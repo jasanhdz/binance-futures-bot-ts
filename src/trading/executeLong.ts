@@ -1,3 +1,4 @@
+import { getRealLiqPrice } from '../strategy/liquidation';
 import { binanceClient } from '../api/binanceClient';
 import { OrderResponse } from '../types';
 import { CONFIG } from '../utils/config';
@@ -62,10 +63,10 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     const { stepSize, tickSize, pricePrecision, qtyPrecision, minNotional } =
       await getSymbolFilters(symbol);
 
-    const capitalToUse = usdtBalance * CONFIG.CAPITAL_USAGE_PCT;
-    const rawQty = (capitalToUse * LEVERAGE) / currentPrice;
+    const enterPrice = usdtBalance * CONFIG.CAPITAL_USAGE_PCT;
+    const rawQty = (enterPrice * LEVERAGE) / currentPrice;
     let qtyNum = floorToStep(rawQty, stepSize, qtyPrecision);
-    console.log({ qtyNum, rawQty, usdtBalance });
+    console.log({ usdtBalance, LEVERAGE, currentPrice, qtyPrecision, enterPrice, qtyNum });
 
     const minQtyByNotional = ceilToStep(minNotional / currentPrice, stepSize, qtyPrecision);
     if (qtyNum < minQtyByNotional) {
@@ -83,7 +84,7 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
       return null;
     }
 
-    const quantity = String(100);
+    const quantity = String(qtyNum);
     logHistory(`🔔 Ejecutando LONG ${symbol} qty=${quantity} @ ~${currentPrice}`);
 
     // 5) Compra a mercado
@@ -98,18 +99,26 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     const executedPrice = parseFloat(order.avgPrice || currentPrice.toString());
 
     // 6) Estimar liquidación y calcular SL a N ticks por encima (LONG)
-    const liquidationEst = executedPrice * (1 - 1 / LEVERAGE);
-    const stopLossPrice = computeStopFromLiqTicks({
+    const liqReal = await getRealLiqPrice(symbol, 'LONG');
+
+    // Calcula SL a N ticks sobre la liq REAL, con guardas:
+    let stopLossPrice = computeStopFromLiqTicks({
       side: 'LONG',
-      liqPrice: liquidationEst,
-      currentPrice,
+      liqPrice: liqReal,
+      currentPrice, // mark actual
       entryPrice: executedPrice,
       tickSize,
       pricePrecision,
       symbol,
     });
 
-    // 7) Stop Market (closePosition) con MARK_PRICE
+    // Por seguridad ante el redondeo al tick:
+    if (stopLossPrice <= liqReal)
+      stopLossPrice = Number((liqReal + tickSize).toFixed(pricePrecision));
+
+    console.log('[SL LONG]', { entry: executedPrice, mark: currentPrice, liqReal, stopLossPrice });
+
+    // Coloca el STOP_MARKET con MARK_PRICE
     await binanceClient.futuresOrder({
       symbol,
       side: 'SELL',
@@ -118,7 +127,6 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
       closePosition: 'true',
       workingType: 'MARK_PRICE',
     });
-
     logHistory(`✅ LONG ejecutada a ${executedPrice} | SL=${stopLossPrice}`);
 
     return {

@@ -15,7 +15,6 @@ export async function hasOpenPosition(
   try {
     const account = await binanceClient.futuresAccountInfo();
     const positions = account.positions || [];
-    console.log('*************** HERE *******************');
 
     // ANY: cualquier posición abierta (long o short)
     if (side === 'ANY') {

@@ -213,3 +213,103 @@
 [2025-08-22T02:05:04.701Z] ✅ LONG ejecutada a 2.8595 | SL=2.8222
 [2025-08-22T02:09:04.592Z] 🔔 Ejecutando LONG XRPUSDT qty=100 @ ~2.86535358
 [2025-08-22T02:09:04.989Z] ✅ LONG ejecutada a 2.8645 | SL=2.8271
+[2025-08-22T05:09:06.151Z] 🔔 Ejecutando LONG XRPUSDT qty=733.2 @ ~2.86199281
+[2025-08-22T05:09:06.343Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:09:16.885Z] 🔔 Ejecutando LONG XRPUSDT qty=733.2 @ ~2.86182557
+[2025-08-22T05:09:17.083Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:09:31.736Z] 🔔 Ejecutando LONG XRPUSDT qty=733.6 @ ~2.86028015
+[2025-08-22T05:09:31.934Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:09:46.991Z] 🔔 Ejecutando LONG XRPUSDT qty=734 @ ~2.85882154
+[2025-08-22T05:09:47.179Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:09:53.034Z] 🔔 Ejecutando LONG XRPUSDT qty=733.7 @ ~2.86
+[2025-08-22T05:09:53.234Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:10:01.813Z] 🔔 Ejecutando LONG XRPUSDT qty=733.8 @ ~2.85971829
+[2025-08-22T05:10:02.016Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:10:16.876Z] 🔔 Ejecutando LONG XRPUSDT qty=733.8 @ ~2.8594
+[2025-08-22T05:10:17.064Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:10:38.970Z] 🔔 Ejecutando LONG XRPUSDT qty=733.5 @ ~2.86062908
+[2025-08-22T05:10:39.169Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:10:46.952Z] 🔔 Ejecutando LONG XRPUSDT qty=733.4 @ ~2.8612
+[2025-08-22T05:10:47.148Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:11:01.821Z] 🔔 Ejecutando LONG XRPUSDT qty=733.6 @ ~2.8605
+[2025-08-22T05:11:02.010Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:11:16.755Z] 🔔 Ejecutando LONG XRPUSDT qty=733.3 @ ~2.86151825
+[2025-08-22T05:11:16.947Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:11:31.918Z] 🔔 Ejecutando LONG XRPUSDT qty=733.1 @ ~2.8625
+[2025-08-22T05:11:32.115Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:11:46.732Z] 🔔 Ejecutando LONG XRPUSDT qty=733.1 @ ~2.86213811
+[2025-08-22T05:11:46.926Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:12:01.738Z] 🔔 Ejecutando LONG XRPUSDT qty=732.9 @ ~2.8632
+[2025-08-22T05:12:01.932Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:12:10.770Z] 🔔 Ejecutando LONG XRPUSDT qty=733 @ ~2.86281246
+[2025-08-22T05:12:10.967Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:12:16.986Z] 🔔 Ejecutando LONG XRPUSDT qty=732.8 @ ~2.8634
+[2025-08-22T05:12:17.178Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:12:24.502Z] 🔔 Ejecutando LONG XRPUSDT qty=659.6 @ ~2.86298798
+[2025-08-22T05:12:24.706Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:12:33.717Z] 🔔 Ejecutando LONG XRPUSDT qty=659.5 @ ~2.8634
+[2025-08-22T05:12:33.914Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:12:46.747Z] 🔔 Ejecutando LONG XRPUSDT qty=659.4 @ ~2.8638
+[2025-08-22T05:12:46.937Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:12:53.937Z] 🔔 Ejecutando LONG XRPUSDT qty=659.4 @ ~2.86382092
+[2025-08-22T05:12:54.128Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:13:01.763Z] 🔔 Ejecutando LONG XRPUSDT qty=659.4 @ ~2.86383592
+[2025-08-22T05:13:01.956Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:13:16.827Z] 🔔 Ejecutando LONG XRPUSDT qty=659.9 @ ~2.86190952
+[2025-08-22T05:13:17.021Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:13:31.732Z] 🔔 Ejecutando LONG XRPUSDT qty=659.9 @ ~2.8617
+[2025-08-22T05:13:31.923Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:13:47.270Z] 🔔 Ejecutando LONG XRPUSDT qty=659.9 @ ~2.862
+[2025-08-22T05:13:47.458Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:14:01.878Z] 🔔 Ejecutando LONG XRPUSDT qty=659.8 @ ~2.8622
+[2025-08-22T05:14:02.070Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:14:17.126Z] 🔔 Ejecutando LONG XRPUSDT qty=659.8 @ ~2.8624
+[2025-08-22T05:14:17.320Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:14:31.887Z] 🔔 Ejecutando LONG XRPUSDT qty=659.7 @ ~2.86259961
+[2025-08-22T05:14:32.080Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:14:46.904Z] 🔔 Ejecutando LONG XRPUSDT qty=659.7 @ ~2.8628
+[2025-08-22T05:14:47.102Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:15:02.430Z] 🔔 Ejecutando LONG XRPUSDT qty=659.7 @ ~2.86272921
+[2025-08-22T05:15:02.624Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:15:16.764Z] 🔔 Ejecutando LONG XRPUSDT qty=659.8 @ ~2.8622
+[2025-08-22T05:15:16.955Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:15:31.920Z] 🔔 Ejecutando LONG XRPUSDT qty=659.7 @ ~2.86284737
+[2025-08-22T05:15:32.119Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:15:46.701Z] 🔔 Ejecutando LONG XRPUSDT qty=659.7 @ ~2.86261061
+[2025-08-22T05:15:46.891Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:16:01.699Z] 🔔 Ejecutando LONG XRPUSDT qty=660.1 @ ~2.86099294
+[2025-08-22T05:16:01.889Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:16:16.765Z] 🔔 Ejecutando LONG XRPUSDT qty=660.1 @ ~2.8609
+[2025-08-22T05:16:16.958Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:16:31.720Z] 🔔 Ejecutando LONG XRPUSDT qty=659.7 @ ~2.86276355
+[2025-08-22T05:16:31.915Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:16:47.089Z] 🔔 Ejecutando LONG XRPUSDT qty=659.7 @ ~2.8626
+[2025-08-22T05:16:47.277Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:17:01.732Z] 🔔 Ejecutando LONG XRPUSDT qty=659.8 @ ~2.8623
+[2025-08-22T05:17:01.925Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:17:16.968Z] 🔔 Ejecutando LONG XRPUSDT qty=660 @ ~2.8613982
+[2025-08-22T05:17:17.163Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:17:31.753Z] 🔔 Ejecutando LONG XRPUSDT qty=660.1 @ ~2.8611
+[2025-08-22T05:17:31.949Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:17:46.733Z] 🔔 Ejecutando LONG XRPUSDT qty=660.3 @ ~2.85988276
+[2025-08-22T05:17:46.923Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:18:01.732Z] 🔔 Ejecutando LONG XRPUSDT qty=660.1 @ ~2.861
+[2025-08-22T05:18:01.922Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:18:16.799Z] 🔔 Ejecutando LONG XRPUSDT qty=660.1 @ ~2.8609
+[2025-08-22T05:18:16.992Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:18:31.736Z] 🔔 Ejecutando LONG XRPUSDT qty=660.2 @ ~2.8605
+[2025-08-22T05:18:31.930Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:18:46.690Z] 🔔 Ejecutando LONG XRPUSDT qty=660.2 @ ~2.8605
+[2025-08-22T05:18:46.885Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:19:01.767Z] 🔔 Ejecutando LONG XRPUSDT qty=660.2 @ ~2.86051947
+[2025-08-22T05:19:01.958Z] ❌ Error ejecutando orden LONG: Margin is insufficient.
+[2025-08-22T05:19:16.878Z] 🔔 Ejecutando LONG XRPUSDT qty=660.4 @ ~2.85980075
+[2025-08-22T05:19:17.261Z] ✅ LONG ejecutada a 2.8585 | SL=2.8307
+[2025-08-22T05:24:02.139Z] 🔔 Ejecutando LONG XRPUSDT qty=622.6 @ ~2.8593
+[2025-08-22T05:24:02.604Z] ✅ LONG ejecutada a 2.8589 | SL=2.8311
+[2025-08-22T05:28:01.959Z] 🔔 Ejecutando LONG XRPUSDT qty=584.5 @ ~2.85943592
+[2025-08-22T05:28:02.348Z] ✅ LONG ejecutada a 2.8594 | SL=2.8316
+[2025-08-22T05:42:23.231Z] 🔔 Ejecutando LONG XRPUSDT qty=531.7 @ ~2.8576
+[2025-08-22T05:42:23.837Z] ✅ LONG ejecutada a 2.8571 | SL=2.845
+[2025-08-22T06:05:31.954Z] 🔔 Ejecutando SHORT XRPUSDT qty=651.2 @ ~2.8622
+[2025-08-22T06:05:32.149Z] ❌ Error ejecutando SHORT: Margin is insufficient.

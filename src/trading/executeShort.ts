@@ -3,6 +3,7 @@ import { CONFIG } from '../utils/config';
 import { logHistory } from '../utils/logger';
 import { OrderResponse } from '../types';
 import { computeStopFromLiqTicks } from './stopLoss';
+import { getRealLiqPrice } from '../strategy/liquidation';
 
 const { LEVERAGE } = CONFIG;
 
@@ -99,30 +100,25 @@ export async function executeShortTrade(
     const executedPrice = parseFloat(order.avgPrice || currentPrice.toString());
 
     // 6) Stop Loss: por defecto a N ticks por DEBAJO de la liquidación (SHORT)
-    const liquidationEst = executedPrice * (1 + 1 / LEVERAGE);
+    // ...después de crear la orden de mercado y obtener executedPrice:
+    const liqReal = await getRealLiqPrice(symbol, 'SHORT');
 
-    let stopLossPrice: number;
-    if (typeof opts?.stopLossPrice === 'number') {
-      // Guardia mínima al pasar SL custom:
-      // - En SHORT el stop debe quedar POR ENCIMA del precio actual (para que no se dispare ya)
-      // - Y POR DEBAJO de la liquidación (para evitar liquidarte)
-      let raw = opts.stopLossPrice;
-      raw = Math.max(raw, currentPrice + tickSize); // por encima del precio actual
-      raw = Math.min(raw, liquidationEst - tickSize * 0.5); // por debajo de la liq
-      stopLossPrice = roundToTick(raw, tickSize, pricePrecision);
-    } else {
-      stopLossPrice = computeStopFromLiqTicks({
-        side: 'SHORT',
-        liqPrice: liquidationEst,
-        currentPrice,
-        entryPrice: executedPrice,
-        tickSize,
-        pricePrecision,
-        symbol,
-      });
-    }
+    let stopLossPrice = computeStopFromLiqTicks({
+      side: 'SHORT',
+      liqPrice: liqReal,
+      currentPrice,
+      entryPrice: executedPrice,
+      tickSize,
+      pricePrecision,
+      symbol,
+    });
 
-    // 7) STOP_MARKET (closePosition) con MARK_PRICE
+    // Seguridad por redondeo:
+    if (stopLossPrice >= liqReal)
+      stopLossPrice = Number((liqReal - tickSize).toFixed(pricePrecision));
+
+    console.log('[SL SHORT]', { entry: executedPrice, mark: currentPrice, liqReal, stopLossPrice });
+
     await binanceClient.futuresOrder({
       symbol,
       side: 'BUY',

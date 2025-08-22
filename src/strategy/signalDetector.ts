@@ -36,6 +36,8 @@ export async function evaluateSignals(symbol: string) {
 
   // Lógica normal (sin bypass)
   const [ls, ss] = await Promise.all([longSignal(symbol), shortSignal(symbol)]);
+  console.log('[LOG - evaluateSignals]', { ls, ss });
+
   return {
     longOk: !!ls.ok,
     long: ls,

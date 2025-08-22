@@ -1,4 +1,5 @@
 {
-  "mode": "LONG_RIDE",
-  "lastSide": "LONG"
+  "mode": "SHORT_RIDE",
+  "lastSide": "SHORT",
+  "lastExitReason": "boot_no_position"
 }

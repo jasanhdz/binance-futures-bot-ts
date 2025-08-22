@@ -61,5 +61,11 @@ export const CONFIG = {
 
   BYPASS_ENTRY_CHECKS: process.env.BYPASS_ENTRY_CHECKS === '1',
   BYPASS_SIDE: process.env.BYPASS_SIDE as 'LONG' | 'SHORT' | undefined,
-  CAPITAL_USAGE_PCT: 0.9,
+  CAPITAL_USAGE_PCT: 0.85,
+
+  // Re-entrada tras TP (puedes ser igual o un poco más flexible)
+  VOL_FACTOR_REENTER: 1.5,
+  GREEN_STREAK_REENTER_MIN: 2,
+  VOL_DROP_FACTOR_REENTER: 0.7,
+  RED_STREAK_REENTER_MIN: 2,
 } as const;

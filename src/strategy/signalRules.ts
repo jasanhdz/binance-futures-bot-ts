@@ -17,6 +17,14 @@ export async function trendFilterHTF(symbol: string): Promise<Trend> {
   const ema50 = ema50Arr[ema50Arr.length - 1]!;
   const ema200 = ema200Arr[ema200Arr.length - 1]!;
 
+  console.log('[LONG - trendFilterHTF] ', {
+    closes,
+    ema50Arr,
+    ema200Arr,
+    ema50,
+    ema200,
+  });
+
   if (ema50 > ema200) return 'UP';
   if (ema50 < ema200) return 'DOWN';
   return 'SIDE';
@@ -26,6 +34,13 @@ function volumeOkay(candles: Candle[]): boolean {
   const latest = candles[candles.length - 1]!;
   const vols = candles.slice(-CONFIG.VOL_AVG_LEN - 1, -1).map((c) => c.volume);
   const vavg = avg(vols);
+
+  console.log('[LOG - volumeOkay]', {
+    latest,
+    vols,
+    vavg,
+  });
+
   return latest.volume >= CONFIG.VOL_FACTOR * vavg;
 }
 
@@ -33,6 +48,11 @@ function brokeUp(candles: Candle[]): { ok: boolean; level: number } {
   const latest = candles[candles.length - 1]!;
   const level = lookbackHigh(candles, CONFIG.BREAK_LOOKBACK);
   const ok = latest.close > level;
+  console.log('[LOG - brokeUp]', {
+    latest,
+    level,
+    ok,
+  });
   return { ok, level };
 }
 
@@ -40,12 +60,18 @@ function brokeDown(candles: Candle[]): { ok: boolean; level: number } {
   const latest = candles[candles.length - 1]!;
   const level = lookbackLow(candles, CONFIG.BREAK_LOOKBACK);
   const ok = latest.close < level;
+  console.log('[LOG - brokeDown]', {
+    latest,
+    level,
+    ok,
+  });
   return { ok, level };
 }
 
 function retested(level: number, candles: Candle[], side: Side): boolean {
   if (!CONFIG.REQUIRE_RETEST) return true;
   const recent = candles.slice(Math.max(0, candles.length - 3)); // últimas 1–3 velas
+  console.log('[LOG - brokeDown]', { recent });
   if (side === 'LONG') {
     return recent.some((c) => c.low <= level && c.close >= level);
   } else {
@@ -77,6 +103,17 @@ export async function longSignal(symbol: string) {
     const atrVal = atr(candles, CONFIG.ATR_PERIOD);
     const entry = candles[candles.length - 1]!.close;
     const sl = entry - CONFIG.ATR_MULT * atrVal;
+    console.log('[LOG - longSignal]', {
+      candles,
+      entry,
+      trend,
+      volOk,
+      broke,
+      level,
+      rt,
+      atrVal,
+      sl,
+    });
     return { ok: true, entry, sl, trend, level, atr: atrVal };
   }
   return { ok: false };
@@ -105,6 +142,17 @@ export async function shortSignal(symbol: string) {
     const atrVal = atr(candles, CONFIG.ATR_PERIOD);
     const entry = candles[candles.length - 1]!.close;
     const sl = entry + CONFIG.ATR_MULT * atrVal;
+    console.log('[LOG - shortSignal]', {
+      candles,
+      entry,
+      trend,
+      volOk,
+      broke,
+      level,
+      rt,
+      atrVal,
+      sl,
+    });
     return { ok: true, entry, sl, trend, level, atr: atrVal };
   }
   return { ok: false };

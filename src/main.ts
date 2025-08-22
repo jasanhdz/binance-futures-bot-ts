@@ -1,33 +1,42 @@
 import cron from 'node-cron';
-import { checkTakeProfit } from './trading';
+import { binanceClient } from './api/binanceClient';
+import { checkTakeProfit, executeLongTrade, hasOpenPosition, executeShortTrade } from './trading';
+
 import { CONFIG } from './utils/config';
 import { startupHealthCheck } from './utils/verify';
-import { executeShortTrade } from './trading/executeShort';
-import { executeLongTrade } from './trading/executeLong';
-import { hasOpenPosition } from './trading/hasOpenPosition';
 import { getState, setState } from './utils/state';
+
 import {
   shouldEnterLongStack,
   shouldEnterShortStack,
   shouldStopLongRide,
   shouldStopShortRide,
 } from './strategy/stacking';
-import { binanceClient } from './api/binanceClient';
 
 const SYMBOL = CONFIG.SYMBOL;
 
+/** Al iniciar, si no hay posición abierta y el modo no es IDLE, reseteamos. */
+async function syncStateWithReality() {
+  const state = getState();
+  const openAny = await hasOpenPosition(SYMBOL, 'ANY');
+  if (!openAny && state.mode !== 'IDLE') {
+    setState({ mode: 'IDLE', lastExitReason: 'boot_no_position' });
+    console.log('🧹 Boot: sin posición abierta → reset a IDLE.');
+  }
+}
+
 async function botLoop() {
-  // 1) TP por ROE
+  // 1) Cierre por TP (ROE)
   await checkTakeProfit(SYMBOL);
 
   const state = getState();
   const isOpenAny = await hasOpenPosition(SYMBOL, 'ANY');
 
-  // 2) Si hay posición abierta: evaluar corte
+  // 2) Si HAY posición abierta: sólo evaluar corte
   if (isOpenAny) {
     if (state.mode === 'LONG_RIDE') {
       if (await shouldStopLongRide(SYMBOL)) {
-        // Cerrar por corte
+        // Cerrar LONG (o posición positiva en one-way)
         const info = await binanceClient.futuresAccountInfo();
         const pos = info.positions.find(
           (p) => p.symbol === SYMBOL && Math.abs(parseFloat(p.positionAmt)) > 0,
@@ -40,7 +49,7 @@ async function botLoop() {
             type: 'MARKET',
             quantity: Math.abs(parseFloat(pos.positionAmt)).toString(),
             reduceOnly: 'true',
-            positionSide: 'LONG',
+            positionSide: 'LONG', // en hedge; en one-way se ignora
           });
         }
         setState({ mode: 'IDLE', lastExitReason: 'cut' });
@@ -48,6 +57,7 @@ async function botLoop() {
       }
     } else if (state.mode === 'SHORT_RIDE') {
       if (await shouldStopShortRide(SYMBOL)) {
+        // Cerrar SHORT (o posición negativa en one-way)
         const info = await binanceClient.futuresAccountInfo();
         const pos = info.positions.find(
           (p) => p.symbol === SYMBOL && Math.abs(parseFloat(p.positionAmt)) > 0,
@@ -67,16 +77,22 @@ async function botLoop() {
         console.log('⛔ Corte SHORT_RIDE: salida forzada.');
       }
     }
-    return; // ya había posición, no abrimos otra
+    return; // no abrimos otra si ya hay una
   }
 
-  // 3) No hay posición abierta
-  //    - Si estamos en modo ride y hubo TP reciente -> re-entrar si sigue momentum
-  if (CONFIG.STACKING_ENABLED && state.mode === 'LONG_RIDE' && CONFIG.REENTER_ON_TP) {
-    const sinceTP = state.lastTPAt ? Date.now() - state.lastTPAt : Infinity;
+  // 3) NO hay posición abierta
+  //    Re-entrada sólo si realmente salimos por TP y se cumple cooldown + momentum
+  if (
+    CONFIG.STACKING_ENABLED &&
+    state.mode === 'LONG_RIDE' &&
+    CONFIG.REENTER_ON_TP &&
+    state.lastExitReason === 'tp' &&
+    typeof state.lastTPAt === 'number'
+  ) {
+    const sinceTP = Date.now() - state.lastTPAt;
     const cont = !(await shouldStopLongRide(SYMBOL));
     if (sinceTP >= CONFIG.REENTER_COOLDOWN_MS && cont) {
-      console.log('🔁 Re-entrada LONG tras TP...');
+      console.log('🔁 Re-entrada LONG tras TP (condiciones válidas)…');
       await executeLongTrade(SYMBOL);
       return;
     } else if (!cont) {
@@ -84,11 +100,17 @@ async function botLoop() {
     }
   }
 
-  if (CONFIG.STACKING_ENABLED && state.mode === 'SHORT_RIDE' && CONFIG.REENTER_ON_TP) {
-    const sinceTP = state.lastTPAt ? Date.now() - state.lastTPAt : Infinity;
+  if (
+    CONFIG.STACKING_ENABLED &&
+    state.mode === 'SHORT_RIDE' &&
+    CONFIG.REENTER_ON_TP &&
+    state.lastExitReason === 'tp' &&
+    typeof state.lastTPAt === 'number'
+  ) {
+    const sinceTP = Date.now() - state.lastTPAt;
     const cont = !(await shouldStopShortRide(SYMBOL));
     if (sinceTP >= CONFIG.REENTER_COOLDOWN_MS && cont) {
-      console.log('🔁 Re-entrada SHORT tras TP...');
+      console.log('🔁 Re-entrada SHORT tras TP (condiciones válidas)…');
       await executeShortTrade(SYMBOL);
       return;
     } else if (!cont) {
@@ -96,7 +118,7 @@ async function botLoop() {
     }
   }
 
-  // 3.5) BYPASS: fuerza una entrada inmediata para pruebas (si no hay posición y estamos IDLE)
+  // 3.5) BYPASS (sólo pruebas): fuerza entrada inmediata si estamos IDLE y sin posición
   if (!isOpenAny && state.mode === 'IDLE' && CONFIG.BYPASS_ENTRY_CHECKS) {
     const side = CONFIG.BYPASS_SIDE || 'LONG';
     if (side === 'LONG') {
@@ -112,7 +134,7 @@ async function botLoop() {
     }
   }
 
-  // 4) Si estamos IDLE, buscar nuevas rachas para iniciar ride
+  // 4) Si estamos IDLE, buscar nuevas “rachas” para iniciar ride
   if (state.mode === 'IDLE') {
     const longReady = await shouldEnterLongStack(SYMBOL);
     if (longReady.ok) {
@@ -136,6 +158,7 @@ async function botLoop() {
 
 async function main() {
   startupHealthCheck();
+  await syncStateWithReality(); // ← muy importante al arrancar
   await botLoop();
 
   // cada 15s
