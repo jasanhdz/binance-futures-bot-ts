@@ -32,29 +32,7 @@ export function ema(values: number[], period: number): number[] {
   return out;
 }
 
-export function atr(candles: Candle[], period: number): number {
-  if (candles.length < period + 1) return NaN;
-  const trs: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    const c = candles[i];
-    const p = candles[i - 1];
-    const tr = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
-    trs.push(tr);
-  }
-  // EMA de TR para ATR suave
-  const atrArr = ema(trs, period);
-  return atrArr[atrArr.length - 1];
-}
-
 export function avg(arr: number[]): number {
   if (arr.length === 0) return 0;
   return arr.reduce((s, v) => s + v, 0) / arr.length;
-}
-
-export function lookbackHigh(candles: Candle[], n: number): number {
-  return Math.max(...candles.slice(-n - 1, -1).map((c) => c.high)); // excluye la última
-}
-
-export function lookbackLow(candles: Candle[], n: number): number {
-  return Math.min(...candles.slice(-n - 1, -1).map((c) => c.low)); // excluye la última
 }

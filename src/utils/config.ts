@@ -49,7 +49,7 @@ export const CONFIG = {
   // Detección de rachas y volumen
   GREEN_STREAK_MIN: 3, // mín. velas verdes consecutivas para LONG
   RED_STREAK_MIN: 3, // mín. velas rojas consecutivas para SHORT
-  VOL_FACTOR_ENTRY: 1.5, // volumen >= 1.5 * media -> “con volumen”
+  VOL_FACTOR_ENTRY: 1.8, // volumen >= 1.5 * media -> “con volumen”
   VOL_DROP_FACTOR: 0.7, // volumen <= 0.7 * media -> “pérdida de volumen”
 
   // Filtros de continuidad / corte
@@ -68,4 +68,17 @@ export const CONFIG = {
   GREEN_STREAK_REENTER_MIN: 2,
   VOL_DROP_FACTOR_REENTER: 0.7,
   RED_STREAK_REENTER_MIN: 2,
+
+  // Dinámica del stop
+  STOP_SWING_LOOKBACK: 5,
+  ATR_STOP_MULT: 1.2,
+  EMA_TRAIL_DEV_STOP: 0.002, // 0.2% desde la EMA para stop
+  STOP_WICK_BUFFER_TICKS: 3, // colchón anti-wicks
+  STOP_MIN_IMPROVE_TICKS: 2, // no re-colocar si mejora menos de 2 ticks
+
+  // --- Profit guard ---
+  PROFIT_LOCK_BE_AT_ROE: 0.2, // al llegar a +20% ROE, activar BE (cierre a mercado si cae)
+  PROFIT_GIVEBACK_ARM_ROE: 0.5, // “armar” el trailing a partir de +50% ROE
+  PROFIT_GIVEBACK_DROP_REL: 0.3, // cerrar si cae ≥30% desde el pico de ROE
+  PROFIT_GIVEBACK_DROP_MIN: 0.1, // pero al menos 10 pp absolutos (seguridad)
 } as const;

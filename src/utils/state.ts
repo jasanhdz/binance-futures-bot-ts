@@ -1,16 +1,9 @@
 // src/utils/state.ts
 import fs from 'fs';
 import path from 'path';
+import { BotState } from 'src/types';
 
 type Mode = 'IDLE' | 'LONG_RIDE' | 'SHORT_RIDE';
-
-export type BotState = {
-  mode: Mode;
-  lastSide?: 'LONG' | 'SHORT';
-  lastEntryPrice?: number;
-  lastTPAt?: number; // timestamp ms del último TP
-  lastExitReason?: string; // 'tp' | 'cut' | ...
-};
 
 const dataDir = path.resolve(__dirname, '../../data');
 const statePath = path.join(dataDir, 'state.json');
