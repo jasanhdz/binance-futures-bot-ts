@@ -11,15 +11,20 @@ import {
   isHedgeMode,
   roundToTick,
   targetFromROE,
+  // ⬇️ NUEVO: helpers para bracket cap
+  getLeverageCapNotional,
+  clampQtyByNotionalCap,
 } from '../utils/trading';
 import { setState } from '../utils/state';
 
 const { LEVERAGE } = CONFIG;
+
 /**
  * Abre LONG a mercado usando budget real (con fee buffer) + SL por liqui real + TP armado.
  */
 export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<OrderResponse | null> {
   try {
+    // 1) Balance
     const balances = await binanceClient.futuresAccountBalance();
     const usdt = balances.find((b) => b.asset === 'USDT');
     const usdtBalance = parseFloat(usdt?.availableBalance ?? '0');
@@ -28,13 +33,16 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
       return null;
     }
 
+    // 2) Mark price
     const marks = await binanceClient.futuresMarkPrice();
     const mark = marks.find((m) => m.symbol === symbol);
     const currentPrice = mark ? parseFloat(mark.markPrice) : NaN;
     if (!isFinite(currentPrice)) throw new Error(`No se pudo obtener markPrice de ${symbol}`);
 
+    // 3) Apalancamiento
     await binanceClient.futuresLeverage({ symbol, leverage: LEVERAGE });
 
+    // 4) Filtros + sizing base
     const { stepSize, tickSize, pricePrecision, qtyPrecision, minNotional } =
       await getSymbolFilters(symbol);
 
@@ -49,9 +57,12 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     }
 
     let qtyNum = floorToStep((budget * LEVERAGE) / currentPrice, stepSize, qtyPrecision);
+
+    // mínimo nocional del símbolo
     const minQtyByNotional = ceilToStep(minNotional / currentPrice, stepSize, qtyPrecision);
     if (qtyNum < minQtyByNotional) qtyNum = minQtyByNotional;
 
+    // ajuste por margen (init margin + fees <= disponible)
     const maxSpendable = Math.max(0, usdtBalance - reserve);
     const fits = () => {
       const notional = qtyNum * currentPrice;
@@ -66,6 +77,22 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     if (qtyNum <= 0) {
       logHistory('⚠️ No se pudo ajustar cantidad para que el margen alcance (LONG).');
       return null;
+    }
+
+    // ⬇️ NUEVO: clamp por notional cap del risk-bracket para este leverage
+    const notionalCap = await getLeverageCapNotional(symbol, LEVERAGE);
+    if (isFinite(notionalCap)) {
+      const safeCap = notionalCap * 0.98; // margen de seguridad
+      qtyNum = clampQtyByNotionalCap(qtyNum, currentPrice, safeCap, stepSize, qtyPrecision);
+
+      if (qtyNum < minQtyByNotional) {
+        logHistory(
+          `⚠️ Risk bracket limita nocional (~${safeCap.toFixed(
+            2,
+          )}) por debajo del mínimo de símbolo (${minNotional}). No se abre la operación.`,
+        );
+        return null;
+      }
     }
 
     const finalNotional = qtyNum * currentPrice;
@@ -83,6 +110,7 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
       stepSize,
       qtyNum,
       minQtyByNotional,
+      notionalCap: isFinite(notionalCap) ? Number(notionalCap.toFixed(6)) : '∞',
       finalNotional: Number(finalNotional.toFixed(6)),
       finalInitMargin: Number(finalInitMargin.toFixed(6)),
       finalFees: Number(finalFees.toFixed(6)),
@@ -92,6 +120,7 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     const quantity = String(qtyNum);
     logHistory(`🔔 Ejecutando LONG ${symbol} qty=${quantity} @ ~${currentPrice}`);
 
+    // 5) Orden de mercado BUY
     const order = await binanceClient.futuresOrder({
       symbol,
       side: 'BUY',
@@ -102,6 +131,7 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
 
     const executedPrice = parseFloat(order.avgPrice || currentPrice.toString());
 
+    // 6) SL por liqui real (N ticks por ENCIMA de la liq en LONG)
     const liqReal = await getRealLiqPrice(symbol, 'LONG');
     let stopLossPrice = computeStopFromLiqTicks({
       side: 'LONG',
@@ -117,6 +147,7 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     }
 
     const hedge = await isHedgeMode();
+
     console.log('[SL LONG]', { entry: executedPrice, mark: currentPrice, liqReal, stopLossPrice });
 
     const slParams: any = {
@@ -130,6 +161,7 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     if (hedge) slParams.positionSide = 'LONG';
     await binanceClient.futuresOrder(slParams);
 
+    // 7) TP por ROE (TAKE_PROFIT_MARKET)
     const tpRaw = targetFromROE(executedPrice, 'LONG', LEVERAGE, CONFIG.FEE_BUFFER_PCT);
     const tpTrigger = roundToTick(tpRaw, tickSize, pricePrecision);
 
@@ -147,7 +179,7 @@ export async function executeLongTrade(symbol: string = 'XRPUSDT'): Promise<Orde
     console.log(`[TP LONG] armado @ ${tpTrigger} (entry=${executedPrice}, lev=${LEVERAGE})`);
     logHistory(`✅ LONG ejecutada a ${executedPrice} | SL=${stopLossPrice} | TP=${tpTrigger}`);
 
-    // ← NUEVO: registra contexto para el profit-guard / re-entradas
+    // Contexto para profit-guard / re-entradas
     setState({
       lastSide: 'LONG',
       lastEntryPrice: executedPrice,

@@ -11,6 +11,9 @@ import {
   isHedgeMode,
   roundToTick,
   targetFromROE,
+  // ⬇️ NUEVO: helpers para bracket cap
+  getLeverageCapNotional,
+  clampQtyByNotionalCap,
 } from '../utils/trading';
 import { setState } from '../utils/state';
 
@@ -22,6 +25,7 @@ export async function executeShortTrade(
   _opts?: { stopLossPrice?: number },
 ): Promise<OrderResponse | null> {
   try {
+    // 1) Balance USDT de futuros
     const balances = await binanceClient.futuresAccountBalance();
     const usdt = balances.find((b) => b.asset === 'USDT');
     const usdtBalance = parseFloat(usdt?.availableBalance ?? '0');
@@ -30,13 +34,16 @@ export async function executeShortTrade(
       return null;
     }
 
+    // 2) Mark price
     const marks = await binanceClient.futuresMarkPrice();
     const mark = marks.find((m) => m.symbol === symbol);
     const currentPrice = mark ? parseFloat(mark.markPrice) : NaN;
     if (!isFinite(currentPrice)) throw new Error(`No markPrice para ${symbol}`);
 
+    // 3) Apalancamiento
     await binanceClient.futuresLeverage({ symbol, leverage: LEVERAGE });
 
+    // 4) Filtros del símbolo y sizing base
     const { stepSize, tickSize, pricePrecision, qtyPrecision, minNotional } =
       await getSymbolFilters(symbol);
 
@@ -51,9 +58,12 @@ export async function executeShortTrade(
     }
 
     let qtyNum = floorToStep((budget * LEVERAGE) / currentPrice, stepSize, qtyPrecision);
+
+    // Cumplir mínimo nocional del símbolo
     const minQtyByNotional = ceilToStep(minNotional / currentPrice, stepSize, qtyPrecision);
     if (qtyNum < minQtyByNotional) qtyNum = minQtyByNotional;
 
+    // Ajuste por margen disponible (margen inicial + fees <= disponible)
     const maxSpendable = Math.max(0, usdtBalance - reserve);
     const fits = () => {
       const notional = qtyNum * currentPrice;
@@ -68,6 +78,24 @@ export async function executeShortTrade(
     if (qtyNum <= 0) {
       logHistory('⚠️ No se pudo ajustar cantidad para que el margen alcance (SHORT).');
       return null;
+    }
+
+    // ⬇️ NUEVO: Ajuste por "notional cap" del risk-bracket a este apalancamiento
+    const notionalCap = await getLeverageCapNotional(symbol, LEVERAGE); // usa recvWindow internamente
+    if (isFinite(notionalCap)) {
+      // margen de seguridad del 2% para evitar roces
+      const safeCap = notionalCap * 0.98;
+      qtyNum = clampQtyByNotionalCap(qtyNum, currentPrice, safeCap, stepSize, qtyPrecision);
+
+      // Si el cap del tier es menor que el mínimo nocional del símbolo, no se puede abrir
+      if (qtyNum < minQtyByNotional) {
+        logHistory(
+          `⚠️ Risk bracket limita nocional (~${safeCap.toFixed(
+            2,
+          )}) por debajo del mínimo de símbolo (${minNotional}). No se abre la operación.`,
+        );
+        return null;
+      }
     }
 
     const finalNotional = qtyNum * currentPrice;
@@ -85,6 +113,7 @@ export async function executeShortTrade(
       stepSize,
       qtyNum,
       minQtyByNotional,
+      notionalCap: isFinite(notionalCap) ? Number(notionalCap.toFixed(6)) : '∞',
       finalNotional: Number(finalNotional.toFixed(6)),
       finalInitMargin: Number(finalInitMargin.toFixed(6)),
       finalFees: Number(finalFees.toFixed(6)),
@@ -94,6 +123,7 @@ export async function executeShortTrade(
     const quantity = String(qtyNum);
     logHistory(`🔔 Ejecutando SHORT ${symbol} qty=${quantity} @ ~${currentPrice}`);
 
+    // 5) Orden de mercado SELL
     const order = await binanceClient.futuresOrder({
       symbol,
       side: 'SELL',
@@ -104,6 +134,7 @@ export async function executeShortTrade(
 
     const executedPrice = parseFloat(order.avgPrice || currentPrice.toString());
 
+    // 6) Stop Loss: a N ticks por DEBAJO de la liqui real (SHORT)
     const liqReal = await getRealLiqPrice(symbol, 'SHORT');
     let stopLossPrice = computeStopFromLiqTicks({
       side: 'SHORT',
@@ -119,6 +150,7 @@ export async function executeShortTrade(
     }
 
     const hedge = await isHedgeMode();
+
     console.log('[SL SHORT]', { entry: executedPrice, mark: currentPrice, liqReal, stopLossPrice });
 
     const slParams: any = {
@@ -132,6 +164,7 @@ export async function executeShortTrade(
     if (hedge) slParams.positionSide = 'SHORT';
     await binanceClient.futuresOrder(slParams);
 
+    // 7) TAKE_PROFIT_MARKET basado en ROE
     const tpRaw = targetFromROE(executedPrice, 'SHORT', LEVERAGE, CONFIG.FEE_BUFFER_PCT);
     const tpTrigger = roundToTick(tpRaw, tickSize, pricePrecision);
 
@@ -149,7 +182,7 @@ export async function executeShortTrade(
     console.log(`[TP SHORT] armado @ ${tpTrigger} (entry=${executedPrice}, lev=${LEVERAGE})`);
     logHistory(`✅ SHORT ejecutada a ${executedPrice} | SL=${stopLossPrice} | TP=${tpTrigger}`);
 
-    // ← NUEVO: registra contexto para el profit-guard / re-entradas
+    // Contexto para profit-guard / re-entradas
     setState({
       lastSide: 'SHORT',
       lastEntryPrice: executedPrice,

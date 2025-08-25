@@ -50,3 +50,32 @@ export async function isHedgeMode(): Promise<boolean> {
   const pm = await binanceClient.futuresPositionMode();
   return !!pm.dualSidePosition;
 }
+
+const RECV_WINDOW_MS = Number(process.env.BINANCE_RECV_WINDOW ?? 5000);
+
+export async function getLeverageCapNotional(symbol: string, leverage: number): Promise<number> {
+  // Tipado del cliente: { symbol?: string; recvWindow: number }
+  const res = await binanceClient.futuresLeverageBracket({
+    symbol,
+    recvWindow: RECV_WINDOW_MS,
+  });
+
+  // Devuelve siempre un array según tu .d.ts
+  const item = res.find((r) => r.symbol === symbol);
+  const brackets = item?.brackets ?? [];
+  // Busca el tier aplicable para ese leverage (el de initialLeverage >= leverage)
+  const tier = brackets.find((b) => leverage <= Number(b.initialLeverage));
+  return tier ? Number(tier.notionalCap) : Infinity;
+}
+
+export function clampQtyByNotionalCap(
+  desiredQty: number,
+  price: number,
+  notionalCap: number,
+  stepSize: number,
+  qtyPrecision: number,
+) {
+  const maxQty = Math.floor(notionalCap / price / stepSize) * stepSize;
+  const clamped = Math.min(desiredQty, maxQty);
+  return Number(clamped.toFixed(qtyPrecision));
+}

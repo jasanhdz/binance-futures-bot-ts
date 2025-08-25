@@ -67,10 +67,11 @@ export async function shouldEnterShortStack(symbol: string) {
   console.log('[STACK/SHORT]', {
     tf: CONFIG.ENTRY_TIMEFRAME,
     rStreak,
+    vOk,
     lastVol: last(candles).volume,
     vavg,
     threshold: CONFIG.VOL_FACTOR_ENTRY * vavg,
-    ok: rStreak >= CONFIG.GREEN_STREAK_MIN && vOk,
+    ok: rStreak >= CONFIG.RED_STREAK_MIN && vOk,
   });
   return {
     ok: rStreak >= CONFIG.RED_STREAK_MIN && vOk, // ⬅️ usa vOk en vez de vDrop
