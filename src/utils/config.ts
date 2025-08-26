@@ -28,6 +28,8 @@ export const CONFIG = {
   VOL_FACTOR: 1.8,
   REQUIRE_RETEST: true,
   ATR_PERIOD: 14,
+  MIN_ATR_PCT: 0.0025,
+  VOL_ASC_TOLERANCE: 0.02,
   ATR_MULT: 0.75,
 
   ENABLE_LOGS: true,
@@ -49,7 +51,7 @@ export const CONFIG = {
   // Detección de rachas y volumen
   GREEN_STREAK_MIN: 3, // mín. velas verdes consecutivas para LONG
   RED_STREAK_MIN: 3, // mín. velas rojas consecutivas para SHORT
-  VOL_FACTOR_ENTRY: 1.8, // volumen >= 1.5 * media -> “con volumen”
+  VOL_FACTOR_ENTRY: 1.1, // volumen >= 1.5 * media -> “con volumen”
   VOL_DROP_FACTOR: 0.7, // volumen <= 0.7 * media -> “pérdida de volumen”
 
   // Filtros de continuidad / corte
@@ -81,4 +83,8 @@ export const CONFIG = {
   PROFIT_GIVEBACK_ARM_ROE: 0.5, // “armar” el trailing a partir de +50% ROE
   PROFIT_GIVEBACK_DROP_REL: 0.3, // cerrar si cae ≥30% desde el pico de ROE
   PROFIT_GIVEBACK_DROP_MIN: 0.1, // pero al menos 10 pp absolutos (seguridad)
+
+  MIN_BODY_PCT: 0.35, // cuerpo ≥ 35% del rango de la vela
+  MAX_WICKINESS: 0.55, // mechas totales ≤ 55% del rango (evita “pabilos”)
+  MAX_EXTENSION_FROM_BASE: 0.006,
 } as const;
