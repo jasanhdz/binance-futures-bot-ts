@@ -313,3 +313,13 @@
 [2025-08-22T05:42:23.837Z] ✅ LONG ejecutada a 2.8571 | SL=2.845
 [2025-08-22T06:05:31.954Z] 🔔 Ejecutando SHORT XRPUSDT qty=651.2 @ ~2.8622
 [2025-08-22T06:05:32.149Z] ❌ Error ejecutando SHORT: Margin is insufficient.
+[2025-08-27T18:50:10.538Z] ❌ Error verificando/cerrando TP: fetch failed
+[2025-08-27T18:50:21.042Z] ❌ Error al verificar posición abierta: fetch failed
+[2025-08-27T18:50:37.005Z] ❌ Error verificando/cerrando TP: fetch failed
+[2025-08-27T18:50:37.028Z] ❌ Error al verificar posición abierta: fetch failed
+[2025-08-27T18:50:40.340Z] ❌ Error verificando/cerrando TP: fetch failed
+[2025-08-27T18:50:40.344Z] ❌ Error al verificar posición abierta: fetch failed
+[2025-08-27T21:02:42.491Z] ❌ Error verificando/cerrando TP: fetch failed
+[2025-08-27T21:03:03.336Z] ❌ Error al verificar posición abierta: fetch failed
+[2025-08-27T21:03:03.339Z] ❌ Error verificando/cerrando TP: fetch failed
+[2025-08-27T21:03:03.342Z] ❌ Error al verificar posición abierta: fetch failed

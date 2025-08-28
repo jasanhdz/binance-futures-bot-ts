@@ -1,5 +1,5 @@
 {
-  "mode": "SHORT_RIDE",
+  "mode": "IDLE",
   "lastSide": "SHORT",
   "lastExitReason": "boot_no_position"
 }
