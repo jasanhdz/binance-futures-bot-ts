@@ -1,5 +1,15 @@
 {
   "mode": "IDLE",
-  "lastSide": "SHORT",
-  "lastExitReason": "boot_no_position"
+  "lastSide": "LONG",
+  "lastExitReason": "giveback",
+  "lastEntryPrice": 2.9961,
+  "lastLeverage": 100,
+  "lastEntryAt": 1756355942973,
+  "peakRoe": 0.530689896865919,
+  "lastEntryQty": 51.7,
+  "pyramidUnits": 0,
+  "lastPyramidPrice": 2.9961,
+  "bracketsArmedAt": 1756355942973,
+  "posSideMode": "BOTH",
+  "lastTrailStop": 2.9781
 }

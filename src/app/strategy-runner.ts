@@ -109,6 +109,11 @@ export class StrategyRunner {
       lastLeverage: CONFIG.LEVERAGE,
       lastEntryAt: Date.now(),
       peakRoe: 0,
+      bracketsArmedAt: Date.now(), // si usas el guard de brackets
+      lastEntryQty: qty, // ⟵ base para piramidación
+      pyramidUnits: 0, // ⟵ resetea contador
+      lastPyramidPrice: avgPrice, // ⟵ primer “base”
+      lastTrailStop: undefined, // ⟵ aún no hay trailing
     });
 
     logger.info('state_entered', { mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE' });

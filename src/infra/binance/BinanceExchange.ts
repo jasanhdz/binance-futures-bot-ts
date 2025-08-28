@@ -1,4 +1,5 @@
-import Binance from 'binance-api-node';
+// src/infra/binance/BinanceExchange.ts
+import Binance, { FuturesOrder } from 'binance-api-node';
 import { Exchange, PositionInfo, SymbolFilters } from '../../core/ports/Exchange';
 import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config';
@@ -15,11 +16,15 @@ export class BinanceExchange implements Exchange {
     wsFutures: CONFIG.WS_FUTURES,
   });
 
+  // cache simple del modo de posiciones (hedge/one-way)
+  private hedgeCache?: { value: boolean; at: number };
+
   constructor() {
+    const isTestnet = process.env.IS_TESTNET === '1';
     this.cli
       .futuresPing()
       .then(() => {
-        console.log(`[Binance] Conectado a ${CONFIG.IS_TESTNET ? 'TESTNET' : 'PROD'} ✅`);
+        console.log(`[Binance] Conectado a ${isTestnet ? 'TESTNET' : 'PROD'} ✅`);
         console.log(`[Binance] HTTP: ${CONFIG.HTTP_FUTURES} | WS: ${CONFIG.WS_FUTURES}`);
         console.log('✅ Ping Futures OK');
       })
@@ -28,10 +33,36 @@ export class BinanceExchange implements Exchange {
       });
   }
 
-  // 1) getServerTime correcto
+  // ---------- utilidades internas ----------
+
+  /** Devuelve true si la cuenta está en Hedge Mode, false si está en One-Way. Cachea 60s. */
+  private async isHedgeMode(): Promise<boolean> {
+    if (this.hedgeCache && Date.now() - this.hedgeCache.at < 60_000) {
+      return this.hedgeCache.value;
+    }
+    try {
+      // Nota: algunos tipos no están en @types → usar any
+      const pm: any = await (this.cli as any).futuresPositionMode();
+      const val = !!pm?.dualSidePosition; // true = hedge
+      this.hedgeCache = { value: val, at: Date.now() };
+      return val;
+    } catch {
+      // si no se puede leer, asumimos one-way para no romper
+      this.hedgeCache = { value: false, at: Date.now() };
+      return false;
+    }
+  }
+
+  /** Detecta el mensaje de “position side mismatch” en diferentes variantes. */
+  private static posSideMismatch(e: any) {
+    const m = (e?.message || '').toLowerCase();
+    return m.includes('positionside') || m.includes('position side');
+  }
+
+  // ---------- implementación de Exchange ----------
+
   async getServerTime() {
     const t: any = await this.cli.futuresTime();
-    // En binance-api-node normalmente futuresTime devuelve { serverTime: number }
     return Number((t && t.serverTime) ?? t);
   }
 
@@ -47,6 +78,7 @@ export class BinanceExchange implements Exchange {
       closeTime: c.closeTime,
     }));
   }
+
   async getMarkPrice(symbol: string) {
     const mk = await this.cli.futuresMarkPrice();
     const it = mk.find((m) => m.symbol === symbol);
@@ -59,12 +91,13 @@ export class BinanceExchange implements Exchange {
     const usdt = b.find((x) => x.asset === 'USDT');
     return +(usdt?.availableBalance ?? '0');
   }
+
   async setLeverage(symbol: string, leverage: number) {
     await this.cli.futuresLeverage({ symbol, leverage });
   }
 
   async getSymbolFilters(symbol: string, leverage: number): Promise<SymbolFilters> {
-    // --- risk bracket para notionalCap a ese leverage ---
+    // --- risk bracket (cap nocional al leverage actual) ---
     const info = await this.cli.futuresLeverageBracket({
       symbol,
       recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 5000),
@@ -72,12 +105,11 @@ export class BinanceExchange implements Exchange {
     const capItem = info.find((r) => r.symbol === symbol);
     const capTier = capItem?.brackets?.find((b) => leverage <= Number(b.initialLeverage));
 
-    // --- exchange info para filtros de símbolo ---
+    // --- exchange info para filtros ---
     const ex = await this.cli.futuresExchangeInfo();
     const s = ex.symbols.find((x) => x.symbol === symbol);
     if (!s) throw new Error(`Símbolo no encontrado en exchangeInfo: ${symbol}`);
 
-    // Type guards
     type AnyFilter = { filterType: string } & Record<string, any>;
     const isPriceFilter = (f: AnyFilter): f is AnyFilter & { tickSize: string } =>
       f?.filterType === 'PRICE_FILTER' && typeof f.tickSize === 'string';
@@ -140,6 +172,8 @@ export class BinanceExchange implements Exchange {
   }
 
   async marketOpen(symbol: string, side: Side, quantity: number) {
+    const hedge = await this.isHedgeMode();
+
     const base: any = {
       symbol,
       type: 'MARKET' as const,
@@ -147,10 +181,11 @@ export class BinanceExchange implements Exchange {
       newOrderRespType: 'RESULT' as const,
       side: side === 'LONG' ? 'BUY' : 'SELL',
     };
+    const payload = hedge ? { ...base, positionSide: side } : base;
 
-    const tryWith = async (params: any) => {
-      const t0 = Date.now();
-      const res = await this.cli.futuresOrder(params);
+    const t0 = Date.now();
+    try {
+      const res = await this.cli.futuresOrder(payload);
       console.log(
         JSON.stringify({
           ts: new Date().toISOString(),
@@ -163,22 +198,29 @@ export class BinanceExchange implements Exchange {
         }),
       );
       return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
-    };
-
-    try {
-      // intenta como Hedge
-      return await tryWith({ ...base, positionSide: side });
     } catch (e: any) {
-      const m = (e?.message || '').toLowerCase();
-      if (m.includes('positionside')) {
-        // fallback one-way
-        return await tryWith(base);
+      if (BinanceExchange.posSideMismatch(e)) {
+        // fallback si el modo real no coincide con nuestro cache
+        const res = await this.cli.futuresOrder(base); // sin positionSide
+        this.hedgeCache = undefined; // invalidar cache
+        console.log(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'warn',
+            msg: 'api_market_open_fallback',
+            symbol,
+            side,
+            qty: quantity,
+          }),
+        );
+        return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
       }
       throw e;
     }
   }
 
-  async placeStopClose(symbol: string, side: Side, stopPrice: number) {
+  async placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<void> {
+    const hedge = await this.isHedgeMode();
     const base: any = {
       symbol,
       type: 'STOP_MARKET',
@@ -187,9 +229,11 @@ export class BinanceExchange implements Exchange {
       closePosition: 'true',
       workingType: 'MARK_PRICE',
     };
-    const tryWith = async (p: any) => {
-      const t0 = Date.now();
-      await this.cli.futuresOrder(p);
+    const payload = hedge ? { ...base, positionSide: side } : base;
+
+    const t0 = Date.now();
+    try {
+      await this.cli.futuresOrder(payload);
       console.log(
         JSON.stringify({
           ts: new Date().toISOString(),
@@ -201,19 +245,27 @@ export class BinanceExchange implements Exchange {
           stopPrice,
         }),
       );
-    };
-    try {
-      return await tryWith({ ...base, positionSide: side }); // hedge
     } catch (e: any) {
-      const m = (e?.message || '').toLowerCase();
-      if (m.includes('positionside')) {
-        return await tryWith(base); // one-way fallback
+      if (BinanceExchange.posSideMismatch(e)) {
+        await this.cli.futuresOrder(base); // fallback sin positionSide
+        this.hedgeCache = undefined;
+        console.log(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'warn',
+            msg: 'api_stop_upsert_fallback',
+            symbol,
+            side,
+            stopPrice,
+          }),
+        );
       }
       throw e;
     }
   }
 
-  async placeTpClose(symbol: string, side: Side, triggerPrice: number) {
+  async placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<void> {
+    const hedge = await this.isHedgeMode();
     const base: any = {
       symbol,
       type: 'TAKE_PROFIT_MARKET',
@@ -222,9 +274,11 @@ export class BinanceExchange implements Exchange {
       closePosition: 'true',
       workingType: 'MARK_PRICE',
     };
-    const tryWith = async (p: any) => {
-      const t0 = Date.now();
-      await this.cli.futuresOrder(p);
+    const payload = hedge ? { ...base, positionSide: side } : base;
+
+    const t0 = Date.now();
+    try {
+      await this.cli.futuresOrder(payload);
       console.log(
         JSON.stringify({
           ts: new Date().toISOString(),
@@ -236,13 +290,20 @@ export class BinanceExchange implements Exchange {
           tp: triggerPrice,
         }),
       );
-    };
-    try {
-      return await tryWith({ ...base, positionSide: side }); // hedge
     } catch (e: any) {
-      const m = (e?.message || '').toLowerCase();
-      if (m.includes('positionside')) {
-        return await tryWith(base); // one-way fallback
+      if (BinanceExchange.posSideMismatch(e)) {
+        await this.cli.futuresOrder(base); // fallback sin positionSide
+        this.hedgeCache = undefined;
+        console.log(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'warn',
+            msg: 'api_tp_upsert_fallback',
+            symbol,
+            side,
+            tp: triggerPrice,
+          }),
+        );
       }
       throw e;
     }
@@ -261,31 +322,38 @@ export class BinanceExchange implements Exchange {
       newOrderRespType: 'RESULT' as const,
       side: side === 'LONG' ? 'SELL' : 'BUY',
     };
+
     try {
-      if (sideMode === 'BOTH') await this.cli.futuresOrder(base);
-      else
+      if (sideMode === 'BOTH') {
+        // One-Way
+        await this.cli.futuresOrder(base);
+      } else {
+        // Hedge: necesita positionSide y (preferible) reduceOnly
         await this.cli.futuresOrder({ ...base, positionSide: side, reduceOnly: 'true' as const });
+      }
     } catch (e: any) {
+      if (BinanceExchange.posSideMismatch(e)) {
+        // Si falló por modo, intentamos sin positionSide
+        await this.cli.futuresOrder(base);
+        this.hedgeCache = undefined;
+        return;
+      }
       const m = (e?.message || '').toLowerCase();
-      if (m.includes('reduceonly')) await this.cli.futuresOrder(base);
-      else throw e;
+      if (m.includes('reduceonly') || m.includes('reduce only')) {
+        // algunas cuentas no requieren/aceptan reduceOnly → reintenta sin él
+        await this.cli.futuresOrder(base);
+        return;
+      }
+      throw e;
     }
   }
 
-  // Reemplaza tu openStopForSide por este (soporta 'true' string/boolean):
   async openStopForSide(symbol: string, side: Side) {
-    const open = await this.cli.futuresOpenOrders({ symbol });
-    const want = open.find(
-      (o: any) =>
-        o.type === 'STOP_MARKET' &&
-        o.side === (side === 'LONG' ? 'SELL' : 'BUY') &&
-        isTrueish(o.closePosition) && // ⟵ aquí el cast a any evita el TS2367
-        (!o.positionSide || o.positionSide === side), // filtra por Hedge mode
-    );
-    return want ? { stopPrice: Number(want.stopPrice!), orderId: String(want.orderId) } : null;
+    const list = await this.listCloseOrdersForSide(symbol, side);
+    const st = list.find((o) => o.type === 'STOP_MARKET');
+    return st ? { stopPrice: st.stopPrice, orderId: st.orderId } : null;
   }
 
-  // útil para limpiar STOP/TP con closePosition=true tras cerrar posición
   async cancelCloseOrdersForSide(symbol: string, side: Side) {
     const open = await this.cli.futuresOpenOrders({ symbol });
     for (const o of open as any[]) {
@@ -299,7 +367,6 @@ export class BinanceExchange implements Exchange {
     }
   }
 
-  // 3) cancelOrderById: implementación
   async cancelOrderById(symbol: string, orderId: string) {
     await this.cli.futuresCancelOrder({ symbol, orderId: Number(orderId) });
   }
@@ -315,5 +382,38 @@ export class BinanceExchange implements Exchange {
     );
     const liq = p ? Number(p.liquidationPrice) : NaN;
     return Number.isFinite(liq) && liq > 0 ? liq : null;
+  }
+
+  private orderSideForPosition(side: Side) {
+    return side === 'LONG' ? 'SELL' : 'BUY';
+  }
+
+  /** Lista sólo órdenes de cierre (STOP/TP) del lado dado. Acepta closePosition o reduceOnly. */
+  async listCloseOrdersForSide(
+    symbol: string,
+    side: Side,
+  ): Promise<{ orderId: string; type: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET'; stopPrice: number }[]> {
+    const open = await this.cli.futuresOpenOrders({ symbol });
+    const wantSide = this.orderSideForPosition(side);
+    return (open as any[])
+      .filter((o) => {
+        const isClose = isTrueish(o.closePosition) || isTrueish(o.reduceOnly);
+        const isType = o.type === 'STOP_MARKET' || o.type === 'TAKE_PROFIT_MARKET';
+        const isSide = o.side === wantSide;
+        const hedgeOk = !o.positionSide || o.positionSide === side; // soporta hedge y one-way
+        return isClose && isType && isSide && hedgeOk;
+      })
+      .map((o) => ({ orderId: String(o.orderId), type: o.type, stopPrice: Number(o.stopPrice) }));
+  }
+
+  async openTpForSide(symbol: string, side: Side) {
+    const list = await this.listCloseOrdersForSide(symbol, side);
+    const tp = list.find((o) => o.type === 'TAKE_PROFIT_MARKET');
+    return tp ? { stopPrice: tp.stopPrice, orderId: tp.orderId } : null;
+  }
+  async cancelOrdersByIds(symbol: string, orderIds: string[]) {
+    for (const id of orderIds) {
+      await this.cli.futuresCancelOrder({ symbol, orderId: Number(id) });
+    }
   }
 }

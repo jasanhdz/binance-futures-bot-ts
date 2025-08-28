@@ -21,6 +21,16 @@ export type BotState = {
   peakRoe?: number;
   lastTPAt?: number;
   lastExitReason?: string;
+
+  // NUEVO: recordatorio de que ya armamos los brackets para esta posición
+  bracketsArmedAt?: number;
+  // (opcional) recordar el modo real leído de la posición
+  posSideMode?: 'BOTH' | 'LONG' | 'SHORT';
+
+  lastEntryQty?: number; // qty de la ENTRADA inicial (base para piramidación)
+  pyramidUnits?: number; // nº de adds realizados en este “ride”
+  lastPyramidPrice?: number; // precio de referencia del último add
+  lastTrailStop?: number;
 };
 
 export type Signal =

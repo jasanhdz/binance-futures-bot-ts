@@ -43,6 +43,9 @@ export interface Exchange {
     sideMode: 'BOTH' | 'LONG' | 'SHORT',
   ): Promise<void>;
 
-  openStopForSide(symbol: string, side: Side): Promise<{ stopPrice: number } | null>; // para upsert
+  openStopForSide(
+    symbol: string,
+    side: Side,
+  ): Promise<{ stopPrice: number; orderId: string } | null>; // para upsert
   cancelOrderById(symbol: string, orderId: string): Promise<void>;
 }

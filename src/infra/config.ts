@@ -42,4 +42,10 @@ export const CONFIG = {
 
   ENTRY_MAX_STREAK: Number(process.env.ENTRY_MAX_STREAK ?? 6),
   RETEST_LOOKBACK: Number(process.env.RETEST_LOOKBACK ?? 30),
+
+  PYRAMID_MAX_UNITS: 3, // nº de “adds” máximos (además de la entrada inicial)
+  PYRAMID_STEP_ATR: 0.5, // cada cuánto ATR se permite un add
+  PYRAMID_UNIT_PCT_OF_ENTRY: 0.5, // el add será 50% del tamaño inicial (ejemplo)
+  ATR_LEN: 14, // ATR para pasos y trailing
+  TRAIL_ATR_MULT: 2.5,
 };

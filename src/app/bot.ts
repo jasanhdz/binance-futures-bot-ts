@@ -5,6 +5,7 @@ import { enforceProfitGuard } from './guards/profit-guard';
 import { earlyFailGuard } from './guards/early-fail';
 import { syncStateGuard } from './guards/sync-state';
 import { ensureBracketsGuard } from './guards/ensure-brackets';
+import { pyramidGuard } from './guards/pyramid-guard';
 
 export function startBot(deps: {
   runner: StrategyRunner;
@@ -39,6 +40,7 @@ export function startBot(deps: {
       await enforceProfitGuard(symbol, exchange, state, logger);
       await earlyFailGuard(symbol, exchange, state, logger);
       await ensureBracketsGuard(symbol, exchange, state, logger);
+      await pyramidGuard(symbol, exchange, state, logger);
 
       await runner.tick(symbol);
     } catch (e: any) {
