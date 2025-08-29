@@ -1,15 +1,16 @@
 {
   "mode": "IDLE",
-  "lastSide": "LONG",
-  "lastExitReason": "giveback",
-  "lastEntryPrice": 2.9961,
+  "lastSide": "SHORT",
+  "lastExitReason": "be_protect",
+  "lastEntryPrice": 2.9497,
   "lastLeverage": 100,
-  "lastEntryAt": 1756355942973,
-  "peakRoe": 0.530689896865919,
-  "lastEntryQty": 51.7,
-  "pyramidUnits": 0,
-  "lastPyramidPrice": 2.9961,
-  "bracketsArmedAt": 1756355942973,
+  "lastEntryAt": 1756414180481,
+  "peakRoe": 0.12507949961012516,
+  "lastEntryQty": 95.8,
+  "pyramidUnits": 1,
+  "lastPyramidPrice": 2.95884715,
+  "bracketsArmedAt": 0,
   "posSideMode": "BOTH",
-  "lastTrailStop": 2.9781
+  "bracketsAttached": true,
+  "lastTrailStop": 2.9591
 }

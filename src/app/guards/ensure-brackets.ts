@@ -1,105 +1,94 @@
+// src/app/guards/brackets-guard.ts
 import { Exchange } from '../../core/ports/Exchange';
 import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
 import { CONFIG } from '../../infra/config';
-import { computeStopFromLiqTicks, roundToTick } from '../../core/risk/stop';
+import { atr } from '../../core/indicators/atr';
+import { roundToTick } from '../../core/risk/stop';
 
-const THROTTLE_MS = 5_000;
-const lastTry: Record<string, number> = {};
-const K = (sym: string, side: 'LONG' | 'SHORT') => `${sym}:${side}:arm`;
+type Side = 'LONG' | 'SHORT';
 
-export async function ensureBracketsGuard(
-  symbol: string,
-  ex: Exchange,
-  st: StateStore,
-  log: Logger,
-) {
+export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore, log: Logger) {
   const s = st.get();
-  if (s.mode === 'IDLE' || !s.lastSide || !s.lastEntryPrice) return;
+  if (s.mode === 'IDLE' || !s.lastSide || !s.lastEntryPrice || !s.lastLeverage) return;
 
-  const pos = await ex.readActivePosition(symbol, s.lastSide);
-  if (!pos) return;
+  // Si ya adjuntamos bracket una vez, no tocar nada más
+  if ((s as any).bracketsAttached) return;
 
-  // 1) Lee órdenes existentes (acepta closePosition o reduceOnly)
-  const list: Array<{
-    orderId: string;
-    type: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
-    stopPrice: number;
-  }> = (await (ex as any).listCloseOrdersForSide?.(symbol, s.lastSide)) ?? [];
+  // Debe existir posición activa
+  const pos = await ex.readActivePosition(symbol, s.lastSide as Side);
+  if (!pos || !pos.qtyAbs || pos.qtyAbs <= 0) return;
 
-  // Dedupe: deja 1 STOP y 1 TP como máximo
-  const stops = list.filter((o) => o.type === 'STOP_MARKET');
-  const tps = list.filter((o) => o.type === 'TAKE_PROFIT_MARKET');
-
-  if (stops.length > 1) {
-    await (ex as any).cancelOrdersByIds?.(
-      symbol,
-      stops.slice(1).map((o) => o.orderId),
+  // ¿Ya existen órdenes de cierre? Si sí, no re-armar
+  let hasAnyClose = false;
+  try {
+    const list: Array<{ type: string }> =
+      (await (ex as any).listCloseOrdersForSide?.(symbol, s.lastSide as Side)) ?? [];
+    hasAnyClose = list.some(
+      (o) =>
+        o.type === 'STOP_MARKET' ||
+        o.type === 'STOP' ||
+        o.type === 'TAKE_PROFIT_MARKET' ||
+        o.type === 'TAKE_PROFIT',
     );
-    log.warn('brackets_dedupe_stop', { canceled: stops.length - 1 });
+  } catch {
+    // si no hay API para listar, seguimos y confiamos en openStop/openTp si existieran
   }
-  if (tps.length > 1) {
-    await (ex as any).cancelOrdersByIds?.(
-      symbol,
-      tps.slice(1).map((o) => o.orderId),
-    );
-    log.warn('brackets_dedupe_tp', { canceled: tps.length - 1 });
-  }
-
-  const haveStop = stops.length >= 1;
-  const haveTp = tps.length >= 1;
-
-  // 2) Si ya están ambos → marca armado y sal
-  if (haveStop && haveTp) {
-    if (!s.bracketsArmedAt) st.set({ bracketsArmedAt: Date.now(), posSideMode: pos.sideMode });
+  if (hasAnyClose) {
+    // Ya hay bracket; marcamos y salimos
+    st.set({ bracketsAttached: true });
     return;
   }
 
-  // 3) Armar sólo si no se ha armado aún EN ESTE RIDE (como hacía tu bot viejo)
-  if (s.bracketsArmedAt) return;
+  // Calcular ATR para un bracket inicial prudente
+  const candles = await ex.getCandles(symbol, CONFIG.ENTRY_TIMEFRAME, 400);
+  const a = atr(candles, (CONFIG as any).ATR_LEN ?? 14);
+  if (!Number.isFinite(a) || a <= 0) return;
 
-  // Throttle para evitar duplicar si openOrders está “lento”
-  const k = K(symbol, s.lastSide);
-  const now = Date.now();
-  if (now - (lastTry[k] ?? 0) < THROTTLE_MS) {
-    log.debug('brackets_throttled', { side: s.lastSide });
-    return;
-  }
-  lastTry[k] = now;
+  const filters = await ex.getSymbolFilters(symbol, s.lastLeverage);
+  const mark = await ex.getMarkPrice(symbol);
 
-  const filters = await ex.getSymbolFilters(symbol, pos.leverage);
+  const trailMult = Number((CONFIG as any).TRAIL_ATR_MULT ?? 2.5);
+  const tpMult = Number((CONFIG as any).TP_ATR_MULT ?? 3);
 
-  // STOP si falta
-  if (!haveStop) {
-    const liq = (await ex.readLiquidationPrice(symbol, s.lastSide)) ?? s.lastEntryPrice;
-    const ticks = CONFIG.SL_TICKS_ABOVE_LIQ_MAP[symbol] ?? CONFIG.SL_TICKS_ABOVE_LIQ_DEFAULT;
-    const mark = await ex.getMarkPrice(symbol);
-    const stop = computeStopFromLiqTicks({
-      side: s.lastSide,
-      liqPrice: liq,
-      currentPrice: mark,
-      entryPrice: s.lastEntryPrice,
-      tickSize: filters.tickSize,
-      pricePrecision: filters.pricePrecision,
-      ticksAboveLiq: ticks,
+  // Stop inicial (tipo chandelier desde el precio actual)
+  let stopPrice = (s.lastSide as Side) === 'LONG' ? mark - trailMult * a : mark + trailMult * a;
+
+  // Que no quede "por el otro lado" del mark
+  const oneTick = filters.tickSize;
+  if ((s.lastSide as Side) === 'LONG') stopPrice = Math.min(stopPrice, mark - oneTick);
+  else stopPrice = Math.max(stopPrice, mark + oneTick);
+
+  stopPrice = roundToTick(stopPrice, filters.tickSize, filters.pricePrecision);
+
+  // TP inicial simple basado en ATR desde la entrada
+  let tpPrice =
+    (s.lastSide as Side) === 'LONG'
+      ? s.lastEntryPrice! + tpMult * a
+      : s.lastEntryPrice! - tpMult * a;
+  tpPrice = roundToTick(tpPrice, filters.tickSize, filters.pricePrecision);
+
+  // Upsert inicial: si falla por límite, no reintentes en loop (pyramid-guard tomará el control)
+  try {
+    // coloca STOP
+    await ex.placeStopClose(symbol, s.lastSide as Side, stopPrice);
+    log.info('rearmed_stop', { ctx: { side: s.lastSide, stop: stopPrice } });
+
+    // coloca TP (si tu Exchange expone el método)
+    try {
+      await (ex as any).placeTpClose?.(symbol, s.lastSide as Side, tpPrice);
+      log.info('rearmed_tp', { ctx: { side: s.lastSide, tp: tpPrice } });
+    } catch {
+      // ignora si no hay API para TP
+    }
+
+    // Marca que ya se adjuntó bracket y deja el trailing al pyramid-guard
+    st.set({ bracketsAttached: true, lastTrailStop: stopPrice });
+    log.info('sync_attach_to_open_position', {
+      ctx: { side: s.lastSide, entry: s.lastEntryPrice, lev: s.lastLeverage, qtyAbs: pos.qtyAbs },
     });
-    await ex.placeStopClose(symbol, s.lastSide, stop);
-    log.info('rearmed_stop', { side: s.lastSide, stop });
+  } catch (e: any) {
+    // Evita loops si choca con límite de stops o similar
+    log.warn('brackets_attach_once_failed', { err: e?.message || String(e) });
   }
-
-  // TP si falta (fijo por ROE desde entry; NO re-upsert en cada tick)
-  if (!haveTp) {
-    const r = CONFIG.TP_ROE;
-    const fee = CONFIG.FEE_BUFFER_PCT;
-    const tpRaw =
-      s.lastSide === 'LONG'
-        ? s.lastEntryPrice * (1 + r / pos.leverage + fee)
-        : s.lastEntryPrice * (1 - r / pos.leverage - fee);
-    const tp = roundToTick(tpRaw, filters.tickSize, filters.pricePrecision);
-    await ex.placeTpClose(symbol, s.lastSide, tp);
-    log.info('rearmed_tp', { side: s.lastSide, tp });
-  }
-
-  // 4) Marca que ya armamos brackets para este ride
-  st.set({ bracketsArmedAt: Date.now(), posSideMode: pos.sideMode });
 }

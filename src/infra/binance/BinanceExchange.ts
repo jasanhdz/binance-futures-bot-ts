@@ -350,8 +350,17 @@ export class BinanceExchange implements Exchange {
 
   async openStopForSide(symbol: string, side: Side) {
     const list = await this.listCloseOrdersForSide(symbol, side);
-    const st = list.find((o) => o.type === 'STOP_MARKET');
-    return st ? { stopPrice: st.stopPrice, orderId: st.orderId } : null;
+    const stops = list.filter((o) => o.type === 'STOP_MARKET' || o.type === 'STOP');
+    if (!stops.length) return null;
+
+    // Elegimos el stop “más cercano” al precio en sentido conservador:
+    // LONG: el más ALTO (sube el stop);  SHORT: el más BAJO (baja el stop)
+    const pick =
+      side === 'LONG'
+        ? stops.reduce((a, b) => (a.stopPrice > b.stopPrice ? a : b))
+        : stops.reduce((a, b) => (a.stopPrice < b.stopPrice ? a : b));
+
+    return { stopPrice: pick.stopPrice, orderId: pick.orderId };
   }
 
   async cancelCloseOrdersForSide(symbol: string, side: Side) {
@@ -388,32 +397,74 @@ export class BinanceExchange implements Exchange {
     return side === 'LONG' ? 'SELL' : 'BUY';
   }
 
-  /** Lista sólo órdenes de cierre (STOP/TP) del lado dado. Acepta closePosition o reduceOnly. */
+  /** Lista órdenes de cierre (o candidatas) del lado dado.
+   *  - Acepta STOP_MARKET / STOP y TAKE_PROFIT_MARKET / TAKE_PROFIT
+   *  - No exige closePosition/reduceOnly para DETECTAR (los manuales a veces no lo traen)
+   *  - Respeta hedge/one-way: si positionSide existe, debe coincidir; si no existe, se acepta igual
+   */
   async listCloseOrdersForSide(
     symbol: string,
     side: Side,
-  ): Promise<{ orderId: string; type: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET'; stopPrice: number }[]> {
+  ): Promise<
+    {
+      orderId: string;
+      type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
+      stopPrice: number;
+    }[]
+  > {
     const open = await this.cli.futuresOpenOrders({ symbol });
     const wantSide = this.orderSideForPosition(side);
+
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'debug',
+        msg: 'raw_open_orders',
+        count: (open as any[]).length,
+        sample: (open as any[]).map((o) => ({
+          id: o.orderId,
+          type: o.type,
+          side: o.side,
+          positionSide: o.positionSide,
+          closePosition: o.closePosition,
+          reduceOnly: o.reduceOnly,
+          stopPrice: o.stopPrice,
+          workingType: o.workingType,
+        })),
+      }),
+    );
+
     return (open as any[])
       .filter((o) => {
-        const isClose = isTrueish(o.closePosition) || isTrueish(o.reduceOnly);
-        const isType = o.type === 'STOP_MARKET' || o.type === 'TAKE_PROFIT_MARKET';
-        const isSide = o.side === wantSide;
-        const hedgeOk = !o.positionSide || o.positionSide === side; // soporta hedge y one-way
-        return isClose && isType && isSide && hedgeOk;
+        const t: string = o.type;
+        const isType =
+          t === 'STOP_MARKET' || t === 'STOP' || t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
+        if (!isType) return false;
+
+        // Debe ser del lado de CIERRE
+        if (o.side !== wantSide) return false;
+
+        // Hedge: si trae positionSide, debe coincidir. Si no trae, lo aceptamos.
+        const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
+        if (!hedgeOk) return false;
+
+        // Preferimos closePosition/reduceOnly, pero ya no es obligatorio para DETECTAR
+        return true;
       })
-      .map((o) => ({ orderId: String(o.orderId), type: o.type, stopPrice: Number(o.stopPrice) }));
+      .map((o) => ({
+        orderId: String(o.orderId),
+        type: o.type as any,
+        stopPrice: Number(o.stopPrice),
+      }));
   }
 
   async openTpForSide(symbol: string, side: Side) {
     const list = await this.listCloseOrdersForSide(symbol, side);
-    const tp = list.find((o) => o.type === 'TAKE_PROFIT_MARKET');
-    return tp ? { stopPrice: tp.stopPrice, orderId: tp.orderId } : null;
-  }
-  async cancelOrdersByIds(symbol: string, orderIds: string[]) {
-    for (const id of orderIds) {
-      await this.cli.futuresCancelOrder({ symbol, orderId: Number(id) });
-    }
+    const tps = list.filter((o) => o.type === 'TAKE_PROFIT_MARKET' || o.type === 'TAKE_PROFIT');
+    if (!tps.length) return null;
+
+    // Para TP nos da igual cuál, devolvemos el primero
+    const pick = tps[0];
+    return { stopPrice: pick.stopPrice, orderId: pick.orderId };
   }
 }
