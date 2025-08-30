@@ -12,6 +12,7 @@ import { floorToStep, ceilToStep } from '../../core/risk/sizing';
  * - Añade unidades cuando el precio avanza stepATR*ATR desde el último add/base.
  * - Mueve el stop con un upsert atómico (candado + dedupe) para evitar duplicados.
  * - Respeta stepSize/precision, minNotional, risk-bracket y margen disponible.
+ * - Tope por riesgo agregado (opcional via MAX_RISK_PCT).
  * - Throttle para no spamear trailing y cooldown si Binance rechaza adds.
  */
 
@@ -56,7 +57,6 @@ function betterOrEqualStop(
   improveMinTicks: number,
   tick: number,
 ): boolean {
-  // Si el actual ya es suficientemente “bueno”, no colocar uno nuevo.
   return side === 'LONG'
     ? current >= proposed - improveMinTicks * tick
     : current <= proposed + improveMinTicks * tick;
@@ -78,18 +78,14 @@ async function listCloseOrdersForSideSafe(
 async function cancelOrdersByIdsSafe(ex: any, symbol: string, orderIds: (string | number)[]) {
   if (!orderIds.length) return;
   try {
-    if (typeof ex.cancelOrdersByIds === 'function') {
-      await ex.cancelOrdersByIds(symbol, orderIds);
-    } else if (typeof ex.cancelOrderById === 'function') {
-      for (const id of orderIds) await ex.cancelOrderById(symbol, String(id));
-    }
+    await ex.cancelOrdersByIds?.(symbol, orderIds);
   } catch {
     // swallow
   }
 }
 
 /**
- * Upsert atómico: garantiza como máximo 1 STOP y 1 TP (si existen) para este símbolo/lado.
+ * Upsert atómico: como máximo 1 STOP y 1 TP para este símbolo/lado.
  * Cancela duplicados y sólo coloca un nuevo STOP cuando realmente mejora.
  */
 async function upsertSingleBracket(
@@ -119,13 +115,11 @@ async function upsertSingleBracket(
           : stops.reduce((a, b) => (Number(a.stopPrice) < Number(b.stopPrice) ? a : b));
 
       if (betterOrEqualStop(side, Number(best.stopPrice), desiredStop, improveMinTicks, tick)) {
-        // Mantener best, cancelar el resto
         const toCancel = stops.filter((o) => o.orderId !== best.orderId).map((o) => o.orderId);
         await cancelOrdersByIdsSafe(ex, symbol, toCancel);
         needPlaceStop = false;
         log.debug('bracket_keep_best_stop', { keep: best.stopPrice, canceled: toCancel.length });
       } else {
-        // Cancelar todos → luego colocamos el nuevo
         await cancelOrdersByIdsSafe(
           ex,
           symbol,
@@ -146,7 +140,7 @@ async function upsertSingleBracket(
       log.info('pyramid_trail_upsert', { side, stop: desiredStop });
     }
 
-    // 4) TP: mantener como mucho 1 (si hay más, cancelar extras). NO rearmamos TP aquí.
+    // 4) TP: mantener como mucho 1 (si hay más, cancelar extras).
     list = await listCloseOrdersForSideSafe(ex, symbol, side);
     tps = list.filter((o) => isTp(o.type));
     if (tps.length > 1) {
@@ -171,10 +165,20 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
   const mark = await ex.getMarkPrice(symbol);
   const filters = await ex.getSymbolFilters(symbol, s.lastLeverage);
 
+  // --- Ratchet: trailing más apretado cuando el peak ROE sube ---
+  const peak = Math.max(0, s.peakRoe ?? 0);
+  const stepRoe = Number((CONFIG as any).TRAIL_ATR_STEP_ROE ?? 0.5); // cada 0.5 ROE apretamos
+  const steps = Math.floor(peak / Math.max(1e-9, stepRoe));
+  const baseMult = Number(
+    (CONFIG as any).TRAIL_ATR_MULT_BASE ?? (CONFIG as any).TRAIL_ATR_MULT ?? 2.5,
+  );
+  const minMult = Number((CONFIG as any).TRAIL_ATR_MULT_MIN ?? 1.2);
+  // Por cada "paso" reducimos 0.2 el múltiplo, hasta minMult
+  const dynTrailMult = Math.max(minMult, baseMult - 0.2 * steps);
+
   const maxUnits = Number((CONFIG as any).PYRAMID_MAX_UNITS ?? 3);
   const stepATR = Number((CONFIG as any).PYRAMID_STEP_ATR ?? 0.5);
   const unitPct = Number((CONFIG as any).PYRAMID_UNIT_PCT_OF_ENTRY ?? 0.5);
-  const trailMult = Number((CONFIG as any).TRAIL_ATR_MULT ?? 2.5);
   const improveMin = Number((CONFIG as any).STOP_MIN_IMPROVE_TICKS ?? 2); // ticks mínimo de mejora
 
   // 2) Piramidación: añade si el precio avanzó >= stepATR*ATR desde el último add/base
@@ -241,6 +245,34 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
       }
     }
 
+    // E) Tope por riesgo agregado (opcional): (qty_total * distancia_stop) <= MAX_RISK_PCT * balance
+    const maxRiskPct = Number((CONFIG as any).MAX_RISK_PCT ?? 0);
+    if (addQty > 0 && maxRiskPct > 0) {
+      // Stop de referencia: el último trailing o uno provisional por ATR dinÁmico
+      let stopCand = s.lastSide === 'LONG' ? mark - dynTrailMult * a : mark + dynTrailMult * a;
+      const oneTick = filters.tickSize;
+      if (s.lastSide === 'LONG') stopCand = Math.min(stopCand, mark - oneTick);
+      else stopCand = Math.max(stopCand, mark + oneTick);
+      stopCand = roundToTick(stopCand, filters.tickSize, filters.pricePrecision);
+
+      const stopRef = Number.isFinite(s.lastTrailStop!)
+        ? Math[s.lastSide === 'LONG' ? 'max' : 'min'](s.lastTrailStop!, stopCand)
+        : stopCand;
+      const dist =
+        s.lastSide === 'LONG' ? Math.max(0, mark - stopRef) : Math.max(0, stopRef - mark);
+
+      if (dist > 0) {
+        const usdtBal = await ex.getUSDTBalance();
+        const maxRisk = usdtBal * maxRiskPct;
+        const currentRisk = (pos.qtyAbs ?? 0) * dist;
+        const roomRisk = Math.max(0, maxRisk - currentRisk);
+        const maxAddByRisk = floorToStep(roomRisk / dist, filters.stepSize, filters.qtyPrecision);
+
+        if (maxAddByRisk <= 0) addQty = 0;
+        else if (addQty > maxAddByRisk) addQty = maxAddByRisk;
+      }
+    }
+
     if (addQty > 0) {
       log.info('pyramid_add_request', { side: s.lastSide, addQty, stepATR, atr: a });
       try {
@@ -272,7 +304,7 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
     log.debug('pyramid_add_cooldown', { msLeft: ADD_ERR_COOLDOWN_MS - lastErrAgo });
   }
 
-  // 3) Trailing por ATR (Chandelier) + guard rails vs. liquidación + throttle + upsert atómico
+  // 3) Trailing por ATR (Chandelier con ratchet) + throttle + upsert atómico
   const tKey = trailKey(symbol, s.lastSide);
   const sinceLastTrail = Date.now() - (lastTrailTryAt[tKey] ?? 0);
   if (sinceLastTrail < TRAIL_THROTTLE_MS) {
@@ -280,65 +312,16 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
     return;
   }
 
-  // Candidato ATR
-  let trailStop = s.lastSide === 'LONG' ? mark - trailMult * a : mark + trailMult * a;
+  let trailStop = s.lastSide === 'LONG' ? mark - dynTrailMult * a : mark + dynTrailMult * a;
 
+  // Guardas básicas para no ejecutarlo al instante
   const oneTick = filters.tickSize;
-
-  // --- Guard rail por LIQUIDACIÓN ---
-  // No permitimos stops por debajo/encima de la liq (según lado) con un buffer de ticks.
-  const ticksBuf =
-    (CONFIG as any).SL_TICKS_ABOVE_LIQ_MAP?.[symbol] ??
-    (CONFIG as any).SL_TICKS_ABOVE_LIQ_DEFAULT ??
-    4;
-
-  const liq = await ex.readLiquidationPrice(symbol, s.lastSide);
-  if (liq != null && Number.isFinite(liq)) {
-    const guardRaw = s.lastSide === 'LONG' ? liq + ticksBuf * oneTick : liq - ticksBuf * oneTick;
-
-    // Para LONG: el stop final debe ser >= guard; para SHORT: <= guard.
-    if (s.lastSide === 'LONG') {
-      trailStop = Math.max(trailStop, guardRaw);
-    } else {
-      trailStop = Math.min(trailStop, guardRaw);
-    }
-  }
-
-  // --- Guardas básicas para no ejecutarlo al instante contra el mark ---
-  // LONG: siempre por debajo del mark; SHORT: siempre por encima del mark
   if (s.lastSide === 'LONG') {
-    trailStop = Math.min(trailStop, mark - oneTick);
+    trailStop = Math.min(trailStop, mark - oneTick); // por debajo del mark
   } else {
-    trailStop = Math.max(trailStop, mark + oneTick);
+    trailStop = Math.max(trailStop, mark + oneTick); // por encima del mark
   }
-
-  // Redondeo
   trailStop = roundToTick(trailStop, filters.tickSize, filters.pricePrecision);
-
-  // Si la guarda de liquidación hace imposible colocar un stop válido (p. ej. mark casi = liq),
-  // evitamos mandar orden que Binance rechazaría.
-  if (liq != null && Number.isFinite(liq)) {
-    const guardRounded =
-      s.lastSide === 'LONG'
-        ? roundToTick(liq + ticksBuf * oneTick, filters.tickSize, filters.pricePrecision)
-        : roundToTick(liq - ticksBuf * oneTick, filters.tickSize, filters.pricePrecision);
-
-    const violates =
-      (s.lastSide === 'LONG' && trailStop < guardRounded) ||
-      (s.lastSide === 'SHORT' && trailStop > guardRounded);
-
-    if (violates) {
-      log.debug('pyramid_trail_guard_conflict_skip', {
-        side: s.lastSide,
-        mark,
-        liq,
-        guard: guardRounded,
-        candidate: trailStop,
-      });
-      lastTrailTryAt[tKey] = Date.now();
-      return; // ⟵ no movemos stop en este tick
-    }
-  }
 
   try {
     await upsertSingleBracket(

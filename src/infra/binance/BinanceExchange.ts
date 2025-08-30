@@ -100,7 +100,7 @@ export class BinanceExchange implements Exchange {
     // --- risk bracket (cap nocional al leverage actual) ---
     const info = await this.cli.futuresLeverageBracket({
       symbol,
-      recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 5000),
+      recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 20000),
     });
     const capItem = info.find((r) => r.symbol === symbol);
     const capTier = capItem?.brackets?.find((b) => leverage <= Number(b.initialLeverage));

@@ -2,10 +2,11 @@ import { Exchange } from '../core/ports/Exchange';
 import { Logger } from '../core/ports/Logger';
 import { StateStore } from '../core/ports/StateStore';
 import { Side } from '../core/types';
-import { sizeByBudget } from '../core/risk/sizing';
+import { sizeByBudget, floorToStep } from '../core/risk/sizing';
 import { computeStopFromLiqTicks, roundToTick } from '../core/risk/stop';
 import { Strategy } from '../strategies/types';
 import { CONFIG } from '../infra/config';
+import { atr } from '../core/indicators/atr';
 
 export class StrategyRunner {
   constructor(
@@ -44,7 +45,7 @@ export class StrategyRunner {
       return;
     }
 
-    // --- Entradas
+    // --- Entradas ---
     const side: Side = sig.action === 'ENTER_LONG' ? 'LONG' : 'SHORT';
 
     await exchange.setLeverage(symbol, CONFIG.LEVERAGE);
@@ -54,6 +55,20 @@ export class StrategyRunner {
     logger.debug('filters', filters);
 
     const usdt = await exchange.getUSDTBalance();
+
+    // ------ Kill-switch diario (no abrir si el DD del día supera el máximo) ------
+    const ddMax = Number((CONFIG as any).DAILY_DD_MAX_PCT ?? 0);
+    if (ddMax > 0) {
+      const sod = Number(process.env.BAL_SOD ?? usdt); // start-of-day simple
+      process.env.BAL_SOD = String(sod);
+      const dd = (sod - usdt) / Math.max(1e-9, sod);
+      if (dd >= ddMax) {
+        logger.warn('daily_kill_switch', { dd, sod, bal: usdt });
+        return; // bloquea nuevas entradas
+      }
+    }
+
+    // ------ Sizing base por presupuesto ------
     const sized = sizeByBudget({
       usdtBalance: usdt,
       reserve: CONFIG.MIN_WALLET_RESERVE_USDT,
@@ -68,16 +83,59 @@ export class StrategyRunner {
       logger.warn('sizing_rejected', sized);
       return;
     }
-    const qty = (sized as any).qty as number;
+    let qty = (sized as any).qty as number;
+
+    // ------ Overlay de riesgo: limita qty por un stop provisional (ATR Chandelier base) ------
+    const maxRiskPct = Number((CONFIG as any).MAX_RISK_PCT ?? 0);
+    if (maxRiskPct > 0) {
+      const candles = await exchange.getCandles(symbol, CONFIG.ENTRY_TIMEFRAME, 200);
+      const a = atr(candles, (CONFIG as any).ATR_LEN ?? 14);
+      if (Number.isFinite(a) && a > 0) {
+        const baseMult = Number(
+          (CONFIG as any).TRAIL_ATR_MULT_BASE ?? (CONFIG as any).TRAIL_ATR_MULT ?? 2.5,
+        );
+        let planStop = side === 'LONG' ? price - baseMult * a : price + baseMult * a;
+        // respeta un tick “del lado correcto”
+        const oneTick = filters.tickSize;
+        if (side === 'LONG') planStop = Math.min(planStop, price - oneTick);
+        else planStop = Math.max(planStop, price + oneTick);
+        planStop = roundToTick(planStop, filters.tickSize, filters.pricePrecision);
+
+        const stopDist =
+          side === 'LONG' ? Math.max(0, price - planStop) : Math.max(0, planStop - price);
+        if (stopDist > 0) {
+          const riskUSDT = usdt * maxRiskPct;
+          const qtyByRisk = floorToStep(
+            riskUSDT / stopDist,
+            filters.stepSize,
+            filters.qtyPrecision,
+          );
+          if (qtyByRisk <= 0) {
+            logger.warn('sizing_rejected_by_risk', { stopDist, riskUSDT });
+            return;
+          }
+          if (qty > qtyByRisk) {
+            logger.info('sizing_capped_by_risk', {
+              from: qty,
+              to: qtyByRisk,
+              stopDist,
+              riskPct: maxRiskPct,
+            });
+            qty = qtyByRisk;
+          }
+        }
+      }
+    }
+
     logger.info('sizing_ok', { side, qty, price, usdt });
 
-    // Abrir mercado
+    // ------ Abrir mercado ------
     const tOpen = Date.now();
     const { avgPrice: rawAvg } = await exchange.marketOpen(symbol, side, qty);
     const avgPrice = rawAvg || price;
     logger.info('market_opened', { side, qty, price, avgPrice, ms: Date.now() - tOpen });
 
-    // Stop / TP
+    // ------ Stop / TP de bracket inicial (igual que antes) ------
     const ticks = CONFIG.SL_TICKS_ABOVE_LIQ_MAP[symbol] ?? CONFIG.SL_TICKS_ABOVE_LIQ_DEFAULT;
     const liq = (await exchange.readLiquidationPrice(symbol, side)) ?? price;
     const stop = computeStopFromLiqTicks({
@@ -109,11 +167,11 @@ export class StrategyRunner {
       lastLeverage: CONFIG.LEVERAGE,
       lastEntryAt: Date.now(),
       peakRoe: 0,
-      bracketsArmedAt: Date.now(), // si usas el guard de brackets
-      lastEntryQty: qty, // ⟵ base para piramidación
-      pyramidUnits: 0, // ⟵ resetea contador
-      lastPyramidPrice: avgPrice, // ⟵ primer “base”
-      lastTrailStop: undefined, // ⟵ aún no hay trailing
+      bracketsArmedAt: Date.now(),
+      lastEntryQty: qty,
+      pyramidUnits: 0,
+      lastPyramidPrice: avgPrice,
+      lastTrailStop: undefined,
     });
 
     logger.info('state_entered', { mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE' });
