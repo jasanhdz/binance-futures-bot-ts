@@ -78,7 +78,11 @@ async function listCloseOrdersForSideSafe(
 async function cancelOrdersByIdsSafe(ex: any, symbol: string, orderIds: (string | number)[]) {
   if (!orderIds.length) return;
   try {
-    await ex.cancelOrdersByIds?.(symbol, orderIds);
+    if (typeof ex.cancelOrdersByIds === 'function') {
+      await ex.cancelOrdersByIds(symbol, orderIds);
+    } else if (typeof ex.cancelOrderById === 'function') {
+      for (const id of orderIds) await ex.cancelOrderById(symbol, String(id));
+    }
   } catch {
     // swallow
   }
@@ -268,7 +272,7 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
     log.debug('pyramid_add_cooldown', { msLeft: ADD_ERR_COOLDOWN_MS - lastErrAgo });
   }
 
-  // 3) Trailing por ATR (Chandelier simplificado) con throttle + upsert atómico
+  // 3) Trailing por ATR (Chandelier) + guard rails vs. liquidación + throttle + upsert atómico
   const tKey = trailKey(symbol, s.lastSide);
   const sinceLastTrail = Date.now() - (lastTrailTryAt[tKey] ?? 0);
   if (sinceLastTrail < TRAIL_THROTTLE_MS) {
@@ -276,16 +280,65 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
     return;
   }
 
+  // Candidato ATR
   let trailStop = s.lastSide === 'LONG' ? mark - trailMult * a : mark + trailMult * a;
 
-  // Guardas básicas para no ejecutarlo al instante
   const oneTick = filters.tickSize;
-  if (s.lastSide === 'LONG') {
-    trailStop = Math.min(trailStop, mark - oneTick); // por debajo del mark
-  } else {
-    trailStop = Math.max(trailStop, mark + oneTick); // por encima del mark
+
+  // --- Guard rail por LIQUIDACIÓN ---
+  // No permitimos stops por debajo/encima de la liq (según lado) con un buffer de ticks.
+  const ticksBuf =
+    (CONFIG as any).SL_TICKS_ABOVE_LIQ_MAP?.[symbol] ??
+    (CONFIG as any).SL_TICKS_ABOVE_LIQ_DEFAULT ??
+    4;
+
+  const liq = await ex.readLiquidationPrice(symbol, s.lastSide);
+  if (liq != null && Number.isFinite(liq)) {
+    const guardRaw = s.lastSide === 'LONG' ? liq + ticksBuf * oneTick : liq - ticksBuf * oneTick;
+
+    // Para LONG: el stop final debe ser >= guard; para SHORT: <= guard.
+    if (s.lastSide === 'LONG') {
+      trailStop = Math.max(trailStop, guardRaw);
+    } else {
+      trailStop = Math.min(trailStop, guardRaw);
+    }
   }
+
+  // --- Guardas básicas para no ejecutarlo al instante contra el mark ---
+  // LONG: siempre por debajo del mark; SHORT: siempre por encima del mark
+  if (s.lastSide === 'LONG') {
+    trailStop = Math.min(trailStop, mark - oneTick);
+  } else {
+    trailStop = Math.max(trailStop, mark + oneTick);
+  }
+
+  // Redondeo
   trailStop = roundToTick(trailStop, filters.tickSize, filters.pricePrecision);
+
+  // Si la guarda de liquidación hace imposible colocar un stop válido (p. ej. mark casi = liq),
+  // evitamos mandar orden que Binance rechazaría.
+  if (liq != null && Number.isFinite(liq)) {
+    const guardRounded =
+      s.lastSide === 'LONG'
+        ? roundToTick(liq + ticksBuf * oneTick, filters.tickSize, filters.pricePrecision)
+        : roundToTick(liq - ticksBuf * oneTick, filters.tickSize, filters.pricePrecision);
+
+    const violates =
+      (s.lastSide === 'LONG' && trailStop < guardRounded) ||
+      (s.lastSide === 'SHORT' && trailStop > guardRounded);
+
+    if (violates) {
+      log.debug('pyramid_trail_guard_conflict_skip', {
+        side: s.lastSide,
+        mark,
+        liq,
+        guard: guardRounded,
+        candidate: trailStop,
+      });
+      lastTrailTryAt[tKey] = Date.now();
+      return; // ⟵ no movemos stop en este tick
+    }
+  }
 
   try {
     await upsertSingleBracket(

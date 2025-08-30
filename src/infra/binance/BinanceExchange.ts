@@ -467,4 +467,14 @@ export class BinanceExchange implements Exchange {
     const pick = tps[0];
     return { stopPrice: pick.stopPrice, orderId: pick.orderId };
   }
+
+  async cancelOrdersByIds(symbol: string, orderIds: (string | number)[]) {
+    for (const id of orderIds) {
+      try {
+        await this.cli.futuresCancelOrder({ symbol, orderId: Number(id) });
+      } catch (e) {
+        console.warn('[Binance] cancelOrdersByIds fail', { id, err: (e as any)?.message });
+      }
+    }
+  }
 }

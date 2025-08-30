@@ -48,4 +48,15 @@ export const CONFIG = {
   PYRAMID_UNIT_PCT_OF_ENTRY: 0.5, // el add será 50% del tamaño inicial (ejemplo)
   ATR_LEN: 14, // ATR para pasos y trailing
   TRAIL_ATR_MULT: 2.5,
+
+  // --- Profit guard refinements ---
+  PROFIT_LOCK_BE_HYST: Number(process.env.PROFIT_LOCK_BE_HYST ?? 0.05), // ROE extra por debajo del BE para cerrar
+  PROFIT_GIVEBACK_DEBOUNCE_MS: Number(process.env.PROFIT_GIVEBACK_DEBOUNCE_MS ?? 7000),
+  PROFIT_GIVEBACK_ATR_ROE_MULT: Number(process.env.PROFIT_GIVEBACK_ATR_ROE_MULT ?? 0.6), // 0.6× ATR en ROE
+  GIVEBACK_CONFIRM_EMA_ENABLED: (process.env.GIVEBACK_CONFIRM_EMA_ENABLED ?? '0') === '1',
+  GIVEBACK_CONFIRM_EMA_PERIOD: Number(process.env.GIVEBACK_CONFIRM_EMA_PERIOD ?? 9),
+
+  TRAIL_ATR_MULT_BASE: 3.0, // al inicio
+  TRAIL_ATR_MULT_MIN: 1.2, // muy ganador → más apretado
+  TRAIL_ATR_STEP_ROE: 0.5, // cada 0.5 ROE bajamos un poco
 };
