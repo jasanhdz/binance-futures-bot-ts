@@ -59,4 +59,34 @@ export const CONFIG = {
   TRAIL_ATR_MULT_BASE: 3.0, // al inicio
   TRAIL_ATR_MULT_MIN: 1.2, // muy ganador → más apretado
   TRAIL_ATR_STEP_ROE: 0.5, // cada 0.5 ROE bajamos un poco
+
+  ATR_PERIOD: 14,
+  MIN_ATR_PCT: 0.0025,
+
+  // --- IPT anti-falsos gatillos ---
+  IPT_REQUIRE_RETEST: (process.env.IPT_REQUIRE_RETEST ?? '1') === '1',
+  IPT_RETEST_TICKS: Number(process.env.IPT_RETEST_TICKS ?? 3), // 2–5 típico
+  IPT_MAX_EMA25_EXTENSION: Number(process.env.IPT_MAX_EMA25_EXTENSION ?? 0.006), // 0.6%
+
+  // Si el “stop lógico” (debajo/encima del pullback) queda demasiado cerca, no entrar
+  MIN_STOP_DIST_TICKS: Number(process.env.MIN_STOP_DIST_TICKS ?? 4),
+  MIN_STOP_DIST_PCT: Number(process.env.MIN_STOP_DIST_PCT ?? 0.0015), // 0.15% del precio
+
+  // ---------- Router (detección de régimen) ----------
+  ROUTER_TREND_SCORE_STRONG: Number(process.env.ROUTER_TREND_SCORE_STRONG ?? 2), // |score|≥2 → tendencia
+  ROUTER_TREND_SCORE_WEAK: Number(process.env.ROUTER_TREND_SCORE_WEAK ?? 1), // |score|≤1 → débil/neutral
+  ROUTER_ATR_MIN_TREND: Number(process.env.ROUTER_ATR_MIN_TREND ?? 0.0025), // ≥0.25% para usar IPT
+  ROUTER_EMA_SLOPE_LOOKBACK: Number(process.env.ROUTER_EMA_SLOPE_LOOKBACK ?? 8),
+  ROUTER_EMA_SLOPE_FLAT_MAX: Number(process.env.ROUTER_EMA_SLOPE_FLAT_MAX ?? 0.0006), // 0.06% en 8 velas
+
+  // ---------- Parámetros IPT (ya los tienes) ----------
+  // IPT_MAX_EMA25_EXTENSION, IPT_REQUIRE_RETEST, IPT_RETEST_TICKS, MIN_STOP_DIST_*, etc.
+
+  // ---------- Parámetros Range-Reversion (ya propuestos) ----------
+  RR_BAND_K: Number(process.env.RR_BAND_K ?? 1.6),
+  RR_MIN_ATR_PCT: Number(process.env.RR_MIN_ATR_PCT ?? 0.001),
+  RR_MAX_ATR_PCT: Number(process.env.RR_MAX_ATR_PCT ?? 0.006),
+  RR_MAX_EMA_SLOPE: Number(process.env.RR_MAX_EMA_SLOPE ?? 0), // no usado en router si usas ROUTER_EMA_SLOPE_FLAT_MAX
+  RR_MIN_BODY_PCT: Number(process.env.RR_MIN_BODY_PCT ?? 0.3),
+  RR_MAX_WICKINESS: Number(process.env.RR_MAX_WICKINESS ?? 0.6),
 };

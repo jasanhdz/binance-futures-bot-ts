@@ -1,26 +1,7 @@
 // src/strategies/stacking/index.ts
 import { Strategy, StrategyContext } from '../types';
 import { ema } from '../../core/indicators/ema';
-
-function last<T>(a: T[]) {
-  return a[a.length - 1];
-}
-function avg(a: number[]) {
-  return a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0;
-}
-function bodyPct(c: { open: number; close: number; high: number; low: number }) {
-  const r = Math.max(1e-9, c.high - c.low);
-  return Math.abs(c.close - c.open) / r;
-}
-function countStreak(cs: any[], color: 'green' | 'red') {
-  let n = 0;
-  for (let i = cs.length - 1; i >= 0; i--) {
-    const ok = color === 'green' ? cs[i].close > cs[i].open : cs[i].close < cs[i].open;
-    if (ok) n++;
-    else break;
-  }
-  return n;
-}
+import { last, avg, bodyPct, countStreak } from '../../core/utils/candles';
 
 export const StackingStrategy: Strategy = {
   name: 'stacking',
