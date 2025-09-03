@@ -113,4 +113,10 @@ export const CONFIG = {
   DAILY_DD_MAX_PCT: 0.25,
   TIME_STOP_MINUTES: 20,
   TIME_STOP_MIN_ROE: 0.05,
+
+  // ----- Liquidity Sweep + Reclaim -----
+  SWEEP_LOOKBACK: Number(process.env.SWEEP_LOOKBACK ?? 30), // HH/LL previos (excluye vela actual)
+  SWEEP_VOL_FACTOR: Number(process.env.SWEEP_VOL_FACTOR ?? 1.3), // volumen de la vela de barrido vs vAvg20
+  SWEEP_MIN_BODY_PCT: Number(process.env.SWEEP_MIN_BODY_PCT ?? 0.3),
+  SWEEP_MAX_WICKINESS: Number(process.env.SWEEP_MAX_WICKINESS ?? 0.65),
 };

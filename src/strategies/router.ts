@@ -2,33 +2,32 @@ import { Strategy, StrategyContext } from './types';
 import { ema } from '../core/indicators/ema';
 import { atrPctNow, last } from '../core/utils/candles';
 import { IptStrategy } from './ipt';
+import { RangeReversionStrategy } from './range-reversion';
+import { LiquiditySweepStrategy } from './liquidity-sweep';
 
-// Nuevo perfil "sniper" para 100x
 export type Profile = 'ipt_sniper' | 'ipt_strict' | 'ipt_relaxed' | 'rr';
 
-function emaTrendScoreMultiTF(
+async function emaTrendScoreMultiTF(
   symbol: string,
   exchange: StrategyContext['exchange'],
   cfg: any,
 ): Promise<number> {
   const tfs: string[] = [cfg.ENTRY_TIMEFRAME, ...(cfg.HTF_TFS || [])];
-  return (async () => {
-    let score = 0;
-    for (const tf of tfs) {
-      const cs = await exchange.getCandles(symbol, tf, 200);
-      if (cs.length < 120) continue;
-      const closes = cs.map((c) => c.close);
-      const e7 = last(ema(closes, 7))!;
-      const e25 = last(ema(closes, 25))!;
-      const e99 = last(ema(closes, 99))!;
-      const L = last(cs);
-      const longOK = L.close > e25 && e7 > e25 && e25 > e99;
-      const shortOK = L.close < e25 && e7 < e25 && e25 < e99;
-      if (longOK) score++;
-      if (shortOK) score--;
-    }
-    return score; // >0 alcista, <0 bajista
-  })();
+  let score = 0;
+  for (const tf of tfs) {
+    const cs = await exchange.getCandles(symbol, tf, 200);
+    if (cs.length < 120) continue;
+    const closes = cs.map((c) => c.close);
+    const e7 = last(ema(closes, 7))!;
+    const e25 = last(ema(closes, 25))!;
+    const e99 = last(ema(closes, 99))!;
+    const L = last(cs);
+    const longOK = L.close > e25 && e7 > e25 && e25 > e99;
+    const shortOK = L.close < e25 && e7 < e25 && e25 < e99;
+    if (longOK) score++;
+    if (shortOK) score--;
+  }
+  return score; // >0 alcista, <0 bajista
 }
 
 function emaSlopePct(closes: number[], period: number, lookback: number) {
@@ -40,23 +39,20 @@ function emaSlopePct(closes: number[], period: number, lookback: number) {
 }
 
 export class RouterStrategy implements Strategy {
-  name: string = 'router';
-  timeframe: string = '5m';
+  name = 'router';
+  timeframe = '5m';
 
   private lastProfile: Profile = 'ipt_strict';
   private lastSwitchAt = 0;
+  private SWITCH_COOLDOWN_MS = 15 * 60_000;
 
-  // cooldown por defecto (se puede sobreescribir desde config.SWITCH_COOLDOWN_MS)
-  private SWITCH_COOLDOWN_MS = 15 * 60_000; // 15 min
-
-  // Overrides SOLO para la lógica de ENTRADA (guards/gestión no se tocan)
+  // Overrides SOLO para la ENTRADA de IPT
   private profiles: Record<Profile, Partial<any>> = {
     ipt_sniper: {
       IPT_REQUIRE_RETEST: 1,
       IPT_MAX_EMA25_EXTENSION: 0.0045,
       MIN_STOP_DIST_TICKS: 5,
       MIN_STOP_DIST_PCT: 0.0018,
-      // anti-falsos PB (consumidos por IPT)
       IPT_PB_MAX_VOL_REL: 0.7,
       IPT_PB_MAX_RANGE_REL: 0.85,
       IPT_BREAK_MIN_TICKS: 2,
@@ -83,7 +79,7 @@ export class RouterStrategy implements Strategy {
       MIN_STOP_DIST_TICKS: 3,
       MIN_STOP_DIST_PCT: 0.001,
     },
-    rr: {},
+    rr: {}, // (se maneja fuera con Sweep/RR)
   };
 
   private pickProfile = ({
@@ -115,44 +111,63 @@ export class RouterStrategy implements Strategy {
     const { symbol, exchange, config } = ctx;
 
     const cs = await exchange.getCandles(symbol, config.ENTRY_TIMEFRAME, 300);
-    if (cs.length < 150) {
-      // sin datos suficientes, delega igual a IPT estricto con el config base
-      return IptStrategy.evaluate(ctx);
-    }
+    if (cs.length < 150) return IptStrategy.evaluate(ctx);
 
     const closes = cs.map((c) => c.close);
     const trendScore = await emaTrendScoreMultiTF(symbol, exchange, config);
-    const emaSlope = emaSlopePct(closes, 25, config.ROUTER_EMA_SLOPE_LOOKBACK ?? 8);
+    const slope = emaSlopePct(closes, 25, config.ROUTER_EMA_SLOPE_LOOKBACK ?? 8);
     const atrRel = atrPctNow(cs, config.ATR_PERIOD ?? 14);
 
-    // Perfil objetivo
-    const wanted = this.pickProfile({ trendScore, emaSlope, atrPct: atrRel, cfg: config });
-
-    // Histeresis
+    // Perfil deseado y cooldown de cambios
+    const wanted = this.pickProfile({ trendScore, emaSlope: slope, atrPct: atrRel, cfg: config });
     const now = ctx.now ?? Date.now();
     const cooldown = (config as any).SWITCH_COOLDOWN_MS ?? this.SWITCH_COOLDOWN_MS;
     const profile = now - this.lastSwitchAt < cooldown ? this.lastProfile : wanted;
-
     if (profile !== this.lastProfile) {
       this.lastProfile = profile;
       this.lastSwitchAt = now;
     }
 
-    // Si aún no usas RR real, fallback a IPT estricto
-    const realProfile: Profile = profile === 'rr' ? 'ipt_strict' : profile;
+    // ——— RANGO: intentar Sweep → si no hay, Range-Reversion ———
+    if (profile === 'rr') {
+      const sweep = await LiquiditySweepStrategy.evaluate(ctx);
+      if (sweep.action !== 'IDLE') {
+        const reason = [
+          sweep.reason,
+          'profile:rr',
+          `score:${trendScore}`,
+          `slope:${slope}`,
+          `atr:${atrRel}`,
+        ]
+          .filter(Boolean)
+          .join('|');
+        return { ...sweep, reason };
+      }
+      const rr = await RangeReversionStrategy.evaluate(ctx);
+      const reason = [
+        rr.reason,
+        'profile:rr',
+        `score:${trendScore}`,
+        `slope:${slope}`,
+        `atr:${atrRel}`,
+      ]
+        .filter(Boolean)
+        .join('|');
+      return { ...rr, reason };
+    }
 
-    // Merge de config (overrides de entrada)
-    const mergedConfig = { ...config, ...this.profiles[realProfile] };
-
-    // Delegar a IPT con overrides y anotar motivo para logs
-    const base = await IptStrategy.evaluate({ ...ctx, config: mergedConfig });
-    const reasonBits = [
+    // ——— TENDENCIA: usar IPT con overrides del perfil ———
+    const merged = { ...config, ...this.profiles[profile] };
+    const base = await IptStrategy.evaluate({ ...ctx, config: merged });
+    const reason = [
       base.reason,
-      `profile:${realProfile}`,
+      `profile:${profile}`,
       `score:${trendScore}`,
-      `slope:${emaSlope}`,
+      `slope:${slope}`,
       `atr:${atrRel}`,
-    ].filter(Boolean);
-    return { ...base, reason: reasonBits.join('|') } as typeof base;
+    ]
+      .filter(Boolean)
+      .join('|');
+    return { ...base, reason };
   }
 }
