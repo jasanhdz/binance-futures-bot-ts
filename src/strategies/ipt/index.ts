@@ -11,6 +11,7 @@ import {
   atrPctNow,
   green,
   red,
+  avg,
 } from '../../core/utils/candles';
 
 /* ---------- confluencia HTF (EMA 7/25/99) ---------- */
@@ -44,7 +45,7 @@ function impulsePullbackTrigger(candles: Candle[], side: 'LONG' | 'SHORT', cfg: 
     kPBMax = 3;
 
   const n = candles.length;
-  if (n < 60) return { ok: false };
+  if (n < 60) return { ok: false } as const;
 
   const vavg = volumeAvg(candles, Math.max(20, cfg.VOL_AVG_LEN));
 
@@ -89,8 +90,8 @@ function impulsePullbackTrigger(candles: Candle[], side: 'LONG' | 'SHORT', cfg: 
 
   const ok = impulseOK && pbOK && breakOK && volAsc && volStrong && bodyOK && wicksOK;
 
-  // ⬅️ devolvemos detalles para las palancas extra
-  return { ok, details: { e25, hiPB, loPB, pb, L, vavg } };
+  // devolvemos detalles para filtros extra
+  return { ok, details: { e25, hiPB, loPB, pb, L, vavg, impulse } } as const;
 }
 
 /* ---------- zona limpia y ATR mínimo ---------- */
@@ -113,15 +114,26 @@ function hasCleanZone(candles: Candle[], side: 'LONG' | 'SHORT', cfg: any) {
     : distToMA99 >= minClr && distToLL >= minClr;
 }
 
-/* ---------- Estrategia IPT (la de tu código anterior) ---------- */
+/* ---------- anti–falso PB: contracción en PB ---------- */
+function pbContractionOK(impulse: Candle[], pb: Candle[], cfg: any) {
+  if (!impulse.length || !pb.length) return false;
+  const impVol = avg(impulse.map((c) => c.volume));
+  const pbVol = avg(pb.map((c) => c.volume));
+  const impRange = Math.max(...impulse.map((c) => c.high)) - Math.min(...impulse.map((c) => c.low));
+  const pbRange = Math.max(...pb.map((c) => c.high)) - Math.min(...pb.map((c) => c.low));
+
+  const volOK = pbVol <= (cfg.IPT_PB_MAX_VOL_REL ?? 0.7) * impVol;
+  const rangeOK = pbRange <= (cfg.IPT_PB_MAX_RANGE_REL ?? 0.85) * impRange;
+  return volOK && rangeOK;
+}
+
+/* ---------- Estrategia IPT (con filtros “sniper”) ---------- */
 export const IptStrategy: Strategy = {
   name: 'ipt',
   timeframe: '5m',
   async evaluate({ symbol, exchange, config, state, now }: StrategyContext) {
-    // Sólo buscamos entradas si estamos IDLE
     if (state.mode !== 'IDLE') return { action: 'IDLE' };
 
-    // Cooldown opcional tras TP (idéntico a tu runner actual)
     const cool = Number((config as any).REENTER_COOLDOWN_MS ?? 5_000);
     if (
       state.lastExitReason === 'tp' &&
@@ -131,47 +143,58 @@ export const IptStrategy: Strategy = {
       return { action: 'IDLE', reason: 'tp_cooldown' };
     }
 
-    // Candles del TF de entrada
     const cs = await exchange.getCandles(symbol, config.ENTRY_TIMEFRAME, 300);
     if (cs.length < 120) return { action: 'IDLE', reason: 'few_candles' };
 
-    // ATR mínimo (evita rangos muertos)
     const atrOK = atrPctNow(cs, config.ATR_PERIOD) >= config.MIN_ATR_PCT;
     if (!atrOK) return { action: 'IDLE', reason: 'atr_low' };
 
-    // Confluencia multi-TF por EMAs
     const score = await emaTrendScore(symbol, exchange, config); // >0 alcista, <0 bajista
+
     // LONG
     if (score > 0) {
       const ipt = impulsePullbackTrigger(cs, 'LONG', config);
       if (!ipt.ok) return { action: 'IDLE', reason: 'ipt_fail_long' };
 
-      const { e25, hiPB, loPB, pb, L, vavg } = ipt.details!;
+      const { e25, hiPB, pb, L, vavg, impulse } = ipt.details!;
       const filters = await exchange.getSymbolFilters(symbol, config.LEVERAGE);
       const tick = filters.tickSize;
       const prev = cs[cs.length - 2];
 
-      // (1) Límite de extensión vs EMA25 (no comprar demasiado lejos)
+      // (A) contracción en PB
+      if (!pbContractionOK(impulse, pb, config)) {
+        return { action: 'IDLE', reason: 'pb_no_contraction' };
+      }
+
+      // (1) Límite de extensión vs EMA25
       const ext = (L.close - e25) / Math.max(1e-9, e25);
       if (ext > (config.IPT_MAX_EMA25_EXTENSION ?? 0.006)) {
         return { action: 'IDLE', reason: 'ipt_ext_ema25' };
       }
 
-      // (2) Filtro de clímax (cuerpo y volumen desproporcionados)
+      // (2) Filtro de clímax
       const isClimax =
         bodyPct(L) >= (config.CLIMAX_BODY_PCT ?? 0.75) &&
         L.volume >= (config.CLIMAX_VOL_FACTOR ?? 2.2) * vavg;
       if (isClimax) return { action: 'IDLE', reason: 'ipt_climax_filter' };
 
-      // (3) Retest obligatorio del nivel roto (hiPB)
+      // (3) Retest obligatorio del nivel roto
       if (config.IPT_REQUIRE_RETEST) {
         const tol = (config.IPT_RETEST_TICKS ?? 3) * tick;
-        const touched = (prev && prev.low <= hiPB + tol) || L.low <= hiPB + tol; // wick que “besa” el nivel
+        const touched = (prev && prev.low <= hiPB + tol) || L.low <= hiPB + tol;
         if (!touched) return { action: 'IDLE', reason: 'ipt_need_retest' };
       }
 
-      // (4) Distancia mínima de stop (lógica del stop “natural” bajo el PB)
-      const stopCandidate = Math.min(...pb.map((c) => c.low)) - tick; // 1 tick de colchón
+      // (3.b) Ruptura con margen mínimo
+      const breakMarginAbs = Math.max(
+        (config.IPT_BREAK_MIN_TICKS ?? 2) * tick,
+        (config.IPT_BREAK_MIN_PCT ?? 0.0003) * L.close,
+      );
+      const breakWithMargin = L.close >= hiPB + breakMarginAbs;
+      if (!breakWithMargin) return { action: 'IDLE', reason: 'break_weak' };
+
+      // (4) Distancia mínima de stop
+      const stopCandidate = Math.min(...pb.map((c) => c.low)) - tick;
       const dist = L.close - stopCandidate;
       const minDist = Math.max(
         (config.MIN_STOP_DIST_TICKS ?? 4) * tick,
@@ -189,31 +212,38 @@ export const IptStrategy: Strategy = {
       const ipt = impulsePullbackTrigger(cs, 'SHORT', config);
       if (!ipt.ok) return { action: 'IDLE', reason: 'ipt_fail_short' };
 
-      const { e25, hiPB, loPB, pb, L, vavg } = ipt.details!;
+      const { e25, loPB, pb, L, vavg, impulse } = ipt.details!;
       const filters = await exchange.getSymbolFilters(symbol, config.LEVERAGE);
       const tick = filters.tickSize;
       const prev = cs[cs.length - 2];
 
-      // (1) Límite de extensión vs EMA25 (no vender demasiado lejos)
+      if (!pbContractionOK(impulse, pb, config)) {
+        return { action: 'IDLE', reason: 'pb_no_contraction' };
+      }
+
       const ext = (e25 - L.close) / Math.max(1e-9, e25);
       if (ext > (config.IPT_MAX_EMA25_EXTENSION ?? 0.006)) {
         return { action: 'IDLE', reason: 'ipt_ext_ema25' };
       }
 
-      // (2) Filtro de clímax
       const isClimax =
         bodyPct(L) >= (config.CLIMAX_BODY_PCT ?? 0.75) &&
         L.volume >= (config.CLIMAX_VOL_FACTOR ?? 2.2) * vavg;
       if (isClimax) return { action: 'IDLE', reason: 'ipt_climax_filter' };
 
-      // (3) Retest obligatorio del nivel roto (loPB)
       if (config.IPT_REQUIRE_RETEST) {
         const tol = (config.IPT_RETEST_TICKS ?? 3) * tick;
         const touched = (prev && prev.high >= loPB - tol) || L.high >= loPB - tol;
         if (!touched) return { action: 'IDLE', reason: 'ipt_need_retest' };
       }
 
-      // (4) Distancia mínima de stop (por encima del PB)
+      const breakMarginAbs = Math.max(
+        (config.IPT_BREAK_MIN_TICKS ?? 2) * tick,
+        (config.IPT_BREAK_MIN_PCT ?? 0.0003) * L.close,
+      );
+      const breakWithMargin = L.close <= loPB - breakMarginAbs;
+      if (!breakWithMargin) return { action: 'IDLE', reason: 'break_weak' };
+
       const stopCandidate = Math.max(...pb.map((c) => c.high)) + tick;
       const dist = stopCandidate - L.close;
       const minDist = Math.max(

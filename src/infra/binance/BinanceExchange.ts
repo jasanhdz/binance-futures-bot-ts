@@ -259,6 +259,7 @@ export class BinanceExchange implements Exchange {
             stopPrice,
           }),
         );
+        return;
       }
       throw e;
     }

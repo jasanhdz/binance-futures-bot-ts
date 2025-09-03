@@ -1,92 +1,158 @@
-// Router: decide el régimen y delega en IPT o Range-Reversion
 import { Strategy, StrategyContext } from './types';
 import { ema } from '../core/indicators/ema';
 import { atrPctNow, last } from '../core/utils/candles';
+import { IptStrategy } from './ipt';
 
-async function emaTrendScore(symbol: string, exchange: StrategyContext['exchange'], cfg: any) {
+// Nuevo perfil "sniper" para 100x
+export type Profile = 'ipt_sniper' | 'ipt_strict' | 'ipt_relaxed' | 'rr';
+
+function emaTrendScoreMultiTF(
+  symbol: string,
+  exchange: StrategyContext['exchange'],
+  cfg: any,
+): Promise<number> {
   const tfs: string[] = [cfg.ENTRY_TIMEFRAME, ...(cfg.HTF_TFS || [])];
-  let score = 0;
-  for (const tf of tfs) {
-    const cs = await exchange.getCandles(symbol, tf, 200);
-    if (cs.length < 120) continue;
-    const closes = cs.map((c) => c.close);
-    const e7 = last(ema(closes, 7))!;
-    const e25 = last(ema(closes, 25))!;
-    const e99 = last(ema(closes, 99))!;
-    const L = last(cs);
-    const longOK = L.close > e25 && e7 > e25 && e25 > e99;
-    const shortOK = L.close < e25 && e7 < e25 && e25 < e99;
-    if (longOK) score++;
-    if (shortOK) score--;
-  }
-  return score; // >0 alcista, <0 bajista
-}
-
-function ema25SlopePct(closes: number[], lookback = 8) {
-  const e25 = ema(closes, 25);
-  if (e25.length < lookback + 1) return 0;
-  const a = e25[e25.length - 1];
-  const b = e25[e25.length - 1 - lookback];
-  return Math.abs((a - b) / Math.max(1e-9, b)); // % en 'lookback' velas
-}
-
-export function makeStrategyRouter(ipt: Strategy, rr: Strategy): Strategy {
-  return {
-    name: 'router',
-    timeframe: ipt.timeframe, // 5m en tu caso
-    async evaluate(ctx: StrategyContext) {
-      const { symbol, exchange, config, state } = ctx;
-      if (state.mode !== 'IDLE') return { action: 'IDLE' };
-
-      // --- Lecturas ligeras del TF de entrada ---
-      const cs = await exchange.getCandles(symbol, config.ENTRY_TIMEFRAME, 220);
-      if (cs.length < 120) return { action: 'IDLE', reason: 'router_few_candles' };
-
+  return (async () => {
+    let score = 0;
+    for (const tf of tfs) {
+      const cs = await exchange.getCandles(symbol, tf, 200);
+      if (cs.length < 120) continue;
       const closes = cs.map((c) => c.close);
-      const atrPct = atrPctNow(cs, config.ATR_PERIOD);
-      const slopePct = ema25SlopePct(
-        closes,
-        Number((config as any).ROUTER_EMA_SLOPE_LOOKBACK ?? 8),
-      );
-      const tScore = await emaTrendScore(symbol, exchange, config);
+      const e7 = last(ema(closes, 7))!;
+      const e25 = last(ema(closes, 25))!;
+      const e99 = last(ema(closes, 99))!;
+      const L = last(cs);
+      const longOK = L.close > e25 && e7 > e25 && e25 > e99;
+      const shortOK = L.close < e25 && e7 < e25 && e25 < e99;
+      if (longOK) score++;
+      if (shortOK) score--;
+    }
+    return score; // >0 alcista, <0 bajista
+  })();
+}
 
-      // --- Umbrales de régimen (configurables) ---
-      const TREND_STRONG = Number((config as any).ROUTER_TREND_SCORE_STRONG ?? 2);
-      const TREND_WEAK = Number((config as any).ROUTER_TREND_SCORE_WEAK ?? 1);
-      const ATR_MIN_TREND = Number((config as any).ROUTER_ATR_MIN_TREND ?? config.MIN_ATR_PCT);
-      const RR_MIN_ATR = Number((config as any).RR_MIN_ATR_PCT ?? 0.001);
-      const RR_MAX_ATR = Number((config as any).RR_MAX_ATR_PCT ?? 0.006);
-      const EMA_SLOPE_FLAT_MAX = Number((config as any).ROUTER_EMA_SLOPE_FLAT_MAX ?? 0.0006); // 0.06%
+function emaSlopePct(closes: number[], period: number, lookback: number) {
+  if (closes.length < period + lookback + 1) return 0;
+  const e = ema(closes, period);
+  const a = e[e.length - 1]!;
+  const b = e[e.length - 1 - lookback]!;
+  return (a - b) / Math.max(1e-9, b);
+}
 
-      // --- Decisión de régimen ---
-      const trending = Math.abs(tScore) >= TREND_STRONG && atrPct >= ATR_MIN_TREND;
-      const ranging =
-        Math.abs(tScore) <= TREND_WEAK &&
-        slopePct <= EMA_SLOPE_FLAT_MAX &&
-        atrPct >= RR_MIN_ATR &&
-        atrPct <= RR_MAX_ATR;
+export class RouterStrategy implements Strategy {
+  name: string = 'router';
+  timeframe: string = '5m';
 
-      if (trending) {
-        // Delegar en IPT (rupturas con confluencia)
-        const res = await ipt.evaluate(ctx);
-        return res.action === 'IDLE'
-          ? { action: 'IDLE', reason: `router_trend_idle:${res.reason}` }
-          : res;
-      }
+  private lastProfile: Profile = 'ipt_strict';
+  private lastSwitchAt = 0;
 
-      if (ranging) {
-        // Delegar en Range-Reversion (rebotes a la media)
-        const res = await rr.evaluate(ctx);
-        return res.action === 'IDLE'
-          ? { action: 'IDLE', reason: `router_range_idle:${res.reason}` }
-          : res;
-      }
+  // cooldown por defecto (se puede sobreescribir desde config.SWITCH_COOLDOWN_MS)
+  private SWITCH_COOLDOWN_MS = 15 * 60_000; // 15 min
 
-      // Zona gris: sin señal clara → mejor no forzar
-      return {
-        action: 'IDLE',
-        reason: `router_no_regime:tScore=${tScore},atrPct=${atrPct.toFixed(4)},slope=${slopePct.toFixed(4)}`,
-      };
+  // Overrides SOLO para la lógica de ENTRADA (guards/gestión no se tocan)
+  private profiles: Record<Profile, Partial<any>> = {
+    ipt_sniper: {
+      IPT_REQUIRE_RETEST: 1,
+      IPT_MAX_EMA25_EXTENSION: 0.0045,
+      MIN_STOP_DIST_TICKS: 5,
+      MIN_STOP_DIST_PCT: 0.0018,
+      // anti-falsos PB (consumidos por IPT)
+      IPT_PB_MAX_VOL_REL: 0.7,
+      IPT_PB_MAX_RANGE_REL: 0.85,
+      IPT_BREAK_MIN_TICKS: 2,
+      IPT_BREAK_MIN_PCT: 0.0003,
+      CLEARANCE_LOOKBACK: 80,
+      MIN_CLEARANCE_PCT: 0.006,
+      VOL_FACTOR_ENTRY: 2.0,
+      CLIMAX_BODY_PCT: 0.7,
+      CLIMAX_VOL_FACTOR: 2.3,
     },
+    ipt_strict: {
+      IPT_REQUIRE_RETEST: 1,
+      IPT_MAX_EMA25_EXTENSION: 0.006,
+      CLIMAX_BODY_PCT: 0.75,
+      CLIMAX_VOL_FACTOR: 2.2,
+      MIN_STOP_DIST_TICKS: 4,
+      MIN_STOP_DIST_PCT: 0.0015,
+    },
+    ipt_relaxed: {
+      IPT_REQUIRE_RETEST: 0,
+      IPT_MAX_EMA25_EXTENSION: 0.012,
+      CLIMAX_BODY_PCT: 0.75,
+      CLIMAX_VOL_FACTOR: 2.2,
+      MIN_STOP_DIST_TICKS: 3,
+      MIN_STOP_DIST_PCT: 0.001,
+    },
+    rr: {},
   };
+
+  private pickProfile = ({
+    trendScore,
+    emaSlope,
+    atrPct,
+    cfg,
+  }: {
+    trendScore: number;
+    emaSlope: number;
+    atrPct: number;
+    cfg: any;
+  }): Profile => {
+    const STRONG =
+      Math.abs(trendScore) >= (cfg.ROUTER_TREND_SCORE_STRONG ?? 2) &&
+      Math.abs(emaSlope) >= (cfg.ROUTER_EMA_SLOPE_STRONG ?? 0.001) &&
+      atrPct >= (cfg.ROUTER_ATR_MIN_TREND ?? 0.0028);
+
+    const FLAT = Math.abs(emaSlope) <= (cfg.ROUTER_EMA_SLOPE_FLAT_MAX ?? 0.0006);
+    const IN_RR =
+      atrPct >= (cfg.RR_MIN_ATR_PCT ?? 0.001) && atrPct <= (cfg.RR_MAX_ATR_PCT ?? 0.006);
+
+    if (STRONG) return 'ipt_sniper';
+    if (FLAT && IN_RR) return 'rr';
+    return 'ipt_strict';
+  };
+
+  async evaluate(ctx: StrategyContext) {
+    const { symbol, exchange, config } = ctx;
+
+    const cs = await exchange.getCandles(symbol, config.ENTRY_TIMEFRAME, 300);
+    if (cs.length < 150) {
+      // sin datos suficientes, delega igual a IPT estricto con el config base
+      return IptStrategy.evaluate(ctx);
+    }
+
+    const closes = cs.map((c) => c.close);
+    const trendScore = await emaTrendScoreMultiTF(symbol, exchange, config);
+    const emaSlope = emaSlopePct(closes, 25, config.ROUTER_EMA_SLOPE_LOOKBACK ?? 8);
+    const atrRel = atrPctNow(cs, config.ATR_PERIOD ?? 14);
+
+    // Perfil objetivo
+    const wanted = this.pickProfile({ trendScore, emaSlope, atrPct: atrRel, cfg: config });
+
+    // Histeresis
+    const now = ctx.now ?? Date.now();
+    const cooldown = (config as any).SWITCH_COOLDOWN_MS ?? this.SWITCH_COOLDOWN_MS;
+    const profile = now - this.lastSwitchAt < cooldown ? this.lastProfile : wanted;
+
+    if (profile !== this.lastProfile) {
+      this.lastProfile = profile;
+      this.lastSwitchAt = now;
+    }
+
+    // Si aún no usas RR real, fallback a IPT estricto
+    const realProfile: Profile = profile === 'rr' ? 'ipt_strict' : profile;
+
+    // Merge de config (overrides de entrada)
+    const mergedConfig = { ...config, ...this.profiles[realProfile] };
+
+    // Delegar a IPT con overrides y anotar motivo para logs
+    const base = await IptStrategy.evaluate({ ...ctx, config: mergedConfig });
+    const reasonBits = [
+      base.reason,
+      `profile:${realProfile}`,
+      `score:${trendScore}`,
+      `slope:${emaSlope}`,
+      `atr:${atrRel}`,
+    ].filter(Boolean);
+    return { ...base, reason: reasonBits.join('|') } as typeof base;
+  }
 }
