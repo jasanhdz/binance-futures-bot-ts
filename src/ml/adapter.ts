@@ -9,7 +9,7 @@ export type FeatureVec = Record<
   number
 >;
 
-const dataDir = path.resolve(__dirname, '../../data');
+const dataDir = path.resolve(__dirname, '../../train/data');
 
 function loadJSON<T>(file: string): T {
   return JSON.parse(fs.readFileSync(path.join(dataDir, file), 'utf8')) as T;
