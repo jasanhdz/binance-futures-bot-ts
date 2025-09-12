@@ -1,97 +1,228 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-retrain.py  – entrena y exporta modelos LONG + SHORT
-Salida:  data/{model_coeffs,scaler}_{long,short}.{json,pkl}
+retrain.py – Pipeline Único:
+- Mantiene un CSV acumulado de velas (últimos 5 días + append incremental)
+- Calcula features
+- Entrena modelos LONG/SHORT y exporta artefactos para TypeScript
+
+Requisitos:
+  pip install python-binance scikit-learn imbalanced-learn joblib pandas numpy
+
+ENV (opcional):
+  SYMBOL=XRPPUSDT   (default: XRPUSDT)
+  INTERVAL=5m       (default: 5m)
+  IS_TESTNET=1|0    (default: 1)
+  DAYS=5            (default: 5)
 """
+
+import os, json, time, math, pathlib
 import pandas as pd
 import numpy as np
-import json
+from datetime import datetime, timedelta, timezone
 from binance.client import Client
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegressionCV
 from imblearn.over_sampling import RandomOverSampler
 from joblib import dump
 
-# ---------- CONFIG ----------
-API_KEY    = "06ce79f3b906a3b3e427eb2e39cbcf74e099b85dd456c392b9d58aaab64af20d"
-API_SECRET = "4906637f42bb342721ab114ef7b0695d9b53b0fa5a65e7b03f499f34ab9a9382"
-SYMBOL     = "XRPUSDT"
-INTERVAL   = "5m"
-LIMIT      = 15000
-FEAT_COLS  = ['rsi','ema_slope','atr_pct','vol_ratio',
-              'body_pct','wickiness','mom3','mom12']
+# ========= CONFIG =========
+SYMBOL   = os.getenv("SYMBOL", "XRPUSDT")
+INTERVAL = os.getenv("INTERVAL", "5m")
+IS_TEST  = os.getenv("IS_TESTNET", "1") == "1"
+DAYS     = int(os.getenv("DAYS", "20"))
 
-client = Client(API_KEY, API_SECRET, testnet=True,
-                base_endpoint="https://testnet.binancefuture.com")
+DATA_DIR = pathlib.Path(__file__).resolve().parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+RAW_PATH = DATA_DIR / f"raw_klines_{SYMBOL}_{INTERVAL}.csv"
 
-# ---------- HELPERS ----------
-def fetch(limit):
-    klines = client.futures_klines(symbol=SYMBOL, interval=INTERVAL, limit=min(limit, 1500))
-    df = pd.DataFrame(klines, columns=[
+HTTP_TEST = "https://testnet.binancefuture.com"
+HTTP_PROD = "https://fapi.binance.com"
+
+client = Client(
+    api_key=os.getenv("BINANCE_API_KEY",""),
+    api_secret=os.getenv("BINANCE_API_SECRET",""),
+    testnet=IS_TEST,
+    base_endpoint=HTTP_TEST if IS_TEST else HTTP_PROD
+)
+
+FEAT_COLS = ['rsi','ema_slope','atr_pct','vol_ratio','body_pct','wickiness','mom3','mom12']
+
+# ========= HELPERS =========
+def interval_ms(interval: str) -> int:
+    unit = interval[-1].lower()
+    n = int(interval[:-1])
+    if unit == 'm': return n * 60_000
+    if unit == 'h': return n * 3_600_000
+    if unit == 'd': return n * 86_400_000
+    raise ValueError("INTERVAL inválido (usa 1m, 5m, 15m, 1h, etc.)")
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+def dt_ms(dt: datetime) -> int:
+    return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+def fetch_range(symbol: str, interval: str, start_ms: int, end_ms: int) -> pd.DataFrame:
+    """Paginea futures_klines hasta traer [start_ms, end_ms)."""
+    out = []
+    lim = 1500
+    cursor = start_ms
+    while cursor < end_ms:
+        batch = client.futures_klines(
+            symbol=symbol,
+            interval=interval,
+            startTime=cursor,
+            endTime=end_ms,
+            limit=lim
+        )
+        if not batch:
+            break
+        out.extend(batch)
+        last_close = int(batch[-1][6])  # close_time
+        # cortamos si no avanzó (protege loops)
+        step = max(interval_ms(interval), 1)
+        cursor = max(last_close + 1, cursor + step)
+        # evita superar demasiado el límite API
+        if len(batch) < lim:
+            break
+
+    if not out:
+        return pd.DataFrame(columns=['open_time','open','high','low','close','volume','close_time'])
+
+    df = pd.DataFrame(out, columns=[
         'open_time','open','high','low','close','volume',
         'close_time','quote_vol','count','taker_buy_base','taker_buy_quote','ignore'
-    ]).iloc[:, :6]
-    for col in df.columns[1:6]:
-        df[col] = pd.to_numeric(df[col])
+    ]).iloc[:, :7]  # nos quedamos hasta close_time
+    for c in ['open','high','low','close','volume']:
+        df[c] = pd.to_numeric(df[c])
     return df
 
-def add_feats(df):
-    c = df
-    c['body_pct']  = np.abs(c['close'] - c['open']) / (c['high'] - c['low'] + 1e-9)
+def ensure_raw_csv(days: int = 5) -> pd.DataFrame:
+    """Crea/actualiza el CSV acumulado sin perder histórico (dedupe por open_time)."""
+    end = now_ms()
+    start_default = end - days * 86_400_000
+
+    if RAW_PATH.exists():
+        # cargar histórico y continuar desde la última vela
+        hist = pd.read_csv(RAW_PATH)
+        # por compatibilidad si columnas vienen en string
+        for c in ['open','high','low','close','volume']:
+            hist[c] = pd.to_numeric(hist[c], errors='coerce')
+        hist = hist.dropna(subset=['open_time','close_time']).copy()
+        last_ct = int(hist['close_time'].max())
+        start = max(start_default, last_ct + 1)
+        print(f"🔄 Actualizando desde {datetime.utcfromtimestamp(start/1000)} UTC ...")
+        add = fetch_range(SYMBOL, INTERVAL, start, end)
+        if not add.empty:
+            all_df = pd.concat([hist, add], ignore_index=True)
+        else:
+            all_df = hist
+    else:
+        print(f"⬇️  Descargando histórico inicial ({days} días)...")
+        all_df = fetch_range(SYMBOL, INTERVAL, start_default, end)
+
+    if all_df.empty:
+        print("⚠️ No se obtuvieron velas.")
+        return all_df
+
+    # dedupe + orden
+    all_df = all_df.drop_duplicates(subset=['open_time']).sort_values('open_time').reset_index(drop=True)
+
+    # persistir
+    all_df.to_csv(RAW_PATH, index=False)
+    print(f"✅ RAW actualizado → {RAW_PATH} (filas={len(all_df)})")
+    return all_df
+
+def add_features(df: pd.DataFrame) -> pd.DataFrame:
+    c = df.copy()
+    r = (c['high'] - c['low']).replace(0, 1e-9)
+    c['body_pct']  = (c['close'] - c['open']).abs() / r
     c['wickiness'] = ((c['high'] - np.maximum(c['open'], c['close'])) +
-                      (np.minimum(c['open'], c['close']) - c['low'])) / (c['high'] - c['low'] + 1e-9)
-    c['atr']       = (c['high'] - c['low']).rolling(14).mean()
-    c['atr_pct']   = c['atr'] / c['close']
+                      (np.minimum(c['open'], c['close']) - c['low'])) / r
+
+    # ATR % (versión simple)
+    tr = np.maximum(c['high'] - c['low'],
+                    np.maximum((c['high'] - c['close'].shift(1)).abs(),
+                               (c['low'] - c['close'].shift(1)).abs()))
+    atr = tr.rolling(14).mean()
+    c['atr_pct'] = (atr / c['close']).fillna(0)
+
+    # RSI (Wilder suavizado simple)
     delta = c['close'].diff()
     gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta).clip(lower=0).rolling(14).mean()
-    rs    = gain / loss
-    c['rsi']       = 100 - (100 / (1 + rs))
-    c['ema25']     = c['close'].ewm(span=25).mean()
-    c['ema_slope'] = (c['ema25'] - c['ema25'].shift(8)) / c['ema25'].shift(8)
-    c['vol_ratio'] = c['volume'] / c['volume'].rolling(20).mean()
-    c['mom3']      = c['close'].pct_change(3)
-    c['mom12']     = c['close'].pct_change(12)
+    loss  = (-delta).clip(lower=0).rolling(14).mean().replace(0, np.nan)
+    rs = gain / loss
+    c['rsi'] = (100 - (100 / (1 + rs))).fillna(50)
+
+    # EMA 25 + pendiente
+    ema25 = c['close'].ewm(span=25).mean()
+    c['ema_slope'] = ((ema25 - ema25.shift(8)) / ema25.shift(8)).replace([np.inf, -np.inf], 0).fillna(0)
+
+    # Volumen relativo
+    vol_avg20 = c['volume'].rolling(20).mean().replace(0, np.nan)
+    c['vol_ratio'] = (c['volume'] / vol_avg20).fillna(1.0)
+
+    # Momentums
+    c['mom3']  = c['close'].pct_change(3)
+    c['mom12'] = c['close'].pct_change(12)
+
+    # Label para entrenamiento (retorno a 1h = 12 velas de 5m)
     c['next_1h_return'] = (c['close'].shift(-12) - c['close']) / c['close']
-    return c.dropna()
 
-# ---------- ENTRENAR ----------
-df = add_feats(fetch(LIMIT))
-X = df[FEAT_COLS]
+    c = c.dropna().reset_index(drop=True)
+    return c
 
-targets = {
-    "long":  (df['next_1h_return'] >  0.003).astype(int),
-    "short": (df['next_1h_return'] < -0.003).astype(int)
-}
+def train_and_export(df_feats: pd.DataFrame, suffix: str, feat_cols: list[str]):
+    X = df_feats[feat_cols].values
+    if suffix == "long":
+        y = (df_feats['next_1h_return'] >  0.003).astype(int).values
+    else:
+        y = (df_feats['next_1h_return'] < -0.003).astype(int).values
 
-def train_and_save(X, y, suffix):
     scaler = StandardScaler()
-    X_s = scaler.fit_transform(X)
+    Xs = scaler.fit_transform(X)
 
     ros = RandomOverSampler(sampling_strategy=0.8, random_state=42)
-    X_bal, y_bal = ros.fit_resample(X_s, y)
+    Xb, yb = ros.fit_resample(Xs, y)
 
     model = LogisticRegressionCV(
-        Cs=np.logspace(-3, 1, 5), cv=5, scoring='f1', max_iter=1000
-    ).fit(X_bal, y_bal)
+        Cs=np.logspace(-3, 1, 5), cv=5, scoring='f1', max_iter=1000, n_jobs=-1
+    ).fit(Xb, yb)
 
-    # ---- JSON para TypeScript ----
+    # Artefactos JSON para TypeScript
     json.dump(
         {"coefficients": model.coef_[0].tolist(), "intercept": float(model.intercept_[0])},
-        open(f"data/model_coeffs_{suffix}.json", "w"), indent=2
+        open(DATA_DIR / f"model_coeffs_{suffix}.json", "w"),
+        indent=2
     )
-    # ---- Pickle para Python ----
-    dump(scaler, f"data/scaler_{suffix}.pkl")
-    # ---- JSON para TypeScript ----
+    # Scaler .pkl (útil en Python)
+    dump(scaler, DATA_DIR / f"scaler_{suffix}.pkl")
+
+    # Scaler JSON para tu bot TS
     scaler_json = {
-        "mean": {f: float(scaler.mean_[i]) for i, f in enumerate(FEAT_COLS)},
-        "std":  {f: float(scaler.scale_[i]) for i, f in enumerate(FEAT_COLS)}
+        "mean": {f: float(scaler.mean_[i]) for i, f in enumerate(feat_cols)},
+        "std":  {f: float(scaler.scale_[i]) for i, f in enumerate(feat_cols)}
     }
-    json.dump(scaler_json, open(f"data/scaler_{suffix}.json", "w"), indent=2)
+    json.dump(scaler_json, open(DATA_DIR / f"scaler_{suffix}.json", "w"), indent=2)
 
-    print(f"✅ {suffix.upper()} exportado")
+    print(f"✅ Modelo {suffix.upper()} exportado")
 
-for suffix, y in targets.items():
-    train_and_save(X, y, suffix)
+def main():
+    raw = ensure_raw_csv(DAYS)
+    if raw.empty or len(raw) < 400:
+        print("⚠️ Pocas velas para entrenar. Aborta.")
+        return
 
-print("Entrenamiento dual finalizado – archivos en data/")
+    feats = add_features(raw)
+    if feats.empty:
+        print("⚠️ No se pudieron calcular features.")
+        return
+
+    print(f"📦 Dataset de entrenamiento: {len(feats)} filas")
+    train_and_export(feats, "long",  FEAT_COLS)
+    train_and_export(feats, "short", FEAT_COLS)
+    print("🎉 Entrenamiento dual finalizado – artefactos en:", DATA_DIR)
+
+if __name__ == "__main__":
+    main()

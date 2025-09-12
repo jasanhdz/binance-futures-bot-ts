@@ -3,6 +3,7 @@ import Binance, { FuturesOrder } from 'binance-api-node';
 import { Exchange, PositionInfo, SymbolFilters } from '../../core/ports/Exchange';
 import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config';
+import { Logger } from '../../core/ports/Logger';
 
 function isTrueish(v: unknown): boolean {
   return v === true || v === 'true' || v === 'TRUE' || v === 1 || v === '1';
@@ -19,17 +20,20 @@ export class BinanceExchange implements Exchange {
   // cache simple del modo de posiciones (hedge/one-way)
   private hedgeCache?: { value: boolean; at: number };
 
-  constructor() {
+  constructor(private log: Logger) {
     const isTestnet = process.env.IS_TESTNET === '1';
     this.cli
       .futuresPing()
       .then(() => {
-        console.log(`[Binance] Conectado a ${isTestnet ? 'TESTNET' : 'PROD'} ✅`);
-        console.log(`[Binance] HTTP: ${CONFIG.HTTP_FUTURES} | WS: ${CONFIG.WS_FUTURES}`);
-        console.log('✅ Ping Futures OK');
+        this.log.info('binance_connected', {
+          net: isTestnet ? 'TESTNET' : 'PROD',
+          http: CONFIG.HTTP_FUTURES,
+          ws: CONFIG.WS_FUTURES,
+        });
+        this.log.info('ping_ok');
       })
       .catch((err: any) => {
-        console.error('[Binance] Error de conexión:', err?.message || String(err));
+        this.log.error('binance_connect_error', { err: err?.message || String(err) });
       });
   }
 
@@ -186,33 +190,19 @@ export class BinanceExchange implements Exchange {
     const t0 = Date.now();
     try {
       const res = await this.cli.futuresOrder(payload);
-      console.log(
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          level: 'debug',
-          msg: 'api_market_open',
-          ms: Date.now() - t0,
-          symbol,
-          side,
-          qty: quantity,
-        }),
-      );
+      this.log.debug('api_market_open', {
+        ms: Date.now() - t0,
+        symbol,
+        side,
+        qty: quantity,
+      });
       return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
     } catch (e: any) {
       if (BinanceExchange.posSideMismatch(e)) {
         // fallback si el modo real no coincide con nuestro cache
         const res = await this.cli.futuresOrder(base); // sin positionSide
         this.hedgeCache = undefined; // invalidar cache
-        console.log(
-          JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'warn',
-            msg: 'api_market_open_fallback',
-            symbol,
-            side,
-            qty: quantity,
-          }),
-        );
+        this.log.warn('api_market_open_fallback', { symbol, side, qty: quantity });
         return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
       }
       throw e;
@@ -234,31 +224,17 @@ export class BinanceExchange implements Exchange {
     const t0 = Date.now();
     try {
       await this.cli.futuresOrder(payload);
-      console.log(
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          level: 'debug',
-          msg: 'api_stop_upsert',
-          ms: Date.now() - t0,
-          symbol,
-          side,
-          stopPrice,
-        }),
-      );
+      this.log.debug('api_stop_upsert', {
+        ms: Date.now() - t0,
+        symbol,
+        side,
+        stopPrice,
+      });
     } catch (e: any) {
       if (BinanceExchange.posSideMismatch(e)) {
         await this.cli.futuresOrder(base); // fallback sin positionSide
         this.hedgeCache = undefined;
-        console.log(
-          JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'warn',
-            msg: 'api_stop_upsert_fallback',
-            symbol,
-            side,
-            stopPrice,
-          }),
-        );
+        this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice });
         return;
       }
       throw e;
@@ -280,31 +256,18 @@ export class BinanceExchange implements Exchange {
     const t0 = Date.now();
     try {
       await this.cli.futuresOrder(payload);
-      console.log(
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          level: 'debug',
-          msg: 'api_tp_upsert',
-          ms: Date.now() - t0,
-          symbol,
-          side,
-          tp: triggerPrice,
-        }),
-      );
+      this.log.debug('api_tp_upsert', {
+        ms: Date.now() - t0,
+        symbol,
+        side,
+        tp: triggerPrice,
+      });
     } catch (e: any) {
       if (BinanceExchange.posSideMismatch(e)) {
         await this.cli.futuresOrder(base); // fallback sin positionSide
         this.hedgeCache = undefined;
-        console.log(
-          JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'warn',
-            msg: 'api_tp_upsert_fallback',
-            symbol,
-            side,
-            tp: triggerPrice,
-          }),
-        );
+        this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice });
+        return;
       }
       throw e;
     }
@@ -416,24 +379,19 @@ export class BinanceExchange implements Exchange {
     const open = await this.cli.futuresOpenOrders({ symbol });
     const wantSide = this.orderSideForPosition(side);
 
-    console.log(
-      JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'debug',
-        msg: 'raw_open_orders',
-        count: (open as any[]).length,
-        sample: (open as any[]).map((o) => ({
-          id: o.orderId,
-          type: o.type,
-          side: o.side,
-          positionSide: o.positionSide,
-          closePosition: o.closePosition,
-          reduceOnly: o.reduceOnly,
-          stopPrice: o.stopPrice,
-          workingType: o.workingType,
-        })),
-      }),
-    );
+    this.log.debug('raw_open_orders', {
+      count: (open as any[]).length,
+      sample: (open as any[]).map((o) => ({
+        id: o.orderId,
+        type: o.type,
+        side: o.side,
+        positionSide: o.positionSide,
+        closePosition: o.closePosition,
+        reduceOnly: o.reduceOnly,
+        stopPrice: o.stopPrice,
+        workingType: o.workingType,
+      })),
+    });
 
     return (open as any[])
       .filter((o) => {
@@ -449,7 +407,6 @@ export class BinanceExchange implements Exchange {
         const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
         if (!hedgeOk) return false;
 
-        // Preferimos closePosition/reduceOnly, pero ya no es obligatorio para DETECTAR
         return true;
       })
       .map((o) => ({
@@ -474,7 +431,7 @@ export class BinanceExchange implements Exchange {
       try {
         await this.cli.futuresCancelOrder({ symbol, orderId: Number(id) });
       } catch (e) {
-        console.warn('[Binance] cancelOrdersByIds fail', { id, err: (e as any)?.message });
+        this.log.warn('cancel_order_fail', { id, err: (e as any)?.message });
       }
     }
   }

@@ -37,7 +37,7 @@ export const CONFIG = {
   ENTRY_MAX_EMA_EXTENSION: Number(process.env.ENTRY_MAX_EMA_EXTENSION ?? 9), // alto → no bloquea
 
   // --- ML gate + re-entradas ---
-  ML_THRESHOLD: Number(process.env.ML_THRESHOLD ?? 0.65),
+  ML_THRESHOLD: Number(process.env.ML_THRESHOLD ?? 0.7),
   REENTER_ON_TP: (process.env.REENTER_ON_TP ?? '1') === '1',
   REENTER_COOLDOWN_MS: Number(process.env.REENTER_COOLDOWN_MS ?? 5_000),
   VOL_FACTOR_REENTER: Number(process.env.VOL_FACTOR_REENTER ?? 1.5),
@@ -81,4 +81,37 @@ export const CONFIG = {
   TRAIL_ATR_MULT: 2.5,
   TRAIL_THROTTLE_MS: 15_000,
   MAX_RISK_PCT: 0.008,
+
+  // --- Filtros de tendencia (multi-timeframe) ---
+  TREND_TIMEFRAMES: (process.env.TREND_TIMEFRAMES || '5m,15m').split(',') as (
+    | '5m'
+    | '15m'
+    | '1h'
+  )[],
+  EMA_FAST: Number(process.env.EMA_FAST ?? 7),
+  EMA_MID: Number(process.env.EMA_MID ?? 25),
+  EMA_SLOW: Number(process.env.EMA_SLOW ?? 99),
+
+  // ADX (Wilder)
+  ADX_LEN: Number(process.env.ADX_LEN ?? 14),
+  ADX_MIN: Number(process.env.ADX_MIN ?? 20), // fuerza mínima de tendencia
+
+  // Extensión y zona de no-trade
+  MAX_EXT_FROM_EMA_FAST: Number(process.env.MAX_EXT_FROM_EMA_FAST ?? 0.015), // 1.5%
+  NO_TRADE_BAND_AROUND_EMA_SLOW: Number(process.env.NO_TRADE_BAND_AROUND_EMA_SLOW ?? 0.003), // 0.3%
+
+  // ML gate duro
+  ML_MIN_PROB: Number(process.env.ML_MIN_PROB ?? 0.7),
+  ML_MARGIN: Number(process.env.ML_MARGIN ?? 0.12), // diferencia min vs lado opuesto,
+
+  ALLOW_LONGS: true,
+  ALLOW_SHORTS: false, // ⟵ apaga shorts por ahora
+
+  // Umbrales ML por lado (asimétricos)
+  ML_THRESHOLD_LONG: Number(process.env.ML_THRESHOLD_LONG ?? 0.6),
+  ML_THRESHOLD_SHORT: Number(process.env.ML_THRESHOLD_SHORT ?? 0.8),
+
+  // Filtros de tendencia para permitir short
+  ADX_MIN_FOR_SHORT: Number(process.env.ADX_MIN_FOR_SHORT ?? 25),
+  REQUIRE_BEAR_MA_FOR_SHORT: (process.env.REQUIRE_BEAR_MA_FOR_SHORT ?? '1') === '1',
 } as const;
