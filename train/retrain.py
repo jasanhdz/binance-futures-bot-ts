@@ -25,6 +25,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegressionCV
 from imblearn.over_sampling import RandomOverSampler
 from joblib import dump
+from feats import add_features, FEATURES
 
 # ========= CONFIG =========
 SYMBOL   = os.getenv("SYMBOL", "XRPUSDT")
@@ -133,45 +134,6 @@ def ensure_raw_csv(days: int = 5) -> pd.DataFrame:
     all_df.to_csv(RAW_PATH, index=False)
     print(f"✅ RAW actualizado → {RAW_PATH} (filas={len(all_df)})")
     return all_df
-
-def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    c = df.copy()
-    r = (c['high'] - c['low']).replace(0, 1e-9)
-    c['body_pct']  = (c['close'] - c['open']).abs() / r
-    c['wickiness'] = ((c['high'] - np.maximum(c['open'], c['close'])) +
-                      (np.minimum(c['open'], c['close']) - c['low'])) / r
-
-    # ATR % (versión simple)
-    tr = np.maximum(c['high'] - c['low'],
-                    np.maximum((c['high'] - c['close'].shift(1)).abs(),
-                               (c['low'] - c['close'].shift(1)).abs()))
-    atr = tr.rolling(14).mean()
-    c['atr_pct'] = (atr / c['close']).fillna(0)
-
-    # RSI (Wilder suavizado simple)
-    delta = c['close'].diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta).clip(lower=0).rolling(14).mean().replace(0, np.nan)
-    rs = gain / loss
-    c['rsi'] = (100 - (100 / (1 + rs))).fillna(50)
-
-    # EMA 25 + pendiente
-    ema25 = c['close'].ewm(span=25).mean()
-    c['ema_slope'] = ((ema25 - ema25.shift(8)) / ema25.shift(8)).replace([np.inf, -np.inf], 0).fillna(0)
-
-    # Volumen relativo
-    vol_avg20 = c['volume'].rolling(20).mean().replace(0, np.nan)
-    c['vol_ratio'] = (c['volume'] / vol_avg20).fillna(1.0)
-
-    # Momentums
-    c['mom3']  = c['close'].pct_change(3)
-    c['mom12'] = c['close'].pct_change(12)
-
-    # Label para entrenamiento (retorno a 1h = 12 velas de 5m)
-    c['next_1h_return'] = (c['close'].shift(-12) - c['close']) / c['close']
-
-    c = c.dropna().reset_index(drop=True)
-    return c
 
 def train_and_export(df_feats: pd.DataFrame, suffix: str, feat_cols: list[str]):
     X = df_feats[feat_cols].values

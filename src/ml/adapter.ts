@@ -48,3 +48,25 @@ export function predictShort(features: FeatureVec): number {
   const dot = modelShort.coefficients.reduce((s, w, i) => s + w * x[i], modelShort.intercept);
   return sigmoid(dot);
 }
+
+function assertFeatureContract() {
+  const expected = [
+    'rsi',
+    'ema_slope',
+    'atr_pct',
+    'vol_ratio',
+    'body_pct',
+    'wickiness',
+    'mom3',
+    'mom12',
+  ];
+  const haveLong = Object.keys(scalerLong.mean);
+  const haveShort = Object.keys(scalerShort.mean);
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((k, i) => k === b[i]);
+  if (!same(expected, haveLong) || !same(expected, haveShort)) {
+    throw new Error(
+      `Feature contract mismatch: expected ${expected.join(',')} but got long=[${haveLong.join(',')}] short=[${haveShort.join(',')}]`,
+    );
+  }
+}
+assertFeatureContract();

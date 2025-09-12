@@ -21,6 +21,7 @@ ENV opcionales:
 import os, json, pathlib
 import pandas as pd
 import numpy as np
+from feats import add_features, FEATURES
 
 SYMBOL   = os.getenv("SYMBOL", "XRPUSDT")
 INTERVAL = os.getenv("INTERVAL", "5m")
@@ -45,38 +46,6 @@ def zscore(arr, scaler_dict):
             for i, f in enumerate(FEATURES)]
 
 def sigmoid(z): return 1 / (1 + np.exp(-z))
-
-def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    c = df.copy()
-    r = (c['high'] - c['low']).replace(0, 1e-9)
-    c['body_pct']  = (c['close'] - c['open']).abs() / r
-    c['wickiness'] = ((c['high'] - np.maximum(c['open'], c['close'])) +
-                      (np.minimum(c['open'], c['close']) - c['low'])) / r
-
-    tr = np.maximum(c['high'] - c['low'],
-                    np.maximum((c['high'] - c['close'].shift(1)).abs(),
-                               (c['low'] - c['close'].shift(1)).abs()))
-    atr = tr.rolling(14).mean()
-    c['atr_pct'] = (atr / c['close']).fillna(0)
-
-    delta = c['close'].diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta).clip(lower=0).rolling(14).mean().replace(0, np.nan)
-    rs = gain / loss
-    c['rsi'] = (100 - (100 / (1 + rs))).fillna(50)
-
-    ema25 = c['close'].ewm(span=25).mean()
-    c['ema_slope'] = ((ema25 - ema25.shift(8)) / ema25.shift(8)).replace([np.inf, -np.inf], 0).fillna(0)
-
-    vol_avg20 = c['volume'].rolling(20).mean().replace(0, np.nan)
-    c['vol_ratio'] = (c['volume'] / vol_avg20).fillna(1.0)
-
-    c['mom3']  = c['close'].pct_change(3)
-    c['mom12'] = c['close'].pct_change(12)
-
-    c['next_1h_return'] = (c['close'].shift(-12) - c['close']) / c['close']
-
-    return c.dropna().reset_index(drop=True)
 
 def main():
     if not RAW_PATH.exists():
