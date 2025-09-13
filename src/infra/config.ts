@@ -26,7 +26,7 @@ export const CONFIG = {
   // --- Timeframes / volumen para señales ---
   ENTRY_TIMEFRAME: (process.env.ENTRY_TIMEFRAME as '1m' | '5m' | '15m' | '1h') || '5m',
   VOL_AVG_LEN: Number(process.env.VOL_AVG_LEN ?? 20),
-  VOL_FACTOR_ENTRY: Number(process.env.VOL_FACTOR_ENTRY ?? 1.8),
+  VOL_FACTOR_ENTRY: Number(process.env.VOL_FACTOR_ENTRY ?? 1.1),
 
   // --- Rachas mínimas ---
   GREEN_STREAK_MIN: Number(process.env.GREEN_STREAK_MIN ?? 3),
@@ -105,7 +105,7 @@ export const CONFIG = {
   ML_MARGIN: Number(process.env.ML_MARGIN ?? 0.12), // diferencia min vs lado opuesto,
 
   ALLOW_LONGS: true,
-  ALLOW_SHORTS: false, // ⟵ apaga shorts por ahora
+  ALLOW_SHORTS: true, // ⟵ apaga shorts por ahora
 
   // Umbrales ML por lado (asimétricos)
   ML_THRESHOLD_LONG: Number(process.env.ML_THRESHOLD_LONG ?? 0.6),
@@ -114,4 +114,33 @@ export const CONFIG = {
   // Filtros de tendencia para permitir short
   ADX_MIN_FOR_SHORT: Number(process.env.ADX_MIN_FOR_SHORT ?? 25),
   REQUIRE_BEAR_MA_FOR_SHORT: (process.env.REQUIRE_BEAR_MA_FOR_SHORT ?? '1') === '1',
+
+  // STACK CLASSIC (apagado)
+  STACKC_RANGE_FALLBACK: (process.env.STACKC_RANGE_FALLBACK as 'MR' | 'IDLE') ?? 'MR',
+  STACKC_VOL_FACTOR: Number(process.env.STACKC_VOL_FACTOR ?? 1.6),
+  STACKC_VOL_FACTOR_SHORT: Number(process.env.STACKC_VOL_FACTOR_SHORT ?? 2.1),
+  STACKC_GREEN_STREAK: Number(process.env.STACKC_GREEN_STREAK ?? 3),
+  STACKC_RED_STREAK: Number(process.env.STACKC_RED_STREAK ?? 4),
+  STACKC_BLOCK_TOP: (process.env.STACKC_BLOCK_TOP ?? '0') === '1',
+  STACKC_USE_ML: (process.env.STACKC_USE_ML ?? '0') === '1',
+
+  STACKC_TREND_ADX_MIN: Number(process.env.STACKC_TREND_ADX_MIN ?? 22),
+  STACKC_RANGE_ADX_MAX: Number(process.env.STACKC_RANGE_ADX_MAX ?? 18),
+  STACKC_BB_WIDTH_MAX: Number(process.env.STACKC_BB_WIDTH_MAX ?? 0.025),
+
+  SHORT_CONFIRM_1H: (process.env.SHORT_CONFIRM_1H ?? '1') === '1',
+  SHORT_1H_ADX_MIN: Number(process.env.SHORT_1H_ADX_MIN ?? 20),
+
+  // MEAN REVERSION (apagado)
+  MR_ADX_MAX: Number(process.env.MR_ADX_MAX ?? 20),
+  MR_BB_WIDTH_MAX: Number(process.env.MR_BB_WIDTH_MAX ?? 0.025),
+  MR_RSI_LOW: Number(process.env.MR_RSI_LOW ?? 32),
+  MR_RSI_HIGH: Number(process.env.MR_RSI_HIGH ?? 68),
+  MR_TOUCH_EPS: Number(process.env.MR_TOUCH_EPS ?? 0.001),
+  MR_SPIKE_VOL_FACTOR: Number(process.env.MR_SPIKE_VOL_FACTOR ?? 2.5),
+  MR_MIN_STREAK: Number(process.env.MR_MIN_STREAK ?? 2),
+
+  MR_STRICT_SHORTS: (process.env.MR_STRICT_SHORTS ?? '1') === '1',
+  MR_SHORT_CONFIRM_1H: (process.env.MR_SHORT_CONFIRM_1H ?? '0') === '1',
+  MR_SHORT_1H_ADX_MIN: Number(process.env.MR_SHORT_1H_ADX_MIN ?? 18),
 } as const;

@@ -10,22 +10,26 @@
     "build": "tsc -p tsconfig.json",
     "start:testnet": "DOTENV_CONFIG_PATH=.env.testnet node -r dotenv/config dist/main.js",
     "start:prod": "DOTENV_CONFIG_PATH=.env node -r dotenv/config dist/main.js",
-
     "verify:feats": "python3 train/export_sample_features.py --n 50 && ts-node src/ml/check_features.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bt": "ts-node src/backtest/runner.ts",
+    "bt:stack:file": "ts-node src/backtest/run_stack_classic.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",
     "binance-api-node": "^0.12.9",
     "dotenv": "^17.2.1",
-    "node-cron": "^4.2.1"
+    "node-cron": "^4.2.1",
+    "onnxruntime-node": "^1.22.0-rev"
   },
   "devDependencies": {
     "@types/node": "^24.3.1",
+    "@types/yargs": "^17.0.33",
     "nodemon": "^3.1.10",
     "prettier": "^3.6.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "yargs": "^18.0.0"
   }
 }

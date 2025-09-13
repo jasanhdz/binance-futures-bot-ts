@@ -5,3 +5,4 @@ dist/
 # Ignorar archivos específicos
 data/*
 logs/*
+train/data/*

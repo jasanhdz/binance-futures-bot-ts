@@ -1,8 +1,9 @@
+// src/app/strategy-runner.ts
 import { Exchange } from '../core/ports/Exchange';
 import { Logger } from '../core/ports/Logger';
 import { StateStore } from '../core/ports/StateStore';
 import { Side } from '../core/types';
-import { sizeByBudget, floorToStep } from '../core/risk/sizing';
+import { sizeByBudget, floorToStep, ceilToStep } from '../core/risk/sizing';
 import { computeStopFromLiqTicks, roundToTick } from '../core/risk/stop';
 import { Strategy } from '../strategies/types';
 import { CONFIG } from '../infra/config';
@@ -125,6 +126,23 @@ export class StrategyRunner {
           }
         }
       }
+    }
+
+    // ✅ Re-validación de mínimo nocional tras el cap de riesgo
+    const minQtyByNotional = ceilToStep(
+      filters.minNotional / price,
+      filters.stepSize,
+      filters.qtyPrecision,
+    );
+    if (qty < minQtyByNotional) {
+      logger.warn('min_notional_not_met_after_risk', {
+        qty,
+        minQtyByNotional,
+        price,
+        notional: Number((qty * price).toFixed(filters.pricePrecision)),
+        minNotional: filters.minNotional,
+      });
+      return; // aborta para evitar el error de Binance
     }
 
     logger.info('sizing_ok', { side, qty, price, usdt });

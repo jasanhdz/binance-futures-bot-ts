@@ -31,7 +31,7 @@ from feats import add_features, FEATURES
 SYMBOL   = os.getenv("SYMBOL", "XRPUSDT")
 INTERVAL = os.getenv("INTERVAL", "5m")
 IS_TEST  = os.getenv("IS_TESTNET", "1") == "1"
-DAYS     = int(os.getenv("DAYS", "20"))
+DAYS     = int(os.getenv("DAYS", "365"))
 
 DATA_DIR = pathlib.Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
