@@ -65,6 +65,6 @@ export async function earlyFailGuard(symbol: string, ex: Exchange, st: StateStor
   if (!pos) return;
   await ex.closeSideMarketSafe(symbol, s.lastSide, pos.qtyAbs, pos.sideMode);
   await (ex as any).cancelCloseOrdersForSide?.(symbol, s.lastSide);
-  st.set({ mode: 'IDLE', lastExitReason: 'early_fail' });
+  st.set({ mode: 'IDLE', lastExitReason: 'early_fail', lastExitAt: Date.now() });
   log.info('Early_fail_close');
 }

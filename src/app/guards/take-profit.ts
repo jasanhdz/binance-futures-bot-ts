@@ -1,3 +1,4 @@
+// take-profit.ts
 import { Exchange } from '../../core/ports/Exchange';
 import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';

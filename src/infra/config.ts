@@ -16,8 +16,8 @@ export const CONFIG = {
   // --- Mercado / sizing ---
   SYMBOL: process.env.SYMBOL || 'XRPUSDT',
   LEVERAGE: Number(process.env.LEVERAGE ?? 100),
-  CAPITAL_USAGE_PCT: Number(process.env.CAPITAL_USAGE_PCT ?? 0.85),
-  MIN_WALLET_RESERVE_USDT: Number(process.env.MIN_WALLET_RESERVE_USDT ?? 0.5),
+  CAPITAL_USAGE_PCT: Number(process.env.CAPITAL_USAGE_PCT ?? 0.99),
+  MIN_WALLET_RESERVE_USDT: Number(process.env.MIN_WALLET_RESERVE_USDT ?? 0.01),
   FEE_BUFFER_PCT: Number(process.env.FEE_BUFFER_PCT ?? 0.001),
 
   // --- Take-profit por ROE ---
@@ -143,4 +143,9 @@ export const CONFIG = {
   MR_STRICT_SHORTS: (process.env.MR_STRICT_SHORTS ?? '1') === '1',
   MR_SHORT_CONFIRM_1H: (process.env.MR_SHORT_CONFIRM_1H ?? '0') === '1',
   MR_SHORT_1H_ADX_MIN: Number(process.env.MR_SHORT_1H_ADX_MIN ?? 18),
+
+  ANTI_LOSS_ON: true,
+  ANTI_LOSS_THR_LONG: Number(process.env.ANTI_LOSS_THR_LONG ?? 0.8),
+  ANTI_LOSS_THR_SHORT: Number(process.env.ANTI_LOSS_THR_SHORT ?? 0.1),
+  ALLOW_REVERSE: true,
 } as const;

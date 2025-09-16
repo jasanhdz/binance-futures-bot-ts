@@ -1,4 +1,4 @@
-import { Trade } from './engine';
+import { Trade } from '../core/types';
 
 type Condicion = { name: string; fn: (t: Trade) => boolean };
 type Suggest = { cond: string; salvados: number; total: number; nuevoWR: number };

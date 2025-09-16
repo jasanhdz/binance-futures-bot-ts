@@ -49,7 +49,11 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
     } catch (e: any) {
       log.warn('sync_cancel_orders_fail', { err: e?.message || String(e) });
     }
-    st.set({ mode: 'IDLE', lastExitReason: s.lastExitReason ?? 'sync_reset' });
+    st.set({
+      mode: 'IDLE',
+      lastExitReason: s.lastExitReason ?? 'sync_reset',
+      lastExitAt: Date.now(),
+    });
     log.info('sync_reset_to_idle');
   }
 }

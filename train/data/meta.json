@@ -1,4 +1,0 @@
-{
-  "features_version": "v1",
-  "features": ["rsi","ema_slope","atr_pct","vol_ratio","body_pct","wickiness","mom3","mom12"]
-}

@@ -45,3 +45,17 @@ export function hourOfDay(ts: number): number {
   const d = new Date(ts);
   return d.getUTCHours(); // usa UTC para consistencia
 }
+
+export function mfeMaeFromPath(side: 'LONG' | 'SHORT', entry: number, path: Candle[]) {
+  let maxFav = 0,
+    maxAdv = 0;
+  for (const c of path) {
+    const up = (c.high - entry) / entry;
+    const dn = (entry - c.low) / entry;
+    const fav = side === 'LONG' ? up : dn;
+    const adv = side === 'LONG' ? dn : up;
+    if (fav > maxFav) maxFav = fav;
+    if (adv > maxAdv) maxAdv = adv;
+  }
+  return { mfePct: maxFav, maePct: maxAdv };
+}

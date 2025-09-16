@@ -21,6 +21,7 @@ export type BotState = {
   peakRoe?: number;
   lastTPAt?: number;
   lastExitReason?: string;
+  lastExitAt?: number; // ← NUEVO
 
   // NUEVO: recordatorio de que ya armamos los brackets para esta posición
   bracketsArmedAt?: number;
@@ -39,3 +40,28 @@ export type Signal =
   | { action: 'ENTER_SHORT'; reason?: string }
   | { action: 'EXIT'; reason?: string }
   | { action: 'IDLE'; reason?: string };
+
+// src/core/types.ts
+export type Trade = {
+  side: 'LONG' | 'SHORT';
+  entryIdx: number;
+  entryTs: number;
+  entryPx: number;
+  exitIdx: number;
+  exitTs: number;
+  exitPx: number;
+  exit: 'TP' | 'SL' | 'Timeout' | 'StrategyExit';
+  barsHeld: number;
+  pnlPct: number;
+  mfePct: number;
+  maePct: number;
+  reason?: string;
+  adx: number;
+  longP: number;
+  shortP: number;
+  mlMargin: number;
+  vRatio: number;
+  bbUpper?: number;
+  bbLower?: number;
+  distTopPct?: number;
+};

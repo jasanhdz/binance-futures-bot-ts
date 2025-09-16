@@ -1,7 +1,7 @@
 #!/usr/bin/env ts-node
 import 'dotenv/config';
 import path from 'path';
-import { backtestStrategy } from './engine';
+import { statefulBacktest } from './engine';
 import { loadCsvCandles } from './utils';
 import { strategyMap } from './strategyMap';
 import { parseCli } from './optsSchema';
@@ -16,7 +16,7 @@ async function main() {
     csv,
     symbol,
     interval,
-    ...cfg // slPct, tpPct, feePct, leverage, maxBars, warmup, entryAt, ...
+    ...cfg // slPct, tpPct, feePct, leverage, maxBars, warmup, entryAt, antiLossThr, allowReverse, ...
   } = argv;
 
   // 2. cargar candles
@@ -26,14 +26,14 @@ async function main() {
   const StrategyClass = strategyMap[stratName as keyof typeof strategyMap] as any;
   if (!StrategyClass) throw new Error(`Estrategia desconocida: ${stratName}`);
 
-  // 4. instanciar
+  // 4. instanciar (ya es una clase con .evaluate)
   const strategy = StrategyClass;
 
-  // 5. backtest
-  const res = await backtestStrategy(strategy, candles, { symbol, interval, ...cfg });
+  // 5. backtest STATEFUL (una posición a la vez)
+  const res = await statefulBacktest(strategy, candles, { symbol, interval, ...cfg });
 
   // 6. report
-  console.log('\n===== SUMMARY =====');
+  console.log('\n===== SUMMARY (STATEFUL) =====');
   console.table([res.summary]);
 
   // 7. análisis post-BT
