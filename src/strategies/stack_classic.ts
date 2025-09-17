@@ -31,9 +31,13 @@ export const StackClassic: Strategy = {
   timeframe: '5m',
 
   async evaluate(ctx: StrategyContext) {
-    const { exchange, symbol, config, now } = ctx;
+    const { exchange, symbol, config, state, now } = ctx;
     const cs = await exchange.getCandles(symbol, config.ENTRY_TIMEFRAME, 300);
     if (cs.length < 60) return { action: 'IDLE', reason: 'few_candles' };
+
+    if (state.mode !== 'IDLE') {
+      return { action: 'IDLE', reason: 'not_idle' };
+    }
 
     const L = last(cs);
     const closes = cs.map((c) => c.close);

@@ -16,8 +16,8 @@ export const CONFIG = {
   // --- Mercado / sizing ---
   SYMBOL: process.env.SYMBOL || 'XRPUSDT',
   LEVERAGE: Number(process.env.LEVERAGE ?? 100),
-  CAPITAL_USAGE_PCT: Number(process.env.CAPITAL_USAGE_PCT ?? 0.99),
-  MIN_WALLET_RESERVE_USDT: Number(process.env.MIN_WALLET_RESERVE_USDT ?? 0.01),
+  CAPITAL_USAGE_PCT: Number(process.env.CAPITAL_USAGE_PCT ?? 0.85),
+  MIN_WALLET_RESERVE_USDT: Number(process.env.MIN_WALLET_RESERVE_USDT ?? 0.1),
   FEE_BUFFER_PCT: Number(process.env.FEE_BUFFER_PCT ?? 0.001),
 
   // --- Take-profit por ROE ---
@@ -80,7 +80,7 @@ export const CONFIG = {
   // Trailing throttle
   TRAIL_ATR_MULT: 2.5,
   TRAIL_THROTTLE_MS: 15_000,
-  MAX_RISK_PCT: 0.008,
+  MAX_RISK_PCT: 0,
 
   // --- Filtros de tendencia (multi-timeframe) ---
   TREND_TIMEFRAMES: (process.env.TREND_TIMEFRAMES || '5m,15m').split(',') as (
