@@ -46,15 +46,15 @@ export const CONFIG = {
 
   // --- Stops iniciales ---
   SL_TICKS_ABOVE_LIQ_MAP: {
-    XRPUSDT: 8,
+    XRPUSDT: 69,
     ETHUSDT: 8,
     BTCUSDT: 50,
   } as Record<string, number>,
-  SL_TICKS_ABOVE_LIQ_DEFAULT: Number(process.env.SL_TICKS_ABOVE_LIQ_DEFAULT ?? 8),
+  SL_TICKS_ABOVE_LIQ_DEFAULT: Number(process.env.SL_TICKS_ABOVE_LIQ_DEFAULT ?? 69),
 
   // --- Guards de beneficio / seguridad ---
   PROFIT_LOCK_BE_AT_ROE: Number(process.env.PROFIT_LOCK_BE_AT_ROE ?? 0.2),
-  PROFIT_GIVEBACK_ARM_ROE: Number(process.env.PROFIT_GIVEBACK_ARM_ROE ?? 0.5),
+  PROFIT_GIVEBACK_ARM_ROE: Number(process.env.PROFIT_GIVEBACK_ARM_ROE ?? 0.4),
   PROFIT_GIVEBACK_DROP_REL: Number(process.env.PROFIT_GIVEBACK_DROP_REL ?? 0.3),
   PROFIT_GIVEBACK_DROP_MIN: Number(process.env.PROFIT_GIVEBACK_DROP_MIN ?? 0.1),
 
@@ -145,7 +145,7 @@ export const CONFIG = {
   MR_SHORT_1H_ADX_MIN: Number(process.env.MR_SHORT_1H_ADX_MIN ?? 18),
 
   ANTI_LOSS_ON: true,
-  ANTI_LOSS_THR_LONG: Number(process.env.ANTI_LOSS_THR_LONG ?? 0.8),
-  ANTI_LOSS_THR_SHORT: Number(process.env.ANTI_LOSS_THR_SHORT ?? 0.1),
-  ALLOW_REVERSE: true,
+  ANTI_LOSS_THR_LONG: Number(process.env.ANTI_LOSS_THR_LONG ?? 0.9),
+  ANTI_LOSS_THR_SHORT: Number(process.env.ANTI_LOSS_THR_SHORT ?? 0.82),
+  ALLOW_REVERSE: false,
 } as const;

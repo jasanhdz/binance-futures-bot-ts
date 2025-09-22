@@ -27,3 +27,24 @@ export function computeStopFromLiqTicks(params: {
   }
   return roundToTick(raw, tickSize, pricePrecision);
 }
+
+// src/core/risk/stop.ts - Agregar esta nueva función
+export function computeStopFromMaxLoss(params: {
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  tickSize: number;
+  pricePrecision: number;
+  ticksFromEntry: number; // Los 69 ticks de tu config
+}) {
+  const { side, entryPrice, tickSize, pricePrecision, ticksFromEntry } = params;
+
+  // Calcular stop directamente desde el precio de entrada
+  let stopPrice: number;
+  if (side === 'LONG') {
+    stopPrice = entryPrice - ticksFromEntry * tickSize;
+  } else {
+    stopPrice = entryPrice + ticksFromEntry * tickSize;
+  }
+
+  return roundToTick(stopPrice, tickSize, pricePrecision);
+}

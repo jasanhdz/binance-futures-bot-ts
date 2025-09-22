@@ -1,4 +1,4 @@
-// src/backtest/utils.ts
+// src/backtest/utils.ts - CORREGIDO
 import fs from 'fs';
 import { Candle } from '../core/types';
 
@@ -46,7 +46,12 @@ export function hourOfDay(ts: number): number {
   return d.getUTCHours(); // usa UTC para consistencia
 }
 
-export function mfeMaeFromPath(side: 'LONG' | 'SHORT', entry: number, path: Candle[]) {
+// CORREGIDO: Tipo de retorno explícito
+export function mfeMaeFromPath(
+  side: 'LONG' | 'SHORT',
+  entry: number,
+  path: Candle[],
+): { mfePct: number; maePct: number } {
   let maxFav = 0,
     maxAdv = 0;
   for (const c of path) {

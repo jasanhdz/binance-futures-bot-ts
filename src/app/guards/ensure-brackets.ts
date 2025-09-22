@@ -3,7 +3,7 @@ import { Exchange } from '../../core/ports/Exchange';
 import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
 import { CONFIG } from '../../infra/config';
-import { computeStopFromLiqTicks, roundToTick } from '../../core/risk/stop';
+import { computeStopFromMaxLoss, roundToTick } from '../../core/risk/stop';
 import { Side } from '../../core/types';
 
 export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore, log: Logger) {
@@ -19,29 +19,39 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
   const tpOpen = await (ex as any).openTpForSide?.(symbol, s.lastSide as Side);
 
   const filters = await ex.getSymbolFilters(symbol, pos.leverage ?? s.lastLeverage!);
-  const price = await ex.getMarkPrice(symbol);
 
-  // ---- STOP: si falta, créalo con lógica de liquidación + ticks ----
+  // ---- STOP: Ahora basado en pérdida máxima desde ENTRADA ----
   if (!stopOpen) {
-    const liq = (await ex.readLiquidationPrice(symbol, s.lastSide as Side)) ?? price;
-    const ticks = CONFIG.SL_TICKS_ABOVE_LIQ_MAP[symbol] ?? CONFIG.SL_TICKS_ABOVE_LIQ_DEFAULT ?? 4;
+    // Usar los ticks configurados (69 para XRP = ~24% pérdida con 100x)
+    const ticksFromEntry =
+      CONFIG.SL_TICKS_ABOVE_LIQ_MAP[symbol] ?? CONFIG.SL_TICKS_ABOVE_LIQ_DEFAULT ?? 69;
 
-    const stop = computeStopFromLiqTicks({
+    const stop = computeStopFromMaxLoss({
       side: s.lastSide as Side,
-      liqPrice: liq,
-      currentPrice: price,
       entryPrice: s.lastEntryPrice!,
       tickSize: filters.tickSize,
       pricePrecision: filters.pricePrecision,
-      ticksAboveLiq: ticks,
+      ticksFromEntry: ticksFromEntry,
     });
 
+    // Calcular el porcentaje de pérdida para logging
+    const leverage = pos.leverage ?? s.lastLeverage ?? 100;
+    const priceMovePct = (Math.abs(stop - s.lastEntryPrice!) / s.lastEntryPrice!) * 100;
+    const capitalLossPct = priceMovePct * leverage;
+
     await ex.placeStopClose(symbol, s.lastSide as Side, stop);
-    log.info('ensure_stop_created', { side: s.lastSide, stop });
-    st.set({ lastTrailStop: stop }); // registro informativo
+    log.info('stop_created_max_loss', {
+      side: s.lastSide,
+      stop,
+      entryPrice: s.lastEntryPrice,
+      ticksFromEntry,
+      priceMovePct: `${priceMovePct.toFixed(3)}%`,
+      capitalLoss: `${capitalLossPct.toFixed(1)}%`,
+    });
+    st.set({ lastTrailStop: stop });
   }
 
-  // ---- TP: si falta, créalo según ROE objetivo ----
+  // ---- TP: sin cambios ----
   if (!tpOpen) {
     const r = CONFIG.TP_ROE;
     const fee = CONFIG.FEE_BUFFER_PCT;
@@ -56,10 +66,10 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
     log.info('ensure_tp_created', { side: s.lastSide, tp });
   }
 
-  // Marca “armado” solo si realmente ya están ambos
+  // Marca "armado" solo si realmente ya están ambos
   const stopNow = stopOpen || (await ex.openStopForSide(symbol, s.lastSide as Side));
   const tpNow = tpOpen || (await (ex as any).openTpForSide?.(symbol, s.lastSide as Side));
   if (stopNow && tpNow) {
-    st.set({ bracketsAttached: true }); // idempotente
+    st.set({ bracketsAttached: true });
   }
 }
