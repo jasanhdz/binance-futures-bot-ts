@@ -1,3 +1,4 @@
+import { Logger } from 'src/core/ports/Logger';
 import { Exchange } from '../core/ports/Exchange';
 import { BotState, Signal } from '../core/types';
 
@@ -10,6 +11,7 @@ export type StrategyContext = {
   config: BotConfig; // ⟵ en vez de any
   state: BotState;
   now: number;
+  logger?: Logger;
 };
 
 export interface Strategy {

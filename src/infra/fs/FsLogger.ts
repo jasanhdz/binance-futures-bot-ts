@@ -2,6 +2,50 @@ import fs from 'fs';
 import path from 'path';
 import type { Logger } from '../../core/ports/Logger';
 
+const RESET = '\x1b[0m';
+const RED = '\x1b[31m';
+const GREEN = '\x1b[32m';
+
+export const COLORS = {
+  RESET,
+  RED,
+  GREEN,
+};
+
+export const zoneBadge = (z?: string) => {
+  switch (z) {
+    case 'SUPPORT':
+      return color.ok('🛡️ SUPPORT');
+    case 'RESISTANCE':
+      return color.error('🧱 RESISTANCE');
+    case 'MIDDLE':
+      return color.gray('⚖️ MIDDLE');
+    case 'LOWER_RANGE':
+      return color.info('⬇️ LOWER');
+    case 'UPPER_RANGE':
+      return color.info('⬆️ UPPER');
+    default:
+      return color.gray('—');
+  }
+};
+
+export const trendBadge = (dir?: string) => {
+  switch (dir) {
+    case 'STRONG_BULL':
+      return color.ok('⚡ STRONG BULL') + ' 📈';
+    case 'BULL':
+      return color.ok('🟢 BULL');
+    case 'NEUTRAL':
+      return color.warn('🟡 NEUTRAL');
+    case 'BEAR':
+      return color.error('🔴 BEAR');
+    case 'STRONG_BEAR':
+      return color.error('⚡ STRONG BEAR') + ' 📉';
+    default:
+      return color.gray('⚪ UNKNOWN');
+  }
+};
+
 // ===== Config =====
 const logDir = path.resolve(__dirname, '../../../logs');
 const legacyPath = path.join(logDir, 'history.log');
@@ -156,6 +200,47 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
 
       // Log compacto: [hora] emoji ACCIÓN · razón
       return `${color.gray(t)} ${emoji}  ${color.bold(String(a))}${r ? ' · ' + r : ''}`;
+    }
+
+    // 1) Agrega este case dentro de prettyLine(level, msg, ctx)
+    case 'market_snapshot': {
+      const t = new Date().toLocaleTimeString();
+
+      const n = (x: any, d = 4) =>
+        typeof x === 'number' && Number.isFinite(x) ? x.toFixed(d) : '—';
+      const pct = (x?: number, d = 2) =>
+        typeof x === 'number' && Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(d)}%` : '—';
+
+      const sgn = (x?: number, s?: string) =>
+        typeof x === 'number'
+          ? (x > 0 ? color.ok : x < 0 ? color.error : color.gray)(s ?? String(x))
+          : color.gray('—');
+
+      const line1 =
+        `${color.gray(t)} ${color.info('💹 market')} ${color.gray('•')} ` +
+        `P:${color.bold(n(ctx?.price))} ${color.gray('│')} ` +
+        `R:${color.error(n(ctx?.resistance))} ` +
+        `S:${color.ok(n(ctx?.support))} ${color.gray('│')} ` +
+        `${zoneBadge(ctx?.zone)}`;
+
+      const t10 = typeof ctx?.t10 === 'number' ? ctx.t10 : undefined;
+      const t5 = typeof ctx?.t5 === 'number' ? ctx.t5 : undefined;
+      const line2 =
+        ` ${trendBadge(ctx?.trend)} ${color.gray('│')} ` +
+        `T10:${sgn(t10, pct(t10))} ${color.gray('·')} ` +
+        `T5:${sgn(t5, pct(t5))} ${color.gray('│')} ` +
+        `RSI:${n(ctx?.rsi, 1)} ${color.gray('·')} ADX:${n(ctx?.adx, 1)} ${color.gray('·')} ` +
+        `BBW:${pct(ctx?.bbw, 2)}`;
+
+      // (Opcional) Estructura de EMAs si las mandas en ctx
+      const line3 =
+        typeof ctx?.ema7 === 'number' &&
+        typeof ctx?.ema25 === 'number' &&
+        typeof ctx?.ema99 === 'number'
+          ? `${color.gray('   └ ')}EMA7:${n(ctx.ema7)}  EMA25:${n(ctx.ema25)}  EMA99:${n(ctx.ema99)}`
+          : '';
+
+      return line1 + '\n' + line2 + (line3 ? '\n' + line3 : '');
     }
 
     default: {

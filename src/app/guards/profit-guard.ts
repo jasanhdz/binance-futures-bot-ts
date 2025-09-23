@@ -22,7 +22,7 @@ export async function enforceProfitGuard(
       ? (mark - s.lastEntryPrice) / s.lastEntryPrice
       : (s.lastEntryPrice - mark) / s.lastEntryPrice) * pos.leverage;
 
-  const peak = Math.max(0, s.peakRoe ?? 0);
+  const peak = s.peakRoe ?? roe;
   const newPeak = Math.max(peak, roe);
   if (newPeak !== peak) st.set({ peakRoe: newPeak });
 

@@ -26,6 +26,7 @@ export class StrategyRunner {
       config: CONFIG,
       state: stBefore,
       now: Date.now(),
+      logger,
     });
 
     logger.info('signal', sig);
