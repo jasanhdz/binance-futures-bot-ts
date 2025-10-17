@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { StrategyRunner } from './strategy-runner';
-import { checkTakeProfit } from './guards/take-profit';
-import { enforceProfitGuard } from './guards/profit-guard';
+// import { checkTakeProfit } from './guards/take-profit';
+// import { enforceProfitGuard } from './guards/profit-guard';
 import { syncStateGuard } from './guards/sync-state';
 import { bracketsGuard } from './guards/ensure-brackets';
 import { pyramidGuard } from './guards/pyramid-guard';
@@ -37,8 +37,8 @@ export function startBot(deps: {
       await syncStateGuard(symbol, exchange, state, logger);
       await bracketsGuard(symbol, exchange, state, logger);
 
-      await checkTakeProfit(symbol, exchange, state, logger);
-      await enforceProfitGuard(symbol, exchange, state, logger);
+      // await checkTakeProfit(symbol, exchange, state, logger);
+      // await enforceProfitGuard(symbol, exchange, state, logger);
       await pyramidGuard(symbol, exchange, state, logger);
 
       await runner.tick(symbol);
