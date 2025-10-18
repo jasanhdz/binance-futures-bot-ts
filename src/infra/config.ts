@@ -24,7 +24,7 @@ export const CONFIG = {
   TP_ROE: Number(process.env.TP_ROE ?? 1.0),
 
   // --- Timeframes / volumen para señales ---
-  ENTRY_TIMEFRAME: (process.env.ENTRY_TIMEFRAME as '1m' | '5m' | '15m' | '1h') || '5m',
+  ENTRY_TIMEFRAME: (process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m',
   VOL_AVG_LEN: Number(process.env.VOL_AVG_LEN ?? 20),
   VOL_FACTOR_ENTRY: Number(process.env.VOL_FACTOR_ENTRY ?? 1.1),
 
@@ -130,6 +130,17 @@ export const CONFIG = {
 
   SHORT_CONFIRM_1H: (process.env.SHORT_CONFIRM_1H ?? '1') === '1',
   SHORT_1H_ADX_MIN: Number(process.env.SHORT_1H_ADX_MIN ?? 20),
+
+  // MOMENTUM BREAKOUT
+  MOM_CONSEC_MIN: Number(process.env.MOM_CONSEC_MIN ?? 2),
+  MOM_CONSEC_MAX: Number(process.env.MOM_CONSEC_MAX ?? 3),
+  MOM_VOL_FACTOR: Number(process.env.MOM_VOL_FACTOR ?? 1.5),
+  MOM_BODY_PCT_MIN: Number(process.env.MOM_BODY_PCT_MIN ?? 0.55),
+  MOM_TREND_ADX_MIN: Number(process.env.MOM_TREND_ADX_MIN ?? 22),
+  MOM_TREND_CONFIRM_TF:
+    (process.env.MOM_TREND_CONFIRM_TF as '3m' | '5m' | '15m' | '1h') ?? '15m',
+  MOM_SR_LOOKBACK: Number(process.env.MOM_SR_LOOKBACK ?? 36),
+  MOM_SR_BUFFER: Number(process.env.MOM_SR_BUFFER ?? 0.0015),
 
   // MEAN REVERSION (apagado)
   MR_ADX_MAX: Number(process.env.MR_ADX_MAX ?? 20),
