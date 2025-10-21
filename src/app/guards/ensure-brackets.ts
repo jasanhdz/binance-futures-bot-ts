@@ -8,15 +8,43 @@ import { Side } from '../../core/types';
 
 export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore, log: Logger) {
   const s = st.get();
-  if (s.mode === 'IDLE' || !s.lastSide || !s.lastEntryPrice) return;
+  if (s.mode === 'IDLE' || !s.lastSide || !s.lastEntryPrice) {
+    log.debug('brackets_skip_idle', {
+      symbol,
+      mode: s.mode,
+      hasSide: !!s.lastSide,
+      hasEntry: !!s.lastEntryPrice,
+    });
+    return;
+  }
 
   // Debe existir posición activa
-  const pos = await ex.readActivePosition(symbol, s.lastSide as Side);
-  if (!pos || !pos.qtyAbs || pos.qtyAbs <= 0) return;
+  let pos: Awaited<ReturnType<Exchange['readActivePosition']>> | null = null;
+  try {
+    pos = await ex.readActivePosition(symbol, s.lastSide as Side);
+  } catch (err) {
+    log.warn('brackets_read_position_fail', {
+      symbol,
+      side: s.lastSide,
+      err: (err as any)?.message || String(err),
+    });
+  }
+  if (!pos || !pos.qtyAbs || pos.qtyAbs <= 0) {
+    log.debug('brackets_skip_no_position', { symbol, side: s.lastSide });
+    return;
+  }
 
   // Leer órdenes existentes del lado activo
   const stopOpen = await ex.openStopForSide(symbol, s.lastSide as Side);
   const tpOpen = await (ex as any).openTpForSide?.(symbol, s.lastSide as Side);
+
+  log.debug('brackets_status', {
+    symbol,
+    side: s.lastSide,
+    stopOpen: stopOpen?.stopPrice,
+    tpOpen: tpOpen?.stopPrice,
+    leverage: pos.leverage,
+  });
 
   const filters = await ex.getSymbolFilters(symbol, pos.leverage ?? s.lastLeverage!);
 
@@ -39,16 +67,26 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
     const priceMovePct = (Math.abs(stop - s.lastEntryPrice!) / s.lastEntryPrice!) * 100;
     const capitalLossPct = priceMovePct * leverage;
 
-    await ex.placeStopClose(symbol, s.lastSide as Side, stop);
-    log.info('stop_created_max_loss', {
-      side: s.lastSide,
-      stop,
-      entryPrice: s.lastEntryPrice,
-      ticksFromEntry,
-      priceMovePct: `${priceMovePct.toFixed(3)}%`,
-      capitalLoss: `${capitalLossPct.toFixed(1)}%`,
-    });
-    st.set({ lastTrailStop: stop });
+    try {
+      await ex.placeStopClose(symbol, s.lastSide as Side, stop);
+      log.info('stop_created_max_loss', {
+        symbol,
+        side: s.lastSide,
+        stop,
+        entryPrice: s.lastEntryPrice,
+        ticksFromEntry,
+        priceMovePct: `${priceMovePct.toFixed(3)}%`,
+        capitalLoss: `${capitalLossPct.toFixed(1)}%`,
+      });
+      st.set({ lastTrailStop: stop });
+    } catch (err) {
+      log.error('stop_upsert_failed', {
+        symbol,
+        side: s.lastSide,
+        stop,
+        err: (err as any)?.message || String(err),
+      });
+    }
   }
 
   // ---- TP: sin cambios ----
@@ -62,14 +100,33 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
         : s.lastEntryPrice! * (1 - r / lev - fee);
     const tp = roundToTick(tpRaw, filters.tickSize, filters.pricePrecision);
 
-    await ex.placeTpClose(symbol, s.lastSide as Side, tp);
-    log.info('ensure_tp_created', { side: s.lastSide, tp });
+    try {
+      await ex.placeTpClose(symbol, s.lastSide as Side, tp);
+      log.info('ensure_tp_created', { symbol, side: s.lastSide, tp });
+    } catch (err) {
+      log.error('tp_upsert_failed', {
+        symbol,
+        side: s.lastSide,
+        tp,
+        err: (err as any)?.message || String(err),
+      });
+    }
   }
 
   // Marca "armado" solo si realmente ya están ambos
   const stopNow = stopOpen || (await ex.openStopForSide(symbol, s.lastSide as Side));
   const tpNow = tpOpen || (await (ex as any).openTpForSide?.(symbol, s.lastSide as Side));
   if (stopNow && tpNow) {
+    if (!s.bracketsAttached) {
+      log.info('brackets_guard_attached', { symbol, side: s.lastSide });
+    }
     st.set({ bracketsAttached: true });
+  } else {
+    log.debug('brackets_incomplete', {
+      symbol,
+      side: s.lastSide,
+      stopPresent: !!stopNow,
+      tpPresent: !!tpNow,
+    });
   }
 }

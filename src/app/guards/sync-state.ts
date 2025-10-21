@@ -28,6 +28,7 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
       });
 
       log.info('sync_attach_to_open_position', {
+        symbol,
         side,
         entry: pos.entryPrice,
         lev: pos.leverage,
@@ -35,7 +36,7 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
       });
     } else {
       // Nada abierto realmente; no hacer ruido a nivel info
-      log.debug('sync_idle_no_position');
+      log.debug('sync_idle_no_position', { symbol });
     }
     return; // importante: no continúes al bloque 2
   }
@@ -47,13 +48,13 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
       await (ex as any).cancelCloseOrdersForSide?.(symbol, 'LONG');
       await (ex as any).cancelCloseOrdersForSide?.(symbol, 'SHORT');
     } catch (e: any) {
-      log.warn('sync_cancel_orders_fail', { err: e?.message || String(e) });
+      log.warn('sync_cancel_orders_fail', { symbol, err: e?.message || String(e) });
     }
     st.set({
       mode: 'IDLE',
       lastExitReason: s.lastExitReason ?? 'sync_reset',
       lastExitAt: Date.now(),
     });
-    log.info('sync_reset_to_idle');
+    log.info('sync_reset_to_idle', { symbol });
   }
 }

@@ -7,11 +7,26 @@ import { CONFIG } from './infra/config';
 import { StrategyRunner } from './app/strategy-runner';
 import { startBot } from './app/bot';
 import { MomentumBreakout } from './strategies/momentum_breakout';
+import { BreakRetest } from './strategies/break_retest';
+import { MeanReversionSnapback } from './strategies/mean_reversion_snapback';
+import { composeStrategies } from './strategies/composite';
+import { TrendFollow } from './strategies/trend_follow';
 
 async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
-  const strategy = MomentumBreakout;
+  const strategy = composeStrategies([
+    { name: TrendFollow.name, strategy: TrendFollow },
+    { name: MomentumBreakout.name, strategy: MomentumBreakout },
+    { name: BreakRetest.name, strategy: BreakRetest },
+    { name: MeanReversionSnapback.name, strategy: MeanReversionSnapback },
+  ]);
+
+  logger.info('environment_boot', {
+    network: CONFIG.IS_TESTNET ? 'TESTNET' : 'PROD',
+    http: CONFIG.HTTP_FUTURES,
+    ws: CONFIG.WS_FUTURES,
+  });
 
   const uniqueSymbols = Array.from(
     new Set(CONFIG.SYMBOLS && CONFIG.SYMBOLS.length ? CONFIG.SYMBOLS : [CONFIG.SYMBOL]),
@@ -22,26 +37,48 @@ async function main() {
     return;
   }
 
-  for (const symbol of uniqueSymbols) {
-    const share = CONFIG.SYMBOL_ALLOCATIONS[symbol] ?? 0;
-    if (share <= 0) {
-      logger.warn('symbol_skipped_zero_share', { symbol });
-      continue;
-    }
+  uniqueSymbols.forEach((symbol, idx) => {
+    const allocation = CONFIG.SYMBOL_ALLOCATIONS[symbol] ?? 0;
+    const capitalUsage =
+      allocation > 0 ? allocation : CONFIG.CAPITAL_USAGE_PCT;
+    const leverage = CONFIG.SYMBOL_LEVERAGE[symbol] ?? CONFIG.LEVERAGE;
 
-    const state = new FsStateStore(symbol);
+    const baseRisk = (CONFIG.MAX_RISK_PCT ?? 0) as number;
+    const usageRatio =
+      CONFIG.CAPITAL_USAGE_PCT > 0
+        ? capitalUsage / CONFIG.CAPITAL_USAGE_PCT
+        : 1;
+    const riskPct =
+      baseRisk > 0 ? Math.max(0, Math.min(baseRisk * usageRatio, baseRisk)) : baseRisk;
+
+    const stateScope = CONFIG.IS_TESTNET ? 'testnet' : 'prod';
+    const state = new FsStateStore(symbol, stateScope);
     const perSymbolConfig: typeof CONFIG = {
       ...CONFIG,
       SYMBOL: symbol,
-      SYMBOL_SHARE: share,
-      CAPITAL_USAGE_PCT: CONFIG.CAPITAL_USAGE_PCT * share,
-      MAX_RISK_PCT: (CONFIG.MAX_RISK_PCT ?? 0) * share,
+      SYMBOL_SHARE: capitalUsage,
+      LEVERAGE: leverage,
+      CAPITAL_USAGE_PCT: capitalUsage,
+      MAX_RISK_PCT: riskPct,
     };
 
-    logger.info('symbol_runner_start', { symbol, share });
+    logger.info('symbol_runner_start', {
+      symbol,
+      capitalUsage,
+      leverage,
+    });
 
     const runner = new StrategyRunner({ exchange, logger, state, strategy, config: perSymbolConfig });
-    startBot({ runner, symbol, exchange, state, logger, intervalSec: 5 });
-  }
+    startBot({
+      runner,
+      symbol,
+      exchange,
+      state,
+      logger,
+      intervalSec: Math.max(5, CONFIG.BOT_INTERVAL_SEC),
+      initialDelayMs: idx * Math.max(500, CONFIG.BOT_STAGGER_MS),
+    });
+  });
+
 }
 main().catch(console.error);

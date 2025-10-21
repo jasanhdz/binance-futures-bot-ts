@@ -1,4 +1,166 @@
 // src/infra/config.ts
+const defaultSymbol = (process.env.SYMBOL || 'XRPUSDT').toUpperCase();
+const DEFAULT_CAPITAL_USAGE = Number(process.env.CAPITAL_USAGE_PCT ?? 0.85);
+const DEFAULT_LEVERAGE = Number(process.env.LEVERAGE ?? 100);
+
+type SymbolDescriptor = {
+  symbol: string;
+  leverage?: number;
+  capitalUsage?: number;
+};
+
+type AllocationMap = Record<string, number>;
+
+function clampShare(v: number) {
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
+function parseShare(raw?: string): number | undefined {
+  if (raw === undefined) return undefined;
+  const cleaned = raw.replace('%', '').trim();
+  if (!cleaned) return undefined;
+  let num = Number(cleaned);
+  if (!Number.isFinite(num)) return undefined;
+  if (num > 1) num = num / 100;
+  return clampShare(num);
+}
+
+function parsePositiveNumber(raw?: string): number | undefined {
+  if (raw === undefined) return undefined;
+  const cleaned = raw.trim();
+  if (!cleaned) return undefined;
+  const num = Number(cleaned);
+  if (!Number.isFinite(num) || num <= 0) return undefined;
+  return num;
+}
+
+function parseSymbolDescriptors(baseSymbol: string): SymbolDescriptor[] {
+  const raw = process.env.SYMBOLS;
+  const tokens = raw
+    ? raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    : [];
+
+  const descriptors: SymbolDescriptor[] = [];
+  const seen = new Map<string, number>(); // symbol -> index
+
+  const upsert = (desc: SymbolDescriptor) => {
+    const symbol = desc.symbol;
+    if (!symbol) return;
+    const idx = seen.get(symbol);
+    if (idx !== undefined) {
+      const curr = descriptors[idx];
+      if (desc.leverage !== undefined) curr.leverage = desc.leverage;
+      if (desc.capitalUsage !== undefined) curr.capitalUsage = desc.capitalUsage;
+      return;
+    }
+    seen.set(symbol, descriptors.length);
+    descriptors.push(desc);
+  };
+
+  for (const token of tokens) {
+    const [symRaw, part1, part2] = token.split(':');
+    const symbol = (symRaw ?? '').trim().toUpperCase();
+    if (!symbol) continue;
+
+    let leverage: number | undefined;
+    let capitalUsage: number | undefined;
+
+    if (part2 !== undefined) {
+      leverage = parsePositiveNumber(part1);
+      capitalUsage = parseShare(part2);
+    } else if (part1 !== undefined) {
+      const shareCandidate = parseShare(part1);
+      if (shareCandidate !== undefined && shareCandidate <= 1) {
+        capitalUsage = shareCandidate;
+      } else {
+        leverage = parsePositiveNumber(part1);
+      }
+    }
+
+    if (part1 === '' && part2 !== undefined && capitalUsage === undefined) {
+      capitalUsage = parseShare(part2);
+    }
+
+    upsert({
+      symbol,
+      leverage,
+      capitalUsage,
+    });
+  }
+
+  if (!seen.has(baseSymbol)) {
+    upsert({ symbol: baseSymbol });
+  }
+
+  return descriptors;
+}
+
+function parseAllocationOverrides(symbols: string[]): AllocationMap {
+  const map: AllocationMap = {};
+  const raw = process.env.SYMBOL_ALLOCATIONS;
+  if (!raw) return map;
+
+  const parts = raw
+    .split(/[,;]+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  for (const part of parts) {
+    const [symbolRaw, valueRaw] = part.split(/[:=]/, 2);
+    if (!symbolRaw || !valueRaw) continue;
+    const sym = symbolRaw.trim().toUpperCase();
+    const share = parseShare(valueRaw);
+    if (share === undefined) continue;
+    map[sym] = share;
+  }
+  return map;
+}
+
+const SYMBOL_DESCRIPTORS = parseSymbolDescriptors(defaultSymbol);
+const SYMBOL_LIST = SYMBOL_DESCRIPTORS.map((d) => d.symbol);
+function parseSymbolList(raw?: string): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => s.length > 0);
+}
+
+const SCAN_SYMBOLS_LIST = Array.from(new Set(parseSymbolList(process.env.SCAN_SYMBOLS ?? '')));
+const PRIMARY_SYMBOL = SYMBOL_LIST[0] ?? defaultSymbol;
+
+const SYMBOL_ALLOCATIONS: AllocationMap = {};
+const SYMBOL_LEVERAGE: Record<string, number> = {};
+
+const allocationOverrides = parseAllocationOverrides(SYMBOL_LIST);
+
+for (const desc of SYMBOL_DESCRIPTORS) {
+  if (desc.leverage !== undefined) {
+    SYMBOL_LEVERAGE[desc.symbol] = desc.leverage;
+  }
+  if (desc.capitalUsage !== undefined) {
+    SYMBOL_ALLOCATIONS[desc.symbol] = clampShare(desc.capitalUsage);
+  }
+}
+
+for (const sym of SYMBOL_LIST) {
+  if (allocationOverrides[sym] !== undefined) {
+    SYMBOL_ALLOCATIONS[sym] = allocationOverrides[sym];
+  }
+  if (SYMBOL_ALLOCATIONS[sym] === undefined) {
+    SYMBOL_ALLOCATIONS[sym] = 0;
+  }
+}
+
+const PRIMARY_SYMBOL_SHARE =
+  SYMBOL_ALLOCATIONS[PRIMARY_SYMBOL] && SYMBOL_ALLOCATIONS[PRIMARY_SYMBOL] > 0
+    ? SYMBOL_ALLOCATIONS[PRIMARY_SYMBOL]
+    : DEFAULT_CAPITAL_USAGE;
+
 export const CONFIG = {
   // --- Credenciales / endpoints ---
   API_KEY: process.env.BINANCE_API_KEY || '',
@@ -13,10 +175,19 @@ export const CONFIG = {
       ? 'wss://fstream.binancefuture.com'
       : 'wss://fstream.binance.com',
 
+  BOT_STAGGER_MS: Number(process.env.BOT_STAGGER_MS ?? 2_000),
+  BOT_INTERVAL_SEC: Number(process.env.BOT_INTERVAL_SEC ?? 10),
+
   // --- Mercado / sizing ---
-  SYMBOL: process.env.SYMBOL || 'XRPUSDT',
-  LEVERAGE: Number(process.env.LEVERAGE ?? 100),
-  CAPITAL_USAGE_PCT: Number(process.env.CAPITAL_USAGE_PCT ?? 0.85),
+  SYMBOL: PRIMARY_SYMBOL,
+  SYMBOLS: SYMBOL_LIST,
+  SCAN_SYMBOLS: SCAN_SYMBOLS_LIST,
+  SYMBOL_DESCRIPTORS,
+  SYMBOL_ALLOCATIONS,
+  SYMBOL_LEVERAGE,
+  SYMBOL_SHARE: PRIMARY_SYMBOL_SHARE,
+  LEVERAGE: DEFAULT_LEVERAGE,
+  CAPITAL_USAGE_PCT: DEFAULT_CAPITAL_USAGE,
   MIN_WALLET_RESERVE_USDT: Number(process.env.MIN_WALLET_RESERVE_USDT ?? 0.1),
   FEE_BUFFER_PCT: Number(process.env.FEE_BUFFER_PCT ?? 0.001),
 
@@ -80,7 +251,7 @@ export const CONFIG = {
   // Trailing throttle
   TRAIL_ATR_MULT: 2.5,
   TRAIL_THROTTLE_MS: 15_000,
-  MAX_RISK_PCT: 0,
+  MAX_RISK_PCT: Number(process.env.MAX_RISK_PCT ?? 0),
 
   // --- Filtros de tendencia (multi-timeframe) ---
   TREND_TIMEFRAMES: (process.env.TREND_TIMEFRAMES || '5m,15m').split(',') as (
@@ -141,6 +312,45 @@ export const CONFIG = {
     (process.env.MOM_TREND_CONFIRM_TF as '3m' | '5m' | '15m' | '1h') ?? '15m',
   MOM_SR_LOOKBACK: Number(process.env.MOM_SR_LOOKBACK ?? 36),
   MOM_SR_BUFFER: Number(process.env.MOM_SR_BUFFER ?? 0.0015),
+  MOM_ROOM_MIN: Number(process.env.MOM_ROOM_MIN ?? 0.003),
+
+  // TREND FOLLOW
+  TF_CONFIRM_TF1: (process.env.TF_CONFIRM_TF1 as '3m' | '5m' | '15m' | '1h') ?? '15m',
+  TF_CONFIRM_TF2: (process.env.TF_CONFIRM_TF2 as '15m' | '1h' | '4h') ?? '1h',
+  TF_ATR_LEN: Number(process.env.TF_ATR_LEN ?? 14),
+  TF_SUPERTREND_PERIOD: Number(process.env.TF_SUPERTREND_PERIOD ?? 10),
+  TF_SUPERTREND_MULT: Number(process.env.TF_SUPERTREND_MULT ?? 3),
+  TF_BREAKOUT_ATR_MULT: Number(process.env.TF_BREAKOUT_ATR_MULT ?? 0.5),
+  TF_VOL_FACTOR: Number(process.env.TF_VOL_FACTOR ?? 1.2),
+  TF_VOL_BASIS: Number(process.env.TF_VOL_BASIS ?? 30),
+  TF_ADX_MIN: Number(process.env.TF_ADX_MIN ?? 18),
+  TF_MAX_EXTENSION: Number(process.env.TF_MAX_EXTENSION ?? 0.01),
+  TF_LONG_MAX_RSI: Number(process.env.TF_LONG_MAX_RSI ?? 70),
+  TF_SHORT_MIN_RSI: Number(process.env.TF_SHORT_MIN_RSI ?? 30),
+
+  // Scanner / monitor
+  SCAN_MONITOR_INTERVAL_MS: Number(process.env.SCAN_MONITOR_INTERVAL_MS ?? 120_000),
+
+  // BREAK & RE-TEST
+  BR_CONFIRM_TF: (process.env.BR_CONFIRM_TF as '3m' | '5m' | '15m' | '1h') ?? '15m',
+  BR_LOOKBACK: Number(process.env.BR_LOOKBACK ?? 180),
+  BR_EXCLUDE_RECENT: Number(process.env.BR_EXCLUDE_RECENT ?? 20),
+  BR_BREAK_BUFFER: Number(process.env.BR_BREAK_BUFFER ?? 0.0015),
+  BR_RETEST_TOLERANCE: Number(process.env.BR_RETEST_TOLERANCE ?? 0.001),
+  BR_RETEST_DEPTH: Number(process.env.BR_RETEST_DEPTH ?? 0.0025),
+  BR_MIN_ROOM: Number(process.env.BR_MIN_ROOM ?? 0.004),
+  BR_VOL_FACTOR: Number(process.env.BR_VOL_FACTOR ?? 1.2),
+  BR_VOL_BASIS: Number(process.env.BR_VOL_BASIS ?? 30),
+
+  // MEAN-REVERSION SNAPBACK
+  MRS_CONFIRM_TF: (process.env.MRS_CONFIRM_TF as '3m' | '5m' | '15m' | '1h') ?? '15m',
+  MRS_VOL_BASIS: Number(process.env.MRS_VOL_BASIS ?? 30),
+  MRS_VOL_FACTOR: Number(process.env.MRS_VOL_FACTOR ?? 1.15),
+  MRS_EXT_MIN: Number(process.env.MRS_EXT_MIN ?? 0.015),
+  MRS_RSI_HIGH: Number(process.env.MRS_RSI_HIGH ?? 75),
+  MRS_RSI_LOW: Number(process.env.MRS_RSI_LOW ?? 25),
+  MRS_STREAK_MIN: Number(process.env.MRS_STREAK_MIN ?? 3),
+  MRS_ROOM_MIN: Number(process.env.MRS_ROOM_MIN ?? 0.0025),
 
   // MEAN REVERSION (apagado)
   MR_ADX_MAX: Number(process.env.MR_ADX_MAX ?? 20),

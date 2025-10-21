@@ -14,7 +14,8 @@
     "test": "vitest run",
     "bt": "ts-node src/backtest/runner.ts",
     "bt:stack:file": "ts-node src/backtest/run_stack_classic.ts",
-    "scan:mom": "ts-node src/tools/momentum_scanner.ts"
+    "scan:mom": "ts-node src/tools/momentum_scanner.ts",
+    "scan:testnet": "DOTENV_CONFIG_PATH=.env.testnet ts-node src/tools/momentum_scanner.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",

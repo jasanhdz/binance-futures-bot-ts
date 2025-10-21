@@ -2,11 +2,13 @@
 import 'dotenv/config';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { BinanceExchange } from '../infra/binance/BinanceExchange';
+import fs from 'fs';
+import path from 'path';
+import Binance from 'binance-api-node';
 import { CONFIG } from '../infra/config';
-import { MomentumBreakout, MOMENTUM_TIMEFRAME, analyzeMomentumBreakout } from '../strategies/momentum_breakout';
 import { Logger } from '../core/ports/Logger';
-import { MomentumAnalysis, MomentumDirectionState } from '../strategies/momentum_breakout';
+import { scanSymbols, StrategyCandidate, SymbolScanResult } from '../scanner/analyzer';
+import { Candle } from '../core/types';
 
 class CliLogger implements Logger {
   debug(msg: string, ctx?: any): void {
@@ -22,12 +24,6 @@ class CliLogger implements Logger {
     console.error(`[error] ${msg}`, ctx ?? '');
   }
 }
-
-type DirectionScore = {
-  side: 'LONG' | 'SHORT';
-  score: number;
-  state: MomentumDirectionState;
-};
 
 const DEFAULT_SYMBOLS = [
   'BTCUSDT',
@@ -53,33 +49,206 @@ const DEFAULT_SYMBOLS = [
   'ARBUSDT',
 ];
 
-function directionScore(analysis: MomentumAnalysis, state: MomentumDirectionState): number {
-  if (!Number.isFinite(state.triggerPrice) || !Number.isFinite(state.baseLevel)) return 0;
-  let score = 0;
+async function fetchTopSymbols(limit = 150): Promise<string[]> {
+  try {
+    const client = Binance({
+      apiKey: CONFIG.API_KEY || undefined,
+      apiSecret: CONFIG.API_SECRET || undefined,
+      httpFutures: CONFIG.HTTP_FUTURES,
+      wsFutures: CONFIG.WS_FUTURES,
+    });
+    const stats = (await client.futuresDailyStats()) as any[];
+    const filtered = stats.filter((s: any) => {
+      const sym = String(s.symbol ?? '');
+      if (!sym.endsWith('USDT')) return false;
+      if (sym.includes('_')) return false;
+      if (sym.startsWith('BTCDOM')) return false;
+      const quote = Number(s.quoteVolume ?? s.volume ?? 0);
+      const baseVol = Number(s.volume ?? 0);
+      if (!Number.isFinite(quote) || quote < 100_000_000) return false;
+      if (!Number.isFinite(baseVol) || baseVol < 10_000_000) return false;
+      if (Number.isFinite(s.priceChangePercent) && Math.abs(Number(s.priceChangePercent)) > 250)
+        return false;
+      return true;
+    });
+    filtered.sort((a: any, b: any) => {
+      const av = Number(a.quoteVolume ?? a.volume ?? 0);
+      const bv = Number(b.quoteVolume ?? b.volume ?? 0);
+      return bv - av;
+    });
+    const top = filtered.slice(0, limit).map((s: any) => String(s.symbol));
+    if (top.length) return top;
+  } catch (err) {
+    console.warn('top_symbol_fetch_failed', err);
+  }
+  return DEFAULT_SYMBOLS.slice();
+}
 
-  const streakRatio =
-    analysis.params.streakMin > 0 ? Math.min(1, state.streak / analysis.params.streakMin) : 0;
-  score += streakRatio * 25;
+function parseSymbolList(raw?: string): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => s.length > 0);
+}
 
-  const volRatio =
-    analysis.params.volFactor > 0
-      ? Math.min(state.weakestVolRatio / analysis.params.volFactor, 1)
-      : 0;
-  score += volRatio * 20;
+function printSupporting(symbol: string, candidates: StrategyCandidate[], minScore: number, best: StrategyCandidate) {
+  const supporting = candidates
+    .filter((c) => c !== best && c.score >= minScore - 5)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2);
+  supporting.forEach((cand) => {
+    const formattedScore = (cand.score / 100).toFixed(4);
+    console.log(
+      `    ↳ ${symbol} ${cand.strategy} ${cand.side} score=${formattedScore} ready=${
+        cand.ready ? 'yes' : 'no'
+      } ${cand.detail}`,
+    );
+  });
+}
 
-  if (state.trendOk) score += 25;
-  if (state.breakoutOk) score += 10;
+function renderTable(rows: Array<{
+  rank: number;
+  symbol: string;
+  best: StrategyCandidate;
+  metrics: { pullbackDepthPct: number; bounceDistancePct: number };
+  extras: { lastClose: number; shortSma: number; longSma: number; trendStrengthPct: number };
+}>) {
+  const headers = [
+    'Rank',
+    'Symbol',
+    'Strategy',
+    'Side',
+    'Score',
+    'TrendStrengthPct',
+    'PullbackDepthPct',
+    'BounceDistancePct',
+    'Qualifies',
+    'LatestClose',
+    'ShortSma',
+    'LongSma',
+  ];
 
-  const dist = state.priceToTriggerPct;
-  if (Number.isFinite(dist)) {
-    const window = 0.003; // 0.3%
-    const closeness = Math.max(0, (window - Math.max(0, dist)) / window);
-    score += closeness * 20;
+  const data = rows.map((row) => {
+    const score = row.best.score / 100;
+    return [
+      String(row.rank),
+      row.symbol,
+      row.best.strategy,
+      row.best.side,
+      formatNumber(score, 4),
+      formatNumber(row.extras.trendStrengthPct, 2),
+      formatNumber(row.metrics.pullbackDepthPct, 2),
+      formatNumber(row.metrics.bounceDistancePct, 2),
+      row.best.ready ? 'true' : 'false',
+      formatNumber(row.extras.lastClose, 4),
+      formatNumber(row.extras.shortSma, 4),
+      formatNumber(row.extras.longSma, 4),
+    ];
+  });
+
+  const colWidths = headers.map((header, idx) =>
+    Math.max(
+      header.length,
+      ...data.map((row) => row[idx].length),
+    ),
+  );
+
+  const formatRow = (row: string[]) =>
+    '│ ' +
+    row
+      .map((value, idx) => value.padEnd(colWidths[idx], ' '))
+      .join(' │ ') +
+    ' │';
+
+  const headerLine =
+    '┌ ' +
+    headers
+      .map((header, idx) => header.padEnd(colWidths[idx], ' '))
+      .join(' ┬ ') +
+    ' ┐';
+  const separator =
+    '├ ' +
+    colWidths
+      .map((width) => '─'.repeat(width))
+      .join(' ┼ ') +
+    ' ┤';
+  const footer =
+    '└ ' +
+    colWidths
+      .map((width) => '─'.repeat(width))
+      .join(' ┴ ') +
+    ' ┘';
+
+  console.log(headerLine);
+  console.log(
+    '│ ' +
+      headers
+        .map((header, idx) => header.padEnd(colWidths[idx], ' '))
+        .join(' │ ') +
+      ' │',
+  );
+  console.log(separator);
+  data.forEach((row) => console.log(formatRow(row)));
+  console.log(footer);
+}
+
+function saveResults(results: SymbolScanResult[]) {
+  const dir = path.resolve(process.cwd(), 'data', 'scans');
+  fs.mkdirSync(dir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:]/g, '-');
+  const file = path.join(dir, `scan_${timestamp}.json`);
+  fs.writeFileSync(file, JSON.stringify(results, null, 2), 'utf8');
+  logInfo('Saved full scan results', { path: file });
+}
+
+const logPrefix = () => {
+  const d = new Date();
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `[${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
+};
+
+function logInfo(message: string, ctx?: Record<string, unknown>) {
+  if (ctx) console.log(`${logPrefix()} [INFO] ${message} ${JSON.stringify(ctx)}`);
+  else console.log(`${logPrefix()} [INFO] ${message}`);
+}
+
+function formatNumber(value: number, digits = 2) {
+  if (!Number.isFinite(value)) return 'n/a';
+  return value.toFixed(digits);
+}
+
+function deriveMetrics(res: SymbolScanResult) {
+  const { best, analyses } = res;
+  let pullback = 0;
+  let bounce = 0;
+
+  if (!best) return { pullbackDepthPct: 0, bounceDistancePct: 0 };
+
+  if (best.strategy === 'momentum' && analyses.momentum) {
+    const state = best.side === 'LONG' ? analyses.momentum.long : analyses.momentum.short;
+    pullback = Math.abs((state.priceVsLevelPct ?? 0) * 100);
+    bounce = Math.abs((state.priceToTriggerPct ?? 0) * 100);
+  } else if (best.strategy === 'break_retest' && analyses.breakRetest) {
+    const state = best.side === 'LONG' ? analyses.breakRetest.long : analyses.breakRetest.short;
+    if (state.breakoutLevel && state.last) {
+      const ref = best.side === 'LONG' ? state.last.low : state.last.high;
+      if (typeof ref === 'number' && Number.isFinite(ref)) {
+        const depth = Math.abs(state.breakoutLevel - (ref as number));
+        pullback = state.breakoutLevel !== 0 ? (depth / Math.abs(state.breakoutLevel)) * 100 : 0;
+      }
+    }
+    bounce = Math.abs((state.roomPct ?? 0) * 100);
+  } else if (best.strategy === 'snapback' && analyses.snap) {
+    const state = best.side === 'LONG' ? analyses.snap.long : analyses.snap.short;
+    pullback = Math.abs(state.extension * 100);
+    bounce = Math.abs(state.extension * 100);
   }
 
-  if (state.ready) score += 20;
-
-  return Math.min(100, score);
+  return {
+    pullbackDepthPct: pullback,
+    bounceDistancePct: bounce,
+  };
 }
 
 async function main() {
@@ -91,7 +260,7 @@ async function main() {
     .option('limit', {
       type: 'number',
       describe: 'How many top results to display',
-      default: 10,
+      default: 25,
     })
     .option('side', {
       type: 'string',
@@ -104,147 +273,117 @@ async function main() {
       describe: 'Minimum score threshold to display',
       default: 20,
     })
+    .option('save', {
+      type: 'boolean',
+      describe: 'Save full scan results to data/scans',
+      default: false,
+    })
     .help()
     .parse();
 
   const logger = new CliLogger();
-  const exchange = new BinanceExchange(logger);
-
-  const rawSymbols =
-    argv.symbols ??
-    process.env.SCANNER_SYMBOLS ??
-    DEFAULT_SYMBOLS.join(',');
-  const symbols = rawSymbols
-    .split(',')
-    .map((s) => s.trim().toUpperCase())
-    .filter((s) => s.length > 0);
-
-  const confirmTf = (CONFIG as any).MOM_TREND_CONFIRM_TF ?? '15m';
-  if (!['3m', '5m', '15m', '1h'].includes(confirmTf)) {
-    throw new Error(`Unsupported confirm timeframe ${confirmTf}`);
-  }
-
-  const results: Array<{
-    symbol: string;
-    analysis: MomentumAnalysis;
-    longScore: number;
-    shortScore: number;
-    best: DirectionScore;
-    alternate: DirectionScore;
-  }> = [];
-
-  logger.info('scanner_start', {
-    symbols: symbols.length,
-    timeframe: MomentumBreakout.timeframe,
-    confirmTf,
+  const client = Binance({
+    apiKey: CONFIG.API_KEY || undefined,
+    apiSecret: CONFIG.API_SECRET || undefined,
+    httpFutures: CONFIG.HTTP_FUTURES,
+    wsFutures: CONFIG.WS_FUTURES,
   });
 
-  for (const symbol of symbols) {
-    try {
-      const candles = await exchange.getCandles(symbol, MOMENTUM_TIMEFRAME, 320);
-      if (candles.length < 80) {
-        logger.warn('skip_symbol_insufficient_data', { symbol, candles: candles.length });
-        continue;
-      }
+  let symbols: string[] = [];
+  const cliSymbols = parseSymbolList(argv.symbols);
+  const envSymbols = parseSymbolList(process.env.SCANNER_SYMBOLS);
+  const configSymbols = CONFIG.SYMBOLS && CONFIG.SYMBOLS.length ? CONFIG.SYMBOLS : [];
 
-      const confirmCandles =
-        confirmTf === MOMENTUM_TIMEFRAME
-          ? candles
-          : await exchange.getCandles(symbol, confirmTf, 320);
+  if (cliSymbols.length) symbols = cliSymbols;
+  else if (envSymbols.length) symbols = envSymbols;
+  else symbols = await fetchTopSymbols(150);
 
-      const analysis = analyzeMomentumBreakout({
-        candles,
-        confirmCandles,
-        config: CONFIG,
-        confirmTf,
-      });
+  symbols = Array.from(new Set([...symbols, ...configSymbols])).slice(0, 150);
 
-      const longScore = directionScore(analysis, analysis.long);
-      const shortScore = directionScore(analysis, analysis.short);
+  const source = cliSymbols.length
+    ? 'cli'
+    : envSymbols.length
+      ? 'env'
+      : configSymbols.length
+        ? 'config'
+        : 'top200';
 
-      const best =
-        longScore >= shortScore
-          ? { side: 'LONG' as const, score: longScore, state: analysis.long }
-          : { side: 'SHORT' as const, score: shortScore, state: analysis.short };
-      const alternate =
-        best.side === 'LONG'
-          ? { side: 'SHORT' as const, score: shortScore, state: analysis.short }
-          : { side: 'LONG' as const, score: longScore, state: analysis.long };
-
-      results.push({ symbol, analysis, longScore, shortScore, best, alternate });
-    } catch (err: any) {
-      logger.warn('scan_error', { symbol, err: err?.message ?? String(err) });
-    }
+  try {
+    const server = await client.futuresTime();
+    const offset = Number(server) - Date.now();
+    logInfo('Synchronized clock with Binance', { offset });
+  } catch (err) {
+    logInfo('Failed to sync clock', { err: (err as any)?.message || String(err) });
   }
 
-  results.sort((a, b) => b.best.score - a.best.score);
+  if (!cliSymbols.length && !envSymbols.length && !configSymbols.length) {
+    logInfo('Fetching top futures symbols by volume.');
+  } else {
+    logInfo(`Using ${symbols.length} configured symbols (source=${source}).`);
+  }
 
-  const limit = Number.isFinite(argv.limit) ? Math.max(1, argv.limit!) : 10;
-  const showSide = (argv.side ?? 'BOTH') as 'LONG' | 'SHORT' | 'BOTH';
-  const filtered = results.filter((res) => {
-    if (res.best.score < argv.minscore!) return false;
-    if (showSide === 'BOTH') return true;
-    return res.best.side === showSide && res.best.score >= argv.minscore!;
+  logInfo('scanner_start', { symbols: symbols.length, source, timeframe: CONFIG.ENTRY_TIMEFRAME });
+
+  logInfo(`Evaluating strategies for ${symbols.length} symbols.`);
+
+  const candlesFetcher = async (symbol: string, interval: string, limit: number): Promise<Candle[]> => {
+    const raw = await client.futuresCandles({ symbol, interval: interval as any, limit });
+    return raw.map((c) => ({
+      openTime: c.openTime,
+      open: +c.open,
+      high: +c.high,
+      low: +c.low,
+      close: +c.close,
+      volume: +c.volume,
+      closeTime: c.closeTime,
+    }));
+  };
+
+  const ranked = await scanSymbols({
+    candlesFetcher,
+    symbols,
+    config: CONFIG,
+    sideFilter: (argv.side ?? 'BOTH') as 'LONG' | 'SHORT' | 'BOTH',
+    minScore: argv.minscore!,
+    limit: argv.limit!,
+    logger,
   });
 
-  if (filtered.length === 0) {
-    console.log('No symbols met the minimum score threshold.');
+  if (!ranked.length) {
+    logInfo('No symbols met the minimum score threshold.');
     return;
   }
 
-  console.log(
-    `Momentum breakout readiness — timeframe=${MomentumBreakout.timeframe} confirm=${confirmTf} — ${new Date().toISOString()}`,
-  );
-
-  filtered.slice(0, limit).forEach((res, idx) => {
-    const { best, alternate, analysis } = res;
-    const state = best.state;
-    const distPct = Number.isFinite(state.priceToTriggerPct)
-      ? (state.priceToTriggerPct * 100).toFixed(2)
-      : 'n/a';
-    const baseLevel = Number.isFinite(state.baseLevel) ? state.baseLevel.toFixed(4) : 'n/a';
-    const trigger = Number.isFinite(state.triggerPrice)
-      ? state.triggerPrice.toFixed(4)
-      : 'n/a';
-    const volx = Number.isFinite(state.weakestVolRatio)
-      ? state.weakestVolRatio.toFixed(2)
-      : 'n/a';
-    const adxNow = Number.isFinite(analysis.trendNow.adx)
-      ? analysis.trendNow.adx.toFixed(1)
-      : 'n/a';
-    const flags = [
-      state.streakOk ? 'streak✓' : `streak${state.streak}/${analysis.params.streakMin}`,
-      state.trendOk ? 'trend✓' : 'trend✗',
-      state.breakoutOk ? 'breakout✓' : `dist${distPct}%`,
-    ].join(' ');
-
-    console.log(
-      `${String(idx + 1).padStart(2, ' ')}. ${res.symbol.padEnd(9, ' ')} score=${best.score
-        .toFixed(1)
-        .padStart(5, ' ')} side=${best.side.padEnd(5, ' ')} price=${analysis.lastCandle.close
-        .toFixed(4)
-        .padEnd(10, ' ')} trigger=${trigger} level=${baseLevel} dist=${distPct}% volx=${volx} adx=${adxNow} ${flags}`,
-    );
-
-    if (alternate.score >= argv.minscore! && showSide === 'BOTH') {
-      const alt = alternate.state;
-      const altDist = Number.isFinite(alt.priceToTriggerPct)
-        ? (alt.priceToTriggerPct * 100).toFixed(2)
-        : 'n/a';
-      console.log(
-        `    ↳ alt ${alternate.side} score=${alternate.score.toFixed(1)} dist=${altDist}% streak=${alt.streak} trend=${alt.trendOk ? 'yes' : 'no'} ready=${alt.ready ? 'yes' : 'no'}`,
-      );
-    }
+  const rows = ranked.map((res, idx) => {
+    const metrics = deriveMetrics(res);
+    return {
+      rank: idx + 1,
+      symbol: res.symbol,
+      best: res.best!,
+      candidates: res.candidates,
+      metrics,
+      extras: res.extras,
+    };
   });
 
-  const readyNow = filtered.filter((res) => res.best.state.ready);
-  if (readyNow.length) {
-    console.log('\nSymbols currently signalling (ready=true):');
-    readyNow.forEach((res) => {
-      console.log(
-        ` - ${res.symbol} ${res.best.side} score=${res.best.score.toFixed(1)} price=${res.analysis.lastCandle.close.toFixed(4)}`,
-      );
-    });
+  const readyCount = rows.filter((row) => row.best.ready).length;
+  logInfo(`Found ${readyCount} qualifying candidates.`);
+
+  const topRows = rows.slice(0, Math.min(argv.limit!, rows.length));
+
+  console.log('\nTop candidates by score:');
+  renderTable(topRows);
+
+  const qualifying = topRows.filter((row) => row.best.ready);
+  if (qualifying.length) {
+    console.log(`\nQualifying candidates (max ${qualifying.length}):`);
+    renderTable(qualifying);
+  }
+
+  topRows.forEach((row) => printSupporting(row.symbol, row.candidates, argv.minscore!, row.best));
+
+  if (argv.save) {
+    saveResults(ranked);
   }
 }
 

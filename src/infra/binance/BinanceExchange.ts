@@ -1,9 +1,63 @@
 // src/infra/binance/BinanceExchange.ts
-import Binance, { FuturesOrder } from 'binance-api-node';
+import Binance from 'binance-api-node';
 import { Exchange, PositionInfo, SymbolFilters } from '../../core/ports/Exchange';
 import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config';
 import { Logger } from '../../core/ports/Logger';
+import { noteRateLimitFromError } from '../rate-limit';
+
+const DEFAULT_MIN_REQ_GAP_MS = Number(process.env.BINANCE_REQ_GAP_MS ?? 40);
+const EXCHANGE_INFO_TTL_MS = Number(process.env.BINANCE_EXCHANGEINFO_TTL_MS ?? 5 * 60_000);
+const LEVERAGE_BRACKET_TTL_MS = Number(process.env.BINANCE_BRACKET_TTL_MS ?? 2 * 60_000);
+
+type CandleCacheEntry = {
+  candles: Candle[];
+  ts: number;
+  interval: string;
+  ttl: number;
+};
+
+const CANDLE_INTERVAL_SETTINGS: Record<string, { minFetch: number; ttl: number }> = {
+  '1m': { minFetch: 240, ttl: 5_000 },
+  '3m': { minFetch: 240, ttl: 7_000 },
+  '5m': { minFetch: 320, ttl: 10_000 },
+  '15m': { minFetch: 180, ttl: 20_000 },
+  '30m': { minFetch: 160, ttl: 30_000 },
+  '1h': { minFetch: 160, ttl: 60_000 },
+  '2h': { minFetch: 140, ttl: 90_000 },
+  '4h': { minFetch: 120, ttl: 120_000 },
+  '6h': { minFetch: 100, ttl: 180_000 },
+  '8h': { minFetch: 90, ttl: 240_000 },
+  '12h': { minFetch: 72, ttl: 240_000 },
+  '1d': { minFetch: 5, ttl: 300_000 },
+  '3d': { minFetch: 5, ttl: 300_000 },
+  '1w': { minFetch: 5, ttl: 300_000 },
+  '1M': { minFetch: 5, ttl: 300_000 },
+};
+
+function resolveCandleSettings(interval: string, limit: number): { fetch: number; ttl: number } {
+  const preset = CANDLE_INTERVAL_SETTINGS[interval];
+  if (preset) {
+    return {
+      fetch: Math.max(limit, preset.minFetch),
+      ttl: preset.ttl,
+    };
+  }
+  if (interval.endsWith('m')) {
+    return { fetch: Math.max(limit, 240), ttl: 10_000 };
+  }
+  if (interval.endsWith('h')) {
+    return { fetch: Math.max(limit, 120), ttl: 120_000 };
+  }
+  if (interval.endsWith('d') || interval === '1w' || interval === '1M') {
+    return { fetch: Math.max(limit, 5), ttl: 300_000 };
+  }
+  return { fetch: limit, ttl: 10_000 };
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
 
 function isTrueish(v: unknown): boolean {
   return v === true || v === 'true' || v === 'TRUE' || v === 1 || v === '1';
@@ -17,8 +71,25 @@ export class BinanceExchange implements Exchange {
     wsFutures: CONFIG.WS_FUTURES,
   });
 
-  // cache simple del modo de posiciones (hedge/one-way)
   private hedgeCache?: { value: boolean; at: number };
+  private candleCache = new Map<string, CandleCacheEntry>();
+  private markCache = new Map<string, { price: number; ts: number }>();
+  private markPriceInflight?: Promise<void>;
+
+  private usdtCache?: { value: number; ts: number };
+  private filtersCache = new Map<
+    string,
+    {
+      filters: SymbolFilters;
+      ts: number;
+      leverage: number;
+    }
+  >();
+  private exchangeInfoCache?: { data: any; ts: number };
+  private leverageBracketCache = new Map<string, { data: any; ts: number }>();
+  private requestQueue: Promise<void> = Promise.resolve();
+  private nextRequestAt = 0;
+  private readonly minReqGapMs = Math.max(0, DEFAULT_MIN_REQ_GAP_MS);
 
   constructor(private log: Logger) {
     const isTestnet = process.env.IS_TESTNET === '1';
@@ -33,46 +104,39 @@ export class BinanceExchange implements Exchange {
         this.log.info('ping_ok');
       })
       .catch((err: any) => {
+        noteRateLimitFromError(err);
         this.log.error('binance_connect_error', { err: err?.message || String(err) });
       });
   }
 
-  // ---------- utilidades internas ----------
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const run = async () => {
+      const wait = Math.max(0, this.nextRequestAt - Date.now());
+      if (wait > 0) await sleep(wait);
+      try {
+        const result = await task();
+        this.nextRequestAt = Date.now() + this.minReqGapMs;
+        return result;
+      } catch (err) {
+        this.nextRequestAt = Date.now() + this.minReqGapMs;
+        throw err;
+      }
+    };
 
-  /** Devuelve true si la cuenta está en Hedge Mode, false si está en One-Way. Cachea 60s. */
-  private async isHedgeMode(): Promise<boolean> {
-    if (this.hedgeCache && Date.now() - this.hedgeCache.at < 60_000) {
-      return this.hedgeCache.value;
-    }
-    try {
-      // Nota: algunos tipos no están en @types → usar any
-      const pm: any = await (this.cli as any).futuresPositionMode();
-      const val = !!pm?.dualSidePosition; // true = hedge
-      this.hedgeCache = { value: val, at: Date.now() };
-      return val;
-    } catch {
-      // si no se puede leer, asumimos one-way para no romper
-      this.hedgeCache = { value: false, at: Date.now() };
-      return false;
-    }
+    const chained = this.requestQueue.then(run, run);
+    this.requestQueue = chained.then(
+      () => undefined,
+      () => undefined,
+    );
+    return chained;
   }
 
-  /** Detecta el mensaje de “position side mismatch” en diferentes variantes. */
-  private static posSideMismatch(e: any) {
-    const m = (e?.message || '').toLowerCase();
-    return m.includes('positionside') || m.includes('position side');
+  private cacheKey(symbol: string, interval: string) {
+    return `${symbol}|${interval}`;
   }
 
-  // ---------- implementación de Exchange ----------
-
-  async getServerTime() {
-    const t: any = await this.cli.futuresTime();
-    return Number((t && t.serverTime) ?? t);
-  }
-
-  async getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]> {
-    const raw = await this.cli.futuresCandles({ symbol, interval: interval as any, limit });
-    return raw.map((c) => ({
+  private fromRestCandle(c: any): Candle {
+    return {
       openTime: c.openTime,
       open: +c.open,
       high: +c.high,
@@ -80,99 +144,261 @@ export class BinanceExchange implements Exchange {
       close: +c.close,
       volume: +c.volume,
       closeTime: c.closeTime,
-    }));
+    };
+  }
+
+  private async fetchCandles(symbol: string, interval: string, limit: number) {
+    try {
+      const raw = await this.enqueue(() =>
+        this.cli.futuresCandles({ symbol, interval: interval as any, limit }),
+      );
+      return raw.map((c) => this.fromRestCandle(c));
+    } catch (err) {
+      const until = noteRateLimitFromError(err);
+      if (until) {
+        this.log.warn('rest_candles_rate_limited', { symbol, interval, limit, banUntil: until });
+      }
+      throw err;
+    }
+  }
+
+  private async getExchangeInfoSnapshot(): Promise<any> {
+    const now = Date.now();
+    if (this.exchangeInfoCache && now - this.exchangeInfoCache.ts < EXCHANGE_INFO_TTL_MS) {
+      return this.exchangeInfoCache.data;
+    }
+    try {
+      const data = await this.enqueue(() => this.cli.futuresExchangeInfo());
+      this.exchangeInfoCache = { data, ts: now };
+      return data;
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
+  }
+
+  private async getLeverageBrackets(symbol: string): Promise<any[]> {
+    const now = Date.now();
+    const cached = this.leverageBracketCache.get(symbol);
+    if (cached && now - cached.ts < LEVERAGE_BRACKET_TTL_MS) {
+      return cached.data;
+    }
+    try {
+      const data = await this.enqueue(() =>
+        this.cli.futuresLeverageBracket({
+          symbol,
+          recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 20_000),
+        }),
+      );
+      this.leverageBracketCache.set(symbol, { data, ts: now });
+      return data;
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
+  }
+
+  private async isHedgeMode(): Promise<boolean> {
+    if (this.hedgeCache && Date.now() - this.hedgeCache.at < 60_000) {
+      return this.hedgeCache.value;
+    }
+    try {
+      const pm: any = await this.enqueue(() => (this.cli as any).futuresPositionMode());
+      const val = !!pm?.dualSidePosition;
+      this.hedgeCache = { value: val, at: Date.now() };
+      return val;
+    } catch (err) {
+      noteRateLimitFromError(err);
+      this.hedgeCache = { value: false, at: Date.now() };
+      return false;
+    }
+  }
+
+  private static posSideMismatch(e: any) {
+    const m = (e?.message || '').toLowerCase();
+    return m.includes('positionside') || m.includes('position side');
+  }
+
+  // ---------- Exchange implementation ----------
+
+  async getServerTime() {
+    try {
+      const t: any = await this.enqueue(() => this.cli.futuresTime());
+      return Number((t && t.serverTime) ?? t);
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
+  }
+
+  async getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]> {
+    const key = this.cacheKey(symbol, interval);
+    const cached = this.candleCache.get(key);
+    const now = Date.now();
+
+    const { fetch, ttl } = resolveCandleSettings(interval, limit);
+
+    if (cached && now - cached.ts < ttl && cached.candles.length >= limit) {
+      return cached.candles.slice(-limit);
+    }
+
+    const candles = await this.fetchCandles(symbol, interval, fetch);
+    this.candleCache.set(key, { candles, ts: now, interval, ttl });
+    return candles.slice(-limit);
   }
 
   async getMarkPrice(symbol: string) {
-    const mk = await this.cli.futuresMarkPrice();
-    const it = mk.find((m) => m.symbol === symbol);
-    if (!it) throw new Error('markPrice missing');
-    return +it.markPrice;
+    const cached = this.markCache.get(symbol);
+    const now = Date.now();
+    if (cached && now - cached.ts < 2_000 && Number.isFinite(cached.price)) {
+      return cached.price;
+    }
+
+    try {
+      if (!this.markPriceInflight) {
+        this.markPriceInflight = this.enqueue(async () => {
+          const snapshot = await this.cli.futuresMarkPrice();
+          const ts = Date.now();
+          for (const item of snapshot) {
+            const priceVal = Number(item.markPrice);
+            if (Number.isFinite(priceVal)) {
+              this.markCache.set(item.symbol, { price: priceVal, ts });
+            }
+          }
+        }).finally(() => {
+          this.markPriceInflight = undefined;
+        });
+      }
+
+      await this.markPriceInflight;
+      const updated = this.markCache.get(symbol);
+      if (!updated) throw new Error('markPrice missing');
+      return updated.price;
+    } catch (err) {
+      noteRateLimitFromError(err);
+      if (cached) return cached.price;
+      throw err;
+    }
   }
 
   async getUSDTBalance() {
-    const b = await this.cli.futuresAccountBalance();
-    const usdt = b.find((x) => x.asset === 'USDT');
-    return +(usdt?.availableBalance ?? '0');
+    const now = Date.now();
+    if (this.usdtCache && now - this.usdtCache.ts < 5_000) {
+      return this.usdtCache.value;
+    }
+    try {
+      const b = await this.enqueue(() => this.cli.futuresAccountBalance());
+      const usdt = b.find((x) => x.asset === 'USDT');
+      const value = +(usdt?.availableBalance ?? '0');
+      this.usdtCache = { value, ts: now };
+      return value;
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   async setLeverage(symbol: string, leverage: number) {
-    await this.cli.futuresLeverage({ symbol, leverage });
+    try {
+      await this.enqueue(() => this.cli.futuresLeverage({ symbol, leverage }));
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   async getSymbolFilters(symbol: string, leverage: number): Promise<SymbolFilters> {
-    // --- risk bracket (cap nocional al leverage actual) ---
-    const info = await this.cli.futuresLeverageBracket({
-      symbol,
-      recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 20000),
-    });
-    const capItem = info.find((r) => r.symbol === symbol);
-    const capTier = capItem?.brackets?.find((b) => leverage <= Number(b.initialLeverage));
+    const now = Date.now();
+    const cached = this.filtersCache.get(symbol);
+    if (cached && now - cached.ts < 60_000 && cached.leverage === leverage) {
+      return cached.filters;
+    }
+    try {
+      const [bracketsResponse, exchangeInfo] = await Promise.all([
+        this.getLeverageBrackets(symbol),
+        this.getExchangeInfoSnapshot(),
+      ]);
+      const capItem = bracketsResponse.find((r: any) => r.symbol === symbol);
+      const capTier = capItem?.brackets?.find((b: any) => leverage <= Number(b.initialLeverage));
 
-    // --- exchange info para filtros ---
-    const ex = await this.cli.futuresExchangeInfo();
-    const s = ex.symbols.find((x) => x.symbol === symbol);
-    if (!s) throw new Error(`Símbolo no encontrado en exchangeInfo: ${symbol}`);
+      const s = exchangeInfo.symbols.find((x: any) => x.symbol === symbol);
+      if (!s) throw new Error(`Símbolo no encontrado en exchangeInfo: ${symbol}`);
 
-    type AnyFilter = { filterType: string } & Record<string, any>;
-    const isPriceFilter = (f: AnyFilter): f is AnyFilter & { tickSize: string } =>
-      f?.filterType === 'PRICE_FILTER' && typeof f.tickSize === 'string';
-    const isLotSizeFilter = (f: AnyFilter): f is AnyFilter & { stepSize: string } =>
-      (f?.filterType === 'MARKET_LOT_SIZE' || f?.filterType === 'LOT_SIZE') &&
-      typeof f.stepSize === 'string';
-    const isMinNotionalFilter = (f: AnyFilter): f is AnyFilter & { notional: string } =>
-      f?.filterType === 'MIN_NOTIONAL' && typeof f.notional === 'string';
+      type AnyFilter = { filterType: string } & Record<string, any>;
+      const isPriceFilter = (f: AnyFilter): f is AnyFilter & { tickSize: string } =>
+        f?.filterType === 'PRICE_FILTER' && typeof f.tickSize === 'string';
+      const isLotSizeFilter = (f: AnyFilter): f is AnyFilter & { stepSize: string } =>
+        (f?.filterType === 'MARKET_LOT_SIZE' || f?.filterType === 'LOT_SIZE') &&
+        typeof f.stepSize === 'string';
+      const isMinNotionalFilter = (f: AnyFilter): f is AnyFilter & { notional: string } =>
+        f?.filterType === 'MIN_NOTIONAL' && typeof f.notional === 'string';
 
-    const pf = (s.filters as AnyFilter[]).find(isPriceFilter);
-    const lot =
-      (s.filters as AnyFilter[]).find((f) => f.filterType === 'MARKET_LOT_SIZE') ??
-      (s.filters as AnyFilter[]).find((f) => f.filterType === 'LOT_SIZE');
-    const lotOk = lot && isLotSizeFilter(lot as AnyFilter) ? (lot as AnyFilter) : undefined;
-    const mn = (s.filters as AnyFilter[]).find(isMinNotionalFilter)?.notional ?? '5';
+      const pf = (s.filters as AnyFilter[]).find(isPriceFilter);
+      const lot =
+        (s.filters as AnyFilter[]).find((f) => f.filterType === 'MARKET_LOT_SIZE') ??
+        (s.filters as AnyFilter[]).find((f) => f.filterType === 'LOT_SIZE');
+      const lotOk = lot && isLotSizeFilter(lot as AnyFilter) ? (lot as AnyFilter) : undefined;
+      const mn = (s.filters as AnyFilter[]).find(isMinNotionalFilter)?.notional ?? '5';
 
-    const tickSizeStr = pf?.tickSize ?? '0.0001';
-    const stepSizeStr = lotOk?.stepSize ?? '0.1';
+      const tickSizeStr = pf?.tickSize ?? '0.0001';
+      const stepSizeStr = lotOk?.stepSize ?? '0.1';
 
-    const pricePrecision = tickSizeStr.includes('.') ? tickSizeStr.split('.')[1]!.length : 0;
-    const qtyPrecision = stepSizeStr.includes('.') ? stepSizeStr.split('.')[1]!.length : 0;
+      const pricePrecision = tickSizeStr.includes('.') ? tickSizeStr.split('.')[1]!.length : 0;
+      const qtyPrecision = stepSizeStr.includes('.') ? stepSizeStr.split('.')[1]!.length : 0;
 
-    return {
-      tickSize: Number(tickSizeStr),
-      stepSize: Number(stepSizeStr),
-      pricePrecision,
-      qtyPrecision,
-      minNotional: Number(mn),
-      notionalCap: capTier ? Number(capTier.notionalCap) : undefined,
-    };
+      const filters = {
+        tickSize: Number(tickSizeStr),
+        stepSize: Number(stepSizeStr),
+        pricePrecision,
+        qtyPrecision,
+        minNotional: Number(mn),
+        notionalCap: capTier ? Number(capTier.notionalCap) : undefined,
+      };
+      this.filtersCache.set(symbol, { filters, ts: now, leverage });
+      return filters;
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   async hasOpenPosition(symbol: string, side: 'LONG' | 'SHORT' | 'ANY') {
-    const info = await this.cli.futuresAccountInfo();
-    const ps = info.positions || [];
-    if (side === 'ANY') return ps.some((p) => p.symbol === symbol && Math.abs(+p.positionAmt) > 0);
-    return ps.some((p) => {
-      if (p.symbol !== symbol) return false;
-      const amt = +p.positionAmt;
-      if (p.positionSide === 'BOTH') return side === 'LONG' ? amt > 0 : amt < 0;
-      return p.positionSide === side && Math.abs(amt) > 0;
-    });
+    try {
+      const info = await this.enqueue(() => this.cli.futuresAccountInfo());
+      const ps = info.positions || [];
+      if (side === 'ANY') return ps.some((p) => p.symbol === symbol && Math.abs(+p.positionAmt) > 0);
+      return ps.some((p) => {
+        if (p.symbol !== symbol) return false;
+        const amt = +p.positionAmt;
+        if (p.positionSide === 'BOTH') return side === 'LONG' ? amt > 0 : amt < 0;
+        return p.positionSide === side && Math.abs(amt) > 0;
+      });
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   async readActivePosition(symbol: string, sideHint: Side): Promise<PositionInfo | null> {
-    const info = await this.cli.futuresAccountInfo();
-    const pos = info.positions.find((p) => {
-      if (p.symbol !== symbol) return false;
-      const amt = +p.positionAmt;
-      if (p.positionSide === 'BOTH') return sideHint === 'LONG' ? amt > 0 : amt < 0;
-      return p.positionSide === sideHint && Math.abs(amt) > 0;
-    });
-    if (!pos) return null;
-    return {
-      sideMode: (pos.positionSide as any) || 'BOTH',
-      qtyAbs: Math.abs(+pos.positionAmt),
-      entryPrice: +pos.entryPrice,
-      leverage: +(pos.leverage || CONFIG.LEVERAGE),
-    };
+    try {
+      const info = await this.enqueue(() => this.cli.futuresAccountInfo());
+      const pos = info.positions.find((p) => {
+        if (p.symbol !== symbol) return false;
+        const amt = +p.positionAmt;
+        if (p.positionSide === 'BOTH') return sideHint === 'LONG' ? amt > 0 : amt < 0;
+        return p.positionSide === sideHint && Math.abs(amt) > 0;
+      });
+      if (!pos) return null;
+      return {
+        sideMode: (pos.positionSide as any) || 'BOTH',
+        qtyAbs: Math.abs(+pos.positionAmt),
+        entryPrice: +pos.entryPrice,
+        leverage: +(pos.leverage || CONFIG.LEVERAGE),
+      };
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   async marketOpen(symbol: string, side: Side, quantity: number) {
@@ -189,7 +415,7 @@ export class BinanceExchange implements Exchange {
 
     const t0 = Date.now();
     try {
-      const res = await this.cli.futuresOrder(payload);
+      const res = await this.enqueue(() => this.cli.futuresOrder(payload));
       this.log.debug('api_market_open', {
         ms: Date.now() - t0,
         symbol,
@@ -198,10 +424,10 @@ export class BinanceExchange implements Exchange {
       });
       return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
     } catch (e: any) {
+      noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
-        // fallback si el modo real no coincide con nuestro cache
-        const res = await this.cli.futuresOrder(base); // sin positionSide
-        this.hedgeCache = undefined; // invalidar cache
+        const res = await this.enqueue(() => this.cli.futuresOrder(base));
+        this.hedgeCache = undefined;
         this.log.warn('api_market_open_fallback', { symbol, side, qty: quantity });
         return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
       }
@@ -223,7 +449,7 @@ export class BinanceExchange implements Exchange {
 
     const t0 = Date.now();
     try {
-      await this.cli.futuresOrder(payload);
+      await this.enqueue(() => this.cli.futuresOrder(payload));
       this.log.debug('api_stop_upsert', {
         ms: Date.now() - t0,
         symbol,
@@ -231,8 +457,9 @@ export class BinanceExchange implements Exchange {
         stopPrice,
       });
     } catch (e: any) {
+      noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
-        await this.cli.futuresOrder(base); // fallback sin positionSide
+        await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
         this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice });
         return;
@@ -255,7 +482,7 @@ export class BinanceExchange implements Exchange {
 
     const t0 = Date.now();
     try {
-      await this.cli.futuresOrder(payload);
+      await this.enqueue(() => this.cli.futuresOrder(payload));
       this.log.debug('api_tp_upsert', {
         ms: Date.now() - t0,
         symbol,
@@ -263,8 +490,9 @@ export class BinanceExchange implements Exchange {
         tp: triggerPrice,
       });
     } catch (e: any) {
+      noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
-        await this.cli.futuresOrder(base); // fallback sin positionSide
+        await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
         this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice });
         return;
@@ -289,23 +517,22 @@ export class BinanceExchange implements Exchange {
 
     try {
       if (sideMode === 'BOTH') {
-        // One-Way
-        await this.cli.futuresOrder(base);
+        await this.enqueue(() => this.cli.futuresOrder(base));
       } else {
-        // Hedge: necesita positionSide y (preferible) reduceOnly
-        await this.cli.futuresOrder({ ...base, positionSide: side, reduceOnly: 'true' as const });
+        await this.enqueue(() =>
+          this.cli.futuresOrder({ ...base, positionSide: side, reduceOnly: 'true' as const }),
+        );
       }
     } catch (e: any) {
+      noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
-        // Si falló por modo, intentamos sin positionSide
-        await this.cli.futuresOrder(base);
+        await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
         return;
       }
       const m = (e?.message || '').toLowerCase();
       if (m.includes('reduceonly') || m.includes('reduce only')) {
-        // algunas cuentas no requieren/aceptan reduceOnly → reintenta sin él
-        await this.cli.futuresOrder(base);
+        await this.enqueue(() => this.cli.futuresOrder(base));
         return;
       }
       throw e;
@@ -317,55 +544,67 @@ export class BinanceExchange implements Exchange {
     const stops = list.filter((o) => o.type === 'STOP_MARKET' || o.type === 'STOP');
     if (!stops.length) return null;
 
-    // Elegimos el stop “más cercano” al precio en sentido conservador:
-    // LONG: el más ALTO (sube el stop);  SHORT: el más BAJO (baja el stop)
     const pick =
       side === 'LONG'
-        ? stops.reduce((a, b) => (a.stopPrice > b.stopPrice ? a : b))
-        : stops.reduce((a, b) => (a.stopPrice < b.stopPrice ? a : b));
+        ? stops.reduce((a, b) => (Number(a.stopPrice) > Number(b.stopPrice) ? a : b))
+        : stops.reduce((a, b) => (Number(a.stopPrice) < Number(b.stopPrice) ? a : b));
 
     return { stopPrice: pick.stopPrice, orderId: pick.orderId };
   }
 
   async cancelCloseOrdersForSide(symbol: string, side: Side) {
-    const open = await this.cli.futuresOpenOrders({ symbol });
-    for (const o of open as any[]) {
-      if (
-        (o.type === 'STOP_MARKET' || o.type === 'TAKE_PROFIT_MARKET') &&
-        isTrueish(o.closePosition) &&
-        (!o.positionSide || o.positionSide === side)
-      ) {
-        await this.cli.futuresCancelOrder({ symbol, orderId: Number(o.orderId) });
+    try {
+      const open = await this.enqueue(() => this.cli.futuresOpenOrders({ symbol }));
+      for (const o of open as any[]) {
+        if (
+          (o.type === 'STOP_MARKET' || o.type === 'TAKE_PROFIT_MARKET') &&
+          isTrueish(o.closePosition) &&
+          (!o.positionSide || o.positionSide === side)
+        ) {
+          await this.enqueue(() =>
+            this.cli.futuresCancelOrder({ symbol, orderId: Number(o.orderId) }),
+          );
+        }
       }
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
     }
   }
 
   async cancelOrderById(symbol: string, orderId: string) {
-    await this.cli.futuresCancelOrder({ symbol, orderId: Number(orderId) });
+    try {
+      await this.enqueue(() =>
+        this.cli.futuresCancelOrder({ symbol, orderId: Number(orderId) }),
+      );
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   async readLiquidationPrice(symbol: string, side: Side) {
-    const risks: any[] = await this.cli.futuresPositionRisk();
-    const p = risks.find(
-      (r) =>
-        r.symbol === symbol &&
-        ((r.positionSide === 'BOTH' &&
-          (side === 'LONG' ? +r.positionAmt > 0 : +r.positionAmt < 0)) ||
-          (r.positionSide === side && Math.abs(+r.positionAmt) > 0)),
-    );
-    const liq = p ? Number(p.liquidationPrice) : NaN;
-    return Number.isFinite(liq) && liq > 0 ? liq : null;
+    try {
+      const risks: any[] = await this.enqueue(() => this.cli.futuresPositionRisk());
+      const p = risks.find(
+        (r) =>
+          r.symbol === symbol &&
+          ((r.positionSide === 'BOTH' &&
+            (side === 'LONG' ? +r.positionAmt > 0 : +r.positionAmt < 0)) ||
+            (r.positionSide === side && Math.abs(+r.positionAmt) > 0)),
+      );
+      const liq = p ? Number(p.liquidationPrice) : NaN;
+      return Number.isFinite(liq) && liq > 0 ? liq : null;
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   private orderSideForPosition(side: Side) {
     return side === 'LONG' ? 'SELL' : 'BUY';
   }
 
-  /** Lista órdenes de cierre (o candidatas) del lado dado.
-   *  - Acepta STOP_MARKET / STOP y TAKE_PROFIT_MARKET / TAKE_PROFIT
-   *  - No exige closePosition/reduceOnly para DETECTAR (los manuales a veces no lo traen)
-   *  - Respeta hedge/one-way: si positionSide existe, debe coincidir; si no existe, se acepta igual
-   */
   async listCloseOrdersForSide(
     symbol: string,
     side: Side,
@@ -376,52 +615,50 @@ export class BinanceExchange implements Exchange {
       stopPrice: number;
     }[]
   > {
-    const open = await this.cli.futuresOpenOrders({ symbol });
-    const wantSide = this.orderSideForPosition(side);
+    try {
+      const open = await this.enqueue(() => this.cli.futuresOpenOrders({ symbol }));
+      const wantSide = this.orderSideForPosition(side);
 
-    this.log.debug('raw_open_orders', {
-      count: (open as any[]).length,
-      sample: (open as any[]).map((o) => ({
-        id: o.orderId,
-        type: o.type,
-        side: o.side,
-        positionSide: o.positionSide,
-        closePosition: o.closePosition,
-        reduceOnly: o.reduceOnly,
-        stopPrice: o.stopPrice,
-        workingType: o.workingType,
-      })),
-    });
+      this.log.debug('raw_open_orders', {
+        count: (open as any[]).length,
+        sample: (open as any[]).map((o) => ({
+          id: o.orderId,
+          type: o.type,
+          side: o.side,
+          positionSide: o.positionSide,
+          closePosition: o.closePosition,
+          reduceOnly: o.reduceOnly,
+          stopPrice: o.stopPrice,
+          workingType: o.workingType,
+        })),
+      });
 
-    return (open as any[])
-      .filter((o) => {
-        const t: string = o.type;
-        const isType =
-          t === 'STOP_MARKET' || t === 'STOP' || t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
-        if (!isType) return false;
-
-        // Debe ser del lado de CIERRE
-        if (o.side !== wantSide) return false;
-
-        // Hedge: si trae positionSide, debe coincidir. Si no trae, lo aceptamos.
-        const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
-        if (!hedgeOk) return false;
-
-        return true;
-      })
-      .map((o) => ({
-        orderId: String(o.orderId),
-        type: o.type as any,
-        stopPrice: Number(o.stopPrice),
-      }));
+      return (open as any[])
+        .filter((o) => {
+          const t: string = o.type;
+          const isType =
+            t === 'STOP_MARKET' || t === 'STOP' || t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
+          if (!isType) return false;
+          if (o.side !== wantSide) return false;
+          const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
+          if (!hedgeOk) return false;
+          return true;
+        })
+        .map((o) => ({
+          orderId: String(o.orderId),
+          type: o.type as any,
+          stopPrice: Number(o.stopPrice),
+        }));
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   async openTpForSide(symbol: string, side: Side) {
     const list = await this.listCloseOrdersForSide(symbol, side);
     const tps = list.filter((o) => o.type === 'TAKE_PROFIT_MARKET' || o.type === 'TAKE_PROFIT');
     if (!tps.length) return null;
-
-    // Para TP nos da igual cuál, devolvemos el primero
     const pick = tps[0];
     return { stopPrice: pick.stopPrice, orderId: pick.orderId };
   }
@@ -429,8 +666,9 @@ export class BinanceExchange implements Exchange {
   async cancelOrdersByIds(symbol: string, orderIds: (string | number)[]) {
     for (const id of orderIds) {
       try {
-        await this.cli.futuresCancelOrder({ symbol, orderId: Number(id) });
+        await this.enqueue(() => this.cli.futuresCancelOrder({ symbol, orderId: Number(id) }));
       } catch (e) {
+        noteRateLimitFromError(e);
         this.log.warn('cancel_order_fail', { id, err: (e as any)?.message });
       }
     }
