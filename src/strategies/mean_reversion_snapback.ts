@@ -342,6 +342,13 @@ export const MeanReversionSnapback: Strategy = {
       return {
         action: 'ENTER_LONG',
         reason: `mrs_long ext=${(analysis.long.extension * 100).toFixed(2)}% rsi=${analysis.long.rsi.toFixed(1)}`,
+        diagnostics: {
+          strategy: MeanReversionSnapback.name,
+          selection: 'LONG',
+          analysis,
+          alreadyLong,
+          alreadyShort,
+        },
       };
     }
 
@@ -352,6 +359,13 @@ export const MeanReversionSnapback: Strategy = {
       return {
         action: 'ENTER_SHORT',
         reason: `mrs_short ext=${(analysis.short.extension * 100).toFixed(2)}% rsi=${analysis.short.rsi.toFixed(1)}`,
+        diagnostics: {
+          strategy: MeanReversionSnapback.name,
+          selection: 'SHORT',
+          analysis,
+          alreadyLong,
+          alreadyShort,
+        },
       };
     }
 

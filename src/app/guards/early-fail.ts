@@ -2,6 +2,7 @@ import { Exchange } from '../../core/ports/Exchange';
 import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
 import { CONFIG } from '../../infra/config';
+import { finalizeTrade } from '../trade-book-hooks';
 
 type Candle = {
   open: number;
@@ -65,6 +66,13 @@ export async function earlyFailGuard(symbol: string, ex: Exchange, st: StateStor
   if (!pos) return;
   await ex.closeSideMarketSafe(symbol, s.lastSide, pos.qtyAbs, pos.sideMode);
   await (ex as any).cancelCloseOrdersForSide?.(symbol, s.lastSide);
-  st.set({ mode: 'IDLE', lastExitReason: 'early_fail', lastExitAt: Date.now() });
+  const resetPatch = await finalizeTrade({
+    symbol,
+    exchange: ex,
+    state: st,
+    logger: log,
+    reason: 'early_fail',
+  });
+  st.set({ mode: 'IDLE', lastExitReason: 'early_fail', lastExitAt: Date.now(), ...resetPatch });
   log.info('Early_fail_close');
 }

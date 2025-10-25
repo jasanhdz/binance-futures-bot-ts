@@ -3,6 +3,7 @@ import { Exchange } from '../../core/ports/Exchange';
 import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
 import { CONFIG } from '../../infra/config';
+import { finalizeTrade } from '../trade-book-hooks';
 
 export async function checkTakeProfit(symbol: string, ex: Exchange, st: StateStore, log: Logger) {
   const s = st.get();
@@ -24,7 +25,21 @@ export async function checkTakeProfit(symbol: string, ex: Exchange, st: StateSto
   if (hit) {
     await ex.closeSideMarketSafe(symbol, s.lastSide, pos.qtyAbs, pos.sideMode);
     await (ex as any).cancelCloseOrdersForSide?.(symbol, s.lastSide);
-    st.set({ lastTPAt: Date.now(), lastExitReason: 'tp', mode: 'IDLE' });
+    const resetPatch = await finalizeTrade({
+      symbol,
+      exchange: ex,
+      state: st,
+      logger: log,
+      reason: 'take_profit',
+      exitPrice: mark,
+    });
+    st.set({
+      lastTPAt: Date.now(),
+      lastExitReason: 'tp',
+      lastExitAt: Date.now(),
+      mode: 'IDLE',
+      ...resetPatch,
+    });
     log.info('Closed_by_TP', { mark, target });
   }
 }

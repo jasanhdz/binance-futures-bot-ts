@@ -222,6 +222,7 @@ export const CONFIG = {
     BTCUSDT: 50,
   } as Record<string, number>,
   SL_TICKS_ABOVE_LIQ_DEFAULT: Number(process.env.SL_TICKS_ABOVE_LIQ_DEFAULT ?? 69),
+  STOP_LIQ_BUFFER_RATIO: Number(process.env.STOP_LIQ_BUFFER_RATIO ?? 0.08),
 
   // --- Guards de beneficio / seguridad ---
   PROFIT_LOCK_BE_AT_ROE: Number(process.env.PROFIT_LOCK_BE_AT_ROE ?? 0.2),

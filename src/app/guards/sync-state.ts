@@ -2,6 +2,7 @@
 import { Exchange } from '../../core/ports/Exchange';
 import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
+import { finalizeTrade } from '../trade-book-hooks';
 
 export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStore, log: Logger) {
   const s = st.get();
@@ -44,6 +45,14 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
   // 2) Si NO estamos IDLE pero ya NO hay posición → reset y limpiar órdenes
   const hasAny = await ex.hasOpenPosition(symbol, 'ANY');
   if (!hasAny) {
+    const exitReason = s.lastExitReason ?? 'exchange_exit';
+    const resetPatch = await finalizeTrade({
+      symbol,
+      exchange: ex,
+      state: st,
+      logger: log,
+      reason: exitReason,
+    });
     try {
       await (ex as any).cancelCloseOrdersForSide?.(symbol, 'LONG');
       await (ex as any).cancelCloseOrdersForSide?.(symbol, 'SHORT');
@@ -52,8 +61,9 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
     }
     st.set({
       mode: 'IDLE',
-      lastExitReason: s.lastExitReason ?? 'sync_reset',
+      lastExitReason: exitReason,
       lastExitAt: Date.now(),
+      ...resetPatch,
     });
     log.info('sync_reset_to_idle', { symbol });
   }

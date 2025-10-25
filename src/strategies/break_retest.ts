@@ -3,6 +3,8 @@ import { Strategy, StrategyContext } from './types';
 import { Candle } from '../core/types';
 import { last, volumeAvg } from '../core/utils/candles';
 import { computeLevels, getTrendSignals, TrendSignals } from './shared/context';
+import { computeFeatures } from '../core/utils/features';
+import { ema } from '../core/indicators/ema';
 
 type Direction = 'LONG' | 'SHORT';
 
@@ -17,6 +19,8 @@ export interface BreakRetestParams {
   minRoom: number;
   volFactor: number;
   volBasis: number;
+  slopeMin: number;
+  emaBandMin: number;
 }
 
 export interface BreakRetestState {
@@ -76,11 +80,27 @@ export function analyzeBreakRetest(opts: {
     minRoom: Number((config as any).BR_MIN_ROOM ?? 0.004),
     volFactor: Number((config as any).BR_VOL_FACTOR ?? 1.2),
     volBasis: Math.max(Number((config as any).BR_VOL_BASIS ?? config.VOL_AVG_LEN ?? 20), 10),
+    slopeMin: Number((config as any).BR_SLOPE_MIN ?? 0.0003),
+    emaBandMin: Number((config as any).BR_EMA_BAND_MIN ?? 0.001),
   };
 
   const prev = candles[candles.length - 2];
   const lastCandle = last(candles);
   const volAvg = volumeAvg(candles, params.volBasis);
+
+  const closes = candles.map((c) => c.close);
+  const emaFastArr = ema(closes, (config as any).EMA_MID ?? 25);
+  const emaUltraArr = ema(closes, (config as any).EMA_FAST ?? 7);
+  const emaFast = emaFastArr[emaFastArr.length - 1];
+  const emaUltra = emaUltraArr[emaUltraArr.length - 1];
+  const emaBandRatio =
+    Number.isFinite(emaUltra) && Number.isFinite(emaFast)
+      ? Math.abs((emaUltra as number) - (emaFast as number)) /
+        Math.max(Math.abs(emaFast as number), 1e-9)
+      : 0;
+
+  const features = computeFeatures(candles);
+  const emaSlope = Number.isFinite(features.ema_slope) ? features.ema_slope : 0;
 
   const { resistance, support } = computeLevels(
     candles,
@@ -122,6 +142,8 @@ export function analyzeBreakRetest(opts: {
     breakoutLong &&
     retestLong &&
     volumeLong &&
+    emaSlope >= params.slopeMin &&
+    emaBandRatio >= params.emaBandMin &&
     (Number.isFinite(roomLong.roomPct) ? roomLong.roomPct >= params.minRoom : true);
 
   const shortReady =
@@ -130,6 +152,8 @@ export function analyzeBreakRetest(opts: {
     breakoutShort &&
     retestShort &&
     volumeShort &&
+    emaSlope <= -params.slopeMin &&
+    emaBandRatio >= params.emaBandMin &&
     (Number.isFinite(roomShort.roomPct) ? roomShort.roomPct >= params.minRoom : true);
 
   return {
@@ -181,6 +205,12 @@ export const BreakRetest: Strategy = {
       return { action: 'IDLE', reason: 'br_few_candles' };
     }
 
+    const dailyPumpGuard = Number((config as any).BR_DAILY_PUMP_GUARD ?? 0.05);
+    const dailyDropGuard = Number((config as any).BR_DAILY_DROP_GUARD ?? 0.05);
+    const dailyCandles = await exchange.getCandles(symbol, '1d', 3);
+    const lastDaily = dailyCandles.length ? last(dailyCandles) : undefined;
+    const dailyChange = lastDaily && lastDaily.open > 0 ? lastDaily.close / lastDaily.open - 1 : NaN;
+
     const confirmTf = ((config as any).BR_CONFIRM_TF ?? '15m') as '3m' | '5m' | '15m' | '1h';
     const confirmCandles =
       confirmTf === config.ENTRY_TIMEFRAME
@@ -188,30 +218,61 @@ export const BreakRetest: Strategy = {
         : await exchange.getCandles(symbol, confirmTf, 240);
 
     const analysis = analyzeBreakRetest({ candles, confirmCandles, config });
+    
+    const allowLongDaily =
+      !Number.isFinite(dailyChange) || Number.isNaN(dailyChange)
+        ? true
+        : dailyChange > -dailyDropGuard;
+    const allowShortDaily =
+      !Number.isFinite(dailyChange) || Number.isNaN(dailyChange)
+        ? true
+        : dailyChange < dailyPumpGuard;
 
-    if ((config as any).ALLOW_LONGS && analysis.long.ready) {
+    if ((config as any).ALLOW_LONGS && analysis.long.ready && allowLongDaily) {
       const levelStr = Number.isFinite(analysis.long.breakoutLevel)
         ? analysis.long.breakoutLevel.toFixed(4)
         : 'n/a';
       return {
         action: 'ENTER_LONG',
-        reason: `br_long level=${levelStr} room=${Number.isFinite(analysis.long.roomPct) ? (analysis.long.roomPct * 100).toFixed(2) : 'n/a'}%`,
+        reason: `br_long level=${levelStr} room=${Number.isFinite(analysis.long.roomPct) ? (analysis.long.roomPct * 100).toFixed(2) : 'n/a'}% daily=${Number(
+          allowLongDaily,
+        )}`,
+        diagnostics: {
+          strategy: BreakRetest.name,
+          selection: 'LONG',
+          analysis,
+          confirmTf,
+          dailyChange,
+          allowDaily: allowLongDaily,
+        },
       };
     }
 
-    if ((config as any).ALLOW_SHORTS && analysis.short.ready) {
+    if ((config as any).ALLOW_SHORTS && analysis.short.ready && allowShortDaily) {
       const levelStr = Number.isFinite(analysis.short.breakoutLevel)
         ? analysis.short.breakoutLevel.toFixed(4)
         : 'n/a';
       return {
         action: 'ENTER_SHORT',
-        reason: `br_short level=${levelStr} room=${Number.isFinite(analysis.short.roomPct) ? (analysis.short.roomPct * 100).toFixed(2) : 'n/a'}%`,
+        reason: `br_short level=${levelStr} room=${Number.isFinite(analysis.short.roomPct) ? (analysis.short.roomPct * 100).toFixed(2) : 'n/a'}% daily=${Number(
+          allowShortDaily,
+        )}`,
+        diagnostics: {
+          strategy: BreakRetest.name,
+          selection: 'SHORT',
+          analysis,
+          confirmTf,
+          dailyChange,
+          allowDaily: allowShortDaily,
+        },
       };
     }
 
     return {
       action: 'IDLE',
-      reason: `br_filters long=${Number(analysis.long.ready)} short=${Number(analysis.short.ready)}`,
+      reason: `br_filters long=${Number(analysis.long.ready)} short=${Number(
+        analysis.short.ready,
+      )} daily_short=${Number(allowShortDaily)} daily_long=${Number(allowLongDaily)}`,
     };
   },
 };

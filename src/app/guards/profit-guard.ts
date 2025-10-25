@@ -3,6 +3,7 @@ import { Exchange } from '../../core/ports/Exchange';
 import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
 import { CONFIG } from '../../infra/config';
+import { finalizeTrade } from '../trade-book-hooks';
 
 export async function enforceProfitGuard(
   symbol: string,
@@ -37,7 +38,15 @@ export async function enforceProfitGuard(
   if (withinTimeStop && roe < TIME_STOP_MIN_ROE) {
     await ex.closeSideMarketSafe(symbol, s.lastSide, pos.qtyAbs, pos.sideMode);
     await (ex as any).cancelCloseOrdersForSide?.(symbol, s.lastSide);
-    st.set({ mode: 'IDLE', lastExitReason: 'time_stop', lastExitAt: Date.now() });
+    const resetPatch = await finalizeTrade({
+      symbol,
+      exchange: ex,
+      state: st,
+      logger: log,
+      reason: 'time_stop',
+      exitPrice: mark,
+    });
+    st.set({ mode: 'IDLE', lastExitReason: 'time_stop', lastExitAt: Date.now(), ...resetPatch });
     log.info('Time_stop_close', { roe, minRoe: TIME_STOP_MIN_ROE, minutes: TIME_STOP_MINUTES });
     return;
   }
@@ -56,7 +65,15 @@ export async function enforceProfitGuard(
   if (peak >= CONFIG.PROFIT_LOCK_BE_AT_ROE && roe < CONFIG.PROFIT_LOCK_BE_AT_ROE) {
     await ex.closeSideMarketSafe(symbol, s.lastSide, pos.qtyAbs, pos.sideMode);
     await (ex as any).cancelCloseOrdersForSide?.(symbol, s.lastSide);
-    st.set({ mode: 'IDLE', lastExitReason: 'be_protect', lastExitAt: Date.now() });
+    const resetPatch = await finalizeTrade({
+      symbol,
+      exchange: ex,
+      state: st,
+      logger: log,
+      reason: 'be_protect',
+      exitPrice: mark,
+    });
+    st.set({ mode: 'IDLE', lastExitReason: 'be_protect', lastExitAt: Date.now(), ...resetPatch });
     log.info('BE_protect_close', { roe, threshold: CONFIG.PROFIT_LOCK_BE_AT_ROE });
     return;
   }
@@ -77,7 +94,15 @@ export async function enforceProfitGuard(
     if (rel >= CONFIG.PROFIT_GIVEBACK_DROP_REL && drop >= CONFIG.PROFIT_GIVEBACK_DROP_MIN) {
       await ex.closeSideMarketSafe(symbol, s.lastSide, pos.qtyAbs, pos.sideMode);
       await (ex as any).cancelCloseOrdersForSide?.(symbol, s.lastSide);
-      st.set({ mode: 'IDLE', lastExitReason: 'giveback', lastExitAt: Date.now() });
+      const resetPatch = await finalizeTrade({
+        symbol,
+        exchange: ex,
+        state: st,
+        logger: log,
+        reason: 'giveback',
+        exitPrice: mark,
+      });
+      st.set({ mode: 'IDLE', lastExitReason: 'giveback', lastExitAt: Date.now(), ...resetPatch });
       log.info('Giveback_close', { newPeak, roe, drop, rel });
     }
   }

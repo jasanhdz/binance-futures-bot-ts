@@ -15,18 +15,22 @@
     "bt": "ts-node src/backtest/runner.ts",
     "bt:stack:file": "ts-node src/backtest/run_stack_classic.ts",
     "scan:mom": "ts-node src/tools/momentum_scanner.ts",
-    "scan:testnet": "DOTENV_CONFIG_PATH=.env.testnet ts-node src/tools/momentum_scanner.ts"
+    "scan:testnet": "DOTENV_CONFIG_PATH=.env.testnet ts-node src/tools/momentum_scanner.ts",
+    "export:trades": "ts-node src/tools/trade_book_to_csv.ts",
+    "logs:table": "ts-node src/tools/log_table.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",
     "binance-api-node": "^0.12.9",
     "dotenv": "^17.2.1",
     "node-cron": "^4.2.1",
-    "onnxruntime-node": "^1.22.0-rev"
+    "onnxruntime-node": "^1.22.0-rev",
+    "cli-table3": "^0.6.3"
   },
   "devDependencies": {
     "@types/node": "^24.3.1",
     "@types/yargs": "^17.0.33",
+    "@types/cli-table3": "^0.6.3",
     "nodemon": "^3.1.10",
     "prettier": "^3.6.2",
     "ts-node": "^10.9.2",

@@ -8,6 +8,9 @@ import { computeStopFromLiqTicks, roundToTick } from '../core/risk/stop';
 import { Strategy } from '../strategies/types';
 import { atr } from '../core/indicators/atr';
 import { recordSignal } from '../core/analytics/signal_recorder';
+import { recordTradeOpen } from '../core/analytics/trade_book';
+import { finalizeTrade, ensureOpenTradeBackfill } from './trade-book-hooks';
+import { extractFilters, splitStrategyReason } from './trade-book-utils';
 import type { CONFIG as RuntimeConfig } from '../infra/config';
 
 type BotConfig = typeof RuntimeConfig;
@@ -26,6 +29,8 @@ export class StrategyRunner {
   async tick(symbol: string) {
     const { exchange, logger, state, strategy, config } = this.deps;
     const capitalShare = Number((config as any).SYMBOL_SHARE ?? 1);
+
+    await ensureOpenTradeBackfill({ symbol, exchange, state, logger });
 
     const stBefore = state.get();
     const hasActivePosition = stBefore.mode !== 'IDLE';
@@ -64,17 +69,47 @@ export class StrategyRunner {
 
     logger.info('signal', { symbol, ...sig });
 
+    const { strategy: primaryStrategy, detail: reasonDetail } = splitStrategyReason(
+      sig.reason,
+      strategy.name,
+    );
+    const parsedReasonFilters = extractFilters(reasonDetail);
+    const diagnostics =
+      sig.diagnostics && typeof sig.diagnostics === 'object' ? sig.diagnostics : undefined;
+    const filtersAtEntry: Record<string, unknown> = {};
+    if (Object.keys(parsedReasonFilters).length) {
+      filtersAtEntry.reason = parsedReasonFilters;
+    }
+    if (diagnostics && Object.keys(diagnostics).length) {
+      filtersAtEntry.diagnostics = diagnostics;
+    }
+
     if (hasActivePosition) {
       const entry = stBefore.lastEntryPrice ?? activePosition?.entryPrice ?? 0;
       const mark = await markPrice().catch(() => undefined);
-      const pnlPct =
-        mark !== undefined && entry > 0
-          ? lastSide === 'LONG'
-            ? (mark - entry) / entry
-            : (entry - mark) / entry
+      const qtyAbs = activePosition?.qtyAbs ?? stBefore.lastEntryQty ?? 0;
+      const leverageUsed = activePosition?.leverage ?? stBefore.lastLeverage ?? config.LEVERAGE;
+      const direction = lastSide === 'LONG' ? 1 : -1;
+      const computedPnl =
+        mark !== undefined && entry > 0 && qtyAbs
+          ? (mark - entry) * qtyAbs * direction
           : undefined;
-      const roePct = pnlPct !== undefined ? Number((pnlPct * 100).toFixed(2)) : undefined;
-      const roeColor = roePct !== undefined ? (roePct >= 0 ? 'green' : 'red') : undefined;
+      const pnlUsdRaw =
+        activePosition?.unrealizedPnl !== undefined
+          ? activePosition.unrealizedPnl
+          : computedPnl;
+      const notional = mark !== undefined ? mark * qtyAbs : undefined;
+      const margin =
+        notional !== undefined && leverageUsed
+          ? notional / Math.max(1, leverageUsed)
+          : undefined;
+      const roiPct =
+        pnlUsdRaw !== undefined && margin
+          ? Number(((pnlUsdRaw / Math.max(1e-9, margin)) * 100).toFixed(2))
+          : undefined;
+      const pnlUsd =
+        pnlUsdRaw !== undefined ? Number(pnlUsdRaw.toFixed(6)) : undefined;
+      const roiColor = roiPct !== undefined ? (roiPct >= 0 ? 'green' : 'red') : undefined;
       logger.info('position_snapshot', {
         symbol,
         side: lastSide,
@@ -82,8 +117,9 @@ export class StrategyRunner {
         mark,
         leverage: activePosition?.leverage ?? stBefore.lastLeverage,
         qtyAbs: activePosition?.qtyAbs ?? stBefore.lastEntryQty,
-        roePct,
-        roeColor,
+        roiPct,
+        roiColor,
+        pnlUsd,
         openMs: stBefore.lastEntryAt ? Date.now() - stBefore.lastEntryAt : undefined,
       });
 
@@ -103,24 +139,61 @@ export class StrategyRunner {
       if (pos) {
         logger.info('exit_request', { symbol, side: stBefore.lastSide, qtyAbs: pos.qtyAbs });
         await exchange.closeSideMarketSafe(symbol, stBefore.lastSide!, pos.qtyAbs, pos.sideMode);
-        state.set({ mode: 'IDLE', lastExitReason: sig.reason ?? 'exit_by_strategy' });
         const mark = await markPrice().catch(() => undefined);
-        const wallet = await exchange.getUSDTBalance().catch(() => undefined);
+        let wallet: number | undefined;
+        try {
+          wallet = await exchange.getUSDTBalance();
+        } catch (err: any) {
+          logger.warn('wallet_read_fail', { symbol, err: err?.message || String(err) });
+        }
         const entry = stBefore.lastEntryPrice ?? pos.entryPrice;
-        const pnlPct =
-          mark !== undefined && entry > 0
-            ? stBefore.lastSide === 'LONG'
-              ? (mark - entry) / entry
-              : (entry - mark) / entry
+        const qtyAbs = activePosition?.qtyAbs ?? pos.qtyAbs ?? stBefore.lastEntryQty ?? 0;
+        const leverageUsed = activePosition?.leverage ?? pos.leverage ?? stBefore.lastLeverage ?? config.LEVERAGE;
+        const direction = stBefore.lastSide === 'LONG' ? 1 : -1;
+        const computedPnl =
+          mark !== undefined && entry > 0 && qtyAbs
+            ? (mark - entry) * qtyAbs * direction
             : undefined;
+        const pnlUsdRaw =
+          activePosition?.unrealizedPnl !== undefined
+            ? activePosition.unrealizedPnl
+            : computedPnl;
+        const notional = mark !== undefined ? mark * qtyAbs : undefined;
+        const margin =
+          notional !== undefined && leverageUsed
+            ? notional / Math.max(1, leverageUsed)
+            : undefined;
+        const roiPct =
+          pnlUsdRaw !== undefined && margin
+            ? Number(((pnlUsdRaw / Math.max(1e-9, margin)) * 100).toFixed(2))
+            : undefined;
+        const pnlUsd = pnlUsdRaw !== undefined ? Number(pnlUsdRaw.toFixed(6)) : undefined;
+        const roiColor = roiPct !== undefined ? (roiPct >= 0 ? 'green' : 'red') : undefined;
+        const exitReason = sig.reason ?? 'exit_by_strategy';
+        const resetPatch = await finalizeTrade({
+          symbol,
+          exchange,
+          state,
+          logger,
+          reason: exitReason,
+          exitPrice: mark,
+          walletAfter: wallet,
+        });
+        state.set({
+          mode: 'IDLE',
+          lastExitReason: exitReason,
+          lastExitAt: Date.now(),
+          ...resetPatch,
+        });
         logger.info('position_closed', {
           symbol,
           side: stBefore.lastSide,
           reason: sig.reason,
           wallet,
           closeMark: mark,
-          roePct: pnlPct !== undefined ? Number((pnlPct * 100).toFixed(2)) : undefined,
-          roeColor: pnlPct !== undefined ? (pnlPct >= 0 ? 'green' : 'red') : undefined,
+          roiPct,
+          roiColor,
+          pnlUsd,
         });
       }
       return;
@@ -133,6 +206,13 @@ export class StrategyRunner {
 
     // --- Entradas ---
     const side: Side = sig.action === 'ENTER_LONG' ? 'LONG' : 'SHORT';
+
+    try {
+      await exchange.ensureMarginType(symbol, 'ISOLATED');
+    } catch (err: any) {
+      logger.warn('margin_type_set_fail', { symbol, err: err?.message || String(err) });
+      return;
+    }
 
     await exchange.setLeverage(symbol, config.LEVERAGE);
     const price = await markPrice();
@@ -156,7 +236,7 @@ export class StrategyRunner {
 
     // ------ Sizing base por presupuesto ------
     const capitalPct = Number((config as any).CAPITAL_USAGE_PCT ?? config.CAPITAL_USAGE_PCT);
-    const sized = sizeByBudget({
+    const sizing = sizeByBudget({
       usdtBalance: usdt,
       reserve: config.MIN_WALLET_RESERVE_USDT,
       capitalPct,
@@ -166,11 +246,21 @@ export class StrategyRunner {
       filters,
     });
 
-    if ((sized as any).qty === 0) {
-      logger.warn('sizing_rejected', { symbol, ...sized });
+    if ('reason' in sizing) {
+      logger.warn('sizing_rejected', { symbol, ...sizing });
       return;
     }
-    let qty = (sized as any).qty as number;
+    let qty = sizing.qty;
+    const sizingDiagnostics = sizing.diagnostics;
+    let usedBalance =
+      sizingDiagnostics && typeof sizingDiagnostics['initMargin'] === 'number'
+        ? (sizingDiagnostics['initMargin'] as number)
+        : (qty * price) / Math.max(1, config.LEVERAGE);
+    let sizingFees =
+      sizingDiagnostics && typeof sizingDiagnostics['fees'] === 'number'
+        ? (sizingDiagnostics['fees'] as number)
+        : qty * price * config.FEE_BUFFER_PCT;
+    let commissionEstimate = sizingFees * 2;
 
     // ------ Overlay de riesgo: limita qty por un stop provisional (ATR Chandelier base) ------
     const maxRiskPct = Number((config as any).MAX_RISK_PCT ?? 0);
@@ -233,7 +323,20 @@ export class StrategyRunner {
       return; // aborta para evitar el error de Binance
     }
 
-    logger.info('sizing_ok', { symbol, side, qty, price, usdt, share: capitalShare });
+    usedBalance = (qty * price) / Math.max(1, config.LEVERAGE);
+    sizingFees = qty * price * config.FEE_BUFFER_PCT;
+    commissionEstimate = sizingFees * 2;
+
+    logger.info('sizing_ok', {
+      symbol,
+      side,
+      qty,
+      price,
+      usdt,
+      share: capitalShare,
+      usedBalance,
+      commissionEstimate,
+    });
 
     recordSignal({
       ts: Date.now(),
@@ -243,15 +346,36 @@ export class StrategyRunner {
       price,
       extras: {
         share: capitalShare,
-        strategy: sig.reason?.split(':')[0] ?? strategy.name,
+        strategy: primaryStrategy,
+        reason_detail: reasonDetail,
+        ...(diagnostics && Object.keys(diagnostics).length ? { diagnostics } : {}),
       },
     });
 
     // ------ Abrir mercado ------
     const tOpen = Date.now();
-    const { avgPrice: rawAvg } = await exchange.marketOpen(symbol, side, qty);
+    const { avgPrice: rawAvg, orderId } = await exchange.marketOpen(symbol, side, qty);
     const avgPrice = rawAvg || price;
     logger.info('market_opened', { symbol, side, qty, price, avgPrice, ms: Date.now() - tOpen });
+
+    let tradeId: string | undefined;
+    try {
+      tradeId = recordTradeOpen({
+        symbol,
+        strategy: primaryStrategy,
+        side,
+        entryTime: Date.now(),
+        entryPrice: avgPrice,
+        usedBalance,
+        walletBefore: usdt,
+        filters: filtersAtEntry,
+        qty,
+        orderId,
+        commissionEstimate,
+      });
+    } catch (err: any) {
+      logger.error('trade_book_open_fail', { symbol, err: err?.message || String(err) });
+    }
 
     // ------ Stop / TP de bracket inicial (igual que antes) ------
     const ticks = config.SL_TICKS_ABOVE_LIQ_MAP[symbol] ?? config.SL_TICKS_ABOVE_LIQ_DEFAULT;
@@ -264,6 +388,7 @@ export class StrategyRunner {
       tickSize: filters.tickSize,
       pricePrecision: filters.pricePrecision,
       ticksAboveLiq: ticks,
+      liqBufferRatio: config.STOP_LIQ_BUFFER_RATIO,
     });
     await exchange.placeStopClose(symbol, side, stop);
     logger.info('stop_upserted', { symbol, side, stop, liq, ticks });
@@ -290,6 +415,13 @@ export class StrategyRunner {
       pyramidUnits: 0,
       lastPyramidPrice: avgPrice,
       lastTrailStop: undefined,
+      lastTradeId: tradeId,
+      lastStrategyName: primaryStrategy,
+      lastEntryWallet: usdt,
+      lastEntryUsedBalance: usedBalance,
+      lastEntryFilters: filtersAtEntry,
+      lastCommissionEstimate: commissionEstimate,
+      lastOrderId: orderId,
     });
 
     logger.info('state_entered', {

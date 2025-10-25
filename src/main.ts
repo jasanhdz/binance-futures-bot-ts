@@ -6,19 +6,27 @@ import { FsLogger } from './infra/fs/FsLogger';
 import { CONFIG } from './infra/config';
 import { StrategyRunner } from './app/strategy-runner';
 import { startBot } from './app/bot';
-import { MomentumBreakout } from './strategies/momentum_breakout';
 import { BreakRetest } from './strategies/break_retest';
 import { MeanReversionSnapback } from './strategies/mean_reversion_snapback';
 import { composeStrategies } from './strategies/composite';
 import { TrendFollow } from './strategies/trend_follow';
+import { RangeBreakoutContinuation } from './strategies/range_breakout_continuation';
+import { LiquiditySweepReversal } from './strategies/liquidity_sweep_reversal';
+import { VolumeProfilePullback } from './strategies/volume_profile_pullback';
+import { FundingBasisMeanReversion } from './strategies/funding_basis_mean_reversion';
+import { VolatilityTrendRide } from './strategies/volatility_trend_ride';
 
 async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
   const strategy = composeStrategies([
     { name: TrendFollow.name, strategy: TrendFollow },
-    { name: MomentumBreakout.name, strategy: MomentumBreakout },
+    { name: VolatilityTrendRide.name, strategy: VolatilityTrendRide },
+    { name: RangeBreakoutContinuation.name, strategy: RangeBreakoutContinuation },
     { name: BreakRetest.name, strategy: BreakRetest },
+    { name: VolumeProfilePullback.name, strategy: VolumeProfilePullback },
+    { name: LiquiditySweepReversal.name, strategy: LiquiditySweepReversal },
+    { name: FundingBasisMeanReversion.name, strategy: FundingBasisMeanReversion },
     { name: MeanReversionSnapback.name, strategy: MeanReversionSnapback },
   ]);
 

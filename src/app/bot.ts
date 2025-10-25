@@ -57,8 +57,8 @@ export function startBot(deps: {
       await bracketsGuard(symbol, exchange, state, logger);
 
       await checkTakeProfit(symbol, exchange, state, logger);
-      await enforceProfitGuard(symbol, exchange, state, logger);
-      await pyramidGuard(symbol, exchange, state, logger);
+      // await enforceProfitGuard(symbol, exchange, state, logger);
+      // await pyramidGuard(symbol, exchange, state, logger);
 
       await runner.tick(symbol);
     } catch (e: any) {

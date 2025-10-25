@@ -11,11 +11,35 @@ export function computeStopFromLiqTicks(params: {
   tickSize: number;
   pricePrecision: number;
   ticksAboveLiq: number;
+  liqBufferRatio?: number;
 }) {
-  const { side, liqPrice, currentPrice, entryPrice, tickSize, pricePrecision, ticksAboveLiq } =
-    params;
-  let raw =
-    side === 'LONG' ? liqPrice + ticksAboveLiq * tickSize : liqPrice - ticksAboveLiq * tickSize;
+  const {
+    side,
+    liqPrice,
+    currentPrice,
+    entryPrice,
+    tickSize,
+    pricePrecision,
+    ticksAboveLiq,
+    liqBufferRatio,
+  } = params;
+
+  const gap = Math.abs(entryPrice - liqPrice);
+  const usableRatio =
+    typeof liqBufferRatio === 'number' && Number.isFinite(liqBufferRatio) && liqBufferRatio > 0
+      ? liqBufferRatio
+      : undefined;
+
+  let raw: number;
+  if (usableRatio !== undefined && gap > tickSize) {
+    const maxOffset = Math.max(tickSize, gap - tickSize);
+    const desiredOffset = Math.max(tickSize, gap * Math.min(usableRatio, 0.95));
+    const offset = Math.min(desiredOffset, maxOffset);
+    raw = side === 'LONG' ? liqPrice + offset : liqPrice - offset;
+  } else {
+    raw = side === 'LONG' ? liqPrice + ticksAboveLiq * tickSize : liqPrice - ticksAboveLiq * tickSize;
+  }
+
   if (side === 'LONG') {
     raw = Math.min(raw, currentPrice - tickSize);
     raw = Math.max(raw, liqPrice + tickSize * 0.5);

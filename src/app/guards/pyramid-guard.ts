@@ -181,8 +181,9 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
 
   // 2) Piramidación: añade si el precio avanzó >= stepATR*ATR desde el último add/base
   const basePrice = s.lastPyramidPrice ?? s.lastEntryPrice;
-  const move = Math.abs(mark - basePrice);
   const needMove = stepATR * a;
+  const directionalMove =
+    s.lastSide === 'LONG' ? mark - basePrice : basePrice - mark;
 
   const pos = await ex.readActivePosition(symbol, s.lastSide);
   if (!pos) return;
@@ -194,7 +195,13 @@ export async function pyramidGuard(symbol: string, ex: Exchange, st: StateStore,
   const lastErrAgo = lastAddErrorAt[k] ? Date.now() - lastAddErrorAt[k] : Infinity;
   const cooldownOk = lastErrAgo > ADD_ERR_COOLDOWN_MS;
 
-  const canAdd = units < maxUnits && move >= needMove && cooldownOk;
+  const inProfit = s.lastSide === 'LONG' ? mark >= s.lastEntryPrice : mark <= s.lastEntryPrice;
+  const canAdd =
+    units < maxUnits &&
+    directionalMove >= needMove &&
+    cooldownOk &&
+    directionalMove > 0 &&
+    inProfit;
 
   if (canAdd && s.lastEntryQty) {
     const rawWanted = Math.max(0, s.lastEntryQty * unitPct);

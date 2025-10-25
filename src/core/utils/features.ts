@@ -1,7 +1,7 @@
 import { Candle } from '../types';
 import { ema } from '../indicators/ema';
 
-function rsiSMA(closes: number[], period = 14): number {
+export function rsiSMA(closes: number[], period = 14): number {
   if (closes.length < period + 1) return 50; // misma convención de Py cuando faltan datos
   let gain = 0,
     loss = 0;

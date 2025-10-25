@@ -9,6 +9,8 @@ import { CONFIG } from '../infra/config';
 import { Logger } from '../core/ports/Logger';
 import { scanSymbols, StrategyCandidate, SymbolScanResult } from '../scanner/analyzer';
 import { Candle } from '../core/types';
+import { FundingSnapshot, BasisSnapshot } from '../core/ports/Exchange';
+import { getTrendSignals } from '../strategies/shared/context';
 
 class CliLogger implements Logger {
   debug(msg: string, ctx?: any): void {
@@ -225,10 +227,11 @@ function deriveMetrics(res: SymbolScanResult) {
 
   if (!best) return { pullbackDepthPct: 0, bounceDistancePct: 0 };
 
-  if (best.strategy === 'momentum' && analyses.momentum) {
-    const state = best.side === 'LONG' ? analyses.momentum.long : analyses.momentum.short;
-    pullback = Math.abs((state.priceVsLevelPct ?? 0) * 100);
-    bounce = Math.abs((state.priceToTriggerPct ?? 0) * 100);
+  if (best.strategy === 'range_breakout' && analyses.rangeBreakout) {
+    const state =
+      best.side === 'LONG' ? analyses.rangeBreakout.long : analyses.rangeBreakout.short;
+    pullback = Math.abs((state.rangeWidthPct ?? 0) * 100);
+    bounce = Math.abs((state.atrPct ?? 0) * 100);
   } else if (best.strategy === 'break_retest' && analyses.breakRetest) {
     const state = best.side === 'LONG' ? analyses.breakRetest.long : analyses.breakRetest.short;
     if (state.breakoutLevel && state.last) {
@@ -239,16 +242,50 @@ function deriveMetrics(res: SymbolScanResult) {
       }
     }
     bounce = Math.abs((state.roomPct ?? 0) * 100);
+  } else if (best.strategy === 'liquidity_sweep' && analyses.liquiditySweep) {
+    const state =
+      best.side === 'LONG' ? analyses.liquiditySweep.long : analyses.liquiditySweep.short;
+    pullback = Math.abs((state.levelDistance ?? 0) * 100);
+    bounce = Math.abs((state.wickRatio ?? 0) * 100);
   } else if (best.strategy === 'snapback' && analyses.snap) {
     const state = best.side === 'LONG' ? analyses.snap.long : analyses.snap.short;
     pullback = Math.abs(state.extension * 100);
     bounce = Math.abs(state.extension * 100);
+  } else if (best.strategy === 'volume_profile' && analyses.volumeProfile) {
+    const state =
+      best.side === 'LONG' ? analyses.volumeProfile.long : analyses.volumeProfile.short;
+    pullback = Math.abs((state.distancePct ?? 0) * 100);
+    const vah = analyses.volumeProfile.valueAreaHigh;
+    const val = analyses.volumeProfile.valueAreaLow;
+    if (Number.isFinite(vah) && Number.isFinite(val) && vah !== val) {
+      const span = Math.abs(vah - val);
+      const poc = Number.isFinite(analyses.volumeProfile.poc) ? Math.abs(analyses.volumeProfile.poc) : 1;
+      bounce = (span / Math.max(poc, 1e-6)) * 100;
+    }
+  } else if (best.strategy === 'trend_ride' && analyses.trendRide) {
+    const state = best.side === 'LONG' ? analyses.trendRide.long : analyses.trendRide.short;
+    const span = state.keltnerUpper - state.keltnerLower;
+    const denom = Number.isFinite(state.emaSlow) ? Math.abs(state.emaSlow) : 1;
+    pullback = Math.abs((span / Math.max(denom, 1e-6)) * 100);
+    bounce = Math.abs(state.slope * 1000);
+  } else if (best.strategy === 'funding_basis' && analyses.fundingBasis) {
+    const state =
+      best.side === 'LONG' ? analyses.fundingBasis.long : analyses.fundingBasis.short;
+    pullback = Math.abs(state.fundingRate * 100);
+    bounce = Math.abs(state.basisPct * 100);
   }
 
   return {
     pullbackDepthPct: pullback,
     bounceDistancePct: bounce,
   };
+}
+
+function computeTrendStrengthPct(signals: ReturnType<typeof getTrendSignals>): number {
+  const fast = signals.emaFast;
+  const slow = signals.emaSlow;
+  if (!Number.isFinite(fast) || !Number.isFinite(slow) || slow === 0) return 0;
+  return ((fast - slow) / Math.abs(slow)) * 100;
 }
 
 async function main() {
@@ -339,8 +376,32 @@ async function main() {
     }));
   };
 
+  const fundingFetcher = async (symbol: string): Promise<FundingSnapshot> => {
+    const data = await client.futuresFundingRate({ symbol, limit: 1 });
+    const entry = Array.isArray(data) && data.length ? data[0] : undefined;
+    const rate = entry && entry.fundingRate !== undefined ? Number(entry.fundingRate) : NaN;
+    const nextFundingTime = entry && entry.fundingTime !== undefined ? Number(entry.fundingTime) : undefined;
+    return { rate, nextFundingTime };
+  };
+
+  const basisFetcher = async (symbol: string): Promise<BasisSnapshot> => {
+    const markData = await client.futuresMarkPrice();
+    const entry = Array.isArray(markData)
+      ? (markData.find((r: any) => r.symbol === symbol) as any)
+      : (markData as any);
+    const markPrice = entry && entry.markPrice !== undefined ? Number(entry.markPrice) : NaN;
+    const indexPrice = entry && entry.indexPrice !== undefined ? Number(entry.indexPrice) : NaN;
+    const basisPct =
+      Number.isFinite(markPrice) && Number.isFinite(indexPrice) && indexPrice !== 0
+        ? (markPrice - indexPrice) / Math.abs(indexPrice)
+        : NaN;
+    return { markPrice, indexPrice, basisPct };
+  };
+
   const ranked = await scanSymbols({
     candlesFetcher,
+    fundingFetcher,
+    basisFetcher,
     symbols,
     config: CONFIG,
     sideFilter: (argv.side ?? 'BOTH') as 'LONG' | 'SHORT' | 'BOTH',

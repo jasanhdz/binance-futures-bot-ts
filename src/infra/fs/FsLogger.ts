@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { Logger } from '../../core/ports/Logger';
+import Table from 'cli-table3';
 
 const RESET = '\x1b[0m';
 const RED = '\x1b[31m';
@@ -115,6 +116,29 @@ const color = {
   bold: code(1),
 };
 
+const usdFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const formatUsd = (value: unknown) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  const formatted = usdFormatter.format(value);
+  if (value > 0) return color.ok(formatted);
+  if (value < 0) return color.error(formatted);
+  return color.gray(formatted);
+};
+
+const formatRoiPct = (value: unknown) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  const formatted = `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+  if (value > 0) return color.ok(formatted);
+  if (value < 0) return color.error(formatted);
+  return color.gray(formatted);
+};
+
 // ===== Plantillas “bonitas” por msg =====
 function prettyLine(level: Level, msg: string, ctx?: any) {
   const t = new Date().toLocaleTimeString();
@@ -181,6 +205,50 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
     case 'profit_guard_status': {
       // Línea resumida con ROE actual y pico
       return `${color.gray(t)} 🛡️ ROE ${p(ctx?.roe ?? 0)} (peak ${p(ctx?.peak ?? 0)})`;
+    }
+
+    case 'position_snapshot': {
+      const table = new Table({
+        head: [
+          color.gray('Time'),
+          color.gray('Symbol'),
+          color.gray('Side'),
+          color.gray('Entry'),
+          color.gray('Mark'),
+          color.gray('ROI %'),
+          color.gray('PnL (USDT)'),
+          color.gray('Qty'),
+          color.gray('Lev'),
+          color.gray('Open (s)'),
+        ],
+      });
+
+      const fmt = (value: unknown, digits = 6) =>
+        typeof value === 'number' && Number.isFinite(value)
+          ? value.toFixed(digits)
+          : value !== undefined
+            ? String(value)
+            : '—';
+
+      const openSecs =
+        typeof ctx?.openMs === 'number' && Number.isFinite(ctx.openMs)
+          ? (ctx.openMs / 1000).toFixed(0)
+          : '—';
+
+      table.push([
+        color.gray(t),
+        color.info(String(ctx?.symbol ?? '—')),
+        String(ctx?.side ?? '—'),
+        fmt(ctx?.entry),
+        fmt(ctx?.mark),
+        formatRoiPct(ctx?.roiPct),
+        formatUsd(ctx?.pnlUsd),
+        fmt(ctx?.qtyAbs, 4),
+        fmt(ctx?.leverage, 0),
+        openSecs,
+      ]);
+
+      return table.toString();
     }
 
     case 'BE_protect_close':

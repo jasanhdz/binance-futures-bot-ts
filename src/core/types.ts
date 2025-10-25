@@ -33,13 +33,26 @@ export type BotState = {
   lastPyramidPrice?: number; // precio de referencia del último add
   lastTrailStop?: number;
   bracketsAttached?: boolean;
+
+  lastTradeId?: string;
+  lastStrategyName?: string;
+  lastEntryWallet?: number;
+  lastEntryUsedBalance?: number;
+  lastEntryFilters?: Record<string, unknown>;
+  lastCommissionEstimate?: number;
+  lastOrderId?: string;
+};
+
+type SignalCommon = {
+  reason?: string;
+  diagnostics?: Record<string, unknown>;
 };
 
 export type Signal =
-  | { action: 'ENTER_LONG'; reason?: string }
-  | { action: 'ENTER_SHORT'; reason?: string }
-  | { action: 'EXIT'; reason?: string }
-  | { action: 'IDLE'; reason?: string };
+  | ({ action: 'ENTER_LONG' } & SignalCommon)
+  | ({ action: 'ENTER_SHORT' } & SignalCommon)
+  | ({ action: 'EXIT' } & SignalCommon)
+  | ({ action: 'IDLE' } & SignalCommon);
 
 // src/core/types.ts
 export type Trade = {

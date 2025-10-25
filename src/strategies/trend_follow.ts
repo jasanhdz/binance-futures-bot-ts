@@ -90,6 +90,9 @@ export interface TrendFollowParams {
   dailyPumpGuard: number;
   momentumLookback: number;
   momentumBreak: number;
+  momentumSlopeMin: number;
+  momentumEmaBandMin: number;
+  shortRsiFloor: number;
 }
 
 export interface TrendFollowState {
@@ -105,6 +108,7 @@ export interface TrendFollowState {
   momentumOk: boolean;
   dailyOk: boolean;
   reversalOk: boolean;
+  slopeOk: boolean;
   ready: boolean;
   triggerPrice: number;
   stopLine: number;
@@ -146,6 +150,7 @@ function buildState(
     momentumOk: boolean;
     dailyOk: boolean;
     reversalOk: boolean;
+    slopeOk: boolean;
     params: TrendFollowParams;
   },
 ): TrendFollowState {
@@ -167,6 +172,7 @@ function buildState(
     momentumOk,
     dailyOk,
     reversalOk,
+    slopeOk,
     params,
   } = opts;
   const ready =
@@ -180,6 +186,7 @@ function buildState(
     momentumOk &&
     dailyOk &&
     reversalOk &&
+    slopeOk &&
     Number.isFinite(adx) &&
     adx >= params.adxMin;
   return {
@@ -195,6 +202,7 @@ function buildState(
     momentumOk,
     dailyOk,
     reversalOk,
+    slopeOk,
     ready,
     triggerPrice,
     stopLine,
@@ -241,7 +249,10 @@ export function analyzeTrendFollow(opts: {
     dailyDropGuard: Number((config as any).TF_DAILY_DROP_GUARD ?? 0.08),
     dailyPumpGuard: Number((config as any).TF_DAILY_PUMP_GUARD ?? 0.08),
     momentumLookback: Number((config as any).TF_MOMENTUM_LOOKBACK ?? 6),
-    momentumBreak: Number((config as any).TF_MOMENTUM_BREAK ?? 0.002),
+    momentumBreak: Number((config as any).TF_MOMENTUM_BREAK ?? 0.006),
+    momentumSlopeMin: Number((config as any).TF_MOMENTUM_SLOPE_MIN ?? 0.0005),
+    momentumEmaBandMin: Number((config as any).TF_MOMENTUM_EMA_BAND_MIN ?? 0.0015),
+    shortRsiFloor: Number((config as any).TF_SHORT_RSI_FLOOR ?? 55),
   };
 
   const lastCandle = last(candles);
@@ -257,6 +268,10 @@ export function analyzeTrendFollow(opts: {
   const emaSlowArr = ema(closes, config.EMA_SLOW ?? 99);
   const emaFast = emaFastArr[emaFastArr.length - 1];
   const emaSlow = emaSlowArr[emaSlowArr.length - 1];
+  const emaBandRatio =
+    Number.isFinite(emaUltraFast) && Number.isFinite(emaFast)
+      ? Math.abs((emaUltraFast as number) - emaFast) / Math.max(Math.abs(emaFast), 1e-9)
+      : 0;
 
   const stEntry = supertrend(candles, params.supertrendPeriod, params.supertrendMult);
   const stConfirm1 = supertrend(confirmCandles1, params.supertrendPeriod, params.supertrendMult);
@@ -275,9 +290,13 @@ export function analyzeTrendFollow(opts: {
   const absExtension = Math.abs(extensionPct);
   const features = computeFeatures(candles);
   const rsi = features.rsi;
+  const emaSlope = Number.isFinite(features.ema_slope) ? features.ema_slope : 0;
 
   const confirmLong = stConfirm1.trend === 'UP' && stConfirm2.trend === 'UP';
   const confirmShort = stConfirm1.trend === 'DOWN' && stConfirm2.trend === 'DOWN';
+
+  const slopeOkLong = emaSlope >= params.momentumSlopeMin;
+  const slopeOkShort = emaSlope <= -params.momentumSlopeMin;
 
   const breakoutLong = Number.isFinite(atrValue)
     ? lastCandle.close > emaFast + params.breakoutAtrMult * atrValue
@@ -325,10 +344,14 @@ export function analyzeTrendFollow(opts: {
   const shortMomentumOk =
     (!prevCandle || lastCandle.close <= prevCandle.close) &&
     (!Number.isFinite(emaUltraFast) || lastCandle.close <= emaUltraFast) &&
+    emaBandRatio >= params.momentumEmaBandMin &&
+    slopeOkShort &&
     newShortBreak;
   const longMomentumOk =
     (!prevCandle || lastCandle.close >= prevCandle.close) &&
     (!Number.isFinite(emaUltraFast) || lastCandle.close >= emaUltraFast) &&
+    emaBandRatio >= params.momentumEmaBandMin &&
+    slopeOkLong &&
     newLongBreak;
 
   const dailyCandle = dailyCandles.length ? last(dailyCandles) : undefined;
@@ -337,10 +360,11 @@ export function analyzeTrendFollow(opts: {
   if (dailyCandle && dailyCandle.open > 0) {
     const change = dailyCandle.close / dailyCandle.open - 1;
     if (Number.isFinite(change) && change <= -params.dailyDropGuard) {
-      dailyShortOk = shortStructureOk && newShortBreak;
-    }
-    if (Number.isFinite(change) && change >= params.dailyPumpGuard) {
-      dailyLongOk = longStructureOk && newLongBreak;
+      dailyLongOk = longStructureOk && newLongBreak && slopeOkLong;
+      dailyShortOk = false;
+    } else if (Number.isFinite(change) && change >= params.dailyPumpGuard) {
+      dailyShortOk = shortStructureOk && newShortBreak && slopeOkShort;
+      dailyLongOk = false;
     }
   }
 
@@ -356,6 +380,7 @@ export function analyzeTrendFollow(opts: {
     momentumOk: longMomentumOk,
     dailyOk: dailyLongOk,
     reversalOk: longReversalOk,
+    slopeOk: slopeOkLong,
     triggerPrice: lastCandle.close,
     stopLine: stEntry.line,
     atr: atrValue,
@@ -372,11 +397,12 @@ export function analyzeTrendFollow(opts: {
     breakoutOk: breakoutShort,
     volumeOk: volRatio >= params.volFactor,
     extensionOk: absExtension <= params.maxExtension,
-    rsiOk: rsi >= params.shortMinRsi,
+    rsiOk: rsi >= Math.max(params.shortMinRsi, params.shortRsiFloor),
     structureOk: shortStructureOk,
     momentumOk: shortMomentumOk,
     dailyOk: dailyShortOk,
     reversalOk: shortReversalOk,
+    slopeOk: slopeOkShort,
     triggerPrice: lastCandle.close,
     stopLine: stEntry.line,
     atr: atrValue,
@@ -433,6 +459,12 @@ export const TrendFollow: Strategy = {
       dailyCandles,
     });
 
+    const lastDaily = dailyCandles.length ? dailyCandles[dailyCandles.length - 1] : undefined;
+    const dailyChange =
+      lastDaily && lastDaily.open > 0 ? lastDaily.close / lastDaily.open - 1 : NaN;
+    const allowLongDaily = analysis.long.dailyOk;
+    const allowShortDaily = analysis.short.dailyOk;
+
     if ((config as any).ALLOW_LONGS && analysis.long.ready) {
       return {
         action: 'ENTER_LONG',
@@ -441,6 +473,15 @@ export const TrendFollow: Strategy = {
         )} volx=${analysis.long.volRatio.toFixed(2)} ext=${(
           analysis.long.extensionPct * 100
         ).toFixed(2)} rsi=${analysis.long.rsi.toFixed(1)}`,
+        diagnostics: {
+          strategy: TrendFollow.name,
+          selection: 'LONG',
+          analysis,
+          dailyChange,
+          allowDaily: allowLongDaily,
+          confirmTf1,
+          confirmTf2,
+        },
       };
     }
 
@@ -455,7 +496,16 @@ export const TrendFollow: Strategy = {
           analysis.short.structureOk,
         )} momentum=${Number(analysis.short.momentumOk)} daily=${Number(
           analysis.short.dailyOk,
-        )}`,
+        )} slope=${Number(analysis.short.slopeOk)}`,
+        diagnostics: {
+          strategy: TrendFollow.name,
+          selection: 'SHORT',
+          analysis,
+          dailyChange,
+          allowDaily: allowShortDaily,
+          confirmTf1,
+          confirmTf2,
+        },
       };
     }
 
@@ -465,7 +515,9 @@ export const TrendFollow: Strategy = {
         analysis.short.ready,
       )} short_struct=${Number(analysis.short.structureOk)} short_rev=${Number(
         analysis.short.reversalOk,
-      )} short_mom=${Number(analysis.short.momentumOk)}`,
+      )} short_mom=${Number(analysis.short.momentumOk)} short_slope=${Number(
+        analysis.short.slopeOk,
+      )} short_daily=${Number(analysis.short.dailyOk)}`,
     };
   },
 };

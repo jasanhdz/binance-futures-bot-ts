@@ -1,6 +1,13 @@
 // src/infra/binance/BinanceExchange.ts
 import Binance from 'binance-api-node';
-import { Exchange, PositionInfo, SymbolFilters } from '../../core/ports/Exchange';
+import {
+  Exchange,
+  PositionInfo,
+  SymbolFilters,
+  TradeFill,
+  FundingSnapshot,
+  BasisSnapshot,
+} from '../../core/ports/Exchange';
 import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config';
 import { Logger } from '../../core/ports/Logger';
@@ -75,6 +82,8 @@ export class BinanceExchange implements Exchange {
   private candleCache = new Map<string, CandleCacheEntry>();
   private markCache = new Map<string, { price: number; ts: number }>();
   private markPriceInflight?: Promise<void>;
+  private fundingCache = new Map<string, { snapshot: FundingSnapshot; ts: number }>();
+  private basisCache = new Map<string, { snapshot: BasisSnapshot; ts: number }>();
 
   private usdtCache?: { value: number; ts: number };
   private filtersCache = new Map<
@@ -87,6 +96,7 @@ export class BinanceExchange implements Exchange {
   >();
   private exchangeInfoCache?: { data: any; ts: number };
   private leverageBracketCache = new Map<string, { data: any; ts: number }>();
+  private marginTypeCache = new Map<string, { type: 'ISOLATED' | 'CROSSED'; ts: number }>();
   private requestQueue: Promise<void> = Promise.resolve();
   private nextRequestAt = 0;
   private readonly minReqGapMs = Math.max(0, DEFAULT_MIN_REQ_GAP_MS);
@@ -160,6 +170,45 @@ export class BinanceExchange implements Exchange {
       }
       throw err;
     }
+  }
+
+  async getFundingRate(symbol: string): Promise<FundingSnapshot> {
+    const now = Date.now();
+    const cached = this.fundingCache.get(symbol);
+    if (cached && now - cached.ts < 60_000) {
+      return cached.snapshot;
+    }
+    const data = await this.enqueue(() =>
+      this.cli.futuresFundingRate({ symbol, limit: 1 }),
+    );
+    const entry = Array.isArray(data) && data.length ? data[0] : undefined;
+    const rate = entry && entry.fundingRate !== undefined ? Number(entry.fundingRate) : NaN;
+    const nextFundingTime =
+      entry && entry.fundingTime !== undefined ? Number(entry.fundingTime) : undefined;
+    const snapshot: FundingSnapshot = { rate, nextFundingTime };
+    this.fundingCache.set(symbol, { snapshot, ts: now });
+    return snapshot;
+  }
+
+  async getBasisSnapshot(symbol: string): Promise<BasisSnapshot> {
+    const now = Date.now();
+    const cached = this.basisCache.get(symbol);
+    if (cached && now - cached.ts < 5_000) {
+      return cached.snapshot;
+    }
+    const markData = await this.enqueue(() => this.cli.futuresMarkPrice());
+    const entry = Array.isArray(markData)
+      ? (markData.find((r: any) => r.symbol === symbol) as any)
+      : (markData as any);
+    const markPrice = entry && entry.markPrice !== undefined ? Number(entry.markPrice) : NaN;
+    const indexPrice = entry && entry.indexPrice !== undefined ? Number(entry.indexPrice) : NaN;
+    const basisPct =
+      Number.isFinite(markPrice) && Number.isFinite(indexPrice) && indexPrice !== 0
+        ? (markPrice - indexPrice) / Math.abs(indexPrice)
+        : NaN;
+    const basisSnapshot: BasisSnapshot = { markPrice, indexPrice, basisPct };
+    this.basisCache.set(symbol, { snapshot: basisSnapshot, ts: now });
+    return basisSnapshot;
   }
 
   private async getExchangeInfoSnapshot(): Promise<any> {
@@ -307,6 +356,27 @@ export class BinanceExchange implements Exchange {
     }
   }
 
+  async ensureMarginType(symbol: string, marginType: 'ISOLATED' | 'CROSSED' = 'ISOLATED') {
+    const now = Date.now();
+    const cached = this.marginTypeCache.get(symbol);
+    if (cached && cached.type === marginType && now - cached.ts < 5 * 60_000) {
+      return;
+    }
+    try {
+      await this.enqueue(() => this.cli.futuresMarginType({ symbol, marginType }));
+      this.marginTypeCache.set(symbol, { type: marginType, ts: now });
+    } catch (err: any) {
+      noteRateLimitFromError(err);
+      const msg = (err?.message || err?.msg || '').toString();
+      if (/No need to change margin type/i.test(msg) || /margin type cannot be changed/i.test(msg)) {
+        this.marginTypeCache.set(symbol, { type: marginType, ts: now });
+        this.log.debug('margin_type_skip', { symbol, requested: marginType, err: msg });
+        return;
+      }
+      throw err;
+    }
+  }
+
   async getSymbolFilters(symbol: string, leverage: number): Promise<SymbolFilters> {
     const now = Date.now();
     const cached = this.filtersCache.get(symbol);
@@ -394,6 +464,7 @@ export class BinanceExchange implements Exchange {
         qtyAbs: Math.abs(+pos.positionAmt),
         entryPrice: +pos.entryPrice,
         leverage: +(pos.leverage || CONFIG.LEVERAGE),
+        unrealizedPnl: pos.unrealizedProfit !== undefined ? Number(pos.unrealizedProfit) : undefined,
       };
     } catch (err) {
       noteRateLimitFromError(err);
@@ -577,6 +648,31 @@ export class BinanceExchange implements Exchange {
       await this.enqueue(() =>
         this.cli.futuresCancelOrder({ symbol, orderId: Number(orderId) }),
       );
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
+  }
+
+  async getRecentFills(symbol: string, startTime?: number, limit = 100): Promise<TradeFill[]> {
+    try {
+      const trades = await this.enqueue(() =>
+        this.cli.futuresUserTrades({
+          symbol,
+          startTime: startTime ? Number(startTime) : undefined,
+          limit,
+        }),
+      );
+      return (trades as any[]).map((t) => ({
+        orderId: String(t.orderId),
+        side: (t.side || '').toUpperCase() === 'BUY' ? 'BUY' : 'SELL',
+        price: Number(t.price),
+        qty: Number(t.qty),
+        realizedPnl: t.realizedPnl !== undefined ? Number(t.realizedPnl) : undefined,
+        commission: t.commission !== undefined ? Number(t.commission) : undefined,
+        commissionAsset: t.commissionAsset,
+        time: Number(t.time),
+      }));
     } catch (err) {
       noteRateLimitFromError(err);
       throw err;
