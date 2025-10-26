@@ -39,10 +39,17 @@ import {
   TrendRideState,
   TrendRideParams,
 } from '../strategies/volatility_trend_ride';
+import {
+  analyzeMomentumBreakout,
+  MomentumAnalysis,
+  MomentumDirectionState,
+  MOMENTUM_TIMEFRAME,
+} from '../strategies/momentum_breakout';
 import { getTrendSignals } from '../strategies/shared/context';
 import { BasisSnapshot, FundingSnapshot } from '../core/ports/Exchange';
 
 export type StrategyKey =
+  | 'momentum'
   | 'range_breakout'
   | 'break_retest'
   | 'liquidity_sweep'
@@ -64,6 +71,7 @@ export interface SymbolScanResult {
   best: StrategyCandidate | null;
   candidates: StrategyCandidate[];
   analyses: {
+    momentum?: MomentumAnalysis;
     breakRetest?: BreakRetestAnalysis;
     rangeBreakout?: RangeBreakoutAnalysis;
     liquiditySweep?: LiquiditySweepAnalysis;
@@ -127,6 +135,34 @@ function snapScore(state: SnapState, params: SnapParams): number {
     score += Math.min(1, Math.max(0, rsiFactor)) * 12;
   }
   if (state.ready) score += 6;
+  return Math.min(100, score);
+}
+
+function momentumScore(analysis: MomentumAnalysis, state: MomentumDirectionState): number {
+  if (!Number.isFinite(state.triggerPrice) || !Number.isFinite(state.baseLevel)) return 0;
+  let score = 0;
+
+  const streakRatio =
+    analysis.params.streakMin > 0 ? Math.min(1, state.streak / analysis.params.streakMin) : 0;
+  score += streakRatio * 25;
+
+  const volRatio =
+    analysis.params.volFactor > 0
+      ? Math.min(state.weakestVolRatio / analysis.params.volFactor, 1)
+      : 0;
+  score += volRatio * 20;
+
+  if (state.trendOk) score += 25;
+  if (state.breakoutOk) score += 10;
+
+  const dist = state.priceToTriggerPct;
+  if (Number.isFinite(dist)) {
+    const window = 0.003;
+    const closeness = Math.max(0, (window - Math.max(0, dist)) / window);
+    score += closeness * 20;
+  }
+
+  if (state.ready) score += 20;
   return Math.min(100, score);
 }
 
@@ -255,6 +291,27 @@ export async function scanSymbols(options: ScanOptions): Promise<SymbolScanResul
         return tfCache.get(key)!;
       };
 
+      const momentumCandles = await fetchCandles(MOMENTUM_TIMEFRAME, 320);
+      if (momentumCandles.length < 80) {
+        logger?.warn?.('scan_skip_insufficient_candles', { symbol, candles: momentumCandles.length });
+        continue;
+      }
+      const momentumConfirmTf = ((config as any).MOM_TREND_CONFIRM_TF ?? '15m') as
+        | '3m'
+        | '5m'
+        | '15m'
+        | '1h';
+      const momentumConfirmCandles =
+        momentumConfirmTf === MOMENTUM_TIMEFRAME
+          ? momentumCandles
+          : await fetchCandles(momentumConfirmTf, 320);
+      const momentumAnalysis = analyzeMomentumBreakout({
+        candles: momentumCandles,
+        confirmCandles: momentumConfirmCandles,
+        config,
+        confirmTf: momentumConfirmTf,
+      });
+
       const entryTf = config.ENTRY_TIMEFRAME;
       const entryCandles = await fetchCandles(entryTf, 320);
       if (entryCandles.length < 120) {
@@ -355,6 +412,19 @@ export async function scanSymbols(options: ScanOptions): Promise<SymbolScanResul
 
       const candidates: StrategyCandidate[] = [];
       candidates.push(
+        ...[momentumAnalysis.long, momentumAnalysis.short].map((state) => ({
+          strategy: 'momentum' as const,
+          side: state.direction,
+          score: momentumScore(momentumAnalysis, state),
+          ready: state.ready,
+          detail: `streak=${state.streak} volx=${state.weakestVolRatio.toFixed(2)} room=${
+            Number.isFinite(state.priceToTriggerPct)
+              ? (state.priceToTriggerPct * 100).toFixed(2)
+              : 'n/a'
+          }%`,
+        })),
+      );
+      candidates.push(
         ...[rangeAnalysis.long, rangeAnalysis.short].map((state) => ({
           strategy: 'range_breakout' as const,
           side: state.direction,
@@ -446,6 +516,7 @@ export async function scanSymbols(options: ScanOptions): Promise<SymbolScanResul
         best,
         candidates,
         analyses: {
+          momentum: momentumAnalysis,
           breakRetest: breakAnalysis,
           rangeBreakout: rangeAnalysis,
           liquiditySweep: sweepAnalysis,

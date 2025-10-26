@@ -33,6 +33,8 @@ export type BotState = {
   lastPyramidPrice?: number; // precio de referencia del último add
   lastTrailStop?: number;
   bracketsAttached?: boolean;
+  lastIntelliTpAt?: number;
+  intelliTpState?: 'ride' | 'exit';
 
   lastTradeId?: string;
   lastStrategyName?: string;

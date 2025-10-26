@@ -193,6 +193,11 @@ export const CONFIG = {
 
   // --- Take-profit por ROE ---
   TP_ROE: Number(process.env.TP_ROE ?? 1.0),
+  INT_TP_MIN_ROE: Number(process.env.INT_TP_MIN_ROE ?? 0.2),
+  INT_TP_TRAIL_DROP: Number(process.env.INT_TP_TRAIL_DROP ?? 0.35),
+  INT_TP_TREND_ADX: Number(process.env.INT_TP_TREND_ADX ?? 18),
+  INT_TP_LOOKBACK: Number(process.env.INT_TP_LOOKBACK ?? 40),
+  INT_TP_COOLDOWN_MS: Number(process.env.INT_TP_COOLDOWN_MS ?? 15_000),
 
   // --- Timeframes / volumen para señales ---
   ENTRY_TIMEFRAME: (process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m',

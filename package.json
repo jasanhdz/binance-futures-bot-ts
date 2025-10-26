@@ -17,6 +17,7 @@
     "scan:mom": "ts-node src/tools/momentum_scanner.ts",
     "scan:testnet": "DOTENV_CONFIG_PATH=.env.testnet ts-node src/tools/momentum_scanner.ts",
     "export:trades": "ts-node src/tools/trade_book_to_csv.ts",
+    "audit:orders": "ts-node src/tools/order_audit.ts",
     "logs:table": "ts-node src/tools/log_table.ts"
   },
   "dependencies": {

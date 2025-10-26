@@ -227,7 +227,11 @@ function deriveMetrics(res: SymbolScanResult) {
 
   if (!best) return { pullbackDepthPct: 0, bounceDistancePct: 0 };
 
-  if (best.strategy === 'range_breakout' && analyses.rangeBreakout) {
+  if (best.strategy === 'momentum' && analyses.momentum) {
+    const state = best.side === 'LONG' ? analyses.momentum.long : analyses.momentum.short;
+    pullback = Math.abs((state.priceVsLevelPct ?? 0) * 100);
+    bounce = Math.abs((state.priceToTriggerPct ?? 0) * 100);
+  } else if (best.strategy === 'range_breakout' && analyses.rangeBreakout) {
     const state =
       best.side === 'LONG' ? analyses.rangeBreakout.long : analyses.rangeBreakout.short;
     pullback = Math.abs((state.rangeWidthPct ?? 0) * 100);

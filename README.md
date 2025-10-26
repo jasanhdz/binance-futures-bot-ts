@@ -6,13 +6,13 @@ This project implements a multi-strategy Binance Futures trading bot that orches
 ## Runtime Flow
 - **Scheduler** — `src/app/bot.ts` uses `node-cron` to trigger `StrategyRunner.tick` on a fixed cadence (`CONFIG.BOT_INTERVAL_SEC`). Guards enforce state sync, bracket orders, and take-profit logic before strategy evaluation.
 - **Strategy Runner** — `src/app/strategy-runner.ts` hydrates the latest candles, account state, and indicators, invokes the composite strategy, and translates `ENTER_*`/`EXIT` signals into Binance API calls, including sizing (`core/risk`), stop placement, and trade bookkeeping.
-- **Guards & Risk Controls** — Bracket, pyramid, take-profit, and profit-guard modules block conflicting entries, auto-close on configured ROE targets, and keep state aligned with on-exchange positions.
+- **Guards & Risk Controls** — Bracket, pyramid, take-profit (estático e inteligente) y profit-guard módulos bloquean entradas conflictivas, traillean ganancias y mantienen el estado sincronizado con Binance.
 
 ## Key Modules
 - `src/infra/binance` — Rate-limited REST/WebSocket client with caching for candles, mark prices, leverage brackets, and filters.
 - `src/infra/fs` — File system-backed state store (`data/state_*.json`) and structured logger with terminal tables for positions.
 - `src/core` — Domain primitives: indicator calculations, risk sizing helpers, analytics writers (`data/orders_book.json`, `trades.ndjson`), and shared types.
-- `src/strategies` — Signal engines (trend follow, volatility-adjusted trend ride, range-to-breakout continuation, break & retest, volume profile pullback, liquidity sweep reversal, funding & basis mean reversion, mean reversion snapback) plus a composite router that stops at the first actionable signal.
+- `src/strategies` — Signal engines (trend follow, volatility-adjusted trend ride, momentum breakout, range-to-breakout continuation, break & retest, volume profile pullback, liquidity sweep reversal, funding & basis mean reversion, mean reversion snapback) plus a composite router that stops at the first actionable signal.
 - `src/tools` — CLI utilities for scanning markets and running backtests.
 
 ## Data & Observability
@@ -22,6 +22,7 @@ This project implements a multi-strategy Binance Futures trading bot that orches
 
 ## Configuration & Operation
 - Configure symbols, leverage, capital allocation, and feature flags via environment variables (`.env`/`.env.testnet`). See `src/infra/config.ts` for the full matrix of supported overrides.
+- Intelligent TP tuning: `INT_TP_MIN_ROE`, `INT_TP_TRAIL_DROP`, `INT_TP_TREND_ADX`, `INT_TP_LOOKBACK`, `INT_TP_COOLDOWN_MS` control el mínimo ROI, trailing y sensibilidad de tendencia.
 - Common commands:
   - `npm run dev:testnet` — Start the bot against Binance testnet (requires `.env.testnet`).
   - `npm run dev:prod` — Run live with production credentials (`.env`).

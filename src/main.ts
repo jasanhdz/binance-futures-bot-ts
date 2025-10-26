@@ -15,20 +15,24 @@ import { LiquiditySweepReversal } from './strategies/liquidity_sweep_reversal';
 import { VolumeProfilePullback } from './strategies/volume_profile_pullback';
 import { FundingBasisMeanReversion } from './strategies/funding_basis_mean_reversion';
 import { VolatilityTrendRide } from './strategies/volatility_trend_ride';
+import { MomentumBreakout } from './strategies/momentum_breakout';
 
 async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
   const strategy = composeStrategies([
     { name: TrendFollow.name, strategy: TrendFollow },
-    { name: VolatilityTrendRide.name, strategy: VolatilityTrendRide },
-    { name: RangeBreakoutContinuation.name, strategy: RangeBreakoutContinuation },
+    { name: MomentumBreakout.name, strategy: MomentumBreakout },
     { name: BreakRetest.name, strategy: BreakRetest },
-    { name: VolumeProfilePullback.name, strategy: VolumeProfilePullback },
-    { name: LiquiditySweepReversal.name, strategy: LiquiditySweepReversal },
-    { name: FundingBasisMeanReversion.name, strategy: FundingBasisMeanReversion },
     { name: MeanReversionSnapback.name, strategy: MeanReversionSnapback },
+
   ]);
+  // const strategy = composeStrategies([
+  //   { name: TrendFollow.name, strategy: TrendFollow },
+  //   { name: MomentumBreakout.name, strategy: MomentumBreakout },
+  //   { name: BreakRetest.name, strategy: BreakRetest },
+  //   { name: MeanReversionSnapback.name, strategy: MeanReversionSnapback },
+  // ]);
 
   logger.info('environment_boot', {
     network: CONFIG.IS_TESTNET ? 'TESTNET' : 'PROD',

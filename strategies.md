@@ -7,6 +7,7 @@ Closed-trade analytics were computed from `data/orders_book.json` (testnet sampl
 |------------------------------------|--------------:|---------:|----------:|-------------:|-----------:|------------:|
 | Break & Retest                     | 2             | 100%     | 155.92    | 287.97       | 287.97     | 23.87       |
 | Range Breakout Continuation        | 0             | —        | —         | —            | —          | —           |
+| Momentum Breakout                  | 0             | —        | —         | —            | —          | —           |
 | Liquidity Sweep Reversal           | 0             | —        | —         | —            | —          | —           |
 | Volume Profile Pullback            | 0             | —        | —         | —            | —          | —           |
 | Funding + Basis Mean Reversion     | 0             | —        | —         | —            | —          | —           |
@@ -41,6 +42,13 @@ Closed-trade analytics were computed from `data/orders_book.json` (testnet sampl
 - **Qué Mejorar** — Añadir cálculo dinámico de reducción de volatilidad (por ejemplo, Bollinger Bandwidth) y fijar stop automático 1–1.5× ATR bajo el rango.
 - **Conclusión** — Estrategia con alta probabilidad si se acompaña de stops cortos; priorizar pruebas en mercados con liquidez alta y horarios de sesión activos.
 
+## Momentum Breakout (`momentum_breakout.ts`)
+- **Core Idea** — Captura impulsos de 3m con dos velas consecutivas de alto volumen y confirmación de tendencia en marcos superiores; verifica que exista “room” suficiente hacia el siguiente nivel SR antes de disparar.
+- **Fortalezas** — Reacciona rápido a expansiones iniciales; los filtros de streak y volumen reducen entradas en velas aisladas; diagnóstico claro (streak, volx, room) para calibrar símbolos.
+- **Debilidades & Flaws** — Sin stops internos; depende de guardas para salir y es sensible a whipsaws en rangos estrechos. Necesita control estricto del apalancamiento y trailing activo (como el TP inteligente) para evitar devoluciones grandes.
+- **Qué Mejorar** — Añadir invalidaciones basadas en ATR/estructura y medir slippage por símbolo; combinar con orderbook delta u open interest para evitar rupturas falsas.
+- **Conclusión** — Excelente complemento ofensivo siempre que se controle el riesgo; ideal en sesiones de alta volatilidad y noticias.
+
 ## Liquidity Sweep Reversal (`liquidity_sweep_reversal.ts`)
 - **Core Idea** — Identifica barridos de liquidez (mechas que toman el máximo/mínimo previo) con absorción, volumen alto y reversión de RSI cerca de niveles HTF, buscando el giro inmediato al centro del rango.
 - **Fortalezas** — Combina wick ratio, spikes de volumen, streak previo y proximidad a soportes/resistencias mayores, replicando setups usados por desks que operan “stop hunts”.
@@ -57,8 +65,8 @@ Closed-trade analytics were computed from `data/orders_book.json` (testnet sampl
 - **Conclusion** — Needs calibration via backtesting and live paper trades; consider enabling only once filters yield a reasonable number of historical triggers with positive expectancy.
 
 ## Composite Router (`composite.ts`)
-- **Role** — Evalúa estrategias en orden (Trend Follow → Volatility Trend Ride → Range Breakout Continuation → Break & Retest → Volume Profile Pullback → Liquidity Sweep Reversal → Funding Basis Mean Reversion → Mean Reversion Snapback) y despacha la primera señal ejecutable.
-- **Implication** — La prioridad favorece continuidad y pullbacks antes de reversos y mean reversion; revisar métricas periódicas para reordenar según desempeño y evitar bloqueos entre estrategias compatibles.
+- **Role** — Evalúa estrategias en orden (Trend Follow → Volatility Trend Ride → Momentum Breakout → Range Breakout Continuation → Break & Retest → Volume Profile Pullback → Liquidity Sweep Reversal → Funding Basis Mean Reversion → Mean Reversion Snapback) y despacha la primera señal ejecutable.
+- **Implication** — La prioridad favorece continuidad y momentum antes de pullbacks/reversiones; ajustar pesos cuando cambie el régimen de mercado para que ninguna estrategia bloquee señales valiosas.
 ## Volume Profile Pullback (`volume_profile_pullback.ts`)
 - **Core Idea** — Reconstruye el perfil de volumen (POC/Value Area) y busca retrocesos hacia el nodo dominante después de una expansión; confirma con volumen decreciente y tendencia direccional.
 - **Fortalezas** — Captura “backfill” hacia zonas de interés institucional, útil en sesiones direccionales donde el precio tiende a retestear el POC antes de continuar; filtros de volumen evitan entrar en reversals abruptos.
