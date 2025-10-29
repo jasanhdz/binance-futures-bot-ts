@@ -6,11 +6,13 @@ import Table from 'cli-table3';
 const RESET = '\x1b[0m';
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
+const CYAN = '\x1b[36m';
 
 export const COLORS = {
   RESET,
   RED,
   GREEN,
+  CYAN,
 };
 
 export const zoneBadge = (z?: string) => {

@@ -1,11 +1,12 @@
 import { Strategy, StrategyContext } from './types';
-import { Signal } from '../core/types';
+import { Candle, Signal } from '../core/types';
 import {
   MlProbabilityServiceClient,
   MlProbabilityResponse,
   MlServiceError,
 } from '../ml/ml_probability_service';
 import { evaluateMlFilters } from '../ml/ml_probability_filters';
+import { COLORS } from '../infra/fs/FsLogger';
 
 export type MlStrategyOptions = {
   timeframe?: string;
@@ -46,6 +47,61 @@ export class MlProbabilityStrategy implements Strategy {
     return typeof tf === 'string' && tf.length ? tf : this.timeframe;
   }
 
+  private parseTimeframeList(raw: unknown): string[] {
+    const set = new Set<string>();
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (typeof item !== 'string') continue;
+        const trimmed = item.trim();
+        if (trimmed) {
+          set.add(trimmed);
+        }
+      }
+    } else if (typeof raw === 'string') {
+      for (const token of raw.split(/[,;]/)) {
+        const trimmed = token.trim();
+        if (trimmed) {
+          set.add(trimmed);
+        }
+      }
+    } else if (raw && typeof raw === 'object') {
+      const value = (raw as { timeframe?: string }).timeframe;
+      if (typeof value === 'string' && value.trim()) {
+        set.add(value.trim());
+      }
+    }
+    return Array.from(set);
+  }
+
+  private resolveExtraTimeframes(
+    config: StrategyContext['config'],
+    primaryTimeframe: string,
+  ): string[] {
+    const cfg = config as unknown as Record<string, unknown>;
+    const defaults = ['15m'];
+    const extraList = this.parseTimeframeList(cfg.ML_EXTRA_TIMEFRAMES);
+    const additionalList = this.parseTimeframeList(cfg.ML_ADDITIONAL_TIMEFRAMES);
+    const extras = extraList.length ? extraList : additionalList;
+
+    const tfSet = new Set<string>();
+    const primaryLower = primaryTimeframe.toLowerCase();
+
+    for (const tf of extras ?? []) {
+      if (tf.toLowerCase() === primaryLower) continue;
+      tfSet.add(tf);
+    }
+
+    if (tfSet.size === 0) {
+      for (const tf of defaults) {
+        if (tf.toLowerCase() !== primaryLower) {
+          tfSet.add(tf);
+        }
+      }
+    }
+
+    return Array.from(tfSet);
+  }
+
   private resolveNumber(value: unknown, fallback: number): number {
     const num = Number(value);
     return Number.isFinite(num) ? num : fallback;
@@ -66,6 +122,29 @@ export class MlProbabilityStrategy implements Strategy {
     return fallback;
   }
 
+  private formatColoredProb(value: number | null | string, color: string): string {
+    if (value === null) {
+      return 'n/a';
+    }
+    if (typeof value === 'string') {
+      return `${color}${value}${COLORS.RESET}`;
+    }
+    return `${color}${value.toFixed(2)}${COLORS.RESET}`;
+  }
+
+  private formatTimeframeSegment(timeframe: string, longVal: number | null, shortVal: number | null): string {
+  if (longVal === null || shortVal === null) return `${timeframe} long=n/a short=n/a`;
+
+  const higher = Math.max(longVal, shortVal);
+  const longColor = longVal === higher ? COLORS.CYAN : COLORS.RESET;
+  const shortColor = shortVal === higher ? COLORS.CYAN : COLORS.RESET;
+
+  const longDisplay = this.formatColoredProb(longVal, longColor);
+  const shortDisplay = this.formatColoredProb(shortVal, shortColor);
+
+  return `${timeframe} long=${longDisplay}/short=${shortDisplay}`;
+}
+
   private buildSignal(
     probs: MlProbabilityResponse,
     configMap: Record<string, unknown>,
@@ -75,6 +154,9 @@ export class MlProbabilityStrategy implements Strategy {
     const shortProb = probs.short_prob;
     const diffLong = longProb - shortProb;
     const diffShort = shortProb - longProb;
+    const tf15m = probs.probabilities?.['15m'];
+    const longProb15m = tf15m?.long_prob ?? null;
+    const shortProb15m = tf15m?.short_prob ?? null;
 
     const margin = this.resolveNumber(configMap.ML_MARGIN, 0.12);
     const longThreshold = this.resolveNumber(configMap.ML_THRESHOLD_LONG, 0.5);
@@ -88,6 +170,10 @@ export class MlProbabilityStrategy implements Strategy {
       diffLong,
       diffShort,
       serviceSymbol: probs.symbol,
+      primaryTimeframe: probs.primary_timeframe,
+      probabilities: probs.probabilities,
+      longProb15m,
+      shortProb15m,
       filterLong: filters.longReason ?? null,
       filterShort: filters.shortReason ?? null,
       emaBase: filters.emaBase,
@@ -124,9 +210,32 @@ export class MlProbabilityStrategy implements Strategy {
       };
     }
 
+    const idleSegments: string[] = [
+      'ML_IDLE',
+      `symbol=${this.formatColoredProb(probs.symbol, COLORS.CYAN)}`,
+      this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
+    ];
+
+    const extraEntries = probs.probabilities
+      ? Object.entries(probs.probabilities).filter(([tf]) => tf !== probs.primary_timeframe)
+      : [];
+
+    if (extraEntries.length > 0) {
+      extraEntries.sort(([a], [b]) => a.localeCompare(b));
+      for (const [tf, tfProbs] of extraEntries) {
+        const longVal = typeof tfProbs.long_prob === 'number' ? tfProbs.long_prob : null;
+        const shortVal = typeof tfProbs.short_prob === 'number' ? tfProbs.short_prob : null;
+        idleSegments.push(this.formatTimeframeSegment(tf, longVal, shortVal));
+      }
+    } else if (longProb15m !== null || shortProb15m !== null) {
+      idleSegments.push(this.formatTimeframeSegment('15m', longProb15m, shortProb15m));
+    }
+
+    const idleReason = idleSegments.join(' | ');
+
     return {
       action: 'IDLE',
-      reason: `symbol:${probs.symbol} ml_idle long=${longProb.toFixed(2)} short=${shortProb.toFixed(2)}`,
+      reason: idleReason,
       diagnostics,
     };
   }
@@ -149,12 +258,39 @@ export class MlProbabilityStrategy implements Strategy {
       return { action: 'IDLE', reason: 'few_candles' };
     }
 
+    const extraTimeframes = this.resolveExtraTimeframes(config, timeframe);
+    const extraCandles: Record<string, Candle[]> = {};
+    const extraHistoryBars = Math.max(historyBars, 256);
+
+    for (const extraTf of extraTimeframes) {
+      try {
+        const tfCandles = await exchange.getCandles(symbol, extraTf, extraHistoryBars);
+        if (tfCandles.length < Math.min(extraHistoryBars, 64)) {
+          logger?.debug('ml_extra_waiting_candles', {
+            symbol,
+            timeframe: extraTf,
+            have: tfCandles.length,
+            need: extraHistoryBars,
+          });
+          continue;
+        }
+        extraCandles[extraTf] = tfCandles;
+      } catch (err) {
+        logger?.warn('ml_extra_candles_error', {
+          symbol,
+          timeframe: extraTf,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
+
     try {
       const response = await this.client.fetchProbabilities({
         symbol,
         candles,
         timeframe,
         forceRefresh: false,
+        extraCandles,
       });
 
       const configMap = config as unknown as Record<string, unknown>;
@@ -164,14 +300,6 @@ export class MlProbabilityStrategy implements Strategy {
       );
       const filterCandles = candles.slice(-filterLookback);
       const filters = evaluateMlFilters(filterCandles, configMap);
-
-      logger?.debug('ml_service_probs', {
-        symbol,
-        timeframe,
-        longProb: response.long_prob,
-        shortProb: response.short_prob,
-        filters,
-      });
 
       return this.buildSignal(response, configMap, filters);
     } catch (error) {

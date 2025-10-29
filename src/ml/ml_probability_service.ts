@@ -11,10 +11,17 @@ export type CandlePayload = {
   close_time: number;
 };
 
-export type MlProbabilityResponse = {
-  symbol: string;
+export type TimeframeProbability = {
   long_prob: number;
   short_prob: number;
+};
+
+export type MlProbabilityResponse = {
+  symbol: string;
+  primary_timeframe: string;
+  long_prob: number;
+  short_prob: number;
+  probabilities: Record<string, TimeframeProbability>;
 };
 
 export type MlProbabilityClientOptions = {
@@ -70,14 +77,26 @@ export class MlProbabilityServiceClient {
     candles: Candle[];
     timeframe?: string;
     forceRefresh?: boolean;
+    extraCandles?: Record<string, Candle[]>;
   }): Promise<MlProbabilityResponse> {
-    const { symbol, candles, timeframe, forceRefresh } = params;
-    const payload = {
+    const { symbol, candles, timeframe, forceRefresh, extraCandles } = params;
+    const payload: Record<string, unknown> = {
       symbol,
       timeframe,
       force_refresh: forceRefresh ?? false,
       candles: this.toPayload(candles),
     };
+
+    if (extraCandles && Object.keys(extraCandles).length > 0) {
+      const prepared: Record<string, CandlePayload[]> = {};
+      for (const [tf, tfCandles] of Object.entries(extraCandles)) {
+        if (!tfCandles?.length) continue;
+        prepared[tf] = this.toPayload(tfCandles);
+      }
+      if (Object.keys(prepared).length > 0) {
+        payload.extra_candles = prepared;
+      }
+    }
 
     try {
       const { data } = await this.http.post<MlProbabilityResponse>(
