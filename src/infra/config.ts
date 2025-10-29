@@ -287,6 +287,16 @@ export const CONFIG = {
   // Umbrales ML por lado (asimétricos)
   ML_THRESHOLD_LONG: Number(process.env.ML_THRESHOLD_LONG ?? 0.6),
   ML_THRESHOLD_SHORT: Number(process.env.ML_THRESHOLD_SHORT ?? 0.8),
+  ML_HISTORY_BARS: Number(process.env.ML_HISTORY_BARS ?? 512),
+  ML_FILTER_LOOKBACK: Number(process.env.ML_FILTER_LOOKBACK ?? 60),
+  ML_MAX_EXT_PCT: Number(process.env.ML_MAX_EXT_PCT ?? 0.015),
+  ML_MAX_RSI: Number(process.env.ML_MAX_RSI ?? 68),
+  ML_MIN_RSI: Number(process.env.ML_MIN_RSI ?? 32),
+  ML_MAX_BODY_ATR: Number(process.env.ML_MAX_BODY_ATR ?? 2.5),
+  ML_MODEL_TIMEFRAME:
+    process.env.ML_MODEL_TIMEFRAME ||
+    ((process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m'),
+  ML_SERVICE_URL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000',
 
   // Filtros de tendencia para permitir short
   ADX_MIN_FOR_SHORT: Number(process.env.ADX_MIN_FOR_SHORT ?? 25),
