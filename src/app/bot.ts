@@ -1,16 +1,14 @@
 import cron from 'node-cron';
 import { StrategyRunner } from './strategy-runner';
 import { checkTakeProfit } from './guards/take-profit';
-import { enforceProfitGuard } from './guards/profit-guard';
 import { syncStateGuard } from './guards/sync-state';
 import { bracketsGuard } from './guards/ensure-brackets';
-import { pyramidGuard } from './guards/pyramid-guard';
-import { intelligentTakeProfit } from './guards/intelligent-tp';
 import {
   getRateLimitUntil,
   isRateLimited,
   noteRateLimitFromError,
 } from '../infra/rate-limit';
+import { intelligentTakeProfitMl } from './guards/intelligent-tp-ml';
 
 export function startBot(deps: {
   runner: StrategyRunner;
@@ -58,9 +56,7 @@ export function startBot(deps: {
       await bracketsGuard(symbol, exchange, state, logger);
 
       await checkTakeProfit(symbol, exchange, state, logger);
-      await intelligentTakeProfit(symbol, exchange, state, logger);
-      // await enforceProfitGuard(symbol, exchange, state, logger);
-      // await pyramidGuard(symbol, exchange, state, logger);
+      await intelligentTakeProfitMl(symbol, exchange, state, logger);
 
       await runner.tick(symbol);
     } catch (e: any) {
