@@ -50,6 +50,7 @@ export type BotState = {
   postExitMax?: number;
   postExitReady?: boolean;
   postExitCondition?: 'pullback' | 'breakout' | 'timeout';
+  lowFundsActive?: boolean;
 };
 
 type SignalCommon = {

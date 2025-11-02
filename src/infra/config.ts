@@ -221,6 +221,7 @@ export const CONFIG = {
   POST_EXIT_BREAKOUT_PCT: Number(process.env.POST_EXIT_BREAKOUT_PCT ?? 0.0015),
   POST_EXIT_TIMEOUT_MS: Number(process.env.POST_EXIT_TIMEOUT_MS ?? 300_000),
   POST_EXIT_BREAKOUT_VOL_FACTOR: Number(process.env.POST_EXIT_BREAKOUT_VOL_FACTOR ?? 1.3),
+  LOW_FUNDS_WALLET_THRESHOLD: Number(process.env.LOW_FUNDS_WALLET_THRESHOLD ?? 0.2),
 
   // --- Stops iniciales ---
   SL_TICKS_ABOVE_LIQ_MAP: {
@@ -293,8 +294,8 @@ export const CONFIG = {
   ALLOW_SHORTS: true, // ⟵ apaga shorts por ahora
 
   // Umbrales ML por lado (asimétricos)
-  ML_THRESHOLD_LONG: Number(process.env.ML_THRESHOLD_LONG ?? 0.6),
-  ML_THRESHOLD_SHORT: Number(process.env.ML_THRESHOLD_SHORT ?? 0.8),
+  ML_THRESHOLD_LONG: Number(process.env.ML_THRESHOLD_LONG ?? 0.5),
+  ML_THRESHOLD_SHORT: Number(process.env.ML_THRESHOLD_SHORT ?? 0.5),
   ML_HISTORY_BARS: Number(process.env.ML_HISTORY_BARS ?? 512),
   ML_FILTER_LOOKBACK: Number(process.env.ML_FILTER_LOOKBACK ?? 60),
   ML_MAX_EXT_PCT: Number(process.env.ML_MAX_EXT_PCT ?? 0.015),

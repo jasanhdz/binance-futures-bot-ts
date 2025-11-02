@@ -12,6 +12,7 @@ import { recordTradeOpen } from '../core/analytics/trade_book';
 import { finalizeTrade, ensureOpenTradeBackfill } from './trade-book-hooks';
 import { extractFilters, splitStrategyReason } from './trade-book-utils';
 import { postExitClearPatch, postExitSetupPatch } from './trade-state';
+import { isSymbolBlocked } from './symbol-penalty';
 import type { CONFIG as RuntimeConfig } from '../infra/config';
 
 type BotConfig = typeof RuntimeConfig;
@@ -53,6 +54,17 @@ export class StrategyRunner {
       }
       return cachedMarkPrice;
     };
+    let cachedWalletBalance: number | undefined;
+    const readWalletBalance = async () => {
+      if (cachedWalletBalance !== undefined) return cachedWalletBalance;
+      try {
+        cachedWalletBalance = await exchange.getUSDTBalance();
+      } catch (err: any) {
+        logger.warn('wallet_read_fail', { symbol, err: err?.message || String(err) });
+        cachedWalletBalance = undefined;
+      }
+      return cachedWalletBalance;
+    };
     let activePosition = null as Awaited<ReturnType<typeof exchange.readActivePosition>> | null;
     if (hasActivePosition) {
       try {
@@ -60,6 +72,32 @@ export class StrategyRunner {
       } catch (err) {
         logger.warn('read_position_fail', { symbol, err: (err as any)?.message || String(err) });
       }
+    }
+
+    const walletThreshold = Number((config as any).LOW_FUNDS_WALLET_THRESHOLD ?? 0);
+    if (!hasActivePosition && walletThreshold > 0) {
+      const wallet = await readWalletBalance();
+      if (wallet !== undefined && wallet < walletThreshold) {
+        if (!snapshot.lowFundsActive) {
+          applyStatePatch({ lowFundsActive: true });
+        }
+        logger.debug('low_funds_skip', {
+          symbol,
+          wallet,
+          threshold: walletThreshold,
+        });
+        return;
+      }
+      if (snapshot.lowFundsActive) {
+        applyStatePatch({ lowFundsActive: undefined });
+      }
+    } else if (snapshot.lowFundsActive) {
+      applyStatePatch({ lowFundsActive: undefined });
+    }
+
+    if (!hasActivePosition && isSymbolBlocked(symbol)) {
+      logger.debug('symbol_blocked_skip', { symbol });
+      return;
     }
 
     logger.debug('state_snapshot', {
@@ -274,7 +312,19 @@ export class StrategyRunner {
 
     logger.debug('filters', { symbol, ...filters });
 
-    const usdt = await exchange.getUSDTBalance();
+    let usdt = await readWalletBalance();
+    if (usdt === undefined) {
+      try {
+        usdt = await exchange.getUSDTBalance();
+        cachedWalletBalance = usdt;
+      } catch (err: any) {
+        logger.warn('wallet_read_fail', { symbol, err: err?.message || String(err) });
+        return;
+      }
+    }
+    if (usdt === undefined) {
+      return;
+    }
 
     // ------ Kill-switch diario (no abrir si el DD del día supera el máximo) ------
     const ddMax = Number((config as any).DAILY_DD_MAX_PCT ?? 0);

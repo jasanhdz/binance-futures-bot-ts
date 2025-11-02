@@ -8,6 +8,8 @@ import {
 import { evaluateMlFilters } from '../ml/ml_probability_filters';
 import { COLORS } from '../infra/fs/FsLogger';
 import { pickDirection, resolveBool, resolveExtraTimeframes } from '../ml/ml_timeframe_utils';
+import { adx as adxCalc } from '../core/indicators/adx';
+import { ema } from '../core/indicators/ema';
 
 export type MlStrategyOptions = {
   timeframe?: string;
@@ -75,6 +77,132 @@ export class MlProbabilityStrategy implements Strategy {
 
   return `${timeframe} long=${longDisplay}/short=${shortDisplay}`;
 }
+  private detectProbabilityConflict(primary: MlProbabilityResponse, extra?: { long_prob: number; short_prob: number }) {
+    if (!primary || !extra) return null;
+    const primaryDir = primary.long_prob - primary.short_prob;
+    const extraDir = extra.long_prob - extra.short_prob;
+    if (primaryDir === 0 || extraDir === 0) return null;
+    if ((primaryDir > 0 && extraDir < 0) || (primaryDir < 0 && extraDir > 0)) {
+      return { primaryDir, extraDir };
+    }
+    return null;
+  }
+
+  private async evaluateConflictFilter(params: {
+    symbol: string;
+    exchange: StrategyContext['exchange'];
+    config: Record<string, unknown>;
+    primaryProbs: MlProbabilityResponse;
+    extraProbs?: { long_prob: number; short_prob: number };
+    primaryTimeframe: string;
+    extraCandles: Record<string, Candle[]>;
+    logger?: StrategyContext['logger'];
+  }): Promise<{ reason: string; diagnostics: Record<string, unknown> } | null> {
+    const { symbol, exchange, config, primaryProbs, extraProbs, primaryTimeframe, extraCandles, logger } = params;
+    const tf15 = extraCandles['15m'];
+    if (!tf15 || tf15.length < 60) {
+      return null;
+    }
+
+    const closes = tf15.map((c) => c.close);
+    const highs = tf15.map((c) => c.high);
+    const lows = tf15.map((c) => c.low);
+
+    const emaFastLen = Number(config.ML_CONFLICT_EMA_FAST ?? 21);
+    const emaSlowLen = Number(config.ML_CONFLICT_EMA_SLOW ?? 55);
+    const adxLen = Number(config.ML_CONFLICT_ADX_LEN ?? 14);
+    const rsiLen = Number(config.ML_CONFLICT_RSI_LEN ?? 14);
+    const adxMinTrend = Number(config.ML_CONFLICT_ADX_MIN ?? 20);
+    const rsiUpper = Number(config.ML_CONFLICT_RSI_OVERBOUGHT ?? 65);
+    const rsiLower = Number(config.ML_CONFLICT_RSI_OVERSOLD ?? 35);
+
+    const emaFastValues = ema(closes, emaFastLen);
+    const emaSlowValues = ema(closes, emaSlowLen);
+    const emaFast = emaFastValues[emaFastValues.length - 1];
+    const emaSlow = emaSlowValues[emaSlowValues.length - 1];
+    const adxRaw = adxCalc(highs, lows, closes, adxLen);
+    const adxLatest = adxRaw.adx;
+    const conflictRsiLen = Number(config.ML_CONFLICT_RSI_LEN ?? 14);
+    const gain = closes.slice(-Math.max(conflictRsiLen + 1, 2));
+    let up = 0;
+    let down = 0;
+    for (let i = 1; i < gain.length; i++) {
+      const diff = gain[i] - gain[i - 1];
+      if (diff >= 0) up += diff;
+      else down -= diff;
+    }
+    const rs = down === 0 ? Infinity : up / Math.max(down, 1e-9);
+    const rsiLatest = 100 - 100 / (1 + rs);
+
+    const primaryBias = primaryProbs.long_prob - primaryProbs.short_prob;
+    const extraBias = extraProbs ? extraProbs.long_prob - extraProbs.short_prob : 0;
+
+    const diagnostics: Record<string, unknown> = {
+      emaFast,
+      emaSlow,
+      adxLatest,
+      rsiLatest,
+      primaryBias,
+      extraBias,
+      primaryTimeframe,
+    };
+
+    let blockReason: string | null = null;
+
+    const trendUp = emaFast > emaSlow;
+    const trendDown = emaFast < emaSlow;
+    const adxStrong = adxLatest >= adxMinTrend;
+
+    if (extraBias > 0 && trendUp && adxStrong) {
+      blockReason = 'ml_conflict_block_extra_up_trend';
+    } else if (extraBias < 0 && trendDown && adxStrong) {
+      blockReason = 'ml_conflict_block_extra_down_trend';
+    }
+
+    if (!blockReason) {
+      if (extraBias > 0 && rsiLatest !== undefined && rsiLatest > rsiUpper) {
+        blockReason = 'ml_conflict_block_rsi_overbought';
+      } else if (extraBias < 0 && rsiLatest !== undefined && rsiLatest < rsiLower) {
+        blockReason = 'ml_conflict_block_rsi_oversold';
+      }
+    }
+
+    if (!blockReason && logger) {
+      logger.debug('ml_conflict_allow', {
+        symbol,
+        primaryBias,
+        extraBias,
+        emaFast,
+        emaSlow,
+        adxLatest,
+        rsiLatest,
+        adxMinTrend,
+      });
+    }
+
+    if (!blockReason) {
+      return null;
+    }
+
+    if (logger) {
+      logger.info('ml_conflict_block', {
+        symbol,
+        reason: blockReason,
+        primaryBias,
+        extraBias,
+        emaFast,
+        emaSlow,
+        adxLatest,
+        rsiLatest,
+        adxMinTrend,
+      });
+    }
+
+    return {
+      reason: blockReason,
+      diagnostics,
+    };
+  }
 
   private buildSignal(
     requestSymbol: string,
@@ -371,6 +499,42 @@ export class MlProbabilityStrategy implements Strategy {
       );
       const filterCandles = candles.slice(-filterLookback);
       const filters = evaluateMlFilters(filterCandles, configMap);
+
+      const primaryProbs = response;
+      const extraPrimaryTf = response.primary_timeframe;
+      let extraPrimary: { long_prob: number; short_prob: number } | undefined;
+      if (extraPrimaryTf && response.probabilities?.[extraPrimaryTf]) {
+        extraPrimary = response.probabilities[extraPrimaryTf];
+      } else if (response.probabilities?.['15m']) {
+        extraPrimary = response.probabilities['15m'];
+      }
+
+      const conflict = this.detectProbabilityConflict(primaryProbs, extraPrimary);
+      if (conflict) {
+        const conflictReason = await this.evaluateConflictFilter({
+          symbol,
+          exchange,
+          config: configMap,
+          primaryProbs,
+          extraProbs: extraPrimary,
+          primaryTimeframe: response.primary_timeframe,
+          extraCandles,
+          logger,
+        });
+        if (conflictReason) {
+          return {
+            action: 'IDLE',
+            reason: conflictReason.reason,
+            diagnostics: {
+              conflict: true,
+              conflictReason: conflictReason.reason,
+              primaryProbs,
+              extraProbs: extraPrimary,
+              techDiagnostics: conflictReason.diagnostics,
+            },
+          };
+        }
+      }
 
       return this.buildSignal(symbol, response, configMap, filters);
     } catch (error) {

@@ -146,7 +146,7 @@ async function evaluateStacking(ctx: Parameters<Strategy['evaluate']>[0]): Promi
   const params = resolveParams(config);
 
   if (state.mode !== 'IDLE') {
-    return { action: 'IDLE', reason: 'position_active' };
+    return { action: 'IDLE', reason: `symbol=${symbol} position_active` };
   }
 
   const cooldown = resolveNumber(config?.REENTER_COOLDOWN_MS, 60_000);
@@ -155,13 +155,13 @@ async function evaluateStacking(ctx: Parameters<Strategy['evaluate']>[0]): Promi
     typeof state.lastTPAt === 'number' &&
     now - state.lastTPAt < cooldown
   ) {
-    return { action: 'IDLE', reason: 'tp_cooldown' };
+    return { action: 'IDLE', reason: `symbol=${symbol} tp_cooldown` };
   }
 
   const minCandles = Math.max(60, params.retestLookback + 5, params.entryEmaPeriod + 2);
   const candles = await exchange.getCandles(symbol, params.timeframe, Math.max(minCandles, 300));
   if (candles.length < minCandles) {
-    return { action: 'IDLE', reason: 'few_candles' };
+    return { action: 'IDLE', reason: `symbol=${symbol} few_candles` };
   }
 
   const c0 = last(candles);
@@ -186,7 +186,7 @@ async function evaluateStacking(ctx: Parameters<Strategy['evaluate']>[0]): Promi
     Math.max(params.trendEmaPeriod + 5, 200),
   );
   if (trendCandles.length < params.trendEmaPeriod + 2) {
-    return { action: 'IDLE', reason: 'few_trend_candles' };
+    return { action: 'IDLE', reason: `symbol=${symbol} few_trend_candles` };
   }
   const trendEmaArr = ema(trendCandles.map((c) => c.close), params.trendEmaPeriod);
   const trendLast = trendEmaArr[trendEmaArr.length - 1];
@@ -339,7 +339,7 @@ async function evaluateStacking(ctx: Parameters<Strategy['evaluate']>[0]): Promi
     }
   }
 
-  return { action: 'IDLE', reason: 'no_setup' };
+  return { action: 'IDLE', reason: `symbol=${symbol} no_setup` };
 }
 
 export const StackingClassicStrategy: Strategy = {

@@ -88,3 +88,69 @@ function performExit(reason):
 
 ### Seguimiento
 - Confiar en la sincronización NTP del sistema (via `sudo sntp -sS`) y, si es necesario, ajustar `BINANCE_RECV_WINDOW` en `.env` en lugar de manipular `getTime`.
+
+## 2025-11-02 — Low-Funds Symbol Gating
+
+### Resumen
+- Nuevo umbral (`LOW_FUNDS_WALLET_THRESHOLD`, default `0.2` USDT) controla cuándo evaluar señales.
+- `StrategyRunner` consulta el balance USDT; si el símbolo está `IDLE` y la wallet < umbral, se omite el `strategy.evaluate` y se marca `lowFundsActive` en el estado.
+- Los símbolos con posiciones abiertas siguen ejecutando guardias y gestión normal.
+- Al recuperarse el balance, el flag se limpia y el símbolo vuelve a operar todos los ticks.
+
+### Pseudocódigo
+```pseudo
+wallet = readWallet()
+if state.mode == 'IDLE' and wallet < threshold:
+    state.lowFundsActive = true
+    log 'low_funds_skip'
+    return
+else:
+    state.lowFundsActive = false
+    evaluate strategy & maybe enter trades
+```
+
+### Notas
+- El balance se lee una sola vez por tick y se reutiliza para el sizing, evitando fetch duplicado.
+- Este mecanismo reduce llamadas a señales innecesarias cuando la cuenta se queda sin margen disponible, pero sigue protegiendo las posiciones existentes.
+
+## 2025-11-02 — Symbol Performance Penalties
+
+### Resumen
+- Cada cierre de trade graba rendimiento en `data/symbol_performance.json` (victorias/derrotas, historial y métricas básicas).
+- Si `pnlUsd <= 0`, el símbolo se agrega a `blocked`; una vez castigado no vuelve a evaluarse en modo `IDLE` hasta eliminación manual del archivo.
+- Se registran estadísticas de ganadores (`winners`) y se conserva un historial acotado (default 50 entradas) por símbolo.
+
+### Integración
+- `finalizeTrade` computa `pnlUsd`/`roiPct`, actualiza el JSON y loguea `symbol_win_recorded` o `symbol_loss_recorded`.
+- `StrategyRunner` consulta `isSymbolBlocked(symbol)` y omite señales si no hay posición abierta.
+
+### JSON de ejemplo
+```json
+{
+  "blocked": ["BTCUSDT"],
+  "winners": ["SOLUSDT"],
+  "performance": {
+    "BTCUSDT": {
+      "wins": 1,
+      "losses": 3,
+      "history": [
+        {
+          "outcome": "loss",
+          "entryTime": 1730500000000,
+          "exitTime": 1730501234567,
+          "entryPrice": 65000,
+          "exitPrice": 64000,
+          "qty": 0.01,
+          "reason": "stop",
+          "roiPct": -5.2,
+          "pnlUsd": -32.5
+        }
+      ]
+    }
+  }
+}
+```
+
+### Consideraciones
+- Para desbloquear un símbolo basta editar `data/symbol_performance.json` y removerlo de `blocked`.
+- Ajusta `SYMBOL_PERF_HISTORY_LIMIT` si necesitas más (o menos) trades almacenados por símbolo.

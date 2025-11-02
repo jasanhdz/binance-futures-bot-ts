@@ -27,7 +27,7 @@ export function adx(high: number[], low: number[], close: number[], len = 14) {
   const dx = plusDI + minusDI > 0 ? (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI) : NaN;
   // ADX como RMA de DX; para gateo basta este valor instantáneo
   const adx = dx;
-  return { adx, plusDI, minusDI };
+  return { adx, plusDI, minusDI } as const;
 }
 
 export function sma(arr: number[], n: number) {

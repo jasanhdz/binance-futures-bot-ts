@@ -7,6 +7,7 @@ import { findOpenTrade, recordTradeClose, recordTradeOpen } from '../core/analyt
 import { tradeStateResetPatch } from './trade-state';
 import { BotState, Side } from '../core/types';
 import { extractFilters, inferSideFromQty, splitStrategyReason } from './trade-book-utils';
+import { recordSymbolOutcome } from './symbol-penalty';
 
 const logsDir = path.resolve(__dirname, '../../logs');
 const HISTORY_FILE_RE = /^history-\d{4}-\d{2}-\d{2}\.log$/;
@@ -287,6 +288,62 @@ export async function finalizeTrade(params: TradeFinalizerParams): Promise<Parti
     });
   } catch (err: any) {
     logger.error('trade_book_close_fail', { symbol, reason, err: err?.message || String(err) });
+  }
+
+  const entryPrice = snapshot.lastEntryPrice ?? undefined;
+  const entryQty = snapshot.lastEntryQty ?? exitQty ?? undefined;
+  const side = snapshot.lastSide;
+  let pnlUsd =
+    typeof realizedPnl === 'number' && Number.isFinite(realizedPnl)
+      ? Number(realizedPnl)
+      : undefined;
+  if (
+    pnlUsd === undefined &&
+    typeof entryPrice === 'number' &&
+    typeof exitPriceUsed === 'number' &&
+    typeof entryQty === 'number' &&
+    entryQty > 0 &&
+    (side === 'LONG' || side === 'SHORT')
+  ) {
+    const direction = side === 'LONG' ? 1 : -1;
+    pnlUsd = Number(((exitPriceUsed - entryPrice) * entryQty * direction).toFixed(6));
+  }
+
+  let roiPct: number | undefined;
+  if (
+    pnlUsd !== undefined &&
+    typeof entryPrice === 'number' &&
+    typeof entryQty === 'number' &&
+    entryQty > 0
+  ) {
+    const leverageUsed = snapshot.lastLeverage ?? 0;
+    const notional = entryPrice * entryQty;
+    const margin = leverageUsed > 0 ? notional / Math.max(1, leverageUsed) : notional;
+    if (margin > 0) {
+      roiPct = Number(((pnlUsd / margin) * 100).toFixed(2));
+    }
+  }
+
+  if (pnlUsd !== undefined) {
+    const outcome = pnlUsd > 0 ? 'win' : 'loss';
+    recordSymbolOutcome(symbol, {
+      outcome,
+      entryTime: snapshot.lastEntryAt,
+      exitTime: closeTime,
+      entryPrice,
+      exitPrice: exitPriceUsed,
+      qty: entryQty,
+      reason,
+      roiPct,
+      pnlUsd,
+    });
+    logger.info(outcome === 'win' ? 'symbol_win_recorded' : 'symbol_loss_recorded', {
+      symbol,
+      outcome,
+      pnlUsd,
+      roiPct,
+      reason,
+    });
   }
 
   return tradeStateResetPatch();

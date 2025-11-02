@@ -9,6 +9,7 @@ export function tradeStateResetPatch(): Partial<BotState> {
     lastEntryFilters: undefined,
     lastCommissionEstimate: undefined,
     lastOrderId: undefined,
+    lowFundsActive: undefined,
   };
 }
 
@@ -42,5 +43,6 @@ export function postExitClearPatch(): Partial<BotState> {
     postExitMax: undefined,
     postExitReady: undefined,
     postExitCondition: undefined,
+    lowFundsActive: undefined,
   };
 }
