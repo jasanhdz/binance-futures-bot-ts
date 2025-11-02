@@ -154,3 +154,19 @@ else:
 ### Consideraciones
 - Para desbloquear un símbolo basta editar `data/symbol_performance.json` y removerlo de `blocked`.
 - Ajusta `SYMBOL_PERF_HISTORY_LIMIT` si necesitas más (o menos) trades almacenados por símbolo.
+
+## 2025-11-02 — ML TP Guard Enhancements
+
+### Resumen
+- `intelligentTakeProfitMl` ahora monitorea la pendiente de ROE y el historial de puntuaciones ML (ventana por defecto: 45s).
+- Si la ROE cae de forma sostenida (`ML_TP_ROE_SLOPE_THRESHOLD`, `ML_TP_SCORE_DROP_THRESHOLD`) o si la volatilidad (`atr_pct`) se dispara mientras el beneficio se erosiona (`ML_TP_VOLATILITY_EXIT_ATR`), la posición se cierra antes de perder todo el profit.
+- Se mantiene un historial in-memory (`roeHistory`) por símbolo; al cerrar se limpia para evitar ruido.
+- El logging incluye nuevos campos (`roeSlope`, `scoreSlope`, `atrPct`, `slopeTriggered`, `volatilityTriggered`) para auditar decisiones.
+
+### Configuración clave
+- `ML_TP_ROE_SLOPE_WINDOW_MS` (default 45 000) – ventana temporal para evaluar la pendiente.
+- `ML_TP_ROE_SLOPE_THRESHOLD` / `ML_TP_SCORE_DROP_THRESHOLD` – degradación mínima de ROE / score para gatillar salida.
+- `ML_TP_VOLATILITY_EXIT_ATR` y `ML_TP_VOLATILITY_SLOPE_FACTOR` – condiciones de fuga en escenarios de alta volatilidad.
+
+### Nota
+- La lógica sigue respetando `dropTriggered` y `reversalTriggered`; las nuevas condiciones actúan antes de que la ROE viaje a cero, permitiendo cierres “quirúrgicos” en activos volátiles.

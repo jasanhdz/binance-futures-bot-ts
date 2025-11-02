@@ -306,6 +306,11 @@ export const CONFIG = {
   ML_TP_DROP_RATIO: Number(process.env.ML_TP_DROP_RATIO ?? 0.35),
   ML_TP_REVERSAL_VOL_FACTOR: Number(process.env.ML_TP_REVERSAL_VOL_FACTOR ?? 1.5),
   ML_TP_REVERSAL_BODY_RATIO: Number(process.env.ML_TP_REVERSAL_BODY_RATIO ?? 0.55),
+  ML_TP_ROE_SLOPE_WINDOW_MS: Number(process.env.ML_TP_ROE_SLOPE_WINDOW_MS ?? 45_000),
+  ML_TP_ROE_SLOPE_THRESHOLD: Number(process.env.ML_TP_ROE_SLOPE_THRESHOLD ?? 0.08),
+  ML_TP_SCORE_DROP_THRESHOLD: Number(process.env.ML_TP_SCORE_DROP_THRESHOLD ?? 0.08),
+  ML_TP_VOLATILITY_EXIT_ATR: Number(process.env.ML_TP_VOLATILITY_EXIT_ATR ?? 0.02),
+  ML_TP_VOLATILITY_SLOPE_FACTOR: Number(process.env.ML_TP_VOLATILITY_SLOPE_FACTOR ?? 0.6),
   ML_MODEL_TIMEFRAME:
     process.env.ML_MODEL_TIMEFRAME ||
     ((process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m'),

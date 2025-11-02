@@ -32,6 +32,7 @@ const ML_MOMENTUM_DELTA = 0.1;
 const ML_ALLOW_OPPOSITE_HOLD = false;
 
 const weightedScoreMemory = new Map<string, number>();
+const roeHistory = new Map<string, Array<{ t: number; roe: number; score: number }>>();
 
 function computeRoe(opts: {
   side: 'LONG' | 'SHORT';
@@ -204,6 +205,7 @@ export async function intelligentTakeProfitMl(
   const features = computeFeatures(candles);
   const rsi = features.rsi;
   const lastClose = closes[closes.length - 1];
+  const atrPct = features.atr_pct ?? 0;
 
   const adxMin = Number(CONFIG.INT_TP_TREND_ADX ?? 18);
   const trailDrop = Math.max(0, Math.min(1, Number(CONFIG.INT_TP_TRAIL_DROP ?? 0.35)));
@@ -313,6 +315,15 @@ export async function intelligentTakeProfitMl(
     primaryWeight,
   );
 
+  const slopeWindowMs = Number(CONFIG.ML_TP_ROE_SLOPE_WINDOW_MS ?? 45_000);
+  const history = roeHistory.get(symbol) ?? [];
+  history.push({ t: now, roe, score: weightedScore });
+  const maxWindow = slopeWindowMs * 3;
+  while (history.length && now - history[0].t > maxWindow) {
+    history.shift();
+  }
+  roeHistory.set(symbol, history);
+
   const holdThreshold = baseMargin;
   const exitThreshold = Math.max(holdThreshold + ML_EXIT_MARGIN_EXTRA, baseMargin + ML_EXIT_MARGIN_EXTRA);
   const allowHoldOpposite = ML_ALLOW_OPPOSITE_HOLD;
@@ -322,6 +333,25 @@ export async function intelligentTakeProfitMl(
   const momentumFlip =
     Math.sign(previousScore) !== Math.sign(weightedScore) &&
     Math.abs(weightedScore - previousScore) >= momentumDelta;
+
+  const slopeThreshold = Number(CONFIG.ML_TP_ROE_SLOPE_THRESHOLD ?? 0.08);
+  const scoreDropThreshold = Number(CONFIG.ML_TP_SCORE_DROP_THRESHOLD ?? 0.08);
+  const volatilityThreshold = Number(CONFIG.ML_TP_VOLATILITY_EXIT_ATR ?? 0.02);
+  const volatilitySlopeFactor = Number(CONFIG.ML_TP_VOLATILITY_SLOPE_FACTOR ?? 0.5);
+  const historyNow = roeHistory.get(symbol) ?? [];
+  const refEntry = historyNow.find((entry) => now - entry.t >= slopeWindowMs) ?? historyNow[0];
+  let roeSlope = 0;
+  let scoreSlope = 0;
+  let slopeDuration = 0;
+  if (refEntry) {
+    roeSlope = roe - refEntry.roe;
+    scoreSlope = weightedScore - refEntry.score;
+    slopeDuration = now - refEntry.t;
+  }
+  const slopeTriggered =
+    !!refEntry && historyNow.length >= 2 && roeSlope <= -slopeThreshold && scoreSlope <= -scoreDropThreshold;
+  const volatilityTriggered =
+    atrPct >= volatilityThreshold && roeSlope <= -slopeThreshold * Math.max(volatilitySlopeFactor, 0.1);
 
   const holdDecision = selectHoldDecision({
     side: state.lastSide,
@@ -355,6 +385,12 @@ export async function intelligentTakeProfitMl(
     dropRel,
     dropTriggered,
     reversalTriggered,
+    roeSlope,
+    scoreSlope,
+    slopeDuration,
+    slopeTriggered,
+    volatilityTriggered,
+    atrPct,
   };
 
   weightedScoreMemory.set(symbol, weightedScore);
@@ -393,17 +429,24 @@ export async function intelligentTakeProfitMl(
       ...resetPatch,
       ...exitPatch,
     });
+    roeHistory.delete(symbol);
   };
 
-  if (dropTriggered || reversalTriggered) {
-    const reasonKey =
-      dropTriggered && reversalTriggered
-        ? 'tp_ml_guard_drop_reversal'
-        : dropTriggered
-          ? 'tp_ml_guard_drop'
-          : 'tp_ml_guard_reversal';
+  let forceReason: string | null = null;
+  if (dropTriggered && reversalTriggered) {
+    forceReason = 'tp_ml_guard_drop_reversal';
+  } else if (dropTriggered) {
+    forceReason = 'tp_ml_guard_drop';
+  } else if (reversalTriggered) {
+    forceReason = 'tp_ml_guard_reversal';
+  } else if (slopeTriggered) {
+    forceReason = 'tp_ml_guard_slope';
+  } else if (volatilityTriggered) {
+    forceReason = 'tp_ml_guard_volatility';
+  }
 
-    await performExit(reasonKey);
+  if (forceReason) {
+    await performExit(forceReason);
 
     log.info('tp_ml_force_exit', {
       symbol,
@@ -411,7 +454,7 @@ export async function intelligentTakeProfitMl(
       roe,
       peak: newPeak,
       drop,
-      reason: reasonKey,
+      reason: forceReason,
       ...mlDiagnostics,
     });
     return;
