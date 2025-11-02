@@ -216,6 +216,11 @@ export const CONFIG = {
   VOL_FACTOR_REENTER: Number(process.env.VOL_FACTOR_REENTER ?? 1.5),
   GREEN_STREAK_REENTER_MIN: Number(process.env.GREEN_STREAK_REENTER_MIN ?? 2),
   RED_STREAK_REENTER_MIN: Number(process.env.RED_STREAK_REENTER_MIN ?? 2),
+  POST_EXIT_PULLBACK_PCT: Number(process.env.POST_EXIT_PULLBACK_PCT ?? 0.006),
+  POST_EXIT_REBOUND_PCT: Number(process.env.POST_EXIT_REBOUND_PCT ?? 0.35),
+  POST_EXIT_BREAKOUT_PCT: Number(process.env.POST_EXIT_BREAKOUT_PCT ?? 0.0015),
+  POST_EXIT_TIMEOUT_MS: Number(process.env.POST_EXIT_TIMEOUT_MS ?? 300_000),
+  POST_EXIT_BREAKOUT_VOL_FACTOR: Number(process.env.POST_EXIT_BREAKOUT_VOL_FACTOR ?? 1.3),
 
   // --- Stops iniciales ---
   SL_TICKS_ABOVE_LIQ_MAP: {
@@ -296,6 +301,10 @@ export const CONFIG = {
   ML_MAX_RSI: Number(process.env.ML_MAX_RSI ?? 68),
   ML_MIN_RSI: Number(process.env.ML_MIN_RSI ?? 32),
   ML_MAX_BODY_ATR: Number(process.env.ML_MAX_BODY_ATR ?? 2.5),
+  ML_TP_DROP_MIN: Number(process.env.ML_TP_DROP_MIN ?? 0.15),
+  ML_TP_DROP_RATIO: Number(process.env.ML_TP_DROP_RATIO ?? 0.35),
+  ML_TP_REVERSAL_VOL_FACTOR: Number(process.env.ML_TP_REVERSAL_VOL_FACTOR ?? 1.5),
+  ML_TP_REVERSAL_BODY_RATIO: Number(process.env.ML_TP_REVERSAL_BODY_RATIO ?? 0.55),
   ML_MODEL_TIMEFRAME:
     process.env.ML_MODEL_TIMEFRAME ||
     ((process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m'),

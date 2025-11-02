@@ -95,6 +95,7 @@ export class BinanceExchange implements Exchange {
   private requestQueue: Promise<void> = Promise.resolve();
   private nextRequestAt = 0;
   private readonly minReqGapMs = Math.max(0, DEFAULT_MIN_REQ_GAP_MS);
+  private readonly timeSafetyMarginMs = Math.max(0, Number(process.env.BINANCE_TIME_SAFETY_MS ?? 1_500));
   private timeOffsetMs = 0;
   private lastTimeSync = 0;
   private timeSyncInflight?: Promise<void>;
@@ -107,7 +108,11 @@ export class BinanceExchange implements Exchange {
       wsFutures: CONFIG.WS_FUTURES,
       getTime: async () => {
         await this.ensureTimeSync();
-        return Date.now() - this.timeOffsetMs;
+        const ts = Date.now() - this.timeOffsetMs - this.timeSafetyMarginMs;
+        if (ts <= 0) {
+          return Date.now();
+        }
+        return ts;
       },
     });
 

@@ -3,6 +3,7 @@ import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
 import { CONFIG } from '../../infra/config';
 import { finalizeTrade } from '../trade-book-hooks';
+import { postExitSetupPatch } from '../trade-state';
 import { ema } from '../../core/indicators/ema';
 import { adx as adxCalc } from '../../core/indicators/adx';
 import { computeFeatures } from '../../core/utils/features';
@@ -18,7 +19,7 @@ import {
   resolveBool,
   resolveExtraTimeframes,
 } from '../../ml/ml_timeframe_utils';
-import { Candle } from '../../core/types';
+import { Candle, Side } from '../../core/types';
 
 const mlClient = new MlProbabilityServiceClient();
 const DEFAULT_HISTORY_BARS = Number(CONFIG.ML_HISTORY_BARS ?? 512);
@@ -211,6 +212,34 @@ export async function intelligentTakeProfitMl(
   const trendStrongLong = fast > slow && adx >= adxMin && rsi >= 45 && lastClose >= slow;
   const trendStrongShort = fast < slow && adx >= adxMin && rsi <= 55 && lastClose <= slow;
   const trendStrong = state.lastSide === 'LONG' ? trendStrongLong : trendStrongShort;
+  const dropAbs = Math.max(0, newPeak - roe);
+  const dropRel = drop;
+  const mlDropMin = Number(CONFIG.ML_TP_DROP_MIN ?? 0.15);
+  const mlDropRatio = Number(CONFIG.ML_TP_DROP_RATIO ?? 0.35);
+  const dropTriggered =
+    newPeak > 0 && (dropAbs >= mlDropMin || dropRel >= mlDropRatio);
+  const reversalVolFactor = Number(CONFIG.ML_TP_REVERSAL_VOL_FACTOR ?? 1.5);
+  const reversalBodyThreshold = Number(CONFIG.ML_TP_REVERSAL_BODY_RATIO ?? 0.55);
+  const volumeWindow = candles.slice(-Math.min(12, candles.length));
+  const avgVolume =
+    volumeWindow.length > 0
+      ? volumeWindow.reduce((acc, candle) => acc + candle.volume, 0) / volumeWindow.length
+      : 0;
+  const lastCandle = candles[candles.length - 1];
+  const lastVolume = lastCandle?.volume ?? 0;
+  const lastBodyRatio =
+    lastCandle && lastCandle.high !== lastCandle.low
+      ? Math.abs(lastCandle.close - lastCandle.open) /
+        Math.max(lastCandle.high - lastCandle.low, 1e-9)
+      : 0;
+  const reversalVolume =
+    avgVolume > 0 ? lastVolume >= avgVolume * reversalVolFactor : lastVolume > 0;
+  const reversalDirection =
+    state.lastSide === 'LONG'
+      ? lastCandle && lastCandle.close < lastCandle.open
+      : lastCandle && lastCandle.close > lastCandle.open;
+  const reversalTriggered =
+    Boolean(reversalDirection) && reversalVolume && lastBodyRatio >= reversalBodyThreshold;
 
   const primaryTimeframe = CONFIG.ML_MODEL_TIMEFRAME || CONFIG.ENTRY_TIMEFRAME;
   const baseMargin = Number(CONFIG.ML_MARGIN ?? 0.12);
@@ -322,9 +351,71 @@ export async function intelligentTakeProfitMl(
     consensusDirection,
     primaryDirection,
     extraDecisions,
+    dropAbs,
+    dropRel,
+    dropTriggered,
+    reversalTriggered,
   };
 
   weightedScoreMemory.set(symbol, weightedScore);
+
+  const performExit = async (reason: string) => {
+    const side: Side = state.lastSide
+      ? state.lastSide
+      : pos.sideMode === 'SHORT'
+        ? 'SHORT'
+        : 'LONG';
+    await ex.closeSideMarketSafe(symbol, side, pos.qtyAbs, pos.sideMode);
+    await (ex as any).cancelCloseOrdersForSide?.(symbol, state.lastSide);
+
+    const resetPatch = await finalizeTrade({
+      symbol,
+      exchange: ex,
+      state: st,
+      logger: log,
+      reason,
+      exitPrice: mark,
+    });
+
+    const exitPatch = postExitSetupPatch({
+      side: state.lastSide,
+      exitPrice: mark,
+      exitAt: now,
+    });
+
+    st.set({
+      mode: 'IDLE',
+      lastExitReason: reason,
+      lastExitAt: now,
+      lastIntelliTpAt: now,
+      intelliTpState: 'exit',
+      peakRoe: 0,
+      ...resetPatch,
+      ...exitPatch,
+    });
+  };
+
+  if (dropTriggered || reversalTriggered) {
+    const reasonKey =
+      dropTriggered && reversalTriggered
+        ? 'tp_ml_guard_drop_reversal'
+        : dropTriggered
+          ? 'tp_ml_guard_drop'
+          : 'tp_ml_guard_reversal';
+
+    await performExit(reasonKey);
+
+    log.info('tp_ml_force_exit', {
+      symbol,
+      side: state.lastSide,
+      roe,
+      peak: newPeak,
+      drop,
+      reason: reasonKey,
+      ...mlDiagnostics,
+    });
+    return;
+  }
 
   if (holdDecision && !exitDecision) {
     st.set({
@@ -355,27 +446,7 @@ export async function intelligentTakeProfitMl(
     return;
   }
 
-  await ex.closeSideMarketSafe(symbol, state.lastSide, pos.qtyAbs, pos.sideMode);
-  await (ex as any).cancelCloseOrdersForSide?.(symbol, state.lastSide);
-
-  const resetPatch = await finalizeTrade({
-    symbol,
-    exchange: ex,
-    state: st,
-    logger: log,
-    reason: 'tp_ml_guard',
-    exitPrice: mark,
-  });
-
-  st.set({
-    mode: 'IDLE',
-    lastExitReason: 'tp_ml_guard',
-    lastExitAt: now,
-    lastIntelliTpAt: now,
-    intelliTpState: 'exit',
-    peakRoe: 0,
-    ...resetPatch,
-  });
+  await performExit('tp_ml_guard');
 
   log.info('tp_ml_exit', {
     symbol,

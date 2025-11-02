@@ -6,6 +6,7 @@ import { finalizeTrade } from '../trade-book-hooks';
 import { ema } from '../../core/indicators/ema';
 import { adx as adxCalc } from '../../core/indicators/adx';
 import { computeFeatures } from '../../core/utils/features';
+import { postExitSetupPatch } from '../trade-state';
 
 function computeRoe(opts: {
   side: 'LONG' | 'SHORT';
@@ -121,13 +122,20 @@ export async function intelligentTakeProfit(
       reason: 'tp_dynamic',
       exitPrice: mark,
     });
+    const exitAt = now;
+    const exitPatch = postExitSetupPatch({
+      side: state.lastSide,
+      exitPrice: mark,
+      exitAt,
+    });
     st.set({
       mode: 'IDLE',
       lastExitReason: 'tp_dynamic',
-      lastExitAt: now,
+      lastExitAt: exitAt,
       lastIntelliTpAt: now,
       intelliTpState: 'exit',
       ...resetPatch,
+      ...exitPatch,
     });
     log.info('tp_dynamic_close', {
       symbol,

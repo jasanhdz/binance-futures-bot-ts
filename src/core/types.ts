@@ -43,6 +43,13 @@ export type BotState = {
   lastEntryFilters?: Record<string, unknown>;
   lastCommissionEstimate?: number;
   lastOrderId?: string;
+  postExitSide?: Side;
+  postExitPrice?: number;
+  postExitAt?: number;
+  postExitMin?: number;
+  postExitMax?: number;
+  postExitReady?: boolean;
+  postExitCondition?: 'pullback' | 'breakout' | 'timeout';
 };
 
 type SignalCommon = {

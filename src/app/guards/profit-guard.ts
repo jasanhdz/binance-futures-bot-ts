@@ -4,6 +4,7 @@ import { StateStore } from '../../core/ports/StateStore';
 import { Logger } from '../../core/ports/Logger';
 import { CONFIG } from '../../infra/config';
 import { finalizeTrade } from '../trade-book-hooks';
+import { postExitSetupPatch } from '../trade-state';
 
 export async function enforceProfitGuard(
   symbol: string,
@@ -46,7 +47,19 @@ export async function enforceProfitGuard(
       reason: 'time_stop',
       exitPrice: mark,
     });
-    st.set({ mode: 'IDLE', lastExitReason: 'time_stop', lastExitAt: Date.now(), ...resetPatch });
+    const exitAt = Date.now();
+    const exitPatch = postExitSetupPatch({
+      side: s.lastSide,
+      exitPrice: mark,
+      exitAt,
+    });
+    st.set({
+      mode: 'IDLE',
+      lastExitReason: 'time_stop',
+      lastExitAt: exitAt,
+      ...resetPatch,
+      ...exitPatch,
+    });
     log.info('Time_stop_close', { roe, minRoe: TIME_STOP_MIN_ROE, minutes: TIME_STOP_MINUTES });
     return;
   }
@@ -73,7 +86,19 @@ export async function enforceProfitGuard(
       reason: 'be_protect',
       exitPrice: mark,
     });
-    st.set({ mode: 'IDLE', lastExitReason: 'be_protect', lastExitAt: Date.now(), ...resetPatch });
+    const exitAt = Date.now();
+    const exitPatch = postExitSetupPatch({
+      side: s.lastSide,
+      exitPrice: mark,
+      exitAt,
+    });
+    st.set({
+      mode: 'IDLE',
+      lastExitReason: 'be_protect',
+      lastExitAt: exitAt,
+      ...resetPatch,
+      ...exitPatch,
+    });
     log.info('BE_protect_close', { roe, threshold: CONFIG.PROFIT_LOCK_BE_AT_ROE });
     return;
   }
@@ -102,7 +127,19 @@ export async function enforceProfitGuard(
         reason: 'giveback',
         exitPrice: mark,
       });
-      st.set({ mode: 'IDLE', lastExitReason: 'giveback', lastExitAt: Date.now(), ...resetPatch });
+      const exitAt = Date.now();
+      const exitPatch = postExitSetupPatch({
+        side: s.lastSide,
+        exitPrice: mark,
+        exitAt,
+      });
+      st.set({
+        mode: 'IDLE',
+        lastExitReason: 'giveback',
+        lastExitAt: exitAt,
+        ...resetPatch,
+        ...exitPatch,
+      });
       log.info('Giveback_close', { newPeak, roe, drop, rel });
     }
   }
