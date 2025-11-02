@@ -101,6 +101,10 @@ export class MlProbabilityStrategy implements Strategy {
     const { symbol, exchange, config, primaryProbs, extraProbs, primaryTimeframe, extraCandles, logger } = params;
     const tf15 = extraCandles['15m'];
     if (!tf15 || tf15.length < 60) {
+      logger?.warn('ml_conflict_tf15_missing', {
+        symbol,
+        available: Object.keys(extraCandles),
+      });
       return null;
     }
 
@@ -501,12 +505,25 @@ export class MlProbabilityStrategy implements Strategy {
       const filters = evaluateMlFilters(filterCandles, configMap);
 
       const primaryProbs = response;
-      const extraPrimaryTf = response.primary_timeframe;
+      const preferredTf = (configMap.ML_CONFLICT_TF as string) || '15m';
+      const primaryTf = response.primary_timeframe;
       let extraPrimary: { long_prob: number; short_prob: number } | undefined;
-      if (extraPrimaryTf && response.probabilities?.[extraPrimaryTf]) {
-        extraPrimary = response.probabilities[extraPrimaryTf];
-      } else if (response.probabilities?.['15m']) {
-        extraPrimary = response.probabilities['15m'];
+      if (preferredTf && response.probabilities?.[preferredTf]) {
+        extraPrimary = response.probabilities[preferredTf];
+      } else if (primaryTf && response.probabilities) {
+        const entries = Object.entries(response.probabilities).filter(([tf]) => tf !== primaryTf);
+        if (entries.length) {
+          const [tf, probs] = entries.sort((a, b) => a[0].localeCompare(b[0]))[0];
+          extraPrimary = probs;
+        }
+      }
+
+      if (!extraPrimary && preferredTf) {
+        logger?.warn?.('ml_conflict_tf_missing', {
+          symbol,
+          preferredTf,
+          available: response.probabilities ? Object.keys(response.probabilities) : [],
+        });
       }
 
       const conflict = this.detectProbabilityConflict(primaryProbs, extraPrimary);

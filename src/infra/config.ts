@@ -173,7 +173,7 @@ export const CONFIG = {
       : 'wss://fstream.binance.com',
 
   BOT_STAGGER_MS: Number(process.env.BOT_STAGGER_MS ?? 2_000),
-  BOT_INTERVAL_SEC: Number(process.env.BOT_INTERVAL_SEC ?? 10),
+  BOT_INTERVAL_SEC: Number(process.env.BOT_INTERVAL_SEC ?? 5),
 
   // --- Mercado / sizing ---
   SYMBOL: PRIMARY_SYMBOL,

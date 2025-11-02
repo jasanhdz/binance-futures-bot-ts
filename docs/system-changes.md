@@ -170,3 +170,5 @@ else:
 
 ### Nota
 - La lógica sigue respetando `dropTriggered` y `reversalTriggered`; las nuevas condiciones actúan antes de que la ROE viaje a cero, permitiendo cierres “quirúrgicos” en activos volátiles.
+- La detección de conflicto ML ahora compara explícitamente 5 m contra 15 m (o el timeframe superior configurado en `ML_CONFLICT_TF`) y bloquea señales con `ml_conflict_block_*` cuando la tendencia mayor contradice al modelo.
+- Si el servicio ML no devuelve el timeframe esperado, se registra `ml_conflict_tf_missing` para auditar el origen.
