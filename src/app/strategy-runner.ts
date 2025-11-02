@@ -68,7 +68,7 @@ export class StrategyRunner {
     });
 
     logger.info('signal', { symbol, ...sig });
-
+    
     const { strategy: primaryStrategy, detail: reasonDetail } = splitStrategyReason(
       sig.reason,
       strategy.name,

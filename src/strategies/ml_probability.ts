@@ -77,6 +77,7 @@ export class MlProbabilityStrategy implements Strategy {
 }
 
   private buildSignal(
+    requestSymbol: string,
     probs: MlProbabilityResponse,
     configMap: Record<string, unknown>,
     filters: ReturnType<typeof evaluateMlFilters>,
@@ -153,6 +154,7 @@ export class MlProbabilityStrategy implements Strategy {
       shortProb,
       diffLong,
       diffShort,
+      requestSymbol,
       serviceSymbol: probs.symbol,
       primaryTimeframe: probs.primary_timeframe,
       probabilities: probs.probabilities,
@@ -180,7 +182,7 @@ export class MlProbabilityStrategy implements Strategy {
         const reasonSegments = [
           'ML_LONG',
           'mode=consensus',
-          `symbol=${this.formatColoredProb(probs.symbol, COLORS.CYAN)}`,
+          `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
           this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
         ];
         extraDecisions
@@ -203,7 +205,7 @@ export class MlProbabilityStrategy implements Strategy {
         const reasonSegments = [
           'ML_SHORT',
           'mode=consensus',
-          `symbol=${this.formatColoredProb(probs.symbol, COLORS.CYAN)}`,
+          `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
           this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
         ];
         extraDecisions
@@ -239,7 +241,7 @@ export class MlProbabilityStrategy implements Strategy {
         'ML_LONG',
         'mode=weighted',
         `score=${weightedScore.toFixed(3)}`,
-        `symbol=${this.formatColoredProb(probs.symbol, COLORS.CYAN)}`,
+        `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
         this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
       ];
       extraDecisions
@@ -264,7 +266,7 @@ export class MlProbabilityStrategy implements Strategy {
         'ML_SHORT',
         'mode=weighted',
         `score=${weightedScore.toFixed(3)}`,
-        `symbol=${this.formatColoredProb(probs.symbol, COLORS.CYAN)}`,
+        `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
         this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
       ];
       extraDecisions
@@ -282,7 +284,7 @@ export class MlProbabilityStrategy implements Strategy {
 
     const idleSegments: string[] = [
       'ML_IDLE',
-      `symbol=${this.formatColoredProb(probs.symbol, COLORS.CYAN)}`,
+      `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
       this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
     ];
 
@@ -370,7 +372,7 @@ export class MlProbabilityStrategy implements Strategy {
       const filterCandles = candles.slice(-filterLookback);
       const filters = evaluateMlFilters(filterCandles, configMap);
 
-      return this.buildSignal(response, configMap, filters);
+      return this.buildSignal(symbol, response, configMap, filters);
     } catch (error) {
       if (error instanceof MlServiceError) {
         logger?.warn('ml_service_error', {

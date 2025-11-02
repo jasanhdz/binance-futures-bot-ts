@@ -35,7 +35,7 @@ function parsePositiveNumber(raw?: string): number | undefined {
   return num;
 }
 
-function parseSymbolDescriptors(baseSymbol: string): SymbolDescriptor[] {
+function parseSymbolDescriptors(): SymbolDescriptor[] {
   const raw = process.env.SYMBOLS;
   const tokens = raw
     ? raw
@@ -92,10 +92,6 @@ function parseSymbolDescriptors(baseSymbol: string): SymbolDescriptor[] {
     });
   }
 
-  if (!seen.has(baseSymbol)) {
-    upsert({ symbol: baseSymbol });
-  }
-
   return descriptors;
 }
 
@@ -120,7 +116,8 @@ function parseAllocationOverrides(symbols: string[]): AllocationMap {
   return map;
 }
 
-const SYMBOL_DESCRIPTORS = parseSymbolDescriptors(defaultSymbol);
+const SYMBOL_DESCRIPTORS = parseSymbolDescriptors();
+console.log('Parsed symbol descriptors:', SYMBOL_DESCRIPTORS);
 const SYMBOL_LIST = SYMBOL_DESCRIPTORS.map((d) => d.symbol);
 function parseSymbolList(raw?: string): string[] {
   if (!raw) return [];
@@ -280,6 +277,12 @@ export const CONFIG = {
   // ML gate duro
   ML_MIN_PROB: Number(process.env.ML_MIN_PROB ?? 0.7),
   ML_MARGIN: Number(process.env.ML_MARGIN ?? 0.12), // diferencia min vs lado opuesto,
+  ML_PRIMARY_MIN_GAP: Number(process.env.ML_PRIMARY_MIN_GAP ?? 0.1),
+  ML_GUARD_SCORE_FLIP_THRESHOLD: Number(process.env.ML_GUARD_SCORE_FLIP_THRESHOLD ?? 0.02),
+  ML_GUARD_EXIT_EXT_PCT: Number(process.env.ML_GUARD_EXIT_EXT_PCT ?? 0.008),
+  ML_GUARD_EXIT_RSI_HIGH: Number(process.env.ML_GUARD_EXIT_RSI_HIGH ?? 70),
+  ML_GUARD_EXIT_RSI_LOW: Number(process.env.ML_GUARD_EXIT_RSI_LOW ?? 30),
+  ML_GUARD_EXIT_BODY_ATR: Number(process.env.ML_GUARD_EXIT_BODY_ATR ?? 2.0),
 
   ALLOW_LONGS: true,
   ALLOW_SHORTS: true, // ⟵ apaga shorts por ahora
