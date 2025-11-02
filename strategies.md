@@ -64,6 +64,16 @@ Closed-trade analytics were computed from `data/orders_book.json` (testnet sampl
 - **What To Improve** — Relax streak length or allow alternate reversal signals (e.g., bullish divergence), include volatility-weighted take-profit/stop schema, and capture near misses in analytics to tune thresholds.
 - **Conclusion** — Needs calibration via backtesting and live paper trades; consider enabling only once filters yield a reasonable number of historical triggers with positive expectancy.
 
+## Stacking Classic (`stacking_classic.ts`)
+- **Core Idea** — Replica la lógica histórica del bot: combina tendencias EMA multi-timeframe con criterios de volumen, streaks
+  y un patrón de break & retest antes de disparar entradas de continuación.
+- **Fortalezas** — Flujo probado en vivo; el filtro de clímax evita perseguir velas extendidas y el retest sobre EMA/nivel roto
+  confirma absorción. Mantiene el mismo lenguaje de razones (`stack_long`, `break_retest_short`, etc.) para trazabilidad.
+- **Debilidades & Flaws** — Sin stop interno adicional más allá de los guards globales; depende de calibrar `STACKC_*` para cad
+  símbolo/timeframe. Las rachas mínimas pueden dejar pasar reversals tempranos.
+- **Qué Mejorar** — Añadir integración con indicadores de volatilidad (ATR/Bollinger) para modular la extensión máxima, y regist
+  rar métricas de near-misses para ajustar la tolerancia de retest.
+
 ## Composite Router (`composite.ts`)
 - **Role** — Evalúa estrategias en orden (Trend Follow → Volatility Trend Ride → Momentum Breakout → Range Breakout Continuation → Break & Retest → Volume Profile Pullback → Liquidity Sweep Reversal → Funding Basis Mean Reversion → Mean Reversion Snapback) y despacha la primera señal ejecutable.
 - **Implication** — La prioridad favorece continuidad y momentum antes de pullbacks/reversiones; ajustar pesos cuando cambie el régimen de mercado para que ninguna estrategia bloquee señales valiosas.
