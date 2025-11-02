@@ -71,7 +71,12 @@ function isTrueish(v: unknown): boolean {
 }
 
 export class BinanceExchange implements Exchange {
-  private cli: ReturnType<typeof Binance>;
+  private cli = Binance({
+    apiKey: CONFIG.API_KEY,
+    apiSecret: CONFIG.API_SECRET,
+    httpFutures: CONFIG.HTTP_FUTURES,
+    wsFutures: CONFIG.WS_FUTURES,
+  });
 
   private hedgeCache?: { value: boolean; at: number };
   private candleCache = new Map<string, CandleCacheEntry>();
@@ -95,27 +100,8 @@ export class BinanceExchange implements Exchange {
   private requestQueue: Promise<void> = Promise.resolve();
   private nextRequestAt = 0;
   private readonly minReqGapMs = Math.max(0, DEFAULT_MIN_REQ_GAP_MS);
-  private readonly timeSafetyMarginMs = Math.max(0, Number(process.env.BINANCE_TIME_SAFETY_MS ?? 1_500));
-  private timeOffsetMs = 0;
-  private lastTimeSync = 0;
-  private timeSyncInflight?: Promise<void>;
 
   constructor(private log: Logger) {
-    this.cli = Binance({
-      apiKey: CONFIG.API_KEY,
-      apiSecret: CONFIG.API_SECRET,
-      httpFutures: CONFIG.HTTP_FUTURES,
-      wsFutures: CONFIG.WS_FUTURES,
-      getTime: async () => {
-        await this.ensureTimeSync();
-        const ts = Date.now() - this.timeOffsetMs - this.timeSafetyMarginMs;
-        if (ts <= 0) {
-          return Date.now();
-        }
-        return ts;
-      },
-    });
-
     const isTestnet = process.env.IS_TESTNET === '1';
     this.cli
       .futuresPing()
@@ -131,11 +117,6 @@ export class BinanceExchange implements Exchange {
         noteRateLimitFromError(err);
         this.log.error('binance_connect_error', { err: err?.message || String(err) });
       });
-
-    // Pre-sincroniza el reloj para evitar INVALID_TIMESTAMP al boot.
-    this.ensureTimeSync(true).catch((err) => {
-      this.log.warn('time_sync_init_fail', { err: err?.message || String(err) });
-    });
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -255,7 +236,7 @@ export class BinanceExchange implements Exchange {
       const data = await this.enqueue(() =>
         this.cli.futuresLeverageBracket({
           symbol,
-          recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 1_000),
+          recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 20_000),
         }),
       );
       this.leverageBracketCache.set(symbol, { data, ts: now });
@@ -287,43 +268,12 @@ export class BinanceExchange implements Exchange {
     return m.includes('positionside') || m.includes('position side');
   }
 
-  private async ensureTimeSync(force = false) {
-    const now = Date.now();
-    if (!force && now - this.lastTimeSync < 60_000) return;
-    if (this.timeSyncInflight) {
-      return this.timeSyncInflight;
-    }
-    this.timeSyncInflight = this.enqueue(async () => {
-      const server = await this.cli.futuresTime();
-      const serverTime = Number(server);
-      if (Number.isFinite(serverTime)) {
-        const drift = Date.now() - serverTime;
-        this.timeOffsetMs = drift;
-        this.lastTimeSync = Date.now();
-        this.log.debug('time_sync', { driftMs: drift });
-      }
-    })
-      .catch((err) => {
-        noteRateLimitFromError(err);
-        this.log.warn('time_sync_fail', { err: err?.message || String(err) });
-      })
-      .finally(() => {
-        this.timeSyncInflight = undefined;
-      });
-    return this.timeSyncInflight;
-  }
-
   // ---------- Exchange implementation ----------
 
   async getServerTime() {
     try {
       const t: any = await this.enqueue(() => this.cli.futuresTime());
-      const serverTime = Number((t && t.serverTime) ?? t);
-      if (Number.isFinite(serverTime)) {
-        this.timeOffsetMs = Date.now() - serverTime;
-        this.lastTimeSync = Date.now();
-      }
-      return serverTime;
+      return Number((t && t.serverTime) ?? t);
     } catch (err) {
       noteRateLimitFromError(err);
       throw err;

@@ -75,3 +75,16 @@ function performExit(reason):
 ### Próximos pasos sugeridos
 - Afinar thresholds en testnet y revisar logs (`entry_blocked_post_exit`, `tp_ml_force_exit`) para validar timing.
 - Ejecutar backtests comparando ROE medio antes/después y proporción de reentradas inmediatas.
+
+## 2025-11-02 — Revert Binance Time Sync Hook
+
+### Resumen
+- Se retiró el hook personalizado de sincronización (`getTime`/`ensureTimeSync`) en `BinanceExchange`; volvemos al cliente estándar de `binance-api-node`.
+- El `recvWindow` por defecto regresa a 20 000 ms para mantener tolerancia amplia sin ajustar el reloj manualmente.
+- `StrategyRunner` no cambió funcionalmente (solo limpieza de espacios); el gate post-salida permanece activo.
+
+### Motivo
+- Tras introducir el time sync personalizado, Binance empezó a devolver `Timestamp … outside of the recvWindow` aun estando sincronizados vía NTP. Revertir el cambio evita firmas atrasadas y simplifica el scheduling.
+
+### Seguimiento
+- Confiar en la sincronización NTP del sistema (via `sudo sntp -sS`) y, si es necesario, ajustar `BINANCE_RECV_WINDOW` en `.env` en lugar de manipular `getTime`.
