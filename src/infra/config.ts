@@ -195,6 +195,9 @@ export const CONFIG = {
   INT_TP_TREND_ADX: Number(process.env.INT_TP_TREND_ADX ?? 18),
   INT_TP_LOOKBACK: Number(process.env.INT_TP_LOOKBACK ?? 40),
   INT_TP_COOLDOWN_MS: Number(process.env.INT_TP_COOLDOWN_MS ?? 15_000),
+  INT_TP_SUP_INTERVAL_MS: Number(process.env.INT_TP_SUP_INTERVAL_MS ?? 1_500),
+  INT_TP_SUP_CONCURRENCY: Number(process.env.INT_TP_SUP_CONCURRENCY ?? 4),
+  INT_TP_SUP_LOG_PINGS: (process.env.INT_TP_SUP_LOG_PINGS ?? '1') === '1',
 
   // --- Timeframes / volumen para señales ---
   ENTRY_TIMEFRAME: (process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m',

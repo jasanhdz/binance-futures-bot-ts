@@ -220,8 +220,8 @@ export class MlProbabilityStrategy implements Strategy {
     const diffShort = shortProb - longProb;
 
     const margin = this.resolveNumber(configMap.ML_MARGIN, 0.12);
-    const longThreshold = this.resolveNumber(configMap.ML_THRESHOLD_LONG, 0.5);
-    const shortThreshold = this.resolveNumber(configMap.ML_THRESHOLD_SHORT, 0.5);
+    const longThreshold = this.resolveNumber(configMap.ML_THRESHOLD_LONG, 0.9);
+    const shortThreshold = this.resolveNumber(configMap.ML_THRESHOLD_SHORT, 0.9);
     const confirmMargin = this.resolveNumber(configMap.ML_CONFIRM_MARGIN, Math.max(margin * 0.5, 0.05));
     const confirmLongThreshold = this.resolveNumber(
       configMap.ML_CONFIRM_THRESHOLD_LONG,

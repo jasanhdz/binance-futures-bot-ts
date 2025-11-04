@@ -30,5 +30,18 @@ This project implements a multi-strategy Binance Futures trading bot that orches
   - `npm run test` — Execute Vitest suites colocated with features.
   - `npm run bt` — Launch the TypeScript backtest runner for historical evaluation.
 
+## Backtesting
+
+- The backtester lives under `src/backtest/` and reuses your live strategies against historical data pulled from the `trading_system` SQLite (`data/xrp_trading.db`).
+- Install the `better-sqlite3` native binding once before running: `npm install better-sqlite3` (requires build tooling on macOS/Linux).
+- Default CLI (`npm run bt`) arguments:
+  ```bash
+  npm run bt -- --strategy ml_probability --symbol XRPUSDT --timeframe 5m \
+    --db ../trading_system/data/xrp_trading.db --start 2024-01-01 --end 2024-06-30 \
+    --tp 0.01 --sl 0.005 --fee 0.0004 --verbose
+  ```
+- The runner infers database symbols (e.g., `XRPUSDT` → `XRP/USDT`) and streams candles/funding snapshots via a lightweight `Exchange` shim, so strategies can fetch multi-timeframe history without modifications.
+- Results include trade metrics, expectancy, cumulative PnL, and optional per-trade tables; equity curves are emitted for downstream plotting.
+
 ## Extending
 Add new strategies under `src/strategies/`, export them from `src/main.ts`, and enrich analytics in `core/analytics`. Use `npm run verify:feats` to regenerate feature vectors when modifying indicator pipelines. Update `AGENTS.md` and `strategies.md` with behavioral notes before submitting changes.
