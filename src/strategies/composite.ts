@@ -40,7 +40,7 @@ export function composeStrategies(entries: Entry[]): Strategy {
       if (logger) {
         logger.debug('composite_idle', { diagnostics });
       }
-      return { action: 'IDLE', reason: diagnostics.join('|') };
+      return { action: 'IDLE', reason: `symbol:${ctx.symbol} ${diagnostics.join('|')}` };
     },
   };
 }

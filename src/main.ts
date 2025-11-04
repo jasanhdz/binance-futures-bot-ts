@@ -6,12 +6,17 @@ import { FsLogger } from './infra/fs/FsLogger';
 import { CONFIG } from './infra/config';
 import { StrategyRunner } from './app/strategy-runner';
 import { startBot } from './app/bot';
-import { MlProbability } from './strategies/ml_probability';
+import { composeStrategies } from './strategies/composite';
+import { ImpulsePullbackContinuation } from './strategies/impulse_pullback_continuation';
+import { StackingClassicStrategy } from './strategies/stacking_classic';
 
 async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
-  const strategy = MlProbability
+  const strategy = composeStrategies([
+    { name: ImpulsePullbackContinuation.name, strategy: ImpulsePullbackContinuation },
+    { name: StackingClassicStrategy.name, strategy: StackingClassicStrategy },
+  ]);
 
   logger.info('environment_boot', {
     network: CONFIG.IS_TESTNET ? 'TESTNET' : 'PROD',
