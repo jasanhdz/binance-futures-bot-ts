@@ -97,9 +97,11 @@ export class BinanceExchange implements Exchange {
   private exchangeInfoCache?: { data: any; ts: number };
   private leverageBracketCache = new Map<string, { data: any; ts: number }>();
   private marginTypeCache = new Map<string, { type: 'ISOLATED' | 'CROSSED'; ts: number }>();
+  private accountInfoCache?: { data: any; ts: number };
   private requestQueue: Promise<void> = Promise.resolve();
   private nextRequestAt = 0;
   private readonly minReqGapMs = Math.max(0, DEFAULT_MIN_REQ_GAP_MS);
+  private readonly accountInfoTtlMs = Number(process.env.BINANCE_ACCOUNTINFO_TTL_MS ?? 250);
 
   constructor(private log: Logger) {
     const isTestnet = process.env.IS_TESTNET === '1';
@@ -139,6 +141,27 @@ export class BinanceExchange implements Exchange {
       () => undefined,
     );
     return chained;
+  }
+
+  private invalidateAccountInfo() {
+    this.accountInfoCache = undefined;
+  }
+
+  private async getAccountInfo(force = false): Promise<any> {
+    const cached = this.accountInfoCache;
+    const now = Date.now();
+    if (!force && cached && now - cached.ts < this.accountInfoTtlMs) {
+      return cached.data;
+    }
+    try {
+      const info = await this.enqueue(() => this.cli.futuresAccountInfo());
+      this.accountInfoCache = { data: info, ts: Date.now() };
+      return info;
+    } catch (err) {
+      this.invalidateAccountInfo();
+      noteRateLimitFromError(err);
+      throw err;
+    }
   }
 
   private cacheKey(symbol: string, interval: string) {
@@ -433,43 +456,33 @@ export class BinanceExchange implements Exchange {
   }
 
   async hasOpenPosition(symbol: string, side: 'LONG' | 'SHORT' | 'ANY') {
-    try {
-      const info = await this.enqueue(() => this.cli.futuresAccountInfo());
-      const ps = info.positions || [];
-      if (side === 'ANY') return ps.some((p) => p.symbol === symbol && Math.abs(+p.positionAmt) > 0);
-      return ps.some((p) => {
-        if (p.symbol !== symbol) return false;
-        const amt = +p.positionAmt;
-        if (p.positionSide === 'BOTH') return side === 'LONG' ? amt > 0 : amt < 0;
-        return p.positionSide === side && Math.abs(amt) > 0;
-      });
-    } catch (err) {
-      noteRateLimitFromError(err);
-      throw err;
-    }
+    const info = await this.getAccountInfo();
+    const ps = info.positions || [];
+    if (side === 'ANY') return ps.some((p: any) => p.symbol === symbol && Math.abs(+p.positionAmt) > 0);
+    return ps.some((p: any) => {
+      if (p.symbol !== symbol) return false;
+      const amt = +p.positionAmt;
+      if (p.positionSide === 'BOTH') return side === 'LONG' ? amt > 0 : amt < 0;
+      return p.positionSide === side && Math.abs(amt) > 0;
+    });
   }
 
   async readActivePosition(symbol: string, sideHint: Side): Promise<PositionInfo | null> {
-    try {
-      const info = await this.enqueue(() => this.cli.futuresAccountInfo());
-      const pos = info.positions.find((p) => {
-        if (p.symbol !== symbol) return false;
-        const amt = +p.positionAmt;
-        if (p.positionSide === 'BOTH') return sideHint === 'LONG' ? amt > 0 : amt < 0;
-        return p.positionSide === sideHint && Math.abs(amt) > 0;
-      });
-      if (!pos) return null;
-      return {
-        sideMode: (pos.positionSide as any) || 'BOTH',
-        qtyAbs: Math.abs(+pos.positionAmt),
-        entryPrice: +pos.entryPrice,
-        leverage: +(pos.leverage || CONFIG.LEVERAGE),
-        unrealizedPnl: pos.unrealizedProfit !== undefined ? Number(pos.unrealizedProfit) : undefined,
-      };
-    } catch (err) {
-      noteRateLimitFromError(err);
-      throw err;
-    }
+    const info = await this.getAccountInfo();
+    const pos = info.positions.find((p: any) => {
+      if (p.symbol !== symbol) return false;
+      const amt = +p.positionAmt;
+      if (p.positionSide === 'BOTH') return sideHint === 'LONG' ? amt > 0 : amt < 0;
+      return p.positionSide === sideHint && Math.abs(amt) > 0;
+    });
+    if (!pos) return null;
+    return {
+      sideMode: (pos.positionSide as any) || 'BOTH',
+      qtyAbs: Math.abs(+pos.positionAmt),
+      entryPrice: +pos.entryPrice,
+      leverage: +(pos.leverage || CONFIG.LEVERAGE),
+      unrealizedPnl: pos.unrealizedProfit !== undefined ? Number(pos.unrealizedProfit) : undefined,
+    };
   }
 
   async marketOpen(symbol: string, side: Side, quantity: number) {
@@ -493,6 +506,7 @@ export class BinanceExchange implements Exchange {
         side,
         qty: quantity,
       });
+      this.invalidateAccountInfo();
       return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
     } catch (e: any) {
       noteRateLimitFromError(e);
@@ -500,6 +514,7 @@ export class BinanceExchange implements Exchange {
         const res = await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
         this.log.warn('api_market_open_fallback', { symbol, side, qty: quantity });
+        this.invalidateAccountInfo();
         return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
       }
       throw e;
@@ -594,16 +609,19 @@ export class BinanceExchange implements Exchange {
           this.cli.futuresOrder({ ...base, positionSide: side, reduceOnly: 'true' as const }),
         );
       }
+      this.invalidateAccountInfo();
     } catch (e: any) {
       noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
+        this.invalidateAccountInfo();
         return;
       }
       const m = (e?.message || '').toLowerCase();
       if (m.includes('reduceonly') || m.includes('reduce only')) {
         await this.enqueue(() => this.cli.futuresOrder(base));
+        this.invalidateAccountInfo();
         return;
       }
       throw e;
