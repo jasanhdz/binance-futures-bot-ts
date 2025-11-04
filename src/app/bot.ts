@@ -8,7 +8,7 @@ import {
   isRateLimited,
   noteRateLimitFromError,
 } from '../infra/rate-limit';
-import { intelligentTakeProfitMl } from './guards/intelligent-tp-ml';
+import { registerIntelligentTpGuard } from './guards/intelligent-tp-supervisor';
 
 export function startBot(deps: {
   runner: StrategyRunner;
@@ -24,6 +24,13 @@ export function startBot(deps: {
   let running = false;
   let seq = 0;
   let lastRateLimitLog = 0;
+
+  registerIntelligentTpGuard({
+    symbol,
+    exchange,
+    state,
+    logger,
+  });
 
   const tick = async () => {
     if (running) return;
@@ -56,7 +63,6 @@ export function startBot(deps: {
       await bracketsGuard(symbol, exchange, state, logger);
 
       await checkTakeProfit(symbol, exchange, state, logger);
-      await intelligentTakeProfitMl(symbol, exchange, state, logger);
 
       await runner.tick(symbol);
     } catch (e: any) {
