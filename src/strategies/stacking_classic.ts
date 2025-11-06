@@ -55,8 +55,8 @@ function resolveParams(config: any): StackingParams {
     climaxVolFactor: resolveNumber(config?.STACKC_CLIMAX_VOL_FACTOR, 2.2),
     volFactorLong,
     volFactorShort,
-    minGreenStreak: resolveNumber(config?.STACKC_GREEN_STREAK ?? config?.GREEN_STREAK_MIN, 3),
-    minRedStreak: resolveNumber(config?.STACKC_RED_STREAK ?? config?.RED_STREAK_MIN, 3),
+    minGreenStreak: resolveNumber(config?.STACKC_GREEN_STREAK ?? config?.GREEN_STREAK_MIN, 2),
+    minRedStreak: resolveNumber(config?.STACKC_RED_STREAK ?? config?.RED_STREAK_MIN, 2),
     maxEntryStreak: resolveNumber(
       config?.STACKC_ENTRY_MAX_STREAK ?? config?.ENTRY_MAX_STREAK,
       6,

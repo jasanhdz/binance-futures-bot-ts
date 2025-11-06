@@ -7,17 +7,17 @@ import { CONFIG } from './infra/config';
 import { StrategyRunner } from './app/strategy-runner';
 import { startBot } from './app/bot';
 import { composeStrategies } from './strategies/composite';
-import { BreakRetest } from './strategies/break_retest';
 import { ImpulsePullbackContinuation } from './strategies/impulse_pullback_continuation';
 import { StackingClassicStrategy } from './strategies/stacking_classic';
+import { TrendFollow } from './strategies/trend_follow';
 
 async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
   const strategy = composeStrategies([
     { name: ImpulsePullbackContinuation.name, strategy: ImpulsePullbackContinuation },
-    { name: BreakRetest.name, strategy: BreakRetest },
     { name : StackingClassicStrategy.name, strategy: StackingClassicStrategy },
+    { name: TrendFollow.name, strategy: TrendFollow },
   ])
 
   logger.info('environment_boot', {

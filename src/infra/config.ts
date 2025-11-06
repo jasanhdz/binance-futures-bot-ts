@@ -205,8 +205,8 @@ export const CONFIG = {
   VOL_FACTOR_ENTRY: Number(process.env.VOL_FACTOR_ENTRY ?? 1.1),
 
   // --- Rachas mínimas ---
-  GREEN_STREAK_MIN: Number(process.env.GREEN_STREAK_MIN ?? 3),
-  RED_STREAK_MIN: Number(process.env.RED_STREAK_MIN ?? 3),
+  GREEN_STREAK_MIN: Number(process.env.GREEN_STREAK_MIN ?? 2),
+  RED_STREAK_MIN: Number(process.env.RED_STREAK_MIN ?? 2),
 
   // --- Defensa de “extensión EMA” (apagada) ---
   ENTRY_EMA_PERIOD: Number(process.env.ENTRY_EMA_PERIOD ?? 20),

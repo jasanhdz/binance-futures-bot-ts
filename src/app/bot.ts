@@ -9,6 +9,7 @@ import {
   noteRateLimitFromError,
 } from '../infra/rate-limit';
 import { registerIntelligentTpGuard } from './guards/intelligent-tp-supervisor';
+import { enforceProfitGuard } from './guards/profit-guard';
 
 export function startBot(deps: {
   runner: StrategyRunner;
@@ -63,6 +64,7 @@ export function startBot(deps: {
       await bracketsGuard(symbol, exchange, state, logger);
 
       await checkTakeProfit(symbol, exchange, state, logger);
+      await enforceProfitGuard(symbol, exchange, state, logger);
 
       await runner.tick(symbol);
     } catch (e: any) {

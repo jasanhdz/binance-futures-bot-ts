@@ -272,6 +272,10 @@ export class MlProbabilityStrategy implements Strategy {
       }
     }
 
+    const enforceTfAlignment = resolveBool(configMap.ML_REQUIRE_TF_ALIGNMENT, true);
+    const fifteenDecision = extraDecisions.find((entry) => entry.timeframe.toLowerCase() === '15m');
+    const fifteenDirection = fifteenDecision?.direction ?? null;
+
     const aligned =
       primaryDirection !== null &&
       extraDecisions.length > 0 &&
@@ -302,8 +306,34 @@ export class MlProbabilityStrategy implements Strategy {
       extShort: filters.extShort,
       primaryDirection,
       extraDecisions,
+      enforceTfAlignment,
       aligned,
     };
+
+    if (
+      enforceTfAlignment &&
+      primaryDirection &&
+      fifteenDecision &&
+      fifteenDirection &&
+      fifteenDirection !== primaryDirection
+    ) {
+      diagnostics['decision'] = 'BLOCKED_TF_CONFLICT';
+      diagnostics['conflictTimeframe'] = fifteenDecision.timeframe;
+      diagnostics['conflictPrimaryDirection'] = primaryDirection;
+      diagnostics['conflictExtraDirection'] = fifteenDirection;
+      const reasonSegments = [
+        'ML_IDLE',
+        'mode=tf_conflict',
+        `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
+        this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
+        this.formatTimeframeSegment(fifteenDecision.timeframe, fifteenDecision.long, fifteenDecision.short),
+      ];
+      return {
+        action: 'IDLE',
+        reason: reasonSegments.join(' | '),
+        diagnostics,
+      };
+    }
 
     if (aligned) {
       if (primaryDirection === 'LONG' && allowLongs) {
