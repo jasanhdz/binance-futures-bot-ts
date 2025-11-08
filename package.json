@@ -13,6 +13,7 @@
     "verify:feats": "python3 train/export_sample_features.py --n 50 && ts-node src/ml/check_features.ts",
     "test": "vitest run",
     "bt": "ts-node src/backtest/runner.ts",
+    "bt:ml": "ts-node src/backtest/run_ml_probability.ts",
     "bt:stack:file": "ts-node src/backtest/run_stack_classic.ts",
     "scan:mom": "ts-node src/tools/momentum_scanner.ts",
     "scan:testnet": "DOTENV_CONFIG_PATH=.env.testnet ts-node src/tools/momentum_scanner.ts",
@@ -33,7 +34,6 @@
   "devDependencies": {
     "@types/node": "^24.3.1",
     "@types/yargs": "^17.0.33",
-    "@types/cli-table3": "^0.6.3",
     "nodemon": "^3.1.10",
     "prettier": "^3.6.2",
     "ts-node": "^10.9.2",

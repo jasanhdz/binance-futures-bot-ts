@@ -34,7 +34,18 @@ This project implements a multi-strategy Binance Futures trading bot that orches
 
 - The backtester lives under `src/backtest/` and reuses your live strategies against historical data pulled from the `trading_system` SQLite (`data/xrp_trading.db`).
 - Install the `better-sqlite3` native binding once before running: `npm install better-sqlite3` (requires build tooling on macOS/Linux).
-- Default CLI (`npm run bt`) arguments:
+- Quick start for the ML strategy:
+  ```bash
+  npm run bt:ml -- \
+    --symbol TRXUSDT \
+    --timeframe 5m \
+    --db ../trading_system/data/xrp_trading.db \
+    --start 2024-01-01 --end 2024-06-30 \
+    --serviceUrl http://127.0.0.1:8000 \
+    --override ML_THRESHOLD_LONG=0.6 --override ML_THRESHOLD_SHORT=0.6
+  ```
+  Use `--override` to tweak any config key on the fly (e.g., `ML_REQUIRE_TF_ALIGNMENT=1`).
+- Generic CLI (`npm run bt`) example:
   ```bash
   npm run bt -- --strategy ml_probability --symbol XRPUSDT --timeframe 5m \
     --db ../trading_system/data/xrp_trading.db --start 2024-01-01 --end 2024-06-30 \

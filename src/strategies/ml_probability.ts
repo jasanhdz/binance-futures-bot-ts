@@ -220,8 +220,8 @@ export class MlProbabilityStrategy implements Strategy {
     const diffShort = shortProb - longProb;
 
     const margin = this.resolveNumber(configMap.ML_MARGIN, 0.12);
-    const longThreshold = this.resolveNumber(configMap.ML_THRESHOLD_LONG, 0.9);
-    const shortThreshold = this.resolveNumber(configMap.ML_THRESHOLD_SHORT, 0.9);
+    const longThreshold = this.resolveNumber(configMap.ML_THRESHOLD_LONG, 0.5);
+    const shortThreshold = this.resolveNumber(configMap.ML_THRESHOLD_SHORT, 0.5);
     const confirmMargin = this.resolveNumber(configMap.ML_CONFIRM_MARGIN, Math.max(margin * 0.5, 0.05));
     const confirmLongThreshold = this.resolveNumber(
       configMap.ML_CONFIRM_THRESHOLD_LONG,
@@ -274,16 +274,30 @@ export class MlProbabilityStrategy implements Strategy {
 
     const enforceTfAlignment = resolveBool(configMap.ML_REQUIRE_TF_ALIGNMENT, true);
     const fifteenDecision = extraDecisions.find((entry) => entry.timeframe.toLowerCase() === '15m');
-    const fifteenDirection = fifteenDecision?.direction ?? null;
+    const longProb15m = fifteenDecision?.long ?? null;
+    const shortProb15m = fifteenDecision?.short ?? null;
+
+    const alignmentPrimaryMin = this.resolveNumber(configMap.ML_ALIGNMENT_PRIMARY_MIN, 0.5);
+    let primaryAlignmentDirection: 'LONG' | 'SHORT' | null = null;
+    if (longProb >= alignmentPrimaryMin && longProb > shortProb) {
+      primaryAlignmentDirection = 'LONG';
+    } else if (shortProb >= alignmentPrimaryMin && shortProb > longProb) {
+      primaryAlignmentDirection = 'SHORT';
+    }
+
+    let fifteenAlignmentDirection: 'LONG' | 'SHORT' | null = null;
+    if (longProb15m !== null && shortProb15m !== null) {
+      if (longProb15m > shortProb15m) {
+        fifteenAlignmentDirection = 'LONG';
+      } else if (shortProb15m > longProb15m) {
+        fifteenAlignmentDirection = 'SHORT';
+      }
+    }
 
     const aligned =
       primaryDirection !== null &&
       extraDecisions.length > 0 &&
       extraDecisions.every((entry) => entry.direction === primaryDirection);
-
-    const firstExtra = extraDecisions.find((entry) => entry.timeframe.toLowerCase() === '15m');
-    const longProb15m = firstExtra?.long ?? null;
-    const shortProb15m = firstExtra?.short ?? null;
 
     const diagnostics: Record<string, unknown> = {
       longProb,
@@ -307,27 +321,35 @@ export class MlProbabilityStrategy implements Strategy {
       primaryDirection,
       extraDecisions,
       enforceTfAlignment,
+      alignmentPrimaryMin,
+      primaryAlignmentDirection,
+      fifteenAlignmentDirection,
       aligned,
     };
 
-    if (
-      enforceTfAlignment &&
-      primaryDirection &&
-      fifteenDecision &&
-      fifteenDirection &&
-      fifteenDirection !== primaryDirection
-    ) {
-      diagnostics['decision'] = 'BLOCKED_TF_CONFLICT';
-      diagnostics['conflictTimeframe'] = fifteenDecision.timeframe;
-      diagnostics['conflictPrimaryDirection'] = primaryDirection;
-      diagnostics['conflictExtraDirection'] = fifteenDirection;
+    let tfAligned = true;
+    if (enforceTfAlignment) {
+      tfAligned =
+        primaryAlignmentDirection !== null &&
+        fifteenAlignmentDirection !== null &&
+        primaryAlignmentDirection === fifteenAlignmentDirection;
+    }
+    diagnostics['tfAligned'] = tfAligned;
+
+    if (!tfAligned) {
       const reasonSegments = [
         'ML_IDLE',
-        'mode=tf_conflict',
+        'mode=tf_alignment',
         `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
         this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
-        this.formatTimeframeSegment(fifteenDecision.timeframe, fifteenDecision.long, fifteenDecision.short),
       ];
+      if (fifteenDecision) {
+        reasonSegments.push(
+          this.formatTimeframeSegment(fifteenDecision.timeframe, fifteenDecision.long, fifteenDecision.short),
+        );
+      } else {
+        reasonSegments.push('15m unavailable');
+      }
       return {
         action: 'IDLE',
         reason: reasonSegments.join(' | '),

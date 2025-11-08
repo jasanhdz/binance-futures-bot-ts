@@ -10,16 +10,15 @@ import { composeStrategies } from './strategies/composite';
 import { ImpulsePullbackContinuation } from './strategies/impulse_pullback_continuation';
 import { StackingClassicStrategy } from './strategies/stacking_classic';
 import { TrendFollow } from './strategies/trend_follow';
+import { BreakRetest } from './strategies/break_retest';
+import { MeanReversionSnapback } from './strategies/mean_reversion_snapback';
+import { MlProbability } from './strategies/ml_probability';
 
 async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
-  const strategy = composeStrategies([
-    { name: ImpulsePullbackContinuation.name, strategy: ImpulsePullbackContinuation },
-    { name : StackingClassicStrategy.name, strategy: StackingClassicStrategy },
-    { name: TrendFollow.name, strategy: TrendFollow },
-  ])
-
+  const strategy = MlProbability
+  
   logger.info('environment_boot', {
     network: CONFIG.IS_TESTNET ? 'TESTNET' : 'PROD',
     http: CONFIG.HTTP_FUTURES,
