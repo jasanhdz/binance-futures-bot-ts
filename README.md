@@ -30,6 +30,13 @@ This project implements a multi-strategy Binance Futures trading bot that orches
   - `npm run test` — Execute Vitest suites colocated with features.
   - `npm run bt` — Launch the TypeScript backtest runner for historical evaluation.
 
+### ML Advanced Runtime (LIVE / DEV)
+1. Copy `.env.example` to `.env` (and `.env.testnet.example` to `.env.testnet` for paper trading).
+2. Fill `BINANCE_API_KEY` / `BINANCE_API_SECRET` with your credentials and point `ML_SERVICE_URL` to the probability server powering the LINK/SOL/BNB models.
+3. Keep `STRATEGY=ml_advanced` to enable the optimized per-symbol settings; switch to `ml_probability` to fall back to the legacy gate.
+4. Define target markets through `SYMBOLS="SYMBOL:LEVERAGE:CAPITAL_SHARE"`. The parser auto-appends `USDT` if you omit the quote (e.g., `LINK` → `LINKUSDT`), so the string `LINK:50:0.30,SOL:40:0.25,BNB:35:0.15` is accepted.
+5. Start the runtime with `npm run dev:prod` (or `npm run dev:testnet`) once the ML service is reachable; the selected strategy is logged as `strategy_selected` during boot.
+
 ## Backtesting
 
 - The backtester lives under `src/backtest/` and reuses your live strategies against historical data pulled from the `trading_system` SQLite (`data/xrp_trading.db`).

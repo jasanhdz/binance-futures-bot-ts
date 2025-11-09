@@ -56,6 +56,10 @@ export type BotState = {
 type SignalCommon = {
   reason?: string;
   diagnostics?: Record<string, unknown>;
+  confidence?: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  metadata?: Record<string, unknown>;
 };
 
 export type Signal =

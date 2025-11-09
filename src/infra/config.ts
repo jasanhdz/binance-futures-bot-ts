@@ -1,5 +1,23 @@
 // src/infra/config.ts
-const defaultSymbol = (process.env.SYMBOL || 'XRPUSDT').toUpperCase();
+const QUOTE_SUFFIXES = ['USDT', 'USDC', 'BUSD', 'USD', 'BTC', 'ETH', 'PERP'];
+
+function normalizeSymbol(raw?: string): string {
+  if (!raw) return '';
+  const cleaned = raw
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  if (!cleaned) return '';
+  if (QUOTE_SUFFIXES.some((suffix) => cleaned.endsWith(suffix))) {
+    return cleaned;
+  }
+  if (cleaned.includes('USDT')) {
+    return cleaned;
+  }
+  return `${cleaned}USDT`;
+}
+
+const defaultSymbol = normalizeSymbol(process.env.SYMBOL || 'XRPUSDT') || 'XRPUSDT';
 const DEFAULT_CAPITAL_USAGE = Number(process.env.CAPITAL_USAGE_PCT ?? 0.85);
 const DEFAULT_LEVERAGE = Number(process.env.LEVERAGE ?? 100);
 
@@ -63,7 +81,7 @@ function parseSymbolDescriptors(): SymbolDescriptor[] {
 
   for (const token of tokens) {
     const [symRaw, part1, part2] = token.split(':');
-    const symbol = (symRaw ?? '').trim().toUpperCase();
+    const symbol = normalizeSymbol(symRaw);
     if (!symbol) continue;
 
     let leverage: number | undefined;
@@ -108,9 +126,9 @@ function parseAllocationOverrides(symbols: string[]): AllocationMap {
   for (const part of parts) {
     const [symbolRaw, valueRaw] = part.split(/[:=]/, 2);
     if (!symbolRaw || !valueRaw) continue;
-    const sym = symbolRaw.trim().toUpperCase();
+    const sym = normalizeSymbol(symbolRaw);
     const share = parseShare(valueRaw);
-    if (share === undefined) continue;
+    if (!sym || share === undefined) continue;
     map[sym] = share;
   }
   return map;
@@ -123,7 +141,7 @@ function parseSymbolList(raw?: string): string[] {
   if (!raw) return [];
   return raw
     .split(',')
-    .map((s) => s.trim().toUpperCase())
+    .map((s) => normalizeSymbol(s))
     .filter((s) => s.length > 0);
 }
 
@@ -158,6 +176,8 @@ const PRIMARY_SYMBOL_SHARE =
     ? SYMBOL_ALLOCATIONS[PRIMARY_SYMBOL]
     : DEFAULT_CAPITAL_USAGE;
 
+const SELECTED_STRATEGY = (process.env.STRATEGY ?? process.env.STRATEGY_PRESET ?? 'ml_advanced').toLowerCase();
+
 export const CONFIG = {
   // --- Credenciales / endpoints ---
   API_KEY: process.env.BINANCE_API_KEY || '',
@@ -174,6 +194,7 @@ export const CONFIG = {
 
   BOT_STAGGER_MS: Number(process.env.BOT_STAGGER_MS ?? 2_000),
   BOT_INTERVAL_SEC: Number(process.env.BOT_INTERVAL_SEC ?? 5),
+  STRATEGY: SELECTED_STRATEGY,
 
   // --- Mercado / sizing ---
   SYMBOL: PRIMARY_SYMBOL,
