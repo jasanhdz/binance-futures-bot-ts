@@ -50,8 +50,8 @@ const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
     shortTimeframe: '15m',
     // longThreshold: 0.65,
     // shortThreshold: 0.70,
-    longThreshold: 0.45,
-    shortThreshold: 0.50,
+    longThreshold: 0.50,
+    shortThreshold: 0.45,
     useBothDirections: true,
     requireTechnicalConfirmation: true,
     minConfirmations: 3, // 3 of 4 required
@@ -67,8 +67,8 @@ const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
     shortTimeframe: '15m',
     // longThreshold: 0.70, // Higher threshold for 5m longs
     // shortThreshold: 0.65,
-    longThreshold: 0.50, // Higher threshold for 5m longs
-    shortThreshold: 0.45,
+    longThreshold: 0.45, // Higher threshold for 5m longs
+    shortThreshold: 0.40,
     useBothDirections: true,
     requireTechnicalConfirmation: true,
     minConfirmations: 2, // 2 of 4 for shorts, 4 of 4 for longs
@@ -84,7 +84,7 @@ const SYMBOL_CONFIGS: Record<string, SymbolConfig> = {
     shortTimeframe: '15m',
     longThreshold: null,
     // shortThreshold: 0.60, // Lower threshold (high recall)
-    shortThreshold: 0.50, // Lower threshold (high recall)
+    shortThreshold: 0.45, // Lower threshold (high recall)
     useBothDirections: false, // SHORTS ONLY
     requireTechnicalConfirmation: true,
     minConfirmations: 1, // Just basic confirmation
