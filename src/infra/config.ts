@@ -438,3 +438,5 @@ export const CONFIG = {
   ANTI_LOSS_THR_SHORT: Number(process.env.ANTI_LOSS_THR_SHORT ?? 0.82),
   ALLOW_REVERSE: false,
 } as const;
+
+export type BotConfig = typeof CONFIG;

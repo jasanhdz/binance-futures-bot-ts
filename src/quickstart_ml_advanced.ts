@@ -6,6 +6,21 @@
 
 import { MlAdvancedStrategy } from './strategies/ml_advanced';
 import { getTier2Symbols, getSymbolMaxRisk } from './strategies/ml_advanced_config';
+import type { BotState } from './core/types';
+import { CONFIG } from './infra/config';
+import type { BotConfig } from './infra/config';
+
+type PaperPosition = {
+  symbol: string;
+  side: 'long' | 'short';
+  entry: number;
+  quantity: number;
+  stopLoss: number;
+  takeProfit: number;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
+  paperTrading?: boolean;
+};
 
 // ============================================================================
 // QUICK START EXAMPLE
@@ -18,10 +33,12 @@ export async function quickStartMLAdvanced(
 ) {
   
   logger.info('🚀 Starting ML Advanced Strategy');
-  logger.info('=' .repeat(80));
+  logger.info('='.repeat(80));
   
   // 1. Initialize strategy
   const strategy = new MlAdvancedStrategy('15m');
+  const strategyConfig: BotConfig = CONFIG;
+  const botState: BotState = { mode: 'IDLE' };
   
   // 2. Get enabled symbols
   const symbols = getTier2Symbols();
@@ -29,7 +46,7 @@ export async function quickStartMLAdvanced(
   logger.info('');
   
   // 3. Trading state
-  const positions: any[] = [];
+  const positions: PaperPosition[] = [];
   
   // 4. Main loop
   while (true) {
@@ -49,8 +66,8 @@ export async function quickStartMLAdvanced(
         const signal = await strategy.evaluate({
           symbol,
           exchange,
-          config: {}, // Your bot config
-          state: { positions, balance },
+          config: strategyConfig,
+          state: botState,
           now: Date.now(),
           logger,
         });
@@ -62,12 +79,19 @@ export async function quickStartMLAdvanced(
           const displaySide = isLongSignal ? 'LONG' : 'SHORT';
           const orderSide = isLongSignal ? 'buy' : 'sell';
           const exitSide = isLongSignal ? 'sell' : 'buy';
+          if (signal.stopLoss === undefined || signal.takeProfit === undefined) {
+            logger.warn(`${symbol}: Missing stopLoss/takeProfit, skipping entry`);
+            continue;
+          }
+          const stopLoss = signal.stopLoss;
+          const takeProfit = signal.takeProfit;
+          const positionSide: 'long' | 'short' = isLongSignal ? 'long' : 'short';
 
           logger.success('');
           logger.success(`🎯 ${symbol}: ${displaySide} SIGNAL`);
           logger.success(`   Confidence: ${signal.confidence?.toFixed(2)}`);
-          logger.success(`   Stop Loss: ${signal.stopLoss?.toFixed(4)}`);
-          logger.success(`   Take Profit: ${signal.takeProfit?.toFixed(4)}`);
+          logger.success(`   Stop Loss: ${stopLoss.toFixed(4)}`);
+          logger.success(`   Take Profit: ${takeProfit.toFixed(4)}`);
           
           // Get current price
           const ticker = await exchange.fetchTicker(symbol);
@@ -81,6 +105,10 @@ export async function quickStartMLAdvanced(
           logger.info(`   Position Size: $${positionValue.toFixed(2)} (${(maxRisk * 100).toFixed(2)}%)`);
           logger.info(`   Quantity: ${quantity.toFixed(4)}`);
           logger.info('');
+          botState.mode = isLongSignal ? 'LONG_RIDE' : 'SHORT_RIDE';
+          botState.lastSide = isLongSignal ? 'LONG' : 'SHORT';
+          botState.lastEntryPrice = currentPrice;
+          botState.lastEntryAt = Date.now();
           
           // ⚠️ UNCOMMENT TO ENABLE LIVE TRADING ⚠️
           /*
@@ -100,7 +128,7 @@ export async function quickStartMLAdvanced(
             'stop_market',
             exitSide,
             quantity,
-            signal.stopLoss
+            stopLoss
           );
           
           // Set take profit
@@ -109,7 +137,7 @@ export async function quickStartMLAdvanced(
             'limit',
             exitSide,
             quantity,
-            signal.takeProfit
+            takeProfit
           );
           
           // Track position
@@ -129,11 +157,11 @@ export async function quickStartMLAdvanced(
           logger.warn('⚠️  PAPER TRADING MODE - No real orders placed');
           positions.push({
             symbol,
-            side: displaySide.toLowerCase(),
+            side: positionSide,
             entry: currentPrice,
             quantity,
-            stopLoss: signal.stopLoss,
-            takeProfit: signal.takeProfit,
+            stopLoss,
+            takeProfit,
             timestamp: Date.now(),
             metadata: signal.metadata,
             paperTrading: true,
@@ -167,21 +195,33 @@ export async function quickStartMLAdvanced(
               // Remove from positions
               const index = positions.indexOf(position);
               positions.splice(index, 1);
+              botState.mode = 'IDLE';
+              botState.lastExitReason = 'stop_loss';
+              botState.lastExitAt = Date.now();
             } else if (currentPrice >= position.takeProfit) {
               logger.success(`   ✅ ${position.symbol} TAKE PROFIT HIT`);
               // Remove from positions
               const index = positions.indexOf(position);
               positions.splice(index, 1);
+              botState.mode = 'IDLE';
+              botState.lastExitReason = 'take_profit';
+              botState.lastExitAt = Date.now();
             }
           } else {
             if (currentPrice >= position.stopLoss) {
               logger.warn(`   ❌ ${position.symbol} STOP LOSS HIT`);
               const index = positions.indexOf(position);
               positions.splice(index, 1);
+              botState.mode = 'IDLE';
+              botState.lastExitReason = 'stop_loss';
+              botState.lastExitAt = Date.now();
             } else if (currentPrice <= position.takeProfit) {
               logger.success(`   ✅ ${position.symbol} TAKE PROFIT HIT`);
               const index = positions.indexOf(position);
               positions.splice(index, 1);
+              botState.mode = 'IDLE';
+              botState.lastExitReason = 'take_profit';
+              botState.lastExitAt = Date.now();
             }
           }
         }
@@ -192,14 +232,17 @@ export async function quickStartMLAdvanced(
       logger.info('');
       logger.info(`Loop completed in ${(elapsed / 1000).toFixed(1)}s`);
       logger.info(`Next scan in 60 seconds...`);
-      logger.info('=' .repeat(80));
+      logger.info('='.repeat(80));
       
       // Wait before next iteration
       await new Promise(resolve => setTimeout(resolve, 60000)); // 1 minute
       
     } catch (error) {
-      logger.error(`❌ Error in trading loop: ${error}`);
-      logger.error(error.stack);
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error(`❌ Error in trading loop: ${err.message}`);
+      if (err.stack) {
+        logger.error(err.stack);
+      }
       
       // Wait before retry
       await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds

@@ -3,6 +3,7 @@ import { BacktestOptions, BacktestResult, BacktestTrade, EquityPoint } from './t
 import { SqliteHistoricalSource } from './data/sqlite_source';
 import { Strategy } from '../strategies/types';
 import { BotState, Candle, Side } from '../core/types';
+import type { BotConfig } from '../infra/config';
 import { resolveDataSymbol } from './symbols';
 
 type EngineDeps = {
@@ -166,7 +167,8 @@ export class BacktestEngine {
   constructor(private deps: EngineDeps) {}
 
   async run(): Promise<BacktestResult> {
-    const { options, source, exchange, strategy, config } = this.deps;
+    const { options, source, exchange, strategy } = this.deps;
+    const config = this.deps.config as BotConfig;
     const symbol = options.symbol;
     const dataSymbol = resolveDataSymbol(symbol, options.dataSymbol);
     const timeframe = options.timeframe;

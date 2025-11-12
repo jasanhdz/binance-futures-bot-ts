@@ -13,6 +13,20 @@ import {
   getSymbolMaxRisk,
   shouldTradeDirection 
 } from './ml_advanced_config';
+import type { BotState } from '../core/types';
+import { CONFIG } from '../infra/config';
+import type { BotConfig } from '../infra/config';
+
+type ExamplePosition = {
+  symbol: string;
+  side: 'long' | 'short';
+  entry: number;
+  quantity: number;
+  stopLoss: number;
+  takeProfit: number;
+  confidence?: number;
+  timestamp: number;
+};
 
 // ============================================================================
 // EXAMPLE 1: Basic Usage
@@ -20,12 +34,14 @@ import {
 
 export async function example1_basicUsage(exchange: any, logger: any) {
   const strategy = new MlAdvancedStrategy('15m');
+  const config: BotConfig = CONFIG;
+  const botState: BotState = { mode: 'IDLE' };
   
   const signal = await strategy.evaluate({
     symbol: 'LINKUSDT',
     exchange,
-    config: {},
-    state: { positions: [], balance: 10000 },
+    config,
+    state: botState,
     now: Date.now(),
     logger,
   });
@@ -47,6 +63,8 @@ export async function example1_basicUsage(exchange: any, logger: any) {
 export async function example2_multipleSymbols(exchange: any, logger: any) {
   const strategy = new MlAdvancedStrategy();
   const symbols = getTier2Symbols(); // ['LINKUSDT', 'SOLUSDT', 'BNBUSDT']
+  const config: BotConfig = CONFIG;
+  const botState: BotState = { mode: 'IDLE' };
   
   logger.info(`Scanning ${symbols.length} symbols...`);
   
@@ -54,8 +72,8 @@ export async function example2_multipleSymbols(exchange: any, logger: any) {
     const signal = await strategy.evaluate({
       symbol,
       exchange,
-      config: {},
-      state: { positions: [], balance: 10000 },
+      config,
+      state: botState,
       now: Date.now(),
       logger,
     });
@@ -76,13 +94,15 @@ export async function example2_multipleSymbols(exchange: any, logger: any) {
 export async function example3_withPositionSizing(exchange: any, logger: any) {
   const strategy = new MlAdvancedStrategy();
   const balance = 10000; // $10,000
+  const config: BotConfig = CONFIG;
+  const botState: BotState = { mode: 'IDLE' };
   
   const symbol = 'LINKUSDT';
   const signal = await strategy.evaluate({
     symbol,
     exchange,
-    config: {},
-    state: { positions: [], balance },
+    config,
+    state: botState,
     now: Date.now(),
     logger,
   });
@@ -121,9 +141,11 @@ export async function example3_withPositionSizing(exchange: any, logger: any) {
 export async function example4_fullTradingLoop(exchange: any, logger: any) {
   const strategy = new MlAdvancedStrategy();
   const symbols = getTier2Symbols();
+  const config: BotConfig = CONFIG;
+  const botState: BotState = { mode: 'IDLE' };
   
   const balance = 10000;
-  const positions: any[] = [];
+  const positions: ExamplePosition[] = [];
   
   // Main trading loop
   while (true) {
@@ -138,8 +160,8 @@ export async function example4_fullTradingLoop(exchange: any, logger: any) {
         const signal = await strategy.evaluate({
           symbol,
           exchange,
-          config: {},
-          state: { positions, balance },
+          config,
+          state: botState,
           now: Date.now(),
           logger,
         });
@@ -150,6 +172,13 @@ export async function example4_fullTradingLoop(exchange: any, logger: any) {
           const displaySide = isLongSignal ? 'LONG' : 'SHORT';
           const orderSide = isLongSignal ? 'buy' : 'sell';
           const exitSide = isLongSignal ? 'sell' : 'buy';
+          if (signal.stopLoss === undefined || signal.takeProfit === undefined) {
+            logger.warn(`${symbol}: Missing stopLoss/takeProfit, skipping order`);
+            continue;
+          }
+          const stopLoss = signal.stopLoss;
+          const takeProfit = signal.takeProfit;
+          const positionSide: 'long' | 'short' = isLongSignal ? 'long' : 'short';
           const maxRisk = getSymbolMaxRisk(symbol);
           const positionSize = balance * maxRisk;
           
@@ -164,20 +193,24 @@ export async function example4_fullTradingLoop(exchange: any, logger: any) {
           const order = await exchange.createOrder(symbol, 'market', orderSide, quantity);
           
           // Set stop loss & take profit
-          await exchange.createOrder(symbol, 'stop_market', exitSide, quantity, signal.stopLoss);
-          await exchange.createOrder(symbol, 'limit', exitSide, quantity, signal.takeProfit);
+          await exchange.createOrder(symbol, 'stop_market', exitSide, quantity, stopLoss);
+          await exchange.createOrder(symbol, 'limit', exitSide, quantity, takeProfit);
           
           // Track position
           positions.push({
             symbol,
-            side: displaySide.toLowerCase(),
+            side: positionSide,
             entry: price,
             quantity,
-            stopLoss: signal.stopLoss,
-            takeProfit: signal.takeProfit,
+            stopLoss,
+            takeProfit,
             confidence: signal.confidence,
             timestamp: Date.now(),
           });
+          botState.mode = isLongSignal ? 'LONG_RIDE' : 'SHORT_RIDE';
+          botState.lastSide = isLongSignal ? 'LONG' : 'SHORT';
+          botState.lastEntryPrice = price;
+          botState.lastEntryAt = Date.now();
           
           logger.info(`Position opened successfully`);
         }
@@ -193,17 +226,29 @@ export async function example4_fullTradingLoop(exchange: any, logger: any) {
           if (currentPrice <= position.stopLoss) {
             logger.warn(`❌ ${position.symbol} Stop Loss hit`);
             // Close position...
+            botState.mode = 'IDLE';
+            botState.lastExitReason = 'stop_loss';
+            botState.lastExitAt = Date.now();
           } else if (currentPrice >= position.takeProfit) {
             logger.success(`✅ ${position.symbol} Take Profit hit`);
             // Close position...
+            botState.mode = 'IDLE';
+            botState.lastExitReason = 'take_profit';
+            botState.lastExitAt = Date.now();
           }
         } else {
           if (currentPrice >= position.stopLoss) {
             logger.warn(`❌ ${position.symbol} Stop Loss hit`);
             // Close position...
+            botState.mode = 'IDLE';
+            botState.lastExitReason = 'stop_loss';
+            botState.lastExitAt = Date.now();
           } else if (currentPrice <= position.takeProfit) {
             logger.success(`✅ ${position.symbol} Take Profit hit`);
             // Close position...
+            botState.mode = 'IDLE';
+            botState.lastExitReason = 'take_profit';
+            botState.lastExitAt = Date.now();
           }
         }
       }
@@ -212,7 +257,8 @@ export async function example4_fullTradingLoop(exchange: any, logger: any) {
       await new Promise(resolve => setTimeout(resolve, 60000)); // 1 minute
       
     } catch (error) {
-      logger.error(`Error in trading loop: ${error}`);
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error(`Error in trading loop: ${err.message}`);
       await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds
     }
   }

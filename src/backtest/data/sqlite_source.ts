@@ -88,7 +88,7 @@ export class SqliteHistoricalSource {
       return cached;
     }
     const duration = timeframeToMs(timeframe);
-    const stmt = this.db.prepare<CandleRow>(
+    const stmt = this.db.prepare<[string, string], CandleRow>(
       `SELECT timestamp, open, high, low, close, volume
        FROM ohlcv_data
        WHERE symbol = ? AND timeframe = ?
@@ -144,7 +144,7 @@ export class SqliteHistoricalSource {
       return;
     }
 
-    const stmt = this.db.prepare<MarketRow>(
+    const stmt = this.db.prepare<[string], MarketRow>(
       `SELECT timestamp, funding_rate, mark_price, index_price
        FROM market_data
        WHERE symbol = ?
