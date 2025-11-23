@@ -6,35 +6,12 @@ import { FsLogger } from './infra/fs/FsLogger';
 import { CONFIG } from './infra/config';
 import { StrategyRunner } from './app/strategy-runner';
 import { startBot } from './app/bot';
-import { Strategy } from './strategies/types';
-import { MlAdvancedStrategy } from './strategies/ml_advanced';
-import { MlProbabilityStrategy } from './strategies/ml_probability';
-
-function buildStrategy(logger: FsLogger): Strategy {
-  const choice = (CONFIG.STRATEGY || 'ml_advanced').toLowerCase();
-  switch (choice) {
-    case 'ml_probability':
-    case 'ml-probability': {
-      logger.info('strategy_selected', { name: 'ml_probability' });
-      return new MlProbabilityStrategy({ timeframe: CONFIG.ENTRY_TIMEFRAME });
-    }
-    case 'ml_advanced':
-    case 'ml-advanced':
-    default: {
-      if (choice !== 'ml_advanced' && choice !== 'ml-advanced') {
-        logger.warn('strategy_fallback', { requested: choice, fallback: 'ml_advanced' });
-      } else {
-        logger.info('strategy_selected', { name: 'ml_advanced' });
-      }
-      return new MlAdvancedStrategy();
-    }
-  }
-}
+import { MlProbability } from './strategies/ml_probability';
 
 async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
-  const strategy = buildStrategy(logger);
+  const strategy = MlProbability
   
   logger.info('environment_boot', {
     network: CONFIG.IS_TESTNET ? 'TESTNET' : 'PROD',
