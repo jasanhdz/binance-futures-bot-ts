@@ -20,6 +20,7 @@ function normalizeSymbol(raw?: string): string {
 const defaultSymbol = normalizeSymbol(process.env.SYMBOL || 'XRPUSDT') || 'XRPUSDT';
 const DEFAULT_CAPITAL_USAGE = Number(process.env.CAPITAL_USAGE_PCT ?? 0.85);
 const DEFAULT_LEVERAGE = Number(process.env.LEVERAGE ?? 100);
+const FORCE_ML_15M_ONLY = (process.env.ML_USE_15M_ONLY ?? '0') === '1';
 
 type SymbolDescriptor = {
   symbol: string;
@@ -305,6 +306,7 @@ export const CONFIG = {
   NO_TRADE_BAND_AROUND_EMA_SLOW: Number(process.env.NO_TRADE_BAND_AROUND_EMA_SLOW ?? 0.003), // 0.3%
 
   // ML gate duro
+  ML_USE_15M_ONLY: FORCE_ML_15M_ONLY,
   ML_MIN_PROB: Number(process.env.ML_MIN_PROB ?? 0.7),
   ML_MARGIN: Number(process.env.ML_MARGIN ?? 0.12), // diferencia min vs lado opuesto,
   ML_PRIMARY_MIN_GAP: Number(process.env.ML_PRIMARY_MIN_GAP ?? 0.1),
@@ -336,8 +338,10 @@ export const CONFIG = {
   ML_TP_VOLATILITY_EXIT_ATR: Number(process.env.ML_TP_VOLATILITY_EXIT_ATR ?? 0.02),
   ML_TP_VOLATILITY_SLOPE_FACTOR: Number(process.env.ML_TP_VOLATILITY_SLOPE_FACTOR ?? 0.6),
   ML_MODEL_TIMEFRAME:
-    process.env.ML_MODEL_TIMEFRAME ||
-    ((process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m'),
+    FORCE_ML_15M_ONLY
+      ? '15m'
+      : process.env.ML_MODEL_TIMEFRAME ||
+        ((process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '5m'),
   ML_SERVICE_URL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000',
 
   // Filtros de tendencia para permitir short

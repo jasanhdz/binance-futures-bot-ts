@@ -81,17 +81,21 @@ async function fetchMlProbabilities(
   primaryTimeframe: string,
   historyBars: number,
 ): Promise<MlProbabilityResponse | null> {
-  const primaryCandles = await loadCandles(ex, symbol, primaryTimeframe, historyBars);
+  const configAny = CONFIG as Record<string, unknown>;
+  const force15mOnly = resolveBool(configAny['ML_USE_15M_ONLY'], false);
+  const effectivePrimary = force15mOnly ? '15m' : primaryTimeframe;
+  const primaryCandles = await loadCandles(ex, symbol, effectivePrimary, historyBars);
   if (!primaryCandles) return null;
 
-  const configAny = CONFIG as Record<string, unknown>;
-  const extras = resolveExtraTimeframes(
-    {
-      extra: configAny['ML_EXTRA_TIMEFRAMES'],
-      additional: configAny['ML_ADDITIONAL_TIMEFRAMES'],
-    },
-    primaryTimeframe,
-  );
+  const extras = force15mOnly
+    ? []
+    : resolveExtraTimeframes(
+        {
+          extra: configAny['ML_EXTRA_TIMEFRAMES'],
+          additional: configAny['ML_ADDITIONAL_TIMEFRAMES'],
+        },
+        effectivePrimary,
+      );
   const extraCandles: Record<string, Candle[]> = {};
   for (const tf of extras) {
     const candles = await loadCandles(ex, symbol, tf, historyBars);
@@ -104,10 +108,10 @@ async function fetchMlProbabilities(
     const response = await mlClient.fetchProbabilities({
       symbol,
       candles: primaryCandles,
-      timeframe: primaryTimeframe,
+      timeframe: effectivePrimary,
       extraCandles,
     });
-    return response;
+    return force15mOnly ? { ...response, probabilities: {} } : response;
   } catch {
     return null;
   }
@@ -243,7 +247,8 @@ export async function intelligentTakeProfitMl(
   const reversalTriggered =
     Boolean(reversalDirection) && reversalVolume && lastBodyRatio >= reversalBodyThreshold;
 
-  const primaryTimeframe = CONFIG.ML_MODEL_TIMEFRAME || CONFIG.ENTRY_TIMEFRAME;
+  const force15mOnly = resolveBool(CONFIG.ML_USE_15M_ONLY, false);
+  const primaryTimeframe = force15mOnly ? '15m' : CONFIG.ML_MODEL_TIMEFRAME || CONFIG.ENTRY_TIMEFRAME;
   const baseMargin = Number(CONFIG.ML_MARGIN ?? 0.12);
   const baseLongThreshold = Number(CONFIG.ML_THRESHOLD_LONG ?? 0.5);
   const baseShortThreshold = Number(CONFIG.ML_THRESHOLD_SHORT ?? 0.5);
@@ -275,9 +280,11 @@ export async function intelligentTakeProfitMl(
     long_prob: mlResponse.long_prob,
     short_prob: mlResponse.short_prob,
   };
-  const extraEntries = Array.from(tfMap.entries())
-    .filter(([tf]) => tf !== primaryTimeframe)
-    .map(([tf, value]) => ({ timeframe: tf, ...value }));
+  const extraEntries = force15mOnly
+    ? []
+    : Array.from(tfMap.entries())
+        .filter(([tf]) => tf !== primaryTimeframe)
+        .map(([tf, value]) => ({ timeframe: tf, ...value }));
 
   const extraDecisions = extraEntries.map((entry) => {
     const direction = pickDirection({

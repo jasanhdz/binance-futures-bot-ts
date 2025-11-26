@@ -43,9 +43,13 @@ export class MlProbabilityStrategy implements Strategy {
   }
 
   private resolveTimeframe(config: StrategyContext['config']): string {
+    const cfg = config as any;
+    if (resolveBool(cfg.ML_USE_15M_ONLY, false)) {
+      return '15m';
+    }
     const tf =
-      (config as any).ML_MODEL_TIMEFRAME ||
-      (config as any).ENTRY_TIMEFRAME ||
+      cfg.ML_MODEL_TIMEFRAME ||
+      cfg.ENTRY_TIMEFRAME ||
       this.timeframe;
     return typeof tf === 'string' && tf.length ? tf : this.timeframe;
   }
@@ -66,17 +70,17 @@ export class MlProbabilityStrategy implements Strategy {
   }
 
   private formatTimeframeSegment(timeframe: string, longVal: number | null, shortVal: number | null): string {
-  if (longVal === null || shortVal === null) return `${timeframe} long=n/a short=n/a`;
+    if (longVal === null || shortVal === null) return `${timeframe} long=n/a short=n/a`;
 
-  const higher = Math.max(longVal, shortVal);
-  const longColor = longVal === higher ? COLORS.CYAN : COLORS.RESET;
-  const shortColor = shortVal === higher ? COLORS.CYAN : COLORS.RESET;
+    const higher = Math.max(longVal, shortVal);
+    const longColor = longVal === higher ? COLORS.CYAN : COLORS.RESET;
+    const shortColor = shortVal === higher ? COLORS.CYAN : COLORS.RESET;
 
-  const longDisplay = this.formatColoredProb(longVal, longColor);
-  const shortDisplay = this.formatColoredProb(shortVal, shortColor);
+    const longDisplay = this.formatColoredProb(longVal, longColor);
+    const shortDisplay = this.formatColoredProb(shortVal, shortColor);
 
-  return `${timeframe} long=${longDisplay}/short=${shortDisplay}`;
-}
+    return `${timeframe} long=${longDisplay}/short=${shortDisplay}`;
+  }
   private detectProbabilityConflict(primary: MlProbabilityResponse, extra?: { long_prob: number; short_prob: number }) {
     if (!primary || !extra) return null;
     const primaryDir = primary.long_prob - primary.short_prob;
@@ -232,6 +236,7 @@ export class MlProbabilityStrategy implements Strategy {
       Math.max(shortThreshold - 0.05, 0.55),
     );
     const primaryWeight = Math.min(Math.max(this.resolveNumber(configMap.ML_PRIMARY_WEIGHT, 0.6), 0.0), 1.0);
+    const force15mOnly = resolveBool(configMap.ML_USE_15M_ONLY, false);
 
     const allowLongs = resolveBool(configMap.ALLOW_LONGS, true);
     const allowShorts = resolveBool(configMap.ALLOW_SHORTS, true);
@@ -252,7 +257,7 @@ export class MlProbabilityStrategy implements Strategy {
       gap: number;
     }> = [];
 
-    if (probs.probabilities) {
+    if (!force15mOnly && probs.probabilities) {
       for (const [tf, tfProbs] of Object.entries(probs.probabilities)) {
         if (tf === probs.primary_timeframe) continue;
         const direction = pickDirection({
@@ -272,7 +277,7 @@ export class MlProbabilityStrategy implements Strategy {
       }
     }
 
-    const enforceTfAlignment = resolveBool(configMap.ML_REQUIRE_TF_ALIGNMENT, true);
+    const enforceTfAlignment = force15mOnly ? false : resolveBool(configMap.ML_REQUIRE_TF_ALIGNMENT, true);
     const fifteenDecision = extraDecisions.find((entry) => entry.timeframe.toLowerCase() === '15m');
     const longProb15m = fifteenDecision?.long ?? null;
     const shortProb15m = fifteenDecision?.short ?? null;
@@ -325,6 +330,7 @@ export class MlProbabilityStrategy implements Strategy {
       primaryAlignmentDirection,
       fifteenAlignmentDirection,
       aligned,
+      force15mOnly,
     };
 
     let tfAligned = true;
@@ -343,13 +349,19 @@ export class MlProbabilityStrategy implements Strategy {
         `symbol=${this.formatColoredProb(requestSymbol, COLORS.CYAN)}`,
         this.formatTimeframeSegment(probs.primary_timeframe, longProb, shortProb),
       ];
-      if (fifteenDecision) {
-        reasonSegments.push(
-          this.formatTimeframeSegment(fifteenDecision.timeframe, fifteenDecision.long, fifteenDecision.short),
-        );
-      } else {
-        reasonSegments.push('15m unavailable');
+      
+      // Only add 15m info if it's not already the primary timeframe
+      const isPrimary15m = probs.primary_timeframe.toLowerCase() === '15m';
+      if (!isPrimary15m) {
+        if (fifteenDecision) {
+          reasonSegments.push(
+            this.formatTimeframeSegment(fifteenDecision.timeframe, fifteenDecision.long, fifteenDecision.short),
+          );
+        } else {
+          reasonSegments.push('15m unavailable');
+        }
       }
+      
       return {
         action: 'IDLE',
         reason: reasonSegments.join(' | '),
@@ -494,6 +506,8 @@ export class MlProbabilityStrategy implements Strategy {
     const historyBars = this.resolveHistoryBars(config);
 
     this.timeframe = timeframe;
+    const cfgMap = config as unknown as Record<string, unknown>;
+    const force15mOnly = resolveBool(cfgMap.ML_USE_15M_ONLY, false);
 
     const candles = await exchange.getCandles(symbol, timeframe, historyBars);
     if (candles.length < historyBars) {
@@ -506,14 +520,15 @@ export class MlProbabilityStrategy implements Strategy {
       return { action: 'IDLE', reason: 'few_candles' };
     }
 
-    const cfgMap = config as unknown as Record<string, unknown>;
-    const extraTimeframes = resolveExtraTimeframes(
-      {
-        extra: cfgMap.ML_EXTRA_TIMEFRAMES,
-        additional: cfgMap.ML_ADDITIONAL_TIMEFRAMES,
-      },
-      timeframe,
-    );
+    const extraTimeframes = force15mOnly
+      ? []
+      : resolveExtraTimeframes(
+          {
+            extra: cfgMap.ML_EXTRA_TIMEFRAMES,
+            additional: cfgMap.ML_ADDITIONAL_TIMEFRAMES,
+          },
+          timeframe,
+        );
     const extraCandles: Record<string, Candle[]> = {};
     const extraHistoryBars = Math.max(historyBars, 256);
 
@@ -548,7 +563,7 @@ export class MlProbabilityStrategy implements Strategy {
         extraCandles,
       });
 
-      const configMap = config as unknown as Record<string, unknown>;
+      const configMap = cfgMap;
       const filterLookback = Math.min(
         candles.length,
         Math.max(this.resolveNumber(configMap.ML_FILTER_LOOKBACK, 60), 20),
@@ -556,56 +571,63 @@ export class MlProbabilityStrategy implements Strategy {
       const filterCandles = candles.slice(-filterLookback);
       const filters = evaluateMlFilters(filterCandles, configMap);
 
-      const primaryProbs = response;
-      const preferredTf = (configMap.ML_CONFLICT_TF as string) || '15m';
-      const primaryTf = response.primary_timeframe;
-      let extraPrimary: { long_prob: number; short_prob: number } | undefined;
-      if (preferredTf && response.probabilities?.[preferredTf]) {
-        extraPrimary = response.probabilities[preferredTf];
-      } else if (primaryTf && response.probabilities) {
-        const entries = Object.entries(response.probabilities).filter(([tf]) => tf !== primaryTf);
-        if (entries.length) {
-          const [tf, probs] = entries.sort((a, b) => a[0].localeCompare(b[0]))[0];
-          extraPrimary = probs;
+      if (!force15mOnly) {
+        const primaryProbs = response;
+        const preferredTf = (configMap.ML_CONFLICT_TF as string) || '15m';
+        const primaryTf = response.primary_timeframe;
+        let extraPrimary: { long_prob: number; short_prob: number } | undefined;
+        if (preferredTf && response.probabilities?.[preferredTf]) {
+          extraPrimary = response.probabilities[preferredTf];
+        } else if (primaryTf && response.probabilities) {
+          const entries = Object.entries(response.probabilities).filter(([tf]) => tf !== primaryTf);
+          if (entries.length) {
+            const [tf, probs] = entries.sort((a, b) => a[0].localeCompare(b[0]))[0];
+            extraPrimary = probs;
+          }
+        }
+
+        if (!extraPrimary && preferredTf) {
+          logger?.warn?.('ml_conflict_tf_missing', {
+            symbol,
+            preferredTf,
+            available: response.probabilities ? Object.keys(response.probabilities) : [],
+          });
+        }
+
+        const conflict = this.detectProbabilityConflict(primaryProbs, extraPrimary);
+        if (conflict) {
+          const conflictReason = await this.evaluateConflictFilter({
+            symbol,
+            exchange,
+            config: configMap,
+            primaryProbs,
+            extraProbs: extraPrimary,
+            primaryTimeframe: response.primary_timeframe,
+            extraCandles,
+            logger,
+          });
+          if (conflictReason) {
+            return {
+              action: 'IDLE',
+              reason: conflictReason.reason,
+              diagnostics: {
+                conflict: true,
+                conflictReason: conflictReason.reason,
+                primaryProbs,
+                extraProbs: extraPrimary,
+                techDiagnostics: conflictReason.diagnostics,
+              },
+            };
+          }
         }
       }
 
-      if (!extraPrimary && preferredTf) {
-        logger?.warn?.('ml_conflict_tf_missing', {
-          symbol,
-          preferredTf,
-          available: response.probabilities ? Object.keys(response.probabilities) : [],
-        });
-      }
+      const effectiveResponse =
+        force15mOnly && response.probabilities
+          ? { ...response, probabilities: {} }
+          : response;
 
-      const conflict = this.detectProbabilityConflict(primaryProbs, extraPrimary);
-      if (conflict) {
-        const conflictReason = await this.evaluateConflictFilter({
-          symbol,
-          exchange,
-          config: configMap,
-          primaryProbs,
-          extraProbs: extraPrimary,
-          primaryTimeframe: response.primary_timeframe,
-          extraCandles,
-          logger,
-        });
-        if (conflictReason) {
-          return {
-            action: 'IDLE',
-            reason: conflictReason.reason,
-            diagnostics: {
-              conflict: true,
-              conflictReason: conflictReason.reason,
-              primaryProbs,
-              extraProbs: extraPrimary,
-              techDiagnostics: conflictReason.diagnostics,
-            },
-          };
-        }
-      }
-
-      return this.buildSignal(symbol, response, configMap, filters);
+      return this.buildSignal(symbol, effectiveResponse, configMap, filters);
     } catch (error) {
       if (error instanceof MlServiceError) {
         logger?.warn('ml_service_error', {
