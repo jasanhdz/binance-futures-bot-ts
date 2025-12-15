@@ -25,7 +25,7 @@ export class MlConfigWatcher {
 
     private constructor() {
         // Path to thresholds_config.json (absolute from project root)
-        const projectRoot = path.resolve(__dirname, '../../../..');
+        const projectRoot = path.resolve(__dirname, '../../..');
         this.configPath = path.join(projectRoot, 'models', 'advanced', 'thresholds_config.json');
         
         console.log(`[MlConfigWatcher] Watching config at: ${this.configPath}`);
