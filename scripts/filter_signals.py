@@ -14,9 +14,6 @@ from typing import Any, Dict, Iterable, List
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 TARGET_ACTIONS = {"ENTER_LONG", "ENTER_SHORT"}
-RE_REASON_TIMEFRAME = re.compile(
-    r"^(?P<tf>[0-9]+[smhd])\s+long=(?P<long>-?\d+(?:\.\d+)?)\s*/\s*short=(?P<short>-?\d+(?:\.\d+)?)$"
-)
 
 
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
@@ -66,84 +63,37 @@ def to_number(value: str) -> Any:
         return value
 
 
-def normalize_key(raw: str) -> str:
-    token = raw.strip().lower().replace(" ", "_")
-    token = re.sub(r"[^a-z0-9_]+", "_", token)
-    token = re.sub(r"_+", "_", token).strip("_")
-    return token or raw
-
-
-def parse_reason(reason: str) -> Dict[str, Any]:
-    fields: Dict[str, Any] = {}
-    if not reason:
-        return fields
-
-    parts = [segment.strip() for segment in reason.split("|")]
-    tag_count = 0
-    for index, part in enumerate(parts):
-        if not part:
-            continue
-
-        match = RE_REASON_TIMEFRAME.match(part)
-        if match:
-            tf = match.group("tf")
-            long_val = to_number(match.group("long"))
-            short_val = to_number(match.group("short"))
-            fields[f"{tf}_long"] = long_val
-            fields[f"{tf}_short"] = short_val
-            continue
-
-        if "=" in part:
-            key, value = part.split("=", 1)
-            key_norm = normalize_key(key)
-            fields[key_norm] = to_number(value.strip())
-            continue
-
-        tag_key = "tag" if "tag" not in fields else f"tag_{tag_count}"
-        fields[tag_key] = part
-        tag_count += 1
-
-    return fields
-
-
 def round_probabilities(row: Dict[str, Any]) -> None:
-    for key, value in list(row.items()):
+    """Round probability fields to 2 decimals."""
+    for key, value in list(row.items()).copy():
         if not isinstance(value, float):
             continue
         lower = key.lower()
-        if "prob" in lower or lower.endswith("_long") or lower.endswith("_short"):
+        if "prob" in lower or "threshold" in lower or lower.endswith("_pnl"):
             row[key] = round(value, 2)
 
 
-def add_reason_field(row: Dict[str, Any], key: str, value: Any) -> None:
-    if key in row and row[key] == value:
-        return
-    if key in row:
-        suffix = 1
-        candidate = f"{key}_reason"
-        while candidate in row and row[candidate] != value:
-            suffix += 1
-            candidate = f"{key}_reason{suffix}"
-        row[candidate] = value
-    else:
-        row[key] = value
-
-
 def build_csv_row(timestamp: str, cleaned_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a flat CSV row from the ctx payload."""
     row: Dict[str, Any] = {"date": timestamp}
-    for key, value in cleaned_ctx.items():
-        if key == "diagnostics":
-            if isinstance(value, dict):
-                for metric in ("emaBase", "atr", "rsi", "bodyRatio"):
-                    if metric in value:
-                        row[metric] = value[metric]
-            continue
-        if key == "reason" and isinstance(value, str):
-            reason_fields = parse_reason(value)
-            for reason_key, reason_val in reason_fields.items():
-                add_reason_field(row, reason_key, reason_val)
-            continue
-        row[key] = value
+    
+    # Extract top-level fields
+    for key in ["symbol", "action", "reason"]:
+        if key in cleaned_ctx:
+            row[key] = cleaned_ctx[key]
+    
+    # Extract diagnostics (new ML format)
+    diagnostics = cleaned_ctx.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        for key in ["symbol", "timeframe", "longProb", "shortProb", "threshold"]:
+            if key in diagnostics:
+                row[key] = diagnostics[key]
+        
+        # Extract pnl_config if present
+        pnl_config = diagnostics.get("pnl_config")
+        if isinstance(pnl_config, (int, float)):
+            row["pnl_config"] = pnl_config
+    
     round_probabilities(row)
     return row
 
@@ -199,21 +149,17 @@ def main(argv: Iterable[str] = None) -> None:
             handle.write(json.dumps(payload, ensure_ascii=False))
             handle.write("\n")
 
+    # Define column order for CSV (ML Probability fields)
     desired_order = [
         "date",
         "symbol",
+        "timeframe",
         "action",
-        "5m_long",
-        "5m_short",
-        "15m_long",
-        "15m_short",
-        "score",
-        "tag",
-        "mode",
-        "emaBase",
-        "atr",
-        "rsi",
-        "bodyRatio",
+        "longProb",
+        "shortProb",
+        "threshold",
+        "pnl_config",
+        "reason",
     ]
     all_fields = {key for row in csv_rows for key in row.keys()}
     remaining = [field for field in sorted(all_fields) if field not in desired_order]

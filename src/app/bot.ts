@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { StrategyRunner } from './strategy-runner';
-import { checkTakeProfit } from './guards/take-profit';
+
 import { syncStateGuard } from './guards/sync-state';
 import { bracketsGuard } from './guards/ensure-brackets';
 import {
@@ -8,8 +8,7 @@ import {
   isRateLimited,
   noteRateLimitFromError,
 } from '../infra/rate-limit';
-import { registerIntelligentTpGuard } from './guards/intelligent-tp-supervisor';
-import { enforceProfitGuard } from './guards/profit-guard';
+
 
 export function startBot(deps: {
   runner: StrategyRunner;
@@ -26,12 +25,7 @@ export function startBot(deps: {
   let seq = 0;
   let lastRateLimitLog = 0;
 
-  registerIntelligentTpGuard({
-    symbol,
-    exchange,
-    state,
-    logger,
-  });
+
 
   const tick = async () => {
     if (running) return;
@@ -63,8 +57,7 @@ export function startBot(deps: {
       await syncStateGuard(symbol, exchange, state, logger);
       await bracketsGuard(symbol, exchange, state, logger);
 
-      await checkTakeProfit(symbol, exchange, state, logger);
-      await enforceProfitGuard(symbol, exchange, state, logger);
+
 
       await runner.tick(symbol);
     } catch (e: any) {

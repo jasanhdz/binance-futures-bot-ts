@@ -4,6 +4,7 @@ import { Logger } from '../core/ports/Logger';
 import { StateStore } from '../core/ports/StateStore';
 import { BotState, Side } from '../core/types';
 import { sizeByBudget, floorToStep, ceilToStep } from '../core/risk/sizing';
+import { MlConfigWatcher } from '../config/MlConfigWatcher';
 import { computeStopFromLiqTicks, roundToTick } from '../core/risk/stop';
 import { Strategy } from '../strategies/types';
 import { atr } from '../core/indicators/atr';
@@ -282,7 +283,11 @@ export class StrategyRunner {
       return;
     }
 
-    await exchange.setLeverage(symbol, config.LEVERAGE);
+    const tf = (config as any).ENTRY_TIMEFRAME || '1h';
+    const mlLeverage = MlConfigWatcher.getInstance().getLeverage(symbol, tf);
+    const leverage = mlLeverage > 0 ? mlLeverage : config.LEVERAGE;
+
+    await exchange.setLeverage(symbol, leverage);
     const price = await markPrice();
 
     const gateResult = await this.evaluatePostExitGate({
@@ -308,7 +313,7 @@ export class StrategyRunner {
       return;
     }
 
-    const filters = await exchange.getSymbolFilters(symbol, config.LEVERAGE);
+    const filters = await exchange.getSymbolFilters(symbol, leverage);
 
     logger.debug('filters', { symbol, ...filters });
 
@@ -345,7 +350,7 @@ export class StrategyRunner {
       reserve: config.MIN_WALLET_RESERVE_USDT,
       capitalPct,
       price,
-      leverage: config.LEVERAGE,
+      leverage: leverage,
       feePct: config.FEE_BUFFER_PCT,
       filters,
     });
@@ -359,7 +364,7 @@ export class StrategyRunner {
     let usedBalance =
       sizingDiagnostics && typeof sizingDiagnostics['initMargin'] === 'number'
         ? (sizingDiagnostics['initMargin'] as number)
-        : (qty * price) / Math.max(1, config.LEVERAGE);
+        : (qty * price) / Math.max(1, leverage);
     let sizingFees =
       sizingDiagnostics && typeof sizingDiagnostics['fees'] === 'number'
         ? (sizingDiagnostics['fees'] as number)
@@ -427,7 +432,7 @@ export class StrategyRunner {
       return; // aborta para evitar el error de Binance
     }
 
-    usedBalance = (qty * price) / Math.max(1, config.LEVERAGE);
+    usedBalance = (qty * price) / Math.max(1, leverage);
     sizingFees = qty * price * config.FEE_BUFFER_PCT;
     commissionEstimate = sizingFees * 2;
 
@@ -481,37 +486,49 @@ export class StrategyRunner {
       logger.error('trade_book_open_fail', { symbol, err: err?.message || String(err) });
     }
 
-    // ------ Stop / TP de bracket inicial (igual que antes) ------
-    const ticks = config.SL_TICKS_ABOVE_LIQ_MAP[symbol] ?? config.SL_TICKS_ABOVE_LIQ_DEFAULT;
-    const liq = (await exchange.readLiquidationPrice(symbol, side)) ?? price;
-    const stop = computeStopFromLiqTicks({
-      side,
-      liqPrice: liq,
-      currentPrice: price,
-      entryPrice: avgPrice,
-      tickSize: filters.tickSize,
-      pricePrecision: filters.pricePrecision,
-      ticksAboveLiq: ticks,
-      liqBufferRatio: config.STOP_LIQ_BUFFER_RATIO,
-    });
-    await exchange.placeStopClose(symbol, side, stop);
-    logger.info('stop_upserted', { symbol, side, stop, liq, ticks });
+    // ------ Stop / TP Institucional (ATR Based) ------
+    // 1. Calcular ATR
+    let atrVal = 0;
+    try {
+        const candles = await exchange.getCandles(symbol, tf, 100);
+        atrVal = atr(candles, 14);
+    } catch (e) {
+        logger.warn('atr_calc_fail', { symbol, error: String(e) });
+        // Fallback: 2% del precio
+        atrVal = price * 0.02;
+    }
 
-    const r = config.TP_ROE;
-    const fee = config.FEE_BUFFER_PCT;
-    const tpRaw =
-      side === 'LONG'
-        ? avgPrice * (1 + r / config.LEVERAGE + fee)
-        : avgPrice * (1 - r / config.LEVERAGE - fee);
+    // 2. Definir Stop Loss (2.0 ATR)
+    const slMult = 2.0;
+    const slDist = atrVal * slMult;
+    let stopRaw = side === 'LONG' ? avgPrice - slDist : avgPrice + slDist;
+    
+    // Safety: No poner SL más allá de liquidación
+    const liq = (await exchange.readLiquidationPrice(symbol, side)) ?? (side === 'LONG' ? 0 : Infinity);
+    if (side === 'LONG') {
+        stopRaw = Math.max(stopRaw, liq * 1.005); // 0.5% buffer sobre liq
+    } else {
+        stopRaw = Math.min(stopRaw, liq * 0.995);
+    }
+    
+    const stop = roundToTick(stopRaw, filters.tickSize, filters.pricePrecision);
+    await exchange.placeStopClose(symbol, side, stop);
+    logger.info('stop_upserted_atr', { symbol, side, stop, atr: atrVal, mult: slMult });
+
+    // 3. Definir Take Profit (1.5 R:R)
+    const rrRatio = 1.5;
+    const tpDist = slDist * rrRatio;
+    const tpRaw = side === 'LONG' ? avgPrice + tpDist : avgPrice - tpDist;
     const tp = roundToTick(tpRaw, filters.tickSize, filters.pricePrecision);
+    
     await exchange.placeTpClose(symbol, side, tp);
-    logger.info('tp_upserted', { symbol, side, tp, roe: r });
+    logger.info('tp_upserted_rr', { symbol, side, tp, rr: rrRatio });
 
     applyStatePatch({
       mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
       lastSide: side,
       lastEntryPrice: avgPrice,
-      lastLeverage: config.LEVERAGE,
+      lastLeverage: leverage,
       lastEntryAt: Date.now(),
       peakRoe: 0,
       bracketsArmedAt: Date.now(),
