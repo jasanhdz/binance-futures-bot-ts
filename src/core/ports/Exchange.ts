@@ -61,8 +61,8 @@ export interface Exchange {
     side: Side,
     quantity: number,
   ): Promise<{ avgPrice: number; orderId: string }>;
-  placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<void>;
-  placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<void>;
+  placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<boolean>;
+  placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<boolean>;
   closeSideMarketSafe(
     symbol: string,
     side: Side,
@@ -74,6 +74,18 @@ export interface Exchange {
     symbol: string,
     side: Side,
   ): Promise<{ stopPrice: number; orderId: string } | null>; // para upsert
+  
+  listCloseOrdersForSide(
+    symbol: string,
+    side: Side,
+  ): Promise<
+    {
+      orderId: string;
+      type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
+      stopPrice: number;
+    }[]
+  >;
+
   cancelOrderById(symbol: string, orderId: string): Promise<void>;
 
   getRecentFills(symbol: string, startTime?: number, limit?: number): Promise<TradeFill[]>;

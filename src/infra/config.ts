@@ -41,29 +41,56 @@ function parseSymbolList(raw?: string): string[] {
 }
 
 // --- Symbol Parsing Logic ---
-type SymbolDescriptor = { symbol: string; leverage?: number; capitalUsage?: number };
+// --- Symbol Parsing Logic ---
+type SymbolDescriptor = { symbol: string; leverage?: number; capitalUsage?: number; timeframe?: string };
 const rawSymbols = process.env.SYMBOLS || '';
 const tokens = rawSymbols.split(',').map(s => s.trim()).filter(s => s.length > 0);
 const descriptors: SymbolDescriptor[] = [];
 const seen = new Map<string, number>();
 
 for (const token of tokens) {
-    const [symRaw, part1, part2] = token.split(':');
+    const [symRaw, part1, part2, part3] = token.split(':');
     const symbol = normalizeSymbol(symRaw);
     if (!symbol) continue;
 
     let leverage: number | undefined;
     let capitalUsage: number | undefined;
+    let timeframe: string | undefined;
 
-    if (part2 !== undefined) {
+    // Helper to identify if a string looks like a timeframe
+    const isTimeframe = (s?: string) => s && ['1m', '3m', '5m', '15m', '1h', '4h'].includes(s);
+
+    if (part3 !== undefined) {
+      // SYMBOL:LEV:CAP:TF
       leverage = parsePositiveNumber(part1);
       capitalUsage = parseShare(part2);
-    } else if (part1 !== undefined) {
-      const shareCandidate = parseShare(part1);
-      if (shareCandidate !== undefined && shareCandidate <= 1) {
-        capitalUsage = shareCandidate;
+      if (isTimeframe(part3)) timeframe = part3;
+    } else if (part2 !== undefined) {
+      // SYMBOL:LEV:CAP or SYMBOL:LEV:TF or SYMBOL:CAP:TF
+      if (isTimeframe(part2)) {
+         timeframe = part2;
+         // part1 could be lev or cap
+         const shareCandidate = parseShare(part1);
+         if (shareCandidate !== undefined && shareCandidate <= 1) {
+            capitalUsage = shareCandidate;
+         } else {
+            leverage = parsePositiveNumber(part1);
+         }
       } else {
-        leverage = parsePositiveNumber(part1);
+         leverage = parsePositiveNumber(part1);
+         capitalUsage = parseShare(part2);
+      }
+    } else if (part1 !== undefined) {
+      // SYMBOL:LEV or SYMBOL:CAP or SYMBOL:TF
+      if (isTimeframe(part1)) {
+        timeframe = part1;
+      } else {
+        const shareCandidate = parseShare(part1);
+        if (shareCandidate !== undefined && shareCandidate <= 1) {
+          capitalUsage = shareCandidate;
+        } else {
+          leverage = parsePositiveNumber(part1);
+        }
       }
     }
     
@@ -71,19 +98,22 @@ for (const token of tokens) {
         const idx = seen.get(symbol)!;
         if (leverage !== undefined) descriptors[idx].leverage = leverage;
         if (capitalUsage !== undefined) descriptors[idx].capitalUsage = capitalUsage;
+        if (timeframe !== undefined) descriptors[idx].timeframe = timeframe;
     } else {
         seen.set(symbol, descriptors.length);
-        descriptors.push({ symbol, leverage, capitalUsage });
+        descriptors.push({ symbol, leverage, capitalUsage, timeframe });
     }
 }
 
 const SYMBOL_LIST = descriptors.map(d => d.symbol);
 const SYMBOL_ALLOCATIONS: Record<string, number> = {};
 const SYMBOL_LEVERAGE: Record<string, number> = {};
+const SYMBOL_TIMEFRAMES: Record<string, string> = {};
 
 for (const desc of descriptors) {
     if (desc.leverage) SYMBOL_LEVERAGE[desc.symbol] = desc.leverage;
     if (desc.capitalUsage) SYMBOL_ALLOCATIONS[desc.symbol] = desc.capitalUsage;
+    if (desc.timeframe) SYMBOL_TIMEFRAMES[desc.symbol] = desc.timeframe;
 }
 
 // --- Defaults ---
@@ -130,9 +160,20 @@ export const CONFIG = {
   POST_EXIT_BREAKOUT_VOL_FACTOR: Number(process.env.POST_EXIT_BREAKOUT_VOL_FACTOR ?? 1.3),
   VOL_FACTOR_REENTER: Number(process.env.VOL_FACTOR_REENTER ?? 1.5), // Fallback used in logic
   
+  // --- Stops iniciales (Legacy brackets guard) ---
+  SL_TICKS_ABOVE_LIQ_MAP: {
+    XRPUSDT: 69,
+    ETHUSDT: 8,
+    BTCUSDT: 50,
+  } as Record<string, number>,
+  SL_TICKS_ABOVE_LIQ_DEFAULT: Number(process.env.SL_TICKS_ABOVE_LIQ_DEFAULT ?? 69),
+  STOP_LIQ_BUFFER_RATIO: Number(process.env.STOP_LIQ_BUFFER_RATIO ?? 0.08),
+  TP_ROE: Number(process.env.TP_ROE ?? 1.0),
+  
   // --- Symbol Allocations ---
   SYMBOL_ALLOCATIONS,
   SYMBOL_LEVERAGE,
+  SYMBOL_TIMEFRAMES,
   SYMBOL_SHARE: DEFAULT_CAPITAL_USAGE, // Fallback
 } as const;
 

@@ -34,7 +34,11 @@ export function sizeByBudget(params: {
   filters: SymbolFilters;
 }):
   | { qty: number; diagnostics: Record<string, number | string | boolean> }
-  | { qty: 0; reason: 'budget_insufficient' | 'margin_unfit' | 'risk_cap_below_min' } {
+  | {
+      qty: 0;
+      reason: 'budget_insufficient' | 'margin_unfit' | 'risk_cap_below_min';
+      debug?: Record<string, number | string | boolean>;
+    } {
   const { usdtBalance, reserve, capitalPct, price, leverage, feePct, filters } = params;
 
   // Guardas básicas
@@ -82,7 +86,20 @@ export function sizeByBudget(params: {
       reducedByCap = true;
     }
     // Si el cap queda por debajo del mínimo nocional exigido por el símbolo → no se puede abrir
-    if (qty < minQtyByNotional) return { qty: 0, reason: 'risk_cap_below_min' };
+  if (qty < minQtyByNotional) {
+    return {
+      qty: 0,
+      reason: 'risk_cap_below_min',
+      debug: {
+        minQtyByNotional,
+        maxQtyByCap,
+        price,
+        stepSize,
+        minNotional,
+        notionalCap: safeCap,
+      },
+    };
+  }
   }
 
   // 6) Diagnósticos para logging/telemetría

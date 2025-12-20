@@ -51,6 +51,8 @@ export type BotState = {
   postExitReady?: boolean;
   postExitCondition?: 'pullback' | 'breakout' | 'timeout';
   lowFundsActive?: boolean;
+  lastMlProb?: number; // Probabilidad del modelo ML al entrar
+  lastMlThreshold?: number; // Threshold usado al entrar
 };
 
 type SignalCommon = {

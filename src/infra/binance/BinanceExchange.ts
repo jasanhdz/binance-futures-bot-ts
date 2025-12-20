@@ -412,7 +412,15 @@ export class BinanceExchange implements Exchange {
         this.getExchangeInfoSnapshot(),
       ]);
       const capItem = bracketsResponse.find((r: any) => r.symbol === symbol);
-      const capTier = capItem?.brackets?.find((b: any) => leverage <= Number(b.initialLeverage));
+      let capTier: any = undefined;
+      if (capItem?.brackets?.length) {
+        // Ordenar ascendente por initialLeverage para tomar la primera que cubra el leverage solicitado
+        const sorted = [...capItem.brackets].sort(
+          (a: any, b: any) => Number(a.initialLeverage) - Number(b.initialLeverage),
+        );
+        const fallback = sorted.length ? sorted[sorted.length - 1] : undefined;
+        capTier = sorted.find((b: any) => leverage <= Number(b.initialLeverage)) ?? fallback;
+      }
 
       const s = exchangeInfo.symbols.find((x: any) => x.symbol === symbol);
       if (!s) throw new Error(`Símbolo no encontrado en exchangeInfo: ${symbol}`);
@@ -521,7 +529,7 @@ export class BinanceExchange implements Exchange {
     }
   }
 
-  async placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<void> {
+  async placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
     const base: any = {
       symbol,
@@ -542,19 +550,94 @@ export class BinanceExchange implements Exchange {
         side,
         stopPrice,
       });
+      return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
+      
+      // Check if error is about algo orders
+      const msg = (e?.message || '').toLowerCase();
+      if (msg.includes('algo') || msg.includes('order type not supported')) {
+        this.log.debug('api_stop_fallback_to_algo', { symbol, side, stopPrice });
+        try {
+          await this.placeStopCloseAlgo(symbol, side, stopPrice);
+          return true;
+        } catch (algoErr: any) {
+          const algoMsg = (algoErr?.message || '').toLowerCase();
+          // -4130 = order already exists, which is OK
+          if (algoMsg.includes('-4130') || algoMsg.includes('already') || algoMsg.includes('existing')) {
+            this.log.debug('api_stop_algo_already_exists', { symbol, side });
+            return false; // Silent success, but didn't create new
+          }
+          this.log.error('api_stop_algo_fail', { symbol, err: algoErr?.message || String(algoErr) });
+          throw algoErr;
+        }
+      }
+      
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
         this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice });
-        return;
+        return true;
       }
       throw e;
     }
   }
 
-  async placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<void> {
+  private async placeStopCloseAlgo(symbol: string, side: Side, stopPrice: number): Promise<void> {
+    const hedge = await this.isHedgeMode();
+    
+    const params: any = {
+      symbol,
+      algoType: 'CONDITIONAL',
+      type: 'STOP_MARKET',
+      side: side === 'LONG' ? 'SELL' : 'BUY',
+      triggerPrice: String(stopPrice),
+      workingType: 'MARK_PRICE',
+      closePosition: 'true',
+    };
+    
+    if (hedge) {
+      params.positionSide = side;
+    }
+
+    const timestamp = Date.now();
+    const queryString = Object.keys(params)
+      .map(key => `${key}=${encodeURIComponent(params[key])}`)
+      .join('&') + `&timestamp=${timestamp}`;
+
+    const signature = require('crypto')
+      .createHmac('sha256', CONFIG.API_SECRET)
+      .update(queryString)
+      .digest('hex');
+
+    const signedParams = {
+      ...params,
+      timestamp,
+      signature,
+    };
+
+    await this.enqueue(async () => {
+      const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
+        method: 'POST',
+        headers: {
+          'X-MBX-APIKEY': CONFIG.API_KEY,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams(signedParams as any).toString(),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Algo Order failed: ${response.status} ${errorText}`);
+      }
+      
+      return response.json();
+    });
+    
+    this.log.info('api_stop_algo_placed', { symbol, side, stopPrice });
+  }
+
+  async placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
     const base: any = {
       symbol,
@@ -575,16 +658,91 @@ export class BinanceExchange implements Exchange {
         side,
         tp: triggerPrice,
       });
+      return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
+      
+      // Check if error is about algo orders
+      const msg = (e?.message || '').toLowerCase();
+      if (msg.includes('algo') || msg.includes('order type not supported')) {
+        this.log.debug('api_tp_fallback_to_algo', { symbol, side, tp: triggerPrice });
+        try {
+          await this.placeTpCloseAlgo(symbol, side, triggerPrice);
+          return true;
+        } catch (algoErr: any) {
+          const algoMsg = (algoErr?.message || '').toLowerCase();
+          // -4130 = order already exists, which is OK
+          if (algoMsg.includes('-4130') || algoMsg.includes('already') || algoMsg.includes('existing')) {
+            this.log.debug('api_tp_algo_already_exists', { symbol, side });
+            return false; // Silent success
+          }
+          this.log.error('api_tp_algo_fail', { symbol, err: algoErr?.message || String(algoErr) });
+          throw algoErr;
+        }
+      }
+      
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
         this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice });
-        return;
+        return true;
       }
       throw e;
     }
+  }
+
+  private async placeTpCloseAlgo(symbol: string, side: Side, triggerPrice: number): Promise<void> {
+    const hedge = await this.isHedgeMode();
+    
+    const params: any = {
+      symbol,
+      algoType: 'CONDITIONAL',
+      type: 'TAKE_PROFIT_MARKET',
+      side: side === 'LONG' ? 'SELL' : 'BUY',
+      triggerPrice: String(triggerPrice),
+      workingType: 'MARK_PRICE',
+      closePosition: 'true',
+    };
+    
+    if (hedge) {
+      params.positionSide = side;
+    }
+
+    const timestamp = Date.now();
+    const queryString = Object.keys(params)
+      .map(key => `${key}=${encodeURIComponent(params[key])}`)
+      .join('&') + `&timestamp=${timestamp}`;
+
+    const signature = require('crypto')
+      .createHmac('sha256', CONFIG.API_SECRET)
+      .update(queryString)
+      .digest('hex');
+
+    const signedParams = {
+      ...params,
+      timestamp,
+      signature,
+    };
+
+    await this.enqueue(async () => {
+      const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
+        method: 'POST',
+        headers: {
+          'X-MBX-APIKEY': CONFIG.API_KEY,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams(signedParams as any).toString(),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Algo TP Order failed: ${response.status} ${errorText}`);
+      }
+      
+      return response.json();
+    });
+    
+    this.log.info('api_tp_algo_placed', { symbol, side, tp: triggerPrice });
   }
 
   async closeSideMarketSafe(
@@ -729,9 +887,12 @@ export class BinanceExchange implements Exchange {
       stopPrice: number;
     }[]
   > {
+    const wantSide = this.orderSideForPosition(side);
+    const results: any[] = [];
+
+    // 1. Check standard orders
     try {
       const open = await this.enqueue(() => this.cli.futuresOpenOrders({ symbol }));
-      const wantSide = this.orderSideForPosition(side);
 
       this.log.debug('raw_open_orders', {
         count: (open as any[]).length,
@@ -747,7 +908,7 @@ export class BinanceExchange implements Exchange {
         })),
       });
 
-      return (open as any[])
+      const standardOrders = (open as any[])
         .filter((o) => {
           const t: string = o.type;
           const isType =
@@ -763,10 +924,70 @@ export class BinanceExchange implements Exchange {
           type: o.type as any,
           stopPrice: Number(o.stopPrice),
         }));
+      
+      results.push(...standardOrders);
     } catch (err) {
       noteRateLimitFromError(err);
-      throw err;
+      this.log.warn('list_standard_orders_fail', { symbol, err: (err as any)?.message });
     }
+
+    // 2. Check Algo Orders
+    try {
+      const timestamp = Date.now();
+      const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
+      const signature = require('crypto')
+        .createHmac('sha256', CONFIG.API_SECRET)
+        .update(queryString)
+        .digest('hex');
+
+      const response = await fetch(
+        `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
+        {
+          headers: {
+            'X-MBX-APIKEY': CONFIG.API_KEY,
+          },
+        }
+      );
+
+      if (response.ok) {
+        const algoOrders = await response.json();
+        
+        this.log.debug('raw_algo_orders', {
+          count: (algoOrders as any[]).length,
+          sample: (algoOrders as any[]).map((o) => ({
+            id: o.algoId,
+            type: o.algoType,
+            side: o.side,
+            positionSide: o.positionSide,
+            triggerPrice: o.triggerPrice,
+          })),
+        });
+
+        const validAlgoOrders = (algoOrders as any[])
+          .filter((o) => {
+            if (o.algoType !== 'CONDITIONAL') return false;
+            if (o.side !== wantSide) return false;
+            const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
+            if (!hedgeOk) return false;
+            // Match order type
+            const isStop = o.type === 'STOP_MARKET' || o.type === 'STOP';
+            const isTp = o.type === 'TAKE_PROFIT_MARKET' || o.type === 'TAKE_PROFIT';
+            return isStop || isTp;
+          })
+          .map((o) => ({
+            orderId: String(o.algoId),
+            type: o.type as any,
+            stopPrice: Number(o.triggerPrice || 0),
+          }));
+
+        results.push(...validAlgoOrders);
+      }
+    } catch (err) {
+      // Algo orders might not be available, silently continue
+      this.log.debug('list_algo_orders_fail', { symbol, err: (err as any)?.message });
+    }
+
+    return results;
   }
 
   async openTpForSide(symbol: string, side: Side) {

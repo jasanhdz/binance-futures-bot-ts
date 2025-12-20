@@ -111,12 +111,14 @@ export class BacktestExchange implements Exchange {
     throw new Error('marketOpen not available in backtest exchange');
   }
 
-  async placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<void> {
-    return;
+  async placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<boolean> {
+    // En backtest asumimos que siempre se crea (o se actualiza)
+    return true;
   }
 
-  async placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<void> {
-    return;
+  async placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<boolean> {
+    // En backtest asumimos que siempre se crea
+    return true;
   }
 
   async closeSideMarketSafe(
@@ -130,6 +132,19 @@ export class BacktestExchange implements Exchange {
 
   async openStopForSide(symbol: string, side: Side): Promise<{ stopPrice: number; orderId: string } | null> {
     return null;
+  }
+
+  async listCloseOrdersForSide(
+    symbol: string,
+    side: Side,
+  ): Promise<
+    {
+      orderId: string;
+      type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
+      stopPrice: number;
+    }[]
+  > {
+    return [];
   }
 
   async cancelOrderById(symbol: string, orderId: string): Promise<void> {

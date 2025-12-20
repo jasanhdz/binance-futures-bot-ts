@@ -40,6 +40,7 @@ export type TradeRecord = {
   exit_qty?: number;
   realized_pnl?: number;
   commission_asset?: string;
+  outcome?: 'win' | 'loss';
 };
 
 export type TradeOpenPayload = {
@@ -238,6 +239,41 @@ export function recordTradeClose(payload: TradeClosePayload): TradeRecord | null
 
   if (payload.commissionAsset) {
     entry.commission_asset = payload.commissionAsset;
+  }
+
+  // Derive realized_pnl if not provided and we have prices/qty/side
+  if (
+    entry.realized_pnl === undefined &&
+    typeof entry.entry_price === 'number' &&
+    typeof entry.exit_price === 'number' &&
+    typeof entry.side === 'string'
+  ) {
+    const qtyUsed =
+      typeof entry.exit_qty === 'number' && entry.exit_qty > 0
+        ? entry.exit_qty
+        : typeof entry.qty === 'number'
+          ? entry.qty
+          : undefined;
+    if (qtyUsed !== undefined && qtyUsed > 0) {
+      const direction = entry.side === 'LONG' ? 1 : -1;
+      const pnl = (entry.exit_price - entry.entry_price) * qtyUsed * direction;
+      entry.realized_pnl = Number(pnl.toFixed(6));
+    }
+  }
+
+  // If net_profit not derivable from wallet deltas, fall back to realized_pnl
+  if (entry.net_profit === undefined && entry.realized_pnl !== undefined) {
+    entry.net_profit = Number(entry.realized_pnl.toFixed(6));
+    if (Number.isFinite(entry.used_balance) && entry.used_balance !== 0) {
+      entry.roi_pct = Number(((entry.net_profit / entry.used_balance) * 100).toFixed(4));
+    }
+  }
+
+  // Tag outcome for quick win/loss accounting
+  if (entry.realized_pnl !== undefined) {
+    entry.outcome = entry.realized_pnl > 0 ? 'win' : 'loss';
+  } else if (entry.net_profit !== undefined) {
+    entry.outcome = entry.net_profit > 0 ? 'win' : 'loss';
   }
 
   entry.status = payload.status ?? 'CLOSED';

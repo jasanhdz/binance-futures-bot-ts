@@ -32,6 +32,7 @@ export function startBot(deps: {
     running = true;
 
     const now = Date.now();
+    logger.debug('tick_start', { symbol });
     if (isRateLimited(now)) {
       if (now - lastRateLimitLog > 10_000) {
         lastRateLimitLog = now;
@@ -56,8 +57,6 @@ export function startBot(deps: {
 
       await syncStateGuard(symbol, exchange, state, logger);
       await bracketsGuard(symbol, exchange, state, logger);
-
-
 
       await runner.tick(symbol);
     } catch (e: any) {

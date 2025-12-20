@@ -29,6 +29,38 @@ export class StrategyRunner {
     },
   ) {}
 
+  private lastLoggedSignals: Record<string, { action: string, reason: string, time: number }> = {};
+
+  private buildProbCondition(
+    side: Side,
+    longProb?: number,
+    shortProb?: number,
+    threshold?: number,
+  ): { text: string; isAbove?: boolean } | undefined {
+    const lp = typeof longProb === 'number' && Number.isFinite(longProb) ? longProb : undefined;
+    const sp = typeof shortProb === 'number' && Number.isFinite(shortProb) ? shortProb : undefined;
+    const th = typeof threshold === 'number' && Number.isFinite(threshold) ? threshold : undefined;
+
+    if (lp === undefined && sp === undefined && th === undefined) return undefined;
+
+    const fmt = (v?: number) => (v === undefined ? '—' : v.toFixed(2));
+    const base = `(L=${fmt(lp)} | S=${fmt(sp)})`;
+
+    if (th === undefined) return { text: base };
+
+    const sideProb = side === 'LONG' ? lp : sp;
+    const bestProb = Math.max(lp ?? Number.NEGATIVE_INFINITY, sp ?? Number.NEGATIVE_INFINITY);
+    const refProb = sideProb ?? (bestProb > Number.NEGATIVE_INFINITY ? bestProb : undefined);
+
+    if (refProb === undefined) {
+      return { text: `${base} t=${th.toFixed(2)}` };
+    }
+
+    const isAbove = refProb > th;
+    const comparator = isAbove ? '>' : '<';
+    return { text: `${base} ${comparator} t=${th.toFixed(2)}`, isAbove };
+  }
+
   async tick(symbol: string) {
     const { exchange, logger, state, strategy, config } = this.deps;
     const capitalShare = Number((config as any).SYMBOL_SHARE ?? 1);
@@ -117,7 +149,31 @@ export class StrategyRunner {
       logger,
     });
 
-    logger.info('signal', { symbol, ...sig });
+    // Solo loggear señales de entrada si NO hay posición activa
+    // Para evitar logs repetidos cuando ya estamos en posición
+    const shouldLogSignal = 
+      sig.action === 'IDLE' || 
+      sig.action === 'EXIT' || 
+      !hasActivePosition;
+    
+    if (shouldLogSignal) {
+      const lastLogged = this.lastLoggedSignals[symbol];
+      const isEnter = sig.action.startsWith('ENTER');
+      const isIdle = sig.action === 'IDLE';
+      
+      let skipLog = false;
+      if (lastLogged && lastLogged.action === sig.action && lastLogged.reason === sig.reason) {
+         // Si es ENTER, no repetir si es idéntico (evita spam si no entra por fondos/riesgo)
+         if (isEnter) skipLog = true; 
+         // Si es IDLE, no repetir muy seguido (ej. 5 min)
+         if (isIdle && Date.now() - lastLogged.time < 300000) skipLog = true;
+      }
+
+      if (!skipLog) {
+        logger.info('signal', { symbol, ...sig });
+        this.lastLoggedSignals[symbol] = { action: sig.action, reason: sig.reason || '', time: Date.now() };
+      }
+    }
     
     const { strategy: primaryStrategy, detail: reasonDetail } = splitStrategyReason(
       sig.reason,
@@ -160,6 +216,10 @@ export class StrategyRunner {
       const pnlUsd =
         pnlUsdRaw !== undefined ? Number(pnlUsdRaw.toFixed(6)) : undefined;
       const roiColor = roiPct !== undefined ? (roiPct >= 0 ? 'green' : 'red') : undefined;
+      const longProb = typeof (diagnostics as any)?.longProb === 'number' ? (diagnostics as any).longProb : undefined;
+      const shortProb = typeof (diagnostics as any)?.shortProb === 'number' ? (diagnostics as any).shortProb : undefined;
+      const probThreshold = typeof (diagnostics as any)?.threshold === 'number' ? (diagnostics as any).threshold : undefined;
+      const probCond = this.buildProbCondition(lastSide, longProb, shortProb, probThreshold);
       logger.info('position_snapshot', {
         symbol,
         side: lastSide,
@@ -171,7 +231,51 @@ export class StrategyRunner {
         roiColor,
         pnlUsd,
         openMs: stBefore.lastEntryAt ? Date.now() - stBefore.lastEntryAt : undefined,
+        probCond: probCond?.text,
+        probAbove: probCond?.isAbove,
+        longProb,
+        shortProb,
+        probThreshold,
       });
+
+      // --- SMART EXIT LOGIC (Guardia de Ganancias) ---
+      if (roiPct !== undefined && roiPct > 0) {
+        // 1. Actualizar Peak ROE
+        const currentPeak = stBefore.peakRoe ?? 0;
+        if (roiPct > currentPeak) {
+           applyStatePatch({ peakRoe: roiPct });
+        }
+        const peak = Math.max(currentPeak, roiPct);
+
+        // 2. Trailing Profit Protect
+        // Si ROI > 30% y cae más del 30% desde el pico (ej. 50% -> 35%)
+        if (peak > 30 && roiPct < peak * 0.7) {
+           logger.info('smart_exit_trailing', { symbol, peak, current: roiPct, reason: 'gave_back_30pct_of_peak' });
+           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
+           applyStatePatch({ mode: 'IDLE', lastExitReason: 'SMART_TRAIL', lastExitAt: Date.now() });
+           return;
+        }
+
+        // 3. ML Probability Decay
+        // Si ROI > 10% y la probabilidad actual cae por debajo del threshold
+        const currentProb = lastSide === 'LONG' 
+          ? (diagnostics?.longProb as number) 
+          : (diagnostics?.shortProb as number);
+        const entryThreshold = (diagnostics?.threshold as number) ?? 0.5;
+        
+        if (currentProb !== undefined && currentProb < entryThreshold && roiPct > 10) {
+           logger.info('smart_exit_ml_decay', { 
+             symbol, 
+             currentProb: currentProb.toFixed(2), 
+             threshold: entryThreshold, 
+             roiPct, 
+             reason: 'prob_dropped_below_threshold' 
+           });
+           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
+           applyStatePatch({ mode: 'IDLE', lastExitReason: 'SMART_ML_DECAY', lastExitAt: Date.now() });
+           return;
+        }
+      }
 
       if (sig.action === 'ENTER_LONG' || sig.action === 'ENTER_SHORT') {
         logger.debug('entry_blocked_existing_position', {
@@ -276,6 +380,54 @@ export class StrategyRunner {
     // --- Entradas ---
     const side: Side = sig.action === 'ENTER_LONG' ? 'LONG' : 'SHORT';
 
+    // ------ BTC Trend Filter (Protección Macro) ------
+    // Si no somos BTC, consultamos a BTC para ver la tendencia
+    if (symbol !== 'BTCUSDT') {
+      try {
+        // Asumimos que el servicio ML corre en local. Hacemos un fetch rápido.
+        // Nota: Esto añade latencia (~10-20ms), pero vale la pena por seguridad.
+        const btcRes = await fetch('http://localhost:8000/predict?symbol=BTCUSDT&timeframe=1h');
+        if (btcRes.ok) {
+          const btcData = await btcRes.json();
+          // btcData tiene { long_prob, short_prob, ... }
+          const btcLong = btcData.long_prob || 0;
+          const btcShort = btcData.short_prob || 0;
+
+          // Regla 1: No abrir SHORT si BTC es muy Alcista
+          if (side === 'SHORT') {
+             // Si BTC Long > 0.55 (fuerte) o BTC Long es el doble que Short
+             if (btcLong > 0.55 || (btcLong > btcShort * 2 && btcLong > 0.40)) {
+                logger.info('entry_blocked_btc_trend', {
+                  symbol,
+                  side,
+                  reason: 'BTC_BULLISH',
+                  btcLong,
+                  btcShort
+                });
+                return;
+             }
+          }
+
+          // Regla 2: No abrir LONG si BTC es muy Bajista
+          if (side === 'LONG') {
+             if (btcShort > 0.55 || (btcShort > btcLong * 2 && btcShort > 0.40)) {
+                logger.info('entry_blocked_btc_trend', {
+                  symbol,
+                  side,
+                  reason: 'BTC_BEARISH',
+                  btcLong,
+                  btcShort
+                });
+                return;
+             }
+          }
+        }
+      } catch (err) {
+        // Si falla la consulta a BTC, no bloqueamos, pero logueamos warning
+        logger.warn('btc_trend_check_fail', { error: String(err) });
+      }
+    }
+
     try {
       await exchange.ensureMarginType(symbol, 'ISOLATED');
     } catch (err: any) {
@@ -283,12 +435,29 @@ export class StrategyRunner {
       return;
     }
 
-    const tf = (config as any).ENTRY_TIMEFRAME || '1h';
+    const tf = (config as any).SYMBOL_TIMEFRAMES?.[symbol] || (config as any).ENTRY_TIMEFRAME || '1h';
     const mlLeverage = MlConfigWatcher.getInstance().getLeverage(symbol, tf);
     const leverage = mlLeverage > 0 ? mlLeverage : config.LEVERAGE;
 
     await exchange.setLeverage(symbol, leverage);
     const price = await markPrice();
+
+    // ------ Cooldown de Seguridad (Evitar re-entradas inmediatas en la misma dirección) ------
+    // Especialmente crítico después de un Smart Exit o Stop Loss
+    const COOLDOWN_MS = 15 * 60 * 1000; // 15 minutos
+    if (
+      stBefore.lastExitAt && 
+      Date.now() - stBefore.lastExitAt < COOLDOWN_MS &&
+      stBefore.lastSide === side // Solo bloquear si es la misma dirección
+    ) {
+      logger.info('entry_blocked_cooldown', {
+        symbol,
+        side,
+        remainingSeconds: ((COOLDOWN_MS - (Date.now() - stBefore.lastExitAt)) / 1000).toFixed(0),
+        lastExitReason: stBefore.lastExitReason
+      });
+      return;
+    }
 
     const gateResult = await this.evaluatePostExitGate({
       symbol,
@@ -357,6 +526,10 @@ export class StrategyRunner {
 
     if ('reason' in sizing) {
       logger.warn('sizing_rejected', { symbol, ...sizing });
+      // Emit detalle explícito si el sizing trae datos de depuración (p.ej. caps vs minNotional)
+      if ((sizing as any).debug) {
+        logger.warn('sizing_rejected_detail', { symbol, reason: sizing.reason, ...(sizing as any).debug });
+      }
       return;
     }
     let qty = sizing.qty;
@@ -374,7 +547,8 @@ export class StrategyRunner {
     // ------ Overlay de riesgo: limita qty por un stop provisional (ATR Chandelier base) ------
     const maxRiskPct = Number((config as any).MAX_RISK_PCT ?? 0);
     if (maxRiskPct > 0) {
-      const candles = await exchange.getCandles(symbol, config.ENTRY_TIMEFRAME, 200);
+      const tf = (config as any).SYMBOL_TIMEFRAMES?.[symbol] || (config as any).ENTRY_TIMEFRAME || '1h';
+      const candles = await exchange.getCandles(symbol, tf, 200);
       const a = atr(candles, (config as any).ATR_LEN ?? 14);
       if (Number.isFinite(a) && a > 0) {
         const baseMult = Number(
@@ -443,6 +617,8 @@ export class StrategyRunner {
       price,
       usdt,
       share: capitalShare,
+      capitalPct,
+      reserve: config.MIN_WALLET_RESERVE_USDT,
       usedBalance,
       commissionEstimate,
     });
@@ -463,7 +639,30 @@ export class StrategyRunner {
 
     // ------ Abrir mercado ------
     const tOpen = Date.now();
-    const { avgPrice: rawAvg, orderId } = await exchange.marketOpen(symbol, side, qty);
+    let rawAvg = 0;
+    let orderId: string | undefined;
+    try {
+      const res = await exchange.marketOpen(symbol, side, qty);
+      rawAvg = res.avgPrice;
+      orderId = res.orderId;
+    } catch (err: any) {
+      const notional = Number(
+        (qty * price).toFixed(
+          typeof filters.pricePrecision === 'number' ? filters.pricePrecision : 8,
+        ),
+      );
+      logger.warn('market_open_fail', {
+        symbol,
+        side,
+        qty,
+        price,
+        notional,
+        minNotional: filters.minNotional,
+        code: (err as any)?.code,
+        err: err?.message || String(err),
+      });
+      return;
+    }
     const avgPrice = rawAvg || price;
     logger.info('market_opened', { symbol, side, qty, price, avgPrice, ms: Date.now() - tOpen });
 
@@ -512,23 +711,62 @@ export class StrategyRunner {
     }
     
     const stop = roundToTick(stopRaw, filters.tickSize, filters.pricePrecision);
-    await exchange.placeStopClose(symbol, side, stop);
-    logger.info('stop_upserted_atr', { symbol, side, stop, atr: atrVal, mult: slMult });
+    try {
+      await exchange.placeStopClose(symbol, side, stop);
+      logger.info('stop_upserted_atr', { symbol, side, stop, atr: atrVal, mult: slMult });
+    } catch (err: any) {
+      logger.warn('stop_upsert_init_fail', { symbol, side, stop, err: err?.message || String(err) });
+      // bracketsGuard will retry on next tick
+    }
 
-    // 3. Definir Take Profit (1.5 R:R)
-    const rrRatio = 1.5;
+    // 3. Definir Take Profit dinámico basado en confianza del modelo ML
+    let rrRatio = 1.5; // Base conservador
+    let mlProb = 0;
+    let mlThreshold = 0.35; // Default
+    
+    // Extraer probabilidad del modelo si está disponible
+    if (diagnostics) {
+      if (side === 'LONG' && typeof diagnostics.longProb === 'number') {
+        mlProb = diagnostics.longProb;
+      } else if (side === 'SHORT' && typeof diagnostics.shortProb === 'number') {
+        mlProb = diagnostics.shortProb;
+      }
+      if (typeof diagnostics.threshold === 'number') {
+        mlThreshold = diagnostics.threshold;
+      }
+    }
+    
+    // Calcular R:R dinámico basado en confianza
+    if (mlProb > 0) {
+      const confidence = Math.max(0, mlProb - mlThreshold); // 0-0.65 típico
+      const bonusRR = confidence * 5; // 0-3.25 extra
+      rrRatio = 1.5 + bonusRR;
+      logger.info('tp_ml_calculation', { 
+        symbol, 
+        mlProb, 
+        mlThreshold, 
+        confidence, 
+        finalRR: rrRatio.toFixed(2) 
+      });
+    }
+    
     const tpDist = slDist * rrRatio;
     const tpRaw = side === 'LONG' ? avgPrice + tpDist : avgPrice - tpDist;
     const tp = roundToTick(tpRaw, filters.tickSize, filters.pricePrecision);
     
-    await exchange.placeTpClose(symbol, side, tp);
-    logger.info('tp_upserted_rr', { symbol, side, tp, rr: rrRatio });
+    try {
+      await exchange.placeTpClose(symbol, side, tp);
+      logger.info('tp_upserted_rr', { symbol, side, tp, rr: rrRatio.toFixed(2) });
+    } catch (err: any) {
+      logger.warn('tp_upsert_init_fail', { symbol, side, tp, err: err?.message || String(err) });
+      // bracketsGuard will retry on next tick
+    }
 
     applyStatePatch({
       mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
       lastSide: side,
       lastEntryPrice: avgPrice,
-      lastLeverage: leverage,
+      lastLeverage: config.LEVERAGE,
       lastEntryAt: Date.now(),
       peakRoe: 0,
       bracketsArmedAt: Date.now(),
@@ -543,6 +781,8 @@ export class StrategyRunner {
       lastEntryFilters: filtersAtEntry,
       lastCommissionEstimate: commissionEstimate,
       lastOrderId: orderId,
+      lastMlProb: mlProb > 0 ? mlProb : undefined, // Guardar para bracketsGuard
+      lastMlThreshold: mlProb > 0 ? mlThreshold : undefined,
       ...postExitClearPatch(),
     });
 

@@ -41,9 +41,21 @@ export class MlProbabilityStrategy implements Strategy {
     return this.baseHistoryBars;
   }
 
-  private resolveTimeframe(config: StrategyContext['config']): string {
-    const tf = (config as any).ML_MODEL_TIMEFRAME || (config as any).ENTRY_TIMEFRAME || this.timeframe;
+  private resolveTimeframe(config: StrategyContext['config'], symbol: string): string {
+    const tf = (config as any).SYMBOL_TIMEFRAMES?.[symbol] || (config as any).ML_MODEL_TIMEFRAME || (config as any).ENTRY_TIMEFRAME || this.timeframe;
     return typeof tf === 'string' && tf.length ? tf : this.timeframe;
+  }
+
+  private formatIdleReason(symbol: string, timeframe: string, longProb: number, shortProb: number, threshold: number): string {
+    // Columnar alignment so the '|' stays at the same spot; pad raw text before coloring.
+    const SYMBOL_COL = 8; // Longest we expect (e.g., LINKUSDT = 8)
+    const TF_COL = 3; // e.g., 1h, 4h, 15m
+    const paddedSymbol = symbol.padEnd(SYMBOL_COL, ' ');
+    const paddedTf = timeframe.padEnd(TF_COL, ' ');
+    const coloredSymbol = `${COLORS.CYAN}${paddedSymbol}${COLORS.RESET}`;
+    const coloredTf = `${COLORS.CYAN}${paddedTf}${COLORS.RESET}`;
+    const th = Number.isFinite(threshold) ? (threshold as number).toFixed(2) : String(threshold);
+    return `${coloredSymbol} ${coloredTf} | ML_IDLE | (L=${longProb.toFixed(2)} | S=${shortProb.toFixed(2)}) < t=${th}`;
   }
 
   private formatColoredProb(value: number | null, color: string): string {
@@ -53,7 +65,7 @@ export class MlProbabilityStrategy implements Strategy {
 
   async evaluate(ctx: StrategyContext): Promise<Signal> {
     const { symbol, exchange, config, logger } = ctx;
-    const timeframe = this.resolveTimeframe(config);
+    const timeframe = this.resolveTimeframe(config, symbol);
     const historyBars = this.resolveHistoryBars(config);
 
     // 1. Get Candles
@@ -107,7 +119,7 @@ export class MlProbabilityStrategy implements Strategy {
 
       return {
         action: 'IDLE',
-        reason: `ML_IDLE | L=${longProb.toFixed(2)} S=${shortProb.toFixed(2)} < t=${threshold}`,
+        reason: this.formatIdleReason(symbol, timeframe, longProb, shortProb, threshold),
         diagnostics
       };
 

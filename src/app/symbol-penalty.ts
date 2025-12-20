@@ -82,21 +82,38 @@ export function recordSymbolOutcome(symbol: string, entry: TradeRecordEntry) {
     data.performance[target] = { wins: 0, losses: 0, history: [] };
   }
   const stats = data.performance[target];
+  
+  // Update stats
   if (entry.outcome === 'win') {
     stats.wins += 1;
     if (!data.winners.includes(target)) {
       data.winners.push(target);
     }
+    // DESBLOQUEAR si gana (dar segunda oportunidad)
+    const blockedIdx = data.blocked.indexOf(target);
+    if (blockedIdx !== -1) {
+      data.blocked.splice(blockedIdx, 1);
+    }
   } else {
     stats.losses += 1;
-    if (!data.blocked.includes(target)) {
-      data.blocked.push(target);
-    }
   }
+  
+  // Add to history
   stats.history.push(entry);
   if (HISTORY_LIMIT > 0 && stats.history.length > HISTORY_LIMIT) {
     stats.history.splice(0, stats.history.length - HISTORY_LIMIT);
   }
+  
+  // Verificar pérdidas consecutivas (últimas 5 operaciones)
+  const CONSECUTIVE_LOSSES_THRESHOLD = Number(process.env.SYMBOL_BLOCK_CONSECUTIVE_LOSSES ?? 5);
+  const recentHistory = stats.history.slice(-CONSECUTIVE_LOSSES_THRESHOLD);
+  const allRecentLosses = recentHistory.length >= CONSECUTIVE_LOSSES_THRESHOLD &&
+    recentHistory.every(h => h.outcome === 'loss');
+  
+  if (allRecentLosses && !data.blocked.includes(target)) {
+    data.blocked.push(target);
+  }
+  
   save(data);
 }
 

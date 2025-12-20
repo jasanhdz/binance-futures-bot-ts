@@ -194,14 +194,18 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
 
     case 'stop_upserted':
     case 'ensure_stop_created': {
+      if (ctx?.message) return `${color.gray(t)} ${ctx.message}`;
       const side = ctx?.side ?? '?';
-      return `${color.gray(t)} ⛔ Stop ${side} @ ${n(ctx?.stop)}`;
+      const s = ctx?.symbol ? color.info(ctx.symbol.padEnd(8)) : '';
+      return `${color.gray(t)} ⛔ ${s} Stop ${side} @ ${n(ctx?.stop)}`;
     }
 
     case 'tp_upserted':
     case 'ensure_tp_created': {
+      if (ctx?.message) return `${color.gray(t)} ${ctx.message}`;
       const side = ctx?.side ?? '?';
-      return `${color.gray(t)} 🎯 TP ${side} @ ${n(ctx?.tp)}`;
+      const s = ctx?.symbol ? color.info(ctx.symbol.padEnd(8)) : '';
+      return `${color.gray(t)} 🎯 ${s} TP ${side} @ ${n(ctx?.tp)}`;
     }
 
     case 'profit_guard_status': {
@@ -218,6 +222,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
           color.gray('Entry'),
           color.gray('Mark'),
           color.gray('ROI %'),
+          color.gray('Cond'),
           color.gray('PnL (USDT)'),
           color.gray('Qty'),
           color.gray('Lev'),
@@ -237,6 +242,39 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
           ? (ctx.openMs / 1000).toFixed(0)
           : '—';
 
+      const prob = (() => {
+        if (typeof ctx?.probCond === 'string') {
+          return { text: ctx.probCond, above: ctx?.probAbove } as const;
+        }
+        const lp = typeof ctx?.longProb === 'number' ? ctx.longProb : undefined;
+        const sp = typeof ctx?.shortProb === 'number' ? ctx.shortProb : undefined;
+        const th = typeof ctx?.probThreshold === 'number' ? ctx.probThreshold : undefined;
+        if (lp === undefined && sp === undefined && th === undefined) return { text: '—', above: undefined } as const;
+
+        const fmtProb = (v?: number) =>
+          typeof v === 'number' && Number.isFinite(v) ? v.toFixed(2) : '—';
+        const base = `(L=${fmtProb(lp)} | S=${fmtProb(sp)})`;
+        if (th === undefined) return { text: base, above: undefined } as const;
+
+        const sideProb = ctx?.side === 'LONG' ? lp : ctx?.side === 'SHORT' ? sp : undefined;
+        const bestProb = Math.max(lp ?? Number.NEGATIVE_INFINITY, sp ?? Number.NEGATIVE_INFINITY);
+        const refProb = sideProb ?? (bestProb > Number.NEGATIVE_INFINITY ? bestProb : undefined);
+        if (refProb === undefined) return { text: `${base} t=${th.toFixed(2)}`, above: undefined } as const;
+
+        const above = refProb > th;
+        const comparator = above ? '>' : '<';
+        return { text: `${base} ${comparator} t=${th.toFixed(2)}`, above } as const;
+      })();
+
+      const probText =
+        prob.text === '—'
+          ? color.gray(prob.text)
+          : prob.above === true
+            ? color.ok(prob.text)
+            : prob.above === false
+              ? color.warn(prob.text)
+              : color.dim(prob.text);
+
       table.push([
         color.gray(t),
         color.info(String(ctx?.symbol ?? '—')),
@@ -244,6 +282,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
         fmt(ctx?.entry),
         fmt(ctx?.mark),
         formatRoiPct(ctx?.roiPct),
+        probText,
         formatUsd(ctx?.pnlUsd),
         fmt(ctx?.qtyAbs, 4),
         fmt(ctx?.leverage, 0),
@@ -263,13 +302,14 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
 
     case 'signal': {
       const t = new Date().toLocaleTimeString();
+      const s = ctx?.symbol ? color.info(ctx.symbol.padEnd(8)) : '';
       const a = ctx?.action ?? '?';
       const r = ctx?.reason ?? '';
       const emoji =
         a === 'ENTER_LONG' ? '🟢' : a === 'ENTER_SHORT' ? '🔻' : a === 'EXIT' ? '🚪' : '⏸️';
 
       // Log compacto: [hora] emoji ACCIÓN · razón
-      return `${color.gray(t)} ${emoji}  ${color.bold(String(a))}${r ? ' · ' + r : ''}`;
+      return `${color.gray(t)} ${emoji}  ${s} ${color.bold(String(a))}${r ? ' · ' + r : ''}`;
     }
 
     // 1) Agrega este case dentro de prettyLine(level, msg, ctx)
