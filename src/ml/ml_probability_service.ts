@@ -1,27 +1,17 @@
 import axios, { AxiosInstance, isAxiosError } from 'axios';
 import { Candle } from '../core/types';
 
-export type CandlePayload = {
-  open_time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  close_time: number;
-};
-
-export type TimeframeProbability = {
-  long_prob: number;
-  short_prob: number;
-};
-
+// V2 Response Type
 export type MlProbabilityResponse = {
   symbol: string;
-  primary_timeframe: string;
   long_prob: number;
   short_prob: number;
-  probabilities: Record<string, TimeframeProbability>;
+  neutral_prob: number;
+  consensus_level: number;
+  meta_verdict: string;
+  // Legacy support (optional)
+  primary_timeframe?: string;
+  probabilities?: Record<string, { long_prob: number; short_prob: number }>;
 };
 
 export type MlProbabilityClientOptions = {
@@ -46,7 +36,8 @@ export class MlProbabilityServiceClient {
   private readonly baseUrl: string;
 
   constructor(opts: MlProbabilityClientOptions = {}) {
-    const envBase = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
+    // V2 Service runs on port 8001 by default
+    const envBase = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8001';
     this.baseUrl = (opts.baseUrl ?? envBase).replace(/\/+$/, '');
 
     this.http = axios.create({
@@ -55,56 +46,35 @@ export class MlProbabilityServiceClient {
     });
   }
 
-  /**
-   * Convert bot candle objects into the payload required by the Python service.
-   */
-  private toPayload(candles: Candle[]): CandlePayload[] {
-    return candles
-      .slice()
-      .sort((a, b) => a.closeTime - b.closeTime)
-      .map((c) => ({
-        open_time: Math.trunc(c.openTime),
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
-        close_time: Math.trunc(c.closeTime),
-      }));
-  }
-
   async fetchProbabilities(params: {
     symbol: string;
-    candles: Candle[];
+    // Legacy params (ignored in V2 but kept for interface compatibility)
+    candles?: Candle[];
     timeframe?: string;
     forceRefresh?: boolean;
     extraCandles?: Record<string, Candle[]>;
   }): Promise<MlProbabilityResponse> {
-    const { symbol, candles, timeframe, forceRefresh, extraCandles } = params;
-    const payload: Record<string, unknown> = {
-      symbol,
-      timeframe,
-      force_refresh: forceRefresh ?? false,
-      candles: this.toPayload(candles),
-    };
-
-    if (extraCandles && Object.keys(extraCandles).length > 0) {
-      const prepared: Record<string, CandlePayload[]> = {};
-      for (const [tf, tfCandles] of Object.entries(extraCandles)) {
-        if (!tfCandles?.length) continue;
-        prepared[tf] = this.toPayload(tfCandles);
-      }
-      if (Object.keys(prepared).length > 0) {
-        payload.extra_candles = prepared;
-      }
-    }
+    const { symbol } = params;
+    
+    // V2 Payload: Just the symbol
+    const payload = { symbol };
 
     try {
       const { data } = await this.http.post<MlProbabilityResponse>(
-        '/ml/probabilities',
+        '/ml-v2/predict',
         payload,
       );
-      return data;
+      
+      // Adapt V2 response to look a bit like V1 if needed by consumer, 
+      // or just return as is. The consumer (strategy) should be updated to use neutral_prob.
+      return {
+        ...data,
+        primary_timeframe: '1m', // V2 works on 1m data
+        probabilities: {
+          '1m': { long_prob: data.long_prob, short_prob: data.short_prob }
+        }
+      };
+      
     } catch (err) {
       if (isAxiosError(err)) {
         const status = err.response?.status;
@@ -112,8 +82,8 @@ export class MlProbabilityServiceClient {
         const message =
           typeof detail === 'string'
             ? detail
-            : detail?.detail?.message ||
-              detail?.detail ||
+            : (detail as any)?.detail?.message ||
+              (detail as any)?.detail ||
               err.message ||
               'ml_service_error';
         throw new MlServiceError(message, { status, payload: detail });

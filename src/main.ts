@@ -12,7 +12,7 @@ async function main() {
   const logger = new FsLogger();
   const exchange = new BinanceExchange(logger);
   const strategy = MlProbability
-  
+
   logger.info('environment_boot', {
     network: CONFIG.IS_TESTNET ? 'TESTNET' : 'PROD',
     http: CONFIG.HTTP_FUTURES,
@@ -66,6 +66,7 @@ async function main() {
       exchange,
       state,
       logger,
+      config: perSymbolConfig,
       intervalSec: Math.max(5, CONFIG.BOT_INTERVAL_SEC),
       initialDelayMs: idx * Math.max(500, CONFIG.BOT_STAGGER_MS),
     });

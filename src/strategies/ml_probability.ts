@@ -90,12 +90,14 @@ export class MlProbabilityStrategy implements Strategy {
       
       const longProb = response.long_prob;
       const shortProb = response.short_prob;
+      const neutralProb = response.neutral_prob; // V2 field
       
       const diagnostics = {
         symbol,
         timeframe,
         longProb,
         shortProb,
+        neutralProb,
         threshold,
         pnl_config: this.configWatcher.getConfig(symbol, timeframe)?.pnl
       };

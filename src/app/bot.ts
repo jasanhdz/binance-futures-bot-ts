@@ -1,8 +1,10 @@
 import cron from 'node-cron';
 import { StrategyRunner } from './strategy-runner';
+import { BotConfig } from '../infra/config';
 
 import { syncStateGuard } from './guards/sync-state';
 import { bracketsGuard } from './guards/ensure-brackets';
+import { sageExit } from './guards/sage-exit';
 import {
   getRateLimitUntil,
   isRateLimited,
@@ -16,10 +18,11 @@ export function startBot(deps: {
   exchange: any;
   state: any;
   logger: any;
+  config: BotConfig;
   intervalSec: number;
   initialDelayMs?: number;
 }) {
-  const { runner, symbol, exchange, state, logger, intervalSec, initialDelayMs = 0 } = deps;
+  const { runner, symbol, exchange, state, logger, config, intervalSec, initialDelayMs = 0 } = deps;
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'system';
   let running = false;
   let seq = 0;
@@ -56,6 +59,16 @@ export function startBot(deps: {
       }
 
       await syncStateGuard(symbol, exchange, state, logger);
+
+      // Sage Exit (Intelligent Guard)
+      await sageExit.check({
+        symbol,
+        exchange,
+        state,
+        logger,
+        config,
+      });
+
       await bracketsGuard(symbol, exchange, state, logger);
 
       await runner.tick(symbol);
