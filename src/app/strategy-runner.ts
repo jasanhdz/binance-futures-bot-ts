@@ -243,7 +243,8 @@ export class StrategyRunner {
 
 
 
-      // --- NINJA EXIT PROTOCOL (V2) ---
+      // --- NINJA EXIT PROTOCOL v2.0 (Institutional) ---
+      // Based on AI consensus: Sonnet 4.5, Optus 4.5, K2 IA, Gemini 3.5
       if (roiPct !== undefined) {
         // 1. Actualizar Peak ROE (Siempre necesario para trailing)
         const currentPeak = stBefore.peakRoe ?? 0;
@@ -262,36 +263,115 @@ export class StrategyRunner {
         const neutralProb = (diagnostics as any)?.neutralProb ??
           (1 - ((diagnostics as any)?.longProb || 0) - ((diagnostics as any)?.shortProb || 0));
 
-        // CAPA 1: PANIC REVERSAL (Prioridad Máxima) 🚨
-        // Si el modelo grita lo contrario con fuerza (>65%)
-        if (typeof opposingProb === 'number' && opposingProb > 0.65) {
-          logger.info('smart_exit_panic', { symbol, opposingProb, reason: 'ml_reversal_detected' });
+        // Tiempo en posición (segundos)
+        const entryTime = stBefore.lastEntryTime ?? Date.now();
+        const timeInPositionSecs = (Date.now() - entryTime) / 1000;
+
+        // Volatilidad Proxy: spread actual vs spread promedio (configurable externamente)
+        // Lee de thresholds_config.json o usa defaults internos
+        const currentSpread = (diagnostics as any)?.spread ?? 0.0004;
+        const avgSpread = MlConfigWatcher.getInstance().getAvgSpread(symbol);
+        const volatilityFactor = Math.max(0.5, Math.min(3.0, currentSpread / avgSpread));
+
+        // ═══════════════════════════════════════════════════════
+        // CAPA 0: HARD STOP LOSS (Circuit Breaker) 🛑
+        // ═══════════════════════════════════════════════════════
+        const HARD_STOP_ROE = -3.0; // -3% ROE máximo (no precio)
+        if (roiPct < HARD_STOP_ROE) {
+          logger.warn('ninja_exit_hard_stop', { symbol, roiPct, threshold: HARD_STOP_ROE, reason: 'circuit_breaker' });
           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-          applyStatePatch({ mode: 'IDLE', lastExitReason: 'PANIC_REVERSAL', lastExitAt: Date.now() });
+          applyStatePatch({ mode: 'IDLE', lastExitReason: 'HARD_STOP_LOSS', lastExitAt: Date.now(), panicCounter: 0 });
           return;
         }
 
-        // CAPA 2: TIERED TRAILING (Asegurar Ganancias) 💰
-        if (roiPct > 0) {
-          let trailCallback = 0.4; // Default: devuelve 40% (Nivel 1)
-          if (peak > 50) trailCallback = 0.10;      // Nivel 3: Super estricto (10%)
-          else if (peak > 30) trailCallback = 0.20; // Nivel 2: Estricto (20%)
+        // ═══════════════════════════════════════════════════════
+        // CAPA 0.5: BREAKEVEN PROTECTION 🛡️
+        // Si ya ganamos >1.5%, no permitir volver a negativo
+        // ═══════════════════════════════════════════════════════
+        if (peak > 1.5 && roiPct < 0.2) {
+          logger.info('ninja_exit_breakeven', { symbol, peak, roiPct, reason: 'protect_gains' });
+          await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
+          applyStatePatch({ mode: 'IDLE', lastExitReason: 'BREAKEVEN_PROTECT', lastExitAt: Date.now(), panicCounter: 0 });
+          return;
+        }
 
-          // Solo activar trailing si superamos un mínimo de 10% ROI
-          if (peak > 10 && roiPct < peak * (1 - trailCallback)) {
-            logger.info('smart_exit_trailing', { symbol, peak, current: roiPct, trailCallback, reason: 'tiered_trailing' });
+        // ═══════════════════════════════════════════════════════
+        // CAPA 1: PÁNICO INTELIGENTE (Histéresis + Dinámico) 🚨
+        // ═══════════════════════════════════════════════════════
+        // Umbral dinámico basado en volatilidad
+        // Volátil (>1.5) → exige 0.55, Calmo (<1.0) → exige 0.50
+        const dynamicPanicThreshold = 0.50 + (0.05 * Math.max(0, volatilityFactor - 1));
+        const currentPanicCounter = stBefore.panicCounter ?? 0;
+
+        if (typeof opposingProb === 'number' && opposingProb > dynamicPanicThreshold) {
+          const newPanicCounter = currentPanicCounter + 1;
+          applyStatePatch({ panicCounter: newPanicCounter });
+
+          // Requiere 2 ticks consecutivos O señal muy fuerte (>70%)
+          if (newPanicCounter >= 2 || opposingProb > 0.70) {
+            logger.info('ninja_exit_panic_confirmed', {
+              symbol, opposingProb, threshold: dynamicPanicThreshold,
+              confirmations: newPanicCounter, volatility: volatilityFactor,
+              reason: opposingProb > 0.70 ? 'high_confidence_reversal' : 'confirmed_2x'
+            });
             await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-            applyStatePatch({ mode: 'IDLE', lastExitReason: 'TIERED_TRAIL', lastExitAt: Date.now() });
+            applyStatePatch({ mode: 'IDLE', lastExitReason: 'PANIC_REVERSAL_V2', lastExitAt: Date.now(), panicCounter: 0 });
+            return;
+          }
+        } else {
+          // Reset contador si la señal desaparece
+          if (currentPanicCounter > 0) {
+            applyStatePatch({ panicCounter: 0 });
+          }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // CAPA 2: TRAILING STOP CONTINUO (Logarítmico) 💰
+        // Fórmula suave: Trail = 30 - (22 * log10(peak / 5))
+        // Mínimo 8% para evitar salidas por ruido
+        // ═══════════════════════════════════════════════════════
+        if (peak > 5) {
+          // Usar Math.max(5, peak) para evitar NaN con log de número < 1
+          const safePeak = Math.max(5, peak);
+          let baseTrail = 30 - (22 * Math.log10(safePeak / 5));
+          baseTrail = Math.max(8, Math.min(30, baseTrail)); // Clamp entre 8% y 30%
+
+          // Calcular precio de corte
+          const stopThreshold = peak * (1 - (baseTrail / 100));
+
+          if (roiPct < stopThreshold) {
+            logger.info('ninja_exit_trailing_v2', {
+              symbol, peak, current: roiPct, trailPct: baseTrail.toFixed(1),
+              stopAt: stopThreshold.toFixed(2), reason: 'continuous_trailing'
+            });
+            await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
+            applyStatePatch({ mode: 'IDLE', lastExitReason: 'TRAILING_V2', lastExitAt: Date.now(), panicCounter: 0 });
             return;
           }
         }
 
+        // ═══════════════════════════════════════════════════════
         // CAPA 3: NEUTRALITY EXIT (Agotamiento) 😐
-        // Si estamos en ganancia decente (>5%) y el mercado se muere (Neutral > 60%)
+        // ═══════════════════════════════════════════════════════
         if (roiPct > 5 && neutralProb > 0.60) {
-          logger.info('smart_exit_neutral', { symbol, neutralProb, roiPct, reason: 'market_exhaustion' });
+          logger.info('ninja_exit_neutral', { symbol, neutralProb, roiPct, reason: 'market_exhaustion' });
           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-          applyStatePatch({ mode: 'IDLE', lastExitReason: 'NEUTRAL_EXIT', lastExitAt: Date.now() });
+          applyStatePatch({ mode: 'IDLE', lastExitReason: 'NEUTRAL_EXIT', lastExitAt: Date.now(), panicCounter: 0 });
+          return;
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // CAPA 4: TIME DECAY (Predicción Obsoleta) ⏰
+        // Si pasaron 15 min y no ganamos >1%, la predicción falló
+        // ═══════════════════════════════════════════════════════
+        const MAX_TIME_SECS = 900; // 15 minutos
+        if (timeInPositionSecs > MAX_TIME_SECS && Math.abs(roiPct) < 1.0) {
+          logger.info('ninja_exit_time_decay', {
+            symbol, timeInPositionSecs: Math.round(timeInPositionSecs),
+            roiPct, reason: 'stale_prediction'
+          });
+          await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
+          applyStatePatch({ mode: 'IDLE', lastExitReason: 'TIME_DECAY', lastExitAt: Date.now(), panicCounter: 0 });
           return;
         }
       }
@@ -793,7 +873,9 @@ export class StrategyRunner {
       lastEntryPrice: avgPrice,
       lastLeverage: config.LEVERAGE,
       lastEntryAt: Date.now(),
+      lastEntryTime: Date.now(), // Ninja Protocol v2.0: Para Time Decay
       peakRoe: 0,
+      panicCounter: 0, // Ninja Protocol v2.0: Reset contador de pánico
       bracketsArmedAt: Date.now(),
       lastEntryQty: qty,
       pyramidUnits: 0,

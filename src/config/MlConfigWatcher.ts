@@ -4,6 +4,7 @@ import path from 'path';
 export interface TimeframeConfig {
     threshold: number;
     leverage?: number;
+    avgSpread?: number; // Spread típico para cálculo de volatilidad (Ninja Protocol v2.0)
     pnl: number;
     trades: number;
     sharpe: number;
@@ -27,7 +28,7 @@ export class MlConfigWatcher {
         // Path to thresholds_config.json (absolute from project root)
         const projectRoot = path.resolve(__dirname, '../../..');
         this.configPath = path.join(projectRoot, 'models', 'advanced', 'thresholds_config.json');
-        
+
         console.log(`[MlConfigWatcher] Watching config at: ${this.configPath}`);
         this.loadConfig();
 
@@ -83,5 +84,20 @@ export class MlConfigWatcher {
     public getConfig(symbol: string, timeframe: string): TimeframeConfig | null {
         const cleanSymbol = this.getCleanSymbol(symbol);
         return this.config[cleanSymbol]?.[timeframe] || null;
+    }
+
+    // Ninja Protocol v2.0: Average spread for volatility calculation
+    // Lee exclusivamente del JSON, si no existe usa fallback genérico
+    public getAvgSpread(symbol: string, timeframe: string = '15m'): number {
+        const cleanSymbol = this.getCleanSymbol(symbol);
+        const configuredSpread = this.config[cleanSymbol]?.[timeframe]?.avgSpread;
+
+        if (configuredSpread === undefined) {
+            // Log para detectar símbolos sin configurar
+            console.warn(`[MlConfigWatcher] avgSpread not configured for ${cleanSymbol}/${timeframe}, using generic fallback`);
+        }
+
+        // Fallback genérico si no está en el JSON
+        return configuredSpread ?? 0.0004;
     }
 }

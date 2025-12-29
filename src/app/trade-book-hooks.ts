@@ -366,7 +366,7 @@ async function readActivePositionSafe(
     try {
       const info = await exchange.readActivePosition(symbol, hint);
       if (info) return { info, hint };
-    } catch {}
+    } catch { }
   }
   return { info: null, hint: sideHint };
 }
@@ -525,6 +525,20 @@ export async function ensureOpenTradeBackfill(params: BackfillParams): Promise<v
     }
     if (!snapshot.lastSide && resolvedSide) {
       patch.lastSide = resolvedSide;
+    }
+    // Ninja Protocol v2.0: Recover peakRoe and lastEntryTime on restart
+    // Note: We initialize peakRoe to 0 here; the next tick() will calculate
+    // the real ROI and update peakRoe accordingly. This ensures protections
+    // are active from the first tick after restart.
+    if (snapshot.peakRoe === undefined) {
+      patch.peakRoe = 0;
+      logger.info('ninja_backfill_peak_init', { symbol, note: 'peakRoe will be updated on next tick' });
+    }
+    if (!snapshot.lastEntryTime) {
+      patch.lastEntryTime = entryTime;
+    }
+    if (!snapshot.panicCounter) {
+      patch.panicCounter = 0;
     }
     state.set(patch);
     logger.info('trade_backfill_created', {

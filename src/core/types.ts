@@ -53,6 +53,10 @@ export type BotState = {
   lowFundsActive?: boolean;
   lastMlProb?: number; // Probabilidad del modelo ML al entrar
   lastMlThreshold?: number; // Threshold usado al entrar
+
+  // Ninja Protocol v2.0
+  panicCounter?: number; // Contador de ticks consecutivos con señal de pánico
+  lastEntryTime?: number; // Timestamp de entrada para Time Decay
 };
 
 type SignalCommon = {
