@@ -275,10 +275,11 @@ export class StrategyRunner {
 
         // ═══════════════════════════════════════════════════════
         // CAPA 0: HARD STOP LOSS (Circuit Breaker) 🛑
+        // Per-symbol configuration from thresholds_config.json
         // ═══════════════════════════════════════════════════════
-        const HARD_STOP_ROE = -3.0; // -3% ROE máximo (no precio)
-        if (roiPct < HARD_STOP_ROE) {
-          logger.warn('ninja_exit_hard_stop', { symbol, roiPct, threshold: HARD_STOP_ROE, reason: 'circuit_breaker' });
+        const symbolHardStop = MlConfigWatcher.getInstance().getHardStop(symbol) * 100; // Convert to percentage
+        if (roiPct < symbolHardStop) {
+          logger.warn('ninja_exit_hard_stop', { symbol, roiPct, threshold: symbolHardStop, reason: 'circuit_breaker' });
           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
           applyStatePatch({ mode: 'IDLE', lastExitReason: 'HARD_STOP_LOSS', lastExitAt: Date.now(), panicCounter: 0 });
           return;
@@ -286,9 +287,9 @@ export class StrategyRunner {
 
         // ═══════════════════════════════════════════════════════
         // CAPA 0.5: BREAKEVEN PROTECTION 🛡️
-        // Si ya ganamos >1.5%, no permitir volver a negativo
+        // Si ya ganamos >1.5%, no permitir caer bajo 0.5% (cubre fees)
         // ═══════════════════════════════════════════════════════
-        if (peak > 1.5 && roiPct < 0.2) {
+        if (peak > 1.5 && roiPct < 0.5) {
           logger.info('ninja_exit_breakeven', { symbol, peak, roiPct, reason: 'protect_gains' });
           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
           applyStatePatch({ mode: 'IDLE', lastExitReason: 'BREAKEVEN_PROTECT', lastExitAt: Date.now(), panicCounter: 0 });
@@ -362,8 +363,9 @@ export class StrategyRunner {
 
         // ═══════════════════════════════════════════════════════
         // CAPA 4: TIME DECAY (Predicción Obsoleta) ⏰
-        // Si pasaron 15 min y no ganamos >1%, la predicción falló
+        // DESACTIVADO por solicitud del usuario (Survivor Mode)
         // ═══════════════════════════════════════════════════════
+        /*
         const MAX_TIME_SECS = 900; // 15 minutos
         if (timeInPositionSecs > MAX_TIME_SECS && Math.abs(roiPct) < 1.0) {
           logger.info('ninja_exit_time_decay', {
@@ -374,6 +376,7 @@ export class StrategyRunner {
           applyStatePatch({ mode: 'IDLE', lastExitReason: 'TIME_DECAY', lastExitAt: Date.now(), panicCounter: 0 });
           return;
         }
+        */
       }
 
       if (sig.action === 'ENTER_LONG' || sig.action === 'ENTER_SHORT') {

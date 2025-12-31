@@ -361,7 +361,7 @@ export class BinanceExchange implements Exchange {
     try {
       const b = await this.enqueue(() => this.cli.futuresAccountBalance());
       const usdt = b.find((x) => x.asset === 'USDT');
-      const value = +(usdt?.availableBalance ?? '0');
+      const value = +(usdt?.balance ?? '0');
       this.usdtCache = { value, ts: now };
       return value;
     } catch (err) {
@@ -553,7 +553,7 @@ export class BinanceExchange implements Exchange {
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
-      
+
       // Check if error is about algo orders
       const msg = (e?.message || '').toLowerCase();
       if (msg.includes('algo') || msg.includes('order type not supported')) {
@@ -572,7 +572,7 @@ export class BinanceExchange implements Exchange {
           throw algoErr;
         }
       }
-      
+
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
@@ -585,7 +585,7 @@ export class BinanceExchange implements Exchange {
 
   private async placeStopCloseAlgo(symbol: string, side: Side, stopPrice: number): Promise<void> {
     const hedge = await this.isHedgeMode();
-    
+
     const params: any = {
       symbol,
       algoType: 'CONDITIONAL',
@@ -595,7 +595,7 @@ export class BinanceExchange implements Exchange {
       workingType: 'MARK_PRICE',
       closePosition: 'true',
     };
-    
+
     if (hedge) {
       params.positionSide = side;
     }
@@ -625,15 +625,15 @@ export class BinanceExchange implements Exchange {
         },
         body: new URLSearchParams(signedParams as any).toString(),
       });
-      
+
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Algo Order failed: ${response.status} ${errorText}`);
       }
-      
+
       return response.json();
     });
-    
+
     this.log.info('api_stop_algo_placed', { symbol, side, stopPrice });
   }
 
@@ -661,7 +661,7 @@ export class BinanceExchange implements Exchange {
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
-      
+
       // Check if error is about algo orders
       const msg = (e?.message || '').toLowerCase();
       if (msg.includes('algo') || msg.includes('order type not supported')) {
@@ -680,7 +680,7 @@ export class BinanceExchange implements Exchange {
           throw algoErr;
         }
       }
-      
+
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
@@ -693,7 +693,7 @@ export class BinanceExchange implements Exchange {
 
   private async placeTpCloseAlgo(symbol: string, side: Side, triggerPrice: number): Promise<void> {
     const hedge = await this.isHedgeMode();
-    
+
     const params: any = {
       symbol,
       algoType: 'CONDITIONAL',
@@ -703,7 +703,7 @@ export class BinanceExchange implements Exchange {
       workingType: 'MARK_PRICE',
       closePosition: 'true',
     };
-    
+
     if (hedge) {
       params.positionSide = side;
     }
@@ -733,15 +733,15 @@ export class BinanceExchange implements Exchange {
         },
         body: new URLSearchParams(signedParams as any).toString(),
       });
-      
+
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Algo TP Order failed: ${response.status} ${errorText}`);
       }
-      
+
       return response.json();
     });
-    
+
     this.log.info('api_tp_algo_placed', { symbol, side, tp: triggerPrice });
   }
 
@@ -924,7 +924,7 @@ export class BinanceExchange implements Exchange {
           type: o.type as any,
           stopPrice: Number(o.stopPrice),
         }));
-      
+
       results.push(...standardOrders);
     } catch (err) {
       noteRateLimitFromError(err);
@@ -951,7 +951,7 @@ export class BinanceExchange implements Exchange {
 
       if (response.ok) {
         const algoOrders = await response.json();
-        
+
         this.log.debug('raw_algo_orders', {
           count: (algoOrders as any[]).length,
           sample: (algoOrders as any[]).map((o) => ({

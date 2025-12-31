@@ -10,8 +10,20 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
   // 1) Si estamos IDLE pero hay una posición real → "attach" al estado
   if (s.mode === 'IDLE') {
     // Intentamos detectar posición en LONG y en SHORT (soporta one-way y hedge)
-    const longPos = await ex.readActivePosition(symbol, 'LONG');
-    const shortPos = await ex.readActivePosition(symbol, 'SHORT');
+    let longPos = null;
+    let shortPos = null;
+
+    try {
+      longPos = await ex.readActivePosition(symbol, 'LONG');
+    } catch (e: any) {
+      log.warn('sync_read_long_failed', { symbol, err: e?.message || String(e) });
+    }
+
+    try {
+      shortPos = await ex.readActivePosition(symbol, 'SHORT');
+    } catch (e: any) {
+      log.warn('sync_read_short_failed', { symbol, err: e?.message || String(e) });
+    }
 
     if (longPos || shortPos) {
       const pos = longPos ?? shortPos!;

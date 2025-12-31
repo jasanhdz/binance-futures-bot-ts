@@ -5,6 +5,7 @@ export interface TimeframeConfig {
     threshold: number;
     leverage?: number;
     avgSpread?: number; // Spread típico para cálculo de volatilidad (Ninja Protocol v2.0)
+    hardStop?: number;  // Per-symbol hard stop (Grid Search Optimizer)
     pnl: number;
     trades: number;
     sharpe: number;
@@ -85,6 +86,15 @@ export class MlConfigWatcher {
         const cleanSymbol = this.getCleanSymbol(symbol);
         return this.config[cleanSymbol]?.[timeframe] || null;
     }
+
+    // Grid Search Optimizer: Per-symbol hard stop configuration
+    public getHardStop(symbol: string, timeframe: string = '1h'): number {
+        const cleanSymbol = this.getCleanSymbol(symbol);
+        const hardStop = this.config[cleanSymbol]?.[timeframe]?.hardStop;
+        // Default to -5% if not configured
+        return hardStop !== undefined ? hardStop : -0.05;
+    }
+
 
     // Ninja Protocol v2.0: Average spread for volatility calculation
     // Lee exclusivamente del JSON, si no existe usa fallback genérico
