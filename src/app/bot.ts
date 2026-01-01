@@ -4,7 +4,6 @@ import { BotConfig } from '../infra/config';
 
 import { syncStateGuard } from './guards/sync-state';
 import { bracketsGuard } from './guards/ensure-brackets';
-import { sageExit } from './guards/sage-exit';
 import {
   getRateLimitUntil,
   isRateLimited,
@@ -60,14 +59,21 @@ export function startBot(deps: {
 
       await syncStateGuard(symbol, exchange, state, logger);
 
-      // Sage Exit (Intelligent Guard)
-      await sageExit.check({
-        symbol,
-        exchange,
-        state,
-        logger,
-        config,
-      });
+      // ═════════════════════════════════════════════════════════════════════
+      // 🛑 SAGE EXIT GUARD (DESACTIVADO - LEGACY CODE)
+      // ═════════════════════════════════════════════════════════════════════
+      // La lógica de salidas ha sido unificada en StrategyRunner (Ninja Protocol v2.0).
+      // sage-exit.ts es código legacy que causaba conflictos y latencia (DB I/O).
+      // Mantener este archivo solo como referencia histórica.
+
+      // await sageExit.check({
+      //   symbol,
+      //   exchange,
+      //   state,
+      //   logger,
+      //   config,
+      // });
+      // ═════════════════════════════════════════════════════════════════════
 
       await bracketsGuard(symbol, exchange, state, logger);
 

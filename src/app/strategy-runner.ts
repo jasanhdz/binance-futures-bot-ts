@@ -285,15 +285,62 @@ export class StrategyRunner {
           return;
         }
 
-        // ═══════════════════════════════════════════════════════
-        // CAPA 0.5: BREAKEVEN PROTECTION 🛡️
-        // Si ya ganamos >1.5%, no permitir caer bajo 0.5% (cubre fees)
-        // ═══════════════════════════════════════════════════════
-        if (peak > 1.5 && roiPct < 0.5) {
-          logger.info('ninja_exit_breakeven', { symbol, peak, roiPct, reason: 'protect_gains' });
-          await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-          applyStatePatch({ mode: 'IDLE', lastExitReason: 'BREAKEVEN_PROTECT', lastExitAt: Date.now(), panicCounter: 0 });
-          return;
+        // ══════════════════════════════════════════════════════════════════
+        // CAPA 0.5: TRAILING PROFIT SECURE (MODO "MOONBAG AGRESIVO") 🚀
+        // ══════════════════════════════════════════════════════════════════
+        // Objetivo: Permitir que el precio respire profundamente para permitir
+        // subidas del 20% - 50% sin cortar prematuramente.
+
+        let secureThreshold = -999;
+
+        if (peak > 1.5) {
+          if (peak > 30.0) {
+            // 🌙 MOONBAG EXTREMO (Peak > 30%)
+            // Estamos en el espacio profundo. Permitimos una caída MUY GRANDE.
+            // Ej: Peak 40% -> Cortamos a 30% (Dejamos caer 10%)
+            secureThreshold = peak - 10.0;
+          }
+          else if (peak > 20.0) {
+            // 🚀 HIGH RUNNER (Peak > 20%)
+            // Estamos en una subida fuerte. Permitimos una caída media.
+            // Ej: Peak 25% -> Cortamos a 15% (Dejamos caer 10%)
+            secureThreshold = peak - 10.0;
+          }
+          else if (peak > 12.0) {
+            // 🎯 HIGH PROFIT (Peak > 12%)
+            // Primera zona de Moonbag. Permitimos un poco de holgura.
+            // Ej: Peak 14% -> Cortamos a 6% (Dejamos caer 8%)
+            secureThreshold = peak - 8.0;
+          }
+          else if (peak > 8.0) {
+            // 📈 SECURE PROFIT (Peak > 8%)
+            // Ej: Peak 10% -> Cortamos a 2.5% (Dejamos caer 7.5%)
+            secureThreshold = 2.5;
+          }
+          else if (peak > 5.0) {
+            // 📊 SECURE PROFIT (Peak > 5%)
+            // Ej: Peak 6% -> Cortamos a 1.5% (Dejamos caer 4.5%)
+            secureThreshold = 1.5;
+          }
+          else {
+            // DEFAULT: Peak entre 1.5% y 5.0%.
+            // Breakeven (cubrir fees) al 0.5%.
+            secureThreshold = 0.5;
+          }
+
+          // ACCIÓN DE CIERRE
+          if (secureThreshold > -999 && roiPct < secureThreshold) {
+            logger.info('ninja_exit_trailing_secure', {
+              symbol,
+              peak,
+              roiPct,
+              threshold: secureThreshold,
+              reason: 'secure_levels_parabolic'
+            });
+            await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
+            applyStatePatch({ mode: 'IDLE', lastExitReason: 'PROFIT_SECURE', lastExitAt: Date.now(), panicCounter: 0 });
+            return;
+          }
         }
 
         // ═══════════════════════════════════════════════════════
@@ -847,13 +894,24 @@ export class StrategyRunner {
     // Calcular R:R dinámico basado en confianza
     if (mlProb > 0) {
       const confidence = Math.max(0, mlProb - mlThreshold); // 0-0.65 típico
-      const bonusRR = confidence * 5; // 0-3.25 extra
-      rrRatio = 1.5 + bonusRR;
+
+      // ═════════════════════════════════════════════════════════════
+      // CALIBRACIÓN MOONBAG: Aumentar R:R para objetivos de 12-15%
+      // ═════════════════════════════════════════════════════════════
+      // 1. Base RR: Subir de 1.5 a 4.0
+      let baseRR = 4.0;
+
+      // 2. Bonus RR: Subir multiplicador de 5 a 10
+      let bonusRR = confidence * 10;
+
+      rrRatio = baseRR + bonusRR;
       logger.info('tp_ml_calculation', {
         symbol,
         mlProb,
         mlThreshold,
         confidence,
+        baseRR: baseRR.toFixed(2),
+        bonusRR: bonusRR.toFixed(2),
         finalRR: rrRatio.toFixed(2)
       });
     }
