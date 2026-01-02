@@ -8,3 +8,7 @@ data/*
 logs/*
 train/data/*
 .venv/*
+
+# Ninja Config (production - contains personal settings)
+regime_config.json
+!regime_config.example.json

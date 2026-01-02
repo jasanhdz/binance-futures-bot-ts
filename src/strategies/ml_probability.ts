@@ -6,7 +6,7 @@ import {
   MlServiceError,
 } from '../ml/ml_probability_service';
 import { COLORS } from '../infra/fs/FsLogger';
-import { MlConfigWatcher } from '../config/MlConfigWatcher';
+import { getNinjaConfig } from '../app/core/NinjaConfigManager';
 
 export type MlStrategyOptions = {
   timeframe?: string;
@@ -24,13 +24,11 @@ export class MlProbabilityStrategy implements Strategy {
 
   private readonly baseHistoryBars: number;
   private readonly client: MlProbabilityServiceClient;
-  private readonly configWatcher: MlConfigWatcher;
 
   constructor(options: MlStrategyOptions = {}) {
     this.timeframe = options.timeframe ?? '1h';
     this.baseHistoryBars = Math.max(options.historyBars ?? DEFAULT_HISTORY_BARS, DEFAULT_HISTORY_BARS);
     this.client = new MlProbabilityServiceClient();
-    this.configWatcher = MlConfigWatcher.getInstance();
   }
 
   private resolveHistoryBars(config: StrategyContext['config']): number {
@@ -47,9 +45,8 @@ export class MlProbabilityStrategy implements Strategy {
   }
 
   private formatIdleReason(symbol: string, timeframe: string, longProb: number, shortProb: number, threshold: number): string {
-    // Columnar alignment so the '|' stays at the same spot; pad raw text before coloring.
-    const SYMBOL_COL = 8; // Longest we expect (e.g., LINKUSDT = 8)
-    const TF_COL = 3; // e.g., 1h, 4h, 15m
+    const SYMBOL_COL = 8;
+    const TF_COL = 3;
     const paddedSymbol = symbol.padEnd(SYMBOL_COL, ' ');
     const paddedTf = timeframe.padEnd(TF_COL, ' ');
     const coloredSymbol = `${COLORS.CYAN}${paddedSymbol}${COLORS.RESET}`;
@@ -61,6 +58,17 @@ export class MlProbabilityStrategy implements Strategy {
   private formatColoredProb(value: number | null, color: string): string {
     if (value === null) return 'n/a';
     return `${color}${value.toFixed(2)}${COLORS.RESET}`;
+  }
+
+  /**
+   * Get threshold from NinjaConfigManager
+   * Uses WHALE regime as default since it's the most conservative for entries (0.50)
+   */
+  private getThreshold(symbol: string): number {
+    const ninjaConfig = getNinjaConfig();
+    // Use WHALE regime threshold as default (most conservative)
+    const regimeConfig = ninjaConfig.getRegimeConfig('WHALE', symbol);
+    return regimeConfig.entryThreshold;
   }
 
   async evaluate(ctx: StrategyContext): Promise<Signal> {
@@ -82,16 +90,16 @@ export class MlProbabilityStrategy implements Strategy {
         candles,
         timeframe,
         forceRefresh: false,
-        extraCandles: {}, // We don't need extra candles for single-model inference anymore
+        extraCandles: {},
       });
 
-      // 3. Get Dynamic Threshold
-      const threshold = this.configWatcher.getThreshold(symbol, timeframe);
-      
+      // 3. Get Dynamic Threshold from NinjaConfigManager (replaces MlConfigWatcher)
+      const threshold = this.getThreshold(symbol);
+
       const longProb = response.long_prob;
       const shortProb = response.short_prob;
-      const neutralProb = response.neutral_prob; // V2 field
-      
+      const neutralProb = response.neutral_prob;
+
       const diagnostics = {
         symbol,
         timeframe,
@@ -99,7 +107,7 @@ export class MlProbabilityStrategy implements Strategy {
         shortProb,
         neutralProb,
         threshold,
-        pnl_config: this.configWatcher.getConfig(symbol, timeframe)?.pnl
+        source: 'regime_config'
       };
 
       // 4. Decision Logic (Pure ML)
@@ -127,15 +135,14 @@ export class MlProbabilityStrategy implements Strategy {
 
     } catch (error) {
       if (error instanceof MlServiceError) {
-        // If model not found (404), log warning but don't crash
         if (error.status === 404) {
-             logger?.warn('ml_model_missing', { symbol, timeframe });
-             return { action: 'IDLE', reason: 'model_missing' };
+          logger?.warn('ml_model_missing', { symbol, timeframe });
+          return { action: 'IDLE', reason: 'model_missing' };
         }
         logger?.warn('ml_service_error', { symbol, error: error.message });
         return { action: 'IDLE', reason: 'ml_service_error' };
       }
-      
+
       logger?.error('ml_unexpected_error', { symbol, error: String(error) });
       return { action: 'IDLE', reason: 'ml_unexpected' };
     }

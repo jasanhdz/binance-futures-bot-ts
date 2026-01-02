@@ -58,23 +58,6 @@ export function startBot(deps: {
       }
 
       await syncStateGuard(symbol, exchange, state, logger);
-
-      // ═════════════════════════════════════════════════════════════════════
-      // 🛑 SAGE EXIT GUARD (DESACTIVADO - LEGACY CODE)
-      // ═════════════════════════════════════════════════════════════════════
-      // La lógica de salidas ha sido unificada en StrategyRunner (Ninja Protocol v2.0).
-      // sage-exit.ts es código legacy que causaba conflictos y latencia (DB I/O).
-      // Mantener este archivo solo como referencia histórica.
-
-      // await sageExit.check({
-      //   symbol,
-      //   exchange,
-      //   state,
-      //   logger,
-      //   config,
-      // });
-      // ═════════════════════════════════════════════════════════════════════
-
       await bracketsGuard(symbol, exchange, state, logger);
 
       await runner.tick(symbol);

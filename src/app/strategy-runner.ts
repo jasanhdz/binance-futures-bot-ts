@@ -4,7 +4,13 @@ import { Logger } from '../core/ports/Logger';
 import { StateStore } from '../core/ports/StateStore';
 import { BotState, Side } from '../core/types';
 import { sizeByBudget, floorToStep, ceilToStep } from '../core/risk/sizing';
-import { MlConfigWatcher } from '../config/MlConfigWatcher';
+import { getNinjaConfig } from './core/NinjaConfigManager';
+import { RegimeDetector, MarketSnapshot } from './core/RegimeDetector';
+import { RegimeType, RegimeContext, RegimeConfig, IRegimeStrategy } from './regimes/RegimeStrategy';
+import { BloodbathStrategy } from './regimes/BloodbathStrategy';
+import { WhaleStrategy } from './regimes/WhaleStrategy';
+import { MonkStrategy } from './regimes/MonkStrategy';
+import { BunkerStrategy } from './regimes/BunkerStrategy';
 import { computeStopFromLiqTicks, roundToTick } from '../core/risk/stop';
 import { Strategy } from '../strategies/types';
 import { atr } from '../core/indicators/atr';
@@ -29,6 +35,19 @@ export class StrategyRunner {
       config: BotConfig;
     },
   ) { }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // NINJA SYSTEM v3.0: REGIME-BASED STRATEGY SELECTION
+  // ═══════════════════════════════════════════════════════════════════════════
+  private regimeDetector = new RegimeDetector();
+
+  // The 4 Armies (Strategy Pattern)
+  private regimeStrategies: Record<RegimeType, IRegimeStrategy> = {
+    BLOODBATH: new BloodbathStrategy(),
+    WHALE: new WhaleStrategy(),
+    MONK: new MonkStrategy(),
+    BUNKER: new BunkerStrategy()
+  };
 
   private lastLoggedSignals: Record<string, { action: string, reason: string, time: number }> = {};
 
@@ -191,6 +210,38 @@ export class StrategyRunner {
       filtersAtEntry.diagnostics = diagnostics;
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NINJA v3.0: REGIME DETECTION (The Brain)
+    // ═══════════════════════════════════════════════════════════════════════════
+    const marketSnapshot: MarketSnapshot = {
+      spreadPct: (diagnostics as any)?.spread ?? 0.0004,
+      obi: (diagnostics as any)?.obi_20 ?? 0,
+      fundingRate: 0, // TODO: Add funding rate fetch if available
+      longProb: (diagnostics as any)?.longProb ?? 0.33,
+      shortProb: (diagnostics as any)?.shortProb ?? 0.33,
+      neutralProb: (diagnostics as any)?.neutralProb ?? 0.34
+    };
+
+    const regimeContext = this.regimeDetector.analyze(marketSnapshot);
+    const activeRegimeStrategy = this.regimeStrategies[regimeContext.type];
+    const regimeConfig = activeRegimeStrategy.getConfig(symbol);
+
+    // Log regime status periodically (every 12 ticks ~ 1 minute at 5s interval)
+    if (!this.lastLoggedSignals[`${symbol}_regime`] ||
+      Date.now() - this.lastLoggedSignals[`${symbol}_regime`].time > 60000) {
+      logger.info('ninja_regime_status', {
+        symbol,
+        regime: regimeContext.type,
+        confidence: regimeContext.confidence,
+        bias: regimeContext.bias,
+        volatility: regimeContext.volatility,
+        trigger: regimeContext.trigger,
+        leverage: regimeConfig.leverage,
+        hardStop: (regimeConfig.hardStopRoe * 100).toFixed(1) + '%'
+      });
+      this.lastLoggedSignals[`${symbol}_regime`] = { action: regimeContext.type, reason: regimeContext.trigger, time: Date.now() };
+    }
+
     if (hasActivePosition) {
       const entry = stBefore.lastEntryPrice ?? activePosition?.entryPrice ?? 0;
       const mark = await markPrice().catch(() => undefined);
@@ -243,8 +294,9 @@ export class StrategyRunner {
 
 
 
-      // --- NINJA EXIT PROTOCOL v2.0 (Institutional) ---
-      // Based on AI consensus: Sonnet 4.5, Optus 4.5, K2 IA, Gemini 3.5
+      // --- NINJA EXIT PROTOCOL v3.0 (Regime-Based) ---
+      // Primary: Delegate to active regime strategy
+      // Fallback: Legacy v2.0 logic for backwards compatibility
       if (roiPct !== undefined) {
         // 1. Actualizar Peak ROE (Siempre necesario para trailing)
         const currentPeak = stBefore.peakRoe ?? 0;
@@ -252,6 +304,42 @@ export class StrategyRunner {
           applyStatePatch({ peakRoe: roiPct });
         }
         const peak = Math.max(currentPeak, roiPct);
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // NINJA v3.0: REGIME-BASED EXIT (Primary Decision Maker)
+        // ═══════════════════════════════════════════════════════════════════════════
+        const currentRoeDec = roiPct / 100.0; // Convert to decimal (0.05 = 5%)
+        const peakRoeDec = peak / 100.0;
+        const holdTimeMs = stBefore.lastEntryTime ? Date.now() - stBefore.lastEntryTime : 0;
+
+        const regimeExitReason = activeRegimeStrategy.getExitReason(currentRoeDec, peakRoeDec, holdTimeMs, symbol);
+
+        if (regimeExitReason) {
+          logger.info('regime_exit', {
+            symbol,
+            reason: regimeExitReason,
+            roi: roiPct.toFixed(2),
+            peak: peak.toFixed(2),
+            regime: regimeContext.type,
+            holdMs: holdTimeMs
+          });
+
+          await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
+          applyStatePatch({
+            mode: 'IDLE',
+            lastExitReason: regimeExitReason,
+            lastExitAt: Date.now(),
+            panicCounter: 0,
+            peakRoe: 0
+          });
+
+          // Reset detector to allow regime change after exit
+          this.regimeDetector.reset();
+          return;
+        }
+        // ═══════════════════════════════════════════════════════════════════════════
+        // END REGIME-BASED EXIT - If no exit triggered, continue to legacy logic
+        // ═══════════════════════════════════════════════════════════════════════════
 
         // Datos para decisión
         const currentProb = lastSide === 'LONG'
@@ -270,14 +358,14 @@ export class StrategyRunner {
         // Volatilidad Proxy: spread actual vs spread promedio (configurable externamente)
         // Lee de thresholds_config.json o usa defaults internos
         const currentSpread = (diagnostics as any)?.spread ?? 0.0004;
-        const avgSpread = MlConfigWatcher.getInstance().getAvgSpread(symbol);
+        const avgSpread = getNinjaConfig().regimeDetector.volatility_spread_low; // Use config spread threshold as proxy
         const volatilityFactor = Math.max(0.5, Math.min(3.0, currentSpread / avgSpread));
 
         // ═══════════════════════════════════════════════════════
         // CAPA 0: HARD STOP LOSS (Circuit Breaker) 🛑
-        // Per-symbol configuration from thresholds_config.json
+        // Now uses ACTIVE REGIME config instead of hardcoded WHALE
         // ═══════════════════════════════════════════════════════
-        const symbolHardStop = MlConfigWatcher.getInstance().getHardStop(symbol) * 100; // Convert to percentage
+        const symbolHardStop = regimeConfig.hardStopRoe * 100; // Convert to percentage
         if (roiPct < symbolHardStop) {
           logger.warn('ninja_exit_hard_stop', { symbol, roiPct, threshold: symbolHardStop, reason: 'circuit_breaker' });
           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
@@ -591,9 +679,11 @@ export class StrategyRunner {
     }
 
     const tf = (config as any).SYMBOL_TIMEFRAMES?.[symbol] || (config as any).ENTRY_TIMEFRAME || '1h';
-    const mlLeverage = MlConfigWatcher.getInstance().getLeverage(symbol, tf);
+    // NINJA v3.0: Use ACTIVE REGIME leverage instead of hardcoded WHALE
+    const mlLeverage = regimeConfig.leverage;
     const leverage = mlLeverage > 0 ? mlLeverage : config.LEVERAGE;
 
+    logger.info('regime_entry_leverage', { symbol, regime: regimeContext.type, leverage });
     await exchange.setLeverage(symbol, leverage);
     const price = await markPrice();
 
