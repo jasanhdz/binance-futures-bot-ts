@@ -681,7 +681,19 @@ export class StrategyRunner {
     const tf = (config as any).SYMBOL_TIMEFRAMES?.[symbol] || (config as any).ENTRY_TIMEFRAME || '1h';
     // NINJA v3.0: Use ACTIVE REGIME leverage instead of hardcoded WHALE
     const mlLeverage = regimeConfig.leverage;
-    const leverage = mlLeverage > 0 ? mlLeverage : config.LEVERAGE;
+
+    // CRITICAL: If regime leverage is 0, this regime BLOCKS ENTRIES (e.g., BUNKER)
+    if (mlLeverage === 0) {
+      logger.info('regime_entry_blocked', {
+        symbol,
+        regime: regimeContext.type,
+        reason: 'regime_leverage_zero',
+        message: 'Regime does not allow new entries'
+      });
+      return;
+    }
+
+    const leverage = mlLeverage;
 
     logger.info('regime_entry_leverage', { symbol, regime: regimeContext.type, leverage });
     await exchange.setLeverage(symbol, leverage);

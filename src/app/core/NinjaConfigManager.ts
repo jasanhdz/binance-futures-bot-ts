@@ -69,8 +69,26 @@ export class NinjaConfigManager {
     private readonly RELOAD_INTERVAL_MS = 30000; // Check for changes every 30s
 
     constructor(configPath?: string) {
-        // Default path relative to project root
-        this.configPath = configPath ?? path.resolve(__dirname, '../../..', 'regime_config.json');
+        // ═══════════════════════════════════════════════════════════════════════════
+        // ISOLATION SYSTEM: "Búnker vs Arena" (Grid Search Safety)
+        // Priority: 1. REGIME_CONFIG env var (.live.json for bot)
+        //           2. Constructor argument (for tests)
+        //           3. Default (regime_config.json - sandbox for grid search)
+        // ═══════════════════════════════════════════════════════════════════════════
+        const envPath = process.env.REGIME_CONFIG;
+
+        if (envPath) {
+            // Bot is reading the LIVE file (protected from grid search)
+            this.configPath = path.resolve(envPath);
+            console.log(`[NinjaConfig] Using LIVE config from env: ${this.configPath}`);
+        } else if (configPath) {
+            // Explicit path provided (for tests or scripts)
+            this.configPath = path.resolve(configPath);
+        } else {
+            // Default: sandbox file (grid search can modify this)
+            this.configPath = path.resolve(__dirname, '../../..', 'regime_config.json');
+        }
+
         this.config = this.loadConfig();
     }
 

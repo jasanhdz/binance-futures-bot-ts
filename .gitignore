@@ -12,3 +12,6 @@ train/data/*
 # Ninja Config (production - contains personal settings)
 regime_config.json
 !regime_config.example.json
+
+# Live regime config (private production settings)
+regime_config.live.json
