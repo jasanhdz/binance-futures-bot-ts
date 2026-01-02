@@ -1,4 +1,19 @@
 node_modules/
+dist/
+.env
+*.log
+*.csv
+data/*.json
+!data/.gitkeep
+*.pyc
+__pycache__/
+.DS_Store
+
+# Regime Configuration (private)
+regime_config.yaml
+regime_config.live.yaml
+!regime_config.example.yaml
+node_modules/
 .env*
 !.env.example
 !.env.testnet.example
@@ -10,8 +25,6 @@ train/data/*
 .venv/*
 
 # Ninja Config (production - contains personal settings)
-regime_config.json
-!regime_config.example.json
 
 # Live regime config (private production settings)
-regime_config.live.json
+regime_config.grid_temp.yaml

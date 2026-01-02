@@ -1,0 +1,137 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# NINJA SYSTEM v4.0 - REGIME CONFIGURATION (EXAMPLE)
+# ═══════════════════════════════════════════════════════════════════════════
+# 
+# This is the EXAMPLE configuration file. Copy to regime_config.yaml to use.
+# 
+# STRUCTURE:
+#   SYSTEM          - Global bot settings
+#   REGIME_DETECTOR - Thresholds for regime classification
+#   IMMUNE_SYSTEM   - Panic detection parameters
+#   REGIMES         - The 4 trading personalities (base definitions)
+#   SYMBOL_OVERRIDES - Per-symbol customizations
+#
+# SYNTAX:
+#   Flow Style: { key: value, key2: value2 }  - Compact one-liner
+#   Block Style: Multi-line with indentation  - More readable
+#
+# ISOLATION:
+#   Bot reads:        regime_config.live.yaml (protected, in .gitignore)
+#   Grid Search uses: regime_config.yaml (sandbox, can be modified)
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────────────────────────────────────────────────────
+# SYSTEM SETTINGS
+# ───────────────────────────────────────────────────────────────────────────
+# tick_interval_ms      - How often the bot checks for signals (ms)
+# max_trades_per_day    - Maximum trades allowed per day (safety limit)
+# global_leverage_default - Default leverage if not specified by regime
+SYSTEM:
+  tick_interval_ms: 5000
+  max_trades_per_day: 200
+  global_leverage_default: 10
+
+# ───────────────────────────────────────────────────────────────────────────
+# REGIME DETECTOR (Market Classification)
+# ───────────────────────────────────────────────────────────────────────────
+# volatility_spread_low   - Below this spread = LOW volatility (range market)
+# volatility_spread_high  - Above this spread = HIGH volatility (trending)
+# bias_strength_threshold - Min prob delta to confirm directional bias
+# obi_confirmation_threshold - Order Book Imbalance threshold
+REGIME_DETECTOR:
+  volatility_spread_low: 0.0008
+  volatility_spread_high: 0.0015
+  bias_strength_threshold: 0.20
+  obi_confirmation_threshold: 0.10
+
+# ───────────────────────────────────────────────────────────────────────────
+# IMMUNE SYSTEM (Panic Detection)
+# ───────────────────────────────────────────────────────────────────────────
+# alpha_slow_rise      - EMA alpha for confidence building (slow)
+# alpha_fast_fall      - EMA alpha for panic detection (fast)
+# panic_exit_threshold - Above this = trigger panic exit
+IMMUNE_SYSTEM:
+  alpha_slow_rise: 0.15
+  alpha_fast_fall: 0.70
+  panic_exit_threshold: 0.70
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THE 4 PERSONALITIES (Base Regime Definitions)
+# ═══════════════════════════════════════════════════════════════════════════
+# Each regime defines trading behavior for specific market conditions.
+#
+# PARAMETERS:
+#   leverage              - Position leverage multiplier
+#   entry_threshold       - Min ML probability to enter (0.0 - 1.0)
+#   hard_stop_roe         - Hard stop loss as ROE % (negative value)
+#   tp_roe                - Take profit as ROE % (use 999.0 for trailing only)
+#   max_hold_ms           - Maximum hold time in milliseconds (optional)
+#   trailing_activation_roe - ROE % to activate trailing stop (optional)
+#
+# REGIMES:
+#   BLOODBATH - High volatility + Strong bias → Quick scalps, tight stops
+#   WHALE     - Any volatility + Strong bias → Ride trends, trailing stops
+#   MONK      - Low volatility + Neutral     → Range trading, precision
+#   BUNKER    - Uncertain conditions         → No trading, protect capital
+
+REGIMES:
+  # BLOODBATH: The Berserker (Quick scalps in extreme volatility)
+  BLOODBATH: { leverage: 15, entry_threshold: 0.30, hard_stop_roe: -0.015, tp_roe: 0.005, max_hold_ms: 120000 }
+  
+  # WHALE: The Trend Hunter (Ride trends with trailing stops)
+  WHALE:     { leverage: 5,  entry_threshold: 0.50, hard_stop_roe: -0.20,  tp_roe: 999.0, trailing_activation_roe: 0.03 }
+  
+  # MONK: The Range Master (Precision in sideways markets)
+  MONK:      { leverage: 10, entry_threshold: 0.40, hard_stop_roe: -0.05,  tp_roe: 0.02 }
+  
+  # BUNKER: The Protector (No trading in uncertainty)
+  BUNKER:    { leverage: 0,  entry_threshold: 999.0, hard_stop_roe: 0.0,   tp_roe: 0.0 }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SYMBOL OVERRIDES (Per-Symbol Customization)
+# ═══════════════════════════════════════════════════════════════════════════
+# Override specific regime parameters for individual symbols.
+# Only specify the parameters you want to change.
+# If a symbol is not listed, it uses base REGIMES values.
+#
+# SYNTAX:
+#   SYMBOL:
+#     REGIME: { param: value, param2: value2 }
+#
+# EXAMPLES:
+#   - BTC needs conservative WHALE settings (slower, wider stops)
+#   - XRP works better with aggressive BLOODBATH (faster, tighter)
+#   - PEPE needs protection in all regimes (volatile meme coin)
+
+SYMBOL_OVERRIDES:
+  # ─────────────────────────────────────────────────────────────────────────
+  # BTCUSDT - The King (Conservative settings)
+  # BTC moves slowly, needs wider stops and lower leverage
+  # ─────────────────────────────────────────────────────────────────────────
+  BTCUSDT:
+    WHALE: { leverage: 3, entry_threshold: 0.55, hard_stop_roe: -0.25 }
+    MONK:  { leverage: 5 }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # ETHUSDT - The Prince
+  # ─────────────────────────────────────────────────────────────────────────
+  ETHUSDT:
+    WHALE: { leverage: 4 }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # XRPUSDT - The Warrior (Aggressive settings)
+  # XRP is volatile, can use higher leverage with tight stops
+  # ─────────────────────────────────────────────────────────────────────────
+  # XRPUSDT:
+  #   BLOODBATH: { leverage: 20, hard_stop_roe: -0.01 }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # MEME COINS (Need protection - use conservative overrides)
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1000PEPEUSDT:
+  #   BLOODBATH: { leverage: 5, hard_stop_roe: -0.03 }
+  #   WHALE:     { leverage: 3, hard_stop_roe: -0.30 }
+  
+  # DOGEUSDT:
+  #   MONK: { leverage: 8 }

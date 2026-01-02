@@ -26,7 +26,7 @@ export interface MarketSnapshot {
 export class RegimeDetector {
     private lastRegime: RegimeType = 'BUNKER';
     private regimeStickyCounter: number = 0;
-    private readonly REGIME_STICKY_THRESHOLD = 3; // Ticks to confirm regime change
+    private readonly REGIME_STICKY_THRESHOLD = 12; // Ticks to confirm regime change (12 ticks @ 5s = 60s grace)
 
     /**
      * Analyzes market data to determine the active trading regime.
@@ -111,13 +111,20 @@ export class RegimeDetector {
             }
         }
 
-        // CASE 3: MONK (Sweet Spot / Range)
+        // CASE 3: WHALE (Slow Trend)
+        // Low volatility + Directional bias = slow but steady trend
+        // This prevents symbols with slight bearish/bullish bias from going to BUNKER
+        if (volatility === 'LOW' && bias !== 'NEUTRAL') {
+            return 'WHALE';
+        }
+
+        // CASE 4: MONK (Sweet Spot / Range)
         // Low volatility + Neutral bias = boring range
         if (volatility === 'LOW' && bias === 'NEUTRAL') {
             return 'MONK';
         }
 
-        // CASE 4: BUNKER (Default / Uncertainty)
+        // CASE 5: BUNKER (Default / Uncertainty)
         return 'BUNKER';
     }
 

@@ -1,16 +1,18 @@
 /**
- * NinjaConfigManager
+ * NinjaConfigManager v4.0 (YAML Edition)
  * 
- * Loads and manages configuration from regime_config.json
- * Provides typed access to regime settings with symbol-level overrides
+ * Loads configuration from 'regime_config.yaml'.
+ * Supports symbol-specific overrides for each regime.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
+
 import { RegimeType, RegimeConfig } from '../regimes/RegimeStrategy';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TYPE DEFINITIONS (Mirror the JSON structure)
+// TYPE DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface SystemConfig {
@@ -32,7 +34,7 @@ export interface ImmuneSystemConfig {
     panic_exit_threshold: number;
 }
 
-export interface RegimeJsonConfig {
+export interface RegimeYamlConfig {
     leverage: number;
     entry_threshold: number;
     hard_stop_roe: number;
@@ -41,19 +43,19 @@ export interface RegimeJsonConfig {
     trailing_activation_roe?: number;
 }
 
-export interface NinjaConfigJson {
+export interface NinjaYamlConfig {
     SYSTEM: SystemConfig;
     REGIME_DETECTOR: RegimeDetectorConfig;
     IMMUNE_SYSTEM: ImmuneSystemConfig;
     REGIMES: {
-        BLOODBATH: RegimeJsonConfig;
-        WHALE: RegimeJsonConfig;
-        MONK: RegimeJsonConfig;
-        BUNKER: RegimeJsonConfig;
+        BLOODBATH: RegimeYamlConfig;
+        WHALE: RegimeYamlConfig;
+        MONK: RegimeYamlConfig;
+        BUNKER: RegimeYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
         [symbol: string]: {
-            [regime: string]: Partial<RegimeJsonConfig>;
+            [regime: string]: Partial<RegimeYamlConfig>;
         };
     };
 }
@@ -63,52 +65,55 @@ export interface NinjaConfigJson {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export class NinjaConfigManager {
-    private config: NinjaConfigJson;
+    private config: NinjaYamlConfig;
     private configPath: string;
     private lastLoadTime: number = 0;
-    private readonly RELOAD_INTERVAL_MS = 30000; // Check for changes every 30s
+    private readonly RELOAD_INTERVAL_MS = 30000;
 
     constructor(configPath?: string) {
         // ═══════════════════════════════════════════════════════════════════════════
-        // ISOLATION SYSTEM: "Búnker vs Arena" (Grid Search Safety)
-        // Priority: 1. REGIME_CONFIG env var (.live.json for bot)
+        // ISOLATION SYSTEM: "Búnker vs Arena"
+        // Priority: 1. REGIME_CONFIG env var (.live.yaml for bot)
         //           2. Constructor argument (for tests)
-        //           3. Default (regime_config.json - sandbox for grid search)
+        //           3. Default (regime_config.yaml - sandbox)
         // ═══════════════════════════════════════════════════════════════════════════
         const envPath = process.env.REGIME_CONFIG;
 
         if (envPath) {
-            // Bot is reading the LIVE file (protected from grid search)
             this.configPath = path.resolve(envPath);
             console.log(`[NinjaConfig] Using LIVE config from env: ${this.configPath}`);
         } else if (configPath) {
-            // Explicit path provided (for tests or scripts)
             this.configPath = path.resolve(configPath);
         } else {
-            // Default: sandbox file (grid search can modify this)
-            this.configPath = path.resolve(__dirname, '../../..', 'regime_config.json');
+            this.configPath = path.resolve(__dirname, '../../..', 'regime_config.yaml');
         }
 
         this.config = this.loadConfig();
     }
 
     /**
-     * Load configuration from JSON file
+     * Load configuration from YAML file
      */
-    private loadConfig(): NinjaConfigJson {
+    private loadConfig(): NinjaYamlConfig {
         try {
             const rawData = fs.readFileSync(this.configPath, 'utf-8');
             this.lastLoadTime = Date.now();
-            return JSON.parse(rawData) as NinjaConfigJson;
+
+            const parsed = yaml.load(rawData) as NinjaYamlConfig;
+            const regimeCount = Object.keys(parsed.REGIMES || {}).length;
+            const symbolCount = Object.keys(parsed.SYMBOL_OVERRIDES || {}).length;
+
+            console.log(`[NinjaConfig] Loaded ${regimeCount} regimes, ${symbolCount} symbol overrides`);
+
+            return parsed;
         } catch (error) {
             console.error(`[NinjaConfig] Failed to load config from ${this.configPath}:`, error);
-            // Return safe defaults
             return this.getDefaultConfig();
         }
     }
 
     /**
-     * Hot-reload config if file was modified (call periodically)
+     * Hot-reload config if file was modified
      */
     reloadIfNeeded(): boolean {
         if (Date.now() - this.lastLoadTime < this.RELOAD_INTERVAL_MS) {
@@ -119,7 +124,7 @@ export class NinjaConfigManager {
             const stats = fs.statSync(this.configPath);
             if (stats.mtimeMs > this.lastLoadTime) {
                 this.config = this.loadConfig();
-                console.log('[NinjaConfig] Configuration reloaded');
+                console.log('[NinjaConfig] Configuration reloaded (YAML)');
                 return true;
             }
         } catch (e) {
@@ -145,45 +150,70 @@ export class NinjaConfigManager {
     }
 
     /**
-     * Get configuration for a specific regime, with optional symbol override
+     * THE MAGIC: Merges Base Regime Config + Symbol-Specific Overrides
      */
     getRegimeConfig(regime: RegimeType, symbol?: string): RegimeConfig {
-        // 1. Get base config for the regime
-        const baseConfig = this.config.REGIMES[regime];
+        const regimeKey = regime.toUpperCase() as keyof typeof this.config.REGIMES;
 
-        // 2. Check for symbol-specific override
-        let overrides: Partial<RegimeJsonConfig> = {};
-        if (symbol && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regime]) {
-            overrides = this.config.SYMBOL_OVERRIDES[symbol][regime];
+        // 1. Load Base Regime Configuration
+        const baseRegime = this.config.REGIMES?.[regimeKey];
+
+        if (!baseRegime) {
+            console.warn(`[NinjaConfig] No base config for regime: ${regime}, using defaults`);
+            return this.getDefaultRegimeConfig(regime);
         }
 
-        // 3. Merge and convert to RegimeConfig interface
-        const merged: RegimeJsonConfig = {
-            ...baseConfig,
-            ...overrides
-        };
+        // Start with base values
+        let mergedConfig = { ...baseRegime };
 
-        return this.jsonToRegimeConfig(merged);
-    }
+        // 2. Apply Symbol-Specific Overrides
+        if (symbol && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regimeKey]) {
+            const overrides = this.config.SYMBOL_OVERRIDES[symbol][regimeKey];
+            mergedConfig = { ...mergedConfig, ...overrides };
+        }
 
-    /**
-     * Convert JSON config format to internal RegimeConfig interface
-     */
-    private jsonToRegimeConfig(json: RegimeJsonConfig): RegimeConfig {
+        // 3. Convert to RegimeConfig interface
         return {
-            leverage: json.leverage,
-            entryThreshold: json.entry_threshold,
-            hardStopRoe: json.hard_stop_roe,
-            tpRoe: json.tp_roe,
-            maxHoldMs: json.max_hold_ms,
-            trailingActivationRoe: json.trailing_activation_roe
+            leverage: mergedConfig.leverage,
+            hardStopRoe: mergedConfig.hard_stop_roe,
+            tpRoe: mergedConfig.tp_roe,
+            entryThreshold: mergedConfig.entry_threshold,
+            maxHoldMs: mergedConfig.max_hold_ms,
+            trailingActivationRoe: mergedConfig.trailing_activation_roe
         };
     }
 
     /**
-     * Safe default configuration (used if JSON fails to load)
+     * Check if a symbol has any overrides defined
      */
-    private getDefaultConfig(): NinjaConfigJson {
+    hasSymbolOverrides(symbol: string): boolean {
+        return !!this.config.SYMBOL_OVERRIDES?.[symbol];
+    }
+
+    /**
+     * Get list of symbols with overrides
+     */
+    getSymbolsWithOverrides(): string[] {
+        return Object.keys(this.config.SYMBOL_OVERRIDES || {});
+    }
+
+    /**
+     * Default regime config (fallback)
+     */
+    private getDefaultRegimeConfig(regime: RegimeType): RegimeConfig {
+        const defaults: Record<RegimeType, RegimeConfig> = {
+            BLOODBATH: { leverage: 10, entryThreshold: 0.30, hardStopRoe: -0.015, tpRoe: 0.005, maxHoldMs: 120000 },
+            WHALE: { leverage: 5, entryThreshold: 0.50, hardStopRoe: -0.20, tpRoe: 999.0, trailingActivationRoe: 0.03 },
+            MONK: { leverage: 10, entryThreshold: 0.40, hardStopRoe: -0.05, tpRoe: 0.02 },
+            BUNKER: { leverage: 0, entryThreshold: 999.0, hardStopRoe: 0.0, tpRoe: 0.0 }
+        };
+        return defaults[regime] || defaults.MONK;
+    }
+
+    /**
+     * Safe default configuration (used if YAML fails to load)
+     */
+    private getDefaultConfig(): NinjaYamlConfig {
         return {
             SYSTEM: {
                 tick_interval_ms: 5000,
@@ -203,7 +233,7 @@ export class NinjaConfigManager {
             },
             REGIMES: {
                 BLOODBATH: {
-                    leverage: 10, // Safe default, not 15
+                    leverage: 10,
                     entry_threshold: 0.30,
                     hard_stop_roe: -0.015,
                     tp_roe: 0.005,
@@ -228,13 +258,14 @@ export class NinjaConfigManager {
                     hard_stop_roe: 0.0,
                     tp_roe: 0.0
                 }
-            }
+            },
+            SYMBOL_OVERRIDES: {}
         };
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SINGLETON INSTANCE (Optional - for easy access across modules)
+// SINGLETON INSTANCE
 // ═══════════════════════════════════════════════════════════════════════════
 
 let _instance: NinjaConfigManager | null = null;

@@ -24,8 +24,27 @@ export class BunkerStrategy implements IRegimeStrategy {
         return false;
     }
 
-    getExitReason(_currentRoe: number, _peakRoe: number, _holdTimeMs: number, _symbol?: string): string | null {
-        // If somehow we have a position in Bunker mode, close it immediately
-        return 'BUNKER_EMERGENCY_EXIT';
+    getExitReason(currentRoe: number, peakRoe: number, _holdTimeMs: number, _symbol?: string): string | null {
+        // BUNKER: Let the market decide, not a timer
+        // Only exit if:
+        // 1. Hit hard stop (-5%)
+        // 2. Trailing stop: was profitable, then fell back significantly
+
+        const HARD_STOP = -0.05; // -5% ROI
+        const TRAILING_ACTIVATION = 0.01; // 1% profit activates trailing
+        const TRAILING_DRAWDOWN = 0.5; // Close if fell to 50% of peak
+
+        // Hard stop - protect capital
+        if (currentRoe < HARD_STOP) {
+            return 'BUNKER_STOP_LOSS';
+        }
+
+        // Trailing stop - was winning, now giving back too much
+        if (peakRoe > TRAILING_ACTIVATION && currentRoe < peakRoe * TRAILING_DRAWDOWN) {
+            return 'BUNKER_TRAILING_EXIT';
+        }
+
+        // No timer - stay in position, let market decide
+        return null;
     }
 }
