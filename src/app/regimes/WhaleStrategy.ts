@@ -1,9 +1,10 @@
 /**
- * Whale Strategy (Modo Cazador)
+ * Whale Strategy (Modo Cazador) v4.1 (Consolidated)
  * 
- * Activates during: Strong sustained bias, aligned funding, smart money flow
- * Objective: Trend following with infinite TP (Moonbag)
- * Risk: MEDIUM-HIGH (configurable, default 5x leverage)
+ * Centraliza toda la lógica de salida:
+ * 1. Hard Stop (YAML)
+ * 2. Moonbag Secure (Ex-CAPA 0.5)
+ * 3. Trailing Logarítmico (Ex-CAPA 2)
  */
 
 import { IRegimeStrategy, RegimeConfig, RegimeContext, RegimeType } from './RegimeStrategy';
@@ -12,59 +13,72 @@ import { getNinjaConfig } from '../core/NinjaConfigManager';
 export class WhaleStrategy implements IRegimeStrategy {
     readonly name: RegimeType = 'WHALE';
 
-    /**
-     * Returns config from regime_config.json with optional symbol override
-     */
     getConfig(symbol?: string): RegimeConfig {
         return getNinjaConfig().getRegimeConfig('WHALE', symbol);
     }
 
     shouldEnter(mlProb: number, ctx: RegimeContext, symbol?: string): boolean {
         const config = this.getConfig(symbol);
-        // In Whale mode, we need HIGH conviction. We're riding the trend.
-        // Only enter if ML is strongly directional AND bias matches.
+        // Solo entrar si hay convicción alta y el sesgo coincide
         const biasMatchesProb =
             (ctx.bias === 'BULL' && mlProb > config.entryThreshold) ||
             (ctx.bias === 'BEAR' && mlProb > config.entryThreshold);
-
         return biasMatchesProb;
     }
 
     getExitReason(currentRoe: number, peakRoe: number, holdTimeMs: number, symbol?: string): string | null {
         const config = this.getConfig(symbol);
 
-        // 1. Hard Stop (Disaster protection)
+        // INPUT: currentRoe y peakRoe vienen en DECIMALES (ej. 0.05 = 5%)
+        // Convertimos a PORCENTAJE para facilitar la lógica de "Moonbag"
+        const peakPct = peakRoe * 100;
+        const currentPct = currentRoe * 100;
+
+        // 1. HARD STOP (Corte seco por liquidación o quiebra de régimen)
         if (currentRoe < config.hardStopRoe) {
             return 'WHALE_HARD_STOP';
         }
 
-        // 2. Parabolic Moonbag Trailing
-        const trailingActivation = config.trailingActivationRoe ?? 0.03;
+        // 2. MOONBAG AGRESIVO (Secure Threshold)
+        // Protege ganancias permitiendo respiración profunda en parábolas
+        if (peakPct > 1.5) {
+            let secureThreshold = -999; // Inactivo por defecto
 
-        if (peakRoe >= trailingActivation) {
-            // Allow larger drawdowns at higher peaks (Parabolic logic)
-            let allowedDrawdownPct: number;
-
-            if (peakRoe > 0.30) {
-                allowedDrawdownPct = 0.10; // At +30%, allow 10% drop
-            } else if (peakRoe > 0.20) {
-                allowedDrawdownPct = 0.10; // At +20%, allow 10% drop
-            } else if (peakRoe > 0.12) {
-                allowedDrawdownPct = 0.08; // At +12%, allow 8% drop
-            } else if (peakRoe > 0.05) {
-                allowedDrawdownPct = 0.04; // At +5%, allow 4% drop
+            if (peakPct > 30.0) {
+                secureThreshold = peakPct - 10.0; // Ej: 40% -> Cortar a 30%
+            } else if (peakPct > 20.0) {
+                secureThreshold = peakPct - 10.0; // Ej: 25% -> Cortar a 15%
+            } else if (peakPct > 12.0) {
+                secureThreshold = peakPct - 8.0;  // Ej: 14% -> Cortar a 6%
+            } else if (peakPct > 8.0) {
+                secureThreshold = 2.5;           // Asegurar ganancia mínima
+            } else if (peakPct > 5.0) {
+                secureThreshold = 1.5;           // Breakeven agresivo
             } else {
-                allowedDrawdownPct = 0.02; // At +3%, allow 2% drop
+                secureThreshold = 0.5;           // Cubrir fees
             }
 
-            const minSecureLevel = peakRoe - allowedDrawdownPct;
-
-            if (currentRoe < minSecureLevel && minSecureLevel > 0) {
-                return 'WHALE_TRAILING_SECURE';
+            if (secureThreshold > -999 && currentPct < secureThreshold) {
+                return 'WHALE_MOONBAG_SECURE';
             }
         }
 
-        // 3. No fixed TP - let it run forever (Moonbag philosophy)
+        // 3. TRAILING LOGARÍTMICO (Continuo)
+        // Fórmula suave para permitir runs largos sin salir por ruido
+        if (peakPct > 5) {
+            const safePeak = Math.max(5, peakPct);
+            let baseTrail = 30 - (22 * Math.log10(safePeak / 5));
+            // Clamp entre 8% y 30%
+            baseTrail = Math.max(8, Math.min(30, baseTrail));
+
+            const stopThreshold = peakPct * (1 - (baseTrail / 100));
+
+            if (currentPct < stopThreshold) {
+                return 'WHALE_LOGARITHMIC_TRAIL';
+            }
+        }
+
+        // Mantener posición
         return null;
     }
 }

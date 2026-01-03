@@ -373,63 +373,12 @@ export class StrategyRunner {
           return;
         }
 
+
         // ══════════════════════════════════════════════════════════════════
-        // CAPA 0.5: TRAILING PROFIT SECURE (MODO "MOONBAG AGRESIVO") 🚀
+        // CAPA 0.5: REMOVED - Now handled by WhaleStrategy.getExitReason()
+        // See: src/app/regimes/WhaleStrategy.ts (WHALE_MOONBAG_SECURE)
         // ══════════════════════════════════════════════════════════════════
-        // Objetivo: Permitir que el precio respire profundamente para permitir
-        // subidas del 20% - 50% sin cortar prematuramente.
 
-        let secureThreshold = -999;
-
-        if (peak > 1.5) {
-          if (peak > 30.0) {
-            // 🌙 MOONBAG EXTREMO (Peak > 30%)
-            // Estamos en el espacio profundo. Permitimos una caída MUY GRANDE.
-            // Ej: Peak 40% -> Cortamos a 30% (Dejamos caer 10%)
-            secureThreshold = peak - 10.0;
-          }
-          else if (peak > 20.0) {
-            // 🚀 HIGH RUNNER (Peak > 20%)
-            // Estamos en una subida fuerte. Permitimos una caída media.
-            // Ej: Peak 25% -> Cortamos a 15% (Dejamos caer 10%)
-            secureThreshold = peak - 10.0;
-          }
-          else if (peak > 12.0) {
-            // 🎯 HIGH PROFIT (Peak > 12%)
-            // Primera zona de Moonbag. Permitimos un poco de holgura.
-            // Ej: Peak 14% -> Cortamos a 6% (Dejamos caer 8%)
-            secureThreshold = peak - 8.0;
-          }
-          else if (peak > 8.0) {
-            // 📈 SECURE PROFIT (Peak > 8%)
-            // Ej: Peak 10% -> Cortamos a 2.5% (Dejamos caer 7.5%)
-            secureThreshold = 2.5;
-          }
-          else if (peak > 5.0) {
-            // 📊 SECURE PROFIT (Peak > 5%)
-            // Ej: Peak 6% -> Cortamos a 1.5% (Dejamos caer 4.5%)
-            secureThreshold = 1.5;
-          }
-          else {
-            // DEFAULT: Peak entre 1.5% y 5.0%.
-            // Breakeven (cubrir fees) al 0.5%.
-            secureThreshold = 0.5;
-          }
-
-          // ACCIÓN DE CIERRE
-          if (secureThreshold > -999 && roiPct < secureThreshold) {
-            logger.info('ninja_exit_trailing_secure', {
-              symbol,
-              peak,
-              roiPct,
-              threshold: secureThreshold,
-              reason: 'secure_levels_parabolic'
-            });
-            await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-            applyStatePatch({ mode: 'IDLE', lastExitReason: 'PROFIT_SECURE', lastExitAt: Date.now(), panicCounter: 0 });
-            return;
-          }
-        }
 
         // ═══════════════════════════════════════════════════════
         // CAPA 1: PÁNICO INTELIGENTE (Histéresis + Dinámico) 🚨
@@ -461,30 +410,12 @@ export class StrategyRunner {
           }
         }
 
-        // ═══════════════════════════════════════════════════════
-        // CAPA 2: TRAILING STOP CONTINUO (Logarítmico) 💰
-        // Fórmula suave: Trail = 30 - (22 * log10(peak / 5))
-        // Mínimo 8% para evitar salidas por ruido
-        // ═══════════════════════════════════════════════════════
-        if (peak > 5) {
-          // Usar Math.max(5, peak) para evitar NaN con log de número < 1
-          const safePeak = Math.max(5, peak);
-          let baseTrail = 30 - (22 * Math.log10(safePeak / 5));
-          baseTrail = Math.max(8, Math.min(30, baseTrail)); // Clamp entre 8% y 30%
 
-          // Calcular precio de corte
-          const stopThreshold = peak * (1 - (baseTrail / 100));
+        // ═══════════════════════════════════════════════════════
+        // CAPA 2: REMOVED - Now handled by WhaleStrategy.getExitReason()
+        // See: src/app/regimes/WhaleStrategy.ts (WHALE_LOGARITHMIC_TRAIL)
+        // ═══════════════════════════════════════════════════════
 
-          if (roiPct < stopThreshold) {
-            logger.info('ninja_exit_trailing_v2', {
-              symbol, peak, current: roiPct, trailPct: baseTrail.toFixed(1),
-              stopAt: stopThreshold.toFixed(2), reason: 'continuous_trailing'
-            });
-            await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-            applyStatePatch({ mode: 'IDLE', lastExitReason: 'TRAILING_V2', lastExitAt: Date.now(), panicCounter: 0 });
-            return;
-          }
-        }
 
         // ═══════════════════════════════════════════════════════
         // CAPA 3: NEUTRALITY EXIT (Agotamiento) 😐
@@ -818,8 +749,24 @@ export class StrategyRunner {
         else planStop = Math.max(planStop, price + oneTick);
         planStop = roundToTick(planStop, filters.tickSize, filters.pricePrecision);
 
-        const stopDist =
+        const atrDist =
           side === 'LONG' ? Math.max(0, price - planStop) : Math.max(0, planStop - price);
+
+        // Distancia basada en RÉGIMEN (Hard Stop del YAML)
+        const regimeHardStopRoe = Math.abs(regimeConfig.hardStopRoe);
+        const regimeDist = price * regimeHardStopRoe;
+
+        // USAR EL STOP MÁS CERCANO para el cálculo de Size
+        const stopDist = Math.min(atrDist, regimeDist);
+
+        logger.debug('sizing_stop_comparison', {
+          symbol,
+          atrDist: atrDist.toFixed(4),
+          regimeDist: regimeDist.toFixed(4),
+          chosenDist: stopDist.toFixed(4),
+          reason: stopDist === atrDist ? 'ATR_Tighter' : 'REGIME_Tighter'
+        });
+
         if (stopDist > 0) {
           const riskUSDT = usdt * maxRiskPct;
           const qtyByRisk = floorToStep(
