@@ -1,6 +1,6 @@
 /**
  * RegimeStrategy Interface
- * Base contract for all trading regime strategies in Ninja System v3.0
+ * Base contract for all trading regime strategies in Ninja System v5.0
  */
 
 export type RegimeType = 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER';
@@ -25,6 +25,18 @@ export interface RegimeConfig {
     maxHoldMs?: number;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// NINJA v5.0: CONTEXTO COMPLETO PARA DECISIONES DE SALIDA
+// ═══════════════════════════════════════════════════════════════════════════
+export interface ExitContext {
+    currentRoe: number;       // ROE actual (decimal, ej. 0.05 = 5%)
+    peakRoe: number;          // Pico máximo ROE alcanzado
+    holdTimeMs: number;       // Tiempo en posición (ms)
+    opposingProb: number;     // Probabilidad del lado OPUESTO (0-1)
+    neutralProb: number;      // Probabilidad de Neutral (0-1)
+    volatilityFactor: number; // Factor de volatilidad (spread actual / spread promedio)
+}
+
 export interface IRegimeStrategy {
     readonly name: RegimeType;
 
@@ -39,8 +51,9 @@ export interface IRegimeStrategy {
     shouldEnter(mlProb: number, ctx: RegimeContext, symbol?: string): boolean;
 
     /**
-     * Evaluates exit conditions
+     * NINJA v5.0: Evaluates exit conditions with full market context
+     * Replaces getExitReason() - each regime decides its own panic/neutrality behavior
      * @returns Exit reason string or null if should hold
      */
-    getExitReason(currentRoe: number, peakRoe: number, holdTimeMs: number, symbol?: string): string | null;
+    evaluateExit(ctx: ExitContext, symbol?: string): string | null;
 }

@@ -1,13 +1,17 @@
 /**
- * Whale Strategy (Modo Cazador) v4.1 (Consolidated)
+ * Whale Strategy (Modo Cazador) v5.0
  * 
- * Centraliza toda la lógica de salida:
- * 1. Hard Stop (YAML)
- * 2. Moonbag Secure (Ex-CAPA 0.5)
- * 3. Trailing Logarítmico (Ex-CAPA 2)
+ * FILOSOFÍA: "Las ballenas aguantan el mareo, pero saltan si el iceberg se mueve"
+ * 
+ * Lógica de salida consolidada:
+ * 1. Hard Stop (Protección de capital)
+ * 2. Moonbag Secure (Asegurar ganancias escalonadas)
+ * 3. Trailing Logarítmico (Dejar correr tendencias)
+ * 4. Panic Extremo (Solo reversales catastróficos >80%)
+ * 5. Neutralidad: IGNORADA (trends respiran)
  */
 
-import { IRegimeStrategy, RegimeConfig, RegimeContext, RegimeType } from './RegimeStrategy';
+import { IRegimeStrategy, RegimeConfig, RegimeContext, RegimeType, ExitContext } from './RegimeStrategy';
 import { getNinjaConfig } from '../core/NinjaConfigManager';
 
 export class WhaleStrategy implements IRegimeStrategy {
@@ -19,57 +23,48 @@ export class WhaleStrategy implements IRegimeStrategy {
 
     shouldEnter(mlProb: number, ctx: RegimeContext, symbol?: string): boolean {
         const config = this.getConfig(symbol);
-        // Solo entrar si hay convicción alta y el sesgo coincide
         const biasMatchesProb =
             (ctx.bias === 'BULL' && mlProb > config.entryThreshold) ||
             (ctx.bias === 'BEAR' && mlProb > config.entryThreshold);
         return biasMatchesProb;
     }
 
-    getExitReason(currentRoe: number, peakRoe: number, holdTimeMs: number, symbol?: string): string | null {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NINJA v5.0: WHALE EVALUATE EXIT (Trend Follower Logic)
+    // ═══════════════════════════════════════════════════════════════════════════
+    evaluateExit(ctx: ExitContext, symbol?: string): string | null {
         const config = this.getConfig(symbol);
 
-        // INPUT: currentRoe y peakRoe vienen en DECIMALES (ej. 0.05 = 5%)
-        // Convertimos a PORCENTAJE para facilitar la lógica de "Moonbag"
-        const peakPct = peakRoe * 100;
-        const currentPct = currentRoe * 100;
+        const peakPct = ctx.peakRoe * 100;
+        const currentPct = ctx.currentRoe * 100;
 
-        // 1. HARD STOP (Corte seco por liquidación o quiebra de régimen)
-        if (currentRoe < config.hardStopRoe) {
+        // 1. HARD STOP (Corte seco - Protección de capital)
+        if (ctx.currentRoe < config.hardStopRoe) {
             return 'WHALE_HARD_STOP';
         }
 
         // 2. MOONBAG AGRESIVO (Secure Threshold)
         // Protege ganancias permitiendo respiración profunda en parábolas
         if (peakPct > 1.5) {
-            let secureThreshold = -999; // Inactivo por defecto
+            let secureThreshold = -999;
 
-            if (peakPct > 30.0) {
-                secureThreshold = peakPct - 10.0; // Ej: 40% -> Cortar a 30%
-            } else if (peakPct > 20.0) {
-                secureThreshold = peakPct - 10.0; // Ej: 25% -> Cortar a 15%
-            } else if (peakPct > 12.0) {
-                secureThreshold = peakPct - 8.0;  // Ej: 14% -> Cortar a 6%
-            } else if (peakPct > 8.0) {
-                secureThreshold = 2.5;           // Asegurar ganancia mínima
-            } else if (peakPct > 5.0) {
-                secureThreshold = 1.5;           // Breakeven agresivo
-            } else {
-                secureThreshold = 0.5;           // Cubrir fees
-            }
+            if (peakPct > 30.0) secureThreshold = peakPct - 10.0;
+            else if (peakPct > 20.0) secureThreshold = peakPct - 10.0;
+            else if (peakPct > 12.0) secureThreshold = peakPct - 8.0;
+            else if (peakPct > 8.0) secureThreshold = 2.5;
+            else if (peakPct > 5.0) secureThreshold = 1.5;
+            else secureThreshold = 0.5;
 
             if (secureThreshold > -999 && currentPct < secureThreshold) {
                 return 'WHALE_MOONBAG_SECURE';
             }
         }
 
-        // 3. TRAILING LOGARÍTMICO (Continuo)
-        // Fórmula suave para permitir runs largos sin salir por ruido
+        // 3. TRAILING LOGARÍTMICO (Fórmula Continua)
         if (peakPct > 5) {
             const safePeak = Math.max(5, peakPct);
             let baseTrail = 30 - (22 * Math.log10(safePeak / 5));
-            // Clamp entre 8% y 30%
-            baseTrail = Math.max(8, Math.min(30, baseTrail));
+            baseTrail = Math.max(8, Math.min(30, baseTrail)); // Clamp 8%-30%
 
             const stopThreshold = peakPct * (1 - (baseTrail / 100));
 
@@ -78,7 +73,16 @@ export class WhaleStrategy implements IRegimeStrategy {
             }
         }
 
-        // Mantener posición
+        // 4. PANIC EXTREMO (Solo reversales catastróficos)
+        // Las ballenas aguantan el "mareo" (rumor), pero saltan si el iceberg se mueve (>80%)
+        if (ctx.opposingProb > 0.80) {
+            return 'WHALE_PANIC_EXTREME';
+        }
+
+        // 5. NEUTRALIDAD: WHALE IGNORA
+        // "Whales don't exit on neutrality - trends continue even in indecision"
+        // Mantener posición. El Trailing Stop ya nos protegerá si la tendencia se rompe.
+
         return null;
     }
 }

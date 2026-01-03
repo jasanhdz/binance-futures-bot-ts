@@ -1,8 +1,13 @@
 /**
- * Regime Detector v2.0
+ * Regime Detector v5.0
  * 
- * The "Brain" of Ninja System v3.0
+ * The "Brain" of Ninja System v5.0
  * Analyzes market micro-state to determine which Regime is active.
+ * 
+ * v5.0 Changes:
+ * - Dynamic hysteresis thresholds per regime
+ * - Bloodbath: 15s (fast regime changes in chaos)
+ * - Whale: 60s (stable regime for trends)
  */
 
 import {
@@ -26,11 +31,24 @@ export interface MarketSnapshot {
 export class RegimeDetector {
     private lastRegime: RegimeType = 'BUNKER';
     private regimeStickyCounter: number = 0;
-    private readonly REGIME_STICKY_THRESHOLD = 12; // Ticks to confirm regime change (12 ticks @ 5s = 60s grace)
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NINJA v5.0: HYSTERESIS DINÁMICA POR RÉGIMEN
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Bloodbath necesita cambios rápidos, Whale necesita estabilidad
+    private getHysteresisThreshold(regime: RegimeType): number {
+        const thresholds: Record<RegimeType, number> = {
+            BLOODBATH: 3,   // 15s (Caos = Reacción rápida)
+            WHALE: 12,      // 60s (Tendencia = Estabilidad)
+            MONK: 6,        // 30s (Rango = Moderado)
+            BUNKER: 2       // 10s (Incertidumbre = Salir/Entrar rápido)
+        };
+        return thresholds[regime] ?? 6;
+    }
 
     /**
      * Analyzes market data to determine the active trading regime.
-     * Implements hysteresis to prevent regime flickering.
+     * Implements dynamic hysteresis to prevent regime flickering.
      */
     analyze(snapshot: MarketSnapshot): RegimeContext {
         // Hot-reload config if changed
@@ -45,7 +63,7 @@ export class RegimeDetector {
         // 3. Determine Raw Regime
         const rawRegime = this.detectRawRegime(snapshot, volatility, bias);
 
-        // 4. Apply Hysteresis (Sticky Regime)
+        // 4. Apply Dynamic Hysteresis (v5.0)
         const finalRegime = this.applyHysteresis(rawRegime);
 
         // 5. Build Context
@@ -59,7 +77,6 @@ export class RegimeDetector {
     }
 
     private classifyVolatility(spreadPct: number): VolatilityLevel {
-        // Read thresholds from config
         const config = getNinjaConfig().regimeDetector;
 
         if (spreadPct > config.volatility_spread_high) return 'HIGH';
@@ -88,20 +105,16 @@ export class RegimeDetector {
         // ═══════════════════════════════════════════════════════════
 
         // CASE 1: BLOODBATH (Panic / Wick Hunting)
-        // High volatility + ML confusion (high neutral) = market chaos
         if (volatility === 'HIGH' && neutralProb > 0.50) {
             return 'BLOODBATH';
         }
 
-        // CASE 2: WHALE (Strong Trend)
-        // Medium volatility + Strong bias + Funding aligned
+        // CASE 2: WHALE (Strong Trend - Med Volatility)
         if (volatility === 'MED' && bias !== 'NEUTRAL') {
-            // Check funding alignment with bias
             const fundingAligned =
                 (bias === 'BULL' && fundingRate > 0) ||
                 (bias === 'BEAR' && fundingRate < 0);
 
-            // OBI should also confirm direction
             const obiAligned =
                 (bias === 'BULL' && obi > 0.1) ||
                 (bias === 'BEAR' && obi < -0.1);
@@ -111,15 +124,12 @@ export class RegimeDetector {
             }
         }
 
-        // CASE 3: WHALE (Slow Trend)
-        // Low volatility + Directional bias = slow but steady trend
-        // This prevents symbols with slight bearish/bullish bias from going to BUNKER
+        // CASE 3: WHALE (Slow Trend - Low Volatility with bias)
         if (volatility === 'LOW' && bias !== 'NEUTRAL') {
             return 'WHALE';
         }
 
         // CASE 4: MONK (Sweet Spot / Range)
-        // Low volatility + Neutral bias = boring range
         if (volatility === 'LOW' && bias === 'NEUTRAL') {
             return 'MONK';
         }
@@ -128,26 +138,28 @@ export class RegimeDetector {
         return 'BUNKER';
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NINJA v5.0: HYSTERESIS DINÁMICA
+    // ═══════════════════════════════════════════════════════════════════════════
     private applyHysteresis(rawRegime: RegimeType): RegimeType {
-        // CASE A: REGIME DID NOT CHANGE
+        // Get dynamic threshold based on CURRENT regime (not the new one)
+        const stickyThreshold = this.getHysteresisThreshold(this.lastRegime);
+
+        // CASE A: REGIME DID NOT CHANGE - reinforce lock
         if (rawRegime === this.lastRegime) {
-            // REINFORCE LOCK: Reset counter to maximum
-            // This ensures if we're in WHALE and market flickers,
-            // WE STAY IN WHALE firmly.
-            this.regimeStickyCounter = this.REGIME_STICKY_THRESHOLD;
+            this.regimeStickyCounter = stickyThreshold;
             return this.lastRegime;
         }
 
-        // CASE B: CHANGE DETECTED
-        // Start countdown for confirmation
-        // Example: Threshold=3. Tick1(Change)->2, Tick2->1, Tick3->0(Switch).
+        // CASE B: CHANGE DETECTED - start countdown
         this.regimeStickyCounter--;
 
         // Check if grace period expired (Cooldown complete)
         if (this.regimeStickyCounter <= 0) {
             // CONFIRM REGIME CHANGE
             this.lastRegime = rawRegime;
-            this.regimeStickyCounter = this.REGIME_STICKY_THRESHOLD; // Reset for new regime
+            // Reset counter using NEW regime's threshold
+            this.regimeStickyCounter = this.getHysteresisThreshold(rawRegime);
             return rawRegime;
         }
 
@@ -159,10 +171,7 @@ export class RegimeDetector {
         const { longProb, shortProb, neutralProb } = snapshot;
         const maxProb = Math.max(longProb, shortProb, neutralProb);
 
-        // In BUNKER, we're uncertain by definition
         if (regime === 'BUNKER') return 'LOW';
-
-        // High confidence if dominant probability is clear
         if (maxProb > 0.60) return 'HIGH';
         if (maxProb > 0.45) return 'MED';
         return 'LOW';

@@ -6,7 +6,7 @@ import { BotState, Side } from '../core/types';
 import { sizeByBudget, floorToStep, ceilToStep } from '../core/risk/sizing';
 import { getNinjaConfig } from './core/NinjaConfigManager';
 import { RegimeDetector, MarketSnapshot } from './core/RegimeDetector';
-import { RegimeType, RegimeContext, RegimeConfig, IRegimeStrategy } from './regimes/RegimeStrategy';
+import { RegimeType, RegimeContext, RegimeConfig, IRegimeStrategy, ExitContext } from './regimes/RegimeStrategy';
 import { BloodbathStrategy } from './regimes/BloodbathStrategy';
 import { WhaleStrategy } from './regimes/WhaleStrategy';
 import { MonkStrategy } from './regimes/MonkStrategy';
@@ -268,9 +268,24 @@ export class StrategyRunner {
       const pnlUsd =
         pnlUsdRaw !== undefined ? Number(pnlUsdRaw.toFixed(6)) : undefined;
       const roiColor = roiPct !== undefined ? (roiPct >= 0 ? 'green' : 'red') : undefined;
-      const longProb = typeof (diagnostics as any)?.longProb === 'number' ? (diagnostics as any).longProb : undefined;
-      const shortProb = typeof (diagnostics as any)?.shortProb === 'number' ? (diagnostics as any).shortProb : undefined;
-      const probThreshold = typeof (diagnostics as any)?.threshold === 'number' ? (diagnostics as any).threshold : undefined;
+
+      // ═════════════════════════════════════════════════════════════════════════
+      // FIX v5.0: UNIFICACIÓN DE PROBABILIDADES (Single Source of Truth)
+      // Usamos 0.33 como fallback seguro (neutralidad) si ML falla
+      // ═════════════════════════════════════════════════════════════════════════
+      const longProb = typeof (diagnostics as any)?.longProb === 'number'
+        ? (diagnostics as any).longProb
+        : 0.33;
+      const shortProb = typeof (diagnostics as any)?.shortProb === 'number'
+        ? (diagnostics as any).shortProb
+        : 0.33;
+      const neutralProb = typeof (diagnostics as any)?.neutralProb === 'number'
+        ? (diagnostics as any).neutralProb
+        : (1 - longProb - shortProb);
+      const probThreshold = typeof (diagnostics as any)?.threshold === 'number'
+        ? (diagnostics as any).threshold
+        : undefined;
+
       const probCond = this.buildProbCondition(lastSide, longProb, shortProb, probThreshold);
       logger.info('position_snapshot', {
         symbol,
@@ -293,10 +308,8 @@ export class StrategyRunner {
 
 
 
-
-      // --- NINJA EXIT PROTOCOL v3.0 (Regime-Based) ---
-      // Primary: Delegate to active regime strategy
-      // Fallback: Legacy v2.0 logic for backwards compatibility
+      // --- NINJA EXIT PROTOCOL v5.0 (Regime-Based) ---
+      // All exit logic now handled by each RegimeStrategy.evaluateExit()
       if (roiPct !== undefined) {
         // 1. Actualizar Peak ROE (Siempre necesario para trailing)
         const currentPeak = stBefore.peakRoe ?? 0;
@@ -305,23 +318,38 @@ export class StrategyRunner {
         }
         const peak = Math.max(currentPeak, roiPct);
 
-        // ═══════════════════════════════════════════════════════════════════════════
-        // NINJA v3.0: REGIME-BASED EXIT (Primary Decision Maker)
-        // ═══════════════════════════════════════════════════════════════════════════
-        const currentRoeDec = roiPct / 100.0; // Convert to decimal (0.05 = 5%)
+        // ═════════════════════════════════════════════════════════════════════════
+        // NINJA v5.0: DELEGACIÓN TOTAL AL RÉGIMEN
+        // ═════════════════════════════════════════════════════════════════════════
+        const currentRoeDec = roiPct / 100.0;
         const peakRoeDec = peak / 100.0;
-        const holdTimeMs = stBefore.lastEntryTime ? Date.now() - stBefore.lastEntryTime : 0;
+        const holdTimeMs = stBefore.lastEntryAt ? Date.now() - stBefore.lastEntryAt : 0;
 
-        const regimeExitReason = activeRegimeStrategy.getExitReason(currentRoeDec, peakRoeDec, holdTimeMs, symbol);
+        const currentSpread = (diagnostics as any)?.spread ?? 0.0004;
+        const avgSpread = getNinjaConfig().regimeDetector.volatility_spread_low;
+
+        // Build ExitContext v5.0
+        const exitContext: ExitContext = {
+          currentRoe: currentRoeDec,
+          peakRoe: peakRoeDec,
+          holdTimeMs,
+          opposingProb: lastSide === 'LONG' ? shortProb : longProb,
+          neutralProb,
+          volatilityFactor: Math.max(0.5, Math.min(3.0, currentSpread / avgSpread))
+        };
+
+        // CONSULTAR AL ESTRATEGA DEL RÉGIMEN ACTIVO
+        const regimeExitReason = activeRegimeStrategy.evaluateExit(exitContext, symbol);
 
         if (regimeExitReason) {
-          logger.info('regime_exit', {
+          logger.info('regime_exit_v5', {
             symbol,
+            regime: regimeContext.type,
             reason: regimeExitReason,
             roi: roiPct.toFixed(2),
             peak: peak.toFixed(2),
-            regime: regimeContext.type,
-            holdMs: holdTimeMs
+            opposing: exitContext.opposingProb.toFixed(2),
+            neutral: exitContext.neutralProb.toFixed(2)
           });
 
           await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
@@ -333,116 +361,18 @@ export class StrategyRunner {
             peakRoe: 0
           });
 
-          // Reset detector to allow regime change after exit
           this.regimeDetector.reset();
           return;
         }
         // ═══════════════════════════════════════════════════════════════════════════
-        // END REGIME-BASED EXIT - If no exit triggered, continue to legacy logic
+        // NINJA v5.0: LEGACY CAPAS REMOVED
+        // All exit logic is now handled by RegimeStrategy.evaluateExit()
+        // - CAPA 0 (Hard Stop) → WHALE_HARD_STOP, BLOODBATH_HARD_STOP, etc.
+        // - CAPA 0.5 (Moonbag) → WHALE_MOONBAG_SECURE
+        // - CAPA 1 (Panic) → WHALE_PANIC_EXTREME, BLOODBATH_PANIC_FAST, etc.
+        // - CAPA 2 (Trailing) → WHALE_LOGARITHMIC_TRAIL
+        // - CAPA 3 (Neutrality) → BLOODBATH_NEUTRAL_EXIT, MONK_NEUTRAL_EXIT, etc.
         // ═══════════════════════════════════════════════════════════════════════════
-
-        // Datos para decisión
-        const currentProb = lastSide === 'LONG'
-          ? (diagnostics as any)?.longProb
-          : (diagnostics as any)?.shortProb;
-        const opposingProb = lastSide === 'LONG'
-          ? (diagnostics as any)?.shortProb
-          : (diagnostics as any)?.longProb;
-        const neutralProb = (diagnostics as any)?.neutralProb ??
-          (1 - ((diagnostics as any)?.longProb || 0) - ((diagnostics as any)?.shortProb || 0));
-
-        // Tiempo en posición (segundos)
-        const entryTime = stBefore.lastEntryTime ?? Date.now();
-        const timeInPositionSecs = (Date.now() - entryTime) / 1000;
-
-        // Volatilidad Proxy: spread actual vs spread promedio (configurable externamente)
-        // Lee de thresholds_config.json o usa defaults internos
-        const currentSpread = (diagnostics as any)?.spread ?? 0.0004;
-        const avgSpread = getNinjaConfig().regimeDetector.volatility_spread_low; // Use config spread threshold as proxy
-        const volatilityFactor = Math.max(0.5, Math.min(3.0, currentSpread / avgSpread));
-
-        // ═══════════════════════════════════════════════════════
-        // CAPA 0: HARD STOP LOSS (Circuit Breaker) 🛑
-        // Now uses ACTIVE REGIME config instead of hardcoded WHALE
-        // ═══════════════════════════════════════════════════════
-        const symbolHardStop = regimeConfig.hardStopRoe * 100; // Convert to percentage
-        if (roiPct < symbolHardStop) {
-          logger.warn('ninja_exit_hard_stop', { symbol, roiPct, threshold: symbolHardStop, reason: 'circuit_breaker' });
-          await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-          applyStatePatch({ mode: 'IDLE', lastExitReason: 'HARD_STOP_LOSS', lastExitAt: Date.now(), panicCounter: 0 });
-          return;
-        }
-
-
-        // ══════════════════════════════════════════════════════════════════
-        // CAPA 0.5: REMOVED - Now handled by WhaleStrategy.getExitReason()
-        // See: src/app/regimes/WhaleStrategy.ts (WHALE_MOONBAG_SECURE)
-        // ══════════════════════════════════════════════════════════════════
-
-
-        // ═══════════════════════════════════════════════════════
-        // CAPA 1: PÁNICO INTELIGENTE (Histéresis + Dinámico) 🚨
-        // ═══════════════════════════════════════════════════════
-        // Umbral dinámico basado en volatilidad
-        // Volátil (>1.5) → exige 0.55, Calmo (<1.0) → exige 0.50
-        const dynamicPanicThreshold = 0.50 + (0.05 * Math.max(0, volatilityFactor - 1));
-        const currentPanicCounter = stBefore.panicCounter ?? 0;
-
-        if (typeof opposingProb === 'number' && opposingProb > dynamicPanicThreshold) {
-          const newPanicCounter = currentPanicCounter + 1;
-          applyStatePatch({ panicCounter: newPanicCounter });
-
-          // Requiere 2 ticks consecutivos O señal muy fuerte (>70%)
-          if (newPanicCounter >= 2 || opposingProb > 0.70) {
-            logger.info('ninja_exit_panic_confirmed', {
-              symbol, opposingProb, threshold: dynamicPanicThreshold,
-              confirmations: newPanicCounter, volatility: volatilityFactor,
-              reason: opposingProb > 0.70 ? 'high_confidence_reversal' : 'confirmed_2x'
-            });
-            await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-            applyStatePatch({ mode: 'IDLE', lastExitReason: 'PANIC_REVERSAL_V2', lastExitAt: Date.now(), panicCounter: 0 });
-            return;
-          }
-        } else {
-          // Reset contador si la señal desaparece
-          if (currentPanicCounter > 0) {
-            applyStatePatch({ panicCounter: 0 });
-          }
-        }
-
-
-        // ═══════════════════════════════════════════════════════
-        // CAPA 2: REMOVED - Now handled by WhaleStrategy.getExitReason()
-        // See: src/app/regimes/WhaleStrategy.ts (WHALE_LOGARITHMIC_TRAIL)
-        // ═══════════════════════════════════════════════════════
-
-
-        // ═══════════════════════════════════════════════════════
-        // CAPA 3: NEUTRALITY EXIT (Agotamiento) 😐
-        // ═══════════════════════════════════════════════════════
-        if (roiPct > 5 && neutralProb > 0.60) {
-          logger.info('ninja_exit_neutral', { symbol, neutralProb, roiPct, reason: 'market_exhaustion' });
-          await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-          applyStatePatch({ mode: 'IDLE', lastExitReason: 'NEUTRAL_EXIT', lastExitAt: Date.now(), panicCounter: 0 });
-          return;
-        }
-
-        // ═══════════════════════════════════════════════════════
-        // CAPA 4: TIME DECAY (Predicción Obsoleta) ⏰
-        // DESACTIVADO por solicitud del usuario (Survivor Mode)
-        // ═══════════════════════════════════════════════════════
-        /*
-        const MAX_TIME_SECS = 900; // 15 minutos
-        if (timeInPositionSecs > MAX_TIME_SECS && Math.abs(roiPct) < 1.0) {
-          logger.info('ninja_exit_time_decay', {
-            symbol, timeInPositionSecs: Math.round(timeInPositionSecs),
-            roiPct, reason: 'stale_prediction'
-          });
-          await exchange.closeSideMarketSafe(symbol, lastSide, qtyAbs, activePosition?.sideMode || 'BOTH');
-          applyStatePatch({ mode: 'IDLE', lastExitReason: 'TIME_DECAY', lastExitAt: Date.now(), panicCounter: 0 });
-          return;
-        }
-        */
       }
 
       if (sig.action === 'ENTER_LONG' || sig.action === 'ENTER_SHORT') {
