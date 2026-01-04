@@ -328,14 +328,21 @@ export class StrategyRunner {
         const currentSpread = (diagnostics as any)?.spread ?? 0.0004;
         const avgSpread = getNinjaConfig().regimeDetector.volatility_spread_low;
 
-        // Build ExitContext v5.0
+        // Build ExitContext v5.1 (with marketBias and positionSide for Guardian)
+        // Deduce marketBias from probabilities
+        let marketBias: 'BULL' | 'BEAR' | 'NEUTRAL' = 'NEUTRAL';
+        if (longProb > 0.50) marketBias = 'BULL';
+        else if (shortProb > 0.50) marketBias = 'BEAR';
+
         const exitContext: ExitContext = {
           currentRoe: currentRoeDec,
           peakRoe: peakRoeDec,
           holdTimeMs,
           opposingProb: lastSide === 'LONG' ? shortProb : longProb,
           neutralProb,
-          volatilityFactor: Math.max(0.5, Math.min(3.0, currentSpread / avgSpread))
+          volatilityFactor: Math.max(0.5, Math.min(3.0, currentSpread / avgSpread)),
+          marketBias,
+          positionSide: lastSide as 'LONG' | 'SHORT'
         };
 
         // CONSULTAR AL ESTRATEGA DEL RÉGIMEN ACTIVO

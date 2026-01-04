@@ -26,7 +26,7 @@ export interface RegimeConfig {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// NINJA v5.0: CONTEXTO COMPLETO PARA DECISIONES DE SALIDA
+// NINJA v5.1: CONTEXTO COMPLETO PARA DECISIONES DE SALIDA
 // ═══════════════════════════════════════════════════════════════════════════
 export interface ExitContext {
     currentRoe: number;       // ROE actual (decimal, ej. 0.05 = 5%)
@@ -35,6 +35,9 @@ export interface ExitContext {
     opposingProb: number;     // Probabilidad del lado OPUESTO (0-1)
     neutralProb: number;      // Probabilidad de Neutral (0-1)
     volatilityFactor: number; // Factor de volatilidad (spread actual / spread promedio)
+    // v5.1: Added for Universal Profit Guardian
+    marketBias: MarketBias;   // Current ML bias (BULL/BEAR/NEUTRAL)
+    positionSide: 'LONG' | 'SHORT'; // Current position side
 }
 
 export interface IRegimeStrategy {

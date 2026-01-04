@@ -1,21 +1,22 @@
 /**
- * Whale Strategy (Modo Cazador) v5.0
+ * Whale Strategy (Modo Cazador) v5.1 (Universal Guardian Integration)
  * 
  * FILOSOFÍA: "Las ballenas aguantan el mareo, pero saltan si el iceberg se mueve"
  * 
- * Lógica de salida consolidada:
- * 1. Hard Stop (Protección de capital)
- * 2. Moonbag Secure (Asegurar ganancias escalonadas)
- * 3. Trailing Logarítmico (Dejar correr tendencias)
- * 4. Panic Extremo (Solo reversales catastróficos >80%)
- * 5. Neutralidad: IGNORADA (trends respiran)
+ * v5.1 Changes:
+ * - Integrated UniversalProfitGuardian for dynamic trailing
+ * - Removed manual Moonbag/Trailing logic (delegated to Guardian)
+ * - Hard Stop and Panic remain as safety cuts
  */
 
 import { IRegimeStrategy, RegimeConfig, RegimeContext, RegimeType, ExitContext } from './RegimeStrategy';
 import { getNinjaConfig } from '../core/NinjaConfigManager';
+import { UniversalProfitGuardian, GuardianContext } from '../core/UniversalProfitGuardian';
 
 export class WhaleStrategy implements IRegimeStrategy {
     readonly name: RegimeType = 'WHALE';
+
+    private profitGuardian = new UniversalProfitGuardian(UniversalProfitGuardian.WHALE_CONFIG);
 
     getConfig(symbol?: string): RegimeConfig {
         return getNinjaConfig().getRegimeConfig('WHALE', symbol);
@@ -30,59 +31,42 @@ export class WhaleStrategy implements IRegimeStrategy {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // NINJA v5.0: WHALE EVALUATE EXIT (Trend Follower Logic)
+    // NINJA v5.1: WHALE EVALUATE EXIT (Universal Guardian Integration)
     // ═══════════════════════════════════════════════════════════════════════════
     evaluateExit(ctx: ExitContext, symbol?: string): string | null {
         const config = this.getConfig(symbol);
 
-        const peakPct = ctx.peakRoe * 100;
-        const currentPct = ctx.currentRoe * 100;
-
-        // 1. HARD STOP (Corte seco - Protección de capital)
+        // 1. HARD STOP (Capital Protection)
         if (ctx.currentRoe < config.hardStopRoe) {
             return 'WHALE_HARD_STOP';
         }
 
-        // 2. MOONBAG AGRESIVO (Secure Threshold)
-        // Protege ganancias permitiendo respiración profunda en parábolas
-        if (peakPct > 1.5) {
-            let secureThreshold = -999;
-
-            if (peakPct > 30.0) secureThreshold = peakPct - 10.0;
-            else if (peakPct > 20.0) secureThreshold = peakPct - 10.0;
-            else if (peakPct > 12.0) secureThreshold = peakPct - 8.0;
-            else if (peakPct > 8.0) secureThreshold = 2.5;
-            else if (peakPct > 5.0) secureThreshold = 1.5;
-            else secureThreshold = 0.5;
-
-            if (secureThreshold > -999 && currentPct < secureThreshold) {
-                return 'WHALE_MOONBAG_SECURE';
-            }
+        // 2. FIXED TP (WHALE uses 999, so this effectively never triggers)
+        if (ctx.currentRoe >= config.tpRoe) {
+            return 'WHALE_RANGE_TP';
         }
 
-        // 3. TRAILING LOGARÍTMICO (Fórmula Continua)
-        if (peakPct > 5) {
-            const safePeak = Math.max(5, peakPct);
-            let baseTrail = 30 - (22 * Math.log10(safePeak / 5));
-            baseTrail = Math.max(8, Math.min(30, baseTrail)); // Clamp 8%-30%
-
-            const stopThreshold = peakPct * (1 - (baseTrail / 100));
-
-            if (currentPct < stopThreshold) {
-                return 'WHALE_LOGARITHMIC_TRAIL';
-            }
-        }
-
-        // 4. PANIC EXTREMO (Solo reversales catastróficos)
-        // Las ballenas aguantan el "mareo" (rumor), pero saltan si el iceberg se mueve (>80%)
+        // 3. PANIC EXTREMO (Only catastrophic reversals >80%)
         if (ctx.opposingProb > 0.80) {
             return 'WHALE_PANIC_EXTREME';
         }
 
-        // 5. NEUTRALIDAD: WHALE IGNORA
-        // "Whales don't exit on neutrality - trends continue even in indecision"
-        // Mantener posición. El Trailing Stop ya nos protegerá si la tendencia se rompe.
+        // 4. UNIVERSAL PROFIT GUARDIAN (v5.1)
+        // Replaces WHALE_MOONBAG_SECURE and WHALE_LOGARITHMIC_TRAIL
+        const guardianCtx: GuardianContext = {
+            peakRoe: ctx.peakRoe,
+            currentRoe: ctx.currentRoe,
+            volatilityFactor: ctx.volatilityFactor,
+            marketBias: ctx.marketBias,
+            positionSide: ctx.positionSide
+        };
 
+        if (this.profitGuardian.evaluate(guardianCtx)) {
+            return 'WHALE_DYNAMIC_LOCK';
+        }
+
+        // 5. NEUTRALITY: WHALE IGNORES
+        // Trends continue even in indecision
         return null;
     }
 }
