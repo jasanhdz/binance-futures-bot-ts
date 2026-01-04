@@ -57,15 +57,11 @@ export class MonkStrategy implements IRegimeStrategy {
             return 'MONK_DYNAMIC_LOCK';
         }
 
-        // 4. BREAKEVEN PROTECTION
-        const peakPct = ctx.peakRoe * 100;
-        const currentPct = ctx.currentRoe * 100;
-        if (peakPct > 1.5 && currentPct < 0.3 && currentPct > 0) {
-            return 'MONK_BREAKEVEN_LOCK';
-        }
+        // ❌ REMOVED v5.1.1: MONK_BREAKEVEN_LOCK
+        // Cause: Closed at +0.22% when peak was +1.88% (XRP bug)
+        // Solution: Guardian handles dynamic drawdown better
 
         // ❌ REMOVED: MONK_NEUTRAL_EXIT (caused fee churning)
-        // Trust TP (+2%) or Hard Stop (-5%)
 
         return null;
     }
