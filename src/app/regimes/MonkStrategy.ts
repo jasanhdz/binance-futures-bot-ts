@@ -52,9 +52,12 @@ export class MonkStrategy implements IRegimeStrategy {
             return 'MONK_PANIC_MODERATE';
         }
 
-        // 4. NEUTRALITY EXIT (Si perdemos dirección y no estamos en verde)
-        // En rango, si el modelo se confunde y no ganamos, mejor salir
-        if (ctx.neutralProb > 0.65 && ctx.currentRoe < 0.01 && ctx.currentRoe > -0.005) {
+        // 4. NEUTRALITY EXIT (FIX v5.0 - Solo cerrar EN GANANCIAS)
+        // ANTES: cerraba con ROI entre -0.5% y +1% (error: cerraba en pérdida)
+        // AHORA: Solo si estamos en verde (ROI > 0) y mercado indeciso
+        // Lógica: Asegurar beneficio cuando el mercado pierde dirección
+        // Si estamos en rojo, dejamos que Hard Stop decida (no panic técnico)
+        if (ctx.currentRoe > 0 && ctx.neutralProb > 0.65) {
             return 'MONK_NEUTRAL_EXIT';
         }
 
