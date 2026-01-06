@@ -895,58 +895,50 @@ export class StrategyRunner {
       // bracketsGuard will retry on next tick
     }
 
-    // 3. Definir Take Profit dinámico basado en confianza del modelo ML
-    let rrRatio = 1.5; // Base conservador
-    let mlProb = 0;
-    let mlThreshold = 0.35; // Default
+    // -------------------------------------------------------------------------
+    // SMART TAKE PROFIT MANAGEMENT (NINJA v6.4)
+    // -------------------------------------------------------------------------
 
-    // Extraer probabilidad del modelo si está disponible
-    if (diagnostics) {
-      if (side === 'LONG' && typeof diagnostics.longProb === 'number') {
-        mlProb = diagnostics.longProb;
-      } else if (side === 'SHORT' && typeof diagnostics.shortProb === 'number') {
-        mlProb = diagnostics.shortProb;
-      }
-      if (typeof diagnostics.threshold === 'number') {
-        mlThreshold = diagnostics.threshold;
-      }
+    const regimeTpRoe = regimeConfig.tpRoe;
+    let finalTpRoe = regimeTpRoe;
+    let isFantasyTp = false;
+
+    // Lógica de Selección de TP
+    if (regimeTpRoe >= 5.0) {
+      // Si el régimen pide TP Infinito (>500%), ponemos un "Fantasy TP"
+      // Esto protege contra flash-pumps absurdos o errores del exchange.
+      // Ejemplo: Poner TP al +50% del precio actual.
+      finalTpRoe = 0.50 * safeLeverage; // +50% movimiento puro de precio
+      isFantasyTp = true;
     }
 
-    // Calcular R:R dinámico basado en confianza
-    if (mlProb > 0) {
-      const confidence = Math.max(0, mlProb - mlThreshold); // 0-0.65 típico
-
-      // ═════════════════════════════════════════════════════════════
-      // CALIBRACIÓN MOONBAG: Aumentar R:R para objetivos de 12-15%
-      // ═════════════════════════════════════════════════════════════
-      // 1. Base RR: Subir de 1.5 a 4.0
-      let baseRR = 4.0;
-
-      // 2. Bonus RR: Subir multiplicador de 5 a 10
-      let bonusRR = confidence * 10;
-
-      rrRatio = baseRR + bonusRR;
-      logger.info('tp_ml_calculation', {
-        symbol,
-        mlProb,
-        mlThreshold,
-        confidence,
-        baseRR: baseRR.toFixed(2),
-        bonusRR: bonusRR.toFixed(2),
-        finalRR: rrRatio.toFixed(2)
-      });
-    }
-
-    const tpDist = slDist * rrRatio;
-    const tpRaw = side === 'LONG' ? avgPrice + tpDist : avgPrice - tpDist;
+    // Cálculo de precio
+    const tpMovePct = finalTpRoe / safeLeverage;
+    const tpDist = entryPrice * tpMovePct;
+    const tpRaw = side === 'LONG' ? entryPrice + tpDist : entryPrice - tpDist;
     const tp = roundToTick(tpRaw, filters.tickSize, filters.pricePrecision);
 
     try {
-      await exchange.placeTpClose(symbol, side, tp);
-      logger.info('tp_upserted_rr', { symbol, side, tp, rr: rrRatio.toFixed(2) });
+      // Solo enviamos la orden si está dentro de rangos permitidos por Binance
+      // (Binance a veces rechaza órdenes muy lejanas, >500% del mark price)
+      const maxPrice = price * 5; // Limite teórico de seguridad
+      const minPrice = price * 0.1;
+
+      if (tp < maxPrice && tp > minPrice) {
+        await exchange.placeTpClose(symbol, side, tp);
+
+        logger.info(isFantasyTp ? 'tp_upserted_fantasy' : 'tp_upserted_tactical', {
+          symbol,
+          tp,
+          regime: regimeContext.type,
+          type: isFantasyTp ? 'LOTTERY_TICKET' : 'SCALP_TARGET',
+          targetRoe: (finalTpRoe * 100).toFixed(1) + '%'
+        });
+      }
     } catch (err: any) {
-      logger.warn('tp_upsert_init_fail', { symbol, side, tp, err: err?.message || String(err) });
-      // bracketsGuard will retry on next tick
+      // Si falla el TP (ej. por estar muy lejos), no es crítico en WHALE, 
+      // pero sí queremos saberlo.
+      logger.warn('tp_upsert_fail', { symbol, tp, err: err?.message || String(err) });
     }
 
     applyStatePatch({
@@ -970,8 +962,6 @@ export class StrategyRunner {
       lastEntryFilters: filtersAtEntry,
       lastCommissionEstimate: commissionEstimate,
       lastOrderId: orderId,
-      lastMlProb: mlProb > 0 ? mlProb : undefined, // Guardar para bracketsGuard
-      lastMlThreshold: mlProb > 0 ? mlThreshold : undefined,
       ...postExitClearPatch(),
     });
 
