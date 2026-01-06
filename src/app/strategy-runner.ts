@@ -225,6 +225,32 @@ export class StrategyRunner {
     const activeRegimeStrategy = this.regimeStrategies[regimeContext.type];
     const regimeConfig = activeRegimeStrategy.getConfig(symbol);
 
+    // ════════════════════════════════════════════════════════════════════
+    // 🧠 SMART COOLDOWN LOGIC (NINJA v6.2)
+    // ════════════════════════════════════════════════════════════════════
+    // Objetivo: Ser rápido en tendencias, paciente en rangos.
+
+    if (stBefore.lastExitAt && !hasActivePosition) {
+      const timeSinceExit = Date.now() - stBefore.lastExitAt;
+
+      // REGLA MONK: Paciencia forzada
+      // Si el mercado está lateral, prohibido re-entrar rápido.
+      if (regimeContext.type === 'MONK') {
+        const MONK_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutos
+        if (timeSinceExit < MONK_COOLDOWN_MS) {
+          logger.debug('monk_cooldown_wait', {
+            symbol,
+            regime: 'MONK',
+            remaining: ((MONK_COOLDOWN_MS - timeSinceExit) / 1000).toFixed(0) + 's'
+          });
+          return; // 🛑 FRENO ACTIVADO
+        }
+      }
+
+      // REGLA WHALE/BLOODBATH: Sin límite artificial
+      // Confiamos en el PostExitGate para validar la estructura del precio.
+    }
+
     // Log regime status periodically (every 12 ticks ~ 1 minute at 5s interval)
     if (!this.lastLoggedSignals[`${symbol}_regime`] ||
       Date.now() - this.lastLoggedSignals[`${symbol}_regime`].time > 60000) {
