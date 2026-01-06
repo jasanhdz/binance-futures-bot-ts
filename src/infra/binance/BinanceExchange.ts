@@ -832,6 +832,15 @@ export class BinanceExchange implements Exchange {
     }
   }
 
+  async cancelAllOrders(symbol: string) {
+    try {
+      await this.enqueue(() => this.cli.futuresCancelAllOpenOrders({ symbol }));
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
+  }
+
   async getRecentFills(symbol: string, startTime?: number, limit = 100): Promise<TradeFill[]> {
     try {
       const trades = await this.enqueue(() =>

@@ -389,10 +389,43 @@ export class StrategyRunner {
               lockedRoe: (roiPct * 0.6).toFixed(2) + '%'
             });
 
-            // Ejecutar cambio en Binance (Fire & Forget para no bloquear tick)
-            exchange.placeStopClose(symbol, lastSide, newStopTick)
-              .then(() => applyStatePatch({ lastTrailStop: newStopTick }))
-              .catch(e => logger.warn('trailing_ratchet_fail', { symbol, err: String(e) }));
+            // ══════════════════════════════════════════════════════════════════
+            // ⚡ SERIALIZACIÓN ESTRICTA (Fix para Cuentas 95% Full)
+            // ══════════════════════════════════════════════════════════════════
+            // Problema: Si intentamos crear el nuevo Stop antes de que el viejo muera,
+            // Binance pide doble margen y falla ("Insufficient Margin").
+            // Solución: Cancelar -> Esperar Margen -> Crear Nuevo.
+
+            try {
+              // 1. CANCELAR: Matar el Stop Loss anterior específicamente
+              // Usamos el método que ya usas en sync-state.ts
+              if ((exchange as any).cancelCloseOrdersForSide) {
+                await (exchange as any).cancelCloseOrdersForSide(symbol, lastSide);
+              } else {
+                // Fallback de emergencia si el método específico no existe
+                await (exchange as any).cancelAllOrders(symbol);
+              }
+
+              // 2. ESPERAR: Darle 500ms a Binance para liberar el margen ("Settlement time")
+              // Esto es VITAL cuando vas al límite del margen.
+              await new Promise(resolve => setTimeout(resolve, 500));
+
+              // 3. CREAR: Poner el nuevo Stop con el margen recién liberado
+              await exchange.placeStopClose(symbol, lastSide, newStopTick);
+
+              // 4. MEMORIA: Actualizar el estado interno
+              applyStatePatch({ lastTrailStop: newStopTick });
+
+            } catch (e: any) {
+              logger.warn('trailing_ratchet_fail', {
+                symbol,
+                step: 'cancel_replace_sequence',
+                err: e?.message || String(e)
+              });
+
+              // Opcional: Si falló al poner el nuevo, intentamos restaurar uno de emergencia
+              // en el siguiente tick gracias al 'ensure-brackets.ts'
+            }
           }
         }
       }
