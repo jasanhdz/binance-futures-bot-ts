@@ -100,32 +100,31 @@ export class StrategyRunner {
     };
     const hasActivePosition = stBefore.mode !== 'IDLE';
     const lastSide = stBefore.lastSide ?? 'LONG';
-    let cachedMarkPrice: number | undefined;
-    const markPrice = async () => {
-      if (cachedMarkPrice === undefined) {
-        cachedMarkPrice = await exchange.getMarkPrice(symbol);
-      }
-      return cachedMarkPrice;
-    };
-    let cachedWalletBalance: number | undefined;
-    const readWalletBalance = async () => {
-      if (cachedWalletBalance !== undefined) return cachedWalletBalance;
-      try {
-        cachedWalletBalance = await exchange.getUSDTBalance();
-      } catch (err: any) {
-        logger.warn('wallet_read_fail', { symbol, err: err?.message || String(err) });
-        cachedWalletBalance = undefined;
-      }
-      return cachedWalletBalance;
-    };
-    let activePosition = null as Awaited<ReturnType<typeof exchange.readActivePosition>> | null;
-    if (hasActivePosition) {
-      try {
-        activePosition = await exchange.readActivePosition(symbol, lastSide);
-      } catch (err) {
-        logger.warn('read_position_fail', { symbol, err: (err as any)?.message || String(err) });
-      }
-    }
+
+    // ⚡ OPTIMIZACIÓN NINJA: Paralelización de I/O ⚡
+    // Lanzamos todas las peticiones de red simultáneamente
+    const [markPriceVal, usdtBalance, activePosData] = await Promise.all([
+      exchange.getMarkPrice(symbol).catch((e: any) => {
+        logger.warn('mark_price_fail', { symbol, error: e?.message || String(e) });
+        return undefined;
+      }),
+      exchange.getUSDTBalance().catch((e: any) => {
+        logger.warn('balance_fail', { symbol, error: e?.message || String(e) });
+        return undefined;
+      }),
+      hasActivePosition
+        ? exchange.readActivePosition(symbol, lastSide).catch(() => null)
+        : Promise.resolve(null)
+    ]);
+
+    // Asignación de valores cacheados para el resto de la función
+    let cachedMarkPrice = markPriceVal;
+    const markPrice = async () => cachedMarkPrice ?? 0;
+
+    let cachedWalletBalance = usdtBalance;
+    const readWalletBalance = async () => cachedWalletBalance;
+
+    let activePosition = activePosData;
 
     const walletThreshold = Number((config as any).LOW_FUNDS_WALLET_THRESHOLD ?? 0);
     if (!hasActivePosition && walletThreshold > 0) {

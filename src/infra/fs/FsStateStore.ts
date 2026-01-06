@@ -1,4 +1,6 @@
+// src/infra/fs/FsStateStore.ts
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import { StateStore } from '../../core/ports/StateStore';
 import { BotState } from '../../core/types';
@@ -16,34 +18,80 @@ function sanitizeKey(key: string) {
 
 export class FsStateStore implements StateStore {
   private readonly statePath: string;
+  private memoryCache: BotState;
+  private isSaving: boolean = false;
+  private pendingSave: boolean = false;
 
   constructor(private readonly key: string = 'default', private readonly scope = 'prod') {
     const scopeSuffix = this.scope ? `_${sanitizeKey(this.scope)}` : '';
     const keySuffix = key === 'default' ? '' : `_${sanitizeKey(key)}`;
     this.statePath = path.join(dataDir, `state${scopeSuffix}${keySuffix}.json`);
-  }
 
-  get(): BotState {
+    // Carga inicial SÍNCRONA (solo al arrancar el bot, esto está bien)
     try {
       ensureDir();
-      if (!fs.existsSync(this.statePath)) return { ...defaultState };
-      const raw = fs.readFileSync(this.statePath, 'utf8');
-      return JSON.parse(raw) as BotState;
-    } catch {
-      return { ...defaultState };
+      if (fs.existsSync(this.statePath)) {
+        const raw = fs.readFileSync(this.statePath, 'utf8');
+        this.memoryCache = JSON.parse(raw) as BotState;
+      } else {
+        this.memoryCache = { ...defaultState };
+      }
+    } catch (err) {
+      console.error('State load failed, using default', err);
+      this.memoryCache = { ...defaultState };
     }
   }
 
+  get(): BotState {
+    // Lectura instantánea desde RAM (0ms de latencia)
+    return { ...this.memoryCache };
+  }
+
   set(patch: Partial<BotState>): BotState {
-    const curr = this.get();
-    const next = { ...curr, ...patch };
-    ensureDir();
-    fs.writeFileSync(this.statePath, JSON.stringify(next, null, 2), 'utf8');
+    // Actualización atómica en memoria
+    const next = { ...this.memoryCache, ...patch };
+    this.memoryCache = next;
+
+    // Persistencia asíncrona "Fire & Forget"
+    this.scheduleDiskWrite();
+
     return next;
   }
 
   reset(): void {
-    ensureDir();
-    fs.writeFileSync(this.statePath, JSON.stringify(defaultState, null, 2), 'utf8');
+    this.memoryCache = { ...defaultState };
+    this.scheduleDiskWrite();
+  }
+
+  /**
+   * Mecanismo de escritura no bloqueante con debounce simple.
+   * Si ya estamos guardando, marcamos 'pendingSave' para guardar de nuevo al terminar.
+   */
+  private async scheduleDiskWrite() {
+    if (this.isSaving) {
+      this.pendingSave = true;
+      return;
+    }
+
+    this.isSaving = true;
+
+    try {
+      // Escribir a archivo temporal primero (Atomic Write pattern)
+      const tempPath = `${this.statePath}.tmp`;
+      const data = JSON.stringify(this.memoryCache, null, 2);
+
+      await fsPromises.writeFile(tempPath, data, 'utf8');
+      await fsPromises.rename(tempPath, this.statePath);
+
+    } catch (err) {
+      console.error('State async save failed:', err);
+    } finally {
+      this.isSaving = false;
+      // Si hubo cambios mientras guardábamos, lanzamos otra escritura
+      if (this.pendingSave) {
+        this.pendingSave = false;
+        this.scheduleDiskWrite();
+      }
+    }
   }
 }
