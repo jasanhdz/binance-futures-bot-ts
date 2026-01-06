@@ -57,6 +57,7 @@ export type BotState = {
   // Ninja Protocol v2.0
   panicCounter?: number; // Contador de ticks consecutivos con señal de pánico
   lastEntryTime?: number; // Timestamp de entrada para Time Decay
+  highestRatchetStop?: number; // High Water Mark para el Stop Loss (Monotonicity Enforcement)
 };
 
 type SignalCommon = {

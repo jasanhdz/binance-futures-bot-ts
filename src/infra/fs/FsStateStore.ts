@@ -48,11 +48,11 @@ export class FsStateStore implements StateStore {
   }
 
   set(patch: Partial<BotState>): BotState {
-    // Actualización atómica en memoria
+    // Update in memory
     const next = { ...this.memoryCache, ...patch };
     this.memoryCache = next;
 
-    // Persistencia asíncrona "Fire & Forget"
+    // Schedule async write
     this.scheduleDiskWrite();
 
     return next;

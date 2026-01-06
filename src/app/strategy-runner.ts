@@ -50,6 +50,7 @@ export class StrategyRunner {
   };
 
   private lastLoggedSignals: Record<string, { action: string, reason: string, time: number }> = {};
+  private stateSyncDone: Record<string, boolean> = {};
 
   private buildProbCondition(
     side: Side,
@@ -93,8 +94,12 @@ export class StrategyRunner {
       if (!patch) return;
       const entries = Object.entries(patch);
       if (!entries.length) return;
-      const changed = entries.some(([key, value]) => (snapshot as any)[key] !== value);
-      if (!changed) return;
+
+      // FORCE UPDATE (Debug Monotonicity)
+      // const changed = entries.some(([key, value]) => (snapshot as any)[key] !== value);
+      // if (!changed) return;
+
+      console.log('[StrategyRunner] applyStatePatch', JSON.stringify(patch));
       state.set(patch);
       snapshot = { ...snapshot, ...patch };
     };
@@ -335,25 +340,26 @@ export class StrategyRunner {
       });
 
       // ═════════════════════════════════════════════════════════════════════════
-      // 🛡️ NINJA v7.0: PHYSICAL TRAILING RATCHET (Piramidado de Stop)
+      // 🛡️ NINJA v7.3: PHYSICAL TRAILING RATCHET (Con Recuperación de Memoria)
       // ═════════════════════════════════════════════════════════════════════════
-      // Objetivo: Mover el SL en Binance para asegurar ganancias sin cerrar la posición.
+      // Objetivo: Mover el SL hacia arriba, NUNCA hacia abajo.
 
       if (roiPct !== undefined && roiPct > 0 && entry && qtyAbs > 0) {
         const currentPrice = mark;
-        // Solo activamos si tenemos ganancia decente (> 1.5% ROE)
-        if (currentPrice && roiPct > 1.5) {
 
-          // 1. Calcular dónde DEBERÍA estar el stop ideal hoy
-          // Queremos asegurar el 60% de nuestra ganancia acumulada (dejar 40% de aire)
-          // Precio Entrada + (Ganancia * 0.60)
+        // 1. Obtener umbral dinámico (Default 5.0% si no está en config)
+        const activationThreshold = (regimeConfig.trailingActivationRoe ?? 0.05) * 100;
+
+        // Solo activamos si tenemos ganancia decente (> Threshold)
+        if (currentPrice && roiPct > activationThreshold) {
+
+          // 1. Calcular el "Nuevo Stop Ideal" basado en el precio actual
           const profitDist = Math.abs(currentPrice - entry);
-          const lockAmount = profitDist * 0.60;
+          const lockAmount = profitDist * 0.60; // Asegurar el 60%
 
           let newStopPrice = 0;
           if (lastSide === 'LONG') {
             newStopPrice = entry + lockAmount;
-            // Nunca bajar el stop, solo subir. Y asegurar que esté debajo del precio actual
             newStopPrice = Math.min(newStopPrice, currentPrice * 0.999);
           } else {
             newStopPrice = entry - lockAmount;
@@ -363,55 +369,141 @@ export class StrategyRunner {
           // Redondear
           const newStopTick = roundToTick(newStopPrice, filters.tickSize, filters.pricePrecision);
 
-          // 2. Verificar Stop Actual en Binance (para no spamear la API)
-          // Usamos una variable en memoria 'lastTrailStop' para no consultar API cada tick
-          const lastPhysicalStop = stBefore.lastTrailStop ?? 0;
+          // 2. RECUPERACIÓN DE ESTADO (El Fix "Anti-Amnesia")
+          // Si acabamos de reiniciar, 'lastTrailStop' será 0. Eso es peligroso.
+          // Preguntamos a Binance dónde está el stop REAL antes de comparar.
+
+          // 2. RECUPERACIÓN DE ESTADO (Anti-Amnesia)
+          let lastPhysicalStop = stBefore.lastTrailStop ?? 0;
+
+          // Nuevo: Memoria de "Marea Alta" (High Water Mark)
+          // Esto nos protege si 'lastPhysicalStop' fue reseteado por ensure-brackets
+          const highWaterStop = stBefore.highestRatchetStop ?? 0;
+
+          // Si es el primer run o falta estado, consultamos a Binance la VERDAD.
+          if (lastPhysicalStop === 0 || !this.stateSyncDone[symbol]) {
+            try {
+              const liveStopData = await exchange.openStopForSide(symbol, lastSide);
+              if (liveStopData && liveStopData.stopPrice) {
+                const liveStop = Number(liveStopData.stopPrice);
+
+                // Si teníamos un estado local, verificamos cual es mejor (más ajustado)
+                // LONG: Mayor es mejor. SHORT: Menor es mejor.
+                let useLive = false;
+                if (lastPhysicalStop === 0) useLive = true;
+                else if (lastSide === 'LONG' && liveStop > lastPhysicalStop) useLive = true;
+                else if (lastSide === 'SHORT' && liveStop < lastPhysicalStop) useLive = true;
+
+                if (useLive) {
+                  lastPhysicalStop = liveStop;
+                  applyStatePatch({ lastTrailStop: lastPhysicalStop });
+                  logger.info('ratchet_state_synced', {
+                    symbol,
+                    local: stBefore.lastTrailStop,
+                    remote: liveStop,
+                    adopted: liveStop
+                  });
+                }
+              } else if (lastPhysicalStop > 0) {
+                // GAP OF DEATH FIX:
+                // Si no hay stop en Binance, pero tenemos memoria de uno...
+                // Significa que se borró (¿crash durante update?).
+                // RESTAURAMOS INMEDIATAMENTE el de la memoria para no quedar desnudos
+                // ni permitir que el ratchet recalcule uno peor.
+                logger.warn('ratchet_gap_detected', {
+                  symbol,
+                  restoring: lastPhysicalStop,
+                  note: 'Stop missing on exchange, restoring from state'
+                });
+                await exchange.placeStopClose(symbol, lastSide, lastPhysicalStop);
+              }
+              this.stateSyncDone[symbol] = true;
+            } catch (e) {
+              logger.warn('ratchet_sync_fail', { symbol, err: String(e) });
+            }
+          }
+
+          // 3. COMPARACIÓN MONOTÓNICA "ULTIMATE" (La Ley de Hierro)
+          // Comparamos contra el MEJOR de: (Stop Físico Actual, Mejor Stop Histórico)
+
+          let referenceStop = lastPhysicalStop;
+
+          if (lastSide === 'LONG') {
+            // En Long, mayor es mejor.
+            // Si la memoria histórica es mayor que el físico actual, usamos la histórica como referencia
+            // para NO bajar el estándar.
+            if (highWaterStop > lastPhysicalStop) referenceStop = highWaterStop;
+          } else {
+            // En Short, menor es mejor.
+            if (highWaterStop !== 0 && (lastPhysicalStop === 0 || highWaterStop < lastPhysicalStop)) {
+              referenceStop = highWaterStop;
+            }
+          }
 
           let shouldUpdate = false;
+
+          // Calcular oldLockedProfit usando referenceStop
+          // Calcular oldLockedProfit usando referenceStop
+          // FIX: Solo si el stop está en zona de ganancia (In The Money)
+          let oldLockedProfit = 0;
+          if (referenceStop !== 0) {
+            if (lastSide === 'LONG' && referenceStop > entry) {
+              oldLockedProfit = (referenceStop - entry) * qtyAbs;
+            } else if (lastSide === 'SHORT' && referenceStop < entry) {
+              oldLockedProfit = (entry - referenceStop) * qtyAbs;
+            }
+          }
+
+          const newLockedProfit = Math.abs(newStopTick - entry) * qtyAbs;
+          const profitDelta = newLockedProfit - oldLockedProfit;
+
+          const positionNotional = currentPrice * qtyAbs;
+          const dynamicThreshold = positionNotional * 0.0002; // 0.02% del tamaño de la posición
+          const MIN_PROFIT_DELTA = Math.max(0.01, dynamicThreshold);
+
           if (lastSide === 'LONG') {
-            // Solo actualizar si el nuevo stop es MAYOR que el anterior + un paso mínimo (0.2%)
-            // Esto evita "Fee Churning" de actualizaciones de orden
-            if (newStopTick > lastPhysicalStop * 1.002 && newStopTick > entry) {
-              shouldUpdate = true;
+            // LONG: Solo subir (Nuevo > Referencia)
+            if (newStopTick > referenceStop && newStopTick > entry) {
+              if (referenceStop === 0 || profitDelta > MIN_PROFIT_DELTA) {
+                shouldUpdate = true;
+              }
             }
           } else {
-            // Short: Solo si es MENOR
-            if ((lastPhysicalStop === 0 || newStopTick < lastPhysicalStop * 0.998) && newStopTick < entry) {
-              shouldUpdate = true;
+            // SHORT: Solo bajar (Nuevo < Referencia)
+            if ((referenceStop === 0 || newStopTick < referenceStop) && newStopTick < entry) {
+              if (referenceStop === 0 || profitDelta > MIN_PROFIT_DELTA) {
+                shouldUpdate = true;
+              }
             }
           }
 
           if (shouldUpdate) {
             logger.info('trailing_ratchet_update', {
               symbol,
-              oldStop: lastPhysicalStop,
+              oldStop: referenceStop, // Logueamos la referencia real usada
               newStop: newStopTick,
               lockedRoe: (roiPct * 0.6).toFixed(2) + '%'
             });
 
-            // ══════════════════════════════════════════════════════════════════
-            // ⚡ SERIALIZACIÓN ESTRICTA (Fix para Cuentas 95% Full)
-            // ══════════════════════════════════════════════════════════════════
-            // Problema: Si intentamos crear el nuevo Stop antes de que el viejo muera,
-            // Binance pide doble margen y falla ("Insufficient Margin").
-            // Solución: Cancelar -> Esperar Margen -> Crear Nuevo.
-
             try {
               // 1. CANCELAR: Matar el Stop Loss anterior específicamente
-              // Usamos el método que ya usas en sync-state.ts
-              if ((exchange as any).cancelCloseOrdersForSide) {
+              // Usamos cancelStopOrdersForSide para NO tocar el Take Profit
+              if ((exchange as any).cancelStopOrdersForSide) {
+                await (exchange as any).cancelStopOrdersForSide(symbol, lastSide);
+              } else if ((exchange as any).cancelCloseOrdersForSide) {
                 await (exchange as any).cancelCloseOrdersForSide(symbol, lastSide);
               } else {
-                // Fallback de emergencia si el método específico no existe
+                // Fallback de emergencia
                 await (exchange as any).cancelAllOrders(symbol);
               }
 
-              // 2. ESPERAR: Darle 500ms a Binance para liberar el margen ("Settlement time")
+              // 2. ESPERAR: Darle 2000ms a Binance para liberar el margen ("Settlement time")
               // Esto es VITAL cuando vas al límite del margen.
-              await new Promise(resolve => setTimeout(resolve, 500));
+              await new Promise(resolve => setTimeout(resolve, 2000));
 
               // 3. CREAR: Poner el nuevo Stop con el margen recién liberado
               await exchange.placeStopClose(symbol, lastSide, newStopTick);
+              logger.info('trailing_ratchet_success', { symbol, newStop: newStopTick });
 
               // 4. MEMORIA: Actualizar el estado interno
               applyStatePatch({ lastTrailStop: newStopTick });

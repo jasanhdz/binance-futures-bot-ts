@@ -22,40 +22,53 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
   const filters = await ex.getSymbolFilters(symbol, pos.leverage ?? s.lastLeverage!);
   const price = await ex.getMarkPrice(symbol);
 
-  // ---- STOP: si falta, créalo con ATR dinámico ----
+  // ---- STOP: si falta, créalo con ATR dinámico O restaura el último conocido ----
   if (!stopOpen) {
-    let atrVal = 0;
-    try {
-      const candles = await ex.getCandles(symbol, '1h', 100);
-      atrVal = atr(candles, 14);
-    } catch (e) {
-      atrVal = price * 0.02; // 2% fallback
-    }
+    let stop: number;
+    let isRestoring = false;
 
-    const slMult = 2.0;
-    const slDist = atrVal * slMult;
-    let stopRaw = s.lastSide === 'LONG' ? s.lastEntryPrice! - slDist : s.lastEntryPrice! + slDist;
-    
-    // Safety: no más allá de liquidación
-    const liq = (await ex.readLiquidationPrice(symbol, s.lastSide as Side)) ?? (s.lastSide === 'LONG' ? 0 : Infinity);
-    if (s.lastSide === 'LONG') {
-      stopRaw = Math.max(stopRaw, liq * 1.005);
+    // 1. Intentar restaurar lastTrailStop si existe y es válido
+    let atrVal = 0;
+    let slMult = 2.0;
+
+    if (s.lastTrailStop && s.lastTrailStop > 0) {
+      stop = s.lastTrailStop;
+      isRestoring = true;
+      log.info('ensure_stop_restoring', { symbol, stop });
     } else {
-      stopRaw = Math.min(stopRaw, liq * 0.995);
+      // 2. Si no hay historia, calcular ATR inicial
+      try {
+        const candles = await ex.getCandles(symbol, '1h', 100);
+        atrVal = atr(candles, 14);
+      } catch (e) {
+        atrVal = price * 0.02; // 2% fallback
+      }
+
+      const slDist = atrVal * slMult;
+      let stopRaw = s.lastSide === 'LONG' ? s.lastEntryPrice! - slDist : s.lastEntryPrice! + slDist;
+
+      // Safety: no más allá de liquidación
+      const liq = (await ex.readLiquidationPrice(symbol, s.lastSide as Side)) ?? (s.lastSide === 'LONG' ? 0 : Infinity);
+      if (s.lastSide === 'LONG') {
+        stopRaw = Math.max(stopRaw, liq * 1.005);
+      } else {
+        stopRaw = Math.min(stopRaw, liq * 0.995);
+      }
+
+      stop = roundToTick(stopRaw, filters.tickSize, filters.pricePrecision);
     }
-    
-    const stop = roundToTick(stopRaw, filters.tickSize, filters.pricePrecision);
 
     try {
       const created = await ex.placeStopClose(symbol, s.lastSide as Side, stop);
       if (created) {
-        log.info('ensure_stop_created', { 
+        log.info('ensure_stop_created', {
           symbol,
           message: `\x1b[36m${symbol.padEnd(10)}\x1b[0m \x1b[33mSL\x1b[0m | ${s.lastSide} @ ${stop.toFixed(filters.pricePrecision)} | ATR=${(atrVal * slMult).toFixed(2)}`,
-          side: s.lastSide, 
-          stop, 
-          atr: atrVal, 
-          mult: slMult 
+          side: s.lastSide,
+          stop,
+          atr: atrVal,
+          mult: slMult,
+          restored: isRestoring
         });
       }
       st.set({ lastTrailStop: stop }); // registro informativo
@@ -72,11 +85,11 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
   // ---- TP: si falta, créalo con R:R dinámico basado en ML ----
   if (!tpOpen) {
     let rrRatio = 1.5; // Base conservador
-    
+
     // Usar probabilidad ML guardada en el estado si está disponible
     const mlProb = s.lastMlProb ?? 0;
     const mlThreshold = s.lastMlThreshold ?? 0.35;
-    
+
     if (mlProb > 0) {
       const confidence = Math.max(0, mlProb - mlThreshold);
       const bonusRR = confidence * 5;
@@ -89,7 +102,7 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
         finalRR: rrRatio.toFixed(2),
       });
     }
-    
+
     // Calcular distancia del SL para usarlo como base
     let slDist = 0;
     try {
@@ -99,7 +112,7 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
     } catch (e) {
       slDist = s.lastEntryPrice! * 0.015; // 1.5% fallback
     }
-    
+
     const tpDist = slDist * rrRatio;
     const tpRaw =
       s.lastSide === 'LONG'
@@ -110,12 +123,12 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
     try {
       const created = await ex.placeTpClose(symbol, s.lastSide as Side, tp);
       if (created) {
-        log.info('ensure_tp_created', { 
+        log.info('ensure_tp_created', {
           symbol,
           message: `\x1b[36m${symbol.padEnd(10)}\x1b[0m \x1b[32mTP\x1b[0m | ${s.lastSide} @ ${tp.toFixed(filters.pricePrecision)} | R:R=${rrRatio.toFixed(2)}`,
-          side: s.lastSide, 
-          tp, 
-          rr: rrRatio.toFixed(2) 
+          side: s.lastSide,
+          tp,
+          rr: rrRatio.toFixed(2)
         });
       }
     } catch (err: any) {

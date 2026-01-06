@@ -803,17 +803,148 @@ export class BinanceExchange implements Exchange {
 
   async cancelCloseOrdersForSide(symbol: string, side: Side) {
     try {
+      // 1. Cancelar Órdenes Estándar (Standard Orders)
       const open = await this.enqueue(() => this.cli.futuresOpenOrders({ symbol }));
       for (const o of open as any[]) {
         if (
-          (o.type === 'STOP_MARKET' || o.type === 'TAKE_PROFIT_MARKET') &&
-          isTrueish(o.closePosition) &&
-          (!o.positionSide || o.positionSide === side)
+          (o.type === 'STOP_MARKET' || o.type === 'TAKE_PROFIT_MARKET' || o.type === 'STOP' || o.type === 'TAKE_PROFIT') &&
+          (isTrueish(o.closePosition) || isTrueish(o.reduceOnly)) &&
+          (!o.positionSide || o.positionSide === side || o.positionSide === 'BOTH')
         ) {
           await this.enqueue(() =>
             this.cli.futuresCancelOrder({ symbol, orderId: Number(o.orderId) }),
           );
         }
+      }
+
+      // 2. Cancelar Órdenes Algo (Conditional Orders) - EL ESLABÓN PERDIDO
+      // Necesario porque la App de Binance a veces crea estos stops
+      try {
+        const timestamp = Date.now();
+        const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
+        const signature = require('crypto')
+          .createHmac('sha256', CONFIG.API_SECRET)
+          .update(queryString)
+          .digest('hex');
+
+        const response = await fetch(
+          `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
+          {
+            headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+          }
+        );
+
+        if (response.ok) {
+          const algoOrders = await response.json();
+          for (const o of algoOrders as any[]) {
+            // Filtrar solo las órdenes condicionales que sean de cierre para nuestro lado
+            if (o.algoType !== 'CONDITIONAL') continue;
+
+            // Mapeo de lado: Si tengo LONG, el stop es SELL.
+            const wantSide = side === 'LONG' ? 'SELL' : 'BUY';
+
+            if (o.side !== wantSide) continue;
+
+            // Verificar si es Stop o TP
+            // Algo orders use 'orderType', not 'type'
+            const type = o.orderType || o.type;
+            const isStop = type === 'STOP_MARKET' || type === 'STOP';
+            const isTp = type === 'TAKE_PROFIT_MARKET' || type === 'TAKE_PROFIT';
+
+            if (isStop || isTp) {
+              // Usar el endpoint específico para cancelar Algo Orders
+              const cancelParams: any = { symbol, algoId: o.algoId };
+              const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}`;
+              const sig = require('crypto').createHmac('sha256', CONFIG.API_SECRET).update(qs).digest('hex');
+
+              const delRes = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${sig}`, {
+                method: 'DELETE',
+                headers: { 'X-MBX-APIKEY': CONFIG.API_KEY }
+              });
+
+              if (!delRes.ok) {
+                const txt = await delRes.text();
+                this.log.warn('cancel_algo_api_fail', { symbol, algoId: o.algoId, status: delRes.status, body: txt });
+              } else {
+                this.log.info('cancel_algo_success', { symbol, algoId: o.algoId });
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        // Ignorar errores de algo orders si no existen o fallan, para no bloquear el flujo principal
+        this.log.debug('cancel_algo_check_fail', { symbol, err: err?.message });
+      }
+    } catch (err) {
+      noteRateLimitFromError(err);
+      throw err;
+    }
+  }
+
+  async cancelStopOrdersForSide(symbol: string, side: Side) {
+    try {
+      // 1. Cancelar Órdenes Estándar (Standard Orders) - SOLO STOPS
+      const open = await this.enqueue(() => this.cli.futuresOpenOrders({ symbol }));
+      for (const o of open as any[]) {
+        if (
+          (o.type === 'STOP_MARKET' || o.type === 'STOP') &&
+          (isTrueish(o.closePosition) || isTrueish(o.reduceOnly)) &&
+          (!o.positionSide || o.positionSide === side || o.positionSide === 'BOTH')
+        ) {
+          await this.enqueue(() =>
+            this.cli.futuresCancelOrder({ symbol, orderId: Number(o.orderId) }),
+          );
+        }
+      }
+
+      // 2. Cancelar Órdenes Algo (Conditional Orders) - SOLO STOPS
+      try {
+        const timestamp = Date.now();
+        const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
+        const signature = require('crypto')
+          .createHmac('sha256', CONFIG.API_SECRET)
+          .update(queryString)
+          .digest('hex');
+
+        const response = await fetch(
+          `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
+          {
+            headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+          }
+        );
+
+        if (response.ok) {
+          const algoOrders = await response.json();
+          for (const o of algoOrders as any[]) {
+            if (o.algoType !== 'CONDITIONAL') continue;
+
+            const wantSide = side === 'LONG' ? 'SELL' : 'BUY';
+            if (o.side !== wantSide) continue;
+
+            const type = o.orderType || o.type;
+            const isStop = type === 'STOP_MARKET' || type === 'STOP';
+
+            // SOLO CANCELAR SI ES STOP (Ignorar TP)
+            if (isStop) {
+              const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}`;
+              const sig = require('crypto').createHmac('sha256', CONFIG.API_SECRET).update(qs).digest('hex');
+
+              const delRes = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${sig}`, {
+                method: 'DELETE',
+                headers: { 'X-MBX-APIKEY': CONFIG.API_KEY }
+              });
+
+              if (!delRes.ok) {
+                const txt = await delRes.text();
+                this.log.warn('cancel_algo_stop_fail', { symbol, algoId: o.algoId, status: delRes.status, body: txt });
+              } else {
+                this.log.info('cancel_algo_stop_success', { symbol, algoId: o.algoId });
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        this.log.debug('cancel_algo_stop_check_fail', { symbol, err: err?.message });
       }
     } catch (err) {
       noteRateLimitFromError(err);
