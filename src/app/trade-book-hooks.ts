@@ -413,18 +413,18 @@ export async function ensureOpenTradeBackfill(params: BackfillParams): Promise<v
     inferSideFromQty(logSnapshot?.qty);
 
   const qty =
+    position?.qtyAbs ??
     snapshot.lastEntryQty ??
-    (isFiniteNumber(logSnapshot?.qty) ? logSnapshot!.qty : undefined) ??
-    position?.qtyAbs;
+    (isFiniteNumber(logSnapshot?.qty) ? logSnapshot!.qty : undefined);
 
   const entryPrice =
+    (position ? position.entryPrice : undefined) ??
     snapshot.lastEntryPrice ??
-    (isFiniteNumber(logSnapshot?.entryPrice) ? logSnapshot!.entryPrice : undefined) ??
-    (position ? position.entryPrice : undefined);
+    (isFiniteNumber(logSnapshot?.entryPrice) ? logSnapshot!.entryPrice : undefined);
 
   let leverage =
-    snapshot.lastLeverage ??
-    (position ? position.leverage : undefined);
+    (position ? position.leverage : undefined) ??
+    snapshot.lastLeverage;
 
   let usedBalance =
     snapshot.lastEntryUsedBalance ??
