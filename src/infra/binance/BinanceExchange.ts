@@ -361,7 +361,9 @@ export class BinanceExchange implements Exchange {
     try {
       const b = await this.enqueue(() => this.cli.futuresAccountBalance());
       const usdt = b.find((x) => x.asset === 'USDT');
-      const value = +(usdt?.balance ?? '0');
+      // NINJA v7.0 FIX: Use AVAILABLE balance (free margin) instead of total balance
+      // This prevents "Insufficient Margin" errors when other positions are open.
+      const value = +(usdt?.availableBalance ?? usdt?.balance ?? '0');
       this.usdtCache = { value, ts: now };
       return value;
     } catch (err) {
