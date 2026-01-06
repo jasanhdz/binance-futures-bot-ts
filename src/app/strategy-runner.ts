@@ -225,6 +225,10 @@ export class StrategyRunner {
     const activeRegimeStrategy = this.regimeStrategies[regimeContext.type];
     const regimeConfig = activeRegimeStrategy.getConfig(symbol);
 
+    // FIX: Fetch filters early for Trailing Ratchet
+    const mlLeverage = regimeConfig.leverage;
+    const filters = await exchange.getSymbolFilters(symbol, mlLeverage);
+
     // ════════════════════════════════════════════════════════════════════
     // 🧠 SMART COOLDOWN LOGIC (NINJA v6.2)
     // ════════════════════════════════════════════════════════════════════
@@ -329,6 +333,69 @@ export class StrategyRunner {
         shortProb,
         probThreshold,
       });
+
+      // ═════════════════════════════════════════════════════════════════════════
+      // 🛡️ NINJA v7.0: PHYSICAL TRAILING RATCHET (Piramidado de Stop)
+      // ═════════════════════════════════════════════════════════════════════════
+      // Objetivo: Mover el SL en Binance para asegurar ganancias sin cerrar la posición.
+
+      if (roiPct !== undefined && roiPct > 0 && entry && qtyAbs > 0) {
+        const currentPrice = mark;
+        // Solo activamos si tenemos ganancia decente (> 1.5% ROE)
+        if (currentPrice && roiPct > 1.5) {
+
+          // 1. Calcular dónde DEBERÍA estar el stop ideal hoy
+          // Queremos asegurar el 60% de nuestra ganancia acumulada (dejar 40% de aire)
+          // Precio Entrada + (Ganancia * 0.60)
+          const profitDist = Math.abs(currentPrice - entry);
+          const lockAmount = profitDist * 0.60;
+
+          let newStopPrice = 0;
+          if (lastSide === 'LONG') {
+            newStopPrice = entry + lockAmount;
+            // Nunca bajar el stop, solo subir. Y asegurar que esté debajo del precio actual
+            newStopPrice = Math.min(newStopPrice, currentPrice * 0.999);
+          } else {
+            newStopPrice = entry - lockAmount;
+            newStopPrice = Math.max(newStopPrice, currentPrice * 1.001);
+          }
+
+          // Redondear
+          const newStopTick = roundToTick(newStopPrice, filters.tickSize, filters.pricePrecision);
+
+          // 2. Verificar Stop Actual en Binance (para no spamear la API)
+          // Usamos una variable en memoria 'lastTrailStop' para no consultar API cada tick
+          const lastPhysicalStop = stBefore.lastTrailStop ?? 0;
+
+          let shouldUpdate = false;
+          if (lastSide === 'LONG') {
+            // Solo actualizar si el nuevo stop es MAYOR que el anterior + un paso mínimo (0.2%)
+            // Esto evita "Fee Churning" de actualizaciones de orden
+            if (newStopTick > lastPhysicalStop * 1.002 && newStopTick > entry) {
+              shouldUpdate = true;
+            }
+          } else {
+            // Short: Solo si es MENOR
+            if ((lastPhysicalStop === 0 || newStopTick < lastPhysicalStop * 0.998) && newStopTick < entry) {
+              shouldUpdate = true;
+            }
+          }
+
+          if (shouldUpdate) {
+            logger.info('trailing_ratchet_update', {
+              symbol,
+              oldStop: lastPhysicalStop,
+              newStop: newStopTick,
+              lockedRoe: (roiPct * 0.6).toFixed(2) + '%'
+            });
+
+            // Ejecutar cambio en Binance (Fire & Forget para no bloquear tick)
+            exchange.placeStopClose(symbol, lastSide, newStopTick)
+              .then(() => applyStatePatch({ lastTrailStop: newStopTick }))
+              .catch(e => logger.warn('trailing_ratchet_fail', { symbol, err: String(e) }));
+          }
+        }
+      }
 
 
 
@@ -571,9 +638,10 @@ export class StrategyRunner {
       return;
     }
 
-    const tf = (config as any).SYMBOL_TIMEFRAMES?.[symbol] || (config as any).ENTRY_TIMEFRAME || '1h';
+    // FIX: Fetch filters early for Trailing Ratchet (Moved to line 227)
     // NINJA v3.0: Use ACTIVE REGIME leverage instead of hardcoded WHALE
-    const mlLeverage = regimeConfig.leverage;
+    // const mlLeverage = regimeConfig.leverage;
+    // const filters = await exchange.getSymbolFilters(symbol, mlLeverage);
 
     // CRITICAL: If regime leverage is 0, this regime BLOCKS ENTRIES (e.g., BUNKER)
     if (mlLeverage === 0) {
@@ -632,7 +700,7 @@ export class StrategyRunner {
       return;
     }
 
-    const filters = await exchange.getSymbolFilters(symbol, leverage);
+    // const filters = await exchange.getSymbolFilters(symbol, leverage); // Moved up
 
     logger.debug('filters', { symbol, ...filters });
 

@@ -1,26 +1,22 @@
 /**
- * NINJA v5.1: Universal Dynamic Profit Guardian
- * 
- * Centralizes profit protection logic to avoid "Fee Churning".
- * 
- * Features:
- * - Peak Threshold (>1%) to avoid triggering on noise
- * - Dynamic Drawdown adjusted by Volatility
- * - ML Trend Filter (Don't close if market still favors position)
+ * NINJA v7.0: Universal Dynamic Profit Guardian (Logarithmic Edition)
+ * * Features:
+ * - Tiered Drawdown: Tightens risk as profits grow.
+ * - Volatility Awareness: Loosens grip in high volatility.
  */
 
 export interface GuardianContext {
     peakRoe: number;          // Peak ROE (0.20 = 20%)
-    currentRoe: number;       // Current ROE (-0.05 = -5%)
-    volatilityFactor: number; // 1.0 = Normal, 2.0 = Very volatile
+    currentRoe: number;       // Current ROE
+    volatilityFactor: number; // 1.0 = Normal, 2.0 = High Vol
     marketBias: 'BULL' | 'BEAR' | 'NEUTRAL';
     positionSide: 'LONG' | 'SHORT';
 }
 
 export interface GuardianConfig {
-    peakThreshold: number;       // Min peak to activate (0.01 = 1%)
-    baseDrawdown: number;        // Base allowed drawdown (0.30 = 30%)
-    volatilitySensitivity: number; // 0.0 to 1.0
+    peakThreshold: number;       // Min peak to activate (0.01)
+    baseDrawdown: number;        // Initial allowed drop
+    volatilitySensitivity: number;
     enableTrendProtection: boolean;
 }
 
@@ -31,67 +27,73 @@ export class UniversalProfitGuardian {
         this.config = config;
     }
 
-    /**
-     * Evaluates if position should close to secure profits.
-     * @returns TRUE if should lock profits (close).
-     */
     evaluate(ctx: GuardianContext): boolean {
-        // 1. ANTI-NOISE: If peak below threshold, don't act
-        if (ctx.peakRoe < this.config.peakThreshold) {
-            return false;
-        }
+        // 1. NOISE FILTER
+        if (ctx.peakRoe < this.config.peakThreshold) return false;
 
-        // 2. CALCULATE DRAWDOWN (Fall from peak)
+        // 2. CALCULATE DRAWDOWN FROM PEAK
         const drawdown = ctx.peakRoe - ctx.currentRoe;
 
-        // 3. DYNAMIC LIMIT BASED ON VOLATILITY
-        let volMultiplier = 1.0;
-        if (ctx.volatilityFactor >= 1.5) {
-            volMultiplier = 1.0 - (this.config.volatilitySensitivity * 0.5);
-        } else if (ctx.volatilityFactor <= 0.8) {
-            volMultiplier = 1.0 + (this.config.volatilitySensitivity * 0.5);
+        // 3. LOGARITHMIC TIGHTENING (La Magia)
+        // A medida que el ROE sube, el drawdown permitido baja.
+        // ROE 2%  -> Permite ceder 40% de la ganancia
+        // ROE 10% -> Permite ceder 20% de la ganancia
+        // ROE 50% -> Permite ceder 10% de la ganancia
+
+        let dynamicAllowedDD = this.config.baseDrawdown;
+
+        if (ctx.peakRoe > 0.05) { // Si ganamos > 5%
+            // Fórmula de endurecimiento: Reduce el DD a la mitad cada vez que duplicas ganancia
+            const tighteningFactor = 1 / (1 + ctx.peakRoe * 5);
+            dynamicAllowedDD = this.config.baseDrawdown * tighteningFactor;
+
+            // Límite duro: Nunca menos del 5% de la ganancia (para respirar)
+            dynamicAllowedDD = Math.max(0.05, dynamicAllowedDD);
         }
-        volMultiplier = Math.max(0.5, Math.min(1.5, volMultiplier));
 
-        const allowedDrawdown = this.config.baseDrawdown * volMultiplier;
+        // 4. VOLATILITY ADJUSTMENT
+        // Si hay mucha volatilidad, aflojamos un poco para no salir por un wick
+        let volMultiplier = 1.0;
+        if (ctx.volatilityFactor > 1.2) {
+            volMultiplier = 1.2; // 20% más de espacio
+        }
 
-        // 4. CHECK IF EXCEEDS LIMIT
-        if (drawdown >= allowedDrawdown) {
-            // 5. ML TREND FILTER
-            if (this.config.enableTrendProtection) {
-                const biasFavorsMe =
-                    (ctx.positionSide === 'LONG' && ctx.marketBias === 'BULL') ||
+        const finalLimit = dynamicAllowedDD * volMultiplier;
+
+        // 5. DECISION
+        if (drawdown >= finalLimit) {
+            // Trend Protection: Si el ML sigue MUY convencido, damos una última oportunidad
+            // Solo si el drawdown no es catastrófico (ej. no perder más del 50% de lo ganado)
+            if (this.config.enableTrendProtection && drawdown < ctx.peakRoe * 0.5) {
+                const biasFavors = (ctx.positionSide === 'LONG' && ctx.marketBias === 'BULL') ||
                     (ctx.positionSide === 'SHORT' && ctx.marketBias === 'BEAR');
-
-                if (biasFavorsMe) {
-                    return false; // HOLD: Trend still alive
-                }
+                if (biasFavors) return false;
             }
-            return true; // CLOSE: Secure profit
+            return true; // CLOSE
         }
 
         return false; // HOLD
     }
 
-    // Predefined configs per regime
+    // CONFIGURACIONES AGRESIVAS (DEJAR CORRER)
     static WHALE_CONFIG: GuardianConfig = {
-        peakThreshold: 0.015,      // Activate only with >1.5% gain
-        baseDrawdown: 0.40,        // Allow 40% drawdown from peak
-        volatilitySensitivity: 0.20,
+        peakThreshold: 0.015,
+        baseDrawdown: 0.40, // Empezamos cediendo 40% del pico
+        volatilitySensitivity: 0.2,
         enableTrendProtection: true
     };
 
     static MONK_CONFIG: GuardianConfig = {
-        peakThreshold: 0.01,       // Activate with >1%
-        baseDrawdown: 0.25,        // Allow 25% drawdown (ranges are small)
-        volatilitySensitivity: 0.30,
+        peakThreshold: 0.01,
+        baseDrawdown: 0.30, // En rango somos un poco más estrictos
+        volatilitySensitivity: 0.3,
         enableTrendProtection: true
     };
 
     static BLOODBATH_CONFIG: GuardianConfig = {
-        peakThreshold: 0.005,      // Activate with >0.5%
-        baseDrawdown: 0.15,        // Chaos = exit fast (15%)
-        volatilitySensitivity: 0.50,
-        enableTrendProtection: false // In chaos, don't trust ML
+        peakThreshold: 0.005,
+        baseDrawdown: 0.15, // En caos salimos rápido
+        volatilitySensitivity: 0.5,
+        enableTrendProtection: false
     };
 }
