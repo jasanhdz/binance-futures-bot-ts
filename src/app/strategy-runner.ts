@@ -851,35 +851,43 @@ export class StrategyRunner {
       logger.error('trade_book_open_fail', { symbol, err: err?.message || String(err) });
     }
 
-    // ------ Stop / TP Institucional (ATR Based) ------
-    // 1. Calcular ATR
-    let atrVal = 0;
-    try {
-      const candles = await exchange.getCandles(symbol, tf, 100);
-      atrVal = atr(candles, 14);
-    } catch (e) {
-      logger.warn('atr_calc_fail', { symbol, error: String(e) });
-      // Fallback: 2% del precio
-      atrVal = price * 0.02;
-    }
+    // ════════════════════════════════════════════════════════════════════════
+    // 🛡️ NATIVE BRACKETS SYNC (NINJA v6.3) - FIX CRÍTICO
+    // ════════════════════════════════════════════════════════════════════════
+    // Objetivo: Que el SL en Binance coincida EXACTAMENTE con el Hard Stop del Régimen.
+    // Si el bot muere, la protección nativa es la correcta.
 
-    // 2. Definir Stop Loss (2.0 ATR)
-    const slMult = 2.0;
-    const slDist = atrVal * slMult;
-    let stopRaw = side === 'LONG' ? avgPrice - slDist : avgPrice + slDist;
+    const entryPrice = avgPrice;
+    const regimeHardStopRoe = regimeConfig.hardStopRoe; // Ej: -0.05 (-5%)
 
-    // Safety: No poner SL más allá de liquidación
+    // Cálculo de Distancia de Precio basada en el % de Movimiento del Activo
+    // ROE = %Movimiento * Leverage  =>  %Movimiento = ROE / Leverage
+    const priceMovePct = Math.abs(regimeHardStopRoe) / leverage;
+    const slDist = entryPrice * priceMovePct;
+
+    let stopRaw = side === 'LONG' ? entryPrice - slDist : entryPrice + slDist;
+
+    // Safety: No poner SL más allá de liquidación (Binance rechazaría la orden)
     const liq = (await exchange.readLiquidationPrice(symbol, side)) ?? (side === 'LONG' ? 0 : Infinity);
     if (side === 'LONG') {
-      stopRaw = Math.max(stopRaw, liq * 1.005); // 0.5% buffer sobre liq
+      // Stop debe ser MAYOR que Liq. Dejamos 0.5% buffer.
+      stopRaw = Math.max(stopRaw, liq * 1.005);
     } else {
+      // Stop debe ser MENOR que Liq.
       stopRaw = Math.min(stopRaw, liq * 0.995);
     }
 
     const stop = roundToTick(stopRaw, filters.tickSize, filters.pricePrecision);
     try {
       await exchange.placeStopClose(symbol, side, stop);
-      logger.info('stop_upserted_atr', { symbol, side, stop, atr: atrVal, mult: slMult });
+      logger.info('stop_upserted_regime', {
+        symbol,
+        side,
+        stop,
+        regime: regimeContext.type,
+        targetRoe: (regimeHardStopRoe * 100).toFixed(1) + '%',
+        priceMovePct: (priceMovePct * 100).toFixed(2) + '%'
+      });
     } catch (err: any) {
       logger.warn('stop_upsert_init_fail', { symbol, side, stop, err: err?.message || String(err) });
       // bracketsGuard will retry on next tick
