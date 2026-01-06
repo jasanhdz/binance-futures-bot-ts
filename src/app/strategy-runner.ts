@@ -6,12 +6,12 @@ import { BotState, Side } from '../core/types';
 import { sizeByBudget, floorToStep, ceilToStep } from '../core/risk/sizing';
 import { getNinjaConfig } from './core/NinjaConfigManager';
 import { RegimeDetector, MarketSnapshot } from './core/RegimeDetector';
-import { RegimeType, RegimeContext, RegimeConfig, IRegimeStrategy, ExitContext } from './regimes/RegimeStrategy';
+import { RegimeType, IRegimeStrategy, ExitContext } from './regimes/RegimeStrategy';
 import { BloodbathStrategy } from './regimes/BloodbathStrategy';
 import { WhaleStrategy } from './regimes/WhaleStrategy';
 import { MonkStrategy } from './regimes/MonkStrategy';
 import { BunkerStrategy } from './regimes/BunkerStrategy';
-import { computeStopFromLiqTicks, roundToTick } from '../core/risk/stop';
+import { roundToTick } from '../core/risk/stop';
 import { Strategy } from '../strategies/types';
 import { atr } from '../core/indicators/atr';
 import { recordSignal } from '../core/analytics/signal_recorder';
@@ -862,7 +862,9 @@ export class StrategyRunner {
 
     // Cálculo de Distancia de Precio basada en el % de Movimiento del Activo
     // ROE = %Movimiento * Leverage  =>  %Movimiento = ROE / Leverage
-    const priceMovePct = Math.abs(regimeHardStopRoe) / leverage;
+    // Safety: Prevent division by zero if leverage is 0 (e.g., BUNKER edge case)
+    const safeLeverage = Math.max(1, leverage);
+    const priceMovePct = Math.abs(regimeHardStopRoe) / safeLeverage;
     const slDist = entryPrice * priceMovePct;
 
     let stopRaw = side === 'LONG' ? entryPrice - slDist : entryPrice + slDist;
