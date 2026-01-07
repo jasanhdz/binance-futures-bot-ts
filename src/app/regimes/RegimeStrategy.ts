@@ -21,7 +21,6 @@ export interface RegimeConfig {
     hardStopRoe: number;  // Negative number (e.g., -0.015 = -1.5%)
     tpRoe: number;        // Positive number (e.g., 0.02 = +2%)
     entryThreshold: number; // ML probability threshold
-    trailingActivationRoe?: number;
     maxHoldMs?: number;
 }
 

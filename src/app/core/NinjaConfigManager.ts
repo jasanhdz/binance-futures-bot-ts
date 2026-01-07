@@ -40,7 +40,6 @@ export interface RegimeYamlConfig {
     hard_stop_roe: number;
     tp_roe: number;
     max_hold_ms?: number;
-    trailing_activation_roe?: number;
 }
 
 export interface NinjaYamlConfig {
@@ -178,8 +177,7 @@ export class NinjaConfigManager {
             hardStopRoe: mergedConfig.hard_stop_roe,
             tpRoe: mergedConfig.tp_roe,
             entryThreshold: mergedConfig.entry_threshold,
-            maxHoldMs: mergedConfig.max_hold_ms,
-            trailingActivationRoe: mergedConfig.trailing_activation_roe
+            maxHoldMs: mergedConfig.max_hold_ms
         };
     }
 
@@ -203,7 +201,7 @@ export class NinjaConfigManager {
     private getDefaultRegimeConfig(regime: RegimeType): RegimeConfig {
         const defaults: Record<RegimeType, RegimeConfig> = {
             BLOODBATH: { leverage: 10, entryThreshold: 0.30, hardStopRoe: -0.015, tpRoe: 0.005, maxHoldMs: 120000 },
-            WHALE: { leverage: 5, entryThreshold: 0.50, hardStopRoe: -0.20, tpRoe: 999.0, trailingActivationRoe: 0.03 },
+            WHALE: { leverage: 5, entryThreshold: 0.50, hardStopRoe: -0.20, tpRoe: 999.0 },
             MONK: { leverage: 10, entryThreshold: 0.40, hardStopRoe: -0.05, tpRoe: 0.02 },
             BUNKER: { leverage: 0, entryThreshold: 999.0, hardStopRoe: 0.0, tpRoe: 0.0 }
         };
@@ -243,8 +241,7 @@ export class NinjaConfigManager {
                     leverage: 5,
                     entry_threshold: 0.50,
                     hard_stop_roe: -0.20,
-                    tp_roe: 999.0,
-                    trailing_activation_roe: 0.03
+                    tp_roe: 999.0
                 },
                 MONK: {
                     leverage: 10,
