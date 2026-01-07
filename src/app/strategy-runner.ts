@@ -340,30 +340,47 @@ export class StrategyRunner {
       });
 
       // ═════════════════════════════════════════════════════════════════════════
-      // 🛡️ NINJA v7.3: PHYSICAL TRAILING RATCHET (Con Recuperación de Memoria)
+      // 🛡️ NINJA v7.7: TIERED RATCHET (Escudo y Espada)
       // ═════════════════════════════════════════════════════════════════════════
-      // Objetivo: Mover el SL hacia arriba, NUNCA hacia abajo.
+      // Basado en Data Mining (38k trades):
+      // - Nivel 1 (3% ROI): Supervivencia (Breakeven). Salva los trades de +4%.
+      // - Nivel 2 (6% ROI): Crecimiento (Trailing 60%). Exprime los trades de +20%.
 
       if (roiPct !== undefined && roiPct > 0 && entry && qtyAbs > 0) {
         const currentPrice = mark;
 
-        // 1. Obtener umbral dinámico (Default 5.0% si no está en config)
-        const activationThreshold = (regimeConfig.trailingActivationRoe ?? 0.05) * 100;
+        // UMBRAL MÍNIMO DE ACTIVACIÓN: 3.0% ROI (Data-driven: 90% de trades lo alcanzan)
+        if (currentPrice && roiPct > 3.0) {
 
-        // Solo activamos si tenemos ganancia decente (> Threshold)
-        if (currentPrice && roiPct > activationThreshold) {
-
-          // 1. Calcular el "Nuevo Stop Ideal" basado en el precio actual
-          const profitDist = Math.abs(currentPrice - entry);
-          const lockAmount = profitDist * 0.60; // Asegurar el 60%
-
+          // --- CÁLCULO DEL NUEVO STOP (TIERED) ---
           let newStopPrice = 0;
-          if (lastSide === 'LONG') {
-            newStopPrice = entry + lockAmount;
-            newStopPrice = Math.min(newStopPrice, currentPrice * 0.999);
+          let ratchetMode: 'SHIELD' | 'SWORD' = 'SHIELD';
+
+          if (roiPct < 6.0) {
+            // 🛡️ MODO ESCUDO (3% - 6%): Mover a Breakeven + Fee Buffer
+            // Buffer de 0.15% del precio cubre comisiones (0.05% x 2) + deslizamiento
+            ratchetMode = 'SHIELD';
+            const feeBuffer = currentPrice * 0.0015;
+
+            if (lastSide === 'LONG') {
+              newStopPrice = entry + feeBuffer; // Un poco por encima de entrada
+            } else {
+              newStopPrice = entry - feeBuffer; // Un poco por debajo de entrada
+            }
+
           } else {
-            newStopPrice = entry - lockAmount;
-            newStopPrice = Math.max(newStopPrice, currentPrice * 1.001);
+            // ⚔️ MODO ESPADA (> 6%): Trailing Ratchet Clásico (60% Lock)
+            ratchetMode = 'SWORD';
+            const profitDist = Math.abs(currentPrice - entry);
+            const lockAmount = profitDist * 0.60; // Asegurar el 60%
+
+            if (lastSide === 'LONG') {
+              newStopPrice = entry + lockAmount;
+              newStopPrice = Math.min(newStopPrice, currentPrice * 0.999);
+            } else {
+              newStopPrice = entry - lockAmount;
+              newStopPrice = Math.max(newStopPrice, currentPrice * 1.001);
+            }
           }
 
           // Redondear
@@ -478,11 +495,12 @@ export class StrategyRunner {
           }
 
           if (shouldUpdate) {
-            logger.info('trailing_ratchet_update', {
+            logger.info('tiered_ratchet_update', {
               symbol,
-              oldStop: referenceStop, // Logueamos la referencia real usada
+              mode: ratchetMode,
+              oldStop: referenceStop,
               newStop: newStopTick,
-              lockedRoe: (roiPct * 0.6).toFixed(2) + '%'
+              roi: roiPct.toFixed(2) + '%'
             });
 
             try {
