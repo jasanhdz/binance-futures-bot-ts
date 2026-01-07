@@ -47,10 +47,11 @@ def parse_arguments():
     )
     
     time_group = parser.add_argument_group('⏱️  Filtros de Tiempo')
-    time_group.add_argument('--today', action='store_true', help='Muestra solo las operaciones realizadas HOY (desde 00:00 local)')
-    time_group.add_argument('--week', action='store_true', help='Muestra operaciones de los últimos 7 días')
-    time_group.add_argument('--month', action='store_true', help='Muestra operaciones de los últimos 30 días')
-    time_group.add_argument('--days', type=int, metavar='N', help='Muestra operaciones de los últimos N días')
+    time_group.add_argument('--today', action='store_true', help='Operaciones de HOY (00:00 a 23:59 local)')
+    time_group.add_argument('--yesterday', action='store_true', help='Operaciones de AYER (00:00 a 23:59 local)')
+    time_group.add_argument('--week', action='store_true', help='Operaciones de los últimos 7 días')
+    time_group.add_argument('--month', action='store_true', help='Operaciones de los últimos 30 días')
+    time_group.add_argument('--days', type=int, metavar='N', help='Operaciones de los últimos N días')
     
     filter_group = parser.add_argument_group('🔍 Filtros de Operación')
     filter_group.add_argument('--symbol', type=str, metavar='SYM', help='Filtrar por par (ej: BTCUSDT, SOL)')
@@ -91,15 +92,28 @@ def filter_operations(df, args):
     filtered = df.copy()
     now = datetime.now()
     
+    # Asegurar que datetime sea timezone-naive para comparación
+    if filtered['datetime'].dt.tz is not None:
+        filtered['datetime'] = filtered['datetime'].dt.tz_localize(None)
+    
     if args.today:
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        filtered = filtered[filtered['datetime'] >= start_of_day]
+        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        filtered = filtered[(filtered['datetime'] >= start_of_day) & (filtered['datetime'] <= end_of_day)]
+    elif hasattr(args, 'yesterday') and args.yesterday:
+        yesterday = now - timedelta(days=1)
+        start_of_yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_yesterday = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+        filtered = filtered[(filtered['datetime'] >= start_of_yesterday) & (filtered['datetime'] <= end_of_yesterday)]
     elif args.week:
-        filtered = filtered[filtered['datetime'] >= (now - timedelta(days=7))]
+        start_week = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+        filtered = filtered[filtered['datetime'] >= start_week]
     elif args.month:
-        filtered = filtered[filtered['datetime'] >= (now - timedelta(days=30))]
+        start_month = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+        filtered = filtered[filtered['datetime'] >= start_month]
     elif args.days:
-        filtered = filtered[filtered['datetime'] >= (now - timedelta(days=args.days))]
+        start_days = (now - timedelta(days=args.days)).replace(hour=0, minute=0, second=0, microsecond=0)
+        filtered = filtered[filtered['datetime'] >= start_days]
         
     if args.symbol:
         sym = args.symbol.upper()
