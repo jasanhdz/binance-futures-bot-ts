@@ -34,6 +34,17 @@ export interface ImmuneSystemConfig {
     panic_exit_threshold: number;
 }
 
+export interface TradingConfig {
+    capital_usage_default: number;
+    min_wallet_reserve_usdt: number;
+    fee_buffer_pct: number;
+    max_risk_pct: number;
+    low_funds_threshold: number;
+    reenter_on_tp: boolean;
+    post_exit_timeout_ms: number;
+    vol_factor_reenter: number;
+}
+
 export interface RegimeYamlConfig {
     leverage: number;
     entry_threshold: number;
@@ -46,6 +57,7 @@ export interface NinjaYamlConfig {
     SYMBOLS?: {
         [symbol: string]: number;  // Capital allocation (0-1)
     };
+    TRADING?: TradingConfig;
     SYSTEM: SystemConfig;
     REGIME_DETECTOR: RegimeDetectorConfig;
     IMMUNE_SYSTEM: ImmuneSystemConfig;
@@ -149,6 +161,19 @@ export class NinjaConfigManager {
 
     get immuneSystem(): ImmuneSystemConfig {
         return this.config.IMMUNE_SYSTEM;
+    }
+
+    get trading(): TradingConfig {
+        return this.config.TRADING || {
+            capital_usage_default: 0.75,
+            min_wallet_reserve_usdt: 0,
+            fee_buffer_pct: 0.0004,
+            max_risk_pct: 0,
+            low_funds_threshold: 2,
+            reenter_on_tp: true,
+            post_exit_timeout_ms: 60000,
+            vol_factor_reenter: 1.5,
+        };
     }
 
     /**
