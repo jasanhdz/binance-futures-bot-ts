@@ -8,8 +8,8 @@ import { NinjaConfigManager } from '../app/core/NinjaConfigManager';
 const ninjaConfig = new NinjaConfigManager();
 const trading = ninjaConfig.trading;
 
-// Symbols from YAML
-const SYMBOL_LIST = ninjaConfig.getSymbols();
+// Only load symbols that have valid models (not vetoed)
+const SYMBOL_LIST = ninjaConfig.getActiveSymbols();
 const SYMBOL_ALLOCATIONS: Record<string, number> = ninjaConfig.getSymbolAllocations();
 
 // Defaults

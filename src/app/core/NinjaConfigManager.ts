@@ -177,11 +177,44 @@ export class NinjaConfigManager {
     }
 
     /**
-     * Get list of symbols from YAML config
+     * Get list of ALL symbols from YAML config (for reference)
      */
     getSymbols(): string[] {
         if (!this.config.SYMBOLS) return [];
         return Object.keys(this.config.SYMBOLS);
+    }
+
+    /**
+     * Get list of ACTIVE symbols (have model + not vetoed)
+     * Filters by checking metadata.json for each symbol
+     */
+    getActiveSymbols(): string[] {
+        const allSymbols = this.getSymbols();
+        const MODELS_DIR = '/home/jasan/Develop/trading_system/models/v2_ensemble';
+        const QUALITY_THRESHOLD = 0.55;
+
+        const activeSymbols: string[] = [];
+
+        for (const symbol of allSymbols) {
+            try {
+                const metaPath = `${MODELS_DIR}/${symbol}/metadata.json`;
+                if (!fs.existsSync(metaPath)) {
+                    continue; // No model exists
+                }
+
+                const metaRaw = fs.readFileSync(metaPath, 'utf-8');
+                const meta = JSON.parse(metaRaw);
+
+                if (meta.accuracy >= QUALITY_THRESHOLD) {
+                    activeSymbols.push(symbol);
+                }
+            } catch (e) {
+                // Skip symbols with invalid/missing metadata
+            }
+        }
+
+        console.log(`[NinjaConfig] Active symbols: ${activeSymbols.length}/${allSymbols.length} (threshold: ${QUALITY_THRESHOLD * 100}%)`);
+        return activeSymbols;
     }
 
     /**
