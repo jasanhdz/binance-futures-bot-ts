@@ -61,8 +61,8 @@ export interface Exchange {
     side: Side,
     quantity: number,
   ): Promise<{ avgPrice: number; orderId: string }>;
-  placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<boolean>;
-  placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<boolean>;
+  placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean>;
+  placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean>;
   closeSideMarketSafe(
     symbol: string,
     side: Side,
@@ -74,7 +74,7 @@ export interface Exchange {
     symbol: string,
     side: Side,
   ): Promise<{ stopPrice: number; orderId: string } | null>; // para upsert
-  
+
   listCloseOrdersForSide(
     symbol: string,
     side: Side,

@@ -136,7 +136,7 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
   if (!stopOpen) {
     // CASO A: No hay stop -> CREARLO
     try {
-      const created = await ex.placeStopClose(symbol, s.lastSide as Side, idealStopPrice);
+      const created = await ex.placeStopClose(symbol, s.lastSide as Side, idealStopPrice, pos.qtyAbs);
       if (created) {
         log.info('native_stop_created', {
           symbol,
@@ -167,7 +167,7 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
         // Cancel existing stop and place new one
         await (ex as any).cancelOrderById(symbol, stopOpen.orderId);
         await new Promise(r => setTimeout(r, 300)); // Small delay for safety
-        await ex.placeStopClose(symbol, s.lastSide as Side, idealStopPrice);
+        await ex.placeStopClose(symbol, s.lastSide as Side, idealStopPrice, pos.qtyAbs);
 
         log.info('native_stop_updated', {
           symbol,
@@ -217,7 +217,7 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
     const tp = roundToTick(tpRaw, filters.tickSize, filters.pricePrecision);
 
     try {
-      const created = await ex.placeTpClose(symbol, s.lastSide as Side, tp);
+      const created = await ex.placeTpClose(symbol, s.lastSide as Side, tp, pos.qtyAbs);
       if (created) {
         log.info('ensure_tp_created', {
           symbol,

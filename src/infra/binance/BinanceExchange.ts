@@ -531,8 +531,33 @@ export class BinanceExchange implements Exchange {
     }
   }
 
-  async placeStopClose(symbol: string, side: Side, stopPrice: number): Promise<boolean> {
+  async placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
+
+    if (qty) {
+      const rawParams: any = {
+        symbol,
+        side: side === 'LONG' ? 'SELL' : 'BUY',
+        type: 'STOP_MARKET',
+        triggerPrice: String(stopPrice),
+        closePosition: 'true',
+        workingType: 'MARK_PRICE',
+        algoType: 'CONDITIONAL',
+        timestamp: Date.now()
+      };
+      if (hedge) rawParams.positionSide = side;
+
+      try {
+        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
+        this.log.info('native_stop_created_raw', { symbol, price: stopPrice, qty });
+        return true;
+      } catch (e: any) {
+        noteRateLimitFromError(e);
+        throw e;
+      }
+    }
+
+    // Legacy fallback (no qty)
     const base: any = {
       symbol,
       type: 'STOP_MARKET',
@@ -557,6 +582,7 @@ export class BinanceExchange implements Exchange {
       noteRateLimitFromError(e);
 
       // Check if error is about algo orders
+      /*
       const msg = (e?.message || '').toLowerCase();
       if (msg.includes('algo') || msg.includes('order type not supported')) {
         this.log.debug('api_stop_fallback_to_algo', { symbol, side, stopPrice });
@@ -574,6 +600,7 @@ export class BinanceExchange implements Exchange {
           throw algoErr;
         }
       }
+      */
 
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
@@ -639,8 +666,33 @@ export class BinanceExchange implements Exchange {
     this.log.info('api_stop_algo_placed', { symbol, side, stopPrice });
   }
 
-  async placeTpClose(symbol: string, side: Side, triggerPrice: number): Promise<boolean> {
+  async placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
+
+    if (qty) {
+      const rawParams: any = {
+        symbol,
+        side: side === 'LONG' ? 'SELL' : 'BUY',
+        type: 'TAKE_PROFIT_MARKET',
+        triggerPrice: String(triggerPrice),
+        closePosition: 'true',
+        workingType: 'MARK_PRICE',
+        algoType: 'CONDITIONAL',
+        timestamp: Date.now()
+      };
+      if (hedge) rawParams.positionSide = side;
+
+      try {
+        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
+        this.log.info('native_tp_created_raw', { symbol, price: triggerPrice, qty });
+        return true;
+      } catch (e: any) {
+        noteRateLimitFromError(e);
+        throw e;
+      }
+    }
+
+    // Legacy fallback
     const base: any = {
       symbol,
       type: 'TAKE_PROFIT_MARKET',
@@ -665,6 +717,7 @@ export class BinanceExchange implements Exchange {
       noteRateLimitFromError(e);
 
       // Check if error is about algo orders
+      /*
       const msg = (e?.message || '').toLowerCase();
       if (msg.includes('algo') || msg.includes('order type not supported')) {
         this.log.debug('api_tp_fallback_to_algo', { symbol, side, tp: triggerPrice });
@@ -682,6 +735,7 @@ export class BinanceExchange implements Exchange {
           throw algoErr;
         }
       }
+      */
 
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
@@ -691,6 +745,27 @@ export class BinanceExchange implements Exchange {
       }
       throw e;
     }
+  }
+
+  private async placeAlgoOrderRaw(params: any): Promise<any> {
+    const qs = new URLSearchParams(params).toString();
+    const signature = require('crypto')
+      .createHmac('sha256', CONFIG.API_SECRET)
+      .update(qs)
+      .digest('hex');
+
+    const url = `${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${signature}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'X-MBX-APIKEY': CONFIG.API_KEY }
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Raw algo order failed: ${res.status} ${txt}`);
+    }
+    return res.json();
   }
 
   private async placeTpCloseAlgo(symbol: string, side: Side, triggerPrice: number): Promise<void> {
@@ -1113,13 +1188,14 @@ export class BinanceExchange implements Exchange {
             const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
             if (!hedgeOk) return false;
             // Match order type
-            const isStop = o.type === 'STOP_MARKET' || o.type === 'STOP';
-            const isTp = o.type === 'TAKE_PROFIT_MARKET' || o.type === 'TAKE_PROFIT';
+            const t = o.orderType;
+            const isStop = t === 'STOP_MARKET' || t === 'STOP';
+            const isTp = t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
             return isStop || isTp;
           })
           .map((o) => ({
             orderId: String(o.algoId),
-            type: o.type as any,
+            type: o.orderType as any,
             stopPrice: Number(o.triggerPrice || 0),
           }));
 
