@@ -43,6 +43,9 @@ export interface RegimeYamlConfig {
 }
 
 export interface NinjaYamlConfig {
+    SYMBOLS?: {
+        [symbol: string]: number;  // Capital allocation (0-1)
+    };
     SYSTEM: SystemConfig;
     REGIME_DETECTOR: RegimeDetectorConfig;
     IMMUNE_SYSTEM: ImmuneSystemConfig;
@@ -54,7 +57,7 @@ export interface NinjaYamlConfig {
     };
     SYMBOL_OVERRIDES?: {
         [symbol: string]: {
-            [regime: string]: Partial<RegimeYamlConfig>;
+            [regime: string]: Partial<RegimeYamlConfig> & { capital_usage?: number };
         };
     };
 }
@@ -146,6 +149,40 @@ export class NinjaConfigManager {
 
     get immuneSystem(): ImmuneSystemConfig {
         return this.config.IMMUNE_SYSTEM;
+    }
+
+    /**
+     * Get list of symbols from YAML config
+     */
+    getSymbols(): string[] {
+        if (!this.config.SYMBOLS) return [];
+        return Object.keys(this.config.SYMBOLS);
+    }
+
+    /**
+     * Get capital allocation for a symbol (with optional regime override)
+     */
+    getCapitalAllocation(symbol: string, regime?: string): number {
+        const DEFAULT_ALLOCATION = 0.75;
+
+        // Check regime-specific override first
+        if (regime && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regime.toUpperCase()]?.capital_usage !== undefined) {
+            return this.config.SYMBOL_OVERRIDES[symbol][regime.toUpperCase()].capital_usage!;
+        }
+
+        // Then check symbol-level allocation
+        if (this.config.SYMBOLS?.[symbol] !== undefined) {
+            return this.config.SYMBOLS[symbol];
+        }
+
+        return DEFAULT_ALLOCATION;
+    }
+
+    /**
+     * Get all symbol allocations as a record
+     */
+    getSymbolAllocations(): Record<string, number> {
+        return this.config.SYMBOLS ? { ...this.config.SYMBOLS } : {};
     }
 
     /**

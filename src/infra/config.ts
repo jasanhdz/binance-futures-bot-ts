@@ -40,81 +40,33 @@ function parseSymbolList(raw?: string): string[] {
   return raw.split(',').map((s) => normalizeSymbol(s)).filter((s) => s.length > 0);
 }
 
-// --- Symbol Parsing Logic ---
-// --- Symbol Parsing Logic ---
-type SymbolDescriptor = { symbol: string; leverage?: number; capitalUsage?: number; timeframe?: string };
-const rawSymbols = process.env.SYMBOLS || '';
-const tokens = rawSymbols.split(',').map(s => s.trim()).filter(s => s.length > 0);
-const descriptors: SymbolDescriptor[] = [];
-const seen = new Map<string, number>();
+// --- Symbol Parsing Logic (YAML-based) ---
+import { NinjaConfigManager } from '../app/core/NinjaConfigManager';
 
-for (const token of tokens) {
-    const [symRaw, part1, part2, part3] = token.split(':');
+// Load symbols from YAML config
+const ninjaConfig = new NinjaConfigManager();
+const SYMBOL_LIST = ninjaConfig.getSymbols();
+const SYMBOL_ALLOCATIONS: Record<string, number> = ninjaConfig.getSymbolAllocations();
+
+// Fallback to ENV if YAML has no symbols (backwards compatibility)
+if (SYMBOL_LIST.length === 0) {
+  const rawSymbols = process.env.SYMBOLS || '';
+  const tokens = rawSymbols.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  for (const token of tokens) {
+    const [symRaw, alloc] = token.split(':');
     const symbol = normalizeSymbol(symRaw);
-    if (!symbol) continue;
-
-    let leverage: number | undefined;
-    let capitalUsage: number | undefined;
-    let timeframe: string | undefined;
-
-    // Helper to identify if a string looks like a timeframe
-    const isTimeframe = (s?: string) => s && ['1m', '3m', '5m', '15m', '1h', '4h'].includes(s);
-
-    if (part3 !== undefined) {
-      // SYMBOL:LEV:CAP:TF
-      leverage = parsePositiveNumber(part1);
-      capitalUsage = parseShare(part2);
-      if (isTimeframe(part3)) timeframe = part3;
-    } else if (part2 !== undefined) {
-      // SYMBOL:LEV:CAP or SYMBOL:LEV:TF or SYMBOL:CAP:TF
-      if (isTimeframe(part2)) {
-         timeframe = part2;
-         // part1 could be lev or cap
-         const shareCandidate = parseShare(part1);
-         if (shareCandidate !== undefined && shareCandidate <= 1) {
-            capitalUsage = shareCandidate;
-         } else {
-            leverage = parsePositiveNumber(part1);
-         }
-      } else {
-         leverage = parsePositiveNumber(part1);
-         capitalUsage = parseShare(part2);
-      }
-    } else if (part1 !== undefined) {
-      // SYMBOL:LEV or SYMBOL:CAP or SYMBOL:TF
-      if (isTimeframe(part1)) {
-        timeframe = part1;
-      } else {
-        const shareCandidate = parseShare(part1);
-        if (shareCandidate !== undefined && shareCandidate <= 1) {
-          capitalUsage = shareCandidate;
-        } else {
-          leverage = parsePositiveNumber(part1);
-        }
+    if (symbol) {
+      SYMBOL_LIST.push(symbol);
+      if (alloc) {
+        const allocNum = parseShare(alloc);
+        if (allocNum !== undefined) SYMBOL_ALLOCATIONS[symbol] = allocNum;
       }
     }
-    
-    if (seen.has(symbol)) {
-        const idx = seen.get(symbol)!;
-        if (leverage !== undefined) descriptors[idx].leverage = leverage;
-        if (capitalUsage !== undefined) descriptors[idx].capitalUsage = capitalUsage;
-        if (timeframe !== undefined) descriptors[idx].timeframe = timeframe;
-    } else {
-        seen.set(symbol, descriptors.length);
-        descriptors.push({ symbol, leverage, capitalUsage, timeframe });
-    }
+  }
 }
 
-const SYMBOL_LIST = descriptors.map(d => d.symbol);
-const SYMBOL_ALLOCATIONS: Record<string, number> = {};
+// Legacy maps (for backwards compatibility)
 const SYMBOL_LEVERAGE: Record<string, number> = {};
-const SYMBOL_TIMEFRAMES: Record<string, string> = {};
-
-for (const desc of descriptors) {
-    if (desc.leverage) SYMBOL_LEVERAGE[desc.symbol] = desc.leverage;
-    if (desc.capitalUsage) SYMBOL_ALLOCATIONS[desc.symbol] = desc.capitalUsage;
-    if (desc.timeframe) SYMBOL_TIMEFRAMES[desc.symbol] = desc.timeframe;
-}
 
 // --- Defaults ---
 const defaultSymbol = normalizeSymbol(process.env.SYMBOL || 'XRPUSDT') || 'XRPUSDT';
@@ -139,7 +91,7 @@ export const CONFIG = {
   CAPITAL_USAGE_PCT: DEFAULT_CAPITAL_USAGE,
   MIN_WALLET_RESERVE_USDT: Number(process.env.MIN_WALLET_RESERVE_USDT ?? 0.1),
   FEE_BUFFER_PCT: Number(process.env.FEE_BUFFER_PCT ?? 0.001),
-  
+
   // --- Risk ---
   MAX_RISK_PCT: Number(process.env.MAX_RISK_PCT ?? 0),
   LOW_FUNDS_WALLET_THRESHOLD: Number(process.env.LOW_FUNDS_WALLET_THRESHOLD ?? 0.2),
@@ -148,9 +100,8 @@ export const CONFIG = {
 
   // --- ML Config ---
   ML_SERVICE_URL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000',
-  ENTRY_TIMEFRAME: (process.env.ENTRY_TIMEFRAME as '1m' | '3m' | '5m' | '15m' | '1h') || '1h',
   ML_HISTORY_BARS: Number(process.env.ML_HISTORY_BARS ?? 512),
-  
+
   // --- Re-entry logic (Post-Exit Gate) ---
   REENTER_ON_TP: (process.env.REENTER_ON_TP ?? '1') === '1',
   POST_EXIT_PULLBACK_PCT: Number(process.env.POST_EXIT_PULLBACK_PCT ?? 0.006),
@@ -159,7 +110,7 @@ export const CONFIG = {
   POST_EXIT_TIMEOUT_MS: Number(process.env.POST_EXIT_TIMEOUT_MS ?? 300_000),
   POST_EXIT_BREAKOUT_VOL_FACTOR: Number(process.env.POST_EXIT_BREAKOUT_VOL_FACTOR ?? 1.3),
   VOL_FACTOR_REENTER: Number(process.env.VOL_FACTOR_REENTER ?? 1.5), // Fallback used in logic
-  
+
   // --- Stops iniciales (Legacy brackets guard) ---
   SL_TICKS_ABOVE_LIQ_MAP: {
     XRPUSDT: 69,
@@ -169,11 +120,10 @@ export const CONFIG = {
   SL_TICKS_ABOVE_LIQ_DEFAULT: Number(process.env.SL_TICKS_ABOVE_LIQ_DEFAULT ?? 69),
   STOP_LIQ_BUFFER_RATIO: Number(process.env.STOP_LIQ_BUFFER_RATIO ?? 0.08),
   TP_ROE: Number(process.env.TP_ROE ?? 1.0),
-  
+
   // --- Symbol Allocations ---
   SYMBOL_ALLOCATIONS,
   SYMBOL_LEVERAGE,
-  SYMBOL_TIMEFRAMES,
   SYMBOL_SHARE: DEFAULT_CAPITAL_USAGE, // Fallback
 } as const;
 
