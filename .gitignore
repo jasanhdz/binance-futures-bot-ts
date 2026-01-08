@@ -32,3 +32,9 @@ regime_config.grid_temp.yaml
 # Ignore generated reports and charts
 *.csv
 *.png
+
+# Archived Logs
+*.log.*
+*.gz
+*.zip
+*.tar

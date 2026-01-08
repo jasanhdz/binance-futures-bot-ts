@@ -763,7 +763,8 @@ export class BinanceExchange implements Exchange {
 
     try {
       if (sideMode === 'BOTH') {
-        await this.enqueue(() => this.cli.futuresOrder(base));
+        // v8.0: Add reduceOnly to prevent notional minimum errors on small positions
+        await this.enqueue(() => this.cli.futuresOrder({ ...base, reduceOnly: 'true' as const }));
       } else {
         await this.enqueue(() =>
           this.cli.futuresOrder({ ...base, positionSide: side, reduceOnly: 'true' as const }),

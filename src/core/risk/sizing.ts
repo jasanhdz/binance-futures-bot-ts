@@ -1,128 +1,150 @@
 // src/core/risk/sizing.ts
+import * as fs from 'fs';
+import * as path from 'path';
 import { SymbolFilters } from '../ports/Exchange';
 
-/** Redondea hacia abajo respetando el step/precisión del símbolo. */
-export function floorToStep(x: number, step: number, prec: number) {
-  const v = Math.floor(x / step) * step;
-  return Number(v.toFixed(prec));
+// Cache simple para no leer disco en cada tick (dura 1 hora)
+const METADATA_CACHE: Record<string, { acc: number; ts: number }> = {};
+const METADATA_TTL = 60 * 60 * 1000;
+// Ajusta la ruta relativa según la estructura de tu proyecto
+const MODELS_DIR = path.resolve(__dirname, '../../../../models/v2_ensemble');
+
+function getModelAccuracy(symbol: string): number {
+  const now = Date.now();
+  if (METADATA_CACHE[symbol] && now - METADATA_CACHE[symbol].ts < METADATA_TTL) {
+    return METADATA_CACHE[symbol].acc;
+  }
+
+  try {
+    const metaPath = path.join(MODELS_DIR, symbol, 'metadata.json');
+    if (fs.existsSync(metaPath)) {
+      const raw = fs.readFileSync(metaPath, 'utf8');
+      const meta = JSON.parse(raw);
+      const acc = meta.accuracy || 0;
+      METADATA_CACHE[symbol] = { acc, ts: now };
+      return acc;
+    }
+  } catch (e) {
+    // Si no hay metadata, asumimos 0 (neutral)
+  }
+  return 0;
 }
 
-/** Redondea hacia arriba respetando el step/precisión del símbolo. */
-export function ceilToStep(x: number, step: number, prec: number) {
-  const v = Math.ceil(x / step) * step;
-  return Number(v.toFixed(prec));
+export function floorToStep(val: number, step: number, precision: number): number {
+  const f = Math.pow(10, precision);
+  const v = Math.floor(val / step) * step;
+  return Math.floor(v * f) / f;
 }
 
-/**
- * Calcula la cantidad (qty) a abrir en función de:
- * - Balance USDT y reserva mínima
- * - % de capital a usar
- * - Precio actual y apalancamiento
- * - Colchón de fees (feePct)
- * - Filtros del símbolo (minNotional, stepSize, notionalCap por leverage, etc.)
- *
- * Devuelve { qty } cuando es viable, o { qty: 0, reason } cuando no.
- * Incluye `diagnostics` para trazabilidad cuando es viable.
- */
-export function sizeByBudget(params: {
+export function ceilToStep(val: number, step: number, precision: number): number {
+  const f = Math.pow(10, precision);
+  const v = Math.ceil(val / step) * step;
+  return Math.ceil(v * f) / f;
+}
+
+export type SizingParams = {
   usdtBalance: number;
   reserve: number;
-  capitalPct: number;
+  capitalPct: number; // Allocation base (0.75)
   price: number;
   leverage: number;
   feePct: number;
   filters: SymbolFilters;
-}):
-  | { qty: number; diagnostics: Record<string, number | string | boolean> }
-  | {
-      qty: 0;
-      reason: 'budget_insufficient' | 'margin_unfit' | 'risk_cap_below_min';
-      debug?: Record<string, number | string | boolean>;
-    } {
-  const { usdtBalance, reserve, capitalPct, price, leverage, feePct, filters } = params;
+  symbol?: string; // Requerido para buscar accuracy
+};
 
-  // Guardas básicas
-  if (!Number.isFinite(price) || price <= 0) {
-    return { qty: 0, reason: 'margin_unfit' };
+export type SizingResult =
+  | { qty: number; diagnostics: Record<string, unknown> }
+  | { reason: string; debug?: Record<string, unknown> };
+
+export function sizeByBudget(params: SizingParams): SizingResult {
+  const { usdtBalance, reserve, capitalPct, price, leverage, feePct, filters, symbol } = params;
+
+  const effectiveBalance = Math.max(0, usdtBalance - reserve);
+  if (effectiveBalance <= 0) {
+    return { reason: 'insufficient_wallet_after_reserve', debug: { usdtBalance, reserve } };
   }
 
-  const { stepSize, qtyPrecision, minNotional, notionalCap } = filters;
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🎯 SMART SIZING (Meritocracia)
+  // Estrategia: Penalizar a los débiles para reservar liquidez a los fuertes.
+  // ═══════════════════════════════════════════════════════════════════════
+  let accuracyMultiplier = 1.0;
+  let accuracy = 0;
 
-  // 1) Presupuesto disponible tras reserva
-  const budget = Math.max(0, (usdtBalance - reserve) * capitalPct);
-  if (budget <= 0) return { qty: 0, reason: 'budget_insufficient' };
+  if (symbol) {
+    accuracy = getModelAccuracy(symbol);
 
-  // 2) Propuesta de qty por presupuesto y leverage
-  const qtyInitial = (budget * leverage) / price;
-  let qty = floorToStep(qtyInitial, stepSize, qtyPrecision);
-
-  // 3) Cumplir mínimo nocional del símbolo
-  const minQtyByNotional = ceilToStep(minNotional / price, stepSize, qtyPrecision);
-  if (qty < minQtyByNotional) qty = minQtyByNotional;
-
-  // 4) Ajuste por margen disponible (initMargin + fees <= usdtBalance - reserve)
-  const maxSpendable = Math.max(0, usdtBalance - reserve);
-  const fits = (q: number) => {
-    const notional = q * price;
-    const fees = notional * feePct; // estimación
-    const initMargin = notional / leverage;
-    return initMargin + fees <= maxSpendable;
-  };
-
-  let marginIterations = 0;
-  while (!fits(qty) && qty > 0 && marginIterations++ < 200) {
-    qty = floorToStep(qty - stepSize, stepSize, qtyPrecision);
-  }
-  if (qty <= 0) return { qty: 0, reason: 'margin_unfit' };
-
-  // 5) Límite por risk-bracket (notionalCap) para el leverage actual
-  let reducedByCap = false;
-  if (Number.isFinite(notionalCap!)) {
-    // Pequeño margen de seguridad para no rebasar por redondeos
-    const safeCap = (notionalCap as number) * 0.98;
-    const maxQtyByCap = floorToStep(safeCap / price, stepSize, qtyPrecision);
-    if (qty > maxQtyByCap) {
-      qty = maxQtyByCap;
-      reducedByCap = true;
+    if (accuracy > 0.80) {
+      // 🚀 ELITE (BNB > 80%): +20% capital
+      // 0.75 * 1.2 = 0.90 (Usa casi todo el disponible)
+      accuracyMultiplier = 1.2;
+    } else if (accuracy > 0.65) {
+      // 🔥 HIGH (SOL > 65%): +10% capital
+      // 0.75 * 1.1 = 0.825
+      accuracyMultiplier = 1.1;
+    } else if (accuracy > 0.60) {
+      // ✅ GOOD (BTC > 60%): Base
+      // 0.75 * 1.0 = 0.75
+      accuracyMultiplier = 1.0;
+    } else if (accuracy < 0.60 && accuracy > 0) {
+      // ⚠️ MEDIOCRE (< 60%): -40% capital
+      // 0.75 * 0.6 = 0.45 (Deja el 55% libre para un trade mejor)
+      accuracyMultiplier = 0.6;
     }
-    // Si el cap queda por debajo del mínimo nocional exigido por el símbolo → no se puede abrir
-  if (qty < minQtyByNotional) {
-    return {
-      qty: 0,
-      reason: 'risk_cap_below_min',
-      debug: {
-        minQtyByNotional,
-        maxQtyByCap,
-        price,
-        stepSize,
-        minNotional,
-        notionalCap: safeCap,
-      },
-    };
-  }
   }
 
-  // 6) Diagnósticos para logging/telemetría
+  // Calcular porcentaje final
+  let adjustedCapitalPct = capitalPct * accuracyMultiplier;
+
+  // 🛡️ CLAMP: Nunca superar el 98% del balance disponible
+  adjustedCapitalPct = Math.min(adjustedCapitalPct, 0.98);
+
+  // Presupuesto Final
+  let budget = effectiveBalance * adjustedCapitalPct;
+
+  // Cálculo estándar de posición
+  const rawNotional = budget * Math.max(1, leverage);
+  let rawQty = rawNotional / price;
+
+  // Buffer de Fees
+  rawQty = rawQty * (1 - feePct);
+
+  // Redondeo
+  let qty = floorToStep(rawQty, filters.stepSize, filters.qtyPrecision);
+
+  // Validaciones de Notional
   const notional = qty * price;
-  const fees = notional * feePct;
-  const initMargin = notional / leverage;
+  if (notional < filters.minNotional) {
+    const minQty = ceilToStep(filters.minNotional / price, filters.stepSize, filters.qtyPrecision);
+    const costForMin = (minQty * price) / leverage;
+
+    if (costForMin < effectiveBalance) {
+      qty = minQty;
+    } else {
+      return {
+        reason: 'min_notional_insufficient_funds',
+        debug: { notional, minNotional: filters.minNotional, costForMin, effectiveBalance },
+      };
+    }
+  }
+
+  if (filters.notionalCap && qty * price > filters.notionalCap) {
+    qty = floorToStep(filters.notionalCap / price, filters.stepSize, filters.qtyPrecision);
+  }
+
+  const initMargin = (qty * price) / leverage;
 
   return {
     qty,
     diagnostics: {
-      budget,
-      qtyInitial: Number(qtyInitial.toFixed(qtyPrecision)),
-      minQtyByNotional,
-      maxSpendable,
-      notional: Number(notional.toFixed(6)),
-      initMargin: Number(initMargin.toFixed(6)),
-      fees: Number(fees.toFixed(6)),
+      initMargin,
+      fees: qty * price * feePct,
       leverage,
-      price,
-      reducedByCap,
-      notionalCap: Number.isFinite(notionalCap!) ? Number((notionalCap as number).toFixed(6)) : -1,
-      marginIterations,
-      stepSize,
+      accuracy,
+      accMult: accuracyMultiplier,
+      adjustedPct: adjustedCapitalPct,
+      finalNotional: qty * price
     },
   };
 }

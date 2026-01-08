@@ -274,6 +274,9 @@ export class StrategyRunner {
         hardStop: (regimeConfig.hardStopRoe * 100).toFixed(1) + '%'
       });
       this.lastLoggedSignals[`${symbol}_regime`] = { action: regimeContext.type, reason: regimeContext.trigger, time: Date.now() };
+
+      // Native Brackets v8.0: Persist regime for ensure-brackets.ts
+      applyStatePatch({ currentRegime: regimeContext.type });
     }
 
     if (hasActivePosition) {
@@ -349,15 +352,16 @@ export class StrategyRunner {
       if (roiPct !== undefined && roiPct > 0 && entry && qtyAbs > 0) {
         const currentPrice = mark;
 
-        // UMBRAL MÍNIMO DE ACTIVACIÓN: 3.0% ROI (Data-driven: 90% de trades lo alcanzan)
-        if (currentPrice && roiPct > 3.0) {
+        // CAMBIO: 3.0 -> 2.2
+        // Razón: Muchos trades tocan +2.5% y se devuelven. Aseguramos fees antes.
+        if (currentPrice && roiPct > 2.2) {
 
           // --- CÁLCULO DEL NUEVO STOP (TIERED) ---
           let newStopPrice = 0;
           let ratchetMode: 'SHIELD' | 'SWORD' = 'SHIELD';
 
           if (roiPct < 6.0) {
-            // 🛡️ MODO ESCUDO (3% - 6%): Mover a Breakeven + Fee Buffer
+            // 🛡️ MODO ESCUDO (2.2% - 6%): Mover a Breakeven + Fee Buffer
             // Buffer de 0.15% del precio cubre comisiones (0.05% x 2) + deslizamiento
             ratchetMode = 'SHIELD';
             const feeBuffer = currentPrice * 0.0015;
@@ -883,6 +887,7 @@ export class StrategyRunner {
       leverage: leverage,
       feePct: config.FEE_BUFFER_PCT,
       filters,
+      symbol, // <--- IMPORTANTE: Agregar esto para que funcione Smart Sizing
     });
 
     if ('reason' in sizing) {

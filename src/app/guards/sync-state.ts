@@ -56,6 +56,7 @@ export async function syncStateGuard(symbol: string, ex: Exchange, st: StateStor
 
   // 2) Si NO estamos IDLE pero ya NO hay posición → reset y limpiar órdenes
   const hasAny = await ex.hasOpenPosition(symbol, 'ANY');
+  log.info('sync_state_check', { symbol, mode: s.mode, hasAny });
   if (!hasAny) {
     const exitReason = s.lastExitReason ?? 'exchange_exit';
     const resetPatch = await finalizeTrade({

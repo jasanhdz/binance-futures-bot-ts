@@ -36,10 +36,8 @@ export class WhaleStrategy implements IRegimeStrategy {
     evaluateExit(ctx: ExitContext, symbol?: string): string | null {
         const config = this.getConfig(symbol);
 
-        // 1. HARD STOP (Capital Protection)
-        if (ctx.currentRoe < config.hardStopRoe) {
-            return 'WHALE_HARD_STOP';
-        }
+        // v8.0: HARD STOP now handled by Binance brackets (ensure-brackets.ts)
+        // Native stop order on exchange provides better protection
 
         // 2. FIXED TP (WHALE uses 999, so this effectively never triggers)
         if (ctx.currentRoe >= config.tpRoe) {

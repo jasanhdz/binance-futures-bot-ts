@@ -33,10 +33,8 @@ export class MonkStrategy implements IRegimeStrategy {
     evaluateExit(ctx: ExitContext, symbol?: string): string | null {
         const config = this.getConfig(symbol);
 
-        // 1. HARD STOP (Range broke)
-        if (ctx.currentRoe < config.hardStopRoe) {
-            return 'MONK_HARD_STOP';
-        }
+        // v8.0: HARD STOP now handled by Binance brackets (ensure-brackets.ts)
+        // Native stop order on exchange provides better protection
 
         // 2. FIXED TP (Mean reversion target - THE GOAL)
         if (ctx.currentRoe >= config.tpRoe) {
