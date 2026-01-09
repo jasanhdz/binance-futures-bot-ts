@@ -1028,8 +1028,37 @@ export class BinanceExchange implements Exchange {
     }
   }
 
+  private async cancelAlgoOrderRaw(symbol: string, algoId: string) {
+    const timestamp = Date.now();
+    const queryString = `symbol=${symbol}&algoId=${algoId}&timestamp=${timestamp}`;
+    const signature = require('crypto')
+      .createHmac('sha256', CONFIG.API_SECRET)
+      .update(queryString)
+      .digest('hex');
+
+    const response = await fetch(
+      `${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${queryString}&signature=${signature}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'X-MBX-APIKEY': CONFIG.API_KEY,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Raw algo cancel failed: ${response.status} ${text}`);
+    }
+    return true;
+  }
+
   async cancelOrderById(symbol: string, orderId: string) {
     try {
+      if (orderId.startsWith('ALGO_')) {
+        await this.cancelAlgoOrderRaw(symbol, orderId.replace('ALGO_', ''));
+        return;
+      }
       await this.enqueue(() =>
         this.cli.futuresCancelOrder({ symbol, orderId: Number(orderId) }),
       );
@@ -1194,7 +1223,7 @@ export class BinanceExchange implements Exchange {
             return isStop || isTp;
           })
           .map((o) => ({
-            orderId: String(o.algoId),
+            orderId: 'ALGO_' + String(o.algoId),
             type: o.orderType as any,
             stopPrice: Number(o.triggerPrice || 0),
           }));
@@ -1220,7 +1249,14 @@ export class BinanceExchange implements Exchange {
   async cancelOrdersByIds(symbol: string, orderIds: (string | number)[]) {
     for (const id of orderIds) {
       try {
-        await this.enqueue(() => this.cli.futuresCancelOrder({ symbol, orderId: Number(id) }));
+        const idStr = String(id);
+        if (idStr.startsWith('ALGO_')) {
+          await this.cancelAlgoOrderRaw(symbol, idStr.replace('ALGO_', ''));
+        } else {
+          await this.enqueue(() =>
+            this.cli.futuresCancelOrder({ symbol, orderId: Number(id) }),
+          );
+        }
       } catch (e) {
         noteRateLimitFromError(e);
         this.log.warn('cancel_order_fail', { id, err: (e as any)?.message });

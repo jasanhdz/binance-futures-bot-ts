@@ -502,6 +502,15 @@ export class StrategyRunner {
           // FIX: Delegamos la ejecución a ensure-brackets.ts para evitar conflictos ("Guerra Civil")
           const shouldUpdatePhysical = Math.abs(newStopTick - referenceStop) > filters.tickSize * 2;
 
+          logger.info('ratchet_debug', {
+            symbol,
+            roi: roiPct,
+            newStop: newStopTick,
+            refStop: referenceStop,
+            shouldUpdate: shouldUpdatePhysical,
+            lastTrailStop: stBefore.lastTrailStop
+          });
+
           if (shouldUpdatePhysical) {
             logger.info('tiered_ratchet_signal', {
               symbol,
