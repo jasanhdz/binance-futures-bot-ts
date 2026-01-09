@@ -498,8 +498,12 @@ export class StrategyRunner {
             }
           }
 
-          if (shouldUpdate) {
-            logger.info('tiered_ratchet_update', {
+          // 4. EJECUCIÓN FÍSICA (Opcional, si queremos que el runner lo haga)
+          // FIX: Delegamos la ejecución a ensure-brackets.ts para evitar conflictos ("Guerra Civil")
+          const shouldUpdatePhysical = Math.abs(newStopTick - referenceStop) > filters.tickSize * 2;
+
+          if (shouldUpdatePhysical) {
+            logger.info('tiered_ratchet_signal', {
               symbol,
               mode: ratchetMode,
               oldStop: referenceStop,
@@ -507,39 +511,40 @@ export class StrategyRunner {
               roi: roiPct.toFixed(2) + '%'
             });
 
+            // 🛑 SECCIÓN ELIMINADA/COMENTADA PARA EVITAR CONFLICTO CON NATIVE BRACKETS
+            /*
             try {
-              // 1. CANCELAR: Matar el Stop Loss anterior específicamente
-              // Usamos cancelStopOrdersForSide para NO tocar el Take Profit
+              // Primero cancelamos stops viejos para no acumular basura
               if ((exchange as any).cancelStopOrdersForSide) {
                 await (exchange as any).cancelStopOrdersForSide(symbol, lastSide);
-              } else if ((exchange as any).cancelCloseOrdersForSide) {
-                await (exchange as any).cancelCloseOrdersForSide(symbol, lastSide);
               } else {
-                // Fallback de emergencia
-                await (exchange as any).cancelAllOrders(symbol);
+                // Fallback genérico si no existe método específico
+                await exchange.cancelAllOrders(symbol); 
               }
 
-              // 2. ESPERAR: Darle 2000ms a Binance para liberar el margen ("Settlement time")
-              // Esto es VITAL cuando vas al límite del margen.
+              // Pequeño delay para asegurar propagación
               await new Promise(resolve => setTimeout(resolve, 2000));
 
-              // 3. CREAR: Poner el nuevo Stop con el margen recién liberado
+              // Colocamos el nuevo stop
               await exchange.placeStopClose(symbol, lastSide, newStopTick);
-              logger.info('trailing_ratchet_success', { symbol, newStop: newStopTick });
-
-              // 4. MEMORIA: Actualizar el estado interno
-              applyStatePatch({ lastTrailStop: newStopTick });
+              
+              logger.info('trailing_ratchet_success', {
+                symbol,
+                newStop: newStopTick
+              });
 
             } catch (e: any) {
               logger.warn('trailing_ratchet_fail', {
                 symbol,
-                step: 'cancel_replace_sequence',
-                err: e?.message || String(e)
+                err: e.message
               });
-
-              // Opcional: Si falló al poner el nuevo, intentamos restaurar uno de emergencia
-              // en el siguiente tick gracias al 'ensure-brackets.ts'
             }
+            */
+            // 🛑 FIN SECCIÓN COMENTADA
+
+            // ✅ ESTO ES LO ÚNICO QUE DEBE HACER: Actualizar el Estado
+            // ensure-brackets leerá esto en el siguiente tick y ejecutará la orden física.
+            applyStatePatch({ lastTrailStop: newStopTick });
           }
         }
       }

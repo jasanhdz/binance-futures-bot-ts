@@ -160,13 +160,20 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
     // Verificamos si el nuevo stop es significativamente diferente
     const isDifferent = Math.abs(idealStopPrice - currentStopPrice) > filters.tickSize * 2;
 
-    // v8.0: SIEMPRE actualizar al stop del régimen actual si es diferente
-    // Esto asegura que el stop siempre coincida con el régimen detectado
-    if (isDifferent) {
+    // 🛡️ FIX CRÍTICO: Calcular si el nuevo precio es MEJOR (más protección)
+    let isBetter = false;
+    if (s.lastSide === 'LONG') {
+      isBetter = idealStopPrice > currentStopPrice; // En Long, subir es bueno
+    } else {
+      isBetter = idealStopPrice < currentStopPrice; // En Short, bajar es bueno
+    }
+
+    // 🔥 REGLA DE ORO: Solo actualizar si es Diferente Y Mejor
+    // (A menos que sea una emergencia de régimen, pero el Ratchet nunca debe retroceder)
+    if (isDifferent && isBetter) {
       try {
-        // Cancel existing stop and place new one
         await (ex as any).cancelOrderById(symbol, stopOpen.orderId);
-        await new Promise(r => setTimeout(r, 300)); // Small delay for safety
+        await new Promise(r => setTimeout(r, 300));
         await ex.placeStopClose(symbol, s.lastSide as Side, idealStopPrice, pos.qtyAbs);
 
         log.info('native_stop_updated', {
@@ -174,7 +181,7 @@ export async function bracketsGuard(symbol: string, ex: Exchange, st: StateStore
           old: currentStopPrice.toFixed(filters.pricePrecision),
           new: idealStopPrice.toFixed(filters.pricePrecision),
           regime: currentRegime,
-          reason: 'regime_sync'
+          reason: 'ratchet_tightening' // Cambiado el motivo para ser claros
         });
 
         st.set({ lastTrailStop: idealStopPrice });
