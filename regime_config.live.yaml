@@ -1,0 +1,88 @@
+# ═══════════════════════════════════════════════════════════════════════
+# NINJA v8.4: ALPHA PREDATOR - SNIPER MODE
+# ═══════════════════════════════════════════════════════════════════════
+SYMBOLS:
+  # --- LOS MONSTRUOS (Pesos Originales Restaurados) ---
+  WLDUSDT: 0.95      
+  1000PEPEUSDT: 0.95 
+  SEIUSDT: 0.90      
+
+  # --- LOS LÍDERES ---
+  AVAXUSDT: 0.90     
+  BTCUSDT: 0.85      
+  SOLUSDT: 0.85      
+  ETHUSDT: 0.85      
+
+  # --- LOS FRANCOTIRADORES ---
+  BNBUSDT: 0.20      
+  LTCUSDT: 0.80      
+
+# ═══════════════════════════════════════════════════════════════════════
+# TRADING DEFAULTS (Ajustes de Riesgo Sniper)
+# ═══════════════════════════════════════════════════════════════════════
+TRADING:
+  capital_usage_default: 0.75        # Restaurado a tu valor original
+  min_wallet_reserve_usdt: 0         
+  fee_buffer_pct: 0.0004            
+  # 🛡️ EL FUSIBLE: Máxima pérdida real de $0.64 USD por trade (2% de $32)
+  # Este número es el que evitará que el 0.85 de capital queme la cuenta.
+  max_risk_pct: 0.02                 
+  low_funds_threshold: 2             
+  reenter_on_tp: true               
+  post_exit_timeout_ms: 60000       
+  vol_factor_reenter: 1.5           
+
+SYSTEM:
+  tick_interval_ms: 5000
+  max_trades_per_day: 300  
+  global_leverage_default: 20        # Nueva potencia base
+
+# Detectores Ninja v7.8
+REGIME_DETECTOR: 
+  volatility_spread_low: 0.0008
+  volatility_spread_high: 0.0015
+  bias_strength_threshold: 0.15 
+  obi_confirmation_threshold: 0.10
+
+IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_threshold: 0.58 }
+
+# ═══════════════════════════════════════════════════════════════════════
+# BASE REGIMES (Ajustados para Ganancias Generosas)
+# ═══════════════════════════════════════════════════════════════════════
+
+REGIMES:
+  # MONK: Rango. 20x y TP del 5% ROE.
+  MONK:       { leverage: 20, entry_threshold: 0.40, hard_stop_roe: -0.15, tp_roe: 0.05 }
+  
+  # WHALE: Caza Mayor. 25x y Trailing infinito.
+  WHALE:      { leverage: 25,  entry_threshold: 0.45, hard_stop_roe: -0.25, tp_roe: 999.0 }
+  
+  # BLOODBATH: Scalping. 30x para aprovechar el caos.
+  BLOODBATH:  { leverage: 30, entry_threshold: 0.35, hard_stop_roe: -0.10, tp_roe: 0.02 }
+  
+  # BUNKER: Seguridad.
+  BUNKER:     { leverage: 0,  entry_threshold: 999.0, hard_stop_roe: 0.0,  tp_roe: 0.0 }
+
+# ═════════════════════════════════════════════════════════════════════
+# SYMBOL OVERRIDES (Blindaje y Potencia)
+# ═════════════════════════════════════════════════════════════════════
+SYMBOL_OVERRIDES:
+  # BTC y ETH: Máxima potencia 30x
+  BTCUSDT:
+    MONK:  { leverage: 25, hard_stop_roe: -0.10, entry_threshold: 0.35 } 
+    WHALE: { leverage: 30, hard_stop_roe: -0.20, entry_threshold: 0.40 } 
+
+  ETHUSDT:
+    MONK:  { leverage: 25, hard_stop_roe: -0.12 }
+    WHALE: { leverage: 30,  hard_stop_roe: -0.22 }
+
+  # Chaleco Antibalas para activos ultra-volátiles (Limitados a 5x)
+  1000PEPEUSDT:
+    WHALE: { leverage: 5, hard_stop_roe: -0.30 } 
+    MONK:  { leverage: 5, hard_stop_roe: -0.08 }
+    BLOODBATH: { leverage: 5 }
+
+  WLDUSDT:
+    WHALE: { leverage: 5 }
+    MONK:  { leverage: 5 }
+
