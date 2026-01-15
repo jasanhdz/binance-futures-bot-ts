@@ -348,13 +348,12 @@ export class StrategyRunner {
       // Basado en Data Mining (38k trades):
       // - Nivel 1 (3% ROI): Supervivencia (Breakeven). Salva los trades de +4%.
       // - Nivel 2 (6% ROI): Crecimiento (Trailing 60%). Exprime los trades de +20%.
-
       if (roiPct !== undefined && roiPct > 0 && entry && qtyAbs > 0) {
         const currentPrice = mark;
 
-        // CAMBIO: 3.0 -> 2.2
-        // Razón: Muchos trades tocan +2.5% y se devuelven. Aseguramos fees antes.
-        if (currentPrice && roiPct > 2.2) {
+        // 4. TIERED RATCHET (The Shield) - NINJA v8.4 (SNIPER MODE)
+        // Activates at +3.5% ROI (Raised to ignore noise and catch big moves)
+        if (currentPrice && roiPct > 3.5) { // Solo protegemos cuando la ganancia sea real
 
           // --- CÁLCULO DEL NUEVO STOP (TIERED) ---
           let newStopPrice = 0;
@@ -530,10 +529,10 @@ export class StrategyRunner {
                 // Fallback genérico si no existe método específico
                 await exchange.cancelAllOrders(symbol); 
               }
-
+  
               // Pequeño delay para asegurar propagación
               await new Promise(resolve => setTimeout(resolve, 2000));
-
+  
               // Colocamos el nuevo stop
               await exchange.placeStopClose(symbol, lastSide, newStopTick);
               
@@ -541,7 +540,7 @@ export class StrategyRunner {
                 symbol,
                 newStop: newStopTick
               });
-
+  
             } catch (e: any) {
               logger.warn('trailing_ratchet_fail', {
                 symbol,

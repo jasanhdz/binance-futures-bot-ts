@@ -1,0 +1,68 @@
+SYMBOLS:
+  # --- MAJORS (Alpha) ---
+  BTCUSDT: 0.60
+  ETHUSDT: 0.60
+  AVAXUSDT: 0.30
+  
+  # --- ALPHA SQUAD (Priority) ---
+  SOLUSDT: 0.50
+  XRPUSDT: 0.50
+  ADAUSDT: 0.50
+  DOGEUSDT: 0.50
+  LINKUSDT: 0.50
+  POLUSDT: 0.50
+
+  # --- BRAVE BATTALION (Secondary) ---
+  BNBUSDT: 0.50
+  DOTUSDT: 0.50
+  LTCUSDT: 0.50
+  UNIUSDT: 0.50
+  ATOMUSDT: 0.50
+  NEARUSDT: 0.50
+  1000PEPEUSDT: 0.50
+  FETUSDT: 0.50
+  SEIUSDT: 0.50
+  WLDUSDT: 0.50
+  INJUSDT: 0.50
+  APTUSDT: 0.50
+
+TRADING:
+  capital_usage_default: 0.75
+  min_wallet_reserve_usdt: 0
+  fee_buffer_pct: 0.0004
+  max_risk_pct: 0
+  reenter_on_tp: true
+  post_exit_timeout_ms: 60000
+
+SYSTEM:
+  tick_interval_ms: 5000
+  global_leverage_default: 10
+
+REGIMES:
+  MONK:       { leverage: 10, entry_threshold: 0.40, hard_stop_roe: -0.05, tp_roe: 0.02 }
+  WHALE:      { leverage: 10, entry_threshold: 0.45, hard_stop_roe: -0.15, tp_roe: 999.0 }
+  BLOODBATH:  { leverage: 10, entry_threshold: 0.30, hard_stop_roe: -0.015, tp_roe: 0.005 }
+
+SYMBOL_OVERRIDES:
+  BTCUSDT:
+    MONK:  { leverage: 12, hard_stop_roe: -0.08 } 
+    WHALE: { leverage: 10, hard_stop_roe: -0.15 } 
+
+  ETHUSDT:
+    MONK:  { leverage: 10, hard_stop_roe: -0.07 }
+    WHALE: { leverage: 9,  hard_stop_roe: -0.10 }
+
+  AVAXUSDT:
+    WHALE: { leverage: 5, hard_stop_roe: -0.10 } 
+    MONK:  { leverage: 4, hard_stop_roe: -0.05 }
+
+REGIME_DETECTOR:
+  volatility_spread_low: 0.0008
+  volatility_spread_high: 0.0015
+  bias_strength_threshold: 0.20
+  obi_confirmation_threshold: 0.10
+
+IMMUNE_SYSTEM:
+  alpha_slow_rise: 0.15
+  alpha_fast_fall: 0.70
+  panic_exit_threshold: 0.70
