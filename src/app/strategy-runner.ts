@@ -351,9 +351,9 @@ export class StrategyRunner {
       if (roiPct !== undefined && roiPct > 0 && entry && qtyAbs > 0) {
         const currentPrice = mark;
 
-        // 4. TIERED RATCHET (The Shield) - NINJA v8.4 (SNIPER MODE)
-        // Activates at +3.5% ROI (Raised to ignore noise and catch big moves)
-        if (currentPrice && roiPct > 3.5) { // Solo protegemos cuando la ganancia sea real
+        // 4. TIERED RATCHET (The Shield) - NINJA v8.5 (SNIPER GROWTH)
+        // Activates at +5.0% ROI (Raised to capture "Dollar Moves" not pennies)
+        if (currentPrice && roiPct > 5.0) { // Solo protegemos cuando la ganancia sea real
 
           // --- CÁLCULO DEL NUEVO STOP (TIERED) ---
           let newStopPrice = 0;
