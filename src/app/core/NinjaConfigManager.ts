@@ -65,6 +65,7 @@ export interface NinjaYamlConfig {
         BLOODBATH: RegimeYamlConfig;
         WHALE: RegimeYamlConfig;
         MONK: RegimeYamlConfig;
+        BERZERKER: RegimeYamlConfig;
         BUNKER: RegimeYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
@@ -298,6 +299,7 @@ export class NinjaConfigManager {
             BLOODBATH: { leverage: 10, entryThreshold: 0.30, hardStopRoe: -0.015, tpRoe: 0.005, maxHoldMs: 120000 },
             WHALE: { leverage: 5, entryThreshold: 0.50, hardStopRoe: -0.20, tpRoe: 999.0 },
             MONK: { leverage: 10, entryThreshold: 0.40, hardStopRoe: -0.05, tpRoe: 0.02 },
+            BERZERKER: { leverage: 50, entryThreshold: 0.55, hardStopRoe: -0.30, tpRoe: 999.0 },
             BUNKER: { leverage: 0, entryThreshold: 999.0, hardStopRoe: 0.0, tpRoe: 0.0 }
         };
         return defaults[regime] || defaults.MONK;
@@ -343,6 +345,12 @@ export class NinjaConfigManager {
                     entry_threshold: 0.40,
                     hard_stop_roe: -0.05,
                     tp_roe: 0.02
+                },
+                BERZERKER: {
+                    leverage: 50,
+                    entry_threshold: 0.55,
+                    hard_stop_roe: -0.30,
+                    tp_roe: 999.0
                 },
                 BUNKER: {
                     leverage: 0,

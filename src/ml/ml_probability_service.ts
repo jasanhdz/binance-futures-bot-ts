@@ -55,7 +55,7 @@ export class MlProbabilityServiceClient {
     extraCandles?: Record<string, Candle[]>;
   }): Promise<MlProbabilityResponse> {
     const { symbol } = params;
-    
+
     // V2 Payload: Just the symbol
     const payload = { symbol };
 
@@ -64,7 +64,7 @@ export class MlProbabilityServiceClient {
         '/ml-v2/predict',
         payload,
       );
-      
+
       // Adapt V2 response to look a bit like V1 if needed by consumer, 
       // or just return as is. The consumer (strategy) should be updated to use neutral_prob.
       return {
@@ -74,7 +74,7 @@ export class MlProbabilityServiceClient {
           '1m': { long_prob: data.long_prob, short_prob: data.short_prob }
         }
       };
-      
+
     } catch (err) {
       if (isAxiosError(err)) {
         const status = err.response?.status;
@@ -83,12 +83,20 @@ export class MlProbabilityServiceClient {
           typeof detail === 'string'
             ? detail
             : (detail as any)?.detail?.message ||
-              (detail as any)?.detail ||
-              err.message ||
-              'ml_service_error';
+            (detail as any)?.detail ||
+            err.message ||
+            'ml_service_error';
         throw new MlServiceError(message, { status, payload: detail });
       }
       throw err;
+    }
+  }
+  async checkHealth(): Promise<boolean> {
+    try {
+      const { data } = await this.http.get('/health');
+      return data?.status === 'healthy';
+    } catch (e) {
+      return false;
     }
   }
 }

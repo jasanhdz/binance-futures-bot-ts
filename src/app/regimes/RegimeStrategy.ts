@@ -3,7 +3,7 @@
  * Base contract for all trading regime strategies in Ninja System v5.0
  */
 
-export type RegimeType = 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER';
+export type RegimeType = 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER' | 'BERZERKER';
 export type VolatilityLevel = 'LOW' | 'MED' | 'HIGH';
 export type MarketBias = 'BULL' | 'BEAR' | 'NEUTRAL';
 export type ConfidenceLevel = 'LOW' | 'MED' | 'HIGH';

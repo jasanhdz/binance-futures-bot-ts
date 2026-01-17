@@ -18,6 +18,7 @@ export interface GuardianConfig {
     baseDrawdown: number;        // Initial allowed drop
     volatilitySensitivity: number;
     enableTrendProtection: boolean;
+    drawdownMode?: 'LINEAR' | 'LOG'; // New flag for Berzerker
 }
 
 export class UniversalProfitGuardian {
@@ -33,22 +34,37 @@ export class UniversalProfitGuardian {
 
         // 2. CALCULATE DRAWDOWN FROM PEAK
         const drawdown = ctx.peakRoe - ctx.currentRoe;
+        let dynamicAllowedDD;
 
-        // 3. LOGARITHMIC TIGHTENING (La Magia)
-        // A medida que el ROE sube, el drawdown permitido baja.
-        // ROE 2%  -> Permite ceder 40% de la ganancia
-        // ROE 10% -> Permite ceder 20% de la ganancia
-        // ROE 50% -> Permite ceder 10% de la ganancia
+        // 3. DRAWDOWN CALCULATION STRATEGY
+        if (this.config.drawdownMode === 'LINEAR') {
+            // ══════════════════════════════════════════════════════════════
+            // MODO BERZERKER: SOGA LINEAL 30% (Legacy Bot 1.0)
+            // ══════════════════════════════════════════════════════════════
+            // La soga es siempre un % del punto más alto.
+            dynamicAllowedDD = ctx.peakRoe * this.config.baseDrawdown;
 
-        let dynamicAllowedDD = this.config.baseDrawdown;
+            // Mínimo de seguridad de 1% ROI para evitar que micro-ticks nos saquen al inicio
+            dynamicAllowedDD = Math.max(0.01, dynamicAllowedDD);
+        } else {
+            // ══════════════════════════════════════════════════════════════
+            // MODO STANDARD: LOGARITHMIC TIGHTENING
+            // ══════════════════════════════════════════════════════════════
+            // A medida que el ROE sube, el drawdown permitido baja.
+            // ROE 2%  -> Permite ceder 40% de la ganancia
+            // ROE 10% -> Permite ceder 20% de la ganancia
+            // ROE 50% -> Permite ceder 10% de la ganancia
 
-        if (ctx.peakRoe > 0.05) { // Si ganamos > 5%
-            // Fórmula de endurecimiento: Reduce el DD a la mitad cada vez que duplicas ganancia
-            const tighteningFactor = 1 / (1 + ctx.peakRoe * 5);
-            dynamicAllowedDD = this.config.baseDrawdown * tighteningFactor;
+            dynamicAllowedDD = this.config.baseDrawdown;
 
-            // Límite duro: Nunca menos del 5% de la ganancia (para respirar)
-            dynamicAllowedDD = Math.max(0.05, dynamicAllowedDD);
+            if (ctx.peakRoe > 0.05) { // Si ganamos > 5%
+                // Fórmula de endurecimiento: Reduce el DD a la mitad cada vez que duplicas ganancia
+                const tighteningFactor = 1 / (1 + ctx.peakRoe * 5);
+                dynamicAllowedDD = this.config.baseDrawdown * tighteningFactor;
+
+                // Límite duro: Nunca menos del 5% de la ganancia (para respirar)
+                dynamicAllowedDD = Math.max(0.05, dynamicAllowedDD);
+            }
         }
 
         // 4. VOLATILITY ADJUSTMENT
@@ -59,6 +75,11 @@ export class UniversalProfitGuardian {
         }
 
         const finalLimit = dynamicAllowedDD * volMultiplier;
+
+        // AUDIT LOG (Berzerker Monitor)
+        if (ctx.peakRoe > 0.05) {
+            console.log(`[Guardian] 🛡️ Drawdown: ${(drawdown * 100).toFixed(2)}% / Limit: ${(finalLimit * 100).toFixed(2)}% | Peak: ${(ctx.peakRoe * 100).toFixed(2)}%`);
+        }
 
         // 5. DECISION
         if (drawdown >= finalLimit) {
@@ -95,5 +116,13 @@ export class UniversalProfitGuardian {
         baseDrawdown: 0.15, // En caos salimos rápido
         volatilitySensitivity: 0.5,
         enableTrendProtection: false
+    };
+
+    static BERZERKER_CONFIG: GuardianConfig = {
+        peakThreshold: 0.05,       // Empezar a vigilar al +5% ROI
+        baseDrawdown: 0.30,        //  LA SOGA DEL 30% EXACTO
+        volatilitySensitivity: 0.5,
+        enableTrendProtection: true,
+        drawdownMode: 'LINEAR'     // ACTIVAR MODO LINEAL
     };
 }

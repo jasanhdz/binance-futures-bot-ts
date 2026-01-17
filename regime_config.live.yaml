@@ -2,16 +2,16 @@
 # NINJA v8.5: SNIPER GROWTH (Meta: $29 -> $100)
 # ═══════════════════════════════════════════════════════════════════════
 SYMBOLS:
-  # --- ESCUADRÓN DE ÉLITE ---
-  WLDUSDT: 0.95      
-  1000PEPEUSDT: 0.95 
-  SEIUSDT: 0.90      
-  AVAXUSDT: 0.90     
-  BTCUSDT: 0.85      
-  SOLUSDT: 0.85      
-  ETHUSDT: 0.85      
-  BNBUSDT: 0.20      
-  LTCUSDT: 0.80      
+  # --- EL ESCUADRÓN BERZERKER ---
+  BTCUSDT: 0.95
+  DOGEUSDT: 0.95
+  SOLUSDT: 0.95
+  XRPUSDT: 0.95
+  AVAXUSDT: 0.90
+  NEARUSDT: 0.90
+  FETUSDT: 0.85
+  SEIUSDT: 0.90
+  1000PEPEUSDT: 0.90      
 
 TRADING:
   capital_usage_default: 0.75        
@@ -41,16 +41,19 @@ IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_thresh
 # BASE REGIMES (Filtrado de alta precisión)
 # ═══════════════════════════════════════════════════════════════════════
 REGIMES:
-  # MONK: Rango. Umbral subido a 0.48 para filtrar señales dudosas.
-  MONK:       { leverage: 20, entry_threshold: 0.48, hard_stop_roe: -0.15, tp_roe: 0.08 }
+  # MONK: PAUSADO (Experimento Berzerker)
+  MONK:       { leverage: 20, entry_threshold: 999.0, hard_stop_roe: -0.15, tp_roe: 0.08 }
   
-  # WHALE: Tendencia. Solo entra con 55% de probabilidad (Pura fuerza).
-  WHALE:      { leverage: 25,  entry_threshold: 0.55, hard_stop_roe: -0.25, tp_roe: 999.0 }
+  # WHALE: PAUSADO (Experimento Berzerker)
+  WHALE:      { leverage: 25,  entry_threshold: 999.0, hard_stop_roe: -0.25, tp_roe: 999.0 }
   
-  # BLOODBATH: Caos. Umbral subido para evitar latigazos.
-  BLOODBATH:  { leverage: 30, entry_threshold: 0.42, hard_stop_roe: -0.10, tp_roe: 0.02 }
+  # BLOODBATH: PAUSADO (Experimento Berzerker)
+  BLOODBATH:  { leverage: 30, entry_threshold: 999.0, hard_stop_roe: -0.10, tp_roe: 0.02 }
   
   BUNKER:     { leverage: 0,  entry_threshold: 999.0, hard_stop_roe: 0.0,  tp_roe: 0.0 }
+  
+  # BERZERKER: Modo Dios (50x). Solo entra con señal perfecta de IA.
+  BERZERKER:  { leverage: 50, entry_threshold: 0.85, hard_stop_roe: -0.15, tp_roe: 0.03 }
 
 # ═════════════════════════════════════════════════════════════════════
 # SYMBOL OVERRIDES

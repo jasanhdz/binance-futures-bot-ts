@@ -58,9 +58,9 @@ export type BotState = {
   panicCounter?: number; // Contador de ticks consecutivos con señal de pánico
   lastEntryTime?: number; // Timestamp de entrada para Time Decay
   highestRatchetStop?: number; // High Water Mark para el Stop Loss (Monotonicity Enforcement)
-  
+
   // Native Brackets v8.0: Regime persistence for ensure-brackets.ts
-  currentRegime?: 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER';
+  currentRegime?: 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER' | 'BERZERKER';
 };
 
 type SignalCommon = {

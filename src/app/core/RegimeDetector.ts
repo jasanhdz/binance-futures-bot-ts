@@ -26,6 +26,7 @@ export interface MarketSnapshot {
     longProb: number;         // ML Long probability
     shortProb: number;        // ML Short probability
     neutralProb: number;      // ML Neutral probability
+    berzerkerScore?: number;  // New Wave Score (0-1)
 }
 
 export class RegimeDetector {
@@ -41,7 +42,8 @@ export class RegimeDetector {
             BLOODBATH: 3,   // 15s (Caos = Reacción rápida)
             WHALE: 12,      // 60s (Tendencia = Estabilidad)
             MONK: 6,        // 30s (Rango = Moderado)
-            BUNKER: 2       // 10s (Incertidumbre = Salir/Entrar rápido)
+            BUNKER: 2,      // 10s (Incertidumbre = Salir/Entrar rápido)
+            BERZERKER: 2    // 10s (Ola rápida = Entrar/Salir muy rápido)
         };
         return thresholds[regime] ?? 6;
     }
@@ -103,6 +105,12 @@ export class RegimeDetector {
         // ═══════════════════════════════════════════════════════════
         // REGIME DETECTION LOGIC (Priority Order)
         // ═══════════════════════════════════════════════════════════
+
+        // CASE 0: BERZERKER (The Wave - Highest Priority)
+        // Safety: Spread must be tight (< 0.05%) for 50x leverage
+        if (snapshot.berzerkerScore && snapshot.berzerkerScore > 0.85 && snapshot.spreadPct < 0.0005) {
+            return 'BERZERKER';
+        }
 
         // CASE 1: BLOODBATH (Panic / Wick Hunting)
         if (volatility === 'HIGH' && neutralProb > 0.50) {
@@ -179,6 +187,8 @@ export class RegimeDetector {
 
     private getTriggerReason(regime: RegimeType, snapshot: MarketSnapshot): string {
         switch (regime) {
+            case 'BERZERKER':
+                return `wave_detected:score=${(snapshot.berzerkerScore || 0).toFixed(2)}`;
             case 'BLOODBATH':
                 return `chaos_detected:neutral=${(snapshot.neutralProb * 100).toFixed(0)}%`;
             case 'WHALE':

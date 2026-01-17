@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type { Logger } from '../../core/ports/Logger';
 import Table from 'cli-table3';
+import { TelegramService } from '../notifications/TelegramService';
 
 const RESET = '\x1b[0m';
 const RED = '\x1b[31m';
@@ -84,10 +85,10 @@ function pruneOldLogs(retainDays: number) {
       if (Number.isFinite(t) && t < cutoff) {
         try {
           fs.rmSync(path.join(logDir, f));
-        } catch {}
+        } catch { }
       }
     }
-  } catch {}
+  } catch { }
 }
 function append(file: string, line: string) {
   if (!LOG_TO_FILE || FILE_LOGGING_DISABLED) return;
@@ -175,7 +176,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       const tps = sample.filter((o: any) => o.type?.includes('TAKE_PROFIT'));
       const bestStop = stops.length
         ? stops.reduce((a: any, b: any) => (Number(a.stopPrice) > Number(b.stopPrice) ? a : b))
-            .stopPrice
+          .stopPrice
         : '-';
       const bestTP = tps.length ? tps[0].stopPrice : '-';
       return `${color.gray(t)} 📜 Órdenes abiertas: ${count} | ⛔ stop* ${bestStop} | 🎯 tp* ${bestTP}`;
@@ -345,8 +346,8 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       // (Opcional) Estructura de EMAs si las mandas en ctx
       const line3 =
         typeof ctx?.ema7 === 'number' &&
-        typeof ctx?.ema25 === 'number' &&
-        typeof ctx?.ema99 === 'number'
+          typeof ctx?.ema25 === 'number' &&
+          typeof ctx?.ema99 === 'number'
           ? `${color.gray('   └ ')}EMA7:${n(ctx.ema7)}  EMA25:${n(ctx.ema25)}  EMA99:${n(ctx.ema99)}`
           : '';
 
@@ -358,9 +359,9 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       const flat =
         ctx && typeof ctx === 'object'
           ? Object.entries(ctx)
-              .filter(([_, v]) => typeof v !== 'object')
-              .map(([k, v]) => `${k}=${v}`)
-              .join(' ')
+            .filter(([_, v]) => typeof v !== 'object')
+            .map(([k, v]) => `${k}=${v}`)
+            .join(' ')
           : '';
       return `${color.gray(t)} ${L(msg)}${flat ? ' ' + color.dim(flat) : ''}`;
     }
@@ -398,6 +399,18 @@ function write(level: Level, msg: string, ctx?: any) {
     const flat = `[${payload.ts}] ${msg}${ctx ? ' ' + JSON.stringify(ctx) : ''}`;
     append(legacyPath, flat);
   }
+
+  // 3) Telegram System Log (Errors & Warnings)
+  if (level === 'error') {
+    const ctxStr = ctx ? `\n\`\`\`json\n${JSON.stringify(ctx, null, 2)}\n\`\`\`` : '';
+    TelegramService.sendSystemLog(`🔴 *SYSTEM ERROR* 🔴\n\n*Type:* ${msg}${ctxStr}`)
+      .catch((e: any) => console.error('[FsLogger] Failed to send Telegram error:', e));
+  } else if (level === 'warn') {
+    // Optional: Uncomment to send warnings too, or filter specific ones
+    // const ctxStr = ctx ? `\n\`\`\`json\n${JSON.stringify(ctx, null, 2)}\n\`\`\`` : '';
+    // TelegramService.sendSystemLog(`⚠️ *SYSTEM WARNING* ⚠️\n\n*Type:* ${msg}${ctxStr}`)
+    //    .catch(e => console.error('[FsLogger] Failed to send Telegram warning:', e));
+  }
 }
 
 export class FsLogger implements Logger {
@@ -418,4 +431,4 @@ export class FsLogger implements Logger {
 // Limpieza opcional al arranque
 try {
   pruneOldLogs(LOG_RETAIN_DAYS);
-} catch {}
+} catch { }

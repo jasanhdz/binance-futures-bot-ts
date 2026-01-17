@@ -219,4 +219,18 @@ export class SymbolManager {
     getRunningCount(): number {
         return this.runners.size;
     }
+
+    /**
+     * Get detailed list of running symbols
+     */
+    getRunningDetails(): string {
+        const details: string[] = [];
+        for (const symbol of this.runners.keys()) {
+            const allocation = this.ninjaConfig.getCapitalAllocation(symbol);
+            // Default leverage, though specific strategies might override it
+            const leverage = this.ninjaConfig.system.global_leverage_default || 10;
+            details.push(`• *${symbol}*: Cap=${allocation}x | Lev=${leverage}x`);
+        }
+        return details.join('\n');
+    }
 }

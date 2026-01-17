@@ -11,6 +11,7 @@ import { BloodbathStrategy } from './regimes/BloodbathStrategy';
 import { WhaleStrategy } from './regimes/WhaleStrategy';
 import { MonkStrategy } from './regimes/MonkStrategy';
 import { BunkerStrategy } from './regimes/BunkerStrategy';
+import { BerzerkerStrategy } from './regimes/BerzerkerStrategy';
 import { roundToTick } from '../core/risk/stop';
 import { Strategy } from '../strategies/types';
 import { atr } from '../core/indicators/atr';
@@ -20,8 +21,8 @@ import { finalizeTrade, ensureOpenTradeBackfill } from './trade-book-hooks';
 import { extractFilters, splitStrategyReason } from './trade-book-utils';
 import { postExitClearPatch, postExitSetupPatch } from './trade-state';
 import { isSymbolBlocked } from './symbol-penalty';
-
 import type { CONFIG as RuntimeConfig } from '../infra/config';
+import { TelegramService } from '../infra/notifications/TelegramService';
 
 type BotConfig = typeof RuntimeConfig;
 
@@ -46,7 +47,8 @@ export class StrategyRunner {
     BLOODBATH: new BloodbathStrategy(),
     WHALE: new WhaleStrategy(),
     MONK: new MonkStrategy(),
-    BUNKER: new BunkerStrategy()
+    BUNKER: new BunkerStrategy(),
+    BERZERKER: new BerzerkerStrategy()
   };
 
   private lastLoggedSignals: Record<string, { action: string, reason: string, time: number }> = {};
@@ -223,7 +225,8 @@ export class StrategyRunner {
       fundingRate: 0, // TODO: Add funding rate fetch if available
       longProb: (diagnostics as any)?.longProb ?? 0.33,
       shortProb: (diagnostics as any)?.shortProb ?? 0.33,
-      neutralProb: (diagnostics as any)?.neutralProb ?? 0.34
+      neutralProb: (diagnostics as any)?.neutralProb ?? 0.34,
+      berzerkerScore: (diagnostics as any)?.berzerker_score ?? 0
     };
 
     const regimeContext = this.regimeDetector.analyze(marketSnapshot);
@@ -1059,6 +1062,19 @@ export class StrategyRunner {
       return;
     }
     const avgPrice = rawAvg || price;
+
+    // 🚀 NOTIFICACIÓN BERZERKER 🚀
+    if (regimeContext.type === 'BERZERKER') {
+      const msg = `🚀 *BERZERKER IN* 🚀\n\n` +
+        `*Símbolo:* ${symbol}\n` +
+        `*Lado:* ${side}\n` +
+        `*Apalancamiento:* 50x\n` +
+        `*Precio:* ${avgPrice}\n` +
+        `*Riesgo:* $0.58 USD\n\n` +
+        `🐎 _Soga del 30% amarrada. ¡A galopar!_`;
+
+      TelegramService.sendAlert(msg);
+    }
     logger.info('market_opened', { symbol, side, qty, price, avgPrice, ms: Date.now() - tOpen });
 
     let tradeId: string | undefined;
