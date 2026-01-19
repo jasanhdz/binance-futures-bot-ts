@@ -1,23 +1,14 @@
 # ═══════════════════════════════════════════════════════════════════════
-# NINJA v8.5: SNIPER GROWTH (Meta: $29 -> $100)
+# PHANTOM V1: Deep Learning Trading (ETH Specialist)
 # ═══════════════════════════════════════════════════════════════════════
 SYMBOLS:
-  # --- EL ESCUADRÓN BERZERKER ---
-  BTCUSDT: 0.95
-  DOGEUSDT: 0.95
-  SOLUSDT: 0.95
-  XRPUSDT: 0.95
-  AVAXUSDT: 0.90
-  NEARUSDT: 0.90
-  FETUSDT: 0.85
-  SEIUSDT: 0.90
-  1000PEPEUSDT: 0.90      
+  # Only ETH for now - BTC/SOL Phantom models coming in future
+  ETHUSDT: 1.0
 
 TRADING:
   capital_usage_default: 0.75        
   min_wallet_reserve_usdt: 0         
   fee_buffer_pct: 0.0004            
-  # 🛡️ EL FUSIBLE: Máxima pérdida real de $0.58 USD por trade (2% de $29)
   max_risk_pct: 0.02                 
   low_funds_threshold: 2             
   reenter_on_tp: true               
@@ -25,52 +16,29 @@ TRADING:
 
 SYSTEM:
   tick_interval_ms: 5000
-  max_trades_per_day: 50             # 📉 CAP DE VOLUMEN: Evita el sobre-trading y fees
-  global_leverage_default: 20        
+  max_trades_per_day: 50
+  global_leverage_default: 3        
 
-REGIME_DETECTOR: 
-  volatility_spread_low: 0.0008
-  volatility_spread_high: 0.0015
-  bias_strength_threshold: 0.15 
-  obi_confirmation_threshold: 0.10
-
-# 🧬 SISTEMA INMUNE AGRESIVO: Salir rápido si la probabilidad baja de 55%
+# 🧬 IMMUNE SYSTEM: Exit on probability drop
 IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_threshold: 0.55 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# BASE REGIMES (Filtrado de alta precisión)
+# PHANTOM REGIME (Single Active Strategy)
+# Matches Phantom V8 backtest parameters ($20 → $79M)
 # ═══════════════════════════════════════════════════════════════════════
 REGIMES:
-  # MONK: PAUSADO (Experimento Berzerker)
-  MONK:       { leverage: 20, entry_threshold: 999.0, hard_stop_roe: -0.15, tp_roe: 0.08 }
-  
-  # WHALE: PAUSADO (Experimento Berzerker)
-  WHALE:      { leverage: 25,  entry_threshold: 999.0, hard_stop_roe: -0.25, tp_roe: 999.0 }
-  
-  # BLOODBATH: PAUSADO (Experimento Berzerker)
-  BLOODBATH:  { leverage: 30, entry_threshold: 999.0, hard_stop_roe: -0.10, tp_roe: 0.02 }
-  
-  BUNKER:     { leverage: 0,  entry_threshold: 999.0, hard_stop_roe: 0.0,  tp_roe: 0.0 }
-  
-  # BERZERKER: Modo Dios (50x). Solo entra con señal perfecta de IA.
-  BERZERKER:  { leverage: 50, entry_threshold: 0.85, hard_stop_roe: -0.15, tp_roe: 0.03 }
+  # PHANTOM: Deep Learning ETH Specialist
+  PHANTOM:
+    leverage: 3
+    entry_threshold: 0.55        # Confidence > 55% to enter
+    hard_stop_roe: -0.015        # -1.5% stop loss (= -4.5% with 3x leverage)
+    tp_roe: 0.06                 # 6% take profit (= 18% with 3x leverage)
+    be_roe: 0.10                 # 10% ROE activates break-even
+    trailing_step: 0.015         # 1.5% trailing stop
 
 # ═════════════════════════════════════════════════════════════════════
-# SYMBOL OVERRIDES
+# SYMBOL OVERRIDES (Future: BTC/SOL will have their own Phantom configs)
 # ═════════════════════════════════════════════════════════════════════
 SYMBOL_OVERRIDES:
-  BTCUSDT:
-    MONK:  { leverage: 25, hard_stop_roe: -0.10, entry_threshold: 0.45 } 
-    WHALE: { leverage: 30, hard_stop_roe: -0.20, entry_threshold: 0.52 } 
-
   ETHUSDT:
-    MONK:  { leverage: 25, hard_stop_roe: -0.12, entry_threshold: 0.45 }
-    WHALE: { leverage: 30,  hard_stop_roe: -0.22, entry_threshold: 0.52 }
-
-  1000PEPEUSDT:
-    WHALE: { leverage: 5, hard_stop_roe: -0.30 } 
-    MONK:  { leverage: 5, hard_stop_roe: -0.08 }
-
-  WLDUSDT:
-    WHALE: { leverage: 5 }
-    MONK:  { leverage: 5 }
+    PHANTOM: { leverage: 3, hard_stop_roe: -0.015, entry_threshold: 0.55 }
