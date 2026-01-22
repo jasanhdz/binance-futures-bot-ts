@@ -171,6 +171,7 @@ export class BinanceExchange implements Exchange {
   private fromRestCandle(c: any): Candle {
     return {
       openTime: c.openTime,
+      timestamp: c.openTime, // Alias
       open: +c.open,
       high: +c.high,
       low: +c.low,
@@ -317,6 +318,11 @@ export class BinanceExchange implements Exchange {
     const candles = await this.fetchCandles(symbol, interval, fetch);
     this.candleCache.set(key, { candles, ts: now, interval, ttl });
     return candles.slice(-limit);
+  }
+
+  async getLastCandle(symbol: string): Promise<Candle | null> {
+    const candles = await this.getCandles(symbol, '5m', 1);
+    return candles.length > 0 ? candles[candles.length - 1] : null;
   }
 
   async getMarkPrice(symbol: string) {

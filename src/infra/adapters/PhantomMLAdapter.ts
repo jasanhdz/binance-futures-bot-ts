@@ -9,6 +9,13 @@ export type MlProbabilityResponse = {
   neutral_prob: number;
   consensus_level: number;
   meta_verdict: string;
+  // Features from ML model (for PhantomTrigger pre-filter)
+  features?: {
+    cvd_z?: number;
+    cvd_slope?: number;
+    weakness?: number;
+    volatility_z?: number;
+  };
   // Legacy support (optional)
   primary_timeframe?: string;
   probabilities?: Record<string, { long_prob: number; short_prob: number }>;
@@ -32,8 +39,8 @@ export class MlServiceError extends Error {
 }
 
 export class MlProbabilityServiceClient {
-  private readonly http: AxiosInstance;
-  private readonly baseUrl: string;
+  protected readonly http: AxiosInstance;
+  protected readonly baseUrl: string;
 
   constructor(opts: MlProbabilityClientOptions = {}) {
     // V2 Service runs on port 8001 by default

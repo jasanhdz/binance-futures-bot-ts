@@ -7,7 +7,7 @@
  * @see binance-futures-bot-ts-clone/src/strategies/ml_probability.ts for reference
  */
 
-import { Signal } from '../types';
+import { Signal, Candle } from '../types';
 
 export interface PhantomConfig {
     leverage: number;
@@ -25,10 +25,15 @@ export interface PhantomSignal {
     longProb: number;
     shortProb: number;
     neutralProb: number;
+    features?: {
+        cvd_z?: number;
+        cvd_slope?: number;
+        weakness?: number;
+    };
 }
 
 export const DEFAULT_PHANTOM_CONFIG: PhantomConfig = {
-    leverage: 3,
+    leverage: 5,
     entryThreshold: 0.55,
     hardStopRoe: -0.015,
     tpRoe: 0.06,
@@ -37,17 +42,95 @@ export const DEFAULT_PHANTOM_CONFIG: PhantomConfig = {
 };
 
 /**
- * Evaluates if a signal should trigger an entry
+ * PhantomTrigger - Pre-filter for ML signals
+ * 
+ * This is a CRITICAL component that ensures we only trade when:
+ * 1. CVD Slope is negative (distribution pressure - smart money selling)
+ * 2. CVD Z-Score is below 0.5 (cumulative selling pressure)
+ * 3. Current candle is bearish (price action confirms)
+ * 4. ETH is weaker than BTC (relative weakness)
+ * 
+ * WHY THIS HELPS:
+ * - The ML model gives probabilistic signals, but it can fire in non-ideal conditions
+ * - This pre-filter ensures we only act on ML signals when market structure confirms
+ * - Reduces false positives by requiring BOTH technical confirmation AND ML confidence
+ * - Matches the exact logic used in the successful Python backtest ($20 → $79M)
  */
-export function shouldEnter(signal: PhantomSignal, config: PhantomConfig): boolean {
-    return signal.action === 'SHORT' && signal.confidence > config.entryThreshold;
+export interface PhantomTriggerContext {
+    currentCandle: Candle;
+    cvdSlope: number;      // Change in CVD over 5 candles (negative = distribution)
+    cvdZ: number;          // Z-score of CVD (below 0.5 = selling pressure)
+    weaknessScore: number; // ETH/BTC ratio divergence (positive = ETH weaker)
+}
+
+/**
+ * Checks if technical conditions are met for a Phantom SHORT entry
+ * 
+ * @param ctx - Market context with CVD and weakness metrics
+ * @returns true if all conditions are met for a valid trigger
+ */
+export function checkPhantomTrigger(ctx: PhantomTriggerContext): boolean {
+    // 1. CVD Slope must be NEGATIVE (distribution - smart money exiting)
+    //    This indicates that over the last 5 candles, selling volume has dominated
+    if (ctx.cvdSlope > 0) {
+        return false;
+    }
+
+    // 2. CVD Z-Score must be below 0.5 (cumulative selling pressure)
+    //    This means the 20-period CVD is below its rolling average
+    if (ctx.cvdZ > 0.5) {
+        return false;
+    }
+
+    // 3. Current candle must be BEARISH (close < open)
+    //    Price action must confirm the distribution pattern
+    if (ctx.currentCandle.close >= ctx.currentCandle.open) {
+        return false;
+    }
+
+    // 4. ETH must be WEAKER than BTC (positive weakness score)
+    //    When ETH underperforms BTC, it signals relative weakness
+    //    This is calculated as: (ETH/BTC EMA - ETH/BTC ratio) * 100
+    //    Positive = ETH is falling faster than BTC
+    if (ctx.weaknessScore < 0) {
+        return false;
+    }
+
+    // All conditions met - valid phantom trigger!
+    return true;
+}
+
+/**
+ * Evaluates if a signal should trigger an entry
+ * Now requires BOTH ML confidence AND technical trigger
+ */
+export function shouldEnter(
+    signal: PhantomSignal,
+    config: PhantomConfig,
+    triggerCtx?: PhantomTriggerContext
+): boolean {
+    // First check: ML model must say SHORT with sufficient confidence
+    if (signal.action !== 'SHORT' || signal.confidence <= config.entryThreshold) {
+        return false;
+    }
+
+    // Second check (if context provided): Technical conditions must align
+    if (triggerCtx && !checkPhantomTrigger(triggerCtx)) {
+        return false;
+    }
+
+    return true;
 }
 
 /**
  * Maps Phantom signal to trading Signal format
  */
-export function toTradeSignal(signal: PhantomSignal, config: PhantomConfig): Signal {
-    if (shouldEnter(signal, config)) {
+export function toTradeSignal(
+    signal: PhantomSignal,
+    config: PhantomConfig,
+    triggerCtx?: PhantomTriggerContext
+): Signal {
+    if (shouldEnter(signal, config, triggerCtx)) {
         return {
             action: 'ENTER_SHORT',
             reason: `PHANTOM | conf=${(signal.confidence * 100).toFixed(1)}%`,
@@ -56,3 +139,4 @@ export function toTradeSignal(signal: PhantomSignal, config: PhantomConfig): Sig
     }
     return { action: 'IDLE', reason: 'PHANTOM_WAIT' };
 }
+

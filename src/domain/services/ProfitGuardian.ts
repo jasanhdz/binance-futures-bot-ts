@@ -11,6 +11,7 @@ export interface GuardianContext {
     peakPrice: number;      // Best price seen (Lowest for SHORT, Highest for LONG)
     positionSide: 'LONG' | 'SHORT';
     leverage: number;
+    peakRoe?: number;       // PARITY FIX: Track max ROE seen to trigger BE intra-candle
 }
 
 export interface GuardianConfig {
@@ -39,7 +40,7 @@ export function evaluateGuardianAction(
     config: GuardianConfig,
     currentSlPrice?: number
 ): GuardianAction {
-    const { entryPrice, currentPrice, peakPrice, positionSide, leverage } = ctx;
+    const { entryPrice, currentPrice, peakPrice, positionSide, leverage, peakRoe } = ctx;
 
     // 1. Calculate ROE
     const roe = positionSide === 'SHORT'
@@ -52,7 +53,8 @@ export function evaluateGuardianAction(
         ? entryPrice * (1 - config.beOffsetPct)
         : entryPrice * (1 + config.beOffsetPct);
 
-    const isBeTriggered = roe >= config.beTriggerRoe;
+    // PARITY FIX: Use peakRoe if available to detect intra-candle BE trigger
+    const isBeTriggered = (peakRoe !== undefined && peakRoe >= config.beTriggerRoe) || roe >= config.beTriggerRoe;
 
     // Check if SL is already at or better than BE
     const slIsAtBe = currentSlPrice && (
@@ -69,7 +71,10 @@ export function evaluateGuardianAction(
         ? currentPrice < entryPrice
         : currentPrice > entryPrice;
 
-    if (isInProfit) {
+    // PARITY FIX: Only trail if BE has been triggered (ROE > 10%)
+    // Python logic: "If BE activated, use trailing stop"
+    if (isInProfit && (isBeTriggered || slIsAtBe)) {
+        // console.log(`[GUARDIAN] Trailing Active. ROE: ${roe.toFixed(4)}, BE: ${isBeTriggered}, SL@BE: ${slIsAtBe}`);
         const trailingSlPrice = positionSide === 'SHORT'
             ? peakPrice * (1 + config.trailingDev)
             : peakPrice * (1 - config.trailingDev);
@@ -81,12 +86,22 @@ export function evaluateGuardianAction(
                 : trailingSlPrice > currentSlPrice
         ) : true;
 
-        // Also ensure trailing SL is not worse than current price (don't execute immediately)
+        // PARITY FIX: Check if trailing SL is hit by current price
         const wouldExecuteNow = positionSide === 'SHORT'
             ? currentPrice >= trailingSlPrice
             : currentPrice <= trailingSlPrice;
 
-        if (isTighter && !wouldExecuteNow) {
+        // DEBUG: Trade 2 investigation
+        if (Math.abs(entryPrice - 3278.93) < 0.01) {
+            console.log(`[TRADE 2 DEBUG] TS: ${Date.now()} | Entry: ${entryPrice}, Peak: ${peakPrice}, Trailing SL: ${trailingSlPrice}, Current: ${currentPrice}, Would Execute: ${wouldExecuteNow}`);
+        }
+
+        if (wouldExecuteNow) {
+            // PARITY FIX: If calculated SL is already hit, CLOSE IMMEDIATELY
+            return { type: 'CLOSE_MARKET', reason: 'TRAILING' };
+        }
+
+        if (isTighter) {
             return { type: 'MOVE_SL_TRAILING', price: trailingSlPrice };
         }
     }

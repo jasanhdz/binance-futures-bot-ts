@@ -50,6 +50,7 @@ export interface BasisSnapshot {
 export interface Exchange {
   getServerTime(): Promise<number>;
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
+  getLastCandle(symbol: string): Promise<Candle | null>;
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;
   getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;
@@ -75,6 +76,7 @@ export interface Exchange {
     side: Side,
     qtyAbs: number,
     sideMode: 'BOTH' | 'LONG' | 'SHORT',
+    reason?: string,
   ): Promise<void>;
 
   openStopForSide(

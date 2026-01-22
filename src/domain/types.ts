@@ -2,6 +2,7 @@ export type Side = 'LONG' | 'SHORT';
 
 export type Candle = {
   openTime: number;
+  timestamp: number; // Alias for openTime
   open: number;
   high: number;
   low: number;

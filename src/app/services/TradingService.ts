@@ -16,6 +16,7 @@ import { BotState, Side, Signal } from '../../domain/types';
 import {
     PhantomConfig,
     PhantomSignal,
+    PhantomTriggerContext,
     DEFAULT_PHANTOM_CONFIG,
     shouldEnter,
     toTradeSignal
@@ -48,6 +49,15 @@ export class TradingService {
     private isRunning = false;
     private tradesToday = 0;
     private lastTradeDayReset = 0;
+
+    // House Money & Circuit Breaker (Python parity)
+    private readonly initialBalance = 20.0;  // Must match BacktestRunner
+    private peakBalance = 20.0;
+    private circuitBreakerUntil: number | null = null;  // Candle index
+    private readonly houseMoneyMultiplier = 2.0;
+    private readonly houseMoneyReduction = 1.0; // PARITY FIX: 100% Reinvestment (All-in)
+    private readonly circuitBreakerDD = 1.0;    // PARITY FIX: Disabled (was 0.15)
+    private readonly circuitBreakerCandles = 288;  // 24h
 
     constructor(
         private deps: TradingServiceDeps,
@@ -140,7 +150,7 @@ export class TradingService {
     /**
      * Process a single symbol
      */
-    private async processSymbol(symbol: string): Promise<void> {
+    protected async processSymbol(symbol: string): Promise<void> {
         const { exchange, mlService, logger, state } = this.deps;
         const botState = state.get();
 
@@ -149,7 +159,7 @@ export class TradingService {
             const hasPosition = botState.mode !== 'IDLE';
 
             if (hasPosition) {
-                // Manage existing position
+                // Manage existing position (handles re-entry if position closes)
                 await this.managePosition(symbol, botState);
             } else {
                 // Look for entry opportunities
@@ -167,11 +177,50 @@ export class TradingService {
     private async lookForEntry(symbol: string): Promise<void> {
         const { mlService, exchange, logger, state, notifier, configManager } = this.deps;
 
+        // DEBUG: Log when lookForEntry is called
+        const candle = await exchange.getLastCandle(symbol);
+        console.log(`[ENTRY ATTEMPT] Candle timestamp: ${candle?.timestamp}, checking for entry`);
+
+        if (candle && candle.timestamp === 1737324000000) {
+            console.log('[PARITY DEBUG] lookForEntry called for Trade 3 candle');
+        }
+
+        // Get current balance and update peak
+        const balance = await exchange.getUSDTBalance();
+        if (balance > this.peakBalance) {
+            this.peakBalance = balance;
+        }
+
+        // Circuit Breaker check (Python parity - check BEFORE entry)
+        if (this.circuitBreakerUntil !== null) {
+            // PARITY FIX: Use exchange time for backtest compatibility
+            const now = await exchange.getServerTime();
+            if (now < this.circuitBreakerUntil) {
+                logger.debug('Circuit breaker active', { until: new Date(this.circuitBreakerUntil).toISOString() });
+                return;
+            } else {
+                // CB period expired
+                this.circuitBreakerUntil = null;
+                logger.info('🔓 Circuit Breaker expired, resuming trading');
+            }
+        }
+
         // Get symbol-specific config from YAML
         const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
         const capitalUsage = configManager.getCapitalAllocation(symbol, 'PHANTOM');
-        const leverage = regimeConfig.leverage;
+        let leverage = regimeConfig.leverage;
         const entryThreshold = regimeConfig.entryThreshold;
+
+        // House Money Rule (Python parity): Reduce leverage after 2x profit
+        if (balance >= this.initialBalance * this.houseMoneyMultiplier) {
+            leverage = regimeConfig.leverage * this.houseMoneyReduction;
+            logger.debug('House Money active', {
+                originalLeverage: regimeConfig.leverage,
+                reducedLeverage: leverage,
+                balance,
+                threshold: this.initialBalance * this.houseMoneyMultiplier
+            });
+        }
 
         // Check daily trade limit
         if (this.tradesToday >= this.config.maxTradesPerDay) {
@@ -190,13 +239,46 @@ export class TradingService {
             tpRoe: regimeConfig.tpRoe
         };
 
-        if (!shouldEnter(signal, phantomConfig)) {
+        // Build PhantomTrigger context from ML features
+        // This pre-filter ensures we only trade when CVD confirms distribution
+        const currentCandle = await exchange.getLastCandle(symbol);
+        const triggerCtx: PhantomTriggerContext | undefined = (signal.features && currentCandle) ? {
+            currentCandle,
+            cvdSlope: signal.features.cvd_slope ?? 0,
+            cvdZ: signal.features.cvd_z ?? 0,
+            weaknessScore: signal.features.weakness ?? 0
+        } : undefined;
+
+        // DEBUG: Trade 3 Investigation
+        if (currentCandle && currentCandle.timestamp === 1737324000000) {  // 2025-01-19 22:00:00
+            logger.info('[TS DEBUG Trade 3] shouldEnter check', {
+                signal: signal.action,
+                confidence: signal.confidence,
+                threshold: entryThreshold,
+                cvdSlope: signal.features?.cvd_slope,
+                cvdZ: signal.features?.cvd_z,
+                weakness: signal.features?.weakness,
+                hasTriggerCtx: !!triggerCtx
+            });
+        }
+
+        if (!shouldEnter(signal, phantomConfig, triggerCtx)) {
+            // DEBUG: Trade 3 - Log WHY it was rejected
+            if (currentCandle && currentCandle.timestamp === 1737324000000) {
+                logger.info('[TS DEBUG Trade 3] Entry REJECTED by shouldEnter');
+            }
             logger.debug('No entry signal', {
                 symbol,
                 confidence: signal.confidence,
-                threshold: entryThreshold
+                threshold: entryThreshold,
+                triggerPassed: triggerCtx ? 'checked' : 'skipped'
             });
             return;
+        }
+
+        // DEBUG: Trade 3 - Log if entry approved
+        if (currentCandle && currentCandle.timestamp === 1737324000000) {
+            logger.info('[TS DEBUG Trade 3] Entry APPROVED by shouldEnter');
         }
 
         // Execute entry
@@ -214,8 +296,9 @@ export class TradingService {
             const filters = await exchange.getSymbolFilters(symbol, leverage);
 
             // Calculate position size using DYNAMIC capital allocation
+            // Python parity: position_size = balance * leverage
             const markPrice = await exchange.getMarkPrice(symbol);
-            const notional = wallet * capitalUsage;  // ← DYNAMIC from YAML
+            const notional = wallet * capitalUsage * leverage;  // ← Leveraged notional (matches Python)
             const quantity = Math.floor((notional / markPrice) * Math.pow(10, filters.qtyPrecision)) / Math.pow(10, filters.qtyPrecision);
 
             if (quantity * markPrice < filters.minNotional) {
@@ -241,7 +324,7 @@ export class TradingService {
                 lastSide: side,
                 lastEntryPrice: result.avgPrice,
                 lastLeverage: leverage,  // ← DYNAMIC
-                lastEntryAt: Date.now(),
+                lastEntryAt: await exchange.getServerTime(), // PARITY FIX: Use exchange time
                 peakRoe: 0,
                 currentRegime: 'PHANTOM',
                 lastPeakPrice: result.avgPrice // Initialize peak price
@@ -304,23 +387,91 @@ export class TradingService {
             if (!position) {
                 // Position was closed externally (SL/TP hit)
                 logger.info('Position closed externally', { symbol, side });
+
+                // Update peak balance and check Circuit Breaker (Python parity)
+                const balance = await exchange.getUSDTBalance();
+                if (balance > this.peakBalance) {
+                    this.peakBalance = balance;
+                }
+
+
+                // Check for circuit breaker trigger AFTER trade closes
+                const currentDD = this.peakBalance > 0 ? (this.peakBalance - balance) / this.peakBalance : 0;
+                if (currentDD >= this.circuitBreakerDD && this.circuitBreakerUntil === null) {
+                    // PARITY FIX: Start CB from ENTRY TIME (matches Python)
+                    // Python uses 'idx' (Entry Index) for duration.
+                    const cbStartTime = botState.lastEntryAt || await exchange.getServerTime();
+                    this.circuitBreakerUntil = cbStartTime + (this.circuitBreakerCandles * 5 * 60 * 1000);  // 24h
+
+                    logger.warn('🚨 Circuit Breaker Activated!', {
+                        peakBalance: this.peakBalance,
+                        currentBalance: balance,
+                        drawdown: `${(currentDD * 100).toFixed(2)}%`,
+                        until: new Date(this.circuitBreakerUntil).toISOString()
+                    });
+                    await notifier.sendMessage(`🚨 Circuit Breaker Activated! DD: ${(currentDD * 100).toFixed(2)}%`);
+                }
+
                 state.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
             }
 
+            // PARITY FIX: Check Time Limit (24h)
+            if (botState.lastEntryAt) {
+                const now = await exchange.getServerTime();
+                const duration = now - botState.lastEntryAt;
+                const TIME_LIMIT_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+                if (duration >= TIME_LIMIT_MS) {
+                    logger.info('⏳ Time Limit Reached (24h), closing position', { duration: duration / 3600000 });
+                    await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'TIME_LIMIT');
+
+                    state.set({
+                        mode: 'IDLE',
+                        lastExitAt: now,
+                        lastExitReason: 'TIME_LIMIT'
+                    });
+
+                    await notifier.sendMessage(`⏳ Time Limit Exit (24h)`);
+                    return;
+                }
+            }
+
             // Get current price
             const markPrice = await exchange.getMarkPrice(symbol);
+            const candle = await exchange.getLastCandle(symbol); // PARITY FIX: Need Low/High for Peak
 
             // Update Peak Price (for Trailing)
+            // Python uses Low for Short, High for Long
             let peakPrice = botState.lastPeakPrice || entryPrice;
-            if (side === 'SHORT') {
-                peakPrice = Math.min(peakPrice, markPrice);
+            if (candle) {
+                if (side === 'SHORT') {
+                    peakPrice = Math.min(peakPrice, candle.low);
+                } else {
+                    peakPrice = Math.max(peakPrice, candle.high);
+                }
             } else {
-                peakPrice = Math.max(peakPrice, markPrice);
+                // Fallback if no candle (should not happen in backtest)
+                if (side === 'SHORT') {
+                    peakPrice = Math.min(peakPrice, markPrice);
+                } else {
+                    peakPrice = Math.max(peakPrice, markPrice);
+                }
             }
 
             if (peakPrice !== botState.lastPeakPrice) {
                 state.set({ lastPeakPrice: peakPrice });
+            }
+
+            // PARITY FIX: Update Peak ROE
+            if (candle) {
+                const currentRoe = side === 'SHORT'
+                    ? (entryPrice - candle.low) / entryPrice * (botState.lastLeverage || 1)
+                    : (candle.high - entryPrice) / entryPrice * (botState.lastLeverage || 1);
+
+                if (currentRoe > (botState.peakRoe || -999)) {
+                    state.set({ peakRoe: currentRoe });
+                }
             }
 
             // Get current SL price (to know if we need to move it)
@@ -329,13 +480,15 @@ export class TradingService {
             const currentSlPrice = currentSlOrder ? Number(currentSlOrder.stopPrice) : undefined;
 
             // Evaluate Guardian Action
+
             const action = evaluateGuardianAction(
                 {
                     entryPrice,
                     currentPrice: markPrice,
                     peakPrice,
                     positionSide: side,
-                    leverage: botState.lastLeverage || 1
+                    leverage: botState.lastLeverage || 1,
+                    peakRoe: botState.peakRoe // PARITY FIX: Pass Peak ROE
                 },
                 guardianConfig,
                 currentSlPrice

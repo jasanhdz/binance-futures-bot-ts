@@ -164,7 +164,7 @@ export class NinjaConfigManager {
 
     get trading(): TradingConfig {
         return this.config.TRADING || {
-            capital_usage_default: 0.75,
+            capital_usage_default: 1.0,
             min_wallet_reserve_usdt: 0,
             fee_buffer_pct: 0.0004,
             max_risk_pct: 0,
@@ -220,7 +220,7 @@ export class NinjaConfigManager {
      * Get capital allocation for a symbol (with optional regime override)
      */
     getCapitalAllocation(symbol: string, regime?: string): number {
-        const DEFAULT_ALLOCATION = 0.75;
+        const DEFAULT_ALLOCATION = this.trading.capital_usage_default;
 
         // Check regime-specific override first
         if (regime && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regime.toUpperCase()]?.capital_usage !== undefined) {
@@ -336,7 +336,7 @@ export class NinjaConfigManager {
             },
             REGIMES: {
                 PHANTOM: {
-                    leverage: 3,
+                    leverage: 5,
                     entry_threshold: 0.55,
                     hard_stop_roe: -0.015,
                     tp_roe: 0.06,
