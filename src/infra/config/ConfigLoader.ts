@@ -53,6 +53,10 @@ export interface RegimeYamlConfig {
     max_hold_ms?: number;
     be_roe?: number;        // Break-Even Trigger ROE
     trailing_step?: number; // Price-based Trailing Deviation
+    trailing_activation_roe?: number;
+    trailing_callback_roe?: number;
+    forbidden_hours?: number[];
+    forbidden_days?: number[];
 }
 
 export interface NinjaYamlConfig {
@@ -252,7 +256,9 @@ export class NinjaConfigManager {
         return {
             beTriggerRoe: baseRegime.be_roe || 0.10,
             beOffsetPct: 0.003, // Hardcoded 0.3% offset for now (standard fee cover)
-            trailingDev: baseRegime.trailing_step || 0.015
+            trailingDev: baseRegime.trailing_step || 0.015,
+            trailingActivationRoe: baseRegime.trailing_activation_roe,
+            trailingCallbackRoe: baseRegime.trailing_callback_roe
         };
     }
 
@@ -285,7 +291,11 @@ export class NinjaConfigManager {
             hardStopRoe: mergedConfig.hard_stop_roe,
             tpRoe: mergedConfig.tp_roe,
             entryThreshold: mergedConfig.entry_threshold,
-            maxHoldMs: mergedConfig.max_hold_ms
+            maxHoldMs: mergedConfig.max_hold_ms,
+            trailingActivationRoe: mergedConfig.trailing_activation_roe,
+            trailingCallbackRoe: mergedConfig.trailing_callback_roe,
+            forbiddenHours: mergedConfig.forbidden_hours,
+            forbiddenDays: mergedConfig.forbidden_days
         };
     }
 

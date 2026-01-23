@@ -18,12 +18,16 @@ export interface GuardianConfig {
     beTriggerRoe: number;   // e.g. 0.10 (10%)
     beOffsetPct: number;    // e.g. 0.003 (0.3% to cover fees)
     trailingDev: number;    // e.g. 0.015 (1.5% deviation)
+    trailingActivationRoe?: number; // Safety Net Activation
+    trailingCallbackRoe?: number;   // Safety Net Callback
 }
 
 export const DEFAULT_GUARDIAN_CONFIG: GuardianConfig = {
-    beTriggerRoe: 0.10,     // 10% ROE triggers BE
-    beOffsetPct: 0.003,     // Secure 0.3% profit at BE
-    trailingDev: 0.015      // Trail price by 1.5%
+    beTriggerRoe: 0.10,
+    beOffsetPct: 0.003,
+    trailingDev: 0.015,
+    trailingActivationRoe: 0.15,
+    trailingCallbackRoe: 0.30
 };
 
 export type GuardianAction =
@@ -47,7 +51,45 @@ export function evaluateGuardianAction(
         ? (entryPrice - currentPrice) / entryPrice * leverage
         : (currentPrice - entryPrice) / entryPrice * leverage;
 
-    // 2. Break-Even Logic
+    // 2. Safety Net / Trailing Logic (Priority)
+    // If Peak ROE > Activation, use Callback logic
+    const activationRoe = config.trailingActivationRoe ?? 999;
+    const callbackRoe = config.trailingCallbackRoe ?? 0;
+    const currentPeakRoe = peakRoe ?? roe;
+
+    if (currentPeakRoe >= activationRoe) {
+        // Calculate Trigger ROE (e.g. 15% * (1 - 0.30) = 10.5%)
+        const triggerRoe = currentPeakRoe * (1 - callbackRoe);
+
+        // Calculate Price at Trigger ROE
+        // ROE = (Entry - Price) / Entry * Lev  =>  Price = Entry * (1 - ROE/Lev)
+        const triggerPrice = positionSide === 'SHORT'
+            ? entryPrice * (1 - (triggerRoe / leverage))
+            : entryPrice * (1 + (triggerRoe / leverage));
+
+        // Check if we should CLOSE NOW
+        const shouldClose = positionSide === 'SHORT'
+            ? currentPrice >= triggerPrice
+            : currentPrice <= triggerPrice;
+
+        if (shouldClose) {
+            return { type: 'CLOSE_MARKET', reason: 'TRAILING_SAFETY_NET' };
+        }
+
+        // Check if we should MOVE SL
+        // Only move if new trigger price is better than current SL
+        const isBetter = currentSlPrice ? (
+            positionSide === 'SHORT'
+                ? triggerPrice < currentSlPrice
+                : triggerPrice > currentSlPrice
+        ) : true;
+
+        if (isBetter) {
+            return { type: 'MOVE_SL_TRAILING', price: triggerPrice };
+        }
+    }
+
+    // 3. Break-Even Logic (Fallback if Safety Net not active)
     // If ROE > Trigger AND we haven't moved SL yet (approx check)
     const bePrice = positionSide === 'SHORT'
         ? entryPrice * (1 - config.beOffsetPct)
@@ -65,16 +107,14 @@ export function evaluateGuardianAction(
         return { type: 'MOVE_SL_BE', price: bePrice };
     }
 
-    // 3. Price-based Trailing Logic
+    // 4. Standard Price-based Trailing (Legacy/Fallback)
     // Only trail if we are in profit (better than entry)
     const isInProfit = positionSide === 'SHORT'
         ? currentPrice < entryPrice
         : currentPrice > entryPrice;
 
     // PARITY FIX: Only trail if BE has been triggered (ROE > 10%)
-    // Python logic: "If BE activated, use trailing stop"
-    if (isInProfit && (isBeTriggered || slIsAtBe)) {
-        // console.log(`[GUARDIAN] Trailing Active. ROE: ${roe.toFixed(4)}, BE: ${isBeTriggered}, SL@BE: ${slIsAtBe}`);
+    if (isInProfit && (isBeTriggered || slIsAtBe) && !config.trailingActivationRoe) {
         const trailingSlPrice = positionSide === 'SHORT'
             ? peakPrice * (1 + config.trailingDev)
             : peakPrice * (1 - config.trailingDev);
@@ -91,13 +131,7 @@ export function evaluateGuardianAction(
             ? currentPrice >= trailingSlPrice
             : currentPrice <= trailingSlPrice;
 
-        // DEBUG: Trade 2 investigation
-        if (Math.abs(entryPrice - 3278.93) < 0.01) {
-            console.log(`[TRADE 2 DEBUG] TS: ${Date.now()} | Entry: ${entryPrice}, Peak: ${peakPrice}, Trailing SL: ${trailingSlPrice}, Current: ${currentPrice}, Would Execute: ${wouldExecuteNow}`);
-        }
-
         if (wouldExecuteNow) {
-            // PARITY FIX: If calculated SL is already hit, CLOSE IMMEDIATELY
             return { type: 'CLOSE_MARKET', reason: 'TRAILING' };
         }
 

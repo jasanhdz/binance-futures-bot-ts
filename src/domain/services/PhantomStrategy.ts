@@ -16,6 +16,18 @@ export interface PhantomConfig {
     tpRoe: number;
     beRoe?: number;
     trailingStep?: number;
+    trailingActivationRoe?: number;
+    trailingCallbackRoe?: number;
+    maxHoldMs?: number;
+    forbiddenHours?: number[];
+    forbiddenDays?: number[];
+}
+
+export function isForbiddenTime(timestamp: number, forbiddenHours: number[] = [], forbiddenDays: number[] = []): boolean {
+    const date = new Date(timestamp);
+    const day = date.getUTCDay();
+    const hour = date.getUTCHours();
+    return forbiddenDays.includes(day) || forbiddenHours.includes(hour);
 }
 
 export interface PhantomSignal {

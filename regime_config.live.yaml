@@ -35,10 +35,57 @@ REGIMES:
     tp_roe: 0.06                 # 6% take profit (= 18% with 3x leverage)
     be_roe: 0.10                 # 10% ROE activates break-even
     trailing_step: 0.015         # 1.5% trailing stop
+    trailing_activation_roe: 0.15 # Activate trailing at 15% ROE
+    trailing_callback_roe: 0.30   # 30% callback (Safety Net)
+    max_trade_duration_ms: 14400000 # 4 Hours (Fixed Exit)
+    forbidden_hours: [0, 1, 22, 23] # UTC Hours to avoid
+    forbidden_days: [2]             # Tuesday (0=Sun, 1=Mon, 2=Tue)
 
 # ═════════════════════════════════════════════════════════════════════
 # SYMBOL OVERRIDES (Future: BTC/SOL will have their own Phantom configs)
 # ═════════════════════════════════════════════════════════════════════
 SYMBOL_OVERRIDES:
   ETHUSDT:
-    PHANTOM: { leverage: 5, hard_stop_roe: -0.015, entry_threshold: 0.55 }
+    # -------------------------------------------------------------------------
+    # ☢️ ULTRA GOD MODE ($823k): 20x + Fixed Exit (4h) + Extended SL
+    # Pros: Max Return. Cons: 70% Drawdown per Loss. Profile: Legend.
+    # -------------------------------------------------------------------------
+    PHANTOM: { 
+      leverage: 20, 
+      hard_stop_roe: -0.035, # -3.5% SL (70% Margin Risk)
+      entry_threshold: 0.55,
+      tp_roe: 2.5, # 250% ROE (Safe Ceiling)
+      max_trade_duration_ms: 14400000,
+      be_roe: 999.0, # Breakeven DISABLED
+      trailing_activation_roe: 999, # Disable Trailing
+      trailing_callback_roe: 0.0  # Unused
+    }
+
+    # -------------------------------------------------------------------------
+    # ⚖️ SMART MODE ($125k): 20x + Breakeven @ 15%
+    # Pros: Safe. Cons: Lower Return. Profile: Smart Human.
+    # -------------------------------------------------------------------------
+    # PHANTOM: { 
+    #   leverage: 20, 
+    #   hard_stop_roe: -0.025, 
+    #   entry_threshold: 0.55,
+    #   tp_roe: 2.5, # 250% ROE
+    #   max_trade_duration_ms: 14400000,
+    #   be_roe: 0.15, # Breakeven Trigger
+    #   trailing_activation_roe: 0.15, # Safety Net Active
+    #   trailing_callback_roe: 0.30    # 30% Callback
+    # }
+
+    # -------------------------------------------------------------------------
+    # 🚀 ELITE MODE ($174k): 15x + Fixed Exit (4h)
+    # Pros: Balanced. Cons: Boring. Profile: Mathematical.
+    # -------------------------------------------------------------------------
+    # PHANTOM: { 
+    #   leverage: 15, 
+    #   hard_stop_roe: -0.033, # Adjusted for 15x
+    #   entry_threshold: 0.55,
+    #   tp_roe: 2.5, # 250% ROE
+    #   max_trade_duration_ms: 14400000,
+    #   trailing_activation_roe: 0.15,
+    #   trailing_callback_roe: 0.30
+    # }

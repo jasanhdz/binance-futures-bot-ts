@@ -216,7 +216,7 @@ export class MockExchange implements Exchange {
             pnl = (entryPrice - exitPrice) * qty;
         }
 
-        const fee = (entryPrice * qty * 0.0005) + (exitPrice * qty * 0.0005);
+        const fee = 0; // DISABLED TO MATCH PYTHON BACKTEST PARITY
         const netPnl = pnl - fee;
 
         this.walletBalance += netPnl;
