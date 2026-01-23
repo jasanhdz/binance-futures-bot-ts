@@ -6,7 +6,7 @@ import { Candle } from '../domain/types';
 // Config
 const LEVERAGE = 20.0;
 const INITIAL_BALANCE = 20.0;
-const SL_PCT = 0.025;
+const SL_PCT = 0.035; // Ultra God Mode: 3.5% SL
 const INFERENCE_URL = 'http://localhost:5000/predict';
 
 interface TradeResult {
