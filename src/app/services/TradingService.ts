@@ -67,7 +67,7 @@ export class TradingService {
     /**
      * Start the trading loop
      */
-    async start(): Promise<void> {
+    async start(startLoop = true): Promise<void> {
         const { logger, notifier } = this.deps;
 
         logger.info('🦅 PHANTOM Trading Bot Starting', {
@@ -84,7 +84,9 @@ export class TradingService {
         );
 
         this.isRunning = true;
-        await this.runLoop();
+        if (startLoop) {
+            await this.runLoop();
+        }
     }
 
     /**
@@ -106,13 +108,6 @@ export class TradingService {
                 // Reset daily trade counter
                 this.checkDailyReset();
 
-                // Time Sentinel (Double Confirmation)
-                if (this.isForbiddenTime()) {
-                    logger.debug('Time Sentinel: Trading paused (Forbidden Hours)');
-                    await this.sleep(60000); // Sleep 1 min
-                    continue;
-                }
-
                 // Process each symbol
                 for (const symbol of this.config.symbols) {
                     if (!this.isRunning) break;
@@ -130,39 +125,46 @@ export class TradingService {
     }
 
     /**
-     * Time Sentinel: Block trading during forbidden hours
-     * Matches backtest logic: [1, 4, 5, 10, 13, 18, 19, 23] UTC
+     * Public tick method for external drivers (e.g. Backtest Runner)
      */
-    private isForbiddenTime(): boolean {
-        const now = new Date();
-        const hour = now.getUTCHours();
-        const day = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-
-        // Forbidden Hours (UTC) from backtest
-        const FORBIDDEN_HOURS = [1, 4, 5, 10, 13, 18, 19, 23];
-
-        // Forbidden Days (Tuesday = 2)
-        if (day === 2) return true;
-
-        return FORBIDDEN_HOURS.includes(hour);
+    public async tick(symbol: string): Promise<void> {
+        await this.processSymbol(symbol);
     }
 
     /**
      * Process a single symbol
      */
     protected async processSymbol(symbol: string): Promise<void> {
-        const { exchange, mlService, logger, state } = this.deps;
+        const { exchange, mlService, logger, state, configManager } = this.deps;
         const botState = state.get();
 
         try {
+            // 0. Time Sentinel (Dynamic from Config)
+            const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
+            const now = await exchange.getServerTime(); // Support Backtest Time
+
             // 1. Check if we have an active position
             const hasPosition = botState.mode !== 'IDLE';
 
             if (hasPosition) {
                 // Manage existing position (handles re-entry if position closes)
                 await this.managePosition(symbol, botState);
+
+                // PARITY FIX: Re-entry Check
+                // If position closed (IDLE), check for entry immediately (same candle)
+                const newState = state.get();
+                if (newState.mode === 'IDLE') {
+                    // Re-check forbidden time for re-entry
+                    if (!this.checkForbiddenTime(now, regimeConfig)) {
+                        await this.lookForEntry(symbol);
+                    }
+                }
             } else {
                 // Look for entry opportunities
+                // Check Time Sentinel (Forbidden Hours) ONLY for new entries
+                if (this.checkForbiddenTime(now, regimeConfig)) {
+                    return;
+                }
                 await this.lookForEntry(symbol);
             }
 
@@ -172,18 +174,26 @@ export class TradingService {
     }
 
     /**
+     * Check if current time is forbidden based on config
+     */
+    private checkForbiddenTime(timestamp: number, config: any): boolean {
+        if (!config.forbiddenHours && !config.forbiddenDays) return false;
+
+        const date = new Date(timestamp);
+        const hour = date.getUTCHours();
+        const day = date.getUTCDay(); // 0=Sun, 1=Mon...
+
+        if (config.forbiddenDays && config.forbiddenDays.includes(day)) return true;
+        if (config.forbiddenHours && config.forbiddenHours.includes(hour)) return true;
+
+        return false;
+    }
+
+    /**
      * Look for entry opportunities
      */
     private async lookForEntry(symbol: string): Promise<void> {
         const { mlService, exchange, logger, state, notifier, configManager } = this.deps;
-
-        // DEBUG: Log when lookForEntry is called
-        const candle = await exchange.getLastCandle(symbol);
-        console.log(`[ENTRY ATTEMPT] Candle timestamp: ${candle?.timestamp}, checking for entry`);
-
-        if (candle && candle.timestamp === 1737324000000) {
-            console.log('[PARITY DEBUG] lookForEntry called for Trade 3 candle');
-        }
 
         // Get current balance and update peak
         const balance = await exchange.getUSDTBalance();
@@ -374,8 +384,9 @@ export class TradingService {
      * Manage existing position
      */
     private async managePosition(symbol: string, botState: BotState): Promise<void> {
-        const { exchange, logger, state, notifier } = this.deps;
-        const guardianConfig = this.config.guardianConfig;
+        const { exchange, logger, state, notifier, configManager } = this.deps;
+        // DYNAMIC CONFIG: Load Guardian settings with symbol overrides
+        const guardianConfig = configManager.getGuardianConfig('PHANTOM', symbol);
 
         const side = botState.lastSide!;
         const entryPrice = botState.lastEntryPrice!;
@@ -416,14 +427,17 @@ export class TradingService {
                 return;
             }
 
-            // PARITY FIX: Check Time Limit (24h)
+            // PARITY FIX: Check Time Limit (Configurable)
             if (botState.lastEntryAt) {
                 const now = await exchange.getServerTime();
                 const duration = now - botState.lastEntryAt;
-                const TIME_LIMIT_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+                // Load maxHoldMs from config (default to 4h if missing)
+                const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
+                const TIME_LIMIT_MS = regimeConfig.maxHoldMs || 4 * 60 * 60 * 1000;
 
                 if (duration >= TIME_LIMIT_MS) {
-                    logger.info('⏳ Time Limit Reached (24h), closing position', { duration: duration / 3600000 });
+                    logger.info('⏳ Time Limit Reached, closing position', { duration: duration / 3600000 });
                     await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'TIME_LIMIT');
 
                     state.set({

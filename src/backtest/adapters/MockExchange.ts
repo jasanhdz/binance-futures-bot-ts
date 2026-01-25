@@ -10,11 +10,6 @@ export class MockExchange implements Exchange {
     private leverage: Map<string, number> = new Map();
     private trades: any[] = [];
 
-    // Track Break-Even state per symbol (for TRAILING detection)
-    private breakEvenActive: Map<string, boolean> = new Map();
-    private previousSlPrice: Map<string, number> = new Map();
-    private peakPrices: Map<string, number> = new Map();
-
     constructor(initialBalance: number = 20.0) {
         this.walletBalance = initialBalance;
     }
@@ -22,14 +17,10 @@ export class MockExchange implements Exchange {
     // --- Backtest Control Methods ---
 
     public setCandle(candle: Candle, nextCandle: Candle | null) {
-        // DEBUG: Track candle changes for Trade 3
-        if (candle.timestamp === 1737324000000 || candle.timestamp === 1737324300000) {
-            console.log(`[MOCK EXCHANGE] setCandle called: ${candle.timestamp} (${new Date(candle.timestamp).toISOString()})`);
-        }
-
         this.currentCandle = candle;
         this.nextCandle = nextCandle;
-        this.checkOrders(); // Check if any open orders are filled by current price action
+        // Do NOT auto-check orders here. Let the Runner/Service trigger recheckOrders()
+        // to support intra-candle simulation.
     }
 
     public getTrades() {
@@ -55,104 +46,23 @@ export class MockExchange implements Exchange {
             const position = this.positions.get(symbol);
             if (!position) return;
 
+            // Use whatever price is currently set in the candle (might be mutated for simulation)
             const low = this.currentCandle!.low;
             const high = this.currentCandle!.high;
 
             const slOrder = orders.find(o => o.type.includes('STOP'));
             const tpOrder = orders.find(o => o.type.includes('TAKE_PROFIT') || o.type === 'LIMIT');
 
-            // We need to retrieve the side from our internal storage
-            const storedPos = position as any; // Cast to any to access 'side'
+            const storedPos = position as any;
             const side = storedPos.side as Side;
-
-            // PARITY FIX: Simulate "Best Case" order (Low before High for SHORT)
-            // Python checks BE trigger (Low) before SL (High).
-            // If ROE > 10%, assume BE triggered and SL moved to Entry.
-
-            // PARITY FIX: Match Python Order of Operations
-            // 1. Update Peak Price & Check BE Trigger (using LOW)
-            // 2. Check Trailing Stop (using HIGH)
-            // 3. Check Hard SL (using HIGH)
-
-            // 1. Update Peak & BE
-            const entryPrice = position.entryPrice;
-            let peakPrice = this.peakPrices.get(symbol) || entryPrice;
-            if (side === 'SHORT') {
-                if (low < peakPrice) peakPrice = low;
-            } else {
-                if (high > peakPrice) peakPrice = high;
-            }
-            this.peakPrices.set(symbol, peakPrice);
-
-            let effectiveSlPrice = slOrder ? Number(slOrder.stopPrice) : null;
-            let isBeSimulated = false;
-
-            if (side === 'SHORT') {
-                const leverage = this.leverage.get(symbol) || 5;
-                const roe = (entryPrice - low) / entryPrice * leverage;
-
-                // If we hit 10% ROE, assume BE triggered first
-                if (roe >= 0.10) {
-                    // console.log(`[MOCK] BE Simulated! ROE=${roe.toFixed(4)}, Low=${low}`);
-                    const bePrice = entryPrice * 0.997; // 0.3% profit
-                    // Only move SL if it improves
-                    if (effectiveSlPrice === null || bePrice < effectiveSlPrice) {
-                        effectiveSlPrice = bePrice;
-                        isBeSimulated = true;
-                    }
-                }
-            }
 
             let hardSlHit = false;
             let tpHit = false;
-            let trailingHit = false;
             let exitPrice = 0;
             let exitReason = '';
 
-            // 2. Check Trailing (Intra-candle)
-            // Python checks Trailing BEFORE Hard SL (if BE is active)
-            const isBreakEven = this.breakEvenActive.get(symbol) || isBeSimulated;
-
-            if (isBreakEven) {
-                const trailingDev = 0.015; // Hardcoded from config
-                let trailingSlPrice = 0;
-
-                // Calculate Trailing Price based on Peak
-                if (side === 'SHORT') {
-                    trailingSlPrice = peakPrice * (1 + trailingDev);
-                    if (high >= trailingSlPrice) {
-                        trailingHit = true;
-                        exitPrice = trailingSlPrice;
-                        exitReason = 'TRAILING';
-                    }
-                } else { // LONG
-                    trailingSlPrice = peakPrice * (1 - trailingDev);
-                    if (low <= trailingSlPrice) {
-                        trailingHit = true;
-                        exitPrice = trailingSlPrice;
-                        exitReason = 'TRAILING';
-                    }
-                }
-            }
-
-            // 3. Check Hard SL (including BE if moved)
-            if (!trailingHit && effectiveSlPrice) {
-                const stopPrice = effectiveSlPrice;
-                if (side === 'SHORT') {
-                    if (high >= stopPrice) {
-                        hardSlHit = true;
-                        exitPrice = stopPrice;
-                        exitReason = 'STOP_LOSS';
-                    }
-                } else { // LONG
-                    if (low <= stopPrice) {
-                        hardSlHit = true;
-                        exitPrice = stopPrice;
-                        exitReason = 'STOP_LOSS';
-                    }
-                }
-            } else if (!trailingHit && slOrder) {
-                // Fallback to original SL order
+            // 1. Check Stop Loss
+            if (slOrder) {
                 const stopPrice = Number(slOrder.stopPrice);
                 if (side === 'SHORT') {
                     if (high >= stopPrice) {
@@ -160,7 +70,7 @@ export class MockExchange implements Exchange {
                         exitPrice = stopPrice;
                         exitReason = 'STOP_LOSS';
                     }
-                } else {
+                } else { // LONG
                     if (low <= stopPrice) {
                         hardSlHit = true;
                         exitPrice = stopPrice;
@@ -169,8 +79,8 @@ export class MockExchange implements Exchange {
                 }
             }
 
-            // 4. Check TP (Lowest Priority in Python loop, checked last)
-            if (!hardSlHit && !trailingHit && tpOrder) {
+            // 2. Check Take Profit
+            if (!hardSlHit && tpOrder) {
                 const tpPrice = Number(tpOrder.stopPrice || tpOrder.price);
                 if (side === 'SHORT') {
                     if (low <= tpPrice) {
@@ -188,16 +98,11 @@ export class MockExchange implements Exchange {
             }
 
             // EXECUTE
-            if (trailingHit) {
-                this.closePosition(symbol, position, exitPrice, 'TRAILING');
-            } else if (hardSlHit) {
-                // console.log(`[MOCK] Closing Position. Reason: STOP_LOSS. SL_Hit: true`);
+            if (hardSlHit) {
                 this.closePosition(symbol, position, exitPrice, 'STOP_LOSS');
             } else if (tpHit) {
                 this.closePosition(symbol, position, exitPrice, 'TAKE_PROFIT');
             }
-
-
         });
     }
 
@@ -235,9 +140,6 @@ export class MockExchange implements Exchange {
 
         this.positions.delete(symbol);
         this.activeOrders.set(symbol, []);
-        this.breakEvenActive.delete(symbol);  // Clean up BE state
-        this.previousSlPrice.delete(symbol);  // Clean up SL tracking
-        this.peakPrices.delete(symbol);       // Clean up Peak Price tracking
     }
 
     // --- Exchange Interface Implementation ---
@@ -280,7 +182,7 @@ export class MockExchange implements Exchange {
             tickSize: 0.01,
             stepSize: 0.001,
             pricePrecision: 2,
-            qtyPrecision: 3,
+            qtyPrecision: 20, // PARITY FIX: High precision to match Python floats
             minNotional: 0.0,
             notionalCap: 1000000
         };
@@ -330,28 +232,6 @@ export class MockExchange implements Exchange {
     async placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean> {
         const orders = this.activeOrders.get(symbol) || [];
         const newOrders = orders.filter(o => !o.type.includes('STOP'));
-
-        // Detect if this is a Break-Even or Trailing SL update
-        const previousSl = this.previousSlPrice.get(symbol);
-        const position = this.positions.get(symbol);
-
-        if (position) {
-            const storedPos = position as any;
-            const positionSide = storedPos.side as Side;
-            const entryPrice = position.entryPrice;
-
-            // Check if SL is at or better than entry (Break-Even activated)
-            const bePrice = positionSide === 'SHORT' ? entryPrice * 0.997 : entryPrice * 1.003;
-            const isAtBreakEven = positionSide === 'SHORT'
-                ? stopPrice <= bePrice
-                : stopPrice >= bePrice;
-
-            if (isAtBreakEven) {
-                this.breakEvenActive.set(symbol, true);
-            }
-        }
-
-        this.previousSlPrice.set(symbol, stopPrice);
 
         newOrders.push({
             type: 'STOP_MARKET',

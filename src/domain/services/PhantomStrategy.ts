@@ -127,9 +127,10 @@ export function shouldEnter(
     }
 
     // Second check (if context provided): Technical conditions must align
-    if (triggerCtx && !checkPhantomTrigger(triggerCtx)) {
-        return false;
-    }
+    // DISABLED FOR V9: Inference Server handles all filtering (Staleness, Volatility, Fakeouts)
+    // if (triggerCtx && !checkPhantomTrigger(triggerCtx)) {
+    //     return false;
+    // }
 
     return true;
 }

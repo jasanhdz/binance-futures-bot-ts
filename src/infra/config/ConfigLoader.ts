@@ -249,16 +249,29 @@ export class NinjaConfigManager {
     /**
      * Get Guardian Config from Regime settings
      */
-    getGuardianConfig(regime: RegimeType): { beTriggerRoe: number; beOffsetPct: number; trailingDev: number } {
+    getGuardianConfig(regime: RegimeType, symbol?: string): {
+        beTriggerRoe: number;
+        beOffsetPct: number;
+        trailingDev: number;
+        trailingActivationRoe?: number;
+        trailingCallbackRoe?: number;
+    } {
         const regimeKey = regime.toUpperCase() as keyof typeof this.config.REGIMES;
         const baseRegime = this.config.REGIMES?.[regimeKey] || this.getDefaultRegimeConfig(regime);
 
+        // Apply Symbol Overrides
+        let mergedConfig = { ...baseRegime };
+        if (symbol && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regimeKey]) {
+            const overrides = this.config.SYMBOL_OVERRIDES[symbol][regimeKey];
+            mergedConfig = { ...mergedConfig, ...overrides };
+        }
+
         return {
-            beTriggerRoe: baseRegime.be_roe || 0.10,
+            beTriggerRoe: mergedConfig.be_roe || 0.10,
             beOffsetPct: 0.003, // Hardcoded 0.3% offset for now (standard fee cover)
-            trailingDev: baseRegime.trailing_step || 0.015,
-            trailingActivationRoe: baseRegime.trailing_activation_roe,
-            trailingCallbackRoe: baseRegime.trailing_callback_roe
+            trailingDev: mergedConfig.trailing_step || 0.015,
+            trailingActivationRoe: mergedConfig.trailing_activation_roe,
+            trailingCallbackRoe: mergedConfig.trailing_callback_roe
         };
     }
 
