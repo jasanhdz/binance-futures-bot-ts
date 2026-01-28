@@ -54,7 +54,7 @@ SYMBOL_OVERRIDES:
       leverage: 20, 
       hard_stop_roe: -0.035, # -3.5% SL (70% Margin Risk)
       entry_threshold: 0.55,
-      tp_roe: 2.5, # 250% ROE (Safe Ceiling)
+      tp_roe: 0.125, # 250% ROE (Safe Ceiling)
       max_trade_duration_ms: 14400000,
       be_roe: 999.0, # Breakeven DISABLED
       trailing_activation_roe: 999, # Disable Trailing

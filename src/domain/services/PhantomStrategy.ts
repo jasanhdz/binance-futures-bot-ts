@@ -42,6 +42,12 @@ export interface PhantomSignal {
         cvd_slope?: number;
         weakness?: number;
     };
+    diagnostics?: {
+        longProb: number;
+        shortProb: number;
+        neutralProb: number;
+        threshold: number;
+    };
 }
 
 export const DEFAULT_PHANTOM_CONFIG: PhantomConfig = {
@@ -143,13 +149,25 @@ export function toTradeSignal(
     config: PhantomConfig,
     triggerCtx?: PhantomTriggerContext
 ): Signal {
+    const diagnostics = {
+        longProb: signal.longProb,
+        shortProb: signal.shortProb,
+        neutralProb: signal.neutralProb,
+        threshold: config.entryThreshold
+    };
+
     if (shouldEnter(signal, config, triggerCtx)) {
         return {
             action: 'ENTER_SHORT',
             reason: `PHANTOM | conf=${(signal.confidence * 100).toFixed(1)}%`,
-            confidence: signal.confidence
+            confidence: signal.confidence,
+            diagnostics
         };
     }
-    return { action: 'IDLE', reason: 'PHANTOM_WAIT' };
+    return {
+        action: 'IDLE',
+        reason: 'PHANTOM_WAIT',
+        diagnostics
+    };
 }
 

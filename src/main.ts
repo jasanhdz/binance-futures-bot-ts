@@ -41,7 +41,8 @@ class PhantomMLService implements MLService {
             confidence: result.short_prob,
             longProb: result.long_prob,
             shortProb: result.short_prob,
-            neutralProb: result.neutral_prob
+            neutralProb: result.neutral_prob,
+            features: result.features
         };
     }
 

@@ -49,6 +49,8 @@ export class TradingService {
     private isRunning = false;
     private tradesToday = 0;
     private lastTradeDayReset = 0;
+    private lastErrorTime: Record<string, number> = {}; // Error Rate Limiting
+    private lastLogTime: Record<string, number> = {}; // Adaptive Logging State
 
     // House Money & Circuit Breaker (Python parity)
     private readonly initialBalance = 20.0;  // Must match BacktestRunner
@@ -65,23 +67,58 @@ export class TradingService {
     ) { }
 
     /**
+     * Helper to send error notifications with rate limiting (1 hour)
+     */
+    private async notifyError(symbol: string, type: string, error: any): Promise<void> {
+        const key = `${symbol}|${type}`;
+        const now = Date.now();
+        const last = this.lastErrorTime[key] || 0;
+        const COOLDOWN = 60 * 60 * 1000; // 1 Hour
+
+        if (now - last > COOLDOWN) {
+            const msg = (error?.message || String(error)).substring(0, 200); // Truncate long errors
+            await this.deps.notifier.sendMessage(
+                `⚠️ **${type}**\n` +
+                `Symbol: ${symbol}\n` +
+                `Error: ${msg}`
+            );
+            this.lastErrorTime[key] = now;
+        }
+    }
+
+    /**
      * Start the trading loop
      */
     async start(startLoop = true): Promise<void> {
         const { logger, notifier } = this.deps;
 
         logger.info('🦅 PHANTOM Trading Bot Starting', {
-            symbols: this.config.symbols,
-            leverage: this.config.phantomConfig.leverage,
-            threshold: this.config.phantomConfig.entryThreshold
+            symbols: this.config.symbols
         });
 
-        await notifier.sendMessage(
-            `🦅 PHANTOM Bot Started\n` +
-            `Symbols: ${this.config.symbols.join(', ')}\n` +
-            `Leverage: ${this.config.phantomConfig.leverage}x\n` +
-            `Threshold: ${(this.config.phantomConfig.entryThreshold * 100).toFixed(0)}%`
-        );
+        let startupMsg = `🦅 **PHANTOM Bot Started**\n\n`;
+
+        // Log effective config for each symbol
+        for (const symbol of this.config.symbols) {
+            const effectiveConfig = this.deps.configManager.getRegimeConfig('PHANTOM', symbol);
+            const trailing = effectiveConfig.trailingActivationRoe ?? 999;
+
+            logger.info(`🔧 Effective Config for ${symbol}`, {
+                leverage: effectiveConfig.leverage,
+                threshold: effectiveConfig.entryThreshold,
+                hardStop: effectiveConfig.hardStopRoe,
+                tp: effectiveConfig.tpRoe,
+                trailing: trailing
+            });
+
+            startupMsg += `🔹 **${symbol}**\n`;
+            startupMsg += `   Lev: ${effectiveConfig.leverage}x\n`;
+            startupMsg += `   SL: ${(effectiveConfig.hardStopRoe * 100).toFixed(2)}%\n`;
+            startupMsg += `   TP: ${(effectiveConfig.tpRoe * 100).toFixed(0)}%\n`;
+            startupMsg += `   Trail: ${trailing > 100 ? 'OFF' : 'ON'}\n\n`;
+        }
+
+        await notifier.sendMessage(startupMsg);
 
         this.isRunning = true;
         if (startLoop) {
@@ -170,6 +207,7 @@ export class TradingService {
 
         } catch (error) {
             logger.warn('Symbol processing error', { symbol, error: String(error) });
+            await this.notifyError(symbol, 'SYSTEM ERROR', error);
         }
     }
 
@@ -195,191 +233,239 @@ export class TradingService {
     private async lookForEntry(symbol: string): Promise<void> {
         const { mlService, exchange, logger, state, notifier, configManager } = this.deps;
 
-        // Get current balance and update peak
-        const balance = await exchange.getUSDTBalance();
-        if (balance > this.peakBalance) {
-            this.peakBalance = balance;
-        }
-
-        // Circuit Breaker check (Python parity - check BEFORE entry)
-        if (this.circuitBreakerUntil !== null) {
-            // PARITY FIX: Use exchange time for backtest compatibility
-            const now = await exchange.getServerTime();
-            if (now < this.circuitBreakerUntil) {
-                logger.debug('Circuit breaker active', { until: new Date(this.circuitBreakerUntil).toISOString() });
-                return;
-            } else {
-                // CB period expired
-                this.circuitBreakerUntil = null;
-                logger.info('🔓 Circuit Breaker expired, resuming trading');
-            }
-        }
-
-        // Get symbol-specific config from YAML
-        const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
-        const capitalUsage = configManager.getCapitalAllocation(symbol, 'PHANTOM');
-        let leverage = regimeConfig.leverage;
-        const entryThreshold = regimeConfig.entryThreshold;
-
-        // House Money Rule (Python parity): Reduce leverage after 2x profit
-        if (balance >= this.initialBalance * this.houseMoneyMultiplier) {
-            leverage = regimeConfig.leverage * this.houseMoneyReduction;
-            logger.debug('House Money active', {
-                originalLeverage: regimeConfig.leverage,
-                reducedLeverage: leverage,
-                balance,
-                threshold: this.initialBalance * this.houseMoneyMultiplier
-            });
-        }
-
-        // Check daily trade limit
-        if (this.tradesToday >= this.config.maxTradesPerDay) {
-            logger.debug('Daily trade limit reached', { trades: this.tradesToday });
-            return;
-        }
-
-        // Get ML signal
-        const signal = await mlService.getSignal(symbol);
-
-        // Check if we should enter (using dynamic threshold)
-        const phantomConfig: PhantomConfig = {
-            leverage,
-            entryThreshold,
-            hardStopRoe: regimeConfig.hardStopRoe,
-            tpRoe: regimeConfig.tpRoe
-        };
-
-        // Build PhantomTrigger context from ML features
-        // This pre-filter ensures we only trade when CVD confirms distribution
-        const currentCandle = await exchange.getLastCandle(symbol);
-        const triggerCtx: PhantomTriggerContext | undefined = (signal.features && currentCandle) ? {
-            currentCandle,
-            cvdSlope: signal.features.cvd_slope ?? 0,
-            cvdZ: signal.features.cvd_z ?? 0,
-            weaknessScore: signal.features.weakness ?? 0
-        } : undefined;
-
-        // DEBUG: Trade 3 Investigation
-        if (currentCandle && currentCandle.timestamp === 1737324000000) {  // 2025-01-19 22:00:00
-            logger.info('[TS DEBUG Trade 3] shouldEnter check', {
-                signal: signal.action,
-                confidence: signal.confidence,
-                threshold: entryThreshold,
-                cvdSlope: signal.features?.cvd_slope,
-                cvdZ: signal.features?.cvd_z,
-                weakness: signal.features?.weakness,
-                hasTriggerCtx: !!triggerCtx
-            });
-        }
-
-        if (!shouldEnter(signal, phantomConfig, triggerCtx)) {
-            // DEBUG: Trade 3 - Log WHY it was rejected
-            if (currentCandle && currentCandle.timestamp === 1737324000000) {
-                logger.info('[TS DEBUG Trade 3] Entry REJECTED by shouldEnter');
-            }
-            logger.debug('No entry signal', {
-                symbol,
-                confidence: signal.confidence,
-                threshold: entryThreshold,
-                triggerPassed: triggerCtx ? 'checked' : 'skipped'
-            });
-            return;
-        }
-
-        // DEBUG: Trade 3 - Log if entry approved
-        if (currentCandle && currentCandle.timestamp === 1737324000000) {
-            logger.info('[TS DEBUG Trade 3] Entry APPROVED by shouldEnter');
-        }
-
-        // Execute entry
-        logger.info('📈 Entry signal detected', {
-            symbol,
-            side: signal.action,
-            confidence: `${(signal.confidence * 100).toFixed(1)}%`,
-            leverage: `${leverage}x`,
-            allocation: `${(capitalUsage * 100).toFixed(0)}%`
-        });
-
         try {
-            // Get wallet balance
-            const wallet = await exchange.getUSDTBalance();
-            const filters = await exchange.getSymbolFilters(symbol, leverage);
+            // Get current balance and update peak
+            const balance = await exchange.getUSDTBalance();
 
-            // Calculate position size using DYNAMIC capital allocation
-            // Python parity: position_size = balance * leverage
-            const markPrice = await exchange.getMarkPrice(symbol);
-            const notional = wallet * capitalUsage * leverage;  // ← Leveraged notional (matches Python)
-            const quantity = Math.floor((notional / markPrice) * Math.pow(10, filters.qtyPrecision)) / Math.pow(10, filters.qtyPrecision);
+            if (balance > this.peakBalance) {
+                this.peakBalance = balance;
+            }
 
-            if (quantity * markPrice < filters.minNotional) {
-                logger.warn('Position too small', {
+            // Circuit Breaker check (Python parity - check BEFORE entry)
+            if (this.circuitBreakerUntil !== null) {
+                // PARITY FIX: Use exchange time for backtest compatibility
+                const now = await exchange.getServerTime();
+                if (now < this.circuitBreakerUntil) {
+                    logger.debug('Circuit breaker active', { until: new Date(this.circuitBreakerUntil).toISOString() });
+                    return;
+                } else {
+                    // CB period expired
+                    this.circuitBreakerUntil = null;
+                    logger.info('🔓 Circuit Breaker expired, resuming trading');
+                }
+            }
+
+            // Get symbol-specific config from YAML
+            const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
+            const capitalUsage = configManager.getCapitalAllocation(symbol, 'PHANTOM');
+            let leverage = regimeConfig.leverage;
+            const entryThreshold = regimeConfig.entryThreshold;
+
+            // House Money Rule (Python parity): Reduce leverage after 2x profit
+            if (balance >= this.initialBalance * this.houseMoneyMultiplier) {
+                leverage = regimeConfig.leverage * this.houseMoneyReduction;
+                logger.debug('House Money active', {
+                    originalLeverage: regimeConfig.leverage,
+                    reducedLeverage: leverage,
+                    balance,
+                    threshold: this.initialBalance * this.houseMoneyMultiplier
+                });
+            }
+
+            // Check daily trade limit
+            if (this.tradesToday >= this.config.maxTradesPerDay) {
+                logger.debug('Daily trade limit reached', { trades: this.tradesToday });
+                return;
+            }
+
+            // Get ML signal
+            const signal = await mlService.getSignal(symbol);
+
+            // Build PhantomTrigger context from ML features
+            const currentCandle = await exchange.getLastCandle(symbol);
+            const triggerCtx: PhantomTriggerContext | undefined = (signal.features && currentCandle) ? {
+                currentCandle,
+                cvdSlope: signal.features.cvd_slope ?? 0,
+                cvdZ: signal.features.cvd_z ?? 0,
+                weaknessScore: signal.features.weakness ?? 0
+            } : undefined;
+
+            // --- HEARTBEAT LOG (Tick by Tick) ---
+            let pnlLog: number | undefined;
+            let roeLog: number | undefined;
+
+            if (state.get().mode !== 'IDLE') {
+                const currentBalance = await exchange.getUSDTBalance();
+                const entryBalance = state.get().lastEntryWallet || currentBalance;
+                pnlLog = currentBalance - entryBalance;
+
+                if (state.get().lastEntryQty && state.get().lastLeverage && state.get().lastEntryPrice) {
+                    const margin = (state.get().lastEntryPrice! * state.get().lastEntryQty!) / state.get().lastLeverage!;
+                    roeLog = (pnlLog / margin) * 100;
+                }
+            }
+
+            // --- ADAPTIVE SAMPLING (Noise Reduction) ---
+            const nowMs = Date.now();
+            const lastLog = this.lastLogTime[symbol] || 0;
+            const prob = signal.shortProb || 0;
+            const isIdle = state.get().mode === 'IDLE';
+            let shouldLog = true;
+
+            if (isIdle) {
+                if (prob < 0.10 && (nowMs - lastLog) < 60000) {
+                    shouldLog = false;
+                }
+            }
+
+            if (shouldLog) {
+                logger.info('phantom_tick', {
                     symbol,
-                    quantity,
-                    minNotional: filters.minNotional
+                    price: currentCandle?.close,
+                    action: signal.action,
+                    conf: signal.confidence,
+                    cvdSlope: signal.features?.cvd_slope,
+                    cvdZ: signal.features?.cvd_z,
+                    weakness: signal.features?.weakness,
+                    pnl: pnlLog,
+                    roe: roeLog,
+                    longProb: signal.longProb,
+                    shortProb: signal.shortProb,
+                    neutralProb: signal.neutralProb,
+                    threshold: entryThreshold,
+                    flags: signal.features
+                });
+                this.lastLogTime[symbol] = nowMs;
+            }
+
+            // Check if we should enter
+            const phantomConfig: PhantomConfig = {
+                leverage,
+                entryThreshold,
+                hardStopRoe: regimeConfig.hardStopRoe,
+                tpRoe: regimeConfig.tpRoe
+            };
+
+            if (!shouldEnter(signal, phantomConfig, triggerCtx)) {
+                logger.debug('No entry signal', {
+                    symbol,
+                    confidence: signal.confidence,
+                    threshold: entryThreshold
                 });
                 return;
             }
 
-            // Set DYNAMIC leverage from YAML
-            await exchange.setLeverage(symbol, leverage);
-            await exchange.ensureMarginType(symbol, 'ISOLATED');
-
-            // Open position
-            const side: Side = signal.action === 'SHORT' ? 'SHORT' : 'LONG';
-            const result = await exchange.marketOpen(symbol, side, quantity);
-
-            // Update state
-            state.set({
-                mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
-                lastSide: side,
-                lastEntryPrice: result.avgPrice,
-                lastLeverage: leverage,  // ← DYNAMIC
-                lastEntryAt: await exchange.getServerTime(), // PARITY FIX: Use exchange time
-                peakRoe: 0,
-                currentRegime: 'PHANTOM',
-                lastPeakPrice: result.avgPrice // Initialize peak price
-            });
-
-            // Place brackets (SL/TP) using DYNAMIC config
-            const stopPrice = side === 'SHORT'
-                ? result.avgPrice * (1 - phantomConfig.hardStopRoe)  // For short: stop above entry
-                : result.avgPrice * (1 + phantomConfig.hardStopRoe); // For long: stop below entry
-
-            const tpPrice = side === 'SHORT'
-                ? result.avgPrice * (1 - phantomConfig.tpRoe)
-                : result.avgPrice * (1 + phantomConfig.tpRoe);
-
-            await exchange.placeStopClose(symbol, side, stopPrice);
-            await exchange.placeTpClose(symbol, side, tpPrice);
-
-            this.tradesToday++;
-
-            // Notify
-            await notifier.sendMessage(
-                `🎯 PHANTOM ENTRY\n` +
-                `Symbol: ${symbol}\n` +
-                `Side: ${side}\n` +
-                `Entry: ${result.avgPrice.toFixed(2)}\n` +
-                `SL: ${stopPrice.toFixed(2)}\n` +
-                `TP: ${tpPrice.toFixed(2)}\n` +
-                `Confidence: ${(signal.confidence * 100).toFixed(1)}%`
-            );
-
-            logger.info('✅ Position opened', {
+            // Execute entry
+            logger.info('📈 Entry signal detected', {
                 symbol,
-                side,
-                entry: result.avgPrice,
-                orderId: result.orderId
+                side: signal.action,
+                confidence: `${(signal.confidence * 100).toFixed(1)}%`,
+                leverage: `${leverage}x`,
+                allocation: `${(capitalUsage * 100).toFixed(0)}%`
             });
+
+            try {
+                // Get wallet balance
+                const wallet = await exchange.getUSDTBalance();
+                const filters = await exchange.getSymbolFilters(symbol, leverage);
+
+                // Apply Fee Buffer
+                const feeBufferPct = this.deps.configManager.trading.fee_buffer_pct;
+                const effectiveWallet = wallet * (1 - feeBufferPct);
+
+                // Calculate position size
+                const markPrice = await exchange.getMarkPrice(symbol);
+                const notional = effectiveWallet * capitalUsage * leverage;
+                const quantity = Math.floor((notional / markPrice) * Math.pow(10, filters.qtyPrecision)) / Math.pow(10, filters.qtyPrecision);
+
+                if (quantity * markPrice < filters.minNotional) {
+                    logger.warn('Position too small', { symbol, quantity, minNotional: filters.minNotional });
+                    return;
+                }
+
+                // Set Leverage
+                await exchange.setLeverage(symbol, leverage);
+                await exchange.ensureMarginType(symbol, 'ISOLATED');
+
+                // Open position
+                const side: Side = signal.action === 'SHORT' ? 'SHORT' : 'LONG';
+                const result = await exchange.marketOpen(symbol, side, quantity);
+
+                // Update state
+                state.set({
+                    mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+                    lastSide: side,
+                    lastEntryPrice: result.avgPrice,
+                    lastLeverage: leverage,
+                    lastEntryAt: await exchange.getServerTime(),
+                    peakRoe: 0,
+                    currentRegime: 'PHANTOM',
+                    lastPeakPrice: result.avgPrice,
+                    lastEntryWallet: wallet,
+                    lastEntryQty: quantity,
+                    lastMlProb: signal.confidence
+                });
+
+                // Place brackets (SL/TP) using DYNAMIC config
+                // PARITY FIX: Round prices to tickSize to avoid "Precision is over the maximum" error
+                const tickSize = filters.tickSize;
+                const roundToTick = (price: number) => {
+                    const inverse = 1 / tickSize;
+                    return Math.floor(price * inverse) / inverse;
+                };
+
+                let stopPrice = side === 'SHORT'
+                    ? result.avgPrice * (1 - phantomConfig.hardStopRoe)
+                    : result.avgPrice * (1 + phantomConfig.hardStopRoe);
+
+                let tpPrice = side === 'SHORT'
+                    ? result.avgPrice * (1 - phantomConfig.tpRoe)
+                    : result.avgPrice * (1 + phantomConfig.tpRoe);
+
+                // Apply rounding
+                stopPrice = roundToTick(stopPrice);
+                tpPrice = roundToTick(tpPrice);
+
+                try {
+                    await exchange.placeStopClose(symbol, side, stopPrice, quantity);
+                    await exchange.placeTpClose(symbol, side, tpPrice, quantity);
+                } catch (bracketError) {
+                    logger.error('Bracket placement failed', { symbol, error: String(bracketError) });
+                    await this.deps.notifier.sendMessage(
+                        `⚠️ **BRACKET FAILED**\n` +
+                        `Symbol: ${symbol}\n` +
+                        `Error: ${String(bracketError)}\n` +
+                        `ACTION REQUIRED: Check Open Orders!`
+                    );
+                }
+
+                this.tradesToday++;
+
+                // Notify
+                await notifier.sendMessage(
+                    `🎯 PHANTOM ENTRY\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Side: ${side}\n` +
+                    `Entry: ${result.avgPrice.toFixed(2)}\n` +
+                    `Size: ${quantity} ETH ($${(quantity * result.avgPrice).toFixed(2)})\n` +
+                    `Balance: $${wallet.toFixed(2)}\n` +
+                    `SL: ${stopPrice.toFixed(2)}\n` +
+                    `TP: ${tpPrice.toFixed(2)}\n` +
+                    `Confidence: ${(signal.confidence * 100).toFixed(1)}%`
+                );
+
+                logger.info('✅ Position opened', { symbol, side, entry: result.avgPrice, orderId: result.orderId });
+
+            } catch (entryError) {
+                logger.error('Entry execution failed', { symbol, error: String(entryError) });
+                await this.notifyError(symbol, 'ENTRY FAILED', entryError);
+            }
 
         } catch (error) {
-            logger.error('Entry execution failed', { symbol, error: String(error) });
+            logger.error('LookForEntry error', { symbol, error: String(error) });
         }
     }
 
-    /**
-     * Manage existing position
-     */
     /**
      * Manage existing position
      */
@@ -423,6 +509,7 @@ export class TradingService {
                     await notifier.sendMessage(`🚨 Circuit Breaker Activated! DD: ${(currentDD * 100).toFixed(2)}%`);
                 }
 
+                await this.notifyExit(symbol, side, 'SL/TP', botState);
                 state.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
             }
@@ -446,7 +533,7 @@ export class TradingService {
                         lastExitReason: 'TIME_LIMIT'
                     });
 
-                    await notifier.sendMessage(`⏳ Time Limit Exit (24h)`);
+                    await this.notifyExit(symbol, side, 'TIME_LIMIT', botState);
                     return;
                 }
             }
@@ -486,12 +573,88 @@ export class TradingService {
                 if (currentRoe > (botState.peakRoe || -999)) {
                     state.set({ peakRoe: currentRoe });
                 }
+
+                // --- HEARTBEAT LOG (RIDE) ---
+                const currentBalance = await exchange.getUSDTBalance();
+                const entryBalance = botState.lastEntryWallet || currentBalance;
+                const pnlLog = currentBalance - entryBalance;
+
+                logger.info('phantom_tick', {
+                    symbol,
+                    price: candle.close,
+                    action: side, // LONG or SHORT
+                    conf: botState.lastMlProb || 0, // Show original entry conf
+                    cvdSlope: 0, // Not checking ML during ride
+                    cvdZ: 0,
+                    weakness: 0,
+                    pnl: pnlLog,
+                    roe: currentRoe * 100
+                });
+                // -----------------------------
             }
 
             // Get current SL price (to know if we need to move it)
             const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
             const currentSlOrder = openOrders.find(o => o.type.includes('STOP'));
             const currentSlPrice = currentSlOrder ? Number(currentSlOrder.stopPrice) : undefined;
+            const currentTpOrder = openOrders.find(o => o.type.includes('TAKE_PROFIT'));
+
+            // ═══════════════════════════════════════════════════════════════════════════
+            // 🛡️ BRACKET RESTORATION (Auto-Heal)
+            // If SL or TP are missing (manually deleted?), restore them immediately.
+            // ═══════════════════════════════════════════════════════════════════════════
+
+            const filters = await exchange.getSymbolFilters(symbol, botState.lastLeverage || 10);
+            const tickSize = filters.tickSize;
+            const roundToTick = (price: number) => {
+                const inverse = 1 / tickSize;
+                return Math.floor(price * inverse) / inverse;
+            };
+
+            // 1. Restore Stop Loss
+            if (!currentSlOrder) {
+                logger.warn('⚠️ Missing Stop Loss detected! Restoring...', { symbol });
+
+                let restoreSlPrice = side === 'SHORT'
+                    ? entryPrice * (1 + Math.abs(guardianConfig.beTriggerRoe)) // Fallback safe default? No, use hardStop
+                    : entryPrice * (1 - Math.abs(guardianConfig.beTriggerRoe));
+
+                // Better: Use Regime Hard Stop
+                const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
+                restoreSlPrice = side === 'SHORT'
+                    ? entryPrice * (1 - regimeConfig.hardStopRoe) // hardStopRoe is negative (-0.015) -> 1 - (-0.015) = 1.015
+                    : entryPrice * (1 + regimeConfig.hardStopRoe); // 1 + (-0.015) = 0.985
+
+                restoreSlPrice = roundToTick(restoreSlPrice);
+
+                try {
+                    await exchange.placeStopClose(symbol, side, restoreSlPrice, position.qtyAbs);
+                    logger.info('✅ Stop Loss Restored', { price: restoreSlPrice });
+                    await notifier.sendMessage(`🛡️ **SL Restored** for ${symbol} @ ${restoreSlPrice}`);
+                } catch (e) {
+                    logger.error('Failed to restore SL', { error: String(e) });
+                }
+            }
+
+            // 2. Restore Take Profit
+            if (!currentTpOrder) {
+                logger.warn('⚠️ Missing Take Profit detected! Restoring...', { symbol });
+
+                const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
+                let restoreTpPrice = side === 'SHORT'
+                    ? entryPrice * (1 - regimeConfig.tpRoe)
+                    : entryPrice * (1 + regimeConfig.tpRoe);
+
+                restoreTpPrice = roundToTick(restoreTpPrice);
+
+                try {
+                    await exchange.placeTpClose(symbol, side, restoreTpPrice, position.qtyAbs);
+                    logger.info('✅ Take Profit Restored', { price: restoreTpPrice });
+                    await notifier.sendMessage(`💰 **TP Restored** for ${symbol} @ ${restoreTpPrice}`);
+                } catch (e) {
+                    logger.error('Failed to restore TP', { error: String(e) });
+                }
+            }
 
             // Evaluate Guardian Action
 
@@ -525,12 +688,13 @@ export class TradingService {
                     logger.info('🛡️ Guardian Force Close', { symbol, reason: action.reason });
                     await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode);
                     state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: action.reason });
-                    await notifier.sendMessage(`🛡️ Guardian Exit: ${action.reason}`);
+                    await this.notifyExit(symbol, side, action.reason, botState);
                     break;
             }
 
         } catch (error) {
             logger.warn('Position management error', { symbol, error: String(error) });
+            await this.notifyError(symbol, 'MANAGEMENT ERROR', error);
         }
     }
 
@@ -544,8 +708,44 @@ export class TradingService {
         if (today > this.lastTradeDayReset) {
             this.tradesToday = 0;
             this.lastTradeDayReset = today;
-            this.deps.logger.info('Daily trade counter reset', { date: new Date().toISOString() });
+            this.tradesToday = 0;
+            this.lastTradeDayReset = today;
         }
+    }
+
+    private async notifyExit(
+        symbol: string,
+        side: Side,
+        reason: string,
+        botState: BotState
+    ): Promise<void> {
+        const { exchange, notifier } = this.deps;
+        const currentBalance = await exchange.getUSDTBalance();
+        const entryBalance = botState.lastEntryWallet || currentBalance;
+        const pnl = currentBalance - entryBalance;
+        const durationMs = Date.now() - (botState.lastEntryAt || Date.now());
+        const durationHrs = (durationMs / 3600000).toFixed(2);
+
+        // ROE Calculation
+        let roeStr = "N/A";
+        if (botState.lastEntryQty && botState.lastLeverage && botState.lastEntryPrice) {
+            const margin = (botState.lastEntryPrice * botState.lastEntryQty) / botState.lastLeverage;
+            const roe = (pnl / margin) * 100;
+            roeStr = `${roe.toFixed(2)}%`;
+        }
+
+        const emoji = pnl >= 0 ? '🤑' : '🩸';
+        const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+
+        await notifier.sendMessage(
+            `${emoji} **TRADE FINISHED**\n` +
+            `Symbol: ${symbol}\n` +
+            `Side: ${side}\n` +
+            `Reason: ${reason}\n` +
+            `Duration: ${durationHrs}h\n` +
+            `PnL: ${pnlStr} (${roeStr})\n` +
+            `Balance: $${currentBalance.toFixed(2)}`
+        );
     }
 
     private sleep(ms: number): Promise<void> {

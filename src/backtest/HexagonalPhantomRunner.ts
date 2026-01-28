@@ -7,7 +7,7 @@ import { TradingService } from '../app/services/TradingService'; // Use Producti
 import { NinjaConfigManager } from '../infra/config/ConfigLoader';
 import { Candle } from '../domain/types';
 
-async function runHexagonalBacktest() {
+export async function runHexagonalBacktest(injectedCandles?: Candle[], symbolOverride?: string) {
     console.log('👻 STARTING HEXAGONAL PHANTOM V9 BACKTEST (PRODUCTION CORE) 👻');
 
     // 1. Load Config
@@ -18,7 +18,7 @@ async function runHexagonalBacktest() {
     // Force reload to ensure we have the latest
     configManager.reloadIfNeeded();
 
-    const SYMBOL = 'ETHUSDT';
+    const SYMBOL = symbolOverride || 'ETHUSDT';
     const regimeConfig = configManager.getRegimeConfig('PHANTOM', SYMBOL);
     const guardianConfig = configManager.getGuardianConfig('PHANTOM');
 
@@ -59,29 +59,35 @@ async function runHexagonalBacktest() {
     await service.start(false);
 
     // 4. Load Data
-    const dataPath = path.resolve(__dirname, '../../../data/phantom_v9_ts_data.json');
-    if (!fs.existsSync(dataPath)) {
-        console.error(`❌ Data file not found: ${dataPath}`);
-        process.exit(1);
+    let candles: Candle[] = [];
+
+    if (injectedCandles) {
+        candles = injectedCandles;
+        console.log(`📊 Using ${candles.length} injected candles`);
+    } else {
+        const dataPath = path.resolve(__dirname, '../../../data/phantom_v9_ts_data.json');
+        if (!fs.existsSync(dataPath)) {
+            console.error(`❌ Data file not found: ${dataPath}`);
+            process.exit(1);
+        }
+
+        console.log('Loading candles...');
+        const rawData = fs.readFileSync(dataPath, 'utf-8');
+        const records: any[] = JSON.parse(rawData);
+
+        // Convert to Candles
+        candles = records.map(r => ({
+            openTime: r.timestamp,
+            timestamp: r.timestamp,
+            open: r.open,
+            high: r.high,
+            low: r.low,
+            close: r.close,
+            volume: r.volume,
+            closeTime: r.timestamp + 300000 - 1
+        }));
+        console.log(`📊 Loaded ${candles.length} candles`);
     }
-
-    console.log('Loading candles...');
-    const rawData = fs.readFileSync(dataPath, 'utf-8');
-    const records: any[] = JSON.parse(rawData);
-
-    // Convert to Candles
-    const candles: Candle[] = records.map(r => ({
-        openTime: r.timestamp,
-        timestamp: r.timestamp,
-        open: r.open,
-        high: r.high,
-        low: r.low,
-        close: r.close,
-        volume: r.volume,
-        closeTime: r.timestamp + 300000 - 1
-    }));
-
-    console.log(`📊 Loaded ${candles.length} candles`);
 
     // 5. Run Simulation Loop
     console.log('🚀 Running Simulation...');
@@ -160,6 +166,10 @@ async function runHexagonalBacktest() {
     console.log(`📄 Report saved to ${reportPath}`);
 
     service.stop();
+
+    return { finalBalance, trades };
 }
 
-runHexagonalBacktest().catch(console.error);
+if (require.main === module) {
+    runHexagonalBacktest().catch(console.error);
+}

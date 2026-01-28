@@ -48,8 +48,7 @@ export class MlProbabilityServiceClient {
     this.baseUrl = (opts.baseUrl ?? envBase).replace(/\/+$/, '');
 
     this.http = axios.create({
-      baseURL: this.baseUrl,
-      timeout: opts.timeoutMs ?? 10000,
+      timeout: opts.timeoutMs ?? 30000,
     });
   }
 

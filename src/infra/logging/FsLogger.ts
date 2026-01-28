@@ -354,6 +354,51 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       return line1 + '\n' + line2 + (line3 ? '\n' + line3 : '');
     }
 
+    case 'phantom_tick': {
+      const t = new Date().toLocaleTimeString('en-GB', { hour12: false });
+      const s = ctx?.symbol ? ctx.symbol.replace('USDT', '') : '';
+      const price = ctx?.price ? ctx.price.toFixed(2) : '0.00';
+
+      // MODE 1: COMBAT (Active Position)
+      if (ctx?.pnl !== undefined && ctx?.roe !== undefined) {
+        const pnl = ctx.pnl;
+        const roe = ctx.roe;
+        const pnlColor = pnl >= 0 ? color.ok : color.error;
+        const pnlSign = pnl >= 0 ? '+' : '-';
+        const pnlStr = `${pnlSign}$${Math.abs(pnl).toFixed(2)}`;
+        const roeStr = `${pnlSign}${Math.abs(roe).toFixed(2)}%`;
+
+        const sideIcon = ctx.action === 'SHORT' ? '🔻' : '🔺';
+        const sideText = ctx.action || 'POS';
+
+        return `${color.gray(`[${t}]`)} ${sideIcon} ${color.bold(`${sideText} ${s}`)} @ $${price} | 💰 PnL: ${pnlColor(`${pnlStr} (${roeStr})`)}`;
+      }
+
+      // MODE 2: HUNT (Idle)
+      const sp = ctx?.shortProb || 0;
+      const th = ctx?.threshold || 0.55;
+      const probColor = sp > th ? color.ok : color.dim;
+
+      // Parse Blockers from Flags
+      const f = ctx?.flags || {};
+      const blockers: string[] = [];
+
+      if (!f.near_resistance) blockers.push('RES');
+      if (!f.is_tired) blockers.push('TIRED');
+      if (!f.is_volatile) blockers.push('VOL');
+      if (!f.is_rejection) blockers.push('REJ');
+
+      const blockerText = blockers.length > 0
+        ? `${color.error('🛑 Blocker:')} [${blockers.join('|')}]`
+        : `${color.ok('✅ READY')}`;
+
+      return `${color.gray(`[${t}]`)} 🔍 ${color.info(s)}: $${price} | ⚡ S-Prob: ${probColor(sp.toFixed(2))} ${color.gray(`(Req: ${th.toFixed(2)})`)} | ${blockerText}`;
+    }
+
+    // Otherwise, use Table (Active Position)
+
+
+
     default: {
       // Fallback: msg + pares clave=valor (plano, sin objetos anidados)
       const flat =
