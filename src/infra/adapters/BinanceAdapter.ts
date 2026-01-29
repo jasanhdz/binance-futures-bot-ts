@@ -70,6 +70,8 @@ function isTrueish(v: unknown): boolean {
   return v === true || v === 'true' || v === 'TRUE' || v === 1 || v === '1';
 }
 
+import { WebSocketManager } from './WebSocketManager';
+
 export class BinanceExchange implements Exchange {
   private cli = Binance({
     apiKey: CONFIG.API_KEY,
@@ -77,6 +79,7 @@ export class BinanceExchange implements Exchange {
     httpFutures: CONFIG.HTTP_FUTURES,
     wsFutures: CONFIG.WS_FUTURES,
   });
+  private wsManager: WebSocketManager;
 
   private hedgeCache?: { value: boolean; at: number };
   private candleCache = new Map<string, CandleCacheEntry>();
@@ -98,12 +101,14 @@ export class BinanceExchange implements Exchange {
   private leverageBracketCache = new Map<string, { data: any; ts: number }>();
   private marginTypeCache = new Map<string, { type: 'ISOLATED' | 'CROSSED'; ts: number }>();
   private accountInfoCache?: { data: any; ts: number };
+  private wsCandleCache: Record<string, Candle> = {}; // Real-time cache
   private requestQueue: Promise<void> = Promise.resolve();
   private nextRequestAt = 0;
   private readonly minReqGapMs = Math.max(0, DEFAULT_MIN_REQ_GAP_MS);
   private readonly accountInfoTtlMs = Number(process.env.BINANCE_ACCOUNTINFO_TTL_MS ?? 250);
 
   constructor(private log: Logger) {
+    this.wsManager = new WebSocketManager(this.cli, log);
     const isTestnet = process.env.IS_TESTNET === '1';
     this.cli
       .futuresPing()
@@ -321,8 +326,31 @@ export class BinanceExchange implements Exchange {
   }
 
   async getLastCandle(symbol: string): Promise<Candle | null> {
+    if (this.wsCandleCache[symbol]) {
+      return this.wsCandleCache[symbol];
+    }
     const candles = await this.getCandles(symbol, '5m', 1);
     return candles.length > 0 ? candles[candles.length - 1] : null;
+  }
+
+  public subscribeToCandles(symbol: string) {
+    this.wsManager.connectCandles(symbol, '5m', (wsCandle) => {
+      const candle: Candle = {
+        openTime: wsCandle.startTime,
+        timestamp: wsCandle.startTime,
+        open: Number(wsCandle.open),
+        high: Number(wsCandle.high),
+        low: Number(wsCandle.low),
+        close: Number(wsCandle.close),
+        volume: Number(wsCandle.volume),
+        closeTime: wsCandle.closeTime
+      };
+      this.wsCandleCache[symbol] = candle;
+    });
+  }
+
+  public simulateChaos(durationMs: number) {
+    this.wsManager.simulateChaos(durationMs);
   }
 
   async getMarkPrice(symbol: string) {

@@ -51,6 +51,7 @@ export interface Exchange {
   getServerTime(): Promise<number>;
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   getLastCandle(symbol: string): Promise<Candle | null>;
+  subscribeToCandles(symbol: string): void;
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;
   getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;

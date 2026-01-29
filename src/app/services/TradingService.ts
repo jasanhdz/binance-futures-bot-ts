@@ -116,6 +116,9 @@ export class TradingService {
             startupMsg += `   SL: ${(effectiveConfig.hardStopRoe * 100).toFixed(2)}%\n`;
             startupMsg += `   TP: ${(effectiveConfig.tpRoe * 100).toFixed(0)}%\n`;
             startupMsg += `   Trail: ${trailing > 100 ? 'OFF' : 'ON'}\n\n`;
+
+            // 🔌 Phoenix Protocol: Subscribe to WS Candles
+            this.deps.exchange.subscribeToCandles(symbol);
         }
 
         await notifier.sendMessage(startupMsg);

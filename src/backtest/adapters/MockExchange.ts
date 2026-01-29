@@ -161,6 +161,10 @@ export class MockExchange implements Exchange {
         return this.currentCandle;
     }
 
+    subscribeToCandles(symbol: string): void {
+        // Mock implementation: do nothing
+    }
+
     async getFundingRate(symbol: string): Promise<FundingSnapshot> {
         return { rate: 0.0001, nextFundingTime: Date.now() + 3600000 };
     }
