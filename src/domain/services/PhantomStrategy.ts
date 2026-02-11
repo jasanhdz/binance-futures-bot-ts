@@ -32,11 +32,12 @@ export function isForbiddenTime(timestamp: number, forbiddenHours: number[] = []
 
 export interface PhantomSignal {
     symbol: string;
-    action: 'PASS' | 'SHORT';
+    action: 'PASS' | 'SHORT' | 'LONG';
     confidence: number;
     longProb: number;
     shortProb: number;
     neutralProb: number;
+    smart_leverage?: number; // V30 Leverage
     features?: {
         cvd_z?: number;
         cvd_slope?: number;
@@ -48,6 +49,7 @@ export interface PhantomSignal {
         neutralProb: number;
         threshold: number;
     };
+    metadata?: Record<string, any>;
 }
 
 export const DEFAULT_PHANTOM_CONFIG: PhantomConfig = {
@@ -127,8 +129,8 @@ export function shouldEnter(
     config: PhantomConfig,
     triggerCtx?: PhantomTriggerContext
 ): boolean {
-    // First check: ML model must say SHORT with sufficient confidence
-    if (signal.action !== 'SHORT' || signal.confidence <= config.entryThreshold) {
+    // First check: ML model must say SHORT or LONG with sufficient confidence
+    if ((signal.action !== 'SHORT' && signal.action !== 'LONG') || signal.confidence <= config.entryThreshold) {
         return false;
     }
 
@@ -158,7 +160,7 @@ export function toTradeSignal(
 
     if (shouldEnter(signal, config, triggerCtx)) {
         return {
-            action: 'ENTER_SHORT',
+            action: signal.action === 'LONG' ? 'ENTER_LONG' : 'ENTER_SHORT',
             reason: `PHANTOM | conf=${(signal.confidence * 100).toFixed(1)}%`,
             confidence: signal.confidence,
             diagnostics

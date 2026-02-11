@@ -65,7 +65,7 @@ export async function runHexagonalBacktest(injectedCandles?: Candle[], symbolOve
         candles = injectedCandles;
         console.log(`📊 Using ${candles.length} injected candles`);
     } else {
-        const dataPath = path.resolve(__dirname, '../../../data/phantom_v9_ts_data.json');
+        const dataPath = path.resolve(__dirname, '../../../data/phantom_v9_ts_data_2026.json');
         if (!fs.existsSync(dataPath)) {
             console.error(`❌ Data file not found: ${dataPath}`);
             process.exit(1);

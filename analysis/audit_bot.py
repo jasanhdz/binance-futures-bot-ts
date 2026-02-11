@@ -1,77 +1,128 @@
 #!/home/jasan/Develop/trading_system/binance-futures-bot-ts/.venv/bin/python3
+"""
+📊 TRADE REPORT (FIXED) - Comprehensive Trade Analysis with Peak ROI
+=====================================================================
+Combines Binance trade history with PM2 log analysis to show:
+- Entry/Exit times and prices
+- PnL and ROI
+- Peak ROI (positive and negative) during trade lifetime
+- Salvability analysis (could trailing stop have saved the trade?)
+
+Fixes:
+- Added 1000PEPE/USDT
+- Fetches 1 day of history to catch entries for trades closing today (avoids pagination limits)
+- Filters operations AFTER grouping to handle orphan exits
+- Updated default salvable threshold to 2.2%
+- Added error logging for API fetch failures
+"""
 import ccxt
 import pandas as pd
 import os
-import matplotlib.pyplot as plt
-import seaborn as sns
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-import sys
+from pathlib import Path
+from collections import defaultdict
 import argparse
 
-# Configuración
-plt.switch_backend('Agg')
-sns.set_theme(style="darkgrid")
+# Config
+SCRIPT_DIR = Path(__file__).resolve().parent
+# PROJECT_ROOT is not reliable when script is in ~/bin
+# Use absolute path for reliability
+DOTENV_PATH = Path("/home/jasan/Develop/trading_system/binance-futures-bot-ts/.env")
+# Point to the correct log file location
+LOG_FILE = Path.home() / ".pm2/logs/01-Trading-Bot-out.log"
 
-# Resolver rutas absolutas (Soporte para Symlinks)
-SCRIPT_PATH = os.path.realpath(__file__)
-SCRIPT_DIR = os.path.dirname(SCRIPT_PATH)
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
-DOTENV_PATH = os.path.join(PROJECT_ROOT, '.env')
 load_dotenv(DOTENV_PATH)
-
 API_KEY = os.getenv('BINANCE_API_KEY')
 API_SECRET = os.getenv('BINANCE_API_SECRET')
-TARGET_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'POL/USDT', 'DOGE/USDT']
-START_DATE = '2026-01-01T00:00:00Z'
 
-if not API_KEY or not API_SECRET:
-    print("❌ Error: Credenciales no encontradas en .env")
-    sys.exit(1)
+# All 21 trading symbols (Priority + Secondary)
+TARGET_SYMBOLS = [
+    # Priority (Alpha Batch)
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT',
+    'DOGE/USDT', 'LINK/USDT', 'AVAX/USDT', 'POL/USDT',
+    # Secondary (Bravo Batch)
+    'BNB/USDT', 'DOT/USDT', 'LTC/USDT', 'UNI/USDT', 'ATOM/USDT',
+    'NEAR/USDT', '1000PEPE/USDT', 'FET/USDT', 'SEI/USDT', 'WLD/USDT',
+    'INJ/USDT', 'APT/USDT'
+]
 
-def parse_arguments():
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+def parse_args():
     parser = argparse.ArgumentParser(
-        description="""
-        🤖 AUDIT BOT - Herramienta de Análisis Forense de Trading
-        =======================================================
-        Descarga, procesa y analiza el historial de operaciones de Binance Futures.
-        Genera reportes CSV y gráficos de rendimiento.
-        """,
-        formatter_class=argparse.RawTextHelpFormatter,
-        epilog="""
-        Ejemplos de uso:
-          audit_bot --today             -> Ver rendimiento de hoy
-          audit_bot --week --status WIN -> Ver ganancias de la semana
-          audit_bot --symbol SOLUSDT    -> Auditar solo SOL
-        """
+        description="📊 Trade Report with Peak ROI Analysis",
+        formatter_class=argparse.RawTextHelpFormatter
     )
     
-    time_group = parser.add_argument_group('⏱️  Filtros de Tiempo')
-    time_group.add_argument('--today', action='store_true', help='Operaciones de HOY (00:00 a 23:59 local)')
-    time_group.add_argument('--yesterday', action='store_true', help='Operaciones de AYER (00:00 a 23:59 local)')
-    time_group.add_argument('--week', action='store_true', help='Operaciones de los últimos 7 días')
-    time_group.add_argument('--month', action='store_true', help='Operaciones de los últimos 30 días')
-    time_group.add_argument('--days', type=int, metavar='N', help='Operaciones de los últimos N días')
+    time_group = parser.add_argument_group('⏱️  Time Filters')
+    time_group.add_argument('--today', action='store_true', help='Trades from today')
+    time_group.add_argument('--yesterday', action='store_true', help='Trades from yesterday')
+    time_group.add_argument('--week', action='store_true', help='Last 7 days')
+    time_group.add_argument('--month', action='store_true', help='Last 30 days')
+    time_group.add_argument('--days', type=int, metavar='N', help='Last N days')
     
-    filter_group = parser.add_argument_group('🔍 Filtros de Operación')
-    filter_group.add_argument('--symbol', type=str, metavar='SYM', help='Filtrar por par (ej: BTCUSDT, SOL)')
-    filter_group.add_argument('--status', type=str, choices=['WIN', 'LOSS'], help='Filtrar por resultado (Ganadoras o Perdedoras)')
-    filter_group.add_argument('--side', type=str, choices=['LONG', 'SHORT'], help='Filtrar por dirección del trade')
+    filter_group = parser.add_argument_group('🔍 Filters')
+    filter_group.add_argument('--status', type=str, choices=['WIN', 'LOSS'], help='WIN or LOSS trades only')
+    filter_group.add_argument('--symbol', type=str, help='Filter by symbol (e.g., SOL, BTCUSDT)')
+    filter_group.add_argument('--side', type=str, choices=['LONG', 'SHORT'], help='Filter by trade direction')
+    
+    analysis_group = parser.add_argument_group('📈 Analysis')
+    analysis_group.add_argument('--peak', action='store_true', help='Include Peak ROI analysis (parses logs)')
+    analysis_group.add_argument('--salvable', type=float, default=2.2, help='ROI threshold for salvability (default: 2.2%%)')
     
     return parser.parse_args()
 
-def fetch_trade_history():
-    print(f"🔄 Conectando a Binance (Inicio: {START_DATE})...", flush=True)
+def get_time_range(args):
+    """Get start/end datetime based on args."""
+    now = datetime.now()
+    
+    if args.today:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+        label = "HOY"
+    elif args.yesterday:
+        yesterday = now - timedelta(days=1)
+        start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+        label = "AYER"
+    elif args.week:
+        start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+        label = "ÚLTIMA SEMANA"
+    elif args.month:
+        start = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+        label = "ÚLTIMO MES"
+    elif args.days:
+        start = (now - timedelta(days=args.days)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+        label = f"ÚLTIMOS {args.days} DÍAS"
+    else:
+        start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+        label = "HOY + AYER"
+    
+    return start, end, label
+
+def fetch_trades(start_date, end_date):
+    """Fetch trades from Binance within date range."""
+    print("🔄 Conectando a Binance...", flush=True)
+    
     exchange = ccxt.binance({
         'apiKey': API_KEY,
         'secret': API_SECRET,
         'options': {'defaultType': 'future'},
         'enableRateLimit': True
     })
-
-    since = exchange.parse8601(START_DATE)
-    all_trades = []
     
+    # Fetch from 1 day BEFORE start_date to catch recent entries, but avoid pagination limits
+    # If we miss the entry, the orphan exit logic will handle it.
+    lookback_start = start_date - timedelta(days=1)
+    since = int(lookback_start.timestamp() * 1000)
+    
+    all_trades = []
     for symbol in TARGET_SYMBOLS:
         try:
             trades = exchange.fetch_my_trades(symbol, since=since)
@@ -79,149 +130,290 @@ def fetch_trade_history():
                 t['symbol'] = symbol
                 info = t.get('info', {})
                 t['realized_pnl'] = float(info.get('realizedPnl', 0))
-                t['commission_paid'] = float(info.get('commission', 0))
-                t['qty'] = float(t['amount'])
-                t['price'] = float(t['price'])
+                t['commission'] = float(info.get('commission', 0))
+                t['position_side'] = info.get('positionSide', 'BOTH')
             all_trades.extend(trades)
-        except:
-            pass 
-    return all_trades
+        except Exception as e:
+            print(f"⚠️ Error fetching {symbol}: {e}")
+            pass
+    
+    if not all_trades:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(all_trades)
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+    
+    # Make timezone naive for comparison
+    if df['datetime'].dt.tz is not None:
+        df['datetime'] = df['datetime'].dt.tz_localize(None)
+    
+    # DO NOT filter by date here. We need all trades to reconstruct operations.
+    # Filtering happens in main() after grouping.
+    
+    return df
 
-def filter_operations(df, args):
-    if df.empty: return df
-    filtered = df.copy()
-    now = datetime.now()
+def group_into_operations(df):
+    """Group individual trades into complete operations (entry + exit)."""
+    if df.empty:
+        return []
     
-    # Asegurar que datetime sea timezone-naive para comparación
-    if filtered['datetime'].dt.tz is not None:
-        filtered['datetime'] = filtered['datetime'].dt.tz_localize(None)
+    operations = []
     
-    if args.today:
-        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=999999)
-        filtered = filtered[(filtered['datetime'] >= start_of_day) & (filtered['datetime'] <= end_of_day)]
-    elif hasattr(args, 'yesterday') and args.yesterday:
-        yesterday = now - timedelta(days=1)
-        start_of_yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_of_yesterday = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
-        filtered = filtered[(filtered['datetime'] >= start_of_yesterday) & (filtered['datetime'] <= end_of_yesterday)]
-    elif args.week:
-        start_week = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-        filtered = filtered[filtered['datetime'] >= start_week]
-    elif args.month:
-        start_month = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
-        filtered = filtered[filtered['datetime'] >= start_month]
-    elif args.days:
-        start_days = (now - timedelta(days=args.days)).replace(hour=0, minute=0, second=0, microsecond=0)
-        filtered = filtered[filtered['datetime'] >= start_days]
+    # Group by symbol
+    for symbol in df['symbol'].unique():
+        sym_df = df[df['symbol'] == symbol].sort_values('datetime')
         
-    if args.symbol:
-        sym = args.symbol.upper()
-        if '/' not in sym and not sym.endswith('USDT'): sym += 'USDT'
-        if '/' not in sym: sym = sym.replace('USDT', '/USDT')
-        filtered = filtered[filtered['symbol'] == sym]
+        # Track position state
+        position = None
         
-    if args.side:
-        filtered = filtered[filtered['side_type'] == args.side]
+        for _, trade in sym_df.iterrows():
+            pnl = trade['realized_pnl']
+            side = trade['side']  # 'buy' or 'sell'
+            
+            if pnl != 0:  # This is an exit trade
+                if position is not None:
+                    # Complete the operation
+                    position['exit_time'] = trade['datetime']
+                    position['exit_price'] = trade['price']
+                    position['pnl'] = pnl
+                    position['exit_qty'] = trade['amount']
+                    operations.append(position)
+                    position = None
+                else:
+                    # Orphan exit (entry was before lookback period)
+                    # We can still report it if we want, but we miss entry price/time
+                    # For now, let's skip or create a partial?
+                    # Creating partial to ensure PnL is counted
+                    operations.append({
+                        'symbol': symbol.replace('/USDT', '').replace('/', ''),
+                        'side': 'LONG' if side == 'sell' else 'SHORT', # Exit side is opposite of entry
+                        'entry_time': None,
+                        'entry_price': 0.0, # Unknown
+                        'entry_qty': trade['amount'],
+                        'exit_time': trade['datetime'],
+                        'exit_price': trade['price'],
+                        'pnl': pnl
+                    })
+            else:
+                # This is an entry
+                if position is None:
+                    position = {
+                        'symbol': symbol.replace('/USDT', '').replace('/', ''),
+                        'side': 'LONG' if side == 'buy' else 'SHORT',
+                        'entry_time': trade['datetime'],
+                        'entry_price': trade['price'],
+                        'entry_qty': trade['amount'],
+                        'exit_time': None,
+                        'exit_price': None,
+                        'pnl': None
+                    }
+    
+    return operations
+
+def parse_log_for_peak_roi(operations, threshold=3.0):
+    """Parse PM2 logs to find Peak ROI for each operation's specific lifetime."""
+    if not LOG_FILE.exists():
+        print("⚠️  Log file not found, skipping Peak ROI analysis")
+        return operations
+    
+    print("📊 Analizando logs para Peak ROI...", flush=True)
+    
+    # Read log file
+    with open(LOG_FILE, 'rb') as f:
+        content = f.read().decode('utf-8', errors='ignore')
+    
+    lines = content.split('\n')
+    
+    # Parse all ROI entries with timestamps and entry prices
+    # Pattern: TIME | SYMBOL | SIDE | ENTRY_PRICE | MARK_PRICE | ROI%
+    pattern = r'(\d+:\d+:\d+\s+[AP]M)\s+.*?(\w+USDT)\s+.*?(LONG|SHORT)\s+.*?([\d.]+)\s+.*?([\d.]+)\s+.*?([+-]?[\d.]+)%'
+    
+    # Build index of log entries by symbol, side, and entry_price
+    log_entries = []
+    
+    for line in lines:
+        clean_line = ANSI_ESCAPE.sub('', line)
+        match = re.search(pattern, clean_line)
+        if match:
+            try:
+                time_str = match.group(1)
+                entry_price = float(match.group(4))
+                mark_price = float(match.group(5))
+                roi = float(match.group(6))
+                
+                log_entries.append({
+                    'time_str': time_str,
+                    'symbol': match.group(2),
+                    'side': match.group(3),
+                    'entry_price': entry_price,
+                    'mark_price': mark_price,
+                    'roi': roi
+                })
+            except:
+                pass
+    
+    print(f"   Parsed {len(log_entries):,} log entries")
+    
+    # Match ROI entries to operations BY ENTRY PRICE (unique identifier)
+    for op in operations:
+        if op['entry_time'] is None or op['exit_time'] is None or op['entry_price'] is None:
+            op['peak_pos'] = None
+            op['peak_neg'] = None
+            op['salvable'] = None
+            continue
         
+        op_symbol = op['symbol'] + 'USDT'
+        op_side = op['side']
+        op_entry_price = op['entry_price']
+        
+        # Find ALL log entries that match this specific trade by:
+        # 1. Same symbol
+        # 2. Same side
+        # 3. Same entry price (within 0.01% tolerance for float comparison)
+        price_tolerance = op_entry_price * 0.0001  # 0.01% tolerance
+        
+        relevant_rois = [
+            e['roi'] for e in log_entries
+            if e['symbol'] == op_symbol 
+            and e['side'] == op_side
+            and abs(e['entry_price'] - op_entry_price) < price_tolerance
+        ]
+        
+        if relevant_rois:
+            op['peak_pos'] = max(relevant_rois)
+            op['peak_neg'] = min(relevant_rois)
+            op['salvable'] = op['peak_pos'] >= threshold
+            op['roi_samples'] = len(relevant_rois)
+        else:
+            op['peak_pos'] = None
+            op['peak_neg'] = None
+            op['salvable'] = None
+            op['roi_samples'] = 0
+    
+    return operations
+
+def print_report_simple(operations, args, label):
+    """Print formatted report. Filters already applied."""
+    if not operations:
+        print("❌ No se encontraron operaciones en el rango seleccionado.")
+        return
+    
+    # Sort by entry time descending
+    operations.sort(key=lambda x: x['entry_time'] if x['entry_time'] else datetime.min, reverse=True)
+    
+    # Calculate totals
+    total_pnl = sum(op['pnl'] for op in operations if op['pnl'])
+    wins = sum(1 for op in operations if op['pnl'] and op['pnl'] > 0)
+    losses = sum(1 for op in operations if op['pnl'] and op['pnl'] <= 0)
+    win_rate = (wins / len(operations) * 100) if operations else 0
+    
+    # Print header
+    status_label = f" ({args.status})" if args.status else ""
+    print(f"\n📊 REPORTE DE OPERACIONES - {label}{status_label}")
+    print("="*100)
+    
+    # Determine if we're showing peak ROI
+    show_peak = args.peak and any(op.get('peak_pos') is not None for op in operations)
+    
+    if show_peak:
+        print(f"{'Par':<8} {'Lado':<6} {'Entrada':<14} {'Salida':<14} {'P.Entrada':<12} {'P.Salida':<12} {'PnL':<10} {'Peak+':<8} {'Peak-':<8} {'@{args.salvable}%?'}")
+        print("-"*100)
+    else:
+        print(f"{'Par':<8} {'Lado':<6} {'Entrada':<14} {'Salida':<14} {'P.Entrada':<12} {'P.Salida':<12} {'PnL':<10}")
+        print("-"*80)
+    
+    for op in operations:
+        symbol = op['symbol']
+        side = op['side'][0]  # L or S
+        entry_time = op['entry_time'].strftime('%m-%d %H:%M') if op['entry_time'] else '-'
+        exit_time = op['exit_time'].strftime('%m-%d %H:%M') if op['exit_time'] else '-'
+        entry_price = f"${op['entry_price']:.4f}" if op['entry_price'] else '-'
+        exit_price = f"${op['exit_price']:.4f}" if op['exit_price'] else '-'
+        pnl = f"${op['pnl']:.2f}" if op['pnl'] else '-'
+        
+        # Color PnL
+        if op['pnl'] and op['pnl'] < 0:
+            pnl = f"\033[91m{pnl}\033[0m"  # Red
+        elif op['pnl'] and op['pnl'] > 0:
+            pnl = f"\033[92m{pnl}\033[0m"  # Green
+        
+        if show_peak:
+            peak_pos = f"+{op['peak_pos']:.2f}%" if op.get('peak_pos') is not None else '-'
+            peak_neg = f"{op['peak_neg']:.2f}%" if op.get('peak_neg') is not None else '-'
+            salvable = "✅" if op.get('salvable') else "❌" if op.get('salvable') is False else "-"
+            print(f"{symbol:<8} {side:<6} {entry_time:<14} {exit_time:<14} {entry_price:<12} {exit_price:<12} {pnl:<10} {peak_pos:<8} {peak_neg:<8} {salvable}")
+        else:
+            print(f"{symbol:<8} {side:<6} {entry_time:<14} {exit_time:<14} {entry_price:<12} {exit_price:<12} {pnl:<10}")
+    
+    # Summary
+    print("="*100)
+    print(f"\n📈 RESUMEN:")
+    print(f"   Total Operaciones: {len(operations)}")
+    print(f"   Ganadas: {wins} | Perdidas: {losses} | Win Rate: {win_rate:.1f}%")
+    print(f"   PnL Total: ${total_pnl:.2f}")
+    
+    if show_peak:
+        salvable_count = sum(1 for op in operations if op.get('salvable'))
+        print(f"\n   🛡️ Operaciones salvables @{args.salvable}%: {salvable_count}/{len(operations)}")
+
+def main():
+    args = parse_args()
+    
+    # Get time range
+    start, end, label = get_time_range(args)
+    print(f"📅 Rango: {start.strftime('%Y-%m-%d %H:%M')} → {end.strftime('%Y-%m-%d %H:%M')}")
+    
+    # Fetch trades
+    df = fetch_trades(start, end)
+    
+    if df.empty:
+        print("❌ No se encontraron trades en el rango seleccionado.")
+        return
+    
+    # Group into operations
+    operations = group_into_operations(df)
+    
+    # Filter operations by time range (Exit time must be in range, or Entry time if Open)
+    # We primarily want CLOSED trades in the range for PnL reports
+    filtered_ops = []
+    for op in operations:
+        # If exit time exists, check if it's in range
+        if op['exit_time']:
+             if start <= op['exit_time'] <= end:
+                 filtered_ops.append(op)
+        # If open (no exit time), check entry time
+        elif op['entry_time']:
+             if start <= op['entry_time'] <= end:
+                 filtered_ops.append(op)
+    
+    operations = filtered_ops
+    
+    # Apply filters BEFORE counting
     if args.status:
         if args.status == 'WIN':
-            filtered = filtered[filtered['realized_pnl'] > 0]
+            operations = [op for op in operations if op['pnl'] and op['pnl'] > 0]
         else:
-            filtered = filtered[filtered['realized_pnl'] <= 0]
-            
-    return filtered
-
-def generate_charts(df, output_dir):
-    if df.empty: return
+            operations = [op for op in operations if op['pnl'] and op['pnl'] <= 0]
     
-    plt.figure(figsize=(10, 5))
-    df_sorted = df.sort_values('datetime')
-    df_sorted['cumulative_pnl'] = df_sorted['realized_pnl'].cumsum()
-    sns.lineplot(data=df_sorted, x='datetime', y='cumulative_pnl', marker='o', color='#00ff00')
-    plt.title('Curva de Crecimiento (Selección Actual)')
-    plt.ylabel('USDT')
-    plt.axhline(0, color='white', linestyle='--', alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'chart_equity.png'))
-    plt.close()
-
-    plt.figure(figsize=(10, 5))
-    pnl_sum = df.groupby('symbol')['realized_pnl'].sum().sort_values()
-    if not pnl_sum.empty:
-        colors = ['red' if x < 0 else 'green' for x in pnl_sum.values]
-        pnl_sum.plot(kind='bar', color=colors)
-        plt.title('PnL Neto por Moneda')
-        plt.axhline(0, color='white', linewidth=0.5)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'chart_pnl_symbol.png'))
-        plt.close()
-
-def analyze_operations(trades, args):
-    if not trades:
-        print("❌ Sin datos crudos.")
+    if args.symbol:
+        sym = args.symbol.upper().replace('USDT', '').replace('/', '')
+        operations = [op for op in operations if op['symbol'] == sym]
+    
+    if args.side:
+        operations = [op for op in operations if op['side'] == args.side]
+    
+    if not operations:
+        print("❌ No se encontraron operaciones con los filtros aplicados.")
         return
-
-    df = pd.DataFrame(trades)
-    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
-
-    closing_fills = df[df['realized_pnl'] != 0].copy()
-    if closing_fills.empty:
-        print("⚠️ Sin operaciones cerradas.")
-        return
-
-    ops = closing_fills.groupby(['symbol', 'order', 'side']).agg({
-        'realized_pnl': 'sum',
-        'commission_paid': 'sum',
-        'qty': 'sum',
-        'price': 'mean', 
-        'datetime': 'max'
-    }).reset_index()
-
-    def calc_metrics(row):
-        pos_side = 'LONG' if row['side'] == 'sell' else 'SHORT'
-        entry = row['price'] - (row['realized_pnl'] / row['qty']) if pos_side == 'LONG' else row['price'] + (row['realized_pnl'] / row['qty'])
-        roi = 0
-        if entry > 0:
-            roi = ((row['price'] - entry) / entry) * 100
-            if pos_side == 'SHORT': roi *= -1
-        return pd.Series([pos_side, entry, roi])
-
-    ops[['side_type', 'entry_price', 'roi_pct']] = ops.apply(calc_metrics, axis=1)
     
-    ops_filtered = filter_operations(ops, args)
-    ops_filtered = ops_filtered.sort_values('datetime', ascending=False)
+    print(f"   Operaciones: {len(operations)}")
     
-    if ops_filtered.empty:
-        print("\n⚠️ No se encontraron operaciones con los filtros aplicados.")
-        return
-
-    net_pnl = ops_filtered['realized_pnl'].sum() - ops_filtered['commission_paid'].sum()
-    win_rate = (len(ops_filtered[ops_filtered['realized_pnl'] > 0]) / len(ops_filtered)) * 100
-
-    print(f"\n--- REPORTE FILTRADO ({len(ops_filtered)} ops) ---")
-    symbol_counts = ops_filtered['symbol'].value_counts()
-    for symbol in TARGET_SYMBOLS:
-        count = symbol_counts.get(symbol, 0)
-        if count > 0:
-            print(f"✅ {symbol}: {count}")
+    # Parse logs for Peak ROI if requested
+    if args.peak:
+        operations = parse_log_for_peak_roi(operations, args.salvable)
     
-    csv_path = os.path.join(PROJECT_ROOT, 'analysis', 'operations_history.csv')
-    ops_filtered.to_csv(csv_path, index=False)
-    
-    charts_dir = os.path.join(PROJECT_ROOT, 'analysis')
-    generate_charts(ops_filtered, charts_dir)
-    
-    print(f"\n💾 CSV Filtrado: {csv_path}")
-    print(f"📄 Gráficas: {charts_dir}")
-    print(f"💡 Ver detalle: trading_report") # Sugerencia del nuevo comando
-
-    print("\n--- TOTALES (SELECCIÓN) ---")
-    print(f"Operaciones: {len(ops_filtered)}")
-    print(f"PnL Neto: ${net_pnl:.2f}")
-    print(f"Win Rate: {win_rate:.2f}%")
+    # Print report (filters already applied)
+    print_report_simple(operations, args, label)
 
 if __name__ == "__main__":
-    args = parse_arguments()
-    trades = fetch_trade_history()
-    analyze_operations(trades, args)
+    main()

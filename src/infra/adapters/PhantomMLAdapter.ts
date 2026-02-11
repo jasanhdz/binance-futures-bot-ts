@@ -19,6 +19,7 @@ export type MlProbabilityResponse = {
   // Legacy support (optional)
   primary_timeframe?: string;
   probabilities?: Record<string, { long_prob: number; short_prob: number }>;
+  smart_leverage?: number; // New V30 field
 };
 
 export type MlProbabilityClientOptions = {

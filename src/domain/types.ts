@@ -23,6 +23,7 @@ export type BotState = {
   lastTPAt?: number;
   lastExitReason?: string;
   lastExitAt?: number; // ← NUEVO
+  lastCheckAt?: number; // Heartbeat for Smart Exit
 
   // NUEVO: recordatorio de que ya armamos los brackets para esta posición
   bracketsArmedAt?: number;
@@ -64,6 +65,8 @@ export type BotState = {
   currentRegime?: 'PHANTOM' | 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER' | 'BERZERKER';
   lastPeakPrice?: number; // Highest/Lowest price reached during trade (for trailing stop)
 };
+
+
 
 type SignalCommon = {
   reason?: string;

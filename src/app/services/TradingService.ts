@@ -258,15 +258,38 @@ export class TradingService {
                 }
             }
 
-            // Get symbol-specific config from YAML
+            // Get symbol-specific config from YAML (Base Config)
             const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
             const capitalUsage = configManager.getCapitalAllocation(symbol, 'PHANTOM');
+
+            // Get ML signal (Moved UP for Dynamic Leverage)
+            const signal = await mlService.getSignal(symbol);
+
+            // Determine Leverage: Static (Config) vs Dynamic (Agent)
             let leverage = regimeConfig.leverage;
-            const entryThreshold = regimeConfig.entryThreshold;
+            let entryThreshold = regimeConfig.entryThreshold;
+
+            // [PURE V30 MODE] Hybrid Logic Removed
+            // Proceed directly to leverage/entry checks
+
+
+
+            if (signal.smart_leverage && signal.smart_leverage > 0) {
+                leverage = signal.smart_leverage;
+                logger.info('⚖️ Dynamic Leverage Applied', {
+                    base: regimeConfig.leverage,
+                    dynamic: leverage,
+                    conf: signal.confidence
+                });
+            }
 
             // House Money Rule (Python parity): Reduce leverage after 2x profit
             if (balance >= this.initialBalance * this.houseMoneyMultiplier) {
-                leverage = regimeConfig.leverage * this.houseMoneyReduction;
+                const houseLev = regimeConfig.leverage * this.houseMoneyReduction;
+                // Only reduce if Dynamic hasn't already reduced it further?
+                // House Money usually implies "Play Safe".
+                leverage = Math.min(leverage, houseLev);
+
                 logger.debug('House Money active', {
                     originalLeverage: regimeConfig.leverage,
                     reducedLeverage: leverage,
@@ -280,9 +303,6 @@ export class TradingService {
                 logger.debug('Daily trade limit reached', { trades: this.tradesToday });
                 return;
             }
-
-            // Get ML signal
-            const signal = await mlService.getSignal(symbol);
 
             // Build PhantomTrigger context from ML features
             const currentCandle = await exchange.getLastCandle(symbol);
@@ -316,7 +336,8 @@ export class TradingService {
             let shouldLog = true;
 
             if (isIdle) {
-                if (prob < 0.10 && (nowMs - lastLog) < 60000) {
+                // If idle, log less frequently unless prob is high
+                if (signal.confidence < 0.10 && (nowMs - lastLog) < 60000) {
                     shouldLog = false;
                 }
             }
@@ -349,6 +370,9 @@ export class TradingService {
                 tpRoe: regimeConfig.tpRoe
             };
 
+
+
+
             if (!shouldEnter(signal, phantomConfig, triggerCtx)) {
                 logger.debug('No entry signal', {
                     symbol,
@@ -379,6 +403,17 @@ export class TradingService {
                 // Calculate position size
                 const markPrice = await exchange.getMarkPrice(symbol);
                 const notional = effectiveWallet * capitalUsage * leverage;
+
+                // DIAGNOSTIC LOG: Margin Check
+                logger.info('💰 Pre-Entry Margin Check', {
+                    wallet: wallet,
+                    effectiveWallet: effectiveWallet,
+                    feeBuffer: feeBufferPct,
+                    capitalUsage: capitalUsage,
+                    leverage: leverage,
+                    maxNotional: notional,
+                    estPrice: markPrice
+                });
                 const quantity = Math.floor((notional / markPrice) * Math.pow(10, filters.qtyPrecision)) / Math.pow(10, filters.qtyPrecision);
 
                 if (quantity * markPrice < filters.minNotional) {
@@ -495,6 +530,7 @@ export class TradingService {
                 }
 
 
+
                 // Check for circuit breaker trigger AFTER trade closes
                 const currentDD = this.peakBalance > 0 ? (this.peakBalance - balance) / this.peakBalance : 0;
                 if (currentDD >= this.circuitBreakerDD && this.circuitBreakerUntil === null) {
@@ -565,6 +601,70 @@ export class TradingService {
 
             if (peakPrice !== botState.lastPeakPrice) {
                 state.set({ lastPeakPrice: peakPrice });
+            }
+
+            // --- ANXIETY EXIT (Smart Re-evaluation) ---
+            // Ask the model: "Do you still like this trade?"
+            const nowTime = Date.now();
+            if (nowTime - (botState.lastCheckAt || 0) > 60000) { // Check every 1 minute
+                try {
+                    // PARITY FIX: Use standard ML Service port
+                    const latestSignal = await this.deps.mlService.getSignal(symbol);
+
+                    // 1. Check for PASS (Idle) signal - Agent wants out
+                    // Only exit if Agent is CONFIDENT outcome is PASS (Hold/Flat)
+                    if (latestSignal.action === 'PASS' && latestSignal.confidence > 0.50) {
+                        logger.info('🧠 Smart Exit Triggered: Agent signaled PASS', {
+                            conf: latestSignal.confidence
+                        });
+                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AGENT_EXIT');
+                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'AGENT_EXIT' });
+                        await this.notifyExit(symbol, side, 'AGENT_EXIT (PASS)', botState);
+                        return;
+                    }
+
+                    // 2. Check for Reversal (Flip)
+                    // If we are LONG and signal is SHORT (with confidence), or vice versa
+                    if (side === 'SHORT' && latestSignal.action === 'LONG' && latestSignal.confidence > 0.55) {
+                        logger.warn('🧠 Smart Exit Triggered: Agent flipped LONG', {
+                            conf: latestSignal.confidence
+                        });
+                        // Close immediately (and potentially re-enter on next tick via normal logic)
+                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AGENT_FLIP');
+                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'AGENT_FLIP' });
+                        await this.notifyExit(symbol, side, 'AGENT_FLIP (LONG)', botState);
+                        return;
+                    }
+
+                    if (side === 'LONG' && latestSignal.action === 'SHORT' && latestSignal.confidence > 0.55) {
+                        logger.warn('🧠 Smart Exit Triggered: Agent flipped SHORT', {
+                            conf: latestSignal.confidence
+                        });
+                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AGENT_FLIP');
+                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'AGENT_FLIP' });
+                        await this.notifyExit(symbol, side, 'AGENT_FLIP (SHORT)', botState);
+                        return;
+                    }
+
+                    // 3. Lost Conviction (Confidence Drop)
+                    // If confidence drops below threshold substantially
+                    // (Optional: V30 might handle this by switching to PASS, but good safeguard)
+                    if (latestSignal.confidence < 0.30) {
+                        logger.warn('🧠 Smart Exit Triggered: Lost Conviction', {
+                            conf: latestSignal.confidence
+                        });
+                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'See_Ya');
+                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'LOST_CONVICTION' });
+                        await this.notifyExit(symbol, side, 'LOST_CONVICTION', botState);
+                        return;
+                    }
+
+                    // Update heartbeat check time
+                    state.set({ lastCheckAt: nowTime });
+
+                } catch (infError) {
+                    logger.warn('Smart Exit check failed (ignoring)', { error: String(infError) });
+                }
             }
 
             // PARITY FIX: Update Peak ROE
@@ -640,17 +740,42 @@ export class TradingService {
             }
 
             // 2. Restore Take Profit
+            // 2. Restore Take Profit
             if (!currentTpOrder) {
                 logger.warn('⚠️ Missing Take Profit detected! Restoring...', { symbol });
 
                 const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
-                let restoreTpPrice = side === 'SHORT'
-                    ? entryPrice * (1 - regimeConfig.tpRoe)
-                    : entryPrice * (1 + regimeConfig.tpRoe);
+                let restoreTpPrice: number;
+
+                if (side === 'SHORT') {
+                    // Prevent negative price for >100% profit targets
+                    // If tpRoe is 10 (1000%), 1 - 10 = -9 (Invalid)
+                    // Logic: If ROE implies price < 0, cap at 0.0001 (or 99.9% drop)
+                    const targetFactor = 1 - regimeConfig.tpRoe;
+                    if (targetFactor <= 0) {
+                        restoreTpPrice = entryPrice * 0.01; // 99% drop target (Max realistic)
+                    } else {
+                        restoreTpPrice = entryPrice * targetFactor;
+                    }
+                } else {
+                    restoreTpPrice = entryPrice * (1 + regimeConfig.tpRoe);
+                }
+
+                // Validation
+                if (!entryPrice || entryPrice <= 0 || !regimeConfig.tpRoe) {
+                    logger.error('Cannot restore TP: Invalid inputs', { entryPrice, tpRoe: regimeConfig.tpRoe });
+                    return; // Stop here
+                }
 
                 restoreTpPrice = roundToTick(restoreTpPrice);
 
+                if (isNaN(restoreTpPrice) || restoreTpPrice <= 0) {
+                    logger.error('Cannot restore TP: Invalid calculated price', { restoreTpPrice, entryPrice, roe: regimeConfig.tpRoe });
+                    return;
+                }
+
                 try {
+                    logger.info('Attempting to restore TP', { symbol, side, price: restoreTpPrice, qty: position.qtyAbs });
                     await exchange.placeTpClose(symbol, side, restoreTpPrice, position.qtyAbs);
                     logger.info('✅ Take Profit Restored', { price: restoreTpPrice });
                     await notifier.sendMessage(`💰 **TP Restored** for ${symbol} @ ${restoreTpPrice}`);

@@ -42,6 +42,7 @@ class PhantomMLService implements MLService {
             longProb: result.long_prob,
             shortProb: result.short_prob,
             neutralProb: result.neutral_prob,
+            smart_leverage: result.smart_leverage, // Forward to Service
             features: result.features
         };
     }

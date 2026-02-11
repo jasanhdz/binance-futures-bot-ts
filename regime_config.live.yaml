@@ -8,7 +8,7 @@ SYMBOLS:
 TRADING:
   capital_usage_default: 1.0        
   min_wallet_reserve_usdt: 0         
-  fee_buffer_pct: 0.0004            
+  fee_buffer_pct: 0.01            
   max_risk_pct: 0.02                 
   low_funds_threshold: 2             
   reenter_on_tp: true               
@@ -39,7 +39,7 @@ REGIMES:
     trailing_callback_roe: 0.30   # 30% callback (Safety Net)
     max_trade_duration_ms: 14400000 # 4 Hours (Fixed Exit)
     forbidden_hours: [0, 1, 22, 23] # UTC Hours to avoid
-    forbidden_days: [2]             # Tuesday (0=Sun, 1=Mon, 2=Tue)
+    # forbidden_days: [2]             # REMOVED: Trust the Agent
 
 # ═════════════════════════════════════════════════════════════════════
 # SYMBOL OVERRIDES (Future: BTC/SOL will have their own Phantom configs)
@@ -50,15 +50,22 @@ SYMBOL_OVERRIDES:
     # ☢️ ULTRA GOD MODE ($823k): 20x + Fixed Exit (4h) + Extended SL
     # Pros: Max Return. Cons: 70% Drawdown per Loss. Profile: Legend.
     # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # 🤖 V30 AGENT MODE: Pure RL Control
+    # Pros: Adaptive. Cons: Trust required. Profile: AI.
+    # -------------------------------------------------------------------------
     PHANTOM: { 
       leverage: 20, 
-      hard_stop_roe: -0.035, # -3.5% SL (70% Margin Risk)
+      hard_stop_roe: -0.80, # -80% Safety Net (Liquidation prevention)
       entry_threshold: 0.55,
-      tp_roe: 0.125, # 250% ROE (Safe Ceiling)
-      max_trade_duration_ms: 14400000,
-      be_roe: 999.0, # Breakeven DISABLED
-      trailing_activation_roe: 999, # Disable Trailing
-      trailing_callback_roe: 0.0  # Unused
+      tp_roe: 10.0, # Infinite TP
+      max_trade_duration_ms: 0, # Disable Time Limit
+      be_roe: 99.0, # Disable BE
+      trailing_activation_roe: 99.0, # Disable Trailing
+      trailing_callback_roe: 0.0,
+      
+      # 🦈 Hybrid Scalper (DISABLED)
+      scalper_enabled: false, 
     }
 
     # -------------------------------------------------------------------------

@@ -17,4 +17,5 @@ export interface RegimeConfig {
     trailingCallbackRoe?: number;
     forbiddenHours?: number[];
     forbiddenDays?: number[];
+
 }
