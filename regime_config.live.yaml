@@ -56,16 +56,13 @@ SYMBOL_OVERRIDES:
     # -------------------------------------------------------------------------
     PHANTOM: { 
       leverage: 20, 
-      hard_stop_roe: -0.80, # -80% Safety Net (Liquidation prevention)
+      hard_stop_roe: -0.03, # -3% price = -60% ROE (room to breathe)
       entry_threshold: 0.55,
-      tp_roe: 10.0, # Infinite TP
-      max_trade_duration_ms: 0, # Disable Time Limit
+      tp_roe: 0.125, # 12.5% price move = 250% ROE with 20x
+      max_trade_duration_ms: 14400000, # 4 hours time limit
       be_roe: 99.0, # Disable BE
       trailing_activation_roe: 99.0, # Disable Trailing
-      trailing_callback_roe: 0.0,
-      
-      # 🦈 Hybrid Scalper (DISABLED)
-      scalper_enabled: false, 
+      trailing_callback_roe: 0.0
     }
 
     # -------------------------------------------------------------------------
