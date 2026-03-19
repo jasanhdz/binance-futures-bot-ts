@@ -99,6 +99,34 @@ export class MlProbabilityServiceClient {
       throw err;
     }
   }
+
+  async getExitSignal(params: {
+    symbol: string;
+    entry_price: number;
+    current_pnl: number;
+    mfe: number;
+    mae: number;
+    duration_minutes: number;
+    leverage: number;
+  }): Promise<{ action: string; confidence: number }> {
+    try {
+      const { data } = await this.http.post<{ action: string; confidence: number }>(
+        '/ml-v2/exit_signal',
+        params,
+      );
+      return {
+        action: data.action,
+        confidence: data.confidence,
+      };
+    } catch (err) {
+      if (isAxiosError(err)) {
+        console.error('MlServiceError (Exit Signal):', err.message);
+      }
+      // Fallback
+      return { action: 'HOLD', confidence: 0.0 };
+    }
+  }
+
   async checkHealth(): Promise<boolean> {
     try {
       const { data } = await this.http.get('/health');

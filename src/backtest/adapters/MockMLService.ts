@@ -62,6 +62,10 @@ export class MockMLService implements MLService {
         }
     }
 
+    async getExitSignal(payload: any): Promise<{ action: string; confidence: number }> {
+        return { action: 'HOLD', confidence: 0 };
+    }
+
     async checkHealth(): Promise<boolean> {
         return true;
     }

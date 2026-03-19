@@ -376,8 +376,11 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
 
       // MODE 2: HUNT (Idle)
       const sp = ctx?.shortProb || 0;
+      const lp = ctx?.longProb || 0;
       const th = ctx?.threshold || 0.55;
-      const probColor = sp > th ? color.ok : color.dim;
+
+      const spColor = sp > th ? color.ok : color.dim;
+      const lpColor = lp > th ? color.ok : color.dim;
 
       // Parse Blockers from Flags
       const f = ctx?.flags || {};
@@ -392,7 +395,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
         ? `${color.error('🛑 Blocker:')} [${blockers.join('|')}]`
         : `${color.ok('✅ READY')}`;
 
-      return `${color.gray(`[${t}]`)} 🔍 ${color.info(s)}: $${price} | ⚡ S-Prob: ${probColor(sp.toFixed(2))} ${color.gray(`(Req: ${th.toFixed(2)})`)} | ${blockerText}`;
+      return `${color.gray(`[${t}]`)} 🔍 ${color.info(s)}: $${price} | ⚡ L:${lpColor(lp.toFixed(2))} S:${spColor(sp.toFixed(2))} ${color.gray(`(Req: ${th.toFixed(2)})`)} | ${blockerText}`;
     }
 
     // Otherwise, use Table (Active Position)

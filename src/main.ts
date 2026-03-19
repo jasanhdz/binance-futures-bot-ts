@@ -35,16 +35,31 @@ class PhantomMLService implements MLService {
     async getSignal(symbol: string): Promise<PhantomSignal> {
         const result = await this.client.fetchProbabilities({ symbol });
 
+        let action: 'LONG' | 'SHORT' | 'PASS' = 'PASS';
+        let confidence = 0;
+
+        if (result.long_prob > 0.5) {
+            action = 'LONG';
+            confidence = result.long_prob;
+        } else if (result.short_prob > 0.5) {
+            action = 'SHORT';
+            confidence = result.short_prob;
+        }
+
         return {
             symbol,
-            action: result.short_prob > 0.5 ? 'SHORT' : 'PASS',
-            confidence: result.short_prob,
+            action,
+            confidence,
             longProb: result.long_prob,
             shortProb: result.short_prob,
             neutralProb: result.neutral_prob,
             smart_leverage: result.smart_leverage, // Forward to Service
             features: result.features
         };
+    }
+
+    async getExitSignal(payload: any) {
+        return this.client.getExitSignal(payload);
     }
 
     async checkHealth(): Promise<boolean> {

@@ -182,6 +182,7 @@ export class BinanceExchange implements Exchange {
       low: +c.low,
       close: +c.close,
       volume: +c.volume,
+      buyVolume: +(c.baseAssetVolume || c.buyVolume || 0),
       closeTime: c.closeTime,
     };
   }
@@ -335,6 +336,7 @@ export class BinanceExchange implements Exchange {
 
   public subscribeToCandles(symbol: string) {
     this.wsManager.connectCandles(symbol, '5m', (wsCandle) => {
+      // Base candle processing
       const candle: Candle = {
         openTime: wsCandle.startTime,
         timestamp: wsCandle.startTime,
@@ -343,10 +345,39 @@ export class BinanceExchange implements Exchange {
         low: Number(wsCandle.low),
         close: Number(wsCandle.close),
         volume: Number(wsCandle.volume),
+        // We initialize buyVolume from the WS candle, but the aggTrades will overlay on it
+        buyVolume: Number((wsCandle as any).buyVolume || (wsCandle as any).baseAssetVolume || 0),
         closeTime: wsCandle.closeTime
       };
+
+      // Preserve the accumulated buyVolume if the aggTrade stream has already started filling it
+      // but only if the candle timestamps match (meaning we are still in the same 5m period)
+      const existingCandle = this.wsCandleCache[symbol];
+      if (existingCandle && existingCandle.openTime === candle.openTime) {
+        // Keep the max: either the Binance kline update, or our high-frequency aggTrade accumulation
+        candle.buyVolume = Math.max(candle.buyVolume, existingCandle.buyVolume);
+      }
+
       this.wsCandleCache[symbol] = candle;
     });
+
+    // Sub-candle High-Frequency AggTrade accumulation (The 10th Dimension Momentum Fix)
+    // The kline update is slow (often every 2 seconds). aggTrade is instant (milisegundos).
+    this.wsManager.connectAggTrades(symbol, (trade) => {
+      const currentCandle = this.wsCandleCache[symbol];
+      if (currentCandle) {
+        // isBuyerMaker = false significa que el Taker fue COMPRADOR. (Agresividad de compra)
+        // En Binance, isBuyerMaker: true significa que el Maker era comprador, por ende el Taker VENDIÓ.
+        // CVD Taker Buy Volume = !isBuyerMaker
+        if (!trade.isBuyerMaker) {
+          currentCandle.buyVolume += Number(trade.quantity);
+        }
+      }
+    });
+  }
+
+  public subscribeToPartialDepth(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void): void {
+    this.wsManager.connectPartialDepth(symbol, levels, speed, callback);
   }
 
   public simulateChaos(durationMs: number) {

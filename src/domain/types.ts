@@ -8,6 +8,7 @@ export type Candle = {
   low: number;
   close: number;
   volume: number;
+  buyVolume: number;
   closeTime: number;
 };
 
@@ -23,6 +24,7 @@ export type BotState = {
   lastTPAt?: number;
   lastExitReason?: string;
   lastExitAt?: number; // ← NUEVO
+  lowestRoe?: number; // MAE (Maximum Adverse Excursion)
   lastCheckAt?: number; // Heartbeat for Smart Exit
 
   // NUEVO: recordatorio de que ya armamos los brackets para esta posición
@@ -64,7 +66,26 @@ export type BotState = {
   // Native Brackets v8.0: Regime persistence for ensure-brackets.ts
   currentRegime?: 'PHANTOM' | 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER' | 'BERZERKER';
   lastPeakPrice?: number; // Highest/Lowest price reached during trade (for trailing stop)
+
+  shadowPos?: ShadowPosition | null; // <-- For shadow trading
 };
+
+export interface ShadowPosition {
+  active: boolean;
+  symbol: string;
+  side: Side;
+  entryPrice: number;
+  initialBalance: number;
+  confidence: number;
+  quantity: number;
+  leverage: number;
+  hardStopPrice: number;
+  tpPrice: number;
+  entryAt: number;
+  peakPrice: number;
+  lowestPrice: number;
+  peakRoe: number;        // Track max ROE for trailing stop
+}
 
 
 

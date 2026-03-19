@@ -18,7 +18,7 @@ describe('MockExchange', () => {
             high: high,
             low: low,
             close: price,
-            volume: 1000,
+            volume: 1000, buyVolume: 500,
             closeTime: baseTime + 300000
         };
     }

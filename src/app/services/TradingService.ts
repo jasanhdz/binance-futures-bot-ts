@@ -1,32 +1,40 @@
 /**
- * TradingService - Application Layer Use Case
- * 
- * Main trading orchestration service.
- * Coordinates between domain services and infrastructure adapters.
- * 
- * @see binance-futures-bot-ts-clone/src/app/strategy-runner.ts for reference
+ * TradingService.ts - Intelligent Kamikaze V33.5
+ *
+ * Objetivo: $20 → $500 (25x) en mínimo tiempo posible
+ * Filosofía: Agresividad matemática pura, cero paranoia defensiva
  */
-
-import { Exchange, PositionInfo } from '../ports/Exchange';
+import { Exchange } from '../ports/Exchange';
 import { MLService } from '../ports/MLService';
 import { Logger } from '../ports/Logger';
 import { StateStore } from '../ports/StateStore';
 import { Notifier } from '../ports/Notifier';
-import { BotState, Side, Signal } from '../../domain/types';
+import { BotState, Side, ShadowPosition } from '../../domain/types';
 import {
     PhantomConfig,
     PhantomSignal,
-    PhantomTriggerContext,
-    DEFAULT_PHANTOM_CONFIG,
-    shouldEnter,
-    toTradeSignal
+    shouldEnter
 } from '../../domain/services/PhantomStrategy';
 import {
-    GuardianConfig,
-    DEFAULT_GUARDIAN_CONFIG,
     evaluateGuardianAction
 } from '../../domain/services/ProfitGuardian';
 import { NinjaConfigManager } from '../../infra/config/ConfigLoader';
+import { LiquidityVoidDetector } from './LiquidityVoidDetector';
+
+// 🎯 CONSTANTES KAMIKAZE
+const TARGET_BALANCE = 500;
+const INITIAL_BALANCE = 20;
+const KAMIKAZE_LEVERAGE = 20;
+const MIN_ENTRY_THRESHOLD = 0.55;
+const MAX_ENTRY_THRESHOLD = 0.65;
+const RESURRECTION_THRESHOLD_BALANCE = 15;
+
+export interface KamikazeConfig {
+    threshold: number;
+    leverage: number;
+    capitalUsage: number;
+    tpRoe?: number;
+}
 
 export interface TradingServiceDeps {
     exchange: Exchange;
@@ -34,13 +42,13 @@ export interface TradingServiceDeps {
     logger: Logger;
     state: StateStore;
     notifier: Notifier;
-    configManager: NinjaConfigManager;  // ← NEW: Dynamic config loader
+    configManager: NinjaConfigManager;
 }
 
 export interface TradingServiceConfig {
     symbols: string[];
-    phantomConfig: PhantomConfig;
-    guardianConfig: GuardianConfig;
+    phantomConfig?: any;
+    guardianConfig?: any;
     tickIntervalMs: number;
     maxTradesPerDay: number;
 }
@@ -49,387 +57,289 @@ export class TradingService {
     private isRunning = false;
     private tradesToday = 0;
     private lastTradeDayReset = 0;
-    private lastErrorTime: Record<string, number> = {}; // Error Rate Limiting
-    private lastLogTime: Record<string, number> = {}; // Adaptive Logging State
+    private lastErrorTime: Record<string, number> = {};
+    private lastLogTime: Record<string, number> = {};
+    private lastAlivePulseMs: number = Date.now();
+    private hardWatchdogTimer: NodeJS.Timeout | null = null;
 
-    // House Money & Circuit Breaker (Python parity)
-    private readonly initialBalance = 20.0;  // Must match BacktestRunner
-    private peakBalance = 20.0;
-    private circuitBreakerUntil: number | null = null;  // Candle index
-    private readonly houseMoneyMultiplier = 2.0;
-    private readonly houseMoneyReduction = 1.0; // PARITY FIX: 100% Reinvestment (All-in)
-    private readonly circuitBreakerDD = 1.0;    // PARITY FIX: Disabled (was 0.15)
-    private readonly circuitBreakerCandles = 288;  // 24h
+    // 🧠 KAMIKAZE STATE
+    private consecutiveLosses = 0;
+    private lastEntryBalance = INITIAL_BALANCE;
+    private resurrectionMultiplier = 1.0;
+    private peakBalance = INITIAL_BALANCE;
+    private detector: Record<string, LiquidityVoidDetector> = {};
 
     constructor(
         private deps: TradingServiceDeps,
         private config: TradingServiceConfig
     ) { }
 
-    /**
-     * Helper to send error notifications with rate limiting (1 hour)
-     */
-    private async notifyError(symbol: string, type: string, error: any): Promise<void> {
-        const key = `${symbol}|${type}`;
-        const now = Date.now();
-        const last = this.lastErrorTime[key] || 0;
-        const COOLDOWN = 60 * 60 * 1000; // 1 Hour
+    private getKamikazeConfig(currentBalance: number): KamikazeConfig {
+        const progress = Math.max(0, (currentBalance - INITIAL_BALANCE) / (TARGET_BALANCE - INITIAL_BALANCE));
+        const aggressionLevel = 1 - progress;
+        const baseThreshold = MIN_ENTRY_THRESHOLD + (aggressionLevel * (MAX_ENTRY_THRESHOLD - MIN_ENTRY_THRESHOLD));
 
-        if (now - last > COOLDOWN) {
-            const msg = (error?.message || String(error)).substring(0, 200); // Truncate long errors
-            await this.deps.notifier.sendMessage(
-                `⚠️ **${type}**\n` +
-                `Symbol: ${symbol}\n` +
-                `Error: ${msg}`
-            );
-            this.lastErrorTime[key] = now;
+        if (currentBalance < RESURRECTION_THRESHOLD_BALANCE && this.consecutiveLosses >= 2) {
+            this.resurrectionMultiplier = 0.85;
+            return {
+                threshold: 0.55,
+                leverage: 10,
+                capitalUsage: 1.0,
+                tpRoe: 0.35
+            };
         }
+
+        this.resurrectionMultiplier = 1.0;
+        const capitalUsage = progress > 0.8 ? 0.7 : 1.0;
+        return {
+            threshold: baseThreshold,
+            leverage: KAMIKAZE_LEVERAGE,
+            capitalUsage: capitalUsage
+        };
     }
 
-    /**
-     * Start the trading loop
-     */
     async start(startLoop = true): Promise<void> {
         const { logger, notifier } = this.deps;
-
-        logger.info('🦅 PHANTOM Trading Bot Starting', {
-            symbols: this.config.symbols
+        logger.info('🔥 KAMIKAZE PHANTOM V33.5 ACTIVATED', {
+            target: TARGET_BALANCE,
+            initial: INITIAL_BALANCE,
+            leverage: KAMIKAZE_LEVERAGE,
+            mode: 'INTELLIGENT_AGGRESSION'
         });
 
-        let startupMsg = `🦅 **PHANTOM Bot Started**\n\n`;
+        let startupMsg = `🔥 **KAMIKAZE V33.5 LAUNCHED**\n\n`;
+        startupMsg += `🎯 Target: $${INITIAL_BALANCE} → $${TARGET_BALANCE}\n`;
+        startupMsg += `⚡ Leverage: ${KAMIKAZE_LEVERAGE}x (LOCKED)\n`;
+        startupMsg += `🧠 Threshold: ${MIN_ENTRY_THRESHOLD}-${MAX_ENTRY_THRESHOLD} (Adaptive)\n`;
+        startupMsg += `🛡️ Circuit Breaker: DISABLED\n`;
+        startupMsg += `🛑 Sentinel: ELIMINATED\n\n`;
+        startupMsg += `⚠️ *Pure CVD Tensor Navigation*`;
 
-        // Log effective config for each symbol
         for (const symbol of this.config.symbols) {
-            const effectiveConfig = this.deps.configManager.getRegimeConfig('PHANTOM', symbol);
-            const trailing = effectiveConfig.trailingActivationRoe ?? 999;
-
-            logger.info(`🔧 Effective Config for ${symbol}`, {
-                leverage: effectiveConfig.leverage,
-                threshold: effectiveConfig.entryThreshold,
-                hardStop: effectiveConfig.hardStopRoe,
-                tp: effectiveConfig.tpRoe,
-                trailing: trailing
-            });
-
-            startupMsg += `🔹 **${symbol}**\n`;
-            startupMsg += `   Lev: ${effectiveConfig.leverage}x\n`;
-            startupMsg += `   SL: ${(effectiveConfig.hardStopRoe * 100).toFixed(2)}%\n`;
-            startupMsg += `   TP: ${(effectiveConfig.tpRoe * 100).toFixed(0)}%\n`;
-            startupMsg += `   Trail: ${trailing > 100 ? 'OFF' : 'ON'}\n\n`;
-
-            // 🔌 Phoenix Protocol: Subscribe to WS Candles
             this.deps.exchange.subscribeToCandles(symbol);
+            this.detector[symbol] = new LiquidityVoidDetector(this.deps.logger);
+
+            if (this.deps.exchange.subscribeToPartialDepth) {
+                this.deps.exchange.subscribeToPartialDepth(symbol, 50, '100ms', (depth: any) => {
+                    if (depth && depth.bids && depth.asks) {
+                        const mapper = (arr: any[]) => arr.map(row => {
+                            if (Array.isArray(row)) {
+                                return { price: Number(row[0]), qty: Number(row[1]) };
+                            }
+                            return { price: Number(row.price), qty: Number(row.quantity) };
+                        });
+                        this.detector[symbol].processDepthUpdate({
+                            bidDepth: mapper(depth.bids),
+                            askDepth: mapper(depth.asks)
+                        });
+                    }
+                });
+            }
         }
 
         await notifier.sendMessage(startupMsg);
-
         this.isRunning = true;
+
+        this.hardWatchdogTimer = setInterval(() => {
+            if (this.isRunning && (Date.now() - this.lastAlivePulseMs > 180000)) {
+                this.deps.logger.error('💀 SYSTEM DEADLOCK DETECTED: No pulse in 3 minutes. Committing suicide to trigger PM2 restart.');
+                process.exit(1);
+            }
+        }, 10000);
+
         if (startLoop) {
             await this.runLoop();
         }
     }
 
-    /**
-     * Stop the trading loop
-     */
     stop(): void {
         this.isRunning = false;
-        this.deps.logger.info('Trading bot stopped');
+        this.deps.logger.info('Kamikaze bot stopped');
+        if (this.hardWatchdogTimer) {
+            clearInterval(this.hardWatchdogTimer);
+        }
     }
 
-    /**
-     * Main trading loop
-     */
     private async runLoop(): Promise<void> {
-        const { logger } = this.deps;
-
         while (this.isRunning) {
             try {
-                // Reset daily trade counter
                 this.checkDailyReset();
-
-                // Process each symbol
                 for (const symbol of this.config.symbols) {
                     if (!this.isRunning) break;
                     await this.processSymbol(symbol);
                 }
-
-                // Wait for next tick
                 await this.sleep(this.config.tickIntervalMs);
-
             } catch (error) {
-                logger.error('Trading loop error', { error: String(error) });
-                await this.sleep(5000); // Wait before retry
+                this.deps.logger.error('Loop error', { error: String(error) });
+                await this.sleep(1000);
             }
         }
     }
 
-    /**
-     * Public tick method for external drivers (e.g. Backtest Runner)
-     */
-    public async tick(symbol: string): Promise<void> {
+    async tick(symbol: string): Promise<void> {
         await this.processSymbol(symbol);
     }
 
-    /**
-     * Process a single symbol
-     */
-    protected async processSymbol(symbol: string): Promise<void> {
-        const { exchange, mlService, logger, state, configManager } = this.deps;
+    private async processSymbol(symbol: string): Promise<void> {
+        this.lastAlivePulseMs = Date.now();
+        const { exchange, state, configManager } = this.deps;
         const botState = state.get();
 
         try {
-            // 0. Time Sentinel (Dynamic from Config)
-            const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
-            const now = await exchange.getServerTime(); // Support Backtest Time
-
-            // 1. Check if we have an active position
             const hasPosition = botState.mode !== 'IDLE';
+            const shadowPos = state.get().shadowPos;
 
-            if (hasPosition) {
-                // Manage existing position (handles re-entry if position closes)
-                await this.managePosition(symbol, botState);
-
-                // PARITY FIX: Re-entry Check
-                // If position closed (IDLE), check for entry immediately (same candle)
-                const newState = state.get();
-                if (newState.mode === 'IDLE') {
-                    // Re-check forbidden time for re-entry
-                    if (!this.checkForbiddenTime(now, regimeConfig)) {
-                        await this.lookForEntry(symbol);
-                    }
-                }
-            } else {
-                // Look for entry opportunities
-                // Check Time Sentinel (Forbidden Hours) ONLY for new entries
-                if (this.checkForbiddenTime(now, regimeConfig)) {
-                    return;
-                }
-                await this.lookForEntry(symbol);
+            if (shadowPos && shadowPos.active) {
+                await this.manageShadowPosition(symbol);
             }
 
+            if (hasPosition) {
+                await this.managePosition(symbol, botState);
+                const newState = state.get();
+                if (newState.mode === 'IDLE') {
+                    await this.lookForEntry(symbol);
+                }
+            } else {
+                await this.lookForEntry(symbol);
+            }
         } catch (error) {
-            logger.warn('Symbol processing error', { symbol, error: String(error) });
-            await this.notifyError(symbol, 'SYSTEM ERROR', error);
+            this.deps.logger.warn('Process error', { symbol, error: String(error) });
         }
     }
 
-    /**
-     * Check if current time is forbidden based on config
-     */
     private checkForbiddenTime(timestamp: number, config: any): boolean {
         if (!config.forbiddenHours && !config.forbiddenDays) return false;
-
         const date = new Date(timestamp);
         const hour = date.getUTCHours();
-        const day = date.getUTCDay(); // 0=Sun, 1=Mon...
-
+        const day = date.getUTCDay();
         if (config.forbiddenDays && config.forbiddenDays.includes(day)) return true;
         if (config.forbiddenHours && config.forbiddenHours.includes(hour)) return true;
-
         return false;
     }
 
-    /**
-     * Look for entry opportunities
-     */
     private async lookForEntry(symbol: string): Promise<void> {
         const { mlService, exchange, logger, state, notifier, configManager } = this.deps;
-
         try {
-            // Get current balance and update peak
             const balance = await exchange.getUSDTBalance();
+            const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
+
+            const kamikazeConfig = this.getKamikazeConfig(balance);
+            const kamikazeThreshold = kamikazeConfig.threshold;
+            const leverage = kamikazeConfig.leverage;
+
+            if (this.tradesToday >= this.config.maxTradesPerDay) {
+                return;
+            }
+
+            const now = await exchange.getServerTime();
+            if (this.checkForbiddenTime(now, regimeConfig)) return;
 
             if (balance > this.peakBalance) {
                 this.peakBalance = balance;
             }
 
-            // Circuit Breaker check (Python parity - check BEFORE entry)
-            if (this.circuitBreakerUntil !== null) {
-                // PARITY FIX: Use exchange time for backtest compatibility
-                const now = await exchange.getServerTime();
-                if (now < this.circuitBreakerUntil) {
-                    logger.debug('Circuit breaker active', { until: new Date(this.circuitBreakerUntil).toISOString() });
-                    return;
-                } else {
-                    // CB period expired
-                    this.circuitBreakerUntil = null;
-                    logger.info('🔓 Circuit Breaker expired, resuming trading');
-                }
-            }
-
-            // Get symbol-specific config from YAML (Base Config)
-            const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
-            const capitalUsage = configManager.getCapitalAllocation(symbol, 'PHANTOM');
-
-            // Get ML signal (Moved UP for Dynamic Leverage)
-            const signal = await mlService.getSignal(symbol);
-
-            // Determine Leverage: Static (Config) vs Dynamic (Agent)
-            let leverage = regimeConfig.leverage;
-            let entryThreshold = regimeConfig.entryThreshold;
-
-            // [PURE V30 MODE] Hybrid Logic Removed
-            // Proceed directly to leverage/entry checks
-
-
-
-            if (signal.smart_leverage && signal.smart_leverage > 0) {
-                leverage = signal.smart_leverage;
-                logger.info('⚖️ Dynamic Leverage Applied', {
-                    base: regimeConfig.leverage,
-                    dynamic: leverage,
-                    conf: signal.confidence
-                });
-            }
-
-            // House Money Rule (Python parity): Reduce leverage after 2x profit
-            if (balance >= this.initialBalance * this.houseMoneyMultiplier) {
-                const houseLev = regimeConfig.leverage * this.houseMoneyReduction;
-                // Only reduce if Dynamic hasn't already reduced it further?
-                // House Money usually implies "Play Safe".
-                leverage = Math.min(leverage, houseLev);
-
-                logger.debug('House Money active', {
-                    originalLeverage: regimeConfig.leverage,
-                    reducedLeverage: leverage,
-                    balance,
-                    threshold: this.initialBalance * this.houseMoneyMultiplier
-                });
-            }
-
-            // Check daily trade limit
-            if (this.tradesToday >= this.config.maxTradesPerDay) {
-                logger.debug('Daily trade limit reached', { trades: this.tradesToday });
-                return;
-            }
-
-            // Build PhantomTrigger context from ML features
+            const signal = await mlService.getSignal(symbol) as PhantomSignal;
             const currentCandle = await exchange.getLastCandle(symbol);
-            const triggerCtx: PhantomTriggerContext | undefined = (signal.features && currentCandle) ? {
+
+            const triggerCtx = (signal.features && currentCandle) ? {
                 currentCandle,
                 cvdSlope: signal.features.cvd_slope ?? 0,
                 cvdZ: signal.features.cvd_z ?? 0,
                 weaknessScore: signal.features.weakness ?? 0
             } : undefined;
 
-            // --- HEARTBEAT LOG (Tick by Tick) ---
-            let pnlLog: number | undefined;
-            let roeLog: number | undefined;
-
-            if (state.get().mode !== 'IDLE') {
-                const currentBalance = await exchange.getUSDTBalance();
-                const entryBalance = state.get().lastEntryWallet || currentBalance;
-                pnlLog = currentBalance - entryBalance;
-
-                if (state.get().lastEntryQty && state.get().lastLeverage && state.get().lastEntryPrice) {
-                    const margin = (state.get().lastEntryPrice! * state.get().lastEntryQty!) / state.get().lastLeverage!;
-                    roeLog = (pnlLog / margin) * 100;
-                }
-            }
-
-            // --- ADAPTIVE SAMPLING (Noise Reduction) ---
-            const nowMs = Date.now();
-            const lastLog = this.lastLogTime[symbol] || 0;
-            const prob = signal.shortProb || 0;
-            const isIdle = state.get().mode === 'IDLE';
-            let shouldLog = true;
-
-            if (isIdle) {
-                // If idle, log less frequently unless prob is high
-                if (signal.confidence < 0.10 && (nowMs - lastLog) < 60000) {
-                    shouldLog = false;
-                }
-            }
-
-            if (shouldLog) {
-                logger.info('phantom_tick', {
-                    symbol,
-                    price: currentCandle?.close,
-                    action: signal.action,
-                    conf: signal.confidence,
-                    cvdSlope: signal.features?.cvd_slope,
-                    cvdZ: signal.features?.cvd_z,
-                    weakness: signal.features?.weakness,
-                    pnl: pnlLog,
-                    roe: roeLog,
-                    longProb: signal.longProb,
-                    shortProb: signal.shortProb,
-                    neutralProb: signal.neutralProb,
-                    threshold: entryThreshold,
-                    flags: signal.features
-                });
-                this.lastLogTime[symbol] = nowMs;
-            }
-
-            // Check if we should enter
             const phantomConfig: PhantomConfig = {
                 leverage,
-                entryThreshold,
+                entryThreshold: kamikazeThreshold,
                 hardStopRoe: regimeConfig.hardStopRoe,
-                tpRoe: regimeConfig.tpRoe
+                tpRoe: kamikazeConfig.tpRoe ?? regimeConfig.tpRoe
             };
 
+            if (signal.confidence && signal.confidence > 0.30) {
+                logger.info('kamikaze_scan', {
+                    symbol,
+                    price: currentCandle?.close,
+                    balance,
+                    targetProgress: `${((balance / TARGET_BALANCE) * 100).toFixed(1)}%`,
+                    threshold: kamikazeThreshold.toFixed(2),
+                    signalConf: signal.confidence.toFixed(2),
+                    cvdZ: signal.features?.cvd_z?.toFixed(2),
+                    cvdSlope: signal.features?.cvd_slope?.toFixed(3),
+                    action: signal.action
+                });
+            }
 
-
+            const shadowPos = state.get().shadowPos;
+            if (!shadowPos && signal.confidence && signal.confidence >= 0.55) {
+                // Abre fantasma automáticamente, sin importar si el Real Bot entra o no.
+                await this.openShadowTrade(symbol, signal, currentCandle, kamikazeConfig, regimeConfig, balance);
+            }
 
             if (!shouldEnter(signal, phantomConfig, triggerCtx)) {
-                logger.debug('No entry signal', {
-                    symbol,
-                    confidence: signal.confidence,
-                    threshold: entryThreshold
-                });
                 return;
             }
 
-            // Execute entry
-            logger.info('📈 Entry signal detected', {
+            const stress = this.detector[symbol]?.getLiquidityStress() || 0;
+            if (stress > 0.7) {
+                logger.warn('🚫 KAMIKAZE VETO: Liquidity Stress detected', { symbol, stress: stress.toFixed(2), action: signal.action });
+                return;
+            }
+
+            // --- DOUBLE CONFIRMATION / IA VETO ONLY FOR REAL BOT ---
+            try {
+                const currentPrice = currentCandle?.close || (await exchange.getMarkPrice(symbol));
+                const exitVeto = await mlService.getExitSignal({
+                    symbol,
+                    entry_price: currentPrice,
+                    current_pnl: 0,
+                    mfe: 0,
+                    mae: 0,
+                    duration_minutes: 0,
+                    leverage: 20
+                });
+
+                if (exitVeto.action === 'CLOSE') {
+                    logger.warn('🚫 AI EXIT VETO: Rejected Real Entry due to Exit IA forecasting immediate close.', {
+                        symbol,
+                        action: signal.action,
+                        confidence: (exitVeto.confidence ?? 0).toFixed(2)
+                    });
+                    return;
+                }
+            } catch (e) {
+                logger.warn('AI Exit Veto check failed', { error: String(e) });
+            }
+
+            logger.info('🔥 KAMIKAZE ENTRY TRIGGERED', {
                 symbol,
                 side: signal.action,
-                confidence: `${(signal.confidence * 100).toFixed(1)}%`,
-                leverage: `${leverage}x`,
-                allocation: `${(capitalUsage * 100).toFixed(0)}%`
+                confidence: (signal.confidence ?? 0).toFixed(2),
+                threshold: kamikazeThreshold.toFixed(2),
+                balance: balance.toFixed(2),
+                progress: `${((balance / TARGET_BALANCE) * 100).toFixed(1)}%`
             });
 
             try {
-                // Get wallet balance
                 const wallet = await exchange.getUSDTBalance();
                 const filters = await exchange.getSymbolFilters(symbol, leverage);
-
-                // Apply Fee Buffer
-                const feeBufferPct = this.deps.configManager.trading.fee_buffer_pct;
+                const capitalUsage = kamikazeConfig.capitalUsage;
+                const feeBufferPct = (this.deps.configManager as any).trading?.fee_buffer_pct || 0.05;
                 const effectiveWallet = wallet * (1 - feeBufferPct);
-
-                // Calculate position size
                 const markPrice = await exchange.getMarkPrice(symbol);
                 const notional = effectiveWallet * capitalUsage * leverage;
-
-                // DIAGNOSTIC LOG: Margin Check
-                logger.info('💰 Pre-Entry Margin Check', {
-                    wallet: wallet,
-                    effectiveWallet: effectiveWallet,
-                    feeBuffer: feeBufferPct,
-                    capitalUsage: capitalUsage,
-                    leverage: leverage,
-                    maxNotional: notional,
-                    estPrice: markPrice
-                });
                 const quantity = Math.floor((notional / markPrice) * Math.pow(10, filters.qtyPrecision)) / Math.pow(10, filters.qtyPrecision);
 
                 if (quantity * markPrice < filters.minNotional) {
-                    logger.warn('Position too small', { symbol, quantity, minNotional: filters.minNotional });
+                    logger.warn('Position too small', { quantity, minNotional: filters.minNotional });
                     return;
                 }
 
-                // Set Leverage
                 await exchange.setLeverage(symbol, leverage);
                 await exchange.ensureMarginType(symbol, 'ISOLATED');
 
-                // Open position
-                const side: Side = signal.action === 'SHORT' ? 'SHORT' : 'LONG';
+                const side = signal.action === 'SHORT' ? 'SHORT' : 'LONG';
                 const result = await exchange.marketOpen(symbol, side, quantity);
 
-                // Update state
                 state.set({
                     mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                     lastSide: side,
@@ -444,439 +354,378 @@ export class TradingService {
                     lastMlProb: signal.confidence
                 });
 
-                // Place brackets (SL/TP) using DYNAMIC config
-                // PARITY FIX: Round prices to tickSize to avoid "Precision is over the maximum" error
                 const tickSize = filters.tickSize;
+                const tickDecimals = Math.max(0, Math.round(-Math.log10(tickSize)));
                 const roundToTick = (price: number) => {
-                    const inverse = 1 / tickSize;
-                    return Math.floor(price * inverse) / inverse;
+                    const rounded = Math.floor(price / tickSize) * tickSize;
+                    return parseFloat(rounded.toFixed(tickDecimals));
                 };
 
-                let stopPrice = side === 'SHORT'
-                    ? result.avgPrice * (1 - phantomConfig.hardStopRoe)
-                    : result.avgPrice * (1 + phantomConfig.hardStopRoe);
+                const hardStopPricePct = Math.abs(regimeConfig.hardStopRoe) / leverage;
+                const tpPricePct = Math.abs(regimeConfig.tpRoe) / leverage;
 
-                let tpPrice = side === 'SHORT'
-                    ? result.avgPrice * (1 - phantomConfig.tpRoe)
-                    : result.avgPrice * (1 + phantomConfig.tpRoe);
-
-                // Apply rounding
-                stopPrice = roundToTick(stopPrice);
-                tpPrice = roundToTick(tpPrice);
+                const stopPrice = side === 'SHORT'
+                    ? roundToTick(result.avgPrice * (1 + hardStopPricePct))
+                    : roundToTick(result.avgPrice * (1 - hardStopPricePct));
+                const tpPrice = side === 'SHORT'
+                    ? roundToTick(result.avgPrice * (1 - tpPricePct))
+                    : roundToTick(result.avgPrice * (1 + tpPricePct));
 
                 try {
                     await exchange.placeStopClose(symbol, side, stopPrice, quantity);
                     await exchange.placeTpClose(symbol, side, tpPrice, quantity);
+                    logger.info('Brackets placed', { stopPrice, tpPrice, tickSize, tickDecimals });
                 } catch (bracketError) {
-                    logger.error('Bracket placement failed', { symbol, error: String(bracketError) });
-                    await this.deps.notifier.sendMessage(
-                        `⚠️ **BRACKET FAILED**\n` +
-                        `Symbol: ${symbol}\n` +
-                        `Error: ${String(bracketError)}\n` +
-                        `ACTION REQUIRED: Check Open Orders!`
-                    );
+                    logger.error('Bracket failed', { error: String(bracketError), stopPrice, tpPrice });
                 }
 
                 this.tradesToday++;
+                this.lastEntryBalance = wallet;
 
-                // Notify
-                await notifier.sendMessage(
-                    `🎯 PHANTOM ENTRY\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Side: ${side}\n` +
-                    `Entry: ${result.avgPrice.toFixed(2)}\n` +
-                    `Size: ${quantity} ETH ($${(quantity * result.avgPrice).toFixed(2)})\n` +
-                    `Balance: $${wallet.toFixed(2)}\n` +
-                    `SL: ${stopPrice.toFixed(2)}\n` +
-                    `TP: ${tpPrice.toFixed(2)}\n` +
-                    `Confidence: ${(signal.confidence * 100).toFixed(1)}%`
-                );
-
-                logger.info('✅ Position opened', { symbol, side, entry: result.avgPrice, orderId: result.orderId });
-
+                await notifier.sendMessage(`🔥 **KAMIKAZE ENTRY**\n` +
+                    `${symbol} | ${side}\n` +
+                    `Entry: $${result.avgPrice.toFixed(2)}\n` +
+                    `Size: ${quantity} ETH ($${(quantity * result.avgPrice).toFixed(0)})\n` +
+                    `Balance: $${wallet.toFixed(2)} (${((wallet / TARGET_BALANCE) * 100).toFixed(1)}% to target)\n` +
+                    `Leverage: ${leverage}x\n` +
+                    `Conf: ${((signal.confidence ?? 0) * 100).toFixed(0)}% (thresh: ${(kamikazeThreshold * 100).toFixed(0)}%)\n` +
+                    `CVD-Z: ${signal.features?.cvd_z?.toFixed(1)}`);
             } catch (entryError) {
-                logger.error('Entry execution failed', { symbol, error: String(entryError) });
+                logger.error('Entry failed', { error: String(entryError) });
+                this.consecutiveLosses++;
                 await this.notifyError(symbol, 'ENTRY FAILED', entryError);
             }
-
         } catch (error) {
-            logger.error('LookForEntry error', { symbol, error: String(error) });
+            logger.error('LookForEntry error', { error: String(error) });
+            await this.notifyError(symbol, 'LOOKFOR ENTRY', error);
         }
     }
 
-    /**
-     * Manage existing position
-     */
     private async managePosition(symbol: string, botState: BotState): Promise<void> {
-        const { exchange, logger, state, notifier, configManager } = this.deps;
-        // DYNAMIC CONFIG: Load Guardian settings with symbol overrides
+        const { exchange, logger, state, notifier, configManager, mlService } = this.deps;
         const guardianConfig = configManager.getGuardianConfig('PHANTOM', symbol);
-
-        const side = botState.lastSide!;
-        const entryPrice = botState.lastEntryPrice!;
+        const side = botState.lastSide as Side;
+        const entryPrice = botState.lastEntryPrice || 0;
 
         try {
-            // Get current position
             const position = await exchange.readActivePosition(symbol, side);
 
             if (!position) {
-                // Position was closed externally (SL/TP hit)
-                logger.info('Position closed externally', { symbol, side });
-
-                // Update peak balance and check Circuit Breaker (Python parity)
                 const balance = await exchange.getUSDTBalance();
-                if (balance > this.peakBalance) {
-                    this.peakBalance = balance;
+                const pnl = balance - (botState.lastEntryWallet || balance);
+
+                if (pnl < 0) {
+                    this.consecutiveLosses++;
+                } else {
+                    this.consecutiveLosses = 0;
                 }
 
+                logger.info('Position closed', {
+                    symbol,
+                    pnl: pnl.toFixed(2),
+                    balance: balance.toFixed(2),
+                    consecutiveLosses: this.consecutiveLosses
+                });
 
-
-                // Check for circuit breaker trigger AFTER trade closes
-                const currentDD = this.peakBalance > 0 ? (this.peakBalance - balance) / this.peakBalance : 0;
-                if (currentDD >= this.circuitBreakerDD && this.circuitBreakerUntil === null) {
-                    // PARITY FIX: Start CB from ENTRY TIME (matches Python)
-                    // Python uses 'idx' (Entry Index) for duration.
-                    const cbStartTime = botState.lastEntryAt || await exchange.getServerTime();
-                    this.circuitBreakerUntil = cbStartTime + (this.circuitBreakerCandles * 5 * 60 * 1000);  // 24h
-
-                    logger.warn('🚨 Circuit Breaker Activated!', {
-                        peakBalance: this.peakBalance,
-                        currentBalance: balance,
-                        drawdown: `${(currentDD * 100).toFixed(2)}%`,
-                        until: new Date(this.circuitBreakerUntil).toISOString()
+                if (this.consecutiveLosses >= 3) {
+                    logger.error('🚨 EMERGENCY STOP: 3 consecutive losses', {
+                        consecutiveLosses: this.consecutiveLosses,
+                        balance: balance.toFixed(2)
                     });
-                    await notifier.sendMessage(`🚨 Circuit Breaker Activated! DD: ${(currentDD * 100).toFixed(2)}%`);
+                    await notifier.sendMessage(`🚨🚨🚨 **EMERGENCY STOP** 🚨🚨🚨\n` +
+                        `3 pérdidas consecutivas detectadas\n` +
+                        `Balance: $${balance.toFixed(2)}\n` +
+                        `Pérdidas seguidas: ${this.consecutiveLosses}\n` +
+                        `Bot DETENIDO para proteger capital\n` +
+                        `Revisa los logs y reinicia manualmente`);
+                    this.isRunning = false;
+                    state.set({ mode: 'IDLE' });
+                    return;
                 }
 
-                await this.notifyExit(symbol, side, 'SL/TP', botState);
+                const closeType = pnl >= 0 ? '🎯 TAKE PROFIT (TP)' : '🛑 STOP LOSS (SL)';
+                await notifier.sendMessage(`${pnl >= 0 ? '💰' : '💸'} **${closeType}**\n` +
+                    `${symbol} | PnL: $${pnl.toFixed(2)}\n` +
+                    `Balance: $${balance.toFixed(2)} (${((balance / TARGET_BALANCE) * 100).toFixed(1)}% to target)`);
                 state.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
             }
 
-            // PARITY FIX: Check Time Limit (Configurable)
-            if (botState.lastEntryAt) {
-                const now = await exchange.getServerTime();
-                const duration = now - botState.lastEntryAt;
-
-                // Load maxHoldMs from config (default to 4h if missing)
-                const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
-                const TIME_LIMIT_MS = regimeConfig.maxHoldMs || 4 * 60 * 60 * 1000;
-
-                if (duration >= TIME_LIMIT_MS) {
-                    logger.info('⏳ Time Limit Reached, closing position', { duration: duration / 3600000 });
-                    await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'TIME_LIMIT');
-
-                    state.set({
-                        mode: 'IDLE',
-                        lastExitAt: now,
-                        lastExitReason: 'TIME_LIMIT'
-                    });
-
-                    await this.notifyExit(symbol, side, 'TIME_LIMIT', botState);
-                    return;
-                }
-            }
-
-            // Get current price
             const markPrice = await exchange.getMarkPrice(symbol);
-            const candle = await exchange.getLastCandle(symbol); // PARITY FIX: Need Low/High for Peak
-
-            // Update Peak Price (for Trailing)
-            // Python uses Low for Short, High for Long
+            const candle = await exchange.getLastCandle(symbol);
             let peakPrice = botState.lastPeakPrice || entryPrice;
-            if (candle) {
-                if (side === 'SHORT') {
-                    peakPrice = Math.min(peakPrice, candle.low);
-                } else {
-                    peakPrice = Math.max(peakPrice, candle.high);
-                }
-            } else {
-                // Fallback if no candle (should not happen in backtest)
-                if (side === 'SHORT') {
-                    peakPrice = Math.min(peakPrice, markPrice);
-                } else {
-                    peakPrice = Math.max(peakPrice, markPrice);
-                }
-            }
 
+            if (candle) {
+                peakPrice = side === 'SHORT'
+                    ? Math.min(peakPrice, candle.low)
+                    : Math.max(peakPrice, candle.high);
+            }
             if (peakPrice !== botState.lastPeakPrice) {
                 state.set({ lastPeakPrice: peakPrice });
             }
 
-            // --- ANXIETY EXIT (Smart Re-evaluation) ---
-            // Ask the model: "Do you still like this trade?"
-            const nowTime = Date.now();
-            if (nowTime - (botState.lastCheckAt || 0) > 60000) { // Check every 1 minute
-                try {
-                    // PARITY FIX: Use standard ML Service port
-                    const latestSignal = await this.deps.mlService.getSignal(symbol);
+            const currentRoe = side === 'SHORT'
+                ? (entryPrice - markPrice) / entryPrice * (botState.lastLeverage || 20)
+                : (markPrice - entryPrice) / entryPrice * (botState.lastLeverage || 20);
 
-                    // 1. Check for PASS (Idle) signal - Agent wants out
-                    // Only exit if Agent is CONFIDENT outcome is PASS (Hold/Flat)
-                    if (latestSignal.action === 'PASS' && latestSignal.confidence > 0.50) {
-                        logger.info('🧠 Smart Exit Triggered: Agent signaled PASS', {
-                            conf: latestSignal.confidence
-                        });
-                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AGENT_EXIT');
-                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'AGENT_EXIT' });
-                        await this.notifyExit(symbol, side, 'AGENT_EXIT (PASS)', botState);
-                        return;
-                    }
-
-                    // 2. Check for Reversal (Flip)
-                    // If we are LONG and signal is SHORT (with confidence), or vice versa
-                    if (side === 'SHORT' && latestSignal.action === 'LONG' && latestSignal.confidence > 0.55) {
-                        logger.warn('🧠 Smart Exit Triggered: Agent flipped LONG', {
-                            conf: latestSignal.confidence
-                        });
-                        // Close immediately (and potentially re-enter on next tick via normal logic)
-                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AGENT_FLIP');
-                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'AGENT_FLIP' });
-                        await this.notifyExit(symbol, side, 'AGENT_FLIP (LONG)', botState);
-                        return;
-                    }
-
-                    if (side === 'LONG' && latestSignal.action === 'SHORT' && latestSignal.confidence > 0.55) {
-                        logger.warn('🧠 Smart Exit Triggered: Agent flipped SHORT', {
-                            conf: latestSignal.confidence
-                        });
-                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AGENT_FLIP');
-                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'AGENT_FLIP' });
-                        await this.notifyExit(symbol, side, 'AGENT_FLIP (SHORT)', botState);
-                        return;
-                    }
-
-                    // 3. Lost Conviction (Confidence Drop)
-                    // If confidence drops below threshold substantially
-                    // (Optional: V30 might handle this by switching to PASS, but good safeguard)
-                    if (latestSignal.confidence < 0.30) {
-                        logger.warn('🧠 Smart Exit Triggered: Lost Conviction', {
-                            conf: latestSignal.confidence
-                        });
-                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'See_Ya');
-                        state.set({ mode: 'IDLE', lastExitAt: nowTime, lastExitReason: 'LOST_CONVICTION' });
-                        await this.notifyExit(symbol, side, 'LOST_CONVICTION', botState);
-                        return;
-                    }
-
-                    // Update heartbeat check time
-                    state.set({ lastCheckAt: nowTime });
-
-                } catch (infError) {
-                    logger.warn('Smart Exit check failed (ignoring)', { error: String(infError) });
-                }
+            // Track peak/lowest ROE for trailing safety net
+            const updatedPeakRoe = Math.max(botState.peakRoe || 0, currentRoe);
+            const updatedLowestRoe = Math.min(botState.lowestRoe || 0, currentRoe);
+            if (updatedPeakRoe !== botState.peakRoe || updatedLowestRoe !== botState.lowestRoe) {
+                state.set({ peakRoe: updatedPeakRoe, lowestRoe: updatedLowestRoe });
             }
 
-            // PARITY FIX: Update Peak ROE
-            if (candle) {
-                const currentRoe = side === 'SHORT'
-                    ? (entryPrice - candle.low) / entryPrice * (botState.lastLeverage || 1)
-                    : (candle.high - entryPrice) / entryPrice * (botState.lastLeverage || 1);
-
-                if (currentRoe > (botState.peakRoe || -999)) {
-                    state.set({ peakRoe: currentRoe });
-                }
-
-                // --- HEARTBEAT LOG (RIDE) ---
-                const currentBalance = await exchange.getUSDTBalance();
-                const entryBalance = botState.lastEntryWallet || currentBalance;
-                const pnlLog = currentBalance - entryBalance;
-
-                logger.info('phantom_tick', {
-                    symbol,
-                    price: candle.close,
-                    action: side, // LONG or SHORT
-                    conf: botState.lastMlProb || 0, // Show original entry conf
-                    cvdSlope: 0, // Not checking ML during ride
-                    cvdZ: 0,
-                    weakness: 0,
-                    pnl: pnlLog,
-                    roe: currentRoe * 100
-                });
-                // -----------------------------
-            }
-
-            // Get current SL price (to know if we need to move it)
-            const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
-            const currentSlOrder = openOrders.find(o => o.type.includes('STOP'));
-            const currentSlPrice = currentSlOrder ? Number(currentSlOrder.stopPrice) : undefined;
-            const currentTpOrder = openOrders.find(o => o.type.includes('TAKE_PROFIT'));
-
-            // ═══════════════════════════════════════════════════════════════════════════
-            // 🛡️ BRACKET RESTORATION (Auto-Heal)
-            // If SL or TP are missing (manually deleted?), restore them immediately.
-            // ═══════════════════════════════════════════════════════════════════════════
-
-            const filters = await exchange.getSymbolFilters(symbol, botState.lastLeverage || 10);
-            const tickSize = filters.tickSize;
-            const roundToTick = (price: number) => {
-                const inverse = 1 / tickSize;
-                return Math.floor(price * inverse) / inverse;
-            };
-
-            // 1. Restore Stop Loss
-            if (!currentSlOrder) {
-                logger.warn('⚠️ Missing Stop Loss detected! Restoring...', { symbol });
-
-                let restoreSlPrice = side === 'SHORT'
-                    ? entryPrice * (1 + Math.abs(guardianConfig.beTriggerRoe)) // Fallback safe default? No, use hardStop
-                    : entryPrice * (1 - Math.abs(guardianConfig.beTriggerRoe));
-
-                // Better: Use Regime Hard Stop
-                const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
-                restoreSlPrice = side === 'SHORT'
-                    ? entryPrice * (1 - regimeConfig.hardStopRoe) // hardStopRoe is negative (-0.015) -> 1 - (-0.015) = 1.015
-                    : entryPrice * (1 + regimeConfig.hardStopRoe); // 1 + (-0.015) = 0.985
-
-                restoreSlPrice = roundToTick(restoreSlPrice);
-
-                try {
-                    await exchange.placeStopClose(symbol, side, restoreSlPrice, position.qtyAbs);
-                    logger.info('✅ Stop Loss Restored', { price: restoreSlPrice });
-                    await notifier.sendMessage(`🛡️ **SL Restored** for ${symbol} @ ${restoreSlPrice}`);
-                } catch (e) {
-                    logger.error('Failed to restore SL', { error: String(e) });
-                }
-            }
-
-            // 2. Restore Take Profit
-            // 2. Restore Take Profit
-            if (!currentTpOrder) {
-                logger.warn('⚠️ Missing Take Profit detected! Restoring...', { symbol });
-
-                const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
-                let restoreTpPrice: number;
-
-                if (side === 'SHORT') {
-                    // Prevent negative price for >100% profit targets
-                    // If tpRoe is 10 (1000%), 1 - 10 = -9 (Invalid)
-                    // Logic: If ROE implies price < 0, cap at 0.0001 (or 99.9% drop)
-                    const targetFactor = 1 - regimeConfig.tpRoe;
-                    if (targetFactor <= 0) {
-                        restoreTpPrice = entryPrice * 0.01; // 99% drop target (Max realistic)
-                    } else {
-                        restoreTpPrice = entryPrice * targetFactor;
-                    }
-                } else {
-                    restoreTpPrice = entryPrice * (1 + regimeConfig.tpRoe);
-                }
-
-                // Validation
-                if (!entryPrice || entryPrice <= 0 || !regimeConfig.tpRoe) {
-                    logger.error('Cannot restore TP: Invalid inputs', { entryPrice, tpRoe: regimeConfig.tpRoe });
-                    return; // Stop here
-                }
-
-                restoreTpPrice = roundToTick(restoreTpPrice);
-
-                if (isNaN(restoreTpPrice) || restoreTpPrice <= 0) {
-                    logger.error('Cannot restore TP: Invalid calculated price', { restoreTpPrice, entryPrice, roe: regimeConfig.tpRoe });
+            // ⏰ Max Trade Duration Check (only close if in PROFIT)
+            const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
+            const maxDurationMs = regimeConfig.maxHoldMs || 28800000; // default 8h
+            const tradeDuration = botState.lastEntryAt ? (Date.now() - botState.lastEntryAt) : 0;
+            if (tradeDuration > maxDurationMs) {
+                if (currentRoe > 0) {
+                    // In profit → close and lock in gains
+                    logger.warn('⏰ MAX DURATION reached (in profit → closing)', {
+                        symbol,
+                        durationH: (tradeDuration / 3600000).toFixed(1),
+                        maxH: (maxDurationMs / 3600000).toFixed(1),
+                        currentRoe: (currentRoe * 100).toFixed(2) + '%'
+                    });
+                    await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'TIME_LIMIT');
+                    const exitBalance = await exchange.getUSDTBalance();
+                    const pnlUsd = exitBalance - (botState.lastEntryWallet || exitBalance);
+                    await notifier.sendMessage(
+                        `⏰ **TIME LIMIT EXIT** ✅\n` +
+                        `${symbol} | ${side}\n` +
+                        `Duración: ${(tradeDuration / 3600000).toFixed(1)}h (max: ${(maxDurationMs / 3600000).toFixed(1)}h)\n` +
+                        `ROE: ${(currentRoe * 100).toFixed(2)}%\n` +
+                        `PnL: $${pnlUsd.toFixed(2)}\n` +
+                        `Balance: $${exitBalance.toFixed(2)}`
+                    );
+                    state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'TIME_LIMIT' });
                     return;
-                }
-
-                try {
-                    logger.info('Attempting to restore TP', { symbol, side, price: restoreTpPrice, qty: position.qtyAbs });
-                    await exchange.placeTpClose(symbol, side, restoreTpPrice, position.qtyAbs);
-                    logger.info('✅ Take Profit Restored', { price: restoreTpPrice });
-                    await notifier.sendMessage(`💰 **TP Restored** for ${symbol} @ ${restoreTpPrice}`);
-                } catch (e) {
-                    logger.error('Failed to restore TP', { error: String(e) });
+                } else {
+                    // In loss → DO NOT close, let SL/AI/manual handle it
+                    logger.info('⏰ MAX DURATION passed but in LOSS → holding (SL/AI will decide)', {
+                        symbol,
+                        durationH: (tradeDuration / 3600000).toFixed(1),
+                        currentRoe: (currentRoe * 100).toFixed(2) + '%'
+                    });
                 }
             }
 
-            // Evaluate Guardian Action
+            const now = Date.now();
+            if (now - (botState.lastCheckAt || 0) > 60000) {
+                state.set({ lastCheckAt: now });
+                // El Real Bot ya no consulta a la IA de Salida para cerrar la operación.
+                // Se confía explícitamente en el ProfitGuardian (Trailing) y los Brackets duros.
+            }
 
-            const action = evaluateGuardianAction(
-                {
-                    entryPrice,
-                    currentPrice: markPrice,
-                    peakPrice,
-                    positionSide: side,
-                    leverage: botState.lastLeverage || 1,
-                    peakRoe: botState.peakRoe // PARITY FIX: Pass Peak ROE
-                },
-                guardianConfig,
-                currentSlPrice
-            );
+            const action = evaluateGuardianAction({
+                entryPrice,
+                currentPrice: markPrice,
+                peakPrice,
+                positionSide: side,
+                leverage: botState.lastLeverage || 20,
+                peakRoe: updatedPeakRoe
+            }, guardianConfig, undefined);
 
-            // Execute Action
             switch (action.type) {
-                case 'MOVE_SL_BE':
-                    logger.info('🛡️ Moving SL to Break-Even', { symbol, price: action.price });
-                    await exchange.placeStopClose(symbol, side, action.price);
-                    await notifier.sendMessage(`🛡️ Break-Even Triggered: SL moved to ${action.price.toFixed(2)}`);
-                    break;
-
                 case 'MOVE_SL_TRAILING':
-                    logger.info('🛡️ Updating Trailing SL', { symbol, price: action.price });
-                    await exchange.placeStopClose(symbol, side, action.price);
+                    await exchange.placeStopClose(symbol, side, action.price!);
                     break;
+                case 'CLOSE_MARKET': {
+                    await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, action.reason!);
 
-                case 'CLOSE_MARKET':
-                    logger.info('🛡️ Guardian Force Close', { symbol, reason: action.reason });
-                    await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode);
+                    const exitBalance = await exchange.getUSDTBalance();
+                    const pnlUsd = exitBalance - (botState.lastEntryWallet || exitBalance);
+                    const roePct = (currentRoe * 100).toFixed(2);
+
+                    let emoji = pnlUsd > 0 ? '✅' : '❌';
+                    if (action.reason === 'TRAILING_SAFETY_NET') emoji = '🛡️';
+
+                    await notifier.sendMessage(`${emoji} **CIERRE DE GUARDIAN (${action.reason})**\n` +
+                        `${symbol} | ${side}\n` +
+                        `Entry: $${entryPrice.toFixed(2)} → Exit: $${markPrice.toFixed(2)}\n` +
+                        `ROE: ${roePct}%\n` +
+                        `PnL: $${pnlUsd.toFixed(2)}\n` +
+                        `MFE Pico: ${(updatedPeakRoe * 100).toFixed(2)}%\n` +
+                        `Balance: $${exitBalance.toFixed(2)}`);
+
+                    logger.info(`Guardian closed position: ${action.reason}`, {
+                        symbol,
+                        pnl: pnlUsd.toFixed(2),
+                        reason: action.reason
+                    });
+
                     state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: action.reason });
-                    await this.notifyExit(symbol, side, action.reason, botState);
                     break;
+                }
             }
-
         } catch (error) {
-            logger.warn('Position management error', { symbol, error: String(error) });
-            await this.notifyError(symbol, 'MANAGEMENT ERROR', error);
+            logger.warn('Management error', { symbol, error: String(error) });
         }
     }
 
-    /**
-     * Reset daily trade counter at midnight
-     */
     private checkDailyReset(): void {
         const now = Date.now();
         const today = Math.floor(now / 86400000);
-
         if (today > this.lastTradeDayReset) {
-            this.tradesToday = 0;
-            this.lastTradeDayReset = today;
             this.tradesToday = 0;
             this.lastTradeDayReset = today;
         }
     }
 
-    private async notifyExit(
-        symbol: string,
-        side: Side,
-        reason: string,
-        botState: BotState
-    ): Promise<void> {
-        const { exchange, notifier } = this.deps;
-        const currentBalance = await exchange.getUSDTBalance();
-        const entryBalance = botState.lastEntryWallet || currentBalance;
-        const pnl = currentBalance - entryBalance;
-        const durationMs = Date.now() - (botState.lastEntryAt || Date.now());
-        const durationHrs = (durationMs / 3600000).toFixed(2);
-
-        // ROE Calculation
-        let roeStr = "N/A";
-        if (botState.lastEntryQty && botState.lastLeverage && botState.lastEntryPrice) {
-            const margin = (botState.lastEntryPrice * botState.lastEntryQty) / botState.lastLeverage;
-            const roe = (pnl / margin) * 100;
-            roeStr = `${roe.toFixed(2)}%`;
+    private async notifyError(symbol: string, type: string, error: unknown): Promise<void> {
+        const now = Date.now();
+        const errorKey = `${symbol}:${type}`;
+        if (this.lastErrorTime[errorKey] && now - this.lastErrorTime[errorKey] < 3600000) {
+            return;
         }
-
-        const emoji = pnl >= 0 ? '🤑' : '🩸';
-        const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
-
-        await notifier.sendMessage(
-            `${emoji} **TRADE FINISHED**\n` +
-            `Symbol: ${symbol}\n` +
-            `Side: ${side}\n` +
-            `Reason: ${reason}\n` +
-            `Duration: ${durationHrs}h\n` +
-            `PnL: ${pnlStr} (${roeStr})\n` +
-            `Balance: $${currentBalance.toFixed(2)}`
-        );
+        this.lastErrorTime[errorKey] = now;
+        const msg = String(error).substring(0, 150);
+        try {
+            await this.deps.notifier.sendMessage(`🚨 **${type}**\nSymbol: ${symbol}\nError: \`${msg}\``);
+        } catch (e) {
+            this.deps.logger.error('Failed to notify error', { error: String(e) });
+        }
     }
 
     private sleep(ms: number): Promise<void> {
         return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    private async manageShadowPosition(symbol: string): Promise<void> {
+        const shadowPos = this.deps.state.get().shadowPos;
+        if (!shadowPos || !shadowPos.active) return;
+
+        const { exchange, logger, configManager } = this.deps;
+        const pos = { ...shadowPos };
+        const markPrice = await exchange.getMarkPrice(symbol);
+        const candle = await exchange.getLastCandle(symbol);
+
+        if (candle) {
+            pos.peakPrice = pos.side === 'SHORT'
+                ? Math.min(pos.peakPrice, candle.low!)
+                : Math.max(pos.peakPrice, candle.high!);
+            pos.lowestPrice = pos.side === 'SHORT'
+                ? Math.max(pos.lowestPrice, candle.high!)
+                : Math.min(pos.lowestPrice, candle.low!);
+        }
+
+        const currentRoe = pos.side === 'SHORT'
+            ? (pos.entryPrice - markPrice) / pos.entryPrice * pos.leverage
+            : (markPrice - pos.entryPrice) / pos.entryPrice * pos.leverage;
+
+        // Track peak ROE for trailing (mirror real bot)
+        pos.peakRoe = Math.max(pos.peakRoe || 0, currentRoe);
+        this.deps.state.set({ shadowPos: pos });
+
+        // 1. Hard Stop Loss
+        if ((pos.side === 'LONG' && markPrice <= pos.hardStopPrice) ||
+            (pos.side === 'SHORT' && markPrice >= pos.hardStopPrice)) {
+            await this.closeShadowPosition(markPrice, '🛑 SL Hit');
+            return;
+        }
+
+        // 2. Take Profit
+        if ((pos.side === 'LONG' && markPrice >= pos.tpPrice) ||
+            (pos.side === 'SHORT' && markPrice <= pos.tpPrice)) {
+            await this.closeShadowPosition(markPrice, '🎯 TP Hit');
+            return;
+        }
+
+        // Shadow Trade is strictly controlled by TP, SL, and the new AI Exit Agent V2
+        // 5. AI Exit Signal (every 60s)
+        const now = Date.now();
+        if (now - pos.entryAt > 60000) {
+            const durationMinutes = (now - pos.entryAt) / 60000;
+            const peakRoe = pos.side === 'LONG'
+                ? (pos.peakPrice - pos.entryPrice) / pos.entryPrice * pos.leverage
+                : (pos.entryPrice - pos.peakPrice) / pos.entryPrice * pos.leverage;
+            const lowestRoe = pos.side === 'LONG'
+                ? (pos.lowestPrice - pos.entryPrice) / pos.entryPrice * pos.leverage
+                : (pos.entryPrice - pos.lowestPrice) / pos.entryPrice * pos.leverage;
+
+            try {
+                const exitSignal = await this.deps.mlService.getExitSignal({
+                    symbol,
+                    entry_price: pos.entryPrice,
+                    current_pnl: currentRoe,
+                    mfe: peakRoe,
+                    mae: lowestRoe,
+                    duration_minutes: durationMinutes,
+                    leverage: pos.leverage
+                });
+
+                if (exitSignal.action === 'CLOSE' && exitSignal.confidence && exitSignal.confidence > 0.6) {
+                    await this.closeShadowPosition(markPrice, '🤖 AI EXIT');
+                }
+            } catch (e) {
+                // Ignore errors for shadow AI exit
+            }
+        }
+    }
+
+    private async closeShadowPosition(exitPrice: number, reason: string): Promise<void> {
+        const shadowPos = this.deps.state.get().shadowPos;
+        if (!shadowPos) return;
+
+        const pnlUsd = shadowPos.side === 'LONG'
+            ? (exitPrice - shadowPos.entryPrice) * shadowPos.quantity
+            : (shadowPos.entryPrice - exitPrice) * shadowPos.quantity;
+
+        await this.deps.notifier.sendMessage(
+            `👻 **SHADOW TRADE CLOSED** (${reason})\n` +
+            `${shadowPos.symbol} | ${shadowPos.side}\n` +
+            `Entry: $${shadowPos.entryPrice.toFixed(2)} → Exit: $${exitPrice.toFixed(2)}\n` +
+            `Fake PnL: $${pnlUsd.toFixed(2)}\n` +
+            `Initial Conf: ${(shadowPos.confidence * 100).toFixed(0)}%`
+        );
+        this.deps.state.set({ shadowPos: null });
+    }
+
+    private async openShadowTrade(symbol: string, signal: PhantomSignal, candle: any, kamikazeConfig: KamikazeConfig, regimeConfig: any, balance: number): Promise<void> {
+        if (!candle) return;
+        const entryPrice = candle.close;
+        const side = signal.action === 'SHORT' ? 'SHORT' : 'LONG';
+        const hardStopPricePct = Math.abs(regimeConfig.hardStopRoe) / kamikazeConfig.leverage;
+        const tpPricePct = Math.abs(kamikazeConfig.tpRoe ?? regimeConfig.tpRoe) / kamikazeConfig.leverage;
+
+        const stopPrice = side === 'SHORT'
+            ? entryPrice * (1 + hardStopPricePct)
+            : entryPrice * (1 - hardStopPricePct);
+        const tpPrice = side === 'SHORT'
+            ? entryPrice * (1 - tpPricePct)
+            : entryPrice * (1 + tpPricePct);
+
+        const notional = balance * kamikazeConfig.capitalUsage * kamikazeConfig.leverage;
+        const quantity = Math.floor(notional / entryPrice * 1000) / 1000;
+        const conf = signal.confidence ?? 0;
+
+        const newShadowPos: ShadowPosition = {
+            active: true,
+            symbol,
+            side: side as Side,
+            entryPrice,
+            initialBalance: balance,
+            confidence: conf,
+            quantity,
+            leverage: kamikazeConfig.leverage,
+            hardStopPrice: stopPrice,
+            tpPrice: tpPrice,
+            entryAt: Date.now(),
+            peakPrice: entryPrice,
+            lowestPrice: entryPrice,
+            peakRoe: 0
+        };
+
+        this.deps.state.set({ shadowPos: newShadowPos });
+
+        await this.deps.notifier.sendMessage(
+            `👻 **SHADOW ENTRY OBSCURED**\n` +
+            `${symbol} | ${side}\n` +
+            `Fake Entry: $${entryPrice.toFixed(2)}\n` +
+            `Fake Size: ${quantity.toFixed(4)} ETH ($${(quantity * entryPrice).toFixed(0)})\n` +
+            `Conf: ${(conf * 100).toFixed(0)}% (below ${Math.round(kamikazeConfig.threshold * 100)}% real limit)\n` +
+            `Tracking stealthily...`
+        );
     }
 }

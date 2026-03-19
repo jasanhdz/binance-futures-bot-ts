@@ -84,6 +84,7 @@ export async function runHexagonalBacktest(injectedCandles?: Candle[], symbolOve
             low: r.low,
             close: r.close,
             volume: r.volume,
+            buyVolume: r.buyVolume || (r.volume / 2),
             closeTime: r.timestamp + 300000 - 1
         }));
         console.log(`📊 Loaded ${candles.length} candles`);

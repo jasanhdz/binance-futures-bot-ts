@@ -30,6 +30,7 @@ describe('HexagonalPhantomRunner', () => {
                 low: price - 10,
                 close: price,
                 volume: 1000,
+                buyVolume: 500,
                 closeTime: baseTime + i * 300000 + 299999
             });
         }
@@ -84,7 +85,7 @@ describe('HexagonalPhantomRunner', () => {
             candles.push({
                 openTime: baseTime + i * 300000,
                 timestamp: baseTime + i * 300000,
-                open: 2000, high: 2005, low: 1995, close: 2000, volume: 1000,
+                open: 2000, high: 2005, low: 1995, close: 2000, volume: 1000, buyVolume: 0,
                 closeTime: baseTime + i * 300000 + 299999
             });
         }
@@ -99,7 +100,7 @@ describe('HexagonalPhantomRunner', () => {
             candles.push({
                 openTime: baseTime + i * 300000,
                 timestamp: baseTime + i * 300000,
-                open: price, high: price + 5, low: price - 5, close: price, volume: 1000,
+                open: price, high: price + 5, low: price - 5, close: price, volume: 1000, buyVolume: 500,
                 closeTime: baseTime + i * 300000 + 299999
             });
         }
@@ -141,7 +142,7 @@ describe('HexagonalPhantomRunner', () => {
             candles.push({
                 openTime: baseTime + i * 300000,
                 timestamp: baseTime + i * 300000,
-                open: 2000, high: 2005, low: 1995, close: 2000, volume: 1000,
+                open: 2000, high: 2005, low: 1995, close: 2000, volume: 1000, buyVolume: 0,
                 closeTime: baseTime + i * 300000 + 299999
             });
         }
@@ -157,7 +158,7 @@ describe('HexagonalPhantomRunner', () => {
             candles.push({
                 openTime: baseTime + i * 300000,
                 timestamp: baseTime + i * 300000,
-                open: price, high: price + 5, low: price - 5, close: price, volume: 1000,
+                open: price, high: price + 5, low: price - 5, close: price, volume: 1000, buyVolume: 500,
                 closeTime: baseTime + i * 300000 + 299999
             });
         }

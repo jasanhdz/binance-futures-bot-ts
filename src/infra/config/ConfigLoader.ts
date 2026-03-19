@@ -19,6 +19,7 @@ export interface SystemConfig {
     tick_interval_ms: number;
     max_trades_per_day: number;
     global_leverage_default: number;
+    enable_sentinel: boolean;
 }
 
 export interface RegimeDetectorConfig {
@@ -51,6 +52,7 @@ export interface RegimeYamlConfig {
     hard_stop_roe: number;
     tp_roe: number;
     max_hold_ms?: number;
+    max_trade_duration_ms?: number;
     be_roe?: number;        // Break-Even Trigger ROE
     trailing_step?: number; // Price-based Trailing Deviation
     trailing_activation_roe?: number;
@@ -305,7 +307,7 @@ export class NinjaConfigManager {
             hardStopRoe: mergedConfig.hard_stop_roe,
             tpRoe: mergedConfig.tp_roe,
             entryThreshold: mergedConfig.entry_threshold,
-            maxHoldMs: mergedConfig.max_hold_ms,
+            maxHoldMs: mergedConfig.max_trade_duration_ms || mergedConfig.max_hold_ms,
             trailingActivationRoe: mergedConfig.trailing_activation_roe,
             trailingCallbackRoe: mergedConfig.trailing_callback_roe,
             forbiddenHours: mergedConfig.forbidden_hours,
@@ -346,7 +348,8 @@ export class NinjaConfigManager {
             SYSTEM: {
                 tick_interval_ms: 5000,
                 max_trades_per_day: 100,
-                global_leverage_default: 10
+                global_leverage_default: 10,
+                enable_sentinel: true
             },
             REGIME_DETECTOR: {
                 volatility_spread_low: 0.0008,

@@ -52,6 +52,7 @@ export interface Exchange {
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   getLastCandle(symbol: string): Promise<Candle | null>;
   subscribeToCandles(symbol: string): void;
+  subscribeToPartialDepth?(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void): void;
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;
   getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;

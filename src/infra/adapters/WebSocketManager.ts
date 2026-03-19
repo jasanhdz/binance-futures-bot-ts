@@ -10,7 +10,7 @@ export interface WebSocketConfig {
 
 export class WebSocketManager {
     private activeCleanups: Record<string, () => void> = {};
-    private activeSubscriptions: Record<string, { type: 'candle' | 'user', params: any }> = {};
+    private activeSubscriptions: Record<string, { type: 'candle' | 'user' | 'aggTrade' | 'depth', params: any }> = {};
     private lastHeartbeat: Record<string, number> = {};
     private watchdogTimer: NodeJS.Timeout | null = null;
     private resetTimer: NodeJS.Timeout | null = null;
@@ -43,6 +43,69 @@ export class WebSocketManager {
         };
 
         this.subscribeCandles(key, symbol, interval, callback);
+    }
+
+    /**
+     * Subscribe to AggTrade Stream (High Frequency Real-Time Taker Flow)
+     */
+    public connectAggTrades(symbol: string, callback: (trade: { isBuyerMaker: boolean, quantity: string, price: string }) => void) {
+        const key = `aggTrade:${symbol}`;
+
+        this.activeSubscriptions[key] = {
+            type: 'aggTrade',
+            params: { symbol, callback }
+        };
+
+        this.subscribeAggTrades(key, symbol, callback);
+    }
+
+    /**
+     * Subscribe to Partial Depth Stream (Order Book)
+     */
+    public connectPartialDepth(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void) {
+        const key = `depth:${symbol}`;
+
+        this.activeSubscriptions[key] = {
+            type: 'depth',
+            params: { symbol, levels, speed, callback }
+        };
+
+        this.subscribePartialDepth(key, symbol, levels, speed, callback);
+    }
+
+    private subscribePartialDepth(key: string, symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void) {
+        this.logger.info('🔌 WS Connecting Partial Depth', { symbol });
+
+        try {
+            const clean = this.client.ws.futuresPartialDepth({ symbol, level: levels, updateSpeed: speed } as any, (depth: any) => {
+                // NOTE: Depth is NOT tracked in heartbeat — it silently dies in binance-api-node
+                // and would trigger Phoenix Protocol endlessly, killing candle/aggTrade streams.
+                callback(depth);
+            });
+
+            this.activeCleanups[key] = clean;
+            // Do NOT set lastHeartbeat for depth — it must not trigger watchdog
+        } catch (e) {
+            this.logger.error('WS Depth Connection Failed', { key, error: String(e) });
+            // Don't schedule full reconnect for depth failure
+        }
+    }
+
+    private subscribeAggTrades(key: string, symbol: string, callback: (trade: { isBuyerMaker: boolean, quantity: string, price: string }) => void) {
+        this.logger.info('🔌 WS Connecting AggTrades', { symbol });
+
+        try {
+            const clean = this.client.ws.futuresAggTrades(symbol, (trade) => {
+                this.lastHeartbeat[key] = Date.now();
+                callback(trade);
+            });
+
+            this.activeCleanups[key] = clean;
+            this.lastHeartbeat[key] = Date.now();
+        } catch (e) {
+            this.logger.error('WS AggTrade Connection Failed', { key, error: String(e) });
+            this.scheduleReconnect();
+        }
     }
 
     private subscribeCandles(key: string, symbol: string, interval: string, callback: (candle: Candle) => void) {
@@ -111,7 +174,9 @@ export class WebSocketManager {
             let needsReset = false;
 
             for (const [key, lastTime] of Object.entries(this.lastHeartbeat)) {
-                if (now - lastTime > timeout) {
+                // Depth stream can go silent in low-vol periods — give 5 min grace
+                const effectiveTimeout = key.startsWith('depth:') ? Math.max(timeout, 300000) : timeout;
+                if (now - lastTime > effectiveTimeout) {
                     this.logger.warn('🚨 WS Watchdog Timeout', { key, elapsed: now - lastTime });
                     needsReset = true;
                 }
@@ -156,8 +221,12 @@ export class WebSocketManager {
         for (const [key, sub] of Object.entries(this.activeSubscriptions)) {
             if (sub.type === 'candle') {
                 this.subscribeCandles(key, sub.params.symbol, sub.params.interval, sub.params.callback);
+            } else if (sub.type === 'aggTrade') {
+                this.subscribeAggTrades(key, sub.params.symbol, sub.params.callback);
             } else if (sub.type === 'user') {
                 this.subscribeUserData(key, sub.params.callback);
+            } else if (sub.type === 'depth') {
+                this.subscribePartialDepth(key, sub.params.symbol, sub.params.levels, sub.params.speed, sub.params.callback);
             }
         }
 

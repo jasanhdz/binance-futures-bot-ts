@@ -20,7 +20,7 @@ describe('MockMLService', () => {
         // Mock Exchange to return a candle
         exchange.setCandle({
             timestamp: 1000,
-            open: 100, high: 110, low: 90, close: 100, volume: 1000,
+            open: 100, high: 110, low: 90, close: 100, volume: 1000, buyVolume: 0,
             openTime: 1000, closeTime: 1300
         }, null);
 
@@ -43,7 +43,7 @@ describe('MockMLService', () => {
     it('should return PASS signal when API returns action 0', async () => {
         exchange.setCandle({
             timestamp: 1000,
-            open: 100, high: 110, low: 90, close: 100, volume: 1000,
+            open: 100, high: 110, low: 90, close: 100, volume: 1000, buyVolume: 0,
             openTime: 1000, closeTime: 1300
         }, null);
 
@@ -64,7 +64,7 @@ describe('MockMLService', () => {
     it('should handle API errors gracefully (return PASS)', async () => {
         exchange.setCandle({
             timestamp: 1000,
-            open: 100, high: 110, low: 90, close: 100, volume: 1000,
+            open: 100, high: 110, low: 90, close: 100, volume: 1000, buyVolume: 0,
             openTime: 1000, closeTime: 1300
         }, null);
 
