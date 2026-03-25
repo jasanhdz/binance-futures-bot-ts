@@ -37,6 +37,7 @@ export interface PhantomSignal {
     longProb: number;
     shortProb: number;
     neutralProb: number;
+    closeProb?: number;
     smart_leverage?: number; // V30 Leverage
     features?: {
         cvd_z?: number;

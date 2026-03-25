@@ -20,13 +20,18 @@ import {
 } from '../../domain/services/ProfitGuardian';
 import { NinjaConfigManager } from '../../infra/config/ConfigLoader';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
+import { CONFIG } from '../../infra/config/environment';
 
 // 🎯 CONSTANTES KAMIKAZE
 const TARGET_BALANCE = 500;
 const INITIAL_BALANCE = 20;
 const KAMIKAZE_LEVERAGE = 20;
-const MIN_ENTRY_THRESHOLD = 0.55;
-const MAX_ENTRY_THRESHOLD = 0.65;
+
+// Umbrales de Confianza Híbridos:
+// Live Bot (Real) = 55% (Muy seguro/conservador)
+// Paper Trading (Testnet) = 43% (Balanceado/Velocidad V31 Original)
+const MIN_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.33 : 0.45;
+const MAX_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.43 : 0.55;
 const RESURRECTION_THRESHOLD_BALANCE = 15;
 
 export interface KamikazeConfig {
@@ -514,8 +519,37 @@ export class TradingService {
             const now = Date.now();
             if (now - (botState.lastCheckAt || 0) > 60000) {
                 state.set({ lastCheckAt: now });
-                // El Real Bot ya no consulta a la IA de Salida para cerrar la operación.
-                // Se confía explícitamente en el ProfitGuardian (Trailing) y los Brackets duros.
+
+                // 🧠 BOTÓN DE PÁNICO DE LA IA (Close Prob)
+                try {
+                    const signal = await mlService.getSignal(symbol) as PhantomSignal;
+                    if (signal.closeProb && signal.closeProb > 0.60) {
+                        logger.warn(`🤖 AI PANIC CLOSE Triggered`, {
+                            closeProb: (signal.closeProb * 100).toFixed(1) + '%',
+                            currentRoe: (currentRoe * 100).toFixed(2) + '%'
+                        });
+
+                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AI_PANIC_CLOSE');
+
+                        const exitBalance = await exchange.getUSDTBalance();
+                        const pnlUsd = exitBalance - (botState.lastEntryWallet || exitBalance);
+                        const emoji = pnlUsd >= 0 ? '✅' : '🚨';
+
+                        await notifier.sendMessage(
+                            `${emoji} **AI PANIC CLOSE EXECUTED** 🤖\n` +
+                            `${symbol} | ${side}\n` +
+                            `Miedo de la IA (Close Prob): ${(signal.closeProb * 100).toFixed(1)}%\n` +
+                            `ROE: ${(currentRoe * 100).toFixed(2)}%\n` +
+                            `PnL: $${pnlUsd.toFixed(2)}\n` +
+                            `Balance: $${exitBalance.toFixed(2)}`
+                        );
+
+                        state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AI_PANIC_CLOSE' });
+                        return;
+                    }
+                } catch (err) {
+                    logger.warn('Failed to fetch ML Panic Close prob', { error: String(err) });
+                }
             }
 
             const action = evaluateGuardianAction({

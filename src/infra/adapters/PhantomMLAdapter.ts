@@ -7,6 +7,7 @@ export type MlProbabilityResponse = {
   long_prob: number;
   short_prob: number;
   neutral_prob: number;
+  close_prob?: number;
   consensus_level: number;
   meta_verdict: string;
   // Features from ML model (for PhantomTrigger pre-filter)
