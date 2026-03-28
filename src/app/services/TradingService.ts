@@ -520,12 +520,25 @@ export class TradingService {
             if (now - (botState.lastCheckAt || 0) > 60000) {
                 state.set({ lastCheckAt: now });
 
-                // 🧠 BOTÓN DE PÁNICO DE LA IA (Close Prob)
+                // 🧠 BOTÓN DE PÁNICO V3
                 try {
-                    const signal = await mlService.getSignal(symbol) as PhantomSignal;
-                    if (signal.closeProb && signal.closeProb > 0.60) {
-                        logger.warn(`🤖 AI PANIC CLOSE Triggered`, {
-                            closeProb: (signal.closeProb * 100).toFixed(1) + '%',
+                    const signalV31 = await mlService.getSignal(symbol) as PhantomSignal;
+                    const durationMinutes = tradeDuration > 0 ? tradeDuration / 60000 : 0;
+
+                    const exitV3 = await mlService.getExitSignal({
+                        symbol,
+                        entry_price: entryPrice,
+                        current_pnl: currentRoe,
+                        mfe: updatedPeakRoe,
+                        mae: updatedLowestRoe,
+                        duration_minutes: durationMinutes,
+                        leverage: botState.lastLeverage || 20
+                    });
+
+                    if (exitV3.action === 'CLOSE' && exitV3.confidence && exitV3.confidence > 0.60) {
+                        logger.warn(`🤖 AI PANIC CLOSE Triggered V3`, {
+                            v3Conf: (exitV3.confidence * 100).toFixed(1) + '%',
+                            v31CloseProb: ((signalV31.closeProb || 0) * 100).toFixed(1) + '%',
                             currentRoe: (currentRoe * 100).toFixed(2) + '%'
                         });
 
@@ -536,9 +549,10 @@ export class TradingService {
                         const emoji = pnlUsd >= 0 ? '✅' : '🚨';
 
                         await notifier.sendMessage(
-                            `${emoji} **AI PANIC CLOSE EXECUTED** 🤖\n` +
+                            `${emoji} **AI EXIT V3 EXECUTED** 🤖\n` +
                             `${symbol} | ${side}\n` +
-                            `Miedo de la IA (Close Prob): ${(signal.closeProb * 100).toFixed(1)}%\n` +
+                            `V3 Confianza Cierre: ${(exitV3.confidence * 100).toFixed(1)}%\n` +
+                            `V31 Opinión Cierre: ${((signalV31.closeProb || 0) * 100).toFixed(1)}%\n` +
                             `ROE: ${(currentRoe * 100).toFixed(2)}%\n` +
                             `PnL: $${pnlUsd.toFixed(2)}\n` +
                             `Balance: $${exitBalance.toFixed(2)}`
@@ -548,7 +562,7 @@ export class TradingService {
                         return;
                     }
                 } catch (err) {
-                    logger.warn('Failed to fetch ML Panic Close prob', { error: String(err) });
+                    logger.warn('Failed to fetch ML Exit signals', { error: String(err) });
                 }
             }
 
@@ -575,13 +589,34 @@ export class TradingService {
                     let emoji = pnlUsd > 0 ? '✅' : '❌';
                     if (action.reason === 'TRAILING_SAFETY_NET') emoji = '🛡️';
 
+                    // Fetch AI opinions for analytics
+                    let aiOpinions = '';
+                    try {
+                        const durationMin = tradeDuration > 0 ? tradeDuration / 60000 : 0;
+                        const [exitV3, signalV31] = await Promise.all([
+                            mlService.getExitSignal({
+                                symbol,
+                                entry_price: entryPrice,
+                                current_pnl: currentRoe,
+                                mfe: updatedPeakRoe,
+                                mae: updatedLowestRoe,
+                                duration_minutes: durationMin,
+                                leverage: botState.lastLeverage || 20
+                            }),
+                            mlService.getSignal(symbol)
+                        ]);
+                        aiOpinions = `\nV3 Exit: ${exitV3.action} (${((exitV3.confidence || 0) * 100).toFixed(1)}%)` +
+                            `\nV31 Close Prob: ${(((signalV31 as PhantomSignal).closeProb || 0) * 100).toFixed(1)}%`;
+                    } catch (_) { /* non-critical */ }
+
                     await notifier.sendMessage(`${emoji} **CIERRE DE GUARDIAN (${action.reason})**\n` +
                         `${symbol} | ${side}\n` +
                         `Entry: $${entryPrice.toFixed(2)} → Exit: $${markPrice.toFixed(2)}\n` +
                         `ROE: ${roePct}%\n` +
                         `PnL: $${pnlUsd.toFixed(2)}\n` +
                         `MFE Pico: ${(updatedPeakRoe * 100).toFixed(2)}%\n` +
-                        `Balance: $${exitBalance.toFixed(2)}`);
+                        `Balance: $${exitBalance.toFixed(2)}` +
+                        aiOpinions);
 
                     logger.info(`Guardian closed position: ${action.reason}`, {
                         symbol,
@@ -679,6 +714,7 @@ export class TradingService {
                 : (pos.entryPrice - pos.lowestPrice) / pos.entryPrice * pos.leverage;
 
             try {
+                const signalV31 = await this.deps.mlService.getSignal(symbol) as PhantomSignal;
                 const exitSignal = await this.deps.mlService.getExitSignal({
                     symbol,
                     entry_price: pos.entryPrice,
@@ -690,7 +726,10 @@ export class TradingService {
                 });
 
                 if (exitSignal.action === 'CLOSE' && exitSignal.confidence && exitSignal.confidence > 0.6) {
-                    await this.closeShadowPosition(markPrice, '🤖 AI EXIT');
+                    await this.closeShadowPosition(markPrice, '🤖 AI EXIT', {
+                        v3Conf: exitSignal.confidence,
+                        v31Conf: signalV31.closeProb
+                    });
                 }
             } catch (e) {
                 // Ignore errors for shadow AI exit
@@ -698,7 +737,7 @@ export class TradingService {
         }
     }
 
-    private async closeShadowPosition(exitPrice: number, reason: string): Promise<void> {
+    private async closeShadowPosition(exitPrice: number, reason: string, confs?: { v3Conf?: number, v31Conf?: number }): Promise<void> {
         const shadowPos = this.deps.state.get().shadowPos;
         if (!shadowPos) return;
 
@@ -706,12 +745,17 @@ export class TradingService {
             ? (exitPrice - shadowPos.entryPrice) * shadowPos.quantity
             : (shadowPos.entryPrice - exitPrice) * shadowPos.quantity;
 
+        let confMsg = `Initial Conf: ${(shadowPos.confidence * 100).toFixed(0)}%`;
+        if (confs) {
+            confMsg += `\nV3 Exit Conf: ${((confs.v3Conf || 0) * 100).toFixed(1)}%\nV31 Close Prob: ${((confs.v31Conf || 0) * 100).toFixed(1)}%`;
+        }
+
         await this.deps.notifier.sendMessage(
             `👻 **SHADOW TRADE CLOSED** (${reason})\n` +
             `${shadowPos.symbol} | ${shadowPos.side}\n` +
             `Entry: $${shadowPos.entryPrice.toFixed(2)} → Exit: $${exitPrice.toFixed(2)}\n` +
             `Fake PnL: $${pnlUsd.toFixed(2)}\n` +
-            `Initial Conf: ${(shadowPos.confidence * 100).toFixed(0)}%`
+            confMsg
         );
         this.deps.state.set({ shadowPos: null });
     }
