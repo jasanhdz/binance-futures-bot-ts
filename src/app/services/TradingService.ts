@@ -18,6 +18,7 @@ import {
 import {
     evaluateGuardianAction
 } from '../../domain/services/ProfitGuardian';
+import { calculateATR } from '../../domain/services/TechnicalIndicators';
 import { NinjaConfigManager } from '../../infra/config/ConfigLoader';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
@@ -39,6 +40,7 @@ export interface KamikazeConfig {
     leverage: number;
     capitalUsage: number;
     tpRoe?: number;
+    lastAtrValue?: number;
 }
 
 export interface TradingServiceDeps {
@@ -566,13 +568,29 @@ export class TradingService {
                 }
             }
 
+            // 📊 FETCH DYNAMIC ATR FOR TRAILING STOP (Cache for 60 seconds)
+            let currentAtr = botState.lastAtrValue;
+            if (now - (botState.lastAtrFetchedAt || 0) > 60000) {
+                try {
+                    const klines = await exchange.getCandles(symbol, '5m', 15);
+                    const atr = calculateATR(klines, 14);
+                    if (atr) {
+                        currentAtr = atr;
+                        state.set({ lastAtrFetchedAt: now, lastAtrValue: atr });
+                    }
+                } catch (e) {
+                    // Fail silently, Guardian uses default trailing logic
+                }
+            }
+
             const action = evaluateGuardianAction({
                 entryPrice,
                 currentPrice: markPrice,
                 peakPrice,
                 positionSide: side,
                 leverage: botState.lastLeverage || 20,
-                peakRoe: updatedPeakRoe
+                peakRoe: updatedPeakRoe,
+                atrValue: currentAtr
             }, guardianConfig, undefined);
 
             switch (action.type) {

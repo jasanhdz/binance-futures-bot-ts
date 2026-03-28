@@ -12,6 +12,7 @@ export interface GuardianContext {
     positionSide: 'LONG' | 'SHORT';
     leverage: number;
     peakRoe?: number;       // PARITY FIX: Track max ROE seen to trigger BE intra-candle
+    atrValue?: number;      // Actual ATR value for dynamic trailing
 }
 
 export interface GuardianConfig {
@@ -20,6 +21,8 @@ export interface GuardianConfig {
     trailingDev: number;    // e.g. 0.015 (1.5% deviation)
     trailingActivationRoe?: number; // Safety Net Activation
     trailingCallbackRoe?: number;   // Safety Net Callback
+    useAtrTrailing?: boolean;       // Enable ATR mode
+    atrMultiplier?: number;         // e.g. 2.0 (2x ATR)
 }
 
 export const DEFAULT_GUARDIAN_CONFIG: GuardianConfig = {
@@ -27,7 +30,9 @@ export const DEFAULT_GUARDIAN_CONFIG: GuardianConfig = {
     beOffsetPct: 0.003,
     trailingDev: 0.015,
     trailingActivationRoe: 0.15,
-    trailingCallbackRoe: 0.30
+    trailingCallbackRoe: 0.30,
+    useAtrTrailing: true,
+    atrMultiplier: 2.0
 };
 
 export type GuardianAction =
@@ -44,7 +49,7 @@ export function evaluateGuardianAction(
     config: GuardianConfig,
     currentSlPrice?: number
 ): GuardianAction {
-    const { entryPrice, currentPrice, peakPrice, positionSide, leverage, peakRoe } = ctx;
+    const { entryPrice, currentPrice, peakPrice, positionSide, leverage, peakRoe, atrValue } = ctx;
 
     // 1. Calculate ROE
     const roe = positionSide === 'SHORT'
@@ -58,14 +63,21 @@ export function evaluateGuardianAction(
     const currentPeakRoe = peakRoe ?? roe;
 
     if (currentPeakRoe >= activationRoe) {
-        // Calculate Trigger ROE (e.g. 15% * (1 - 0.30) = 10.5%)
-        const triggerRoe = currentPeakRoe * (1 - callbackRoe);
+        let triggerPrice = 0;
 
-        // Calculate Price at Trigger ROE
-        // ROE = (Entry - Price) / Entry * Lev  =>  Price = Entry * (1 - ROE/Lev)
-        const triggerPrice = positionSide === 'SHORT'
-            ? entryPrice * (1 - (triggerRoe / leverage))
-            : entryPrice * (1 + (triggerRoe / leverage));
+        // Si tenemos ATR habilitado y un valor de ATR válido, calculamos el Trailing dinámicamente
+        if (config.useAtrTrailing && config.atrMultiplier && atrValue && atrValue > 0) {
+            const trailingDistance = atrValue * config.atrMultiplier;
+            triggerPrice = positionSide === 'SHORT'
+                ? peakPrice + trailingDistance
+                : peakPrice - trailingDistance;
+        } else {
+            // Legacy / Fijo basado en porcentaje de ROE devuelto
+            const triggerRoe = currentPeakRoe * (1 - callbackRoe);
+            triggerPrice = positionSide === 'SHORT'
+                ? entryPrice * (1 - (triggerRoe / leverage))
+                : entryPrice * (1 + (triggerRoe / leverage));
+        }
 
         // Check if we should CLOSE NOW
         const shouldClose = positionSide === 'SHORT'
@@ -115,9 +127,18 @@ export function evaluateGuardianAction(
 
     // PARITY FIX: Only trail if BE has been triggered (ROE > 10%)
     if (isInProfit && (isBeTriggered || slIsAtBe) && !config.trailingActivationRoe) {
-        const trailingSlPrice = positionSide === 'SHORT'
-            ? peakPrice * (1 + config.trailingDev)
-            : peakPrice * (1 - config.trailingDev);
+
+        let trailingSlPrice = 0;
+        if (config.useAtrTrailing && config.atrMultiplier && atrValue && atrValue > 0) {
+            const trailingDistance = atrValue * config.atrMultiplier;
+            trailingSlPrice = positionSide === 'SHORT'
+                ? peakPrice + trailingDistance
+                : peakPrice - trailingDistance;
+        } else {
+            trailingSlPrice = positionSide === 'SHORT'
+                ? peakPrice * (1 + config.trailingDev)
+                : peakPrice * (1 - config.trailingDev);
+        }
 
         // Check if trailing SL is tighter than current SL
         const isTighter = currentSlPrice ? (

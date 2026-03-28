@@ -26,6 +26,8 @@ export type BotState = {
   lastExitAt?: number; // ← NUEVO
   lowestRoe?: number; // MAE (Maximum Adverse Excursion)
   lastCheckAt?: number; // Heartbeat for Smart Exit
+  lastAtrFetchedAt?: number; // Throttle for ATR fetch
+  lastAtrValue?: number;     // Cached ATR Value
 
   // NUEVO: recordatorio de que ya armamos los brackets para esta posición
   bracketsArmedAt?: number;
