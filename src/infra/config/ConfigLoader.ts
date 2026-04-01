@@ -59,7 +59,7 @@ export interface RegimeYamlConfig {
     trailing_callback_roe?: number;
     forbidden_hours?: number[];
     forbidden_days?: number[];
-
+    use_exit_agent?: boolean;
 }
 
 export interface NinjaYamlConfig {
@@ -312,7 +312,7 @@ export class NinjaConfigManager {
             trailingCallbackRoe: mergedConfig.trailing_callback_roe,
             forbiddenHours: mergedConfig.forbidden_hours,
             forbiddenDays: mergedConfig.forbidden_days,
-
+            useExitAgent: mergedConfig.use_exit_agent
         };
     }
 

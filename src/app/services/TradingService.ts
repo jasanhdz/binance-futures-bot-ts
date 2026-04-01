@@ -293,28 +293,30 @@ export class TradingService {
             }
 
             // --- DOUBLE CONFIRMATION / IA VETO ONLY FOR REAL BOT ---
-            try {
-                const currentPrice = currentCandle?.close || (await exchange.getMarkPrice(symbol));
-                const exitVeto = await mlService.getExitSignal({
-                    symbol,
-                    entry_price: currentPrice,
-                    current_pnl: 0,
-                    mfe: 0,
-                    mae: 0,
-                    duration_minutes: 0,
-                    leverage: 20
-                });
-
-                if (exitVeto.action === 'CLOSE') {
-                    logger.warn('🚫 AI EXIT VETO: Rejected Real Entry due to Exit IA forecasting immediate close.', {
+            if (regimeConfig.useExitAgent !== false) {
+                try {
+                    const currentPrice = currentCandle?.close || (await exchange.getMarkPrice(symbol));
+                    const exitVeto = await mlService.getExitSignal({
                         symbol,
-                        action: signal.action,
-                        confidence: (exitVeto.confidence ?? 0).toFixed(2)
+                        entry_price: currentPrice,
+                        current_pnl: 0,
+                        mfe: 0,
+                        mae: 0,
+                        duration_minutes: 0,
+                        leverage: 20
                     });
-                    return;
+
+                    if (exitVeto.action === 'CLOSE') {
+                        logger.warn('🚫 AI EXIT VETO: Rejected Real Entry due to Exit IA forecasting immediate close.', {
+                            symbol,
+                            action: signal.action,
+                            confidence: (exitVeto.confidence ?? 0).toFixed(2)
+                        });
+                        return;
+                    }
+                } catch (e) {
+                    logger.warn('AI Exit Veto check failed', { error: String(e) });
                 }
-            } catch (e) {
-                logger.warn('AI Exit Veto check failed', { error: String(e) });
             }
 
             logger.info('🔥 KAMIKAZE ENTRY TRIGGERED', {
@@ -522,46 +524,74 @@ export class TradingService {
             if (now - (botState.lastCheckAt || 0) > 60000) {
                 state.set({ lastCheckAt: now });
 
-                // 🧠 BOTÓN DE PÁNICO V3
+                // 🧠 BOTÓN DE PÁNICO (V3 o V31)
                 try {
                     const signalV31 = await mlService.getSignal(symbol) as PhantomSignal;
-                    const durationMinutes = tradeDuration > 0 ? tradeDuration / 60000 : 0;
 
-                    const exitV3 = await mlService.getExitSignal({
-                        symbol,
-                        entry_price: entryPrice,
-                        current_pnl: currentRoe,
-                        mfe: updatedPeakRoe,
-                        mae: updatedLowestRoe,
-                        duration_minutes: durationMinutes,
-                        leverage: botState.lastLeverage || 20
-                    });
-
-                    if (exitV3.action === 'CLOSE' && exitV3.confidence && exitV3.confidence > 0.60) {
-                        logger.warn(`🤖 AI PANIC CLOSE Triggered V3`, {
-                            v3Conf: (exitV3.confidence * 100).toFixed(1) + '%',
-                            v31CloseProb: ((signalV31.closeProb || 0) * 100).toFixed(1) + '%',
-                            currentRoe: (currentRoe * 100).toFixed(2) + '%'
+                    if (regimeConfig.useExitAgent !== false) {
+                        // Usa IA Especializada de Salida (V3)
+                        const durationMinutes = tradeDuration > 0 ? tradeDuration / 60000 : 0;
+                        const exitV3 = await mlService.getExitSignal({
+                            symbol,
+                            entry_price: entryPrice,
+                            current_pnl: currentRoe,
+                            mfe: updatedPeakRoe,
+                            mae: updatedLowestRoe,
+                            duration_minutes: durationMinutes,
+                            leverage: botState.lastLeverage || 20
                         });
 
-                        await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AI_PANIC_CLOSE');
+                        if (exitV3.action === 'CLOSE' && exitV3.confidence && exitV3.confidence > 0.60) {
+                            logger.warn(`🤖 AI PANIC CLOSE Triggered V3`, {
+                                v3Conf: (exitV3.confidence * 100).toFixed(1) + '%',
+                                v31CloseProb: ((signalV31.closeProb || 0) * 100).toFixed(1) + '%',
+                                currentRoe: (currentRoe * 100).toFixed(2) + '%'
+                            });
 
-                        const exitBalance = await exchange.getUSDTBalance();
-                        const pnlUsd = exitBalance - (botState.lastEntryWallet || exitBalance);
-                        const emoji = pnlUsd >= 0 ? '✅' : '🚨';
+                            await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AI_PANIC_CLOSE');
 
-                        await notifier.sendMessage(
-                            `${emoji} **AI EXIT V3 EXECUTED** 🤖\n` +
-                            `${symbol} | ${side}\n` +
-                            `V3 Confianza Cierre: ${(exitV3.confidence * 100).toFixed(1)}%\n` +
-                            `V31 Opinión Cierre: ${((signalV31.closeProb || 0) * 100).toFixed(1)}%\n` +
-                            `ROE: ${(currentRoe * 100).toFixed(2)}%\n` +
-                            `PnL: $${pnlUsd.toFixed(2)}\n` +
-                            `Balance: $${exitBalance.toFixed(2)}`
-                        );
+                            const exitBalance = await exchange.getUSDTBalance();
+                            const pnlUsd = exitBalance - (botState.lastEntryWallet || exitBalance);
+                            const emoji = pnlUsd >= 0 ? '✅' : '🚨';
 
-                        state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AI_PANIC_CLOSE' });
-                        return;
+                            await notifier.sendMessage(
+                                `${emoji} **AI EXIT V3 EXECUTED** 🤖\n` +
+                                `${symbol} | ${side}\n` +
+                                `V3 Confianza Cierre: ${(exitV3.confidence * 100).toFixed(1)}%\n` +
+                                `ROE: ${(currentRoe * 100).toFixed(2)}%\n` +
+                                `PnL: $${pnlUsd.toFixed(2)}\n` +
+                                `Balance: $${exitBalance.toFixed(2)}`
+                            );
+
+                            state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AI_PANIC_CLOSE' });
+                            return;
+                        }
+                    } else {
+                        // Delega el cierre al Agente de Entradas Original (V31)
+                        if (signalV31.closeProb && signalV31.closeProb > 0.60) {
+                            logger.warn(`🤖 AI PANIC CLOSE Triggered V31 (Fallback)`, {
+                                v31CloseProb: (signalV31.closeProb * 100).toFixed(1) + '%',
+                                currentRoe: (currentRoe * 100).toFixed(2) + '%'
+                            });
+
+                            await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'V31_PANIC_CLOSE');
+
+                            const exitBalance = await exchange.getUSDTBalance();
+                            const pnlUsd = exitBalance - (botState.lastEntryWallet || exitBalance);
+                            const emoji = pnlUsd >= 0 ? '✅' : '🚨';
+
+                            await notifier.sendMessage(
+                                `${emoji} **AI EXIT V31 EXECUTED** 🤖\n` +
+                                `${symbol} | ${side}\n` +
+                                `V31 Confianza Cierre: ${(signalV31.closeProb * 100).toFixed(1)}%\n` +
+                                `ROE: ${(currentRoe * 100).toFixed(2)}%\n` +
+                                `PnL: $${pnlUsd.toFixed(2)}\n` +
+                                `Balance: $${exitBalance.toFixed(2)}`
+                            );
+
+                            state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'V31_PANIC_CLOSE' });
+                            return;
+                        }
                     }
                 } catch (err) {
                     logger.warn('Failed to fetch ML Exit signals', { error: String(err) });

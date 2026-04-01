@@ -41,7 +41,7 @@ REGIMES:
     max_trade_duration_ms: 28800000  # 8 hours (was 2h) - more room to reach 150%
     forbidden_hours: [] 
     forbidden_days: []              
-
+    use_exit_agent: false         # Toggle for V3 Exit Veto and Panic Close
 # ═════════════════════════════════════════════════════════════════════
 # SYMBOL OVERRIDES (Future: BTC/SOL will have their own Phantom configs)
 # ═════════════════════════════════════════════════════════════════════
@@ -64,9 +64,9 @@ SYMBOL_OVERRIDES:
       max_trade_duration_ms: 28800000,  # 8h (was 2h) - time to reach 150%
       be_roe: 99.0, 
       trailing_activation_roe: 0.40,  # Activate at 30% ROE (was 0.50)
-      trailing_callback_roe: 0.15     # 15% callback (was 0.25) - tighter protection
+      trailing_callback_roe: 0.15,    # 15% callback (was 0.25) - tighter protection
+      use_exit_agent: false           # Delegar control de salida al Agente de Entrada
     }
-
     # -------------------------------------------------------------------------
     # ⚖️ SMART MODE ($125k): 20x + Breakeven @ 15%
     # Pros: Safe. Cons: Lower Return. Profile: Smart Human.

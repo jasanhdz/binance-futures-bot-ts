@@ -17,5 +17,5 @@ export interface RegimeConfig {
     trailingCallbackRoe?: number;
     forbiddenHours?: number[];
     forbiddenDays?: number[];
-
+    useExitAgent?: boolean; // Toggles the V3 Exit Agent Double Confirmation and Panic Close. Default is true.
 }
