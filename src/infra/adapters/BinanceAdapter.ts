@@ -599,30 +599,7 @@ export class BinanceExchange implements Exchange {
   async placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    if (qty) {
-      const rawParams: any = {
-        symbol,
-        side: side === 'LONG' ? 'SELL' : 'BUY',
-        type: 'STOP_MARKET',
-        triggerPrice: String(stopPrice),
-        closePosition: 'true',
-        workingType: 'MARK_PRICE',
-        algoType: 'CONDITIONAL',
-        timestamp: Date.now()
-      };
-      if (hedge) rawParams.positionSide = side;
-
-      try {
-        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
-        this.log.info('native_stop_created_raw', { symbol, price: stopPrice, qty });
-        return true;
-      } catch (e: any) {
-        noteRateLimitFromError(e);
-        throw e;
-      }
-    }
-
-    // Legacy fallback (no qty)
+    // Standard STOP_MARKET on /fapi/v1/order — works for both with-qty and closePosition
     const base: any = {
       symbol,
       type: 'STOP_MARKET',
@@ -631,42 +608,20 @@ export class BinanceExchange implements Exchange {
       closePosition: 'true',
       workingType: 'MARK_PRICE',
     };
+    if (qty) {
+      delete base.closePosition;
+      base.quantity = String(qty);
+      base.reduceOnly = 'true';
+    }
     const payload = hedge ? { ...base, positionSide: side } : base;
 
     const t0 = Date.now();
     try {
       await this.enqueue(() => this.cli.futuresOrder(payload));
-      this.log.debug('api_stop_upsert', {
-        ms: Date.now() - t0,
-        symbol,
-        side,
-        stopPrice,
-      });
+      this.log.debug('api_stop_upsert', { ms: Date.now() - t0, symbol, side, stopPrice });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
-
-      // Check if error is about algo orders
-      /*
-      const msg = (e?.message || '').toLowerCase();
-      if (msg.includes('algo') || msg.includes('order type not supported')) {
-        this.log.debug('api_stop_fallback_to_algo', { symbol, side, stopPrice });
-        try {
-          await this.placeStopCloseAlgo(symbol, side, stopPrice);
-          return true;
-        } catch (algoErr: any) {
-          const algoMsg = (algoErr?.message || '').toLowerCase();
-          // -4130 = order already exists, which is OK
-          if (algoMsg.includes('-4130') || algoMsg.includes('already') || algoMsg.includes('existing')) {
-            this.log.debug('api_stop_algo_already_exists', { symbol, side });
-            return false; // Silent success, but didn't create new
-          }
-          this.log.error('api_stop_algo_fail', { symbol, err: algoErr?.message || String(algoErr) });
-          throw algoErr;
-        }
-      }
-      */
-
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
@@ -734,30 +689,7 @@ export class BinanceExchange implements Exchange {
   async placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    if (qty) {
-      const rawParams: any = {
-        symbol,
-        side: side === 'LONG' ? 'SELL' : 'BUY',
-        type: 'TAKE_PROFIT_MARKET',
-        triggerPrice: String(triggerPrice),
-        closePosition: 'true',
-        workingType: 'MARK_PRICE',
-        algoType: 'CONDITIONAL',
-        timestamp: Date.now()
-      };
-      if (hedge) rawParams.positionSide = side;
-
-      try {
-        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
-        this.log.info('native_tp_created_raw', { symbol, price: triggerPrice, qty });
-        return true;
-      } catch (e: any) {
-        noteRateLimitFromError(e);
-        throw e;
-      }
-    }
-
-    // Legacy fallback
+    // Standard TAKE_PROFIT_MARKET on /fapi/v1/order
     const base: any = {
       symbol,
       type: 'TAKE_PROFIT_MARKET',
@@ -766,42 +698,20 @@ export class BinanceExchange implements Exchange {
       closePosition: 'true',
       workingType: 'MARK_PRICE',
     };
+    if (qty) {
+      delete base.closePosition;
+      base.quantity = String(qty);
+      base.reduceOnly = 'true';
+    }
     const payload = hedge ? { ...base, positionSide: side } : base;
 
     const t0 = Date.now();
     try {
       await this.enqueue(() => this.cli.futuresOrder(payload));
-      this.log.debug('api_tp_upsert', {
-        ms: Date.now() - t0,
-        symbol,
-        side,
-        tp: triggerPrice,
-      });
+      this.log.debug('api_tp_upsert', { ms: Date.now() - t0, symbol, side, tp: triggerPrice });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
-
-      // Check if error is about algo orders
-      /*
-      const msg = (e?.message || '').toLowerCase();
-      if (msg.includes('algo') || msg.includes('order type not supported')) {
-        this.log.debug('api_tp_fallback_to_algo', { symbol, side, tp: triggerPrice });
-        try {
-          await this.placeTpCloseAlgo(symbol, side, triggerPrice);
-          return true;
-        } catch (algoErr: any) {
-          const algoMsg = (algoErr?.message || '').toLowerCase();
-          // -4130 = order already exists, which is OK
-          if (algoMsg.includes('-4130') || algoMsg.includes('already') || algoMsg.includes('existing')) {
-            this.log.debug('api_tp_algo_already_exists', { symbol, side });
-            return false; // Silent success
-          }
-          this.log.error('api_tp_algo_fail', { symbol, err: algoErr?.message || String(algoErr) });
-          throw algoErr;
-        }
-      }
-      */
-
       if (BinanceExchange.posSideMismatch(e)) {
         await this.enqueue(() => this.cli.futuresOrder(base));
         this.hedgeCache = undefined;
