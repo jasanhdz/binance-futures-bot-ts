@@ -38,10 +38,10 @@ class PhantomMLService implements MLService {
         let action: 'LONG' | 'SHORT' | 'PASS' = 'PASS';
         let confidence = 0;
 
-        if (result.long_prob > 0.5) {
+        if (result.long_prob > result.short_prob && result.long_prob >= 0.30) {
             action = 'LONG';
             confidence = result.long_prob;
-        } else if (result.short_prob > 0.5) {
+        } else if (result.short_prob > result.long_prob && result.short_prob >= 0.30) {
             action = 'SHORT';
             confidence = result.short_prob;
         }
