@@ -31,8 +31,8 @@ const KAMIKAZE_LEVERAGE = 20;
 // Umbrales de Confianza Híbridos:
 // Live Bot (Real) = 55% (Muy seguro/conservador)
 // Paper Trading (Testnet) = 43% (Balanceado/Velocidad V31 Original)
-const MIN_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.33 : 0.45;
-const MAX_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.43 : 0.55;
+const MIN_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.33 : 0.40;
+const MAX_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.43 : 0.45;
 const RESURRECTION_THRESHOLD_BALANCE = 15;
 
 export interface KamikazeConfig {
@@ -277,7 +277,7 @@ export class TradingService {
             }
 
             const shadowPos = state.get().shadowPos;
-            if (!shadowPos && signal.confidence && signal.confidence >= 0.55) {
+            if (!shadowPos && signal.confidence && signal.confidence >= 0.33) {
                 // Abre fantasma automáticamente, sin importar si el Real Bot entra o no.
                 await this.openShadowTrade(symbol, signal, currentCandle, kamikazeConfig, regimeConfig, balance);
             }
