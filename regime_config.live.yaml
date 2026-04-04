@@ -36,12 +36,12 @@ REGIMES:
     tp_roe: 1.50                  # 150% ROE (7.5% price) - Phase 1: Ride the Wave
     be_roe: 99.0                  # No breakeven (AI Exit handles this)
     trailing_step: 0.015         
-    trailing_activation_roe: 0.40 # Activate trailing at 40% ROE (turned off previously)
+    trailing_activation_roe: 0.30 # Activate trailing at 30% ROE (turned off previously)
     trailing_callback_roe: 0.15   # Close if gives back 15% from peak (was 25%)
-    max_trade_duration_ms: 28800000  # 8 hours (was 2h) - more room to reach 150%
+    max_trade_duration_ms: 72000000  # 20 hours - extended for longer trades
     forbidden_hours: [] 
     forbidden_days: []              
-    use_exit_agent: false         # Toggle for V3 Exit Veto and Panic Close
+    use_exit_agent: true         # Toggle for V3 Exit Veto and Panic Close
 # ═════════════════════════════════════════════════════════════════════
 # SYMBOL OVERRIDES (Future: BTC/SOL will have their own Phantom configs)
 # ═════════════════════════════════════════════════════════════════════
@@ -61,11 +61,11 @@ SYMBOL_OVERRIDES:
       hard_stop_roe: -0.50, 
       entry_threshold: 0.40, # Base, adjusted dynamically by Resurrection mode
       tp_roe: 1.50,          # 150% ROE (was 0.25) - let winners run
-      max_trade_duration_ms: 28800000,  # 8h (was 2h) - time to reach 150%
+      max_trade_duration_ms: 72000000,  # 20h - extended for longer trades
       be_roe: 99.0, 
-      trailing_activation_roe: 0.40,  # Activate at 30% ROE (was 0.50)
+      trailing_activation_roe: 0.30,  # Activate at 30% ROE (was 0.50)
       trailing_callback_roe: 0.15,    # 15% callback (was 0.25) - tighter protection
-      use_exit_agent: false           # Delegar control de salida al Agente de Entrada
+      use_exit_agent: true           # Delegar control de salida al Agente de Entrada
     }
     # -------------------------------------------------------------------------
     # ⚖️ SMART MODE ($125k): 20x + Breakeven @ 15%

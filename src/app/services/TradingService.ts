@@ -31,8 +31,8 @@ const KAMIKAZE_LEVERAGE = 20;
 // Umbrales de Confianza Híbridos:
 // Live Bot (Real) = 55% (Muy seguro/conservador)
 // Paper Trading (Testnet) = 43% (Balanceado/Velocidad V31 Original)
-const MIN_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.33 : 0.40;
-const MAX_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.43 : 0.45;
+const MIN_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.33 : 0.33;
+const MAX_ENTRY_THRESHOLD = CONFIG.IS_TESTNET ? 0.43 : 0.33;
 const RESURRECTION_THRESHOLD_BALANCE = 15;
 
 export interface KamikazeConfig {
@@ -458,6 +458,34 @@ export class TradingService {
                     `Balance: $${balance.toFixed(2)} (${((balance / TARGET_BALANCE) * 100).toFixed(1)}% to target)`);
                 state.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
+            }
+
+            // SAFETY NET: Ensure brackets (SL/TP) exist on Binance, recreate if missing
+            const openStops = await exchange.openStopForSide(symbol, botState.lastSide as Side);
+            if (openStops === null) {
+                try {
+                    const regimeConfig = configManager.getRegimeConfig('PHANTOM');
+                    const hardStopPricePct = Math.abs(regimeConfig.hardStopRoe) / (botState.lastLeverage || 20);
+                    const tpPricePct = Math.abs(regimeConfig.tpRoe || 1.5) / (botState.lastLeverage || 20);
+
+                    let newStopPrice = side === 'SHORT'
+                        ? entryPrice * (1 + hardStopPricePct)
+                        : entryPrice * (1 - hardStopPricePct);
+
+                    let newTpPrice = side === 'SHORT'
+                        ? entryPrice * (1 - tpPricePct)
+                        : entryPrice * (1 + tpPricePct);
+
+                    // Round to 2 decimals using toFixed to strictly avoid JS float trailing precision
+                    newStopPrice = Number(newStopPrice.toFixed(2));
+                    newTpPrice = Number(newTpPrice.toFixed(2));
+
+                    await exchange.placeStopClose(symbol, side, newStopPrice);
+                    await exchange.placeTpClose(symbol, side, newTpPrice);
+                    logger.info(`Recreated missing brackets for ${symbol}`, { newStopPrice, newTpPrice });
+                } catch (error) {
+                    logger.error('Management error: Failed to recreate brackets', { symbol, error: String(error) });
+                }
             }
 
             const markPrice = await exchange.getMarkPrice(symbol);

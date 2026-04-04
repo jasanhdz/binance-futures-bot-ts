@@ -258,6 +258,8 @@ export class NinjaConfigManager {
         trailingDev: number;
         trailingActivationRoe?: number;
         trailingCallbackRoe?: number;
+        useAtrTrailing?: boolean;
+        atrMultiplier?: number;
     } {
         const regimeKey = regime.toUpperCase() as keyof typeof this.config.REGIMES;
         const baseRegime = this.config.REGIMES?.[regimeKey] || this.getDefaultRegimeConfig(regime);
@@ -274,7 +276,9 @@ export class NinjaConfigManager {
             beOffsetPct: 0.003, // Hardcoded 0.3% offset for now (standard fee cover)
             trailingDev: mergedConfig.trailing_step || 0.015,
             trailingActivationRoe: mergedConfig.trailing_activation_roe,
-            trailingCallbackRoe: mergedConfig.trailing_callback_roe
+            trailingCallbackRoe: mergedConfig.trailing_callback_roe,
+            useAtrTrailing: true, // Activate ATR logic for Trailing
+            atrMultiplier: 2.0
         };
     }
 

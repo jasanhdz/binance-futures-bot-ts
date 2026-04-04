@@ -599,31 +599,36 @@ export class BinanceExchange implements Exchange {
   async placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    // Standard STOP_MARKET on /fapi/v1/order — works for both with-qty and closePosition
-    const base: any = {
+    const rawParams: any = {
       symbol,
-      type: 'STOP_MARKET',
       side: side === 'LONG' ? 'SELL' : 'BUY',
-      stopPrice: String(stopPrice),
-      closePosition: 'true',
+      type: 'STOP_MARKET',
+      algoType: 'CONDITIONAL',
+      triggerPrice: String(stopPrice),
       workingType: 'MARK_PRICE',
+      timestamp: Date.now()
     };
+
     if (qty) {
-      delete base.closePosition;
-      base.quantity = String(qty);
-      base.reduceOnly = 'true';
+      rawParams.quantity = String(qty);
+      rawParams.reduceOnly = 'true';
+    } else {
+      rawParams.closePosition = 'true';
     }
-    const payload = hedge ? { ...base, positionSide: side } : base;
+
+    if (hedge) rawParams.positionSide = side;
 
     const t0 = Date.now();
     try {
-      await this.enqueue(() => this.cli.futuresOrder(payload));
+      await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
       this.log.debug('api_stop_upsert', { ms: Date.now() - t0, symbol, side, stopPrice });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
+      // Wait to see if error is a duplicate position side error
       if (BinanceExchange.posSideMismatch(e)) {
-        await this.enqueue(() => this.cli.futuresOrder(base));
+        delete rawParams.positionSide;
+        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
         this.hedgeCache = undefined;
         this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice });
         return true;
@@ -689,31 +694,35 @@ export class BinanceExchange implements Exchange {
   async placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    // Standard TAKE_PROFIT_MARKET on /fapi/v1/order
-    const base: any = {
+    const rawParams: any = {
       symbol,
-      type: 'TAKE_PROFIT_MARKET',
       side: side === 'LONG' ? 'SELL' : 'BUY',
-      stopPrice: String(triggerPrice),
-      closePosition: 'true',
+      type: 'TAKE_PROFIT_MARKET',
+      algoType: 'CONDITIONAL',
+      triggerPrice: String(triggerPrice),
       workingType: 'MARK_PRICE',
+      timestamp: Date.now()
     };
+
     if (qty) {
-      delete base.closePosition;
-      base.quantity = String(qty);
-      base.reduceOnly = 'true';
+      rawParams.quantity = String(qty);
+      rawParams.reduceOnly = 'true';
+    } else {
+      rawParams.closePosition = 'true';
     }
-    const payload = hedge ? { ...base, positionSide: side } : base;
+
+    if (hedge) rawParams.positionSide = side;
 
     const t0 = Date.now();
     try {
-      await this.enqueue(() => this.cli.futuresOrder(payload));
+      await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
       this.log.debug('api_tp_upsert', { ms: Date.now() - t0, symbol, side, tp: triggerPrice });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
-        await this.enqueue(() => this.cli.futuresOrder(base));
+        delete rawParams.positionSide;
+        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
         this.hedgeCache = undefined;
         this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice });
         return true;
