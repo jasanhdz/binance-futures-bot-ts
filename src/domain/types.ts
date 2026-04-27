@@ -45,6 +45,7 @@ export type BotState = {
   lastTradeId?: string;
   lastStrategyName?: string;
   lastEntryWallet?: number;
+  lastEntryMargin?: number;
   lastEntryUsedBalance?: number;
   lastEntryFilters?: Record<string, unknown>;
   lastCommissionEstimate?: number;

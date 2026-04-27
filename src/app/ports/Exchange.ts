@@ -12,6 +12,7 @@ export interface PositionInfo {
   qtyAbs: number;
   entryPrice: number;
   leverage: number;
+  isolatedMargin?: number;
   unrealizedPnl?: number;
   roePct?: number;
 }

@@ -197,7 +197,7 @@ export class NinjaConfigManager {
     getActiveSymbols(): string[] {
         const allSymbols = this.getSymbols();
         const MODELS_DIR = '/home/jasan/Develop/trading_system/models/v2_ensemble';
-        const QUALITY_THRESHOLD = 0.55;
+        const QUALITY_THRESHOLD = 0.40; // Lowered from 0.55 to prevent filtering active champions
 
         const activeSymbols: string[] = [];
 
@@ -272,13 +272,13 @@ export class NinjaConfigManager {
         }
 
         return {
-            beTriggerRoe: mergedConfig.be_roe || 0.10,
+            beTriggerRoe: mergedConfig.be_roe ?? 0.10,
             beOffsetPct: 0.003, // Hardcoded 0.3% offset for now (standard fee cover)
-            trailingDev: mergedConfig.trailing_step || 0.015,
-            trailingActivationRoe: mergedConfig.trailing_activation_roe,
-            trailingCallbackRoe: mergedConfig.trailing_callback_roe,
+            trailingDev: mergedConfig.trailing_step ?? 0.015,
+            trailingActivationRoe: mergedConfig.trailing_activation_roe ?? 0.15,
+            trailingCallbackRoe: mergedConfig.trailing_callback_roe ?? 0.30,
             useAtrTrailing: true, // Activate ATR logic for Trailing
-            atrMultiplier: 2.0
+            atrMultiplier: 1.5    // V31: Lower multiplier for stability on 8GB cards
         };
     }
 

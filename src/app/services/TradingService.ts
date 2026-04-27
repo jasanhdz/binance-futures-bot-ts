@@ -106,7 +106,7 @@ export class TradingService {
     }
 
     async start(startLoop = true): Promise<void> {
-        const { logger, notifier } = this.deps;
+        const { logger, notifier, mlService, state, configManager, exchange } = this.deps;
         logger.info('🔥 KAMIKAZE PHANTOM V33.5 ACTIVATED', {
             target: TARGET_BALANCE,
             initial: INITIAL_BALANCE,
@@ -117,10 +117,95 @@ export class TradingService {
         let startupMsg = `🔥 **KAMIKAZE V33.5 LAUNCHED**\n\n`;
         startupMsg += `🎯 Target: $${INITIAL_BALANCE} → $${TARGET_BALANCE}\n`;
         startupMsg += `⚡ Leverage: ${KAMIKAZE_LEVERAGE}x (LOCKED)\n`;
-        startupMsg += `🧠 Threshold: ${MIN_ENTRY_THRESHOLD}-${MAX_ENTRY_THRESHOLD} (Adaptive)\n`;
-        startupMsg += `🛡️ Circuit Breaker: DISABLED\n`;
-        startupMsg += `🛑 Sentinel: ELIMINATED\n\n`;
-        startupMsg += `⚠️ *Pure CVD Tensor Navigation*`;
+        
+        const firstSymbol = this.config.symbols[0];
+        const regimeConfigStartup = configManager.getRegimeConfig('PHANTOM', firstSymbol);
+        
+        const currentThreshold = regimeConfigStartup.entryThreshold;
+        const maxDurationMs = regimeConfigStartup.maxHoldMs;
+        const maxDurationH = maxDurationMs ? (maxDurationMs / 3600000).toFixed(1) : "N/A";
+        
+        startupMsg += `🧠 Threshold Real: **${currentThreshold}**\n`;
+        startupMsg += `👻 Threshold Shadow: **0.33**\n`;
+        startupMsg += `⏱️ Time Limit: **${maxDurationH} horas**\n`;
+        startupMsg += `🛡️ Circuit Breaker: ACTIVE\n\n`;
+        
+
+        // Fetch Initial Scan for Startup Report (With Retry Logic)
+        let signal: PhantomSignal | null = null;
+        for (let i = 0; i < 5; i++) {
+            try {
+                signal = await mlService.getSignal(firstSymbol) as PhantomSignal;
+                if (signal && signal.confidence !== undefined) break; // IA lista
+            } catch (e) {
+                logger.info(`⏳ Esperando a que el servidor de IA despierte (Intento ${i + 1}/5)...`);
+                await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+        }
+
+        if (signal) {
+            startupMsg += `🛰️ **ESCANEO INICIAL (Radar):**\n`;
+            startupMsg += `📈 Long:  ${((signal.longProb || 0) * 100).toFixed(1)}%\n`;
+            startupMsg += `📉 Short: ${((signal.shortProb || 0) * 100).toFixed(1)}%\n`;
+            startupMsg += `🧘 Idle:  ${((signal.neutralProb || 0) * 100).toFixed(1)}%\n`;
+            startupMsg += `🚪 Close: ${((signal.closeProb || 0) * 100).toFixed(1)}%\n\n`;
+            
+            const trend = (signal.shortProb || 0) > (signal.longProb || 0) ? '📉 BAJISTA' : '📈 ALCISTA';
+            startupMsg += `🧭 Tendencia: ${trend}\n`;
+            
+            const botState = state.get();
+            if (botState.mode !== 'IDLE') {
+                const markPrice = await exchange.getMarkPrice(firstSymbol);
+                const entryPrice = botState.lastEntryPrice || markPrice;
+                const leverage = botState.lastLeverage || 20;
+                const side = botState.lastSide as string;
+                
+                const roi = side === 'SHORT'
+                    ? (entryPrice - markPrice) / entryPrice * leverage
+                    : (markPrice - entryPrice) / entryPrice * leverage;
+                
+                const pnlUsd = (botState.lastEntryQty || 0) * (markPrice - entryPrice) * (side === 'SHORT' ? -1 : 1);
+                
+                // Fetch exact margin from Binance API to avoid discrepancy
+                const activePos = await exchange.readActivePosition(firstSymbol, side as any);
+                const marginUsed = activePos?.isolatedMargin || botState.lastEntryMargin || ((botState.lastEntryQty || 0) * entryPrice / leverage);
+                const durationH = botState.lastEntryAt ? ((Date.now() - botState.lastEntryAt) / 3600000).toFixed(1) : '0';
+                
+                startupMsg += `💼 **POSICIÓN ACTIVA:** ${side}\n`;
+                startupMsg += `📦 Tamaño: **${(botState.lastEntryQty || 0).toFixed(3)} ETH**\n`;
+                startupMsg += `💸 Margen: **$${marginUsed.toFixed(2)} USDT**\n`;
+                startupMsg += `💰 ROI: **${(roi * 100).toFixed(2)}%** | PnL: **$${pnlUsd.toFixed(2)}**\n`;
+                startupMsg += `⏱️ Duración: ${durationH} horas\n\n`;
+                
+                // Brackets Info
+                try {
+                    const openOrders = await exchange.listCloseOrdersForSide(firstSymbol, side as any);
+
+                    if (openOrders.length > 0) {
+                        startupMsg += `🎯 **BRACKETS (Binance):**\n`;
+                        for (const order of openOrders) {
+                            const orderPrice = (order as any).price || (order as any).stopPrice;
+                            if (orderPrice) {
+                                const dist = ((Math.abs(orderPrice - markPrice) / markPrice) * 100).toFixed(1);
+                                const isSL = side === 'SHORT' ? (orderPrice > entryPrice) : (orderPrice < entryPrice);
+                                startupMsg += `• ${isSL ? 'SL 🛑' : 'TP 🎯'}: $${orderPrice} (${dist}% dist)\n`;
+                            }
+                        }
+                    } else {
+                        startupMsg += `⚠️ No se detectaron SL/TP activos en Binance.\n`;
+                    }
+                } catch (e) {
+                    startupMsg += `⚠️ Error leyendo brackets.\n`;
+                }
+            } else {
+                startupMsg += `💼 Posición: NINGUNA (Flat)\n`;
+            }
+        } else {
+            startupMsg += `🛰️ **ESCANEO INICIAL:**\n`;
+            startupMsg += `⚠️ El servidor de IA está tardando en responder. El Radar se actualizará automáticamente en el primer tick de mercado.`;
+        }
+
+        startupMsg += `\n⚠️ *Pure CVD Tensor Navigation*`;
 
         for (const symbol of this.config.symbols) {
             this.deps.exchange.subscribeToCandles(symbol);
@@ -238,6 +323,12 @@ export class TradingService {
                 return;
             }
 
+            const botState = state.get();
+            const timeSinceLastExit = Date.now() - (botState.lastExitAt || 0);
+            if (timeSinceLastExit < 15 * 60 * 1000) { // 15 minutos de Cooldown
+                return; // Esperamos a que el mercado respire (evita entrar en agotamiento/sobreventa)
+            }
+
             const now = await exchange.getServerTime();
             if (this.checkForbiddenTime(now, regimeConfig)) return;
 
@@ -257,7 +348,7 @@ export class TradingService {
 
             const phantomConfig: PhantomConfig = {
                 leverage,
-                entryThreshold: kamikazeThreshold,
+                entryThreshold: regimeConfig.entryThreshold ?? kamikazeThreshold,
                 hardStopRoe: regimeConfig.hardStopRoe,
                 tpRoe: kamikazeConfig.tpRoe ?? regimeConfig.tpRoe
             };
@@ -336,7 +427,8 @@ export class TradingService {
                 const effectiveWallet = wallet * (1 - feeBufferPct);
                 const markPrice = await exchange.getMarkPrice(symbol);
                 const notional = effectiveWallet * capitalUsage * leverage;
-                const quantity = Math.floor((notional / markPrice) * Math.pow(10, filters.qtyPrecision)) / Math.pow(10, filters.qtyPrecision);
+                const quantityRaw = Math.floor((notional / markPrice) * Math.pow(10, filters.qtyPrecision)) / Math.pow(10, filters.qtyPrecision);
+                const quantity = Number(quantityRaw.toFixed(filters.qtyPrecision));
 
                 if (quantity * markPrice < filters.minNotional) {
                     logger.warn('Position too small', { quantity, minNotional: filters.minNotional });
@@ -349,6 +441,11 @@ export class TradingService {
                 const side = signal.action === 'SHORT' ? 'SHORT' : 'LONG';
                 const result = await exchange.marketOpen(symbol, side, quantity);
 
+                // Wait 500ms to allow Binance to process the order before fetching the true margin
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const positionData = await exchange.readActivePosition(symbol, side);
+                const marginUsed = positionData?.isolatedMargin || ((quantity * result.avgPrice) / leverage);
+
                 state.set({
                     mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                     lastSide: side,
@@ -359,46 +456,29 @@ export class TradingService {
                     currentRegime: 'PHANTOM',
                     lastPeakPrice: result.avgPrice,
                     lastEntryWallet: wallet,
+                    lastEntryMargin: marginUsed,
                     lastEntryQty: quantity,
                     lastMlProb: signal.confidence
                 });
-
-                const tickSize = filters.tickSize;
-                const tickDecimals = Math.max(0, Math.round(-Math.log10(tickSize)));
-                const roundToTick = (price: number) => {
-                    const rounded = Math.floor(price / tickSize) * tickSize;
-                    return parseFloat(rounded.toFixed(tickDecimals));
-                };
-
-                const hardStopPricePct = Math.abs(regimeConfig.hardStopRoe) / leverage;
-                const tpPricePct = Math.abs(regimeConfig.tpRoe) / leverage;
-
-                const stopPrice = side === 'SHORT'
-                    ? roundToTick(result.avgPrice * (1 + hardStopPricePct))
-                    : roundToTick(result.avgPrice * (1 - hardStopPricePct));
-                const tpPrice = side === 'SHORT'
-                    ? roundToTick(result.avgPrice * (1 - tpPricePct))
-                    : roundToTick(result.avgPrice * (1 + tpPricePct));
-
-                try {
-                    await exchange.placeStopClose(symbol, side, stopPrice, quantity);
-                    await exchange.placeTpClose(symbol, side, tpPrice, quantity);
-                    logger.info('Brackets placed', { stopPrice, tpPrice, tickSize, tickDecimals });
-                } catch (bracketError) {
-                    logger.error('Bracket failed', { error: String(bracketError), stopPrice, tpPrice });
-                }
 
                 this.tradesToday++;
                 this.lastEntryBalance = wallet;
 
                 await notifier.sendMessage(`🔥 **KAMIKAZE ENTRY**\n` +
-                    `${symbol} | ${side}\n` +
-                    `Entry: $${result.avgPrice.toFixed(2)}\n` +
-                    `Size: ${quantity} ETH ($${(quantity * result.avgPrice).toFixed(0)})\n` +
-                    `Balance: $${wallet.toFixed(2)} (${((wallet / TARGET_BALANCE) * 100).toFixed(1)}% to target)\n` +
-                    `Leverage: ${leverage}x\n` +
-                    `Conf: ${((signal.confidence ?? 0) * 100).toFixed(0)}% (thresh: ${(kamikazeThreshold * 100).toFixed(0)}%)\n` +
-                    `CVD-Z: ${signal.features?.cvd_z?.toFixed(1)}`);
+                    `${symbol} | ${side === 'LONG' ? '📈 LONG' : '📉 SHORT'}\n` +
+                    `Precio: $${result.avgPrice.toFixed(2)}\n` +
+                    `📦 Tamaño: **${quantity.toFixed(3)} ETH**\n` +
+                    `💸 Margen: **$${marginUsed.toFixed(2)} USDT**\n\n` +
+                    `**PROBABILIDADES IA:**\n` +
+                    `🟢 Long:  ${((signal.longProb || 0) * 100).toFixed(1)}%\n` +
+                    `🔴 Short: ${((signal.shortProb || 0) * 100).toFixed(1)}%\n` +
+                    `🧘 Idle:  ${((signal.neutralProb || 0) * 100).toFixed(1)}%\n` +
+                    `🚪 Close: ${((signal.closeProb || 0) * 100).toFixed(1)}%\n\n` +
+                    `💰 Wallet: $${wallet.toFixed(2)}\n` +
+                    `⚙️ Threshold: ${phantomConfig.entryThreshold}`);
+
+                // 📝 AUDIT LOG: Registro local del mensaje enviado (Solo real)
+                logger.info('📱 [TELEGRAM_REPORT] ENTRY SENT', { message: `🔥 **KAMIKAZE ENTRY**\n${symbol} | ${side}\n...probs: L:${((signal.longProb || 0) * 100).toFixed(1)}% S:${((signal.shortProb || 0) * 100).toFixed(1)}%` });
             } catch (entryError) {
                 logger.error('Entry failed', { error: String(entryError) });
                 this.consecutiveLosses++;
@@ -452,37 +532,65 @@ export class TradingService {
                     return;
                 }
 
-                const closeType = pnl >= 0 ? '🎯 TAKE PROFIT (TP)' : '🛑 STOP LOSS (SL)';
-                await notifier.sendMessage(`${pnl >= 0 ? '💰' : '💸'} **${closeType}**\n` +
-                    `${symbol} | PnL: $${pnl.toFixed(2)}\n` +
-                    `Balance: $${balance.toFixed(2)} (${((balance / TARGET_BALANCE) * 100).toFixed(1)}% to target)`);
+                const isLong = side === 'LONG';
+                const markPrice = await exchange.getMarkPrice(symbol);
+                const exitPrice = markPrice; // Best estimate of where it closed
+                const finalRoe = isLong ? (exitPrice - entryPrice) / entryPrice * (botState.lastLeverage || 20)
+                                       : (entryPrice - exitPrice) / entryPrice * (botState.lastLeverage || 20);
+
+                let closeDetail = "";
+                if (botState.lastTrailStop) {
+                    const distToTrail = Math.abs(exitPrice - botState.lastTrailStop) / exitPrice;
+                    if (distToTrail < 0.001) closeDetail = " [EJECUTADO POR TRAILING] 🛡️";
+                }
+
+                const closeType = pnl >= 0 ? `🎯 TAKE PROFIT (TP)${closeDetail}` : `🛑 STOP LOSS (SL)${closeDetail}`;
+                const emoji = pnl >= 0 ? '💰' : '💸';
+
+                await notifier.sendMessage(
+                    `${emoji} **${closeType}**\n` +
+                    `${symbol} | ${side}\n` +
+                    `Entrada: $${entryPrice.toFixed(2)} → Salida: $${exitPrice.toFixed(2)}\n` +
+                    `ROE Final: **${(finalRoe * 100).toFixed(2)}%**\n` +
+                    `PnL: **$${pnl.toFixed(2)}**\n` +
+                    `Balance: **$${balance.toFixed(2)}** (${((balance / TARGET_BALANCE) * 100).toFixed(1)}% de meta)`
+                );
+                
+                // 📝 AUDIT LOG: Registro local del mensaje enviado (Solo real)
+                logger.info('📱 [TELEGRAM_REPORT] EXIT SENT', { message: `💰 **${closeType}** PnL: $${pnl.toFixed(2)} Balance: $${balance.toFixed(2)}` });
+
                 state.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
             }
 
             // SAFETY NET: Ensure brackets (SL/TP) exist on Binance, recreate if missing
-            const openStops = await exchange.openStopForSide(symbol, botState.lastSide as Side);
-            if (openStops === null) {
+            const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
+            const hasSL = openOrders.some(o => o.type.includes('STOP'));
+            const hasTP = openOrders.some(o => o.type.includes('TAKE_PROFIT'));
+
+            if (!hasSL || !hasTP) {
                 try {
                     const regimeConfig = configManager.getRegimeConfig('PHANTOM');
                     const hardStopPricePct = Math.abs(regimeConfig.hardStopRoe) / (botState.lastLeverage || 20);
                     const tpPricePct = Math.abs(regimeConfig.tpRoe || 1.5) / (botState.lastLeverage || 20);
 
-                    let newStopPrice = side === 'SHORT'
-                        ? entryPrice * (1 + hardStopPricePct)
-                        : entryPrice * (1 - hardStopPricePct);
+                    if (!hasSL) {
+                        let newStopPrice = side === 'SHORT'
+                            ? entryPrice * (1 + hardStopPricePct)
+                            : entryPrice * (1 - hardStopPricePct);
+                        newStopPrice = Number(newStopPrice.toFixed(2));
+                        await exchange.placeStopClose(symbol, side, newStopPrice);
+                        logger.info(`Recreated missing SL for ${symbol}`, { newStopPrice });
+                    }
 
-                    let newTpPrice = side === 'SHORT'
-                        ? entryPrice * (1 - tpPricePct)
-                        : entryPrice * (1 + tpPricePct);
-
-                    // Round to 2 decimals using toFixed to strictly avoid JS float trailing precision
-                    newStopPrice = Number(newStopPrice.toFixed(2));
-                    newTpPrice = Number(newTpPrice.toFixed(2));
-
-                    await exchange.placeStopClose(symbol, side, newStopPrice);
-                    await exchange.placeTpClose(symbol, side, newTpPrice);
-                    logger.info(`Recreated missing brackets for ${symbol}`, { newStopPrice, newTpPrice });
+                    if (!hasTP) {
+                        let newTpPrice = side === 'SHORT'
+                            ? entryPrice * (1 - tpPricePct)
+                            : entryPrice * (1 + tpPricePct);
+                        newTpPrice = Number(newTpPrice.toFixed(2));
+                        await exchange.placeTpClose(symbol, side, newTpPrice);
+                        logger.info(`Recreated missing TP for ${symbol}`, { newTpPrice });
+                    }
                 } catch (error) {
                     logger.error('Management error: Failed to recreate brackets', { symbol, error: String(error) });
                 }
@@ -517,7 +625,7 @@ export class TradingService {
             const maxDurationMs = regimeConfig.maxHoldMs || 28800000; // default 8h
             const tradeDuration = botState.lastEntryAt ? (Date.now() - botState.lastEntryAt) : 0;
             if (tradeDuration > maxDurationMs) {
-                if (currentRoe > 0) {
+                if (currentRoe > 0.02) { // 🛡️ Buffer de 2% para evitar cierres en negativo por slippage
                     // In profit → close and lock in gains
                     logger.warn('⏰ MAX DURATION reached (in profit → closing)', {
                         symbol,
@@ -653,7 +761,43 @@ export class TradingService {
 
             switch (action.type) {
                 case 'MOVE_SL_TRAILING':
-                    await exchange.placeStopClose(symbol, side, action.price!);
+                    const trailingPrice = Number(action.price!.toFixed(2));
+                    let blockUpdate = false;
+                    if (botState.lastTrailStop !== undefined) {
+                        if (botState.lastTrailStop === trailingPrice) {
+                            blockUpdate = true;
+                        } else if (side === 'LONG' && trailingPrice < botState.lastTrailStop) {
+                            blockUpdate = true; // Never lower stop loss for Long
+                        } else if (side === 'SHORT' && trailingPrice > botState.lastTrailStop) {
+                            blockUpdate = true; // Never raise stop loss for Short
+                        }
+                    }
+
+                    if (blockUpdate) {
+                        break;
+                    }
+                    if (typeof (exchange as any).cancelStopOrdersForSide === 'function') {
+                        await (exchange as any).cancelStopOrdersForSide(symbol, side);
+                    }
+                    
+                    await exchange.placeStopClose(symbol, side, trailingPrice);
+
+                    // 📱 NOTIFICACIÓN DE TRAILING (NUEVO)
+                    const protectedRoe = side === 'SHORT'
+                        ? (entryPrice - trailingPrice) / entryPrice * (botState.lastLeverage || 20)
+                        : (trailingPrice - entryPrice) / entryPrice * (botState.lastLeverage || 20);
+
+                    await notifier.sendMessage(
+                        `🛡️ **TRAILING ACTUALIZADO** 🚀\n` +
+                        `${symbol} | ${side}\n` +
+                        `Nuevo SL: **$${trailingPrice}**\n` +
+                        `ROI Protegido: **${(protectedRoe * 100).toFixed(2)}%**\n` +
+                        `Precio Actual: $${markPrice.toFixed(2)}`
+                    );
+
+                    logger.info(`📱 [TELEGRAM_REPORT] TRAILING MOVE`, { message: `🛡️ **TRAILING ACTUALIZADO** SL: $${trailingPrice} ROI: ${(protectedRoe * 100).toFixed(2)}%` });
+
+                    state.set({ lastTrailStop: trailingPrice });
                     break;
                 case 'CLOSE_MARKET': {
                     await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, action.reason!);
@@ -693,6 +837,9 @@ export class TradingService {
                         `MFE Pico: ${(updatedPeakRoe * 100).toFixed(2)}%\n` +
                         `Balance: $${exitBalance.toFixed(2)}` +
                         aiOpinions);
+
+                    // 📝 AUDIT LOG: Registro local del mensaje enviado (Solo real)
+                    logger.info('📱 [TELEGRAM_REPORT] GUARDIAN EXIT SENT', { message: `🛡️ **CIERRE DE GUARDIAN (${action.reason})** PnL: $${pnlUsd.toFixed(2)} ROE: ${roePct}%` });
 
                     logger.info(`Guardian closed position: ${action.reason}`, {
                         symbol,

@@ -556,6 +556,7 @@ export class BinanceExchange implements Exchange {
       qtyAbs: Math.abs(+pos.positionAmt),
       entryPrice: +pos.entryPrice,
       leverage: +(pos.leverage || CONFIG.LEVERAGE),
+      isolatedMargin: pos.isolatedWallet ? Number(pos.isolatedWallet) : (pos.positionInitialMargin ? Number(pos.positionInitialMargin) : undefined),
       unrealizedPnl: pos.unrealizedProfit !== undefined ? Number(pos.unrealizedProfit) : undefined,
     };
   }

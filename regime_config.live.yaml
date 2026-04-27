@@ -2,7 +2,6 @@
 # PHANTOM V1: Deep Learning Trading (ETH Specialist)
 # ═══════════════════════════════════════════════════════════════════════
 SYMBOLS:
-  # Only ETH for now - BTC/SOL Phantom models coming in future
   ETHUSDT: 1.0
 
 TRADING:
@@ -20,78 +19,30 @@ SYSTEM:
   global_leverage_default: 20       
   enable_sentinel: false
 
-# 🧬 IMMUNE SYSTEM: Exit on probability drop
 IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_threshold: 0.55 }
 
-# ═══════════════════════════════════════════════════════════════════════
-# PHANTOM REGIME (Single Active Strategy)
-# Matches Phantom V8 backtest parameters ($20 → $79M)
-# ═══════════════════════════════════════════════════════════════════════
 REGIMES:
-  # PHANTOM: Deep Learning ETH Specialist
   PHANTOM:
     leverage: 20
     entry_threshold: 0.45        
-    hard_stop_roe: -0.50          # -50% ROE (-2.5% price) to survive wicks
-    tp_roe: 1.50                  # 150% ROE (7.5% price) - Phase 1: Ride the Wave
-    be_roe: 99.0                  # No breakeven (AI Exit handles this)
+    hard_stop_roe: -0.50
+    tp_roe: 1.50
+    be_roe: 0.08
     trailing_step: 0.015         
-    trailing_activation_roe: 0.30 # Activate trailing at 30% ROE (turned off previously)
-    trailing_callback_roe: 0.15   # Close if gives back 15% from peak (was 25%)
-    max_trade_duration_ms: 72000000  # 20 hours - extended for longer trades
-    forbidden_hours: [] 
-    forbidden_days: []              
-    use_exit_agent: true         # Toggle for V3 Exit Veto and Panic Close
-# ═════════════════════════════════════════════════════════════════════
-# SYMBOL OVERRIDES (Future: BTC/SOL will have their own Phantom configs)
-# ═════════════════════════════════════════════════════════════════════
+    trailing_activation_roe: 0.10
+    trailing_callback_roe: 0.15
+    max_trade_duration_ms: 72000000
+    use_exit_agent: false
+
 SYMBOL_OVERRIDES:
   ETHUSDT:
-    # -------------------------------------------------------------------------
-    # ☢️ ULTRA GOD MODE ($823k): 20x + Fixed Exit (4h) + Extended SL
-    # Pros: Max Return. Cons: 70% Drawdown per Loss. Profile: Legend.
-    # -------------------------------------------------------------------------
-    # -------------------------------------------------------------------------
-    # 🤖 V33.5 KAMIKAZE MODE + PHASE 1: Ride the Wave (20x)
-    # TP: 150% ROE | SL: -50% ROE | R:R = 1:3
-    # Trailing: Activates at 30% ROE, closes if gives back 15% from peak
-    # -------------------------------------------------------------------------
-    PHANTOM: { 
-      leverage: 20, 
-      hard_stop_roe: -0.50, 
-      entry_threshold: 0.40, # Base, adjusted dynamically by Resurrection mode
-      tp_roe: 1.50,          # 150% ROE (was 0.25) - let winners run
-      max_trade_duration_ms: 72000000,  # 20h - extended for longer trades
-      be_roe: 99.0, 
-      trailing_activation_roe: 0.30,  # Activate at 30% ROE (was 0.50)
-      trailing_callback_roe: 0.15,    # 15% callback (was 0.25) - tighter protection
-      use_exit_agent: true           # Delegar control de salida al Agente de Entrada
-    }
-    # -------------------------------------------------------------------------
-    # ⚖️ SMART MODE ($125k): 20x + Breakeven @ 15%
-    # Pros: Safe. Cons: Lower Return. Profile: Smart Human.
-    # -------------------------------------------------------------------------
-    # PHANTOM: { 
-    #   leverage: 20, 
-    #   hard_stop_roe: -0.025, 
-    #   entry_threshold: 0.55,
-    #   tp_roe: 2.5, # 250% ROE
-    #   max_trade_duration_ms: 14400000,
-    #   be_roe: 0.15, # Breakeven Trigger
-    #   trailing_activation_roe: 0.15, # Safety Net Active
-    #   trailing_callback_roe: 0.30    # 30% Callback
-    # }
-
-    # -------------------------------------------------------------------------
-    # 🚀 ELITE MODE ($174k): 15x + Fixed Exit (4h)
-    # Pros: Balanced. Cons: Boring. Profile: Mathematical.
-    # -------------------------------------------------------------------------
-    # PHANTOM: { 
-    #   leverage: 15, 
-    #   hard_stop_roe: -0.033, # Adjusted for 15x
-    #   entry_threshold: 0.55,
-    #   tp_roe: 2.5, # 250% ROE
-    #   max_trade_duration_ms: 14400000,
-    #   trailing_activation_roe: 0.15,
-    #   trailing_callback_roe: 0.30
-    # }
+    PHANTOM:
+      leverage: 20
+      hard_stop_roe: -0.40
+      entry_threshold: 0.48
+      tp_roe: 0.80
+      max_trade_duration_ms: 18000000
+      be_roe: 0.08
+      trailing_activation_roe: 0.10
+      trailing_callback_roe: 0.07
+      use_exit_agent: false
