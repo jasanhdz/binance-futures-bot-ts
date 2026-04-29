@@ -298,6 +298,36 @@ export class BinanceExchange implements Exchange {
     return m.includes('positionside') || m.includes('position side');
   }
 
+  /**
+   * Get price precision (decimal places) for a symbol from cached exchange info.
+   * Falls back to 2 for USDT pairs if cache is not available.
+   */
+  private getPricePrecision(symbol: string): number {
+    if (this.exchangeInfoCache) {
+      const s = this.exchangeInfoCache.data.symbols?.find((x: any) => x.symbol === symbol);
+      if (s) {
+        const pf = s.filters.find((f: any) => f.filterType === 'PRICE_FILTER');
+        if (pf?.tickSize) {
+          const tickStr = String(pf.tickSize);
+          if (tickStr.includes('.')) {
+            // Count significant decimal places (e.g., "0.01" → 2)
+            const decimals = tickStr.split('.')[1]!;
+            const trimmed = decimals.replace(/0+$/, '');
+            return Math.max(trimmed.length, 0);
+          }
+          return 0;
+        }
+      }
+    }
+    // Default: 2 for USDT pairs (ETH, BTC, etc.)
+    return 2;
+  }
+
+  /** Format a price to the correct precision for the symbol */
+  private formatPrice(symbol: string, price: number): string {
+    return price.toFixed(this.getPricePrecision(symbol));
+  }
+
   // ---------- Exchange implementation ----------
 
   async getServerTime() {
@@ -605,7 +635,7 @@ export class BinanceExchange implements Exchange {
       side: side === 'LONG' ? 'SELL' : 'BUY',
       type: 'STOP_MARKET',
       algoType: 'CONDITIONAL',
-      triggerPrice: String(stopPrice),
+      triggerPrice: this.formatPrice(symbol, stopPrice),
       workingType: 'MARK_PRICE',
       timestamp: Date.now()
     };
@@ -646,7 +676,7 @@ export class BinanceExchange implements Exchange {
       algoType: 'CONDITIONAL',
       type: 'STOP_MARKET',
       side: side === 'LONG' ? 'SELL' : 'BUY',
-      triggerPrice: String(stopPrice),
+      triggerPrice: this.formatPrice(symbol, stopPrice),
       workingType: 'MARK_PRICE',
       closePosition: 'true',
     };
@@ -700,7 +730,7 @@ export class BinanceExchange implements Exchange {
       side: side === 'LONG' ? 'SELL' : 'BUY',
       type: 'TAKE_PROFIT_MARKET',
       algoType: 'CONDITIONAL',
-      triggerPrice: String(triggerPrice),
+      triggerPrice: this.formatPrice(symbol, triggerPrice),
       workingType: 'MARK_PRICE',
       timestamp: Date.now()
     };
@@ -761,7 +791,7 @@ export class BinanceExchange implements Exchange {
       algoType: 'CONDITIONAL',
       type: 'TAKE_PROFIT_MARKET',
       side: side === 'LONG' ? 'SELL' : 'BUY',
-      triggerPrice: String(triggerPrice),
+      triggerPrice: this.formatPrice(symbol, triggerPrice),
       workingType: 'MARK_PRICE',
       closePosition: 'true',
     };
