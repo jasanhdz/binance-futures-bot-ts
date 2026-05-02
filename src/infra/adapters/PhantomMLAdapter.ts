@@ -26,6 +26,8 @@ export type MlProbabilityResponse = {
 export type MlProbabilityClientOptions = {
   baseUrl?: string;
   timeoutMs?: number;
+  retries?: number;
+  retryDelayMs?: number;
 };
 
 export class MlServiceError extends Error {
@@ -43,16 +45,34 @@ export class MlServiceError extends Error {
 export class MlProbabilityServiceClient {
   protected readonly http: AxiosInstance;
   protected readonly baseUrl: string;
+  private readonly retries: number;
+  private readonly retryDelayMs: number;
 
   constructor(opts: MlProbabilityClientOptions = {}) {
     // V2 Service runs on port 8001 by default
     const envBase = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8001';
     this.baseUrl = (opts.baseUrl ?? envBase).replace(/\/+$/, '');
+    this.retries = opts.retries ?? Number(process.env.ML_SERVICE_RETRIES ?? 3);
+    this.retryDelayMs = opts.retryDelayMs ?? Number(process.env.ML_SERVICE_RETRY_DELAY_MS ?? 750);
 
     this.http = axios.create({
       baseURL: this.baseUrl,
       timeout: opts.timeoutMs ?? 30000,
     });
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isTransientMlError(err: unknown): boolean {
+    if (!isAxiosError(err)) {
+      return false;
+    }
+    if (err.response) {
+      return err.response.status === 502 || err.response.status === 503 || err.response.status === 504;
+    }
+    return ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN'].includes(err.code ?? '');
   }
 
   async fetchProbabilities(params: {
@@ -68,37 +88,45 @@ export class MlProbabilityServiceClient {
     // V2 Payload: Just the symbol
     const payload = { symbol };
 
-    try {
-      const { data } = await this.http.post<MlProbabilityResponse>(
-        '/ml-v2/predict',
-        payload,
-      );
+    for (let attempt = 0; attempt <= this.retries; attempt += 1) {
+      try {
+        const { data } = await this.http.post<MlProbabilityResponse>(
+          '/ml-v2/predict',
+          payload,
+        );
 
-      // Adapt V2 response to look a bit like V1 if needed by consumer, 
-      // or just return as is. The consumer (strategy) should be updated to use neutral_prob.
-      return {
-        ...data,
-        primary_timeframe: '1m', // V2 works on 1m data
-        probabilities: {
-          '1m': { long_prob: data.long_prob, short_prob: data.short_prob }
+        // Adapt V2 response to look a bit like V1 if needed by consumer, 
+        // or just return as is. The consumer (strategy) should be updated to use neutral_prob.
+        return {
+          ...data,
+          primary_timeframe: '1m', // V2 works on 1m data
+          probabilities: {
+            '1m': { long_prob: data.long_prob, short_prob: data.short_prob }
+          }
+        };
+
+      } catch (err) {
+        if (attempt < this.retries && this.isTransientMlError(err)) {
+          await this.sleep(this.retryDelayMs * (attempt + 1));
+          continue;
         }
-      };
-
-    } catch (err) {
-      if (isAxiosError(err)) {
-        const status = err.response?.status;
-        const detail = err.response?.data;
-        const message =
-          typeof detail === 'string'
-            ? detail
-            : (detail as any)?.detail?.message ||
-            (detail as any)?.detail ||
-            err.message ||
-            'ml_service_error';
-        throw new MlServiceError(message, { status, payload: detail });
+        if (isAxiosError(err)) {
+          const status = err.response?.status;
+          const detail = err.response?.data;
+          const message =
+            typeof detail === 'string'
+              ? detail
+              : (detail as any)?.detail?.message ||
+              (detail as any)?.detail ||
+              err.message ||
+              'ml_service_error';
+          throw new MlServiceError(message, { status, payload: detail });
+        }
+        throw err;
       }
-      throw err;
     }
+
+    throw new MlServiceError('ml_service_retry_exhausted');
   }
 
   async getExitSignal(params: {
