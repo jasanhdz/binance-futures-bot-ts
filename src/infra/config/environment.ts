@@ -30,7 +30,7 @@ export const CONFIG = {
     : 'https://fapi.binance.com',
   WS_FUTURES: process.env.IS_TESTNET === '1'
     ? 'wss://fstream.binancefuture.com/ws'
-    : 'wss://fstream.binance.com/ws',
+    : 'wss://fstream.binancefuture.com/ws',
 
   // --- Bot Timing (ENV) ---
   BOT_STAGGER_MS: Number(process.env.BOT_STAGGER_MS ?? 2_000),
@@ -63,5 +63,4 @@ export const CONFIG = {
 } as const;
 
 export type BotConfig = typeof CONFIG;
-
 

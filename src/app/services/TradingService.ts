@@ -485,7 +485,9 @@ export class TradingService {
                 await this.notifyError(symbol, 'ENTRY FAILED', entryError);
             }
         } catch (error) {
-            logger.error('LookForEntry error', { error: String(error) });
+            if (this.shouldLogError(symbol, 'LOOKFOR_ENTRY', 60000)) {
+                logger.error('LookForEntry error', { error: String(error) });
+            }
             await this.notifyError(symbol, 'LOOKFOR ENTRY', error);
         }
     }
@@ -878,6 +880,16 @@ export class TradingService {
         } catch (e) {
             this.deps.logger.error('Failed to notify error', { error: String(e) });
         }
+    }
+
+    private shouldLogError(symbol: string, type: string, intervalMs: number): boolean {
+        const now = Date.now();
+        const logKey = `${symbol}:${type}`;
+        if (this.lastLogTime[logKey] && now - this.lastLogTime[logKey] < intervalMs) {
+            return false;
+        }
+        this.lastLogTime[logKey] = now;
+        return true;
     }
 
     private sleep(ms: number): Promise<void> {
