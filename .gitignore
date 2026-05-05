@@ -1,6 +1,40 @@
 node_modules/
+dist/
+.env
+*.log
+*.csv
+data/*.json
+!data/.gitkeep
+*.pyc
+__pycache__/
+.DS_Store
+
+# Regime Configuration (private)
+regime_config.yaml
+# regime_config.live.yaml (Tracked by user request)
+!regime_config.example.yaml
+node_modules/
 .env*
 !.env.example
+!.env.testnet.example
 dist/
+# Ignorar archivos específicos
 data/*
 logs/*
+train/data/*
+.venv/*
+
+# Ninja Config (production - contains personal settings)
+
+# Live regime config (private production settings)
+regime_config.grid_temp.yaml
+
+# Ignore generated reports and charts
+*.csv
+*.png
+
+# Archived Logs
+*.log.*
+*.gz
+*.zip
+*.tar

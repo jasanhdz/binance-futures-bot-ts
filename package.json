@@ -6,28 +6,42 @@
   "scripts": {
     "format": "prettier --write .",
     "dev:testnet": "DOTENV_CONFIG_PATH=.env.testnet nodemon -r ts-node/register -r dotenv/config src/main.ts",
-    "dev:prod":    "DOTENV_CONFIG_PATH=.env nodemon -r ts-node/register -r dotenv/config src/main.ts",
-
+    "dev:prod": "DOTENV_CONFIG_PATH=.env nodemon -r ts-node/register -r dotenv/config src/main.ts",
     "build": "tsc -p tsconfig.json",
-
     "start:testnet": "DOTENV_CONFIG_PATH=.env.testnet node -r dotenv/config dist/main.js",
-    "start:prod":    "DOTENV_CONFIG_PATH=.env node -r dotenv/config dist/main.js"
+    "start:prod": "DOTENV_CONFIG_PATH=.env node -r dotenv/config dist/main.js",
+    "verify:feats": "python3 train/export_sample_features.py --n 50 && ts-node src/ml/check_features.ts",
+    "test": "vitest run",
+    "bt": "ts-node src/backtest/runner.ts",
+    "bt:ml": "ts-node src/backtest/run_ml_probability.ts",
+    "bt:stack:file": "ts-node src/backtest/run_stack_classic.ts",
+    "scan:mom": "ts-node src/tools/momentum_scanner.ts",
+    "scan:testnet": "DOTENV_CONFIG_PATH=.env.testnet ts-node src/tools/momentum_scanner.ts",
+    "export:trades": "ts-node src/tools/trade_book_to_csv.ts",
+    "audit:orders": "ts-node src/tools/order_audit.ts",
+    "report:accuracy": "ts-node src/tools/trade_accuracy_report.ts",
+    "logs:table": "ts-node src/tools/log_table.ts"
   },
   "dependencies": {
-    "@binance/connector": "^3.6.1",
-    "@binance/futures-connector": "^0.1.7",
     "axios": "^1.11.0",
+    "better-sqlite3": "^9.4.3",
     "binance-api-node": "^0.12.9",
-    "chalk": "^5.6.0",
-    "dayjs": "^1.11.13",
+    "cli-table3": "^0.6.3",
     "dotenv": "^17.2.1",
-    "node-cron": "^4.2.1"
+    "js-yaml": "^4.1.1",
+    "node-cron": "^4.2.1",
+    "onnxruntime-node": "^1.22.0-rev"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.3.1",
+    "@types/yargs": "^17.0.33",
     "nodemon": "^3.1.10",
     "prettier": "^3.6.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "yargs": "^18.0.0"
   }
 }

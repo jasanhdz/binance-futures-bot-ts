@@ -1,0 +1,48 @@
+# ═══════════════════════════════════════════════════════════════════════
+# PHANTOM V1: Deep Learning Trading (ETH Specialist)
+# ═══════════════════════════════════════════════════════════════════════
+SYMBOLS:
+  ETHUSDT: 1.0
+
+TRADING:
+  capital_usage_default: 1.0        
+  min_wallet_reserve_usdt: 0         
+  fee_buffer_pct: 0.03            
+  max_risk_pct: 0.02                 
+  low_funds_threshold: 2             
+  reenter_on_tp: true               
+  post_exit_timeout_ms: 60000       
+
+SYSTEM:
+  tick_interval_ms: 2000
+  max_trades_per_day: 100
+  global_leverage_default: 20       
+  enable_sentinel: false
+
+IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_threshold: 0.55 }
+
+REGIMES:
+  PHANTOM:
+    leverage: 20
+    entry_threshold: 0.45        
+    hard_stop_roe: -0.50
+    tp_roe: 1.50
+    be_roe: 0.08
+    trailing_step: 0.015         
+    trailing_activation_roe: 0.10
+    trailing_callback_roe: 0.15
+    max_trade_duration_ms: 72000000
+    use_exit_agent: false
+
+SYMBOL_OVERRIDES:
+  ETHUSDT:
+    PHANTOM:
+      leverage: 20
+      hard_stop_roe: -0.40
+      entry_threshold: 0.48
+      tp_roe: 0.80
+      max_trade_duration_ms: 18000000
+      be_roe: 0.08
+      trailing_activation_roe: 0.10
+      trailing_callback_roe: 0.07
+      use_exit_agent: false
