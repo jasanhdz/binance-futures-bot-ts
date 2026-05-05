@@ -408,6 +408,20 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       return `${color.gray(t)} 🛡️ Aegis ${s} raw=${color.bold(String(rawAction))}/${rawScore} gated=${String(gatedAction)} reason=${String(gatedReason)} safe=${String(safeReason)}`;
     }
 
+    case 'aegis_micro_live_gate_denied': {
+      const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
+      const score = typeof ctx?.turboScore === 'number' ? ctx.turboScore.toFixed(3) : '—';
+      const reason = ctx?.reason ?? 'unknown';
+      const blockedBy = ctx?.gatedBlockedBy ? ` blockedBy=${ctx.gatedBlockedBy}` : '';
+      return `${color.gray(t)} 🛡️ AegisGate ${s} ${color.warn('DENIED')} reason=${String(reason)} score=${score}${blockedBy}`;
+    }
+
+    case 'aegis_micro_live_gate_allowed_dry_run': {
+      const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
+      const score = typeof ctx?.turboScore === 'number' ? ctx.turboScore.toFixed(3) : '—';
+      return `${color.gray(t)} ⚡ AegisGate ${s} ${color.warn('ALLOWED DRY-RUN')} side=${ctx?.side ?? '—'} lev=${ctx?.leverage ?? '—'}x frac=${ctx?.positionFraction ?? '—'} score=${score}`;
+    }
+
     // Otherwise, use Table (Active Position)
 
 

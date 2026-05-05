@@ -9,3 +9,4 @@ export * from './types';
 export * from './services/PhantomStrategy';
 export * from './services/ProfitGuardian';
 export * from './services/AegisStrategy';
+export * from './services/AegisMicroLiveGate';

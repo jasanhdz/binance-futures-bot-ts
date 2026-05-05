@@ -19,6 +19,11 @@ import {
     evaluateGuardianAction
 } from '../../domain/services/ProfitGuardian';
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
+import {
+    AegisMicroLiveGateDecision,
+    buildAegisMicroLiveGateConfigFromEnv,
+    shouldEnterAegisTurboMicroLive
+} from '../../domain/services/AegisMicroLiveGate';
 import { NinjaConfigManager } from '../../infra/config/ConfigLoader';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
@@ -346,6 +351,33 @@ export class TradingService {
         });
     }
 
+    private evaluateAegisTurboGateDryRun(
+        symbol: string,
+        signal: PhantomSignal,
+        balance: number | null
+    ): AegisMicroLiveGateDecision {
+        const botState = this.deps.state.get();
+        const timeSinceLastExitMs = Date.now() - (botState.lastExitAt || 0);
+        const liquidityStress = this.detector[symbol]?.getLiquidityStress() || 0;
+        const dailyPnlPct = balance !== null && this.peakBalance > 0
+            ? (balance - this.peakBalance) / this.peakBalance
+            : undefined;
+
+        return shouldEnterAegisTurboMicroLive(
+            {
+                symbol,
+                signal: { aegis: signal.metadata?.aegis },
+                hasOpenPosition: botState.mode !== 'IDLE',
+                tradesToday: this.tradesToday,
+                consecutiveLosses: this.consecutiveLosses,
+                timeSinceLastExitMs,
+                liquidityStress,
+                dailyPnlPct
+            },
+            buildAegisMicroLiveGateConfigFromEnv(CONFIG)
+        );
+    }
+
     private checkForbiddenTime(timestamp: number, config: any): boolean {
         if (!config.forbiddenHours && !config.forbiddenDays) return false;
         const date = new Date(timestamp);
@@ -369,10 +401,39 @@ export class TradingService {
             if (tradingMode === 'AEGIS_TURBO_MICRO_LIVE') {
                 const signal = await mlService.getSignal(symbol) as PhantomSignal;
                 this.logAegisScan(symbol, signal);
-                logger.warn('aegis_micro_live_not_implemented_yet', {
+                const gateDecision = this.evaluateAegisTurboGateDryRun(symbol, signal, null);
+
+                if (!gateDecision.allowed) {
+                    logger.info('aegis_micro_live_gate_denied', {
+                        symbol,
+                        reason: gateDecision.reason,
+                        turboScore: gateDecision.turboScore,
+                        votes: gateDecision.votes,
+                        rawReason: gateDecision.rawReason,
+                        gatedReason: gateDecision.gatedReason,
+                        gatedBlockedBy: gateDecision.gatedBlockedBy,
+                        liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
+                        tradingMode
+                    });
+                    return;
+                }
+
+                logger.warn('aegis_micro_live_gate_allowed_dry_run', {
                     symbol,
-                    liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
-                    reason: 'phase_1_shadow_only'
+                    side: gateDecision.side,
+                    leverage: gateDecision.leverage,
+                    positionFraction: gateDecision.positionFraction,
+                    stopRoe: gateDecision.stopRoe,
+                    takeProfitRoe: gateDecision.takeProfitRoe,
+                    trailingActivationRoe: gateDecision.trailingActivationRoe,
+                    trailingCallbackRoe: gateDecision.trailingCallbackRoe,
+                    turboScore: gateDecision.turboScore,
+                    votes: gateDecision.votes,
+                    rawReason: gateDecision.rawReason,
+                    gatedReason: gateDecision.gatedReason,
+                    gatedBlockedBy: gateDecision.gatedBlockedBy,
+                    dryRun: true,
+                    message: 'Gate allowed but execution is intentionally disabled in Phase 3'
                 });
                 return;
             }
