@@ -6,9 +6,11 @@
  */
 
 import { PhantomSignal } from '../../domain/services/PhantomStrategy';
+import { AegisPredictionResponse } from '../../domain/services/AegisStrategy';
 
 export interface MLService {
     getSignal(symbol: string): Promise<PhantomSignal>;
+    getAegisPrediction?(symbol: string): Promise<AegisPredictionResponse>;
     getExitSignal(payload: {
         symbol: string;
         entry_price: number;

@@ -1,40 +1,59 @@
+# Dependencies and build output
 node_modules/
 dist/
-.env
-*.log
-*.csv
-data/*.json
-!data/.gitkeep
-*.pyc
-__pycache__/
-.DS_Store
+coverage/
 
-# Regime Configuration (private)
-regime_config.yaml
-# regime_config.live.yaml (Tracked by user request)
-!regime_config.example.yaml
-node_modules/
-.env*
+# Environment and local secrets
+.env
+.env.*
 !.env.example
 !.env.testnet.example
-dist/
-# Ignorar archivos específicos
+
+# Local Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Runtime data and logs
 data/*
+!data/.gitkeep
 logs/*
-train/data/*
-.venv/*
+*.log
+*.log.*
 
-# Ninja Config (production - contains personal settings)
-
-# Live regime config (private production settings)
-regime_config.grid_temp.yaml
-
-# Ignore generated reports and charts
+# Generated reports, charts, and exports
+reports/*
+analysis/*.png
+analysis/*.csv
 *.csv
 *.png
 
-# Archived Logs
-*.log.*
+# Training and temporary data
+train/data/*
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Local/private regime configs
+regime_config.yaml
+regime_config.grid_temp.yaml
+!regime_config.example.yaml
+!regime_config.live.yaml
+
+# OS/editor artifacts and archives
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
 *.gz
 *.zip
 *.tar

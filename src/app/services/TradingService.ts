@@ -58,6 +58,7 @@ export interface TradingServiceConfig {
     guardianConfig?: any;
     tickIntervalMs: number;
     maxTradesPerDay: number;
+    tradingMode?: string;
 }
 
 export class TradingService {
@@ -80,6 +81,10 @@ export class TradingService {
         private deps: TradingServiceDeps,
         private config: TradingServiceConfig
     ) { }
+
+    private getTradingMode(): string {
+        return this.config.tradingMode || CONFIG.TRADING_MODE;
+    }
 
     private getKamikazeConfig(currentBalance: number): KamikazeConfig {
         const progress = Math.max(0, (currentBalance - INITIAL_BALANCE) / (TARGET_BALANCE - INITIAL_BALANCE));
@@ -107,16 +112,34 @@ export class TradingService {
 
     async start(startLoop = true): Promise<void> {
         const { logger, notifier, mlService, state, configManager, exchange } = this.deps;
-        logger.info('🔥 KAMIKAZE PHANTOM V33.5 ACTIVATED', {
+        const tradingMode = this.getTradingMode();
+        const isPhantomLegacy = tradingMode === 'PHANTOM_LEGACY';
+        const isAegisTurbo = tradingMode === 'AEGIS_TURBO_MICRO_LIVE';
+        const aegisModeTitle = isAegisTurbo
+            ? '⚡ AEGIS TURBO MICRO-LIVE MODE'
+            : '🛡️ AEGIS SHADOW MODE';
+        logger.info(isPhantomLegacy ? '🔥 KAMIKAZE PHANTOM V33.5 ACTIVATED' : aegisModeTitle, {
             target: TARGET_BALANCE,
             initial: INITIAL_BALANCE,
-            leverage: KAMIKAZE_LEVERAGE,
-            mode: 'INTELLIGENT_AGGRESSION'
+            leverage: isPhantomLegacy ? KAMIKAZE_LEVERAGE : 0,
+            mode: tradingMode,
+            liveEnabled: CONFIG.AEGIS_LIVE_ENABLED
         });
 
-        let startupMsg = `🔥 **KAMIKAZE V33.5 LAUNCHED**\n\n`;
-        startupMsg += `🎯 Target: $${INITIAL_BALANCE} → $${TARGET_BALANCE}\n`;
-        startupMsg += `⚡ Leverage: ${KAMIKAZE_LEVERAGE}x (LOCKED)\n`;
+        let startupMsg = isPhantomLegacy
+            ? `🔥 **KAMIKAZE V33.5 LAUNCHED**\n\n`
+            : `${isAegisTurbo ? '⚡' : '🛡️'} **${isAegisTurbo ? 'AEGIS TURBO MICRO-LIVE MODE' : 'AEGIS SHADOW MODE'}**\n\n`;
+        if (isPhantomLegacy) {
+            startupMsg += `🎯 Target: $${INITIAL_BALANCE} → $${TARGET_BALANCE}\n`;
+            startupMsg += `⚡ Leverage: ${KAMIKAZE_LEVERAGE}x (LOCKED)\n`;
+        } else {
+            startupMsg += `No live entries\n`;
+            startupMsg += `Aegis API integrated\n`;
+            startupMsg += `AEGIS_LIVE_ENABLED=${CONFIG.AEGIS_LIVE_ENABLED}\n`;
+            if (isAegisTurbo) {
+                startupMsg += `Live requires AEGIS_LIVE_ENABLED=true and is not implemented in Phase 1\n`;
+            }
+        }
         
         const firstSymbol = this.config.symbols[0];
         const regimeConfigStartup = configManager.getRegimeConfig('PHANTOM', firstSymbol);
@@ -125,10 +148,12 @@ export class TradingService {
         const maxDurationMs = regimeConfigStartup.maxHoldMs;
         const maxDurationH = maxDurationMs ? (maxDurationMs / 3600000).toFixed(1) : "N/A";
         
-        startupMsg += `🧠 Threshold Real: **${currentThreshold}**\n`;
-        startupMsg += `👻 Threshold Shadow: **0.33**\n`;
-        startupMsg += `⏱️ Time Limit: **${maxDurationH} horas**\n`;
-        startupMsg += `🛡️ Circuit Breaker: ACTIVE\n\n`;
+        if (isPhantomLegacy) {
+            startupMsg += `🧠 Threshold Real: **${currentThreshold}**\n`;
+            startupMsg += `👻 Threshold Shadow: **0.33**\n`;
+            startupMsg += `⏱️ Time Limit: **${maxDurationH} horas**\n`;
+            startupMsg += `🛡️ Circuit Breaker: ACTIVE\n\n`;
+        }
         
 
         // Fetch Initial Scan for Startup Report (With Retry Logic)
@@ -205,7 +230,9 @@ export class TradingService {
             startupMsg += `⚠️ El servidor de IA está tardando en responder. El Radar se actualizará automáticamente en el primer tick de mercado.`;
         }
 
-        startupMsg += `\n⚠️ *Pure CVD Tensor Navigation*`;
+        startupMsg += isPhantomLegacy
+            ? `\n⚠️ *Pure CVD Tensor Navigation*`
+            : `\n⚠️ *Shadow observation only*`;
 
         for (const symbol of this.config.symbols) {
             this.deps.exchange.subscribeToCandles(symbol);
@@ -274,14 +301,15 @@ export class TradingService {
 
     private async processSymbol(symbol: string): Promise<void> {
         this.lastAlivePulseMs = Date.now();
-        const { exchange, state, configManager } = this.deps;
+        const { state } = this.deps;
         const botState = state.get();
 
         try {
             const hasPosition = botState.mode !== 'IDLE';
             const shadowPos = state.get().shadowPos;
+            const tradingMode = this.getTradingMode();
 
-            if (shadowPos && shadowPos.active) {
+            if (tradingMode === 'PHANTOM_LEGACY' && shadowPos && shadowPos.active) {
                 await this.manageShadowPosition(symbol);
             }
 
@@ -299,6 +327,25 @@ export class TradingService {
         }
     }
 
+    private logAegisScan(symbol: string, signal: PhantomSignal): void {
+        const aegis = signal.metadata?.aegis;
+        this.deps.logger.info('aegis_scan', {
+            symbol,
+            mode: this.getTradingMode(),
+            safeAction: aegis?.shadow?.action,
+            safeReason: aegis?.shadow?.reason,
+            turboRawAction: aegis?.turbo?.raw?.action,
+            turboRawScore: aegis?.turbo?.raw?.turbo_score,
+            turboRawWouldExecute: aegis?.turbo?.raw?.would_execute,
+            turboGatedAction: aegis?.turbo?.gated?.action,
+            turboGatedReason: aegis?.turbo?.gated?.reason,
+            turboBlockedBy: aegis?.turbo?.gated?.blocked_by,
+            execute: aegis?.turbo?.execute,
+            smartLeverage: signal.smart_leverage ?? 0,
+            prodExecute: aegis?.prod?.execute
+        });
+    }
+
     private checkForbiddenTime(timestamp: number, config: any): boolean {
         if (!config.forbiddenHours && !config.forbiddenDays) return false;
         const date = new Date(timestamp);
@@ -312,6 +359,24 @@ export class TradingService {
     private async lookForEntry(symbol: string): Promise<void> {
         const { mlService, exchange, logger, state, notifier, configManager } = this.deps;
         try {
+            const tradingMode = this.getTradingMode();
+            if (tradingMode === 'AEGIS_SHADOW') {
+                const signal = await mlService.getSignal(symbol) as PhantomSignal;
+                this.logAegisScan(symbol, signal);
+                return;
+            }
+
+            if (tradingMode === 'AEGIS_TURBO_MICRO_LIVE') {
+                const signal = await mlService.getSignal(symbol) as PhantomSignal;
+                this.logAegisScan(symbol, signal);
+                logger.warn('aegis_micro_live_not_implemented_yet', {
+                    symbol,
+                    liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
+                    reason: 'phase_1_shadow_only'
+                });
+                return;
+            }
+
             const balance = await exchange.getUSDTBalance();
             const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
 
@@ -368,7 +433,7 @@ export class TradingService {
             }
 
             const shadowPos = state.get().shadowPos;
-            if (!shadowPos && signal.confidence && signal.confidence >= 0.33) {
+            if (tradingMode === 'PHANTOM_LEGACY' && !shadowPos && signal.confidence && signal.confidence >= 0.33) {
                 // Abre fantasma automáticamente, sin importar si el Real Bot entra o no.
                 await this.openShadowTrade(symbol, signal, currentCandle, kamikazeConfig, regimeConfig, balance);
             }
@@ -625,7 +690,8 @@ export class TradingService {
             // ⏰ Max Trade Duration Check (only close if in PROFIT)
             const regimeConfig = configManager.getRegimeConfig('PHANTOM', symbol);
             const maxDurationMs = regimeConfig.maxHoldMs || 28800000; // default 8h
-            const tradeDuration = botState.lastEntryAt ? (Date.now() - botState.lastEntryAt) : 0;
+            const serverNow = await exchange.getServerTime();
+            const tradeDuration = botState.lastEntryAt ? (serverNow - botState.lastEntryAt) : 0;
             if (tradeDuration > maxDurationMs) {
                 if (currentRoe > 0.02) { // 🛡️ Buffer de 2% para evitar cierres en negativo por slippage
                     // In profit → close and lock in gains

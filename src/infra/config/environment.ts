@@ -56,6 +56,17 @@ export const CONFIG = {
   ML_SERVICE_URL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8001',
   ML_HISTORY_BARS: Number(process.env.ML_HISTORY_BARS ?? 512),
 
+  // --- Aegis TS Integration (ENV) ---
+  TRADING_MODE: process.env.TRADING_MODE || 'AEGIS_SHADOW',
+  AEGIS_LIVE_ENABLED: process.env.AEGIS_LIVE_ENABLED === '1',
+  AEGIS_TURBO_ALLOW_SHORT: process.env.AEGIS_TURBO_ALLOW_SHORT === '1',
+  AEGIS_TURBO_MIN_SCORE: Number(process.env.AEGIS_TURBO_MIN_SCORE ?? 0.60),
+  AEGIS_TURBO_LEVERAGE: Number(process.env.AEGIS_TURBO_LEVERAGE ?? 15),
+  AEGIS_TURBO_POSITION_FRACTION: Number(process.env.AEGIS_TURBO_POSITION_FRACTION ?? 0.10),
+  AEGIS_TURBO_MAX_TRADES_PER_DAY: Number(process.env.AEGIS_TURBO_MAX_TRADES_PER_DAY ?? 2),
+  AEGIS_TURBO_DAILY_LOSS_STOP_PCT: Number(process.env.AEGIS_TURBO_DAILY_LOSS_STOP_PCT ?? 0.10),
+  AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES: Number(process.env.AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES ?? 2),
+
   // --- Re-entry Logic (YAML) ---
   REENTER_ON_TP: trading.reenter_on_tp,
   POST_EXIT_TIMEOUT_MS: trading.post_exit_timeout_ms,
@@ -63,4 +74,3 @@ export const CONFIG = {
 } as const;
 
 export type BotConfig = typeof CONFIG;
-

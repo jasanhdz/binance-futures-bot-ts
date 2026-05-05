@@ -14,6 +14,7 @@ import { TelegramService } from './infra/adapters/TelegramAdapter';
 import { FsLogger } from './infra/logging/FsLogger';
 import { FsStateStore } from './infra/logging/FsStateStore';
 import { MlProbabilityServiceClient } from './infra/adapters/PhantomMLAdapter';
+import { AegisMLService } from './app/services/AegisMLService';
 import { NinjaConfigManager } from './infra/config/ConfigLoader';  // ← NEW
 import { TradingService, TradingServiceConfig } from './app/services/TradingService';
 import { DEFAULT_PHANTOM_CONFIG } from './domain/services/PhantomStrategy';
@@ -21,6 +22,7 @@ import { DEFAULT_GUARDIAN_CONFIG } from './domain/services/ProfitGuardian';
 import { MLService } from './app/ports/MLService';
 import { PhantomSignal } from './domain/services/PhantomStrategy';
 import { Notifier } from './app/ports/Notifier';
+import { CONFIG } from './infra/config/environment';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ADAPTER WRAPPERS (to match port interfaces)
@@ -86,14 +88,27 @@ class TelegramNotifier implements Notifier {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
-    console.log('🦅 PHANTOM Trading Bot - Hexagonal Architecture');
+    console.log('🦅 PHANTOM/Aegis Trading Bot - Hexagonal Architecture');
     console.log('================================================');
+    console.log(`Trading mode: ${CONFIG.TRADING_MODE}`);
+    if (CONFIG.TRADING_MODE === 'AEGIS_SHADOW') {
+        console.log('🛡️ AEGIS SHADOW MODE');
+        console.log('No live entries');
+        console.log('Aegis API integrated');
+    } else if (CONFIG.TRADING_MODE === 'AEGIS_TURBO_MICRO_LIVE') {
+        console.log('⚡ AEGIS TURBO MICRO-LIVE MODE');
+        console.log(`Live requires AEGIS_LIVE_ENABLED=true (current=${CONFIG.AEGIS_LIVE_ENABLED})`);
+    } else {
+        console.log('🔥 PHANTOM LEGACY MODE');
+    }
 
     // Create infrastructure adapters
     const logger = new FsLogger();
     const exchange = new BinanceExchange(logger);
     const stateStore = new FsStateStore('phantom_state.json');
-    const mlService = new PhantomMLService();
+    const mlService: MLService = CONFIG.TRADING_MODE === 'PHANTOM_LEGACY'
+        ? new PhantomMLService()
+        : new AegisMLService();
     const notifier = new TelegramNotifier();
     const configManager = new NinjaConfigManager();  // ← NEW: Dynamic YAML config
 

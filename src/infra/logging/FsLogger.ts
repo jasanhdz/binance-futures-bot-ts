@@ -398,6 +398,16 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       return `${color.gray(`[${t}]`)} 🔍 ${color.info(s)}: $${price} | ⚡ L:${lpColor(lp.toFixed(2))} S:${spColor(sp.toFixed(2))} ${color.gray(`(Req: ${th.toFixed(2)})`)} | ${blockerText}`;
     }
 
+    case 'aegis_scan': {
+      const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
+      const rawAction = ctx?.turboRawAction ?? '—';
+      const rawScore = typeof ctx?.turboRawScore === 'number' ? ctx.turboRawScore.toFixed(3) : '—';
+      const gatedAction = ctx?.turboGatedAction ?? '—';
+      const gatedReason = ctx?.turboGatedReason ?? '—';
+      const safeReason = ctx?.safeReason ?? '—';
+      return `${color.gray(t)} 🛡️ Aegis ${s} raw=${color.bold(String(rawAction))}/${rawScore} gated=${String(gatedAction)} reason=${String(gatedReason)} safe=${String(safeReason)}`;
+    }
+
     // Otherwise, use Table (Active Position)
 
 
