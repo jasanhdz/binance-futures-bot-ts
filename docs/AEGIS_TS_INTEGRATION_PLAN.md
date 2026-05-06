@@ -59,6 +59,32 @@ Execution behavior:
 - Closes the position immediately if required brackets fail.
 - Stores `AEGIS_TURBO` metadata in state.
 
+## Telegram Runtime Messages
+
+Fecha: 2026-05-06.
+
+Startup message:
+
+- No longer includes the old fixed target (`$20 -> $500`), because that target is not useful for the live runtime state.
+- Includes the current USDT wallet balance at boot as `Wallet Actual`.
+- Includes compact `Balance Aprox.`, calculated as current available wallet balance plus active position margin plus open unrealized PnL. Example: `$500 available + $65 margin - $10 open PnL = ~$555`. The Telegram message only prints the final approximate total to stay short when multiple symbols are active. When Binance does not expose unrealized PnL, the bot approximates it from current ROE and entry margin.
+- Shows leverage cap, real entry threshold, max hold time, circuit breaker state, trailing configuration, initial radar scan, and current position state.
+- If there is an active position on restart, calculates displayed PnL from current ROE and entry margin instead of using wallet delta.
+- Shows Binance TP/SL brackets with trigger price and ROE percentage.
+
+Entry message:
+
+- Uses the Phantom/Kamikaze-style compact format adapted as `AEGIS TURBO ENTRY`.
+- Shows symbol, side, entry price, ETH size, margin, locked leverage, SL/TP price plus ROE percentage, trailing activation/callback, AI probabilities, Turbo score, votes, reason, wallet, and threshold.
+- Entry wallet is the live `exchange.getUSDTBalance()` value used by the sizing flow.
+
+Exit message:
+
+- Uses the Phantom/Kamikaze-style close format adapted as `AEGIS TURBO EXIT`.
+- Reports entry price, exit price, final ROE, PnL, margin, duration, MFE/MAE, and current balance.
+- Exit PnL is derived from ROE and margin when available.
+- Reason is normalized into explicit close categories: stop loss, take profit, trailing/callback, break even, time limit, IA, or risk-control fallback.
+
 ## Runtime Sizing Source
 
 Fecha: 2026-05-06.

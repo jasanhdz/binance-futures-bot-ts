@@ -17,7 +17,6 @@ import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
 
-const TARGET_BALANCE = 500;
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 
@@ -86,10 +85,16 @@ export class TradingService {
         const { logger, notifier, mlService, state, configManager, exchange } = this.deps;
         const tradingMode = this.getTradingMode();
         const isTurbo = tradingMode === 'AEGIS_TURBO_MICRO_LIVE';
+        let startupWalletBalance: number | null = null;
+        try {
+            startupWalletBalance = await exchange.getUSDTBalance();
+        } catch (error) {
+            logger.warn('startup_wallet_balance_unavailable', { error });
+        }
 
         logger.info(isTurbo ? '⚡ AEGIS TURBO MICRO-LIVE MODE' : '🛡️ AEGIS SHADOW MODE', {
-            target: TARGET_BALANCE,
             initial: INITIAL_BALANCE,
+            walletBalance: startupWalletBalance,
             mode: tradingMode,
             liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
             yamlLiveEnabled: this.getAegisTurboYamlConfig()?.live_enabled === true
@@ -104,7 +109,7 @@ export class TradingService {
         const trailingCallback = (gateConfig as any).trailingCallbackRoe ?? regimeConfig?.trailingCallbackRoe ?? 0.08;
         const circuitBreakerState = this.deps.configManager.system.enable_sentinel ? 'ACTIVE' : 'DISABLED';
         let startupMsg = `🔥 ${isTurbo ? 'AEGIS TURBO MICRO-LIVE LAUNCHED' : 'AEGIS SHADOW MODE'} 🎯\n`;
-        startupMsg += `🎯 Target: $${INITIAL_BALANCE} → $${TARGET_BALANCE}\n`;
+        startupMsg += `💰 Wallet Actual: ${startupWalletBalance !== null ? `$${startupWalletBalance.toFixed(2)} USDT` : 'N/D'}\n`;
         startupMsg += `⚡ Leverage: ${gateConfig.leverageCap}x (LOCKED)\n`;
         startupMsg += `🧠 Threshold Real: ${Number(entryThreshold).toFixed(2)}\n`;
         startupMsg += `⏱️ Time Limit: ${(Number(maxHoldMs) / 3600000).toFixed(1)} horas\n`;
@@ -160,21 +165,27 @@ export class TradingService {
             const roi = side === 'SHORT'
                 ? (entryPrice - markPrice) / entryPrice * leverage
                 : (markPrice - entryPrice) / entryPrice * leverage;
-            const currentBalance = await exchange.getUSDTBalance();
-            const pnl = currentBalance - (botState.lastEntryWallet || currentBalance);
+            const pnl = typeof position?.unrealizedPnl === 'number' && Number.isFinite(position.unrealizedPnl)
+                ? position.unrealizedPnl
+                : this.pnlFromRoe(marginUsed, roi);
+            const approximateBalance = startupWalletBalance !== null ? startupWalletBalance + marginUsed + pnl : null;
             const openOrders = await exchange.listCloseOrdersForSide(firstSymbol, side);
             const tpOrder = openOrders.find(order => order.type.includes('TAKE_PROFIT'));
             const slOrder = openOrders.find(order => order.type.includes('STOP'));
+            const stopRoe = botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15;
+            const takeProfitRoe = botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25;
 
+            startupMsg += `📊 Balance Aprox.: ${approximateBalance !== null ? `~$${approximateBalance.toFixed(2)} USDT` : 'N/D'}\n`;
             startupMsg += `\n💼 POSICIÓN ACTIVA: ${side}\n`;
             startupMsg += `📦 Tamaño: ${qtyAbs.toFixed(3)} ETH\n`;
             startupMsg += `💸 Margen: $${marginUsed.toFixed(2)} USDT\n`;
-            startupMsg += `💰 ROI: ${(roi * 100).toFixed(2)}% | PnL: $${pnl.toFixed(2)}\n`;
+            startupMsg += `💰 ROI: ${(roi * 100).toFixed(2)}% | PnL: ${this.formatSignedUsd(pnl)}\n`;
             startupMsg += `⏱️ Duración: ${(durationMs / 3600000).toFixed(1)} horas\n`;
             startupMsg += `🎯 BRACKETS (Binance):\n`;
-            startupMsg += `• TP 🎯: $${tpOrder?.stopPrice ?? '—'}\n`;
-            startupMsg += `• SL 🛑: $${slOrder?.stopPrice ?? '—'}\n`;
+            startupMsg += `• TP 🎯: ${this.formatBracketLine(tpOrder?.stopPrice, takeProfitRoe)}\n`;
+            startupMsg += `• SL 🛑: ${this.formatBracketLine(slOrder?.stopPrice, stopRoe)}\n`;
         } else {
+            startupMsg += `📊 Balance Aprox.: ${startupWalletBalance !== null ? `~$${startupWalletBalance.toFixed(2)} USDT` : 'N/D'}\n`;
             startupMsg += `\n💼 POSICIÓN ACTIVA: FLAT\n`;
         }
 
@@ -580,16 +591,23 @@ export class TradingService {
             logger.info('aegis_turbo_brackets_created', { symbol, side, stopPrice, tpPrice });
 
             await notifier.sendMessage(
-                `🎯 **AEGIS ENTRY**\n` +
-                `Symbol: ${symbol}\n` +
-                `Side: ${side}\n` +
-                `Entry: ${entryPrice.toFixed(2)}\n` +
-                `Size: ${(positionData.qtyAbs || quantity).toFixed(filters.qtyPrecision)} ETH ($${((positionData.qtyAbs || quantity) * entryPrice).toFixed(2)})\n` +
-                `Balance: $${wallet.toFixed(2)}\n` +
-                `SL: ${stopPrice.toFixed(2)}\n` +
-                `TP: ${tpPrice.toFixed(2)}\n` +
-                `Confidence: ${(gate.turboScore ?? 0).toFixed(1)}%`
+                this.buildAegisEntryMessage({
+                    symbol,
+                    side,
+                    entryPrice,
+                    quantity: positionData.qtyAbs || quantity,
+                    marginUsed,
+                    wallet,
+                    leverage,
+                    stopPrice,
+                    tpPrice,
+                    signal,
+                    gate
+                })
             );
+            logger.info('📱 [TELEGRAM_REPORT] AEGIS ENTRY SENT', {
+                message: `🔥 **AEGIS TURBO ENTRY**\n${symbol} | ${side}\n...score: ${this.formatScore(gate.turboScore)}`
+            });
         } catch (error) {
             logger.error('aegis_entry_error_closed', { symbol, error: String(error) });
             if (opened && openedSide) {
@@ -682,7 +700,9 @@ export class TradingService {
             const position = await exchange.readActivePosition(symbol, side);
             if (!position) {
                 const balance = await exchange.getUSDTBalance();
-                const pnl = balance - (botState.lastEntryWallet || balance);
+                const markPrice = await exchange.getMarkPrice(symbol);
+                const finalRoe = this.calculateRoe(side, botState.lastEntryPrice || markPrice, markPrice, leverage);
+                const pnl = this.pnlFromRoe(this.entryMargin(botState), finalRoe);
                 this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
                 logger.info('aegis_position_closed', {
                     symbol,
@@ -690,7 +710,7 @@ export class TradingService {
                     balance: balance.toFixed(2),
                     consecutiveLosses: this.consecutiveLosses
                 });
-                await this.notifyExit(symbol, side, 'SL/TP', botState);
+                await this.notifyExit(symbol, side, 'SL/TP', botState, { exitPrice: markPrice, finalRoe, pnl });
                 state.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
             }
@@ -781,7 +801,8 @@ export class TradingService {
             } else if (action.type === 'CLOSE_MARKET') {
                 await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, action.reason);
                 state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: action.reason });
-                await this.notifyExit(symbol, side, action.reason, botState);
+                const pnl = this.pnlFromRoe(this.entryMargin(botState), currentRoe);
+                await this.notifyExit(symbol, side, action.reason, botState, { exitPrice: markPrice, finalRoe: currentRoe, pnl });
             }
         } catch (error) {
             logger.warn('Aegis management error', { symbol, error: String(error) });
@@ -792,34 +813,38 @@ export class TradingService {
         symbol: string,
         side: Side,
         reason: string,
-        botState: BotState
+        botState: BotState,
+        exit?: { exitPrice?: number; finalRoe?: number; pnl?: number }
     ): Promise<void> {
-        const { exchange, notifier } = this.deps;
+        const { exchange, notifier, logger } = this.deps;
         const currentBalance = await exchange.getUSDTBalance();
-        const entryBalance = botState.lastEntryWallet || currentBalance;
-        const pnl = currentBalance - entryBalance;
+        const entryPrice = botState.lastEntryPrice || 0;
+        const leverage = botState.lastLeverage || botState.lastActualLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
+        const exitPrice = exit?.exitPrice ?? await exchange.getMarkPrice(symbol);
+        const finalRoe = exit?.finalRoe ?? this.calculateRoe(side, entryPrice || exitPrice, exitPrice, leverage);
+        const pnl = exit?.pnl ?? this.pnlFromRoe(this.entryMargin(botState), finalRoe);
         const durationMs = Date.now() - (botState.lastEntryAt || Date.now());
         const durationHrs = (durationMs / 3600000).toFixed(2);
-
-        let roeStr = 'N/A';
-        if (botState.lastEntryQty && botState.lastLeverage && botState.lastEntryPrice) {
-            const margin = (botState.lastEntryPrice * botState.lastEntryQty) / botState.lastLeverage;
-            const roe = (pnl / margin) * 100;
-            roeStr = `${roe.toFixed(2)}%`;
-        }
-
-        const emoji = pnl >= 0 ? '🤑' : '🩸';
-        const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+        const exitType = this.describeAegisExit(reason, pnl, botState, side, exitPrice);
+        const margin = this.entryMargin(botState);
+        const pnlStr = this.formatSignedUsd(pnl);
 
         await notifier.sendMessage(
-            `${emoji} **TRADE FINISHED**\n` +
-            `Symbol: ${symbol}\n` +
-            `Side: ${side}\n` +
-            `Reason: ${reason}\n` +
-            `Duration: ${durationHrs}h\n` +
-            `PnL: ${pnlStr} (${roeStr})\n` +
-            `Balance: $${currentBalance.toFixed(2)}`
+            `${exitType.emoji} **${exitType.title}**\n` +
+            `${symbol} | ${side}\n` +
+            `Entrada: $${entryPrice.toFixed(2)} → Salida: $${exitPrice.toFixed(2)}\n` +
+            `ROE Final: **${this.formatRoe(finalRoe)}**\n` +
+            `PnL: **${pnlStr}**\n` +
+            `Margen: **$${margin.toFixed(2)} USDT**\n` +
+            `Duración: ${durationHrs}h\n` +
+            `MFE Pico: ${this.formatRoe(botState.peakRoe || 0)}\n` +
+            `MAE: ${this.formatRoe(botState.lowestRoe || 0)}\n` +
+            `Balance: **$${currentBalance.toFixed(2)}**\n` +
+            `Razón: ${exitType.reason}`
         );
+        logger.info('📱 [TELEGRAM_REPORT] AEGIS EXIT SENT', {
+            message: `${exitType.emoji} **${exitType.title}** PnL: ${pnlStr} ROE: ${this.formatRoe(finalRoe)}`
+        });
     }
 
     private async ensureAegisBrackets(
@@ -873,6 +898,138 @@ export class TradingService {
             return side === 'LONG' ? entryPrice * (1 - move) : entryPrice * (1 + move);
         }
         return side === 'LONG' ? entryPrice * (1 + move) : entryPrice * (1 - move);
+    }
+
+    private buildAegisEntryMessage(input: {
+        symbol: string;
+        side: Side;
+        entryPrice: number;
+        quantity: number;
+        marginUsed: number;
+        wallet: number;
+        leverage: number;
+        stopPrice: number;
+        tpPrice: number;
+        signal: AegisTradingSignal;
+        gate: AegisMicroLiveGateDecision;
+    }): string {
+        const { symbol, side, entryPrice, quantity, marginUsed, wallet, leverage, stopPrice, tpPrice, signal, gate } = input;
+        const sideLabel = side === 'LONG' ? '📈 LONG' : '📉 SHORT';
+        const threshold = this.getAegisTurboGateConfig(symbol).minScore;
+        const trailingOn = gate.trailingActivationRoe > 0 && gate.trailingCallbackRoe > 0;
+        return `🔥 **AEGIS TURBO ENTRY**\n` +
+            `${symbol} | ${sideLabel}\n` +
+            `Precio: $${entryPrice.toFixed(2)}\n` +
+            `📦 Tamaño: **${quantity.toFixed(3)} ETH**\n` +
+            `💸 Margen: **$${marginUsed.toFixed(2)} USDT**\n` +
+            `⚡ Leverage: **${leverage}x**\n\n` +
+            `**RIESGO / BRACKETS:**\n` +
+            `🛑 SL: **$${stopPrice.toFixed(2)}** (${this.formatRoe(gate.stopRoe)})\n` +
+            `🎯 TP: **$${tpPrice.toFixed(2)}** (${this.formatRoe(gate.takeProfitRoe)})\n` +
+            `🔁 Trailing: ${trailingOn ? 'ON' : 'OFF'} (${this.formatRoe(gate.trailingActivationRoe)} / ${this.formatRoe(gate.trailingCallbackRoe)} callback)\n\n` +
+            `**PROBABILIDADES IA:**\n` +
+            `🟢 Long:  ${this.formatScore(signal.longProb)}\n` +
+            `🔴 Short: ${this.formatScore(signal.shortProb)}\n` +
+            `🧘 Idle:  ${this.formatScore(signal.neutralProb)}\n` +
+            `🚪 Close: ${this.formatScore(signal.closeProb || 0)}\n\n` +
+            `**TURBO:**\n` +
+            `⚡ Score: **${this.formatScore(gate.turboScore)}**\n` +
+            `🗳️ Votes: L=${gate.votes?.long ?? 0} S=${gate.votes?.short ?? 0} N=${gate.votes?.neutral ?? 0}\n` +
+            `🧠 Reason: ${gate.gatedReason ?? gate.rawReason ?? 'aegis_turbo'}\n` +
+            `💰 Wallet: $${wallet.toFixed(2)}\n` +
+            `⚙️ Threshold: ${threshold.toFixed(2)}`;
+    }
+
+    private calculateRoe(side: Side, entryPrice: number, markPrice: number, leverage: number): number {
+        if (entryPrice <= 0 || leverage <= 0) return 0;
+        return side === 'SHORT'
+            ? (entryPrice - markPrice) / entryPrice * leverage
+            : (markPrice - entryPrice) / entryPrice * leverage;
+    }
+
+    private entryMargin(botState: BotState): number {
+        if (typeof botState.lastEntryMargin === 'number' && Number.isFinite(botState.lastEntryMargin)) {
+            return botState.lastEntryMargin;
+        }
+        if (botState.lastEntryPrice && botState.lastEntryQty && botState.lastLeverage) {
+            return (botState.lastEntryPrice * botState.lastEntryQty) / botState.lastLeverage;
+        }
+        return 0;
+    }
+
+    private pnlFromRoe(margin: number, roe: number): number {
+        if (!Number.isFinite(margin) || !Number.isFinite(roe)) return 0;
+        return margin * roe;
+    }
+
+    private formatScore(value?: number): string {
+        const score = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+        return `${(score * 100).toFixed(1)}%`;
+    }
+
+    private formatRoe(value: number): string {
+        const roe = Number.isFinite(value) ? value * 100 : 0;
+        return `${roe >= 0 ? '+' : ''}${roe.toFixed(2)}% ROE`;
+    }
+
+    private formatSignedUsd(value: number): string {
+        const safe = Number.isFinite(value) ? value : 0;
+        return safe >= 0 ? `+$${safe.toFixed(2)}` : `-$${Math.abs(safe).toFixed(2)}`;
+    }
+
+    private formatBracketLine(price: number | undefined, roe: number): string {
+        const priceText = typeof price === 'number' && Number.isFinite(price)
+            ? `$${price.toFixed(2)}`
+            : '$—';
+        return `${priceText} (${this.formatRoe(roe)})`;
+    }
+
+    private describeAegisExit(
+        reason: string,
+        pnl: number,
+        botState: BotState,
+        side: Side,
+        exitPrice: number
+    ): { emoji: string; title: string; reason: string } {
+        const normalized = String(reason || '').toUpperCase();
+        if (normalized.includes('TIME_LIMIT')) {
+            return { emoji: '⏰', title: 'TIME LIMIT EXIT', reason: 'Cierre por límite de tiempo con posición en ganancia' };
+        }
+        if (normalized.includes('BREAK') || normalized.includes('BE_')) {
+            return { emoji: '🟰', title: 'BREAK EVEN EXIT', reason: 'Cierre por protección de break even' };
+        }
+        if (normalized.includes('TRAIL') || normalized.includes('CALLBACK')) {
+            return { emoji: '🛡️', title: 'TRAILING / CALLBACK EXIT', reason: `Cierre por trailing/callback (${reason})` };
+        }
+        if (normalized.includes('AI') || normalized.includes('IA') || normalized.includes('GUARDIAN') || normalized.includes('SMART') || normalized.includes('CLOSE')) {
+            return { emoji: '🤖', title: 'IA EXIT', reason: `Cierre decidido por IA/guardian (${reason})` };
+        }
+        if (normalized.includes('BRACKET') || normalized.includes('EMERGENCY') || normalized.includes('FAILED')) {
+            return { emoji: '⚠️', title: 'RISK CONTROL EXIT', reason: `Cierre por control de riesgo (${reason})` };
+        }
+
+        const entryPrice = botState.lastEntryPrice || 0;
+        const leverage = botState.lastLeverage || botState.lastActualLeverage || 20;
+        const stopRoe = botState.lastStopRoe ?? -0.15;
+        const takeProfitRoe = botState.lastTakeProfitRoe ?? 0.25;
+        const stopPrice = entryPrice > 0 ? this.bracketPrice(side, entryPrice, stopRoe, leverage, 'STOP') : undefined;
+        const tpPrice = entryPrice > 0 ? this.bracketPrice(side, entryPrice, takeProfitRoe, leverage, 'TP') : undefined;
+        const near = (target?: number) =>
+            typeof target === 'number' && target > 0 && Math.abs(exitPrice - target) / target < 0.004;
+
+        if (near(botState.lastTrailStop)) {
+            return { emoji: '🛡️', title: 'TRAILING STOP EXIT', reason: 'Cierre por trailing stop ejecutado' };
+        }
+        if (near(tpPrice)) {
+            return { emoji: '💰', title: 'TAKE PROFIT (TP)', reason: 'Cierre por take profit' };
+        }
+        if (near(stopPrice)) {
+            return { emoji: '💸', title: 'STOP LOSS (SL)', reason: 'Cierre por stop loss' };
+        }
+        if (pnl >= 0) {
+            return { emoji: '💰', title: 'TAKE PROFIT (TP)', reason: 'Cierre en ganancia; no se pudo distinguir TP/trailing con precisión' };
+        }
+        return { emoji: '💸', title: 'STOP LOSS (SL)', reason: 'Cierre en pérdida; no se pudo distinguir SL/trailing con precisión' };
     }
 
     private roundQuantity(quantity: number, filters: SymbolFilters): number {

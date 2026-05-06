@@ -99,6 +99,7 @@ function makeHarness(options: {
 	    placeTpCloseReject?: boolean;
 	    closeSideMarketSafeReject?: boolean;
 	    markPrice?: number;
+	    initialState?: any;
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
@@ -151,7 +152,7 @@ function makeHarness(options: {
         error: vi.fn(),
         debug: vi.fn()
     };
-    let currentState: any = { mode: 'IDLE', currentRegime: 'AEGIS_TURBO', lastExitAt: Date.now() - 20 * 60 * 1000 };
+    let currentState: any = options.initialState ?? { mode: 'IDLE', currentRegime: 'AEGIS_TURBO', lastExitAt: Date.now() - 20 * 60 * 1000 };
     const state = {
         get: vi.fn(() => currentState),
         set: vi.fn((patch: any) => {
@@ -164,6 +165,7 @@ function makeHarness(options: {
     const configManager = {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
         getRegimeConfig: vi.fn(() => regimeConfig()),
+        system: { enable_sentinel: false },
         trading: { fee_buffer_pct: 0.05 }
     };
     const service = new TradingService(
@@ -200,8 +202,50 @@ describe('TradingService Aegis live execution', () => {
         restoreConfig();
     });
 
+    it('includes current wallet balance in the startup Telegram message', async () => {
+        const { exchange, notifier, service } = makeHarness({ balance: 565.39 });
+
+        await service.start(false);
+
+        expect(exchange.getUSDTBalance).toHaveBeenCalled();
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet Actual: $565.39 USDT'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('📊 Balance Aprox.: ~$565.39 USDT'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 POSICIÓN ACTIVA: FLAT'));
+    });
+
+    it('includes approximate wallet balance with open unrealized PnL in the startup Telegram message', async () => {
+        const { notifier, service } = makeHarness({
+            balance: 500,
+            markPrice: 2990,
+            readActivePosition: {
+                sideMode: 'LONG',
+                qtyAbs: 0.01,
+                entryPrice: 3000,
+                leverage: 20,
+                isolatedMargin: 65,
+                unrealizedPnl: -10
+            },
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 3000,
+                lastEntryQty: 0.01,
+                lastEntryMargin: 65,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 30 * 60 * 1000
+            }
+        });
+
+        await service.start(false);
+
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet Actual: $500.00 USDT'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('📊 Balance Aprox.: ~$555.00 USDT'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 POSICIÓN ACTIVA: LONG'));
+    });
+
 	    it('opens Aegis Turbo position with isolated margin and immediate brackets when env and YAML allow live', async () => {
-	        const { exchange, logger, service, state } = makeHarness();
+	        const { exchange, logger, notifier, service, state } = makeHarness();
 
 	        await service.tick('ETHUSDT');
 
@@ -231,6 +275,11 @@ describe('TradingService Aegis live execution', () => {
             leverage: 20,
             positionFraction: 0.18
 	        }));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 **AEGIS TURBO ENTRY**'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ETHUSDT | 📈 LONG'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🛑 SL: **$2977.50** (-15.00% ROE)'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🎯 TP: **$3037.50** (+25.00% ROE)'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('⚡ Score: **72.0%**'));
 	    });
 
 	    it('blocks before marketOpen when daily loss stop is reached', async () => {
