@@ -10,8 +10,8 @@ function setConfig(liveEnabled: boolean): void {
     (CONFIG as any).AEGIS_LIVE_ENABLED = liveEnabled;
     (CONFIG as any).AEGIS_TURBO_ALLOW_SHORT = false;
     (CONFIG as any).AEGIS_TURBO_MIN_SCORE = 0.60;
-    (CONFIG as any).AEGIS_TURBO_LEVERAGE = 15;
-    (CONFIG as any).AEGIS_TURBO_POSITION_FRACTION = 0.10;
+    (CONFIG as any).AEGIS_TURBO_LEVERAGE = 20;
+    (CONFIG as any).AEGIS_TURBO_POSITION_FRACTION = 1.0;
     (CONFIG as any).AEGIS_TURBO_MAX_TRADES_PER_DAY = 2;
     (CONFIG as any).AEGIS_TURBO_DAILY_LOSS_STOP_PCT = 0.10;
     (CONFIG as any).AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES = 2;
@@ -26,7 +26,7 @@ function yamlTurbo(overrides: Record<string, unknown> = {}) {
         enabled: true,
         live_enabled: true,
         allow_short: false,
-        position_fraction_cap: 0.10,
+        position_fraction_cap: 1.0,
         max_trades_per_day: 1,
         max_consecutive_losses: 1,
         daily_loss_stop_pct: 0.10,
@@ -40,7 +40,7 @@ function yamlTurbo(overrides: Record<string, unknown> = {}) {
 
 function regimeConfig(overrides: Record<string, unknown> = {}) {
     return {
-        leverage: 15,
+        leverage: 20,
         hardStopRoe: -0.15,
         tpRoe: 0.25,
         entryThreshold: 0.60,
@@ -102,14 +102,14 @@ function makeHarness(options: {
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
-        { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 2970 },
-        { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 3050 }
+        { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 2977.5 },
+        { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 3037.5 }
     ];
     const position = options.readActivePosition ?? {
         sideMode: 'LONG',
         qtyAbs: 0.01,
         entryPrice: 3000,
-        leverage: 15,
+        leverage: 20,
         isolatedMargin: 2
     };
 	    const readActivePosition = vi.fn();
@@ -205,11 +205,11 @@ describe('TradingService Aegis live execution', () => {
 
 	        await service.tick('ETHUSDT');
 
-	        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-	        expect(exchange.ensureMarginType).toHaveBeenCalledWith('ETHUSDT', 'ISOLATED');
-	        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.009);
-	        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
-	        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.ensureMarginType).toHaveBeenCalledWith('ETHUSDT', 'ISOLATED');
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
 	        expect(exchange.setLeverage.mock.invocationCallOrder[0]).toBeLessThan(exchange.marketOpen.mock.invocationCallOrder[0]);
 	        expect(exchange.ensureMarginType.mock.invocationCallOrder[0]).toBeLessThan(exchange.marketOpen.mock.invocationCallOrder[0]);
 	        expect(exchange.placeStopClose.mock.invocationCallOrder[0]).toBeLessThan(state.set.mock.invocationCallOrder[0]);
@@ -218,18 +218,18 @@ describe('TradingService Aegis live execution', () => {
 	            currentRegime: 'AEGIS_TURBO',
 	            lastStrategy: 'AEGIS_TURBO',
 	            lastBracketStatus: 'OK',
-	            lastActualLeverage: 15,
-	            lastPositionFraction: 0.10,
-	            lastStopRoe: -0.15,
-	            lastTakeProfitRoe: 0.25,
-	            lastTrailingActivationRoe: 0.15,
-	            lastTrailingCallbackRoe: 0.08
-	        }));
+            lastActualLeverage: 20,
+            lastPositionFraction: 0.18,
+            lastStopRoe: -0.15,
+            lastTakeProfitRoe: 0.25,
+            lastTrailingActivationRoe: 0.15,
+            lastTrailingCallbackRoe: 0.08
+        }));
         expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({
             symbol: 'ETHUSDT',
             side: 'LONG',
-            leverage: 15,
-            positionFraction: 0.10
+            leverage: 20,
+            positionFraction: 0.18
 	        }));
 	    });
 
@@ -261,7 +261,7 @@ describe('TradingService Aegis live execution', () => {
 	        expect(logger.info).not.toHaveBeenCalledWith('aegis_micro_live_gate_denied', expect.objectContaining({
 	            reason: 'daily_loss_stop_reached'
 	        }));
-	        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.009);
+	        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.021);
 	    });
 
 	    it('retries readActivePosition after marketOpen until the position is confirmed', async () => {
@@ -269,7 +269,7 @@ describe('TradingService Aegis live execution', () => {
 	            sideMode: 'LONG',
 	            qtyAbs: 0.01,
 	            entryPrice: 3000,
-	            leverage: 15,
+	            leverage: 20,
 	            isolatedMargin: 2
 	        };
 	        const { exchange, service } = makeHarness({
@@ -280,8 +280,8 @@ describe('TradingService Aegis live execution', () => {
 
 	        expect(exchange.readActivePosition).toHaveBeenCalledTimes(3);
 	        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
-	        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
-	        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
+	        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
+	        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
 	    });
 
 	    it('emergency closes when position cannot be verified after marketOpen', async () => {
@@ -296,7 +296,7 @@ describe('TradingService Aegis live execution', () => {
 	        expect(exchange.closeSideMarketSafe).toHaveBeenCalledWith(
 	            'ETHUSDT',
 	            'LONG',
-	            0.009,
+	            0.022,
 	            'BOTH',
 	            'AEGIS_POSITION_VERIFY_FAILED'
 	        );
@@ -318,10 +318,8 @@ describe('TradingService Aegis live execution', () => {
 
 	        expect(exchange.marketOpen).toHaveBeenCalled();
 	        expect(logger.error).toHaveBeenCalledWith('aegis_emergency_close_failed', expect.any(Object));
-	        expect(notifier.sendAlert).toHaveBeenCalledWith(
-	            'AEGIS EMERGENCY CLOSE FAILED',
-	            expect.stringContaining('AEGIS_POSITION_VERIFY_FAILED')
-	        );
+	        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('AEGIS EMERGENCY CLOSE FAILED'));
+	        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('AEGIS_POSITION_VERIFY_FAILED'));
 	        expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({
 	            currentRegime: 'AEGIS_TURBO'
 	        }));
@@ -406,8 +404,8 @@ describe('TradingService Aegis live execution', () => {
 	            lastBracketStatus: 'OK'
 	        }));
 	        expect(logger.error).toHaveBeenCalledWith('aegis_bracket_creation_failed', expect.any(Object));
-	        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('AEGIS BRACKET FAILED - CLOSED'));
-	    });
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('BRACKET FAILED'));
+    });
 
     it('recreates missing Aegis brackets from state values while managing an open position', async () => {
         const { exchange, service } = makeHarness({ closeOrders: [] });
@@ -417,7 +415,7 @@ describe('TradingService Aegis live execution', () => {
             lastStrategy: 'AEGIS_TURBO',
             lastSide: 'LONG',
             lastEntryPrice: 3000,
-            lastLeverage: 15,
+            lastLeverage: 20,
             lastStopRoe: -0.15,
             lastTakeProfitRoe: 0.25,
             lastTrailingActivationRoe: 0.15,
@@ -433,7 +431,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970, 0.01);
-        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050, 0.01);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5, 0.01);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5, 0.01);
     });
 });

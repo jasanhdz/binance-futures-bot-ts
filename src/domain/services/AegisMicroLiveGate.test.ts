@@ -44,8 +44,8 @@ function baseConfig(): AegisMicroLiveGateConfig {
         liveEnabled: true,
         allowShort: false,
         minScore: 0.50,
-        leverageCap: 15,
-        positionFractionCap: 0.10,
+        leverageCap: 20,
+        positionFractionCap: 1.0,
         maxTradesPerDay: 2,
         maxConsecutiveLosses: 2,
         dailyLossStopPct: 0.10,
@@ -224,14 +224,23 @@ describe('AegisMicroLiveGate', () => {
         expect(decision.reason).toBe('allowed_aegis_turbo_micro_live');
     });
 
-    it('caps leverage at 15 even if raw suggests 25', () => {
+    it('caps leverage at the configured YAML limit', () => {
         const decision = shouldEnterAegisTurboMicroLive(baseCtx(), baseConfig());
 
-        expect(decision.leverage).toBe(15);
+        expect(decision.leverage).toBe(20);
     });
 
-    it('caps positionFraction at 0.10 even if raw suggests 0.18', () => {
+    it('uses the configured YAML position fraction cap', () => {
         const decision = shouldEnterAegisTurboMicroLive(baseCtx(), baseConfig());
+
+        expect(decision.positionFraction).toBe(0.18);
+    });
+
+    it('still respects a lower configured position fraction cap', () => {
+        const config = baseConfig();
+        config.positionFractionCap = 0.10;
+
+        const decision = shouldEnterAegisTurboMicroLive(baseCtx(), config);
 
         expect(decision.positionFraction).toBe(0.10);
     });
@@ -265,7 +274,7 @@ describe('AegisMicroLiveGate', () => {
         expect(decision.gatedBlockedBy).toBe('safe_regime');
     });
 
-    it('builds config from CONFIG-shaped env object', () => {
+    it('falls back to defaults when YAML is absent', () => {
         const config = buildAegisMicroLiveGateConfigFromEnv(
             {
                 TRADING_MODE: 'AEGIS_TURBO_MICRO_LIVE',
@@ -303,10 +312,10 @@ describe('AegisMicroLiveGate', () => {
             takeProfitRoe: 0.25,
             trailingActivationRoe: 0.15,
             trailingCallbackRoe: 0.08,
-            yamlEnabled: undefined,
-            yamlLiveEnabled: undefined,
-            requireBrackets: undefined,
-            closeIfBracketFails: undefined
+            yamlEnabled: false,
+            yamlLiveEnabled: false,
+            requireBrackets: true,
+            closeIfBracketFails: true
         });
     });
 });

@@ -68,8 +68,7 @@ const DEFAULT_STOP_ROE = -0.15;
 const DEFAULT_TAKE_PROFIT_ROE = 0.25;
 const DEFAULT_TRAILING_ACTIVATION_ROE = 0.15;
 const DEFAULT_TRAILING_CALLBACK_ROE = 0.08;
-const HARD_LEVERAGE_CAP = 15;
-const HARD_POSITION_FRACTION_CAP = 0.10;
+const DEFAULT_POSITION_FRACTION_CAP = 0.10;
 
 function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -192,12 +191,10 @@ export function shouldEnterAegisTurboMicroLive(
   const leverage = Math.min(
     raw.leverage_suggestion || DEFAULT_LEVERAGE,
     config.leverageCap,
-    HARD_LEVERAGE_CAP,
   );
   const positionFraction = Math.min(
     raw.position_fraction || DEFAULT_POSITION_FRACTION,
     config.positionFractionCap,
-    HARD_POSITION_FRACTION_CAP,
   );
 
   return buildDecision(
@@ -215,14 +212,6 @@ function finiteConfigNumber(value: unknown): number | undefined {
   return finiteNumber(value) ? value : undefined;
 }
 
-function minDefined(...values: Array<number | undefined>): number {
-  return Math.min(...values.filter((value): value is number => value !== undefined));
-}
-
-function maxDefined(...values: Array<number | undefined>): number {
-  return Math.max(...values.filter((value): value is number => value !== undefined));
-}
-
 export function buildAegisMicroLiveGateConfigFromEnv(
   CONFIG: any,
   yamlTurboConfig?: any,
@@ -235,32 +224,28 @@ export function buildAegisMicroLiveGateConfigFromEnv(
     trailingCallbackRoe?: number;
   }
 ): AegisMicroLiveGateConfig {
-  const envMinScore = finiteConfigNumber(CONFIG.AEGIS_TURBO_MIN_SCORE);
-  const envLeverageCap = finiteConfigNumber(CONFIG.AEGIS_TURBO_LEVERAGE);
-  const envPositionFractionCap = finiteConfigNumber(CONFIG.AEGIS_TURBO_POSITION_FRACTION);
-  const envMaxTrades = finiteConfigNumber(CONFIG.AEGIS_TURBO_MAX_TRADES_PER_DAY);
-  const envMaxLosses = finiteConfigNumber(CONFIG.AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES);
-  const envDailyLoss = finiteConfigNumber(Math.abs(CONFIG.AEGIS_TURBO_DAILY_LOSS_STOP_PCT));
+  const yamlTurbo = yamlTurboConfig ?? {};
+  const yamlRegime = regimeConfig ?? {};
 
   return {
     tradingMode: CONFIG.TRADING_MODE,
     liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
-    yamlEnabled: yamlTurboConfig?.enabled,
-    yamlLiveEnabled: yamlTurboConfig?.live_enabled,
-    allowShort: CONFIG.AEGIS_TURBO_ALLOW_SHORT && yamlTurboConfig?.allow_short === true,
-    minScore: maxDefined(envMinScore, finiteConfigNumber(regimeConfig?.entryThreshold), DEFAULT_MIN_SCORE),
-    leverageCap: minDefined(envLeverageCap, finiteConfigNumber(regimeConfig?.leverage), HARD_LEVERAGE_CAP),
-    positionFractionCap: minDefined(envPositionFractionCap, finiteConfigNumber(yamlTurboConfig?.position_fraction_cap), HARD_POSITION_FRACTION_CAP),
-    maxTradesPerDay: minDefined(envMaxTrades, finiteConfigNumber(yamlTurboConfig?.max_trades_per_day), DEFAULT_MAX_TRADES_PER_DAY),
-    maxConsecutiveLosses: minDefined(envMaxLosses, finiteConfigNumber(yamlTurboConfig?.max_consecutive_losses), DEFAULT_MAX_CONSECUTIVE_LOSSES),
-    dailyLossStopPct: minDefined(envDailyLoss, finiteConfigNumber(Math.abs(yamlTurboConfig?.daily_loss_stop_pct)), DEFAULT_DAILY_LOSS_STOP_PCT),
-    minCooldownMs: finiteConfigNumber(yamlTurboConfig?.min_cooldown_ms) ?? DEFAULT_MIN_COOLDOWN_MS,
-    maxLiquidityStress: minDefined(DEFAULT_MAX_LIQUIDITY_STRESS, finiteConfigNumber(yamlTurboConfig?.max_liquidity_stress)),
-    stopRoe: normalizeNegative(regimeConfig?.hardStopRoe, DEFAULT_STOP_ROE),
-    takeProfitRoe: normalizePositive(regimeConfig?.tpRoe, DEFAULT_TAKE_PROFIT_ROE),
-    trailingActivationRoe: normalizePositive(regimeConfig?.trailingActivationRoe, DEFAULT_TRAILING_ACTIVATION_ROE),
-    trailingCallbackRoe: normalizePositive(regimeConfig?.trailingCallbackRoe, DEFAULT_TRAILING_CALLBACK_ROE),
-    requireBrackets: yamlTurboConfig?.require_brackets,
-    closeIfBracketFails: yamlTurboConfig?.close_if_bracket_fails,
+    yamlEnabled: yamlTurbo.enabled ?? false,
+    yamlLiveEnabled: yamlTurbo.live_enabled ?? false,
+    allowShort: yamlTurbo.allow_short ?? false,
+    minScore: finiteConfigNumber(yamlRegime.entryThreshold) ?? DEFAULT_MIN_SCORE,
+    leverageCap: finiteConfigNumber(yamlRegime.leverage) ?? DEFAULT_LEVERAGE,
+    positionFractionCap: finiteConfigNumber(yamlTurbo.position_fraction_cap) ?? DEFAULT_POSITION_FRACTION_CAP,
+    maxTradesPerDay: finiteConfigNumber(yamlTurbo.max_trades_per_day) ?? DEFAULT_MAX_TRADES_PER_DAY,
+    maxConsecutiveLosses: finiteConfigNumber(yamlTurbo.max_consecutive_losses) ?? DEFAULT_MAX_CONSECUTIVE_LOSSES,
+    dailyLossStopPct: finiteConfigNumber(Math.abs(yamlTurbo.daily_loss_stop_pct)) ?? DEFAULT_DAILY_LOSS_STOP_PCT,
+    minCooldownMs: finiteConfigNumber(yamlTurbo.min_cooldown_ms) ?? DEFAULT_MIN_COOLDOWN_MS,
+    maxLiquidityStress: finiteConfigNumber(yamlTurbo.max_liquidity_stress) ?? DEFAULT_MAX_LIQUIDITY_STRESS,
+    stopRoe: normalizeNegative(yamlRegime.hardStopRoe, DEFAULT_STOP_ROE),
+    takeProfitRoe: normalizePositive(yamlRegime.tpRoe, DEFAULT_TAKE_PROFIT_ROE),
+    trailingActivationRoe: normalizePositive(yamlRegime.trailingActivationRoe, DEFAULT_TRAILING_ACTIVATION_ROE),
+    trailingCallbackRoe: normalizePositive(yamlRegime.trailingCallbackRoe, DEFAULT_TRAILING_CALLBACK_ROE),
+    requireBrackets: yamlTurbo.require_brackets ?? true,
+    closeIfBracketFails: yamlTurbo.close_if_bracket_fails ?? true,
   };
 }

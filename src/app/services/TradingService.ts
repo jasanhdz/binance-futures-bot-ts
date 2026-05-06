@@ -19,8 +19,6 @@ import { CONFIG } from '../../infra/config/environment';
 
 const TARGET_BALANCE = 500;
 const INITIAL_BALANCE = 20;
-const HARD_AEGIS_LEVERAGE_CAP = 15;
-const HARD_AEGIS_POSITION_FRACTION_CAP = 0.10;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 
 export interface TradingServiceDeps {
@@ -97,16 +95,22 @@ export class TradingService {
             yamlLiveEnabled: this.getAegisTurboYamlConfig()?.live_enabled === true
         });
 
-        let startupMsg = `${isTurbo ? '⚡' : '🛡️'} **${isTurbo ? 'AEGIS TURBO MICRO-LIVE MODE' : 'AEGIS SHADOW MODE'}**\n\n`;
-        startupMsg += `Aegis API integrated\n`;
-        startupMsg += `TRADING_MODE=${tradingMode}\n`;
-        startupMsg += `AEGIS_LIVE_ENABLED=${CONFIG.AEGIS_LIVE_ENABLED}\n`;
-        startupMsg += `YAML live_enabled=${this.getAegisTurboYamlConfig()?.live_enabled === true}\n`;
-        if (!isTurbo || !CONFIG.AEGIS_LIVE_ENABLED || this.getAegisTurboYamlConfig()?.live_enabled !== true) {
-            startupMsg += `No live entries\n`;
-        }
-
         const firstSymbol = this.config.symbols[0];
+        const gateConfig = this.getAegisTurboGateConfig(firstSymbol);
+        const regimeConfig = this.getAegisTurboRegimeConfig(firstSymbol);
+        const entryThreshold = (gateConfig as any).entryThreshold ?? regimeConfig?.entryThreshold ?? 0.55;
+        const maxHoldMs = (gateConfig as any).maxHoldMs ?? regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
+        const trailingActivation = (gateConfig as any).trailingActivationRoe ?? regimeConfig?.trailingActivationRoe ?? 0.15;
+        const trailingCallback = (gateConfig as any).trailingCallbackRoe ?? regimeConfig?.trailingCallbackRoe ?? 0.08;
+        const circuitBreakerState = this.deps.configManager.system.enable_sentinel ? 'ACTIVE' : 'DISABLED';
+        let startupMsg = `🔥 ${isTurbo ? 'AEGIS TURBO MICRO-LIVE LAUNCHED' : 'AEGIS SHADOW MODE'} 🎯\n`;
+        startupMsg += `🎯 Target: $${INITIAL_BALANCE} → $${TARGET_BALANCE}\n`;
+        startupMsg += `⚡ Leverage: ${gateConfig.leverageCap}x (LOCKED)\n`;
+        startupMsg += `🧠 Threshold Real: ${Number(entryThreshold).toFixed(2)}\n`;
+        startupMsg += `⏱️ Time Limit: ${(Number(maxHoldMs) / 3600000).toFixed(1)} horas\n`;
+        startupMsg += `🛡️ Circuit Breaker: ${circuitBreakerState}\n`;
+        startupMsg += `🔁 Trailing: ${trailingActivation > 0 ? 'ON' : 'OFF'} (${trailingActivation.toFixed(2)} / ${trailingCallback.toFixed(2)})\n`;
+
         let signal: AegisTradingSignal | null = null;
         for (let i = 0; i < 5; i++) {
             try {
@@ -119,27 +123,59 @@ export class TradingService {
         }
 
         if (signal) {
-            startupMsg += `\n**Initial Aegis scan:**\n`;
-            startupMsg += `Long:  ${((signal.longProb || 0) * 100).toFixed(1)}%\n`;
-            startupMsg += `Short: ${((signal.shortProb || 0) * 100).toFixed(1)}%\n`;
-            startupMsg += `Idle:  ${((signal.neutralProb || 0) * 100).toFixed(1)}%\n`;
-            startupMsg += `Close: ${((signal.closeProb || 0) * 100).toFixed(1)}%\n`;
-
-            const botState = state.get();
-            if (botState.mode !== 'IDLE') {
-                const side = botState.lastSide as Side;
-                const markPrice = await exchange.getMarkPrice(firstSymbol);
-                const entryPrice = botState.lastEntryPrice || markPrice;
-                const leverage = botState.lastLeverage || HARD_AEGIS_LEVERAGE_CAP;
-                const roi = side === 'SHORT'
-                    ? (entryPrice - markPrice) / entryPrice * leverage
-                    : (markPrice - entryPrice) / entryPrice * leverage;
-                startupMsg += `\nActive position: ${side} ROE ${(roi * 100).toFixed(2)}%\n`;
+            startupMsg += `\n🛰️ ESCANEO INICIAL (Radar):\n`;
+            const turbo = signal.aegis?.turbo ?? signal.metadata?.aegis?.turbo;
+            if (isTurbo && turbo?.raw) {
+                startupMsg += `⚡ Turbo Raw: ${turbo.raw.action ?? 'HOLD'} / ${(turbo.raw.turbo_score ?? 0).toFixed(3)}\n`;
+                startupMsg += `⚡ Turbo Gated: ${turbo.gated?.action ?? 'HOLD'}\n`;
+                startupMsg += `⚡ Votes: L=${turbo.raw.votes?.long ?? 0} S=${turbo.raw.votes?.short ?? 0} N=${turbo.raw.votes?.neutral ?? 0}\n`;
+                startupMsg += `⚡ Reason: ${turbo.gated?.reason ?? turbo.raw.reason ?? 'unknown'}\n`;
             } else {
-                startupMsg += `\nPosition: flat\n`;
+                const trend =
+                    (signal.longProb || 0) > (signal.shortProb || 0)
+                        ? '📈 ALCISTA'
+                        : (signal.shortProb || 0) > (signal.longProb || 0)
+                            ? '📉 BAJISTA'
+                            : '🧘 NEUTRA';
+                startupMsg += `📈 Long: ${((signal.longProb || 0) * 100).toFixed(1)}%\n`;
+                startupMsg += `📉 Short: ${((signal.shortProb || 0) * 100).toFixed(1)}%\n`;
+                startupMsg += `🧘 Idle: ${((signal.neutralProb || 0) * 100).toFixed(1)}%\n`;
+                startupMsg += `🚪 Close: ${((signal.closeProb || 0) * 100).toFixed(1)}%\n`;
+                startupMsg += `🧭 Tendencia: ${trend}\n`;
             }
+        }
+
+        const botState = state.get();
+        if (botState.mode !== 'IDLE') {
+            const side = botState.lastSide as Side;
+            const markPrice = await exchange.getMarkPrice(firstSymbol);
+            const position = await exchange.readActivePosition(firstSymbol, side);
+            const entryPrice = botState.lastEntryPrice || position?.entryPrice || markPrice;
+            const leverage = botState.lastLeverage || position?.leverage || gateConfig.leverageCap;
+            const qtyAbs = botState.lastEntryQty || position?.qtyAbs || 0;
+            const marginUsed = botState.lastEntryMargin
+                || position?.isolatedMargin
+                || (entryPrice > 0 && leverage > 0 && qtyAbs > 0 ? (entryPrice * qtyAbs) / leverage : 0);
+            const durationMs = botState.lastEntryAt ? Date.now() - botState.lastEntryAt : 0;
+            const roi = side === 'SHORT'
+                ? (entryPrice - markPrice) / entryPrice * leverage
+                : (markPrice - entryPrice) / entryPrice * leverage;
+            const currentBalance = await exchange.getUSDTBalance();
+            const pnl = currentBalance - (botState.lastEntryWallet || currentBalance);
+            const openOrders = await exchange.listCloseOrdersForSide(firstSymbol, side);
+            const tpOrder = openOrders.find(order => order.type.includes('TAKE_PROFIT'));
+            const slOrder = openOrders.find(order => order.type.includes('STOP'));
+
+            startupMsg += `\n💼 POSICIÓN ACTIVA: ${side}\n`;
+            startupMsg += `📦 Tamaño: ${qtyAbs.toFixed(3)} ETH\n`;
+            startupMsg += `💸 Margen: $${marginUsed.toFixed(2)} USDT\n`;
+            startupMsg += `💰 ROI: ${(roi * 100).toFixed(2)}% | PnL: $${pnl.toFixed(2)}\n`;
+            startupMsg += `⏱️ Duración: ${(durationMs / 3600000).toFixed(1)} horas\n`;
+            startupMsg += `🎯 BRACKETS (Binance):\n`;
+            startupMsg += `• TP 🎯: $${tpOrder?.stopPrice ?? '—'}\n`;
+            startupMsg += `• SL 🛑: $${slOrder?.stopPrice ?? '—'}\n`;
         } else {
-            startupMsg += `\nInitial Aegis scan unavailable; runtime ticks will retry.`;
+            startupMsg += `\n💼 POSICIÓN ACTIVA: FLAT\n`;
         }
 
         await notifier.sendMessage(startupMsg);
@@ -374,12 +410,8 @@ export class TradingService {
 
         try {
             if (!gate.allowed || (gate.side !== 'LONG' && gate.side !== 'SHORT')) return;
-            if (gate.side === 'SHORT' && !CONFIG.AEGIS_TURBO_ALLOW_SHORT) {
-                logger.warn('aegis_short_disabled_at_execution', { symbol });
-                return;
-            }
-            const leverage = Math.min(gate.leverage, HARD_AEGIS_LEVERAGE_CAP);
-            const positionFraction = Math.min(gate.positionFraction, HARD_AEGIS_POSITION_FRACTION_CAP);
+            const leverage = gate.leverage;
+            const positionFraction = gate.positionFraction;
             if (leverage <= 0 || positionFraction <= 0) return;
 
             const wallet = await exchange.getUSDTBalance();
@@ -455,7 +487,12 @@ export class TradingService {
                         lastExitReason: 'AEGIS_BRACKET_FAILED',
                         lastBracketStatus: 'FAILED_CLOSED'
                     });
-                    await notifier.sendMessage(`🚨 **AEGIS BRACKET FAILED - CLOSED**\n${symbol} | ${side}\nPosition closed immediately.`);
+                    await notifier.sendMessage(
+                        `⚠️ **BRACKET FAILED**\n` +
+                        `Symbol: ${symbol}\n` +
+                        `Error: ${String(bracketError)}\n` +
+                        `ACTION REQUIRED: Check Open Orders!`
+                    );
                     return;
                 }
                 throw bracketError;
@@ -484,7 +521,12 @@ export class TradingService {
                         lastExitReason: 'AEGIS_BRACKET_FAILED',
                         lastBracketStatus: 'FAILED_CLOSED'
                     });
-                    await notifier.sendMessage(`🚨 **AEGIS BRACKET FAILED - CLOSED**\n${symbol} | ${side}\nPosition closed immediately.`);
+                    await notifier.sendMessage(
+                        `⚠️ **BRACKET FAILED**\n` +
+                        `Symbol: ${symbol}\n` +
+                        `Error: AEGIS_REQUIRED_BRACKETS_MISSING\n` +
+                        `ACTION REQUIRED: Check Open Orders!`
+                    );
                     return;
                 }
                 throw new Error('AEGIS_REQUIRED_BRACKETS_MISSING');
@@ -538,21 +580,15 @@ export class TradingService {
             logger.info('aegis_turbo_brackets_created', { symbol, side, stopPrice, tpPrice });
 
             await notifier.sendMessage(
-                `⚡ **AEGIS TURBO MICRO-LIVE ENTRY**\n` +
-                `${symbol} | ${side}\n` +
-                `Entry: $${entryPrice.toFixed(2)}\n` +
-                `Qty: ${(positionData.qtyAbs || quantity).toFixed(filters.qtyPrecision)}\n` +
-                `Margin: $${marginUsed.toFixed(2)}\n` +
-                `Leverage: ${leverage}x\n` +
-                `Position fraction: ${positionFraction.toFixed(3)}\n` +
-                `Turbo score: ${(gate.turboScore ?? 0).toFixed(3)}\n` +
-                `Votes: L=${gate.votes?.long ?? 0} S=${gate.votes?.short ?? 0} N=${gate.votes?.neutral ?? 0}\n` +
-                `SL: $${stopPrice}\n` +
-                `TP: $${tpPrice}\n` +
-                `Stop ROE: ${(gate.stopRoe * 100).toFixed(1)}%\n` +
-                `Take profit ROE: ${(gate.takeProfitRoe * 100).toFixed(1)}%\n` +
-                `Trailing: ${(gate.trailingActivationRoe * 100).toFixed(1)}% / ${(gate.trailingCallbackRoe * 100).toFixed(1)}%\n` +
-                `Reason: ${gate.rawReason ?? signal.metadata?.meta_verdict ?? 'aegis_turbo'}`
+                `🎯 **AEGIS ENTRY**\n` +
+                `Symbol: ${symbol}\n` +
+                `Side: ${side}\n` +
+                `Entry: ${entryPrice.toFixed(2)}\n` +
+                `Size: ${(positionData.qtyAbs || quantity).toFixed(filters.qtyPrecision)} ETH ($${((positionData.qtyAbs || quantity) * entryPrice).toFixed(2)})\n` +
+                `Balance: $${wallet.toFixed(2)}\n` +
+                `SL: ${stopPrice.toFixed(2)}\n` +
+                `TP: ${tpPrice.toFixed(2)}\n` +
+                `Confidence: ${(gate.turboScore ?? 0).toFixed(1)}%`
             );
         } catch (error) {
             logger.error('aegis_entry_error_closed', { symbol, error: String(error) });
@@ -562,7 +598,11 @@ export class TradingService {
                     if (position) {
                         await exchange.closeSideMarketSafe(symbol, openedSide, position.qtyAbs, position.sideMode, 'AEGIS_ENTRY_ERROR_CLOSED');
                         state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_ENTRY_ERROR_CLOSED' });
-                        await notifier.sendMessage(`🚨 **AEGIS ENTRY ERROR - CLOSED**\n${symbol} | ${openedSide}\n${String(error).slice(0, 180)}`);
+                        await notifier.sendMessage(
+                            `⚠️ **AEGIS ENTRY FAILED**\n` +
+                            `Symbol: ${symbol}\n` +
+                            `Error: ${String(error).slice(0, 180)}`
+                        );
                     }
                 } catch (closeError) {
                     logger.error('aegis_entry_error_close_failed', { symbol, error: String(closeError) });
@@ -604,15 +644,21 @@ export class TradingService {
             const sideMode = position?.sideMode ?? 'BOTH';
             await exchange.closeSideMarketSafe(symbol, side, qtyAbs, sideMode, reason);
             logger.error('aegis_emergency_close_success', { symbol, side, qtyAbs, sideMode, reason });
-            await notifier.sendAlert(
-                'AEGIS EMERGENCY CLOSE',
-                `${symbol} | ${side}\nReason: ${reason}\nQty: ${qtyAbs}`
+            await notifier.sendMessage(
+                `⚠️ **AEGIS EMERGENCY CLOSE**\n` +
+                `Symbol: ${symbol}\n` +
+                `Side: ${side}\n` +
+                `Reason: ${reason}\n` +
+                `Qty: ${qtyAbs}`
             );
         } catch (error) {
             logger.error('aegis_emergency_close_failed', { symbol, side, quantity, reason, error: String(error) });
-            await notifier.sendAlert(
-                'AEGIS EMERGENCY CLOSE FAILED',
-                `${symbol} | ${side}\nReason: ${reason}\nError: ${String(error).slice(0, 180)}`
+            await notifier.sendMessage(
+                `⚠️ **AEGIS EMERGENCY CLOSE FAILED**\n` +
+                `Symbol: ${symbol}\n` +
+                `Side: ${side}\n` +
+                `Reason: ${reason}\n` +
+                `Error: ${String(error).slice(0, 180)}`
             );
             throw error;
         }
@@ -630,7 +676,7 @@ export class TradingService {
         const { exchange, logger, state, notifier } = this.deps;
         const side = botState.lastSide as Side;
         const entryPrice = botState.lastEntryPrice || 0;
-        const leverage = botState.lastLeverage || HARD_AEGIS_LEVERAGE_CAP;
+        const leverage = botState.lastLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
 
         try {
             const position = await exchange.readActivePosition(symbol, side);
@@ -644,7 +690,7 @@ export class TradingService {
                     balance: balance.toFixed(2),
                     consecutiveLosses: this.consecutiveLosses
                 });
-                await notifier.sendMessage(`✅ **AEGIS POSITION CLOSED**\n${symbol} | ${side}\nPnL: $${pnl.toFixed(2)}\nBalance: $${balance.toFixed(2)}`);
+                await this.notifyExit(symbol, side, 'SL/TP', botState);
                 state.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
             }
@@ -685,7 +731,7 @@ export class TradingService {
             if (tradeDuration > maxHoldMs && currentRoe > 0.02) {
                 await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AEGIS_TIME_LIMIT');
                 state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_TIME_LIMIT' });
-                await notifier.sendMessage(`⏰ **AEGIS TIME LIMIT EXIT**\n${symbol} | ${side}\nROE: ${(currentRoe * 100).toFixed(2)}%`);
+                await this.notifyExit(symbol, side, 'TIME_LIMIT', botState);
                 return;
             }
 
@@ -735,11 +781,45 @@ export class TradingService {
             } else if (action.type === 'CLOSE_MARKET') {
                 await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, action.reason);
                 state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: action.reason });
-                await notifier.sendMessage(`🛡️ **AEGIS GUARDIAN EXIT**\n${symbol} | ${side}\nReason: ${action.reason}`);
+                await this.notifyExit(symbol, side, action.reason, botState);
             }
         } catch (error) {
             logger.warn('Aegis management error', { symbol, error: String(error) });
         }
+    }
+
+    private async notifyExit(
+        symbol: string,
+        side: Side,
+        reason: string,
+        botState: BotState
+    ): Promise<void> {
+        const { exchange, notifier } = this.deps;
+        const currentBalance = await exchange.getUSDTBalance();
+        const entryBalance = botState.lastEntryWallet || currentBalance;
+        const pnl = currentBalance - entryBalance;
+        const durationMs = Date.now() - (botState.lastEntryAt || Date.now());
+        const durationHrs = (durationMs / 3600000).toFixed(2);
+
+        let roeStr = 'N/A';
+        if (botState.lastEntryQty && botState.lastLeverage && botState.lastEntryPrice) {
+            const margin = (botState.lastEntryPrice * botState.lastEntryQty) / botState.lastLeverage;
+            const roe = (pnl / margin) * 100;
+            roeStr = `${roe.toFixed(2)}%`;
+        }
+
+        const emoji = pnl >= 0 ? '🤑' : '🩸';
+        const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+
+        await notifier.sendMessage(
+            `${emoji} **TRADE FINISHED**\n` +
+            `Symbol: ${symbol}\n` +
+            `Side: ${side}\n` +
+            `Reason: ${reason}\n` +
+            `Duration: ${durationHrs}h\n` +
+            `PnL: ${pnlStr} (${roeStr})\n` +
+            `Balance: $${currentBalance.toFixed(2)}`
+        );
     }
 
     private async ensureAegisBrackets(

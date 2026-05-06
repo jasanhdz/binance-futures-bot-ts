@@ -17,7 +17,8 @@ The gate decides whether a Turbo raw signal is eligible for micro-live. Initial 
 
 - Uses `REGIMES.AEGIS_TURBO.entry_threshold` as the minimum Turbo score.
 - Uses `REGIMES.AEGIS_TURBO.leverage` as the leverage cap.
-- Position fraction capped at 0.10.
+- Uses `aegis.turbo.position_fraction_cap` as the maximum position fraction cap.
+- The effective position fraction comes from Aegis API `aegis.turbo.raw.position_fraction`; the cap only limits it.
 - SHORT disabled by default.
 - Maximum trades, cooldown, daily loss, liquidity stress, and consecutive loss limits enforced.
 - SL, TP, trailing, and max hold time come from `REGIMES.AEGIS_TURBO`.
@@ -50,12 +51,44 @@ Execution behavior:
 
 - Sets isolated margin.
 - Sets leverage capped by `REGIMES.AEGIS_TURBO.leverage`.
-- Uses position fraction capped at 0.10.
+- Uses `gate.positionFraction = min(raw.position_fraction, aegis.turbo.position_fraction_cap)`.
+- Calculates entry margin as `wallet * (1 - fee_buffer_pct) * gate.positionFraction`.
 - Opens market only after the gate allows.
 - Places SL/TP brackets immediately.
 - Validates brackets after entry.
 - Closes the position immediately if required brackets fail.
 - Stores `AEGIS_TURBO` metadata in state.
+
+## Runtime Sizing Source
+
+Fecha: 2026-05-06.
+
+`raw.position_fraction` is not calculated in this TypeScript bot. It is produced by the Python Aegis API and consumed here as part of the Turbo metadata.
+
+Current contract:
+
+```text
+Aegis Python:
+  aegis_alpha/configs/turbo.yaml
+  -> sizing bucket by turbo_score
+  -> aegis.turbo.raw.position_fraction
+
+TypeScript bot:
+  -> gate.positionFraction = min(raw.position_fraction, position_fraction_cap)
+  -> margin = wallet * (1 - fee_buffer_pct) * gate.positionFraction
+  -> notional = margin * leverage
+```
+
+Operational meaning:
+
+- `SYMBOLS.ETHUSDT: 1.0` and `TRADING.capital_usage_default: 1.0` do not force full-wallet Aegis Turbo entries.
+- `aegis.turbo.position_fraction_cap: 1.0` means "allow up to 100% if Aegis asks for it"; it does not rewrite Aegis sizing.
+- To change the normal/premium fraction, edit `aegis_alpha/configs/turbo.yaml` in the parent `trading_system` repo.
+- After the Python service has the hot-reload code loaded once, future YAML edits do not require a Python restart.
+
+Documentation rule:
+
+- Any change to Aegis sizing, caps, live gates, entry margin math, env variables, YAML contracts, or recovery procedures must be recorded here and in `aegis_alpha/docs/AEGIS_ALPHA_WHITEPAPER.md`.
 
 Recommended first live validation:
 
