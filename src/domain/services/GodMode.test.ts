@@ -1,8 +1,8 @@
-import { isForbiddenTime } from './PhantomStrategy';
+import { isForbiddenTime } from './AegisStrategy';
 import { evaluateGuardianAction, GuardianConfig, GuardianContext } from './ProfitGuardian';
 import { describe, it, expect } from 'vitest';
 
-describe('God Mode Logic Verification', () => {
+describe('Aegis safety logic verification', () => {
 
     describe('isForbiddenTime', () => {
         const FORBIDDEN_HOURS = [0, 1, 22, 23];

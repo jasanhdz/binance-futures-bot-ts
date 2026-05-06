@@ -2,10 +2,10 @@
  * RegimeStrategy Port - Application Layer Interface
  * 
  * Defines regime configuration types.
- * PHANTOM is the only active regime.
+ * AEGIS_TURBO is the only active regime.
  */
 
-export type RegimeType = 'PHANTOM';
+export type RegimeType = 'AEGIS_TURBO';
 
 export interface RegimeConfig {
     leverage: number;

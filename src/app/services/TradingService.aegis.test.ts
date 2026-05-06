@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TradingService } from './TradingService';
-import { PhantomSignal } from '../../domain/services/PhantomStrategy';
+import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
 
 describe('TradingService Aegis integration', () => {
-    it('logs Aegis shadow scans and returns before Phantom entry execution', async () => {
-        const signal: PhantomSignal = {
+    it('logs Aegis shadow scans and returns before entry execution', async () => {
+        const signal: AegisTradingSignal = {
             symbol: 'ETHUSDT',
-            action: 'LONG',
-            confidence: 0.99,
+            action: 'PASS',
+            confidence: 0,
+            source: 'AEGIS_SAFE',
             longProb: 0.99,
             shortProb: 0.01,
             neutralProb: 0,
@@ -52,7 +53,7 @@ describe('TradingService Aegis integration', () => {
             debug: vi.fn()
         };
         const state = {
-            get: vi.fn(() => ({ mode: 'IDLE' as const, currentRegime: 'PHANTOM' as const })),
+            get: vi.fn(() => ({ mode: 'IDLE' as const, currentRegime: 'AEGIS_TURBO' as const })),
             set: vi.fn(),
             reset: vi.fn()
         };

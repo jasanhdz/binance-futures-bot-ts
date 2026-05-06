@@ -16,6 +16,13 @@ const SYMBOL_ALLOCATIONS: Record<string, number> = ninjaConfig.getSymbolAllocati
 const DEFAULT_SYMBOL = 'BTCUSDT';
 const DEFAULT_LEVERAGE = ninjaConfig.system.global_leverage_default || 10;
 
+function numberEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // EXPORTED CONFIG
 // ═══════════════════════════════════════════════════════════════════════════
@@ -60,12 +67,12 @@ export const CONFIG = {
   TRADING_MODE: process.env.TRADING_MODE || 'AEGIS_SHADOW',
   AEGIS_LIVE_ENABLED: process.env.AEGIS_LIVE_ENABLED === '1',
   AEGIS_TURBO_ALLOW_SHORT: process.env.AEGIS_TURBO_ALLOW_SHORT === '1',
-  AEGIS_TURBO_MIN_SCORE: Number(process.env.AEGIS_TURBO_MIN_SCORE ?? 0.60),
-  AEGIS_TURBO_LEVERAGE: Number(process.env.AEGIS_TURBO_LEVERAGE ?? 15),
-  AEGIS_TURBO_POSITION_FRACTION: Number(process.env.AEGIS_TURBO_POSITION_FRACTION ?? 0.10),
-  AEGIS_TURBO_MAX_TRADES_PER_DAY: Number(process.env.AEGIS_TURBO_MAX_TRADES_PER_DAY ?? 2),
-  AEGIS_TURBO_DAILY_LOSS_STOP_PCT: Number(process.env.AEGIS_TURBO_DAILY_LOSS_STOP_PCT ?? 0.10),
-  AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES: Number(process.env.AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES ?? 2),
+  AEGIS_TURBO_MIN_SCORE: numberEnv('AEGIS_TURBO_MIN_SCORE'),
+  AEGIS_TURBO_LEVERAGE: numberEnv('AEGIS_TURBO_LEVERAGE'),
+  AEGIS_TURBO_POSITION_FRACTION: numberEnv('AEGIS_TURBO_POSITION_FRACTION'),
+  AEGIS_TURBO_MAX_TRADES_PER_DAY: numberEnv('AEGIS_TURBO_MAX_TRADES_PER_DAY'),
+  AEGIS_TURBO_DAILY_LOSS_STOP_PCT: numberEnv('AEGIS_TURBO_DAILY_LOSS_STOP_PCT'),
+  AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES: numberEnv('AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES'),
 
   // --- Re-entry Logic (YAML) ---
   REENTER_ON_TP: trading.reenter_on_tp,

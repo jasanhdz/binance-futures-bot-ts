@@ -107,7 +107,7 @@ export interface AegisTradingSignal {
   symbol: string;
   action: 'LONG' | 'SHORT' | 'PASS';
   confidence: number;
-  source: 'AEGIS_SAFE' | 'AEGIS_TURBO' | 'LEGACY';
+  source: 'AEGIS_SAFE' | 'AEGIS_TURBO';
   longProb: number;
   shortProb: number;
   neutralProb: number;
@@ -115,4 +115,17 @@ export interface AegisTradingSignal {
   smart_leverage?: number;
   features?: Record<string, any>;
   aegis?: AegisBlock;
+  metadata?: {
+    aegis?: AegisBlock;
+    meta_verdict?: string;
+    rawPrediction?: AegisPredictionResponse;
+    [key: string]: unknown;
+  };
+}
+
+export function isForbiddenTime(timestamp: number, forbiddenHours?: number[], forbiddenDays?: number[]): boolean {
+  const date = new Date(timestamp);
+  const hour = date.getUTCHours();
+  const day = date.getUTCDay();
+  return Boolean(forbiddenHours?.includes(hour) || forbiddenDays?.includes(day));
 }

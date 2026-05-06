@@ -30,7 +30,7 @@ export class MockNotifier implements Notifier {
 export class MockStateStore implements StateStore {
     private state: BotState = {
         mode: 'IDLE',
-        currentRegime: 'PHANTOM'
+        currentRegime: 'AEGIS_TURBO'
     };
 
     get(): BotState {
@@ -45,7 +45,7 @@ export class MockStateStore implements StateStore {
     reset(): void {
         this.state = {
             mode: 'IDLE',
-            currentRegime: 'PHANTOM'
+            currentRegime: 'AEGIS_TURBO'
         };
     }
 }

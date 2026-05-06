@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════
-# PHANTOM V1: Deep Learning Trading (ETH Specialist)
+# AEGIS TURBO: Micro-live configuration (safe by default)
 # ═══════════════════════════════════════════════════════════════════════
 SYMBOLS:
   ETHUSDT: 1.0
@@ -16,33 +16,36 @@ TRADING:
 SYSTEM:
   tick_interval_ms: 2000
   max_trades_per_day: 100
-  global_leverage_default: 20       
+  global_leverage_default: 15
   enable_sentinel: false
 
 IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_threshold: 0.55 }
 
 REGIMES:
-  PHANTOM:
-    leverage: 20
-    entry_threshold: 0.45        
-    hard_stop_roe: -0.50
-    tp_roe: 1.50
+  AEGIS_TURBO:
+    leverage: 15
+    entry_threshold: 0.60
+    hard_stop_roe: -0.15
+    tp_roe: 0.25
     be_roe: 0.08
-    trailing_step: 0.015         
-    trailing_activation_roe: 0.10
-    trailing_callback_roe: 0.15
-    max_trade_duration_ms: 72000000
+    trailing_step: 0.015
+    trailing_activation_roe: 0.15
+    trailing_callback_roe: 0.08
+    max_trade_duration_ms: 28800000
     use_exit_agent: false
 
-SYMBOL_OVERRIDES:
-  ETHUSDT:
-    PHANTOM:
-      leverage: 20
-      hard_stop_roe: -0.40
-      entry_threshold: 0.48
-      tp_roe: 0.80
-      max_trade_duration_ms: 18000000
-      be_roe: 0.08
-      trailing_activation_roe: 0.10
-      trailing_callback_roe: 0.07
-      use_exit_agent: false
+aegis:
+  turbo:
+    enabled: false
+    live_enabled: false
+    allow_short: false
+    position_fraction_cap: 0.10
+    max_trades_per_day: 1
+    max_consecutive_losses: 1
+    daily_loss_stop_pct: 0.10
+    min_cooldown_ms: 900000
+    max_liquidity_stress: 0.70
+    require_brackets: true
+    close_if_bracket_fails: true
+
+SYMBOL_OVERRIDES: {}

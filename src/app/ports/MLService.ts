@@ -2,14 +2,13 @@
  * MLService Port - Application Layer Interface
  * 
  * Defines the contract for ML prediction service.
- * Implemented by PhantomMLAdapter in infrastructure layer.
+ * Implemented by AegisMLAdapter in infrastructure layer.
  */
 
-import { PhantomSignal } from '../../domain/services/PhantomStrategy';
-import { AegisPredictionResponse } from '../../domain/services/AegisStrategy';
+import { AegisPredictionResponse, AegisTradingSignal } from '../../domain/services/AegisStrategy';
 
 export interface MLService {
-    getSignal(symbol: string): Promise<PhantomSignal>;
+    getSignal(symbol: string): Promise<AegisTradingSignal>;
     getAegisPrediction?(symbol: string): Promise<AegisPredictionResponse>;
     getExitSignal(payload: {
         symbol: string;

@@ -62,6 +62,20 @@ export interface RegimeYamlConfig {
     use_exit_agent?: boolean;
 }
 
+export interface AegisTurboYamlConfig {
+    enabled?: boolean;
+    live_enabled?: boolean;
+    allow_short?: boolean;
+    position_fraction_cap?: number;
+    max_trades_per_day?: number;
+    max_consecutive_losses?: number;
+    daily_loss_stop_pct?: number;
+    min_cooldown_ms?: number;
+    max_liquidity_stress?: number;
+    require_brackets?: boolean;
+    close_if_bracket_fails?: boolean;
+}
+
 export interface NinjaYamlConfig {
     SYMBOLS?: {
         [symbol: string]: number;  // Capital allocation (0-1)
@@ -71,7 +85,10 @@ export interface NinjaYamlConfig {
     REGIME_DETECTOR: RegimeDetectorConfig;
     IMMUNE_SYSTEM: ImmuneSystemConfig;
     REGIMES: {
-        PHANTOM: RegimeYamlConfig;
+        AEGIS_TURBO: RegimeYamlConfig;
+    };
+    aegis?: {
+        turbo?: AegisTurboYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
         [symbol: string]: {
@@ -282,6 +299,10 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisTurboConfig(): AegisTurboYamlConfig | undefined {
+        return this.config.aegis?.turbo;
+    }
+
     /**
      * THE MAGIC: Merges Base Regime Config + Symbol-Specific Overrides
      */
@@ -339,9 +360,9 @@ export class NinjaConfigManager {
      */
     private getDefaultRegimeConfig(regime: RegimeType): RegimeConfig {
         const defaults: Record<RegimeType, RegimeConfig> = {
-            PHANTOM: { leverage: 3, entryThreshold: 0.55, hardStopRoe: -0.015, tpRoe: 0.06, maxHoldMs: 21600000 }
+            AEGIS_TURBO: { leverage: 15, entryThreshold: 0.60, hardStopRoe: -0.15, tpRoe: 0.25, maxHoldMs: 28800000 }
         };
-        return defaults[regime] || defaults.PHANTOM;
+        return defaults[regime] || defaults.AEGIS_TURBO;
     }
 
     /**
@@ -367,12 +388,27 @@ export class NinjaConfigManager {
                 panic_exit_threshold: 0.70
             },
             REGIMES: {
-                PHANTOM: {
-                    leverage: 5,
-                    entry_threshold: 0.55,
-                    hard_stop_roe: -0.015,
-                    tp_roe: 0.06,
-                    max_hold_ms: 21600000
+                AEGIS_TURBO: {
+                    leverage: 15,
+                    entry_threshold: 0.60,
+                    hard_stop_roe: -0.15,
+                    tp_roe: 0.25,
+                    max_hold_ms: 28800000
+                }
+            },
+            aegis: {
+                turbo: {
+                    enabled: false,
+                    live_enabled: false,
+                    allow_short: false,
+                    position_fraction_cap: 0.10,
+                    max_trades_per_day: 1,
+                    max_consecutive_losses: 1,
+                    daily_loss_stop_pct: 0.10,
+                    min_cooldown_ms: 900000,
+                    max_liquidity_stress: 0.70,
+                    require_brackets: true,
+                    close_if_bracket_fails: true
                 }
             },
             SYMBOL_OVERRIDES: {}

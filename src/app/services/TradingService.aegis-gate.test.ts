@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../../infra/config/environment';
-import { PhantomSignal } from '../../domain/services/PhantomStrategy';
+import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
 import { TradingService } from './TradingService';
 
 const originalConfig = {
@@ -31,11 +31,12 @@ function restoreConfig(): void {
     Object.assign(CONFIG as any, originalConfig);
 }
 
-function validTurboSignal(): PhantomSignal {
+function validTurboSignal(): AegisTradingSignal {
     return {
         symbol: 'ETHUSDT',
         action: 'PASS',
         confidence: 0,
+        source: 'AEGIS_TURBO',
         longProb: 0.72,
         shortProb: 0.12,
         neutralProb: 0.16,
@@ -67,7 +68,7 @@ function validTurboSignal(): PhantomSignal {
     };
 }
 
-function makeHarness(signal: PhantomSignal) {
+function makeHarness(signal: AegisTradingSignal, yamlTurboConfig?: any) {
     const exchange = {
         getUSDTBalance: vi.fn(),
         setLeverage: vi.fn(),
@@ -87,7 +88,7 @@ function makeHarness(signal: PhantomSignal) {
         debug: vi.fn()
     };
     const state = {
-        get: vi.fn(() => ({ mode: 'IDLE' as const, currentRegime: 'PHANTOM' as const })),
+        get: vi.fn(() => ({ mode: 'IDLE' as const, currentRegime: 'AEGIS_TURBO' as const })),
         set: vi.fn(),
         reset: vi.fn()
     };
@@ -103,7 +104,19 @@ function makeHarness(signal: PhantomSignal) {
             logger,
             state,
             notifier: { sendMessage: vi.fn(), sendAlert: vi.fn() },
-            configManager: {} as any
+            configManager: {
+                getAegisTurboConfig: vi.fn(() => yamlTurboConfig),
+                getRegimeConfig: vi.fn(() => ({
+                    leverage: 15,
+                    hardStopRoe: -0.15,
+                    tpRoe: 0.25,
+                    entryThreshold: 0.60,
+                    maxHoldMs: 8 * 60 * 60 * 1000,
+                    trailingActivationRoe: 0.15,
+                    trailingCallbackRoe: 0.08
+                })),
+                trading: { fee_buffer_pct: 0.05 }
+            } as any
         },
         {
             symbols: ['ETHUSDT'],
@@ -148,7 +161,7 @@ describe('TradingService Aegis micro-live gate dry-run', () => {
             gatedReason: 'safe_regime_block',
             gatedBlockedBy: 'safe_regime'
         }));
-        expect(exchange.getUSDTBalance).not.toHaveBeenCalled();
+        expect(exchange.getUSDTBalance).toHaveBeenCalledTimes(1);
         expect(exchange.setLeverage).not.toHaveBeenCalled();
         expect(exchange.ensureMarginType).not.toHaveBeenCalled();
         expect(exchange.marketOpen).not.toHaveBeenCalled();
@@ -157,30 +170,24 @@ describe('TradingService Aegis micro-live gate dry-run', () => {
         expect(state.set).not.toHaveBeenCalled();
     });
 
-    it('logs allowed dry-run when AEGIS_LIVE_ENABLED=true and signal passes, without execution calls', async () => {
+    it('denies without execution when AEGIS_LIVE_ENABLED=true but YAML live is absent', async () => {
         setAegisTurboConfig(true);
         const { exchange, logger, service, state } = makeHarness(validTurboSignal());
 
         await service.tick('ETHUSDT');
 
-        expect(logger.warn).toHaveBeenCalledWith('aegis_micro_live_gate_allowed_dry_run', expect.objectContaining({
+        expect(logger.info).toHaveBeenCalledWith('aegis_micro_live_gate_denied', expect.objectContaining({
             symbol: 'ETHUSDT',
-            side: 'LONG',
-            leverage: 15,
-            positionFraction: 0.10,
-            stopRoe: -0.15,
-            takeProfitRoe: 0.25,
-            trailingActivationRoe: 0.15,
-            trailingCallbackRoe: 0.08,
+            reason: 'aegis_turbo_yaml_live_disabled',
             turboScore: 0.72,
             votes: { long: 2, short: 0, neutral: 1 },
             rawReason: 'raw_long_agreement',
             gatedReason: 'safe_regime_block',
             gatedBlockedBy: 'safe_regime',
-            dryRun: true,
-            message: 'Gate allowed but execution is intentionally disabled in Phase 3'
+            liveEnabled: true,
+            yamlLiveEnabled: false
         }));
-        expect(exchange.getUSDTBalance).not.toHaveBeenCalled();
+        expect(exchange.getUSDTBalance).toHaveBeenCalledTimes(1);
         expect(exchange.setLeverage).not.toHaveBeenCalled();
         expect(exchange.ensureMarginType).not.toHaveBeenCalled();
         expect(exchange.marketOpen).not.toHaveBeenCalled();

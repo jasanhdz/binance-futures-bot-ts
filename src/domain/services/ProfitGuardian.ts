@@ -2,7 +2,7 @@
  * ProfitGuardian - Domain Service
  * 
  * Dynamic trailing profit protection & Break-Even logic.
- * Matches Phantom V8 Backtest logic.
+ * Dynamic protection logic for Aegis-managed futures positions.
  */
 
 export interface GuardianContext {

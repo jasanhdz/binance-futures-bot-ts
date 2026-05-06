@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { MLService } from '../../app/ports/MLService';
-import { PhantomSignal } from '../../domain/services/PhantomStrategy';
+import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
 import { Exchange } from '../../app/ports/Exchange';
 
 export class MockMLService implements MLService {
@@ -8,7 +8,7 @@ export class MockMLService implements MLService {
 
     constructor(private exchange: Exchange) { }
 
-    async getSignal(symbol: string): Promise<PhantomSignal> {
+    async getSignal(symbol: string): Promise<AegisTradingSignal> {
         try {
             const candle = await this.exchange.getLastCandle(symbol);
             if (!candle) {
@@ -16,6 +16,7 @@ export class MockMLService implements MLService {
                     symbol,
                     action: 'PASS',
                     confidence: 0,
+                    source: 'AEGIS_SAFE',
                     longProb: 0,
                     shortProb: 0,
                     neutralProb: 1
@@ -39,6 +40,7 @@ export class MockMLService implements MLService {
                 symbol,
                 action: action,
                 confidence: data.confidence,
+                source: 'AEGIS_TURBO',
                 longProb: 0,
                 shortProb: data.confidence,
                 neutralProb: 1 - data.confidence,
@@ -55,6 +57,7 @@ export class MockMLService implements MLService {
                 symbol,
                 action: 'PASS',
                 confidence: 0,
+                source: 'AEGIS_SAFE',
                 longProb: 0,
                 shortProb: 0,
                 neutralProb: 1

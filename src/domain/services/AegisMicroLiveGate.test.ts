@@ -50,7 +50,11 @@ function baseConfig(): AegisMicroLiveGateConfig {
         maxConsecutiveLosses: 2,
         dailyLossStopPct: 0.10,
         minCooldownMs: 15 * 60 * 1000,
-        maxLiquidityStress: 0.70
+        maxLiquidityStress: 0.70,
+        stopRoe: -0.15,
+        takeProfitRoe: 0.25,
+        trailingActivationRoe: 0.15,
+        trailingCallbackRoe: 0.08
     };
 }
 
@@ -232,15 +236,20 @@ describe('AegisMicroLiveGate', () => {
         expect(decision.positionFraction).toBe(0.10);
     });
 
-    it('normalizes stop/tp/trailing values', () => {
+    it('uses regime risk values instead of Aegis signal risk values', () => {
         const ctx = baseCtx();
         ctx.signal = clone(ctx.signal);
-        ctx.signal.aegis!.turbo!.stop_roe = 0.15;
-        ctx.signal.aegis!.turbo!.take_profit_roe = -0.25;
-        ctx.signal.aegis!.turbo!.trailing_activation_roe = -0.15;
-        ctx.signal.aegis!.turbo!.trailing_callback_roe = -0.08;
+        ctx.signal.aegis!.turbo!.stop_roe = -0.50;
+        ctx.signal.aegis!.turbo!.take_profit_roe = 0.90;
+        ctx.signal.aegis!.turbo!.trailing_activation_roe = 0.40;
+        ctx.signal.aegis!.turbo!.trailing_callback_roe = 0.30;
+        const config = baseConfig();
+        config.stopRoe = 0.15;
+        config.takeProfitRoe = -0.25;
+        config.trailingActivationRoe = -0.15;
+        config.trailingCallbackRoe = -0.08;
 
-        const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
+        const decision = shouldEnterAegisTurboMicroLive(ctx, config);
 
         expect(decision.stopRoe).toBe(-0.15);
         expect(decision.takeProfitRoe).toBe(0.25);
@@ -257,17 +266,26 @@ describe('AegisMicroLiveGate', () => {
     });
 
     it('builds config from CONFIG-shaped env object', () => {
-        const config = buildAegisMicroLiveGateConfigFromEnv({
-            TRADING_MODE: 'AEGIS_TURBO_MICRO_LIVE',
-            AEGIS_LIVE_ENABLED: true,
-            AEGIS_TURBO_ALLOW_SHORT: false,
-            AEGIS_TURBO_MIN_SCORE: 0.60,
-            AEGIS_TURBO_LEVERAGE: 15,
-            AEGIS_TURBO_POSITION_FRACTION: 0.10,
-            AEGIS_TURBO_MAX_TRADES_PER_DAY: 2,
-            AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES: 2,
-            AEGIS_TURBO_DAILY_LOSS_STOP_PCT: 0.10
-        });
+        const config = buildAegisMicroLiveGateConfigFromEnv(
+            {
+                TRADING_MODE: 'AEGIS_TURBO_MICRO_LIVE',
+                AEGIS_LIVE_ENABLED: true,
+                AEGIS_TURBO_ALLOW_SHORT: false,
+                AEGIS_TURBO_POSITION_FRACTION: 0.10,
+                AEGIS_TURBO_MAX_TRADES_PER_DAY: 2,
+                AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES: 2,
+                AEGIS_TURBO_DAILY_LOSS_STOP_PCT: 0.10
+            },
+            undefined,
+            {
+                leverage: 15,
+                entryThreshold: 0.60,
+                hardStopRoe: -0.15,
+                tpRoe: 0.25,
+                trailingActivationRoe: 0.15,
+                trailingCallbackRoe: 0.08
+            }
+        );
 
         expect(config).toEqual({
             tradingMode: 'AEGIS_TURBO_MICRO_LIVE',
@@ -280,7 +298,15 @@ describe('AegisMicroLiveGate', () => {
             maxConsecutiveLosses: 2,
             dailyLossStopPct: 0.10,
             minCooldownMs: 15 * 60 * 1000,
-            maxLiquidityStress: 0.70
+            maxLiquidityStress: 0.70,
+            stopRoe: -0.15,
+            takeProfitRoe: 0.25,
+            trailingActivationRoe: 0.15,
+            trailingCallbackRoe: 0.08,
+            yamlEnabled: undefined,
+            yamlLiveEnabled: undefined,
+            requireBrackets: undefined,
+            closeIfBracketFails: undefined
         });
     });
 });

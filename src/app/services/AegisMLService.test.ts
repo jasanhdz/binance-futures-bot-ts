@@ -1,11 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AegisMLService } from './AegisMLService';
 import { AegisPredictionResponse } from '../../domain/services/AegisStrategy';
-import { CONFIG } from '../../infra/config/environment';
 
 describe('AegisMLService', () => {
-    it('returns a PASS Phantom-compatible signal in AEGIS_SHADOW and preserves Aegis metadata', async () => {
-        (CONFIG as any).TRADING_MODE = 'AEGIS_SHADOW';
+    it('returns a PASS Aegis signal and preserves Aegis metadata', async () => {
         const prediction: AegisPredictionResponse = {
             symbol: 'ETHUSDT',
             long_prob: 0.72,
@@ -48,6 +46,7 @@ describe('AegisMLService', () => {
         expect(client.fetchPrediction).toHaveBeenCalledWith({ symbol: 'ETHUSDT' });
         expect(signal.action).toBe('PASS');
         expect(signal.confidence).toBe(0);
+        expect(signal.source).toBe('AEGIS_SAFE');
         expect(signal.longProb).toBe(0.72);
         expect(signal.smart_leverage).toBe(0);
         expect(signal.metadata?.aegis).toBe(prediction.aegis);

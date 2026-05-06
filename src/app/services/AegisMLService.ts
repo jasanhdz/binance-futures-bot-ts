@@ -1,8 +1,6 @@
 import { MLService } from '../ports/MLService';
-import { PhantomSignal } from '../../domain/services/PhantomStrategy';
-import { AegisPredictionResponse } from '../../domain/services/AegisStrategy';
+import { AegisPredictionResponse, AegisTradingSignal } from '../../domain/services/AegisStrategy';
 import { AegisMLServiceClient } from '../../infra/adapters/AegisMLAdapter';
-import { CONFIG } from '../../infra/config/environment';
 
 export class AegisMLService implements MLService {
   constructor(private readonly client = new AegisMLServiceClient()) {}
@@ -11,29 +9,17 @@ export class AegisMLService implements MLService {
     return this.client.fetchPrediction({ symbol });
   }
 
-  async getSignal(symbol: string): Promise<PhantomSignal> {
+  async getSignal(symbol: string): Promise<AegisTradingSignal> {
     const prediction = await this.getAegisPrediction(symbol);
     const longProb = prediction.long_prob ?? 0;
     const shortProb = prediction.short_prob ?? 0;
     const neutralProb = prediction.neutral_prob ?? 0;
 
-    let action: PhantomSignal['action'] = 'PASS';
-    let confidence = 0;
-
-    if (CONFIG.TRADING_MODE === 'PHANTOM_LEGACY') {
-      if (longProb > shortProb && longProb >= 0.30) {
-        action = 'LONG';
-        confidence = longProb;
-      } else if (shortProb > longProb && shortProb >= 0.30) {
-        action = 'SHORT';
-        confidence = shortProb;
-      }
-    }
-
     return {
       symbol,
-      action,
-      confidence,
+      action: 'PASS',
+      confidence: 0,
+      source: 'AEGIS_SAFE',
       longProb,
       shortProb,
       neutralProb,

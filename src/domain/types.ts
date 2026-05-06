@@ -67,8 +67,23 @@ export type BotState = {
   highestRatchetStop?: number; // High Water Mark para el Stop Loss (Monotonicity Enforcement)
 
   // Native Brackets v8.0: Regime persistence for ensure-brackets.ts
-  currentRegime?: 'PHANTOM' | 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER' | 'BERZERKER';
+  currentRegime?: 'AEGIS_TURBO' | 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER' | 'BERZERKER';
   lastPeakPrice?: number; // Highest/Lowest price reached during trade (for trailing stop)
+
+  // Aegis Turbo position metadata
+  lastStrategy?: 'AEGIS_TURBO';
+  lastStopRoe?: number;
+  lastTakeProfitRoe?: number;
+  lastTrailingActivationRoe?: number;
+  lastTrailingCallbackRoe?: number;
+  lastAegisTurboScore?: number;
+  lastAegisRawReason?: string;
+  lastAegisGatedReason?: string;
+  lastAegisGatedBlockedBy?: string | null;
+  lastPositionFraction?: number;
+  lastRequestedLeverage?: number;
+  lastActualLeverage?: number;
+  lastBracketStatus?: 'PENDING' | 'OK' | 'FAILED_CLOSED';
 
   shadowPos?: ShadowPosition | null; // <-- For shadow trading
 };

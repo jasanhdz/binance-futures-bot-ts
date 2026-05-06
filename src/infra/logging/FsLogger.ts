@@ -354,7 +354,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       return line1 + '\n' + line2 + (line3 ? '\n' + line3 : '');
     }
 
-    case 'phantom_tick': {
+    case 'aegis_tick': {
       const t = new Date().toLocaleTimeString('en-GB', { hour12: false });
       const s = ctx?.symbol ? ctx.symbol.replace('USDT', '') : '';
       const price = ctx?.price ? ctx.price.toFixed(2) : '0.00';
@@ -420,6 +420,27 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
       const score = typeof ctx?.turboScore === 'number' ? ctx.turboScore.toFixed(3) : '—';
       return `${color.gray(t)} ⚡ AegisGate ${s} ${color.warn('ALLOWED DRY-RUN')} side=${ctx?.side ?? '—'} lev=${ctx?.leverage ?? '—'}x frac=${ctx?.positionFraction ?? '—'} score=${score}`;
+    }
+
+    case 'aegis_turbo_micro_live_entry': {
+      const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
+      const score = typeof ctx?.turboScore === 'number' ? ctx.turboScore.toFixed(3) : '—';
+      return `${color.gray(t)} ⚡ AegisEntry ${s} ${color.bold(ctx?.side ?? '—')} @ ${n(ctx?.entryPrice)} qty=${n(ctx?.quantity, 4)} lev=${ctx?.leverage ?? '—'}x score=${score}`;
+    }
+
+    case 'aegis_turbo_brackets_created': {
+      const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
+      return `${color.gray(t)} 🧷 AegisBrackets ${s} side=${ctx?.side ?? '—'} SL=${ctx?.stopPrice ?? '—'} TP=${ctx?.tpPrice ?? '—'}`;
+    }
+
+    case 'aegis_bracket_validation_failed': {
+      const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
+      return `${color.gray(t)} 🚨 AegisBracketFail ${s} side=${ctx?.side ?? '—'} hasSL=${ctx?.hasSL} hasTP=${ctx?.hasTP}`;
+    }
+
+    case 'aegis_entry_error_closed': {
+      const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
+      return `${color.gray(t)} 🚨 AegisEntryErrorClosed ${s} ${ctx?.error ?? ''}`;
     }
 
     // Otherwise, use Table (Active Position)

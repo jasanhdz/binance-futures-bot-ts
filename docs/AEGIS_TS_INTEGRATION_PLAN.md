@@ -1,77 +1,82 @@
 # Aegis TS Integration Plan
 
-## Frozen Phantom Baseline
-
-Phantom/Kamikaze is frozen locally in:
-
-- Branch: `archive/phantom-v33-kamikaze`
-- Tag: `phantom-v33-kamikaze-freeze-2026-05-05`
-
-The TypeScript integration work starts from `feature/aegis-ts-integration`.
-
 ## Runtime Modes
 
 - `TRADING_MODE=AEGIS_SHADOW` is the default.
-- `TRADING_MODE=PHANTOM_LEGACY` keeps the existing Phantom/Kamikaze path.
-- `TRADING_MODE=AEGIS_TURBO_MICRO_LIVE` is reserved for a later phase.
+- `TRADING_MODE=AEGIS_TURBO_MICRO_LIVE` enables the micro-live gate path.
 
-`AEGIS_LIVE_ENABLED` defaults to `false`. Phase 1 never opens live entries from Aegis.
+`AEGIS_LIVE_ENABLED` defaults to `false`. Live execution also requires `aegis.turbo.live_enabled=true` in the active YAML config.
 
-## Phase 1 Scope
+## Phase 1 — Shadow Integration
 
-This phase adds an Aegis API adapter and logs Aegis Safe/Turbo shadow observations from `/ml-v2/predict`.
-
-In `AEGIS_SHADOW`:
-
-- The bot requests the full Aegis prediction.
-- The bot logs Safe and Turbo raw/gated state.
-- The bot returns before Phantom `shouldEnter`, KAMIKAZE sizing, Phantom shadow positions, or Binance entry execution.
+The bot requests `/ml-v2/predict`, preserves Aegis metadata, and logs Safe/Turbo shadow observations. In `AEGIS_SHADOW` it returns before entry execution.
 
 ## Phase 2 — AegisMicroLiveGate
 
-This phase adds a pure TypeScript decision gate for Aegis Turbo micro-live candidates. It does not open orders, call Binance execution, or connect entry execution into `TradingService`.
+The gate decides whether a Turbo raw signal is eligible for micro-live. Initial limits:
 
-The gate only answers whether a Turbo raw signal could qualify for a future micro-live entry. Live eligibility requires both:
+- Uses `REGIMES.AEGIS_TURBO.entry_threshold` as the minimum Turbo score.
+- Uses `REGIMES.AEGIS_TURBO.leverage` as the leverage cap.
+- Position fraction capped at 0.10.
+- SHORT disabled by default.
+- Maximum trades, cooldown, daily loss, liquidity stress, and consecutive loss limits enforced.
+- SL, TP, trailing, and max hold time come from `REGIMES.AEGIS_TURBO`.
 
-- `TRADING_MODE=AEGIS_TURBO_MICRO_LIVE`
-- `AEGIS_LIVE_ENABLED=1`
+## Phase 3 — Gate Dry-Run
 
-Initial risk limits:
+`TradingService` evaluates the gate in runtime. Denied decisions log `aegis_micro_live_gate_denied`; allowed decisions remain dry-run unless live is explicitly enabled by both env and YAML.
 
-- Leverage is capped at 15x, even if Turbo suggests more.
-- Position fraction is capped at 0.10, even if Turbo suggests more.
-- SHORT is disabled by default unless `AEGIS_TURBO_ALLOW_SHORT=1`.
-- Maximum 2 trades per day.
-- 2 consecutive losses block new entries.
-- Daily loss of 10% blocks new entries.
-- Cooldown is 15 minutes after exit.
-- Liquidity stress above 0.70 blocks new entries.
+## Phase 4 — Aegis Turbo Micro-Live Execution
 
-Python production flags such as `execute=false` or `production_allowed=false` are recorded in the decision via gated metadata, but do not block this TS gate when TS is explicitly configured for micro-live. Actual order execution remains for a later phase.
+The live path is implemented but off by default.
 
-## Phase 3 — TradingService Gate Dry-Run
+Live requires:
 
-This phase connects `AegisMicroLiveGate` into `TradingService` only for `TRADING_MODE=AEGIS_TURBO_MICRO_LIVE`.
+```bash
+TRADING_MODE=AEGIS_TURBO_MICRO_LIVE
+AEGIS_LIVE_ENABLED=1
+```
 
-Runtime behavior:
+And the active YAML must contain:
 
-- The bot fetches the full Aegis-compatible signal.
-- The bot logs `aegis_scan`.
-- The bot evaluates the micro-live gate.
-- Denied decisions log `aegis_micro_live_gate_denied`.
-- Allowed decisions log `aegis_micro_live_gate_allowed_dry_run`.
+```yaml
+aegis:
+  turbo:
+    enabled: true
+    live_enabled: true
+```
 
-Allowed decisions are still dry-run only. Phase 3 intentionally does not call Binance execution, does not call `marketOpen`, does not set leverage, does not place stop or take-profit orders, and does not write real position state. This phase exists to validate wiring and real Aegis Turbo signals before entry plumbing is considered.
+Execution behavior:
+
+- Sets isolated margin.
+- Sets leverage capped by `REGIMES.AEGIS_TURBO.leverage`.
+- Uses position fraction capped at 0.10.
+- Opens market only after the gate allows.
+- Places SL/TP brackets immediately.
+- Validates brackets after entry.
+- Closes the position immediately if required brackets fail.
+- Stores `AEGIS_TURBO` metadata in state.
+
+Recommended first live validation:
+
+- `max_trades_per_day: 1`
+- `allow_short: false`
+- Small wallet allocation only.
+- Confirm SL/TP on Binance immediately.
+- Return to `TRADING_MODE=AEGIS_SHADOW` after the test.
+
+Rollback:
+
+```bash
+TRADING_MODE=AEGIS_SHADOW
+AEGIS_LIVE_ENABLED=0
+pm2 restart 01-Trading-Bot --update-env
+```
 
 ## Validation
 
 ```bash
 npm run build
-TRADING_MODE=AEGIS_SHADOW npm run dev:prod
 npx vitest run src/domain/services/AegisMicroLiveGate.test.ts
-npx vitest run src/app/services/AegisMLService.test.ts src/app/services/TradingService.aegis.test.ts src/domain/services/AegisMicroLiveGate.test.ts src/app/services/TradingService.aegis-gate.test.ts
+npx vitest run src/app/services/AegisMLService.test.ts src/app/services/TradingService.aegis.test.ts src/app/services/TradingService.aegis-gate.test.ts src/app/services/TradingService.aegis-live.test.ts
 ```
-
-## Next Phase
-
-Add controlled micro-live entry plumbing only after dry-run logs and shadow metrics justify it.
