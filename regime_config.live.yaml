@@ -24,7 +24,7 @@ IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_thresh
 REGIMES:
   AEGIS_TURBO:
     leverage: 15
-    entry_threshold: 0.60
+    entry_threshold: 0.50
     hard_stop_roe: -0.15
     tp_roe: 0.25
     be_roe: 0.08
@@ -36,12 +36,12 @@ REGIMES:
 
 aegis:
   turbo:
-    enabled: false
-    live_enabled: false
+    enabled: true
+    live_enabled: true
     allow_short: false
-    position_fraction_cap: 0.10
-    max_trades_per_day: 1
-    max_consecutive_losses: 1
+    position_fraction_cap: 1.0
+    max_trades_per_day: 10
+    max_consecutive_losses: 2
     daily_loss_stop_pct: 0.10
     min_cooldown_ms: 900000
     max_liquidity_stress: 0.70

@@ -360,7 +360,7 @@ export class NinjaConfigManager {
      */
     private getDefaultRegimeConfig(regime: RegimeType): RegimeConfig {
         const defaults: Record<RegimeType, RegimeConfig> = {
-            AEGIS_TURBO: { leverage: 15, entryThreshold: 0.60, hardStopRoe: -0.15, tpRoe: 0.25, maxHoldMs: 28800000 }
+            AEGIS_TURBO: { leverage: 15, entryThreshold: 0.50, hardStopRoe: -0.15, tpRoe: 0.25, maxHoldMs: 28800000 }
         };
         return defaults[regime] || defaults.AEGIS_TURBO;
     }
@@ -390,7 +390,7 @@ export class NinjaConfigManager {
             REGIMES: {
                 AEGIS_TURBO: {
                     leverage: 15,
-                    entry_threshold: 0.60,
+                    entry_threshold: 0.50,
                     hard_stop_roe: -0.15,
                     tp_roe: 0.25,
                     max_hold_ms: 28800000

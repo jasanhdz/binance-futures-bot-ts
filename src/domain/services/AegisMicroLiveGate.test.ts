@@ -43,7 +43,7 @@ function baseConfig(): AegisMicroLiveGateConfig {
         tradingMode: 'AEGIS_TURBO_MICRO_LIVE',
         liveEnabled: true,
         allowShort: false,
-        minScore: 0.60,
+        minScore: 0.50,
         leverageCap: 15,
         positionFractionCap: 0.10,
         maxTradesPerDay: 2,
@@ -200,7 +200,7 @@ describe('AegisMicroLiveGate', () => {
 
     it('denies if score < threshold', () => {
         const ctx = baseCtx();
-        ctx.signal.aegis!.turbo!.raw!.turbo_score = 0.59;
+        ctx.signal.aegis!.turbo!.raw!.turbo_score = 0.49;
 
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
@@ -279,7 +279,7 @@ describe('AegisMicroLiveGate', () => {
             undefined,
             {
                 leverage: 15,
-                entryThreshold: 0.60,
+                entryThreshold: 0.50,
                 hardStopRoe: -0.15,
                 tpRoe: 0.25,
                 trailingActivationRoe: 0.15,
@@ -291,7 +291,7 @@ describe('AegisMicroLiveGate', () => {
             tradingMode: 'AEGIS_TURBO_MICRO_LIVE',
             liveEnabled: true,
             allowShort: false,
-            minScore: 0.60,
+            minScore: 0.50,
             leverageCap: 15,
             positionFractionCap: 0.10,
             maxTradesPerDay: 2,

@@ -19,7 +19,7 @@ function setAegisTurboConfig(liveEnabled: boolean): void {
     (CONFIG as any).TRADING_MODE = 'AEGIS_TURBO_MICRO_LIVE';
     (CONFIG as any).AEGIS_LIVE_ENABLED = liveEnabled;
     (CONFIG as any).AEGIS_TURBO_ALLOW_SHORT = false;
-    (CONFIG as any).AEGIS_TURBO_MIN_SCORE = 0.60;
+    (CONFIG as any).AEGIS_TURBO_MIN_SCORE = 0.50;
     (CONFIG as any).AEGIS_TURBO_LEVERAGE = 15;
     (CONFIG as any).AEGIS_TURBO_POSITION_FRACTION = 0.10;
     (CONFIG as any).AEGIS_TURBO_MAX_TRADES_PER_DAY = 2;
