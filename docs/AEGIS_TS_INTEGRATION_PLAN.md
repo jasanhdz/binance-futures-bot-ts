@@ -75,7 +75,7 @@ Startup message:
 Entry message:
 
 - Fecha: 2026-05-07.
-- Uses a compact professional `AEGIS TURBO ENTRY` format without Markdown emphasis, backticks, or underscores in the rendered dynamic fields.
+- Uses a compact professional `AEGIS TURBO ENTRY` format with emoji labels and bold emphasis rendered through Telegram HTML.
 - Does not show legacy ML probabilities (`Long`, `Short`, `Idle`, `Close`) because Aegis Turbo entries are driven by Turbo gate metrics, not the legacy probability section.
 - Shows symbol, side, entry price, leverage, base-asset size, margin, account balances, Turbo score/threshold, votes, formatted reason, SL/TP, trailing status, callback when enabled, and `Brackets confirmados`.
 - `Score: X% / Y%` means current `gate.turboScore` versus the effective entry threshold. The threshold is read from `REGIMES.AEGIS_TURBO.entry_threshold` through `configManager.getRegimeConfig('AEGIS_TURBO', symbol)` and the same `getAegisTurboGateConfig(symbol).minScore` path used by the real gate.

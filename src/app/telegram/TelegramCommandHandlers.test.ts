@@ -105,7 +105,7 @@ describe('TelegramCommandHandlers', () => {
         const text = await handlers.handleSignal('ETHUSDT');
 
         expect(mlService.getAegisPrediction).toHaveBeenCalledWith('ETHUSDT');
-        expect(text).toContain('• Threshold: 60.0%');
+        expect(text).toContain('🎚️ Threshold: **60.0%**');
         expect(text).toContain('Acuerdo LONG reciente 2/3');
     });
 
@@ -121,7 +121,7 @@ describe('TelegramCommandHandlers', () => {
     it('/positions shows Ninguna when there are no active positions', async () => {
         const { handlers } = makeHandlers();
 
-        await expect(handlers.handlePositions()).resolves.toContain('• Ninguna');
+        await expect(handlers.handlePositions()).resolves.toContain('🟢 **Ninguna**');
     });
 
     it('/config shows threshold from REGIMES.AEGIS_TURBO', async () => {
@@ -129,8 +129,8 @@ describe('TelegramCommandHandlers', () => {
 
         const text = await handlers.handleConfig();
 
-        expect(text).toContain('• Entry threshold: 60.0%');
-        expect(text).toContain('• Leverage: 20x');
+        expect(text).toContain('🎚️ Entry threshold: **60.0%**');
+        expect(text).toContain('⚖️ Leverage: **20x**');
     });
 
     it('/account handles missing fields as N/D', async () => {
@@ -138,9 +138,9 @@ describe('TelegramCommandHandlers', () => {
 
         const text = await handlers.handleAccount();
 
-        expect(text).toContain('• Wallet: $500.00 USDT');
-        expect(text).toContain('• Equity total: N/D');
-        expect(text).toContain('• Disponible: N/D');
+        expect(text).toContain('👛 Wallet: **$500.00 USDT**');
+        expect(text).toContain('🏦 Equity total: **N/D**');
+        expect(text).toContain('💵 Disponible: **N/D**');
     });
 
     it('/brackets does not modify orders', async () => {
@@ -159,7 +159,7 @@ describe('TelegramCommandHandlers', () => {
 
         const text = await handlers.handleStatus();
 
-        expect(text).toContain('• Aegis API: ERROR');
-        expect(text).toContain('• Última señal: ERROR');
+        expect(text).toContain('🧠 Aegis API: **ERROR**');
+        expect(text).toContain('🛰️ Última señal: **ERROR**');
     });
 });

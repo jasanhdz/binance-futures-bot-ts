@@ -83,7 +83,9 @@ export const CONFIG = {
 
   // --- Telegram inbound commands (ENV, disabled by default) ---
   TELEGRAM_COMMANDS_ENABLED: process.env.TELEGRAM_COMMANDS_ENABLED === '1',
-  TELEGRAM_ALLOWED_CHAT_IDS: csvEnv('TELEGRAM_ALLOWED_CHAT_IDS'),
+  TELEGRAM_ALLOWED_CHAT_IDS: csvEnv('TELEGRAM_ALLOWED_CHAT_IDS').length > 0
+    ? csvEnv('TELEGRAM_ALLOWED_CHAT_IDS')
+    : csvEnv('TELEGRAM_CHAT_ID'),
 
   // --- Re-entry Logic (YAML) ---
   REENTER_ON_TP: trading.reenter_on_tp,

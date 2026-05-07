@@ -208,11 +208,10 @@ describe('TradingService Aegis live execution', () => {
         await service.start(false);
 
         expect(exchange.getUSDTBalance).toHaveBeenCalled();
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 AEGIS TURBO MICRO-LIVE INICIADO'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('• Wallet: $565.39 USDT'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('• Equity total: N/D'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 POSICIONES ACTIVAS'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('• Ninguna'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 AEGIS TURBO MICRO-LIVE ✅'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧠 MICRO-LIVE | Live ON | Shorts OFF'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet $565.39 | Equity N/D | Disp. N/D'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 Posiciones\nNinguna'));
     });
 
     it('includes approximate wallet balance with open unrealized PnL in the startup Telegram message', async () => {
@@ -241,10 +240,9 @@ describe('TradingService Aegis live execution', () => {
 
         await service.start(false);
 
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('• Wallet: $500.00 USDT'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 POSICIÓN ACTIVA'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ETHUSDT | 📈 LONG'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('• PnL: -$10.00'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet $500.00 | Equity N/D | Disp. N/D'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 ETHUSDT LONG 📈'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ROI -6.7% | PnL -$10.00 | 0.5h'));
     });
 
 	    it('opens Aegis Turbo position with isolated margin and immediate brackets when env and YAML allow live', async () => {

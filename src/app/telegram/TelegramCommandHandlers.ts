@@ -96,18 +96,18 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
     constructor(private readonly deps: TelegramCommandHandlerDeps) {}
 
     handleHelp(): string {
-        return `🤖 AEGIS TELEGRAM COMMANDS\n\n` +
-            `/help - Mostrar comandos\n` +
-            `/status - Estado del bot\n` +
-            `/account - Cuenta y balances\n` +
-            `/positions - Posiciones activas\n` +
-            `/config - Configuración efectiva\n` +
-            `/signal SYMBOL - Señal de un símbolo\n` +
-            `/signals - Señales de símbolos activos\n` +
-            `/risk - Riesgo y límites\n` +
-            `/brackets - Estado de brackets\n` +
-            `/report today - Resumen de hoy\n\n` +
-            `Solo lectura. No abre, cierra ni modifica operaciones.`;
+        return `🤖 **AEGIS TELEGRAM COMMANDS**\n\n` +
+            `🧭 /help - Mostrar comandos\n` +
+            `📡 /status - Estado del bot\n` +
+            `💰 /account - Cuenta y balances\n` +
+            `💼 /positions - Posiciones activas\n` +
+            `⚙️ /config - Configuración efectiva\n` +
+            `🛰️ /signal ETHUSDT - Señal de un símbolo\n` +
+            `📊 /signals - Señales de símbolos activos\n` +
+            `🛡️ /risk - Riesgo y límites\n` +
+            `🧷 /brackets - Estado de brackets\n` +
+            `📈 /report today - Resumen de hoy\n\n` +
+            `🔒 **Solo lectura**. No abre, cierra ni modifica operaciones.`;
     }
 
     async handleStatus(): Promise<string> {
@@ -135,15 +135,15 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             lastSignal = 'ERROR';
         }
 
-        return `📡 STATUS AEGIS\n\n` +
-            `• Bot: online\n` +
-            `• Running: ${boolText(runtime.isRunning)}\n` +
-            `• Trading mode: ${this.deps.tradingMode}\n` +
-            `• Live enabled: ${boolText(this.deps.liveEnabled)}\n` +
-            `• Aegis API: ${apiStatus}\n` +
-            `• Símbolos activos: ${symbols.join(', ') || 'N/D'}\n` +
-            `• Posiciones abiertas: ${positions.length}\n` +
-            `• Última señal: ${lastSignal}`;
+        return `📡 **Status Aegis**\n\n` +
+            `🤖 Bot: **online**\n` +
+            `💓 Running: **${boolText(runtime.isRunning)}**\n` +
+            `⚡ Trading mode: **${this.deps.tradingMode}**\n` +
+            `🟢 Live enabled: **${boolText(this.deps.liveEnabled)}**\n` +
+            `🧠 Aegis API: **${apiStatus}**\n` +
+            `🪙 Símbolos activos: **${symbols.join(', ') || 'N/D'}**\n` +
+            `💼 Posiciones abiertas: **${positions.length}**\n` +
+            `🛰️ Última señal: **${lastSignal}**`;
     }
 
     async handleAccount(): Promise<string> {
@@ -154,10 +154,10 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 ? (account.walletBalance - runtime.dailyStartBalance) / runtime.dailyStartBalance
                 : undefined);
         return `${formatAccountMessage(account)}\n` +
-            `• Unrealized PnL: ${formatUsd(account.unrealizedPnlTotal)}\n` +
-            `• Trades hoy: ${runtime.tradesToday ?? 0}\n` +
-            `• Pérdidas consecutivas: ${runtime.consecutiveLosses ?? 0}\n` +
-            `• Daily PnL: ${formatPct(dailyPnlPct, true)}`;
+            `📈 Unrealized PnL: **${formatUsd(account.unrealizedPnlTotal)}**\n` +
+            `📆 Trades hoy: **${runtime.tradesToday ?? 0}**\n` +
+            `🔻 Pérdidas consecutivas: **${runtime.consecutiveLosses ?? 0}**\n` +
+            `📊 Daily PnL: **${formatPct(dailyPnlPct, true)}**`;
     }
 
     async handlePositions(): Promise<string> {
@@ -186,12 +186,12 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         });
 
         return `${configMessage}\n` +
-            `• Aegis enabled: ${boolText(turbo?.enabled)}\n` +
-            `• Aegis live enabled: ${boolText(turbo?.live_enabled)}\n` +
-            `• Allow short: ${boolText(turbo?.allow_short)}\n` +
-            `• Position fraction cap: ${formatPct(turbo?.position_fraction_cap)}\n` +
-            `• Cooldown: ${finiteNumber(turbo?.min_cooldown_ms) ? `${(turbo.min_cooldown_ms / 60000).toFixed(1)} min` : 'N/D'}\n` +
-            `• Close if bracket fails: ${boolText(turbo?.close_if_bracket_fails)}`;
+            `✅ Aegis enabled: **${boolText(turbo?.enabled)}**\n` +
+            `🟢 Aegis live enabled: **${boolText(turbo?.live_enabled)}**\n` +
+            `📉 Allow short: **${boolText(turbo?.allow_short)}**\n` +
+            `💼 Position fraction cap: **${formatPct(turbo?.position_fraction_cap)}**\n` +
+            `⏲️ Cooldown: **${finiteNumber(turbo?.min_cooldown_ms) ? `${(turbo.min_cooldown_ms / 60000).toFixed(1)} min` : 'N/D'}**\n` +
+            `🧯 Close if bracket fails: **${boolText(turbo?.close_if_bracket_fails)}**`;
     }
 
     async handleSignal(symbol?: string): Promise<string> {
@@ -206,14 +206,14 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             const freshness = raw?.freshness ?? turbo?.freshness;
             const threshold = this.regimeConfig(normalized)?.entryThreshold;
             return `${formatSymbolSignalMessage(signalInputFromTurbo(normalized, turbo))}\n` +
-                `• Threshold: ${formatPct(threshold)}\n` +
-                `• Production allowed: ${boolText(signal.metadata?.aegis?.prod?.allowed ?? signal.aegis?.prod?.allowed ?? turbo?.production_allowed)}\n` +
-                `• Execute Python: ${boolText(turbo?.execute ?? turbo?.would_execute ?? raw?.would_execute)}\n` +
-                `• Feature timestamp: ${freshness?.feature_timestamp ?? freshness?.timestamp ?? 'N/D'}\n` +
-                `• Reason raw: ${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}`;
+                `🎚️ Threshold: **${formatPct(threshold)}**\n` +
+                `✅ Production allowed: **${boolText(signal.metadata?.aegis?.prod?.allowed ?? signal.aegis?.prod?.allowed ?? turbo?.production_allowed)}**\n` +
+                `🐍 Execute Python: **${boolText(turbo?.execute ?? turbo?.would_execute ?? raw?.would_execute)}**\n` +
+                `🕒 Feature timestamp: **${freshness?.feature_timestamp ?? freshness?.timestamp ?? 'N/D'}**\n` +
+                `🧾 Reason raw: **${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}**`;
         } catch (error) {
             this.deps.logger?.warn('telegram_signal_failed', { symbol: normalized, error: String(error) });
-            return `🛰️ SIGNAL ${normalized}\n• ERROR`;
+            return `🛰️ **Signal ${normalized}**\n❌ **ERROR**`;
         }
     }
 
@@ -233,7 +233,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 rows.push(`${symbol} | ERROR`);
             }
         }
-        return rows.length > 0 ? `🛰️ SEÑALES\n${rows.join('\n')}` : formatAllSignalsMessage({ signals: [] });
+        return rows.length > 0 ? `🛰️ **Señales**\n${rows.join('\n')}` : formatAllSignalsMessage({ signals: [] });
     }
 
     async handleRisk(): Promise<string> {
@@ -251,29 +251,29 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 ? (account.walletBalance - runtime.dailyStartBalance) / runtime.dailyStartBalance
                 : undefined);
 
-        return `🛡️ RIESGO AEGIS\n\n` +
-            `• Trades hoy: ${runtime.tradesToday ?? 0} / ${turbo?.max_trades_per_day ?? 'N/D'}\n` +
-            `• Pérdidas consecutivas: ${runtime.consecutiveLosses ?? 0} / ${turbo?.max_consecutive_losses ?? 'N/D'}\n` +
-            `• Daily PnL: ${formatPct(dailyPnlPct, true)}\n` +
-            `• Daily loss stop: ${formatPct(turbo?.daily_loss_stop_pct)}\n` +
-            `• Cooldown: ${cooldownActive ? 'ACTIVO' : 'OK'}\n` +
-            `• Liquidity stress: ${finiteNumber(liquidity) ? formatPct(liquidity) : 'N/D'}\n` +
-            `• Require brackets: ${boolText(turbo?.require_brackets)}\n` +
-            `• Close if bracket fails: ${boolText(turbo?.close_if_bracket_fails)}\n` +
-            `• Shorts: ${turbo?.allow_short ? 'ON' : 'OFF'}`;
+        return `🛡️ **Riesgo Aegis**\n\n` +
+            `📆 Trades hoy: **${runtime.tradesToday ?? 0} / ${turbo?.max_trades_per_day ?? 'N/D'}**\n` +
+            `🔻 Pérdidas consecutivas: **${runtime.consecutiveLosses ?? 0} / ${turbo?.max_consecutive_losses ?? 'N/D'}**\n` +
+            `📊 Daily PnL: **${formatPct(dailyPnlPct, true)}**\n` +
+            `🚨 Daily loss stop: **${formatPct(turbo?.daily_loss_stop_pct)}**\n` +
+            `⏲️ Cooldown: **${cooldownActive ? 'ACTIVO' : 'OK'}**\n` +
+            `🌊 Liquidity stress: **${finiteNumber(liquidity) ? formatPct(liquidity) : 'N/D'}**\n` +
+            `🧷 Require brackets: **${boolText(turbo?.require_brackets)}**\n` +
+            `🧯 Close if bracket fails: **${boolText(turbo?.close_if_bracket_fails)}**\n` +
+            `📉 Shorts: **${turbo?.allow_short ? 'ON' : 'OFF'}**`;
     }
 
     async handleBrackets(): Promise<string> {
         const positions = await this.readPositionsWithOrders();
-        if (positions.length === 0) return `🛡️ BRACKETS\n• Sin posiciones activas`;
+        if (positions.length === 0) return `🛡️ **Brackets**\n🟢 **Sin posiciones activas**`;
 
         const blocks = positions.map(({ position, orders }) => {
             const sl = orders.find((order) => order.type.includes('STOP'));
             const tp = orders.find((order) => order.type.includes('TAKE_PROFIT'));
-            const alert = !sl || !tp ? '\n• ALERTA: bracket faltante' : '';
-            return `🛡️ ${position.symbol} | ${position.side}\n` +
-                `• SL activo: ${sl ? 'Sí' : 'No'} ${sl ? formatPrice(sl.stopPrice) : ''}\n` +
-                `• TP activo: ${tp ? 'Sí' : 'No'} ${tp ? formatPrice(tp.stopPrice) : ''}${alert}`;
+            const alert = !sl || !tp ? '\n🚨 **ALERTA:** bracket faltante' : '';
+            return `🛡️ **${position.symbol}** | **${position.side}**\n` +
+                `🛑 SL activo: **${sl ? 'Sí' : 'No'}** ${sl ? formatPrice(sl.stopPrice) : ''}\n` +
+                `🎯 TP activo: **${tp ? 'Sí' : 'No'}** ${tp ? formatPrice(tp.stopPrice) : ''}${alert}`;
         });
         return blocks.join('\n\n');
     }
@@ -288,15 +288,15 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             const summary: any = report.summary ?? {};
             if (!summary.total_trades && !summary.closed_trades) return 'No hay trades registrados hoy.';
             const symbols = Object.keys(report.by_symbol ?? {});
-            return `📊 REPORTE AEGIS HOY\n\n` +
-                `• Trades: ${summary.total_trades ?? 0}\n` +
-                `• Cerrados: ${summary.closed_trades ?? 0}\n` +
-                `• Win rate: ${finiteNumber(summary.win_rate) ? `${summary.win_rate.toFixed(1)}%` : 'N/D'}\n` +
-                `• Net PnL: ${finiteNumber(summary.net_pnl) ? `$${summary.net_pnl.toFixed(2)} USDT` : 'N/D'}\n` +
-                `• Profit factor: ${finiteNumber(summary.profit_factor) ? summary.profit_factor.toFixed(2) : 'N/D'}\n` +
-                `• Best ROE: ${finiteNumber(summary.best_trade_roe) ? `${summary.best_trade_roe.toFixed(1)}%` : 'N/D'}\n` +
-                `• Worst ROE: ${finiteNumber(summary.worst_trade_roe) ? `${summary.worst_trade_roe.toFixed(1)}%` : 'N/D'}\n` +
-                `• Symbols: ${symbols.join(', ') || 'N/D'}`;
+            return `📊 **Reporte Aegis hoy**\n\n` +
+                `📈 Trades: **${summary.total_trades ?? 0}**\n` +
+                `✅ Cerrados: **${summary.closed_trades ?? 0}**\n` +
+                `🏆 Win rate: **${finiteNumber(summary.win_rate) ? `${summary.win_rate.toFixed(1)}%` : 'N/D'}**\n` +
+                `💵 Net PnL: **${finiteNumber(summary.net_pnl) ? `$${summary.net_pnl.toFixed(2)} USDT` : 'N/D'}**\n` +
+                `⚖️ Profit factor: **${finiteNumber(summary.profit_factor) ? summary.profit_factor.toFixed(2) : 'N/D'}**\n` +
+                `🚀 Best ROE: **${finiteNumber(summary.best_trade_roe) ? `${summary.best_trade_roe.toFixed(1)}%` : 'N/D'}**\n` +
+                `🧯 Worst ROE: **${finiteNumber(summary.worst_trade_roe) ? `${summary.worst_trade_roe.toFixed(1)}%` : 'N/D'}**\n` +
+                `🪙 Symbols: **${symbols.join(', ') || 'N/D'}**`;
         } catch (error) {
             this.deps.logger?.warn('telegram_report_today_failed', { error: String(error) });
             return 'No hay trades registrados hoy.';

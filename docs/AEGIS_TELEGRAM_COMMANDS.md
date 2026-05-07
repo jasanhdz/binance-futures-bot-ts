@@ -18,7 +18,8 @@ TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321
 Reglas:
 
 - Si `TELEGRAM_COMMANDS_ENABLED` no es `1`, no se inicia el listener inbound.
-- Si `TELEGRAM_ALLOWED_CHAT_IDS` está vacío, no se aceptan comandos inbound.
+- Si `TELEGRAM_ALLOWED_CHAT_IDS` está vacío, se autoriza el `TELEGRAM_CHAT_ID` de alertas como fallback.
+- Si ambos están vacíos, no se aceptan comandos inbound.
 - Si un chat no está autorizado, el bot responde `Unauthorized.` sin datos sensibles.
 - Hay rate limit por chat: máximo 1 comando cada 2 segundos.
 - El listener usa el mismo `TELEGRAM_BOT_TOKEN` del bot de alertas.
