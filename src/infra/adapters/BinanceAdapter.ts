@@ -467,6 +467,35 @@ export class BinanceExchange implements Exchange {
     }
   }
 
+  async getUSDTAccountSnapshot() {
+    const info = await this.getAccountInfo();
+    const usdtAsset = Array.isArray(info.assets)
+      ? info.assets.find((asset: any) => asset.asset === 'USDT')
+      : undefined;
+    const walletBalance = this.finiteNumber(info.totalWalletBalance)
+      ?? this.finiteNumber(usdtAsset?.walletBalance);
+    const availableBalance = this.finiteNumber(info.availableBalance)
+      ?? this.finiteNumber(usdtAsset?.availableBalance);
+    const unrealizedPnlTotal = this.finiteNumber(info.totalUnrealizedProfit)
+      ?? this.finiteNumber(usdtAsset?.unrealizedProfit);
+    const equityTotal = walletBalance !== undefined && unrealizedPnlTotal !== undefined
+      ? walletBalance + unrealizedPnlTotal
+      : this.finiteNumber(info.totalMarginBalance)
+      ?? this.finiteNumber(usdtAsset?.marginBalance);
+
+    return {
+      walletBalance,
+      availableBalance,
+      unrealizedPnlTotal,
+      equityTotal,
+    };
+  }
+
+  private finiteNumber(value: unknown): number | undefined {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
   async setLeverage(symbol: string, leverage: number) {
     try {
       await this.enqueue(() => this.cli.futuresLeverage({ symbol, leverage }));

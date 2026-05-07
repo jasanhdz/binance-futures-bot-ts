@@ -172,7 +172,10 @@ describe('TradingService Aegis micro-live gate dry-run', () => {
 
     it('denies without execution when AEGIS_LIVE_ENABLED=true but YAML live is absent', async () => {
         setAegisTurboConfig(true);
-        const { exchange, logger, service, state } = makeHarness(validTurboSignal());
+        const { exchange, logger, service, state } = makeHarness(validTurboSignal(), {
+            enabled: true,
+            live_enabled: false
+        });
 
         await service.tick('ETHUSDT');
 

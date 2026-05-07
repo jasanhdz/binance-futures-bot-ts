@@ -74,9 +74,45 @@ Startup message:
 
 Entry message:
 
-- Uses the Phantom/Kamikaze-style compact format adapted as `AEGIS TURBO ENTRY`.
-- Shows symbol, side, entry price, ETH size, margin, locked leverage, SL/TP price plus ROE percentage, trailing activation/callback, AI probabilities, Turbo score, votes, reason, wallet, and threshold.
-- Entry wallet is the live `exchange.getUSDTBalance()` value used by the sizing flow.
+- Fecha: 2026-05-07.
+- Uses a compact professional `AEGIS TURBO ENTRY` format without Markdown emphasis, backticks, or underscores in the rendered dynamic fields.
+- Does not show legacy ML probabilities (`Long`, `Short`, `Idle`, `Close`) because Aegis Turbo entries are driven by Turbo gate metrics, not the legacy probability section.
+- Shows symbol, side, entry price, leverage, base-asset size, margin, account balances, Turbo score/threshold, votes, formatted reason, SL/TP, trailing status, callback when enabled, and `Brackets confirmados`.
+- `Score: X% / Y%` means current `gate.turboScore` versus the effective entry threshold. The threshold is read from `REGIMES.AEGIS_TURBO.entry_threshold` through `configManager.getRegimeConfig('AEGIS_TURBO', symbol)` and the same `getAegisTurboGateConfig(symbol).minScore` path used by the real gate.
+- Reason formatting is centralized in `src/app/services/formatAegisTurboEntryMessage.ts`. Known compact reasons such as `rawrecentlongagreement2of3` render as `Acuerdo LONG reciente 2/3`; unknown reasons are normalized into readable text.
+- Entry wallet still comes from the live `exchange.getUSDTBalance()` value used by sizing. If the exchange adapter exposes `getUSDTAccountSnapshot()`, the message also shows:
+  - `Wallet`: total USDT wallet balance when available, otherwise sizing wallet fallback.
+  - `Equity total`: wallet plus total unrealized PnL when Binance exposes both values; otherwise `N/D`.
+  - `Disponible`: available USDT balance when exposed by Binance; otherwise `N/D`.
+- Binance snapshot source is `futuresAccountInfo()` via `BinanceExchange.getUSDTAccountSnapshot()`. The method is optional on the `Exchange` port, so mocks and non-Binance adapters can omit it without changing entry execution.
+
+Example:
+
+```text
+🔥 AEGIS TURBO ENTRY
+
+ETHUSDT | 📈 LONG
+Entrada: $3000.00 | Lev: 20x
+Tamaño: 0.010 ETH | Margen: $2.00 USDT
+
+💰 CUENTA
+Wallet: $575.62
+Equity total: $579.12
+Disponible: $421.42
+
+🧠 TURBO SIGNAL
+Score: 65.1% / 60.0%
+Votes: L=2 | S=0 | N=1
+Motivo: Acuerdo LONG reciente 2/3
+
+🛡️ RIESGO / BRACKETS
+SL: $2977.50 (-40.0% ROE)
+TP: $3037.50 (+50.0% ROE)
+Trailing: ON desde +15.0% ROE
+Callback: +8.0% ROE
+
+✅ Brackets confirmados
+```
 
 Exit message:
 
@@ -116,6 +152,45 @@ Documentation rule:
 
 - Any change to Aegis sizing, caps, live gates, entry margin math, env variables, YAML contracts, or recovery procedures must be recorded here and in `aegis_alpha/docs/AEGIS_ALPHA_WHITEPAPER.md`.
 
+## Aegis Turbo History And Analysis
+
+Fecha: 2026-05-07.
+
+`TradingService` now writes non-blocking Aegis Turbo history records through `src/infra/logging/AegisTurboHistoryLogger.ts`. Logging failures are downgraded to warnings and must not block trading, bracket placement, emergency closes, or exits.
+
+Default log directory:
+
+```text
+logs/aegis/
+```
+
+Daily JSONL files:
+
+- `turbo_signals_YYYY-MM-DD.jsonl`: raw/gated/final action, Turbo score, votes, freshness, gate decision, leverage, position fraction, risk config, execution flag, and trade id.
+- `turbo_trades_YYYY-MM-DD.jsonl`: open/close lifecycle records with side, entry/exit, quantity, leverage, margin/notional estimates, Turbo score, votes, ROE, PnL, MFE/MAE, duration, bracket confirmation, and status.
+- `turbo_trade_events_YYYY-MM-DD.jsonl`: gate allowed/denied, order submitted, position confirmed, brackets confirmed/recreated/missing, trailing and break-even events, emergency close attempts/results, and trade closed events.
+- `account_snapshots_YYYY-MM-DD.jsonl`: wallet, available balance, unrealized PnL, daily PnL, trade counters, open-position count, margin/notional exposure, and per-symbol snapshot metadata.
+
+Generated identifiers:
+
+- `AEGIS-SIGNAL-{SYMBOL}-{TIMESTAMP}` for signal observations.
+- `AEGIS-TURBO-{SYMBOL}-{TIMESTAMP}` for trade lifecycle records.
+- `AEGIS-SESSION-{YYYYMMDD}` for portfolio session grouping.
+
+Analysis command:
+
+```bash
+npm run analyze:aegis-turbo -- --date 2026-05-07 --symbol ETHUSDT
+```
+
+The analyzer reads the JSONL history and writes reports under `reports/` by default. Reports include summary PnL, win rate, profit factor, score buckets, exit reasons, symbol/side breakdowns, portfolio snapshots, warnings for corrupted JSONL lines, and both JSON and Markdown output.
+
+Operational notes:
+
+- The analyzer can filter by `--symbol`, analyze all symbols, or use date ranges depending on CLI options.
+- Account equity in reports depends on available account snapshots. Missing equity fields are left absent/null rather than invented.
+- The `analyze:aegis-turbo` npm script is the supported entry point for local review.
+
 Recommended first live validation:
 
 - `max_trades_per_day: 1`
@@ -136,6 +211,12 @@ pm2 restart 01-Trading-Bot --update-env
 
 ```bash
 npm run build
+npm test
 npx vitest run src/domain/services/AegisMicroLiveGate.test.ts
 npx vitest run src/app/services/AegisMLService.test.ts src/app/services/TradingService.aegis.test.ts src/app/services/TradingService.aegis-gate.test.ts src/app/services/TradingService.aegis-live.test.ts
 ```
+
+Latest local validation for the 2026-05-07 Telegram/account/history update:
+
+- `npm run build`: passed.
+- `npm test`: passed, 72 tests across 11 files.

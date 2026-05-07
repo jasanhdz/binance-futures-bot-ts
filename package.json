@@ -20,7 +20,8 @@
     "export:trades": "ts-node src/tools/trade_book_to_csv.ts",
     "audit:orders": "ts-node src/tools/order_audit.ts",
     "report:accuracy": "ts-node src/tools/trade_accuracy_report.ts",
-    "logs:table": "ts-node src/tools/log_table.ts"
+    "logs:table": "ts-node src/tools/log_table.ts",
+    "analyze:aegis-turbo": "ts-node src/tools/analyzeAegisTurboHistory.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",

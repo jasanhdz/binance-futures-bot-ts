@@ -48,6 +48,13 @@ export interface BasisSnapshot {
   basisPct: number;
 }
 
+export interface USDTAccountSnapshot {
+  walletBalance?: number;
+  availableBalance?: number;
+  unrealizedPnlTotal?: number;
+  equityTotal?: number;
+}
+
 export interface Exchange {
   getServerTime(): Promise<number>;
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
@@ -60,6 +67,7 @@ export interface Exchange {
   readLiquidationPrice(symbol: string, side: Side): Promise<number | null>;
 
   getUSDTBalance(): Promise<number>;
+  getUSDTAccountSnapshot?(): Promise<USDTAccountSnapshot>;
   setLeverage(symbol: string, leverage: number): Promise<void>;
   ensureMarginType(symbol: string, marginType?: 'ISOLATED' | 'CROSSED'): Promise<void>;
   getSymbolFilters(symbol: string, leverage: number): Promise<SymbolFilters>;

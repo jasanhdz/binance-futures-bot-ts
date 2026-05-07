@@ -24,7 +24,7 @@ IMMUNE_SYSTEM: { alpha_slow_rise: 0.15, alpha_fast_fall: 0.70, panic_exit_thresh
 REGIMES:
   AEGIS_TURBO:
     leverage: 20
-    entry_threshold: 0.50
+    entry_threshold: 0.60
     hard_stop_roe: -0.40
     tp_roe: 0.50
     be_roe: 0.08

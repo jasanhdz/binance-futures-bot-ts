@@ -275,11 +275,13 @@ describe('TradingService Aegis live execution', () => {
             leverage: 20,
             positionFraction: 0.18
 	        }));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 **AEGIS TURBO ENTRY**'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 AEGIS TURBO ENTRY'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ETHUSDT | 📈 LONG'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🛑 SL: **$2977.50** (-15.00% ROE)'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🎯 TP: **$3037.50** (+25.00% ROE)'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('⚡ Score: **72.0%**'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('SL: $2977.50 (-15.0% ROE)'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('TP: $3037.50 (+25.0% ROE)'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Score: 72.0% / 60.0%'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Equity total: N/D'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('✅ Brackets confirmados'));
 	    });
 
 	    it('blocks before marketOpen when daily loss stop is reached', async () => {
