@@ -23,6 +23,7 @@ import {
     getPortfolioSessionId
 } from '../../infra/logging/AegisTurboHistoryLogger';
 import { formatAegisTurboEntryMessage } from './formatAegisTurboEntryMessage';
+import { AegisPositionMessageInput, formatAegisStartupMessage } from '../messages/AegisMessageFormatter';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -102,6 +103,7 @@ export class TradingService {
         } catch (error) {
             logger.warn('startup_wallet_balance_unavailable', { error });
         }
+        const startupAccount = await this.readEntryAccountSnapshot(startupWalletBalance ?? undefined);
 
         logger.info(isTurbo ? '⚡ AEGIS TURBO MICRO-LIVE MODE' : '🛡️ AEGIS SHADOW MODE', {
             initial: INITIAL_BALANCE,
@@ -114,18 +116,10 @@ export class TradingService {
         const firstSymbol = this.config.symbols[0];
         const gateConfig = this.getAegisTurboGateConfig(firstSymbol);
         const regimeConfig = this.getAegisTurboRegimeConfig(firstSymbol);
-        const entryThreshold = (gateConfig as any).entryThreshold ?? regimeConfig?.entryThreshold ?? 0.55;
+        const entryThreshold = gateConfig.minScore;
         const maxHoldMs = (gateConfig as any).maxHoldMs ?? regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
         const trailingActivation = (gateConfig as any).trailingActivationRoe ?? regimeConfig?.trailingActivationRoe ?? 0.15;
         const trailingCallback = (gateConfig as any).trailingCallbackRoe ?? regimeConfig?.trailingCallbackRoe ?? 0.08;
-        const circuitBreakerState = this.deps.configManager.system.enable_sentinel ? 'ACTIVE' : 'DISABLED';
-        let startupMsg = `🔥 ${isTurbo ? 'AEGIS TURBO MICRO-LIVE LAUNCHED' : 'AEGIS SHADOW MODE'} 🎯\n`;
-        startupMsg += `💰 Wallet Actual: ${startupWalletBalance !== null ? `$${startupWalletBalance.toFixed(2)} USDT` : 'N/D'}\n`;
-        startupMsg += `⚡ Leverage: ${gateConfig.leverageCap}x (LOCKED)\n`;
-        startupMsg += `🧠 Threshold Real: ${Number(entryThreshold).toFixed(2)}\n`;
-        startupMsg += `⏱️ Time Limit: ${(Number(maxHoldMs) / 3600000).toFixed(1)} horas\n`;
-        startupMsg += `🛡️ Circuit Breaker: ${circuitBreakerState}\n`;
-        startupMsg += `🔁 Trailing: ${trailingActivation > 0 ? 'ON' : 'OFF'} (${trailingActivation.toFixed(2)} / ${trailingCallback.toFixed(2)})\n`;
 
         let signal: AegisTradingSignal | null = null;
         for (let i = 0; i < 5; i++) {
@@ -138,28 +132,11 @@ export class TradingService {
             }
         }
 
-        if (signal) {
-            startupMsg += `\n🛰️ ESCANEO INICIAL (Radar):\n`;
-            const turbo = signal.aegis?.turbo ?? signal.metadata?.aegis?.turbo;
-            if (isTurbo && turbo?.raw) {
-                startupMsg += `⚡ Turbo Raw: ${turbo.raw.action ?? 'HOLD'} / ${(turbo.raw.turbo_score ?? 0).toFixed(3)}\n`;
-                startupMsg += `⚡ Turbo Gated: ${turbo.gated?.action ?? 'HOLD'}\n`;
-                startupMsg += `⚡ Votes: L=${turbo.raw.votes?.long ?? 0} S=${turbo.raw.votes?.short ?? 0} N=${turbo.raw.votes?.neutral ?? 0}\n`;
-                startupMsg += `⚡ Reason: ${turbo.gated?.reason ?? turbo.raw.reason ?? 'unknown'}\n`;
-            } else {
-                const trend =
-                    (signal.longProb || 0) > (signal.shortProb || 0)
-                        ? '📈 ALCISTA'
-                        : (signal.shortProb || 0) > (signal.longProb || 0)
-                            ? '📉 BAJISTA'
-                            : '🧘 NEUTRA';
-                startupMsg += `📈 Long: ${((signal.longProb || 0) * 100).toFixed(1)}%\n`;
-                startupMsg += `📉 Short: ${((signal.shortProb || 0) * 100).toFixed(1)}%\n`;
-                startupMsg += `🧘 Idle: ${((signal.neutralProb || 0) * 100).toFixed(1)}%\n`;
-                startupMsg += `🚪 Close: ${((signal.closeProb || 0) * 100).toFixed(1)}%\n`;
-                startupMsg += `🧭 Tendencia: ${trend}\n`;
-            }
-        }
+        const turbo = signal?.aegis?.turbo ?? signal?.metadata?.aegis?.turbo;
+        const turboRaw = turbo?.raw as any;
+        const turboGated = turbo?.gated;
+        const freshness = turboRaw?.freshness ?? (turbo as any)?.freshness;
+        const startupPositions: AegisPositionMessageInput[] = [];
 
         const botState = state.get();
         if (botState.mode !== 'IDLE') {
@@ -186,19 +163,23 @@ export class TradingService {
             const stopRoe = botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15;
             const takeProfitRoe = botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25;
 
-            startupMsg += `📊 Balance Aprox.: ${approximateBalance !== null ? `~$${approximateBalance.toFixed(2)} USDT` : 'N/D'}\n`;
-            startupMsg += `\n💼 POSICIÓN ACTIVA: ${side}\n`;
-            startupMsg += `📦 Tamaño: ${qtyAbs.toFixed(3)} ETH\n`;
-            startupMsg += `💸 Margen: $${marginUsed.toFixed(2)} USDT\n`;
-            startupMsg += `💰 ROI: ${(roi * 100).toFixed(2)}% | PnL: ${this.formatSignedUsd(pnl)}\n`;
-            startupMsg += `⏱️ Duración: ${(durationMs / 3600000).toFixed(1)} horas\n`;
-            startupMsg += `🎯 BRACKETS (Binance):\n`;
-            startupMsg += `• TP 🎯: ${this.formatBracketLine(tpOrder?.stopPrice, takeProfitRoe)}\n`;
-            startupMsg += `• SL 🛑: ${this.formatBracketLine(slOrder?.stopPrice, stopRoe)}\n`;
+            startupPositions.push({
+                symbol: firstSymbol,
+                side,
+                size: qtyAbs,
+                margin: marginUsed,
+                roi,
+                pnl,
+                durationHours: durationMs / 3600000,
+                tpPrice: tpOrder?.stopPrice,
+                slPrice: slOrder?.stopPrice,
+                tpRoe: takeProfitRoe,
+                slRoe: stopRoe
+            });
             await this.logAegisAccountSnapshot({
                 symbol: firstSymbol,
-                walletBalance: startupWalletBalance ?? undefined,
-                availableBalance: startupWalletBalance ?? undefined,
+                walletBalance: startupAccount.walletBalance ?? startupWalletBalance ?? undefined,
+                availableBalance: startupAccount.availableBalance,
                 unrealizedPnl: pnl,
                 positionOpen: true,
                 side,
@@ -210,18 +191,62 @@ export class TradingService {
                 leverage,
                 metadata: { event: 'startup' }
             });
+            if (approximateBalance !== null && startupAccount.equityTotal === undefined) {
+                logger.debug('startup_approximate_balance', { symbol: firstSymbol, approximateBalance });
+            }
         } else {
-            startupMsg += `📊 Balance Aprox.: ${startupWalletBalance !== null ? `~$${startupWalletBalance.toFixed(2)} USDT` : 'N/D'}\n`;
-            startupMsg += `\n💼 POSICIÓN ACTIVA: FLAT\n`;
             await this.logAegisAccountSnapshot({
                 symbol: firstSymbol,
-                walletBalance: startupWalletBalance ?? undefined,
-                availableBalance: startupWalletBalance ?? undefined,
+                walletBalance: startupAccount.walletBalance ?? startupWalletBalance ?? undefined,
+                availableBalance: startupAccount.availableBalance,
                 positionOpen: false,
                 metadata: { event: 'startup' }
             });
         }
 
+        const startupMsg = formatAegisStartupMessage({
+            mode: {
+                tradingMode,
+                liveEnabled: CONFIG.AEGIS_LIVE_ENABLED === true && this.getAegisTurboYamlConfig()?.live_enabled === true,
+                strategy: 'AEGIS_TURBO',
+                shortsEnabled: gateConfig.allowShort === true,
+                activeSymbols: this.config.symbols
+            },
+            account: {
+                walletBalance: startupAccount.walletBalance ?? startupWalletBalance ?? undefined,
+                equityTotal: startupAccount.equityTotal,
+                availableBalance: startupAccount.availableBalance
+            },
+            config: {
+                leverage: gateConfig.leverageCap,
+                entryThreshold: Number(entryThreshold),
+                maxHoldHours: Number(maxHoldMs) / 3600000,
+                trailingEnabled: trailingActivation > 0,
+                trailingActivationRoe: trailingActivation,
+                trailingCallbackRoe: trailingCallback,
+                stopRoe: gateConfig.stopRoe,
+                takeProfitRoe: gateConfig.takeProfitRoe,
+                maxTradesPerDay: gateConfig.maxTradesPerDay,
+                dailyLossStopPct: gateConfig.dailyLossStopPct,
+                maxConsecutiveLosses: gateConfig.maxConsecutiveLosses,
+                requireBrackets: gateConfig.requireBrackets
+            },
+            initialRadar: {
+                symbol: firstSymbol,
+                rawAction: turboRaw?.action ?? 'HOLD',
+                rawScore: turboRaw?.turbo_score,
+                gatedAction: turboGated?.action ?? 'HOLD',
+                votes: turboRaw?.votes,
+                reason: turboGated?.reason ?? turboRaw?.reason,
+                freshnessIsFresh: typeof freshness?.is_fresh === 'boolean'
+                    ? freshness.is_fresh
+                    : typeof freshness?.fresh === 'boolean'
+                        ? freshness.fresh
+                        : undefined,
+                featureTimestamp: freshness?.feature_timestamp ?? freshness?.timestamp
+            },
+            activePositions: startupPositions
+        });
         await notifier.sendMessage(startupMsg);
         for (const symbol of this.config.symbols) {
             this.deps.exchange.subscribeToCandles(symbol);
@@ -1404,10 +1429,10 @@ export class TradingService {
         });
     }
 
-    private async readEntryAccountSnapshot(walletFallback: number): Promise<USDTAccountSnapshot> {
+    private async readEntryAccountSnapshot(walletFallback?: number): Promise<USDTAccountSnapshot> {
         const reader = this.deps.exchange.getUSDTAccountSnapshot;
         if (typeof reader !== 'function') {
-            return { walletBalance: walletFallback };
+            return walletFallback !== undefined ? { walletBalance: walletFallback } : {};
         }
 
         try {
@@ -1420,7 +1445,7 @@ export class TradingService {
             };
         } catch (error) {
             this.deps.logger.warn('aegis_entry_account_snapshot_unavailable', { error: String(error) });
-            return { walletBalance: walletFallback };
+            return walletFallback !== undefined ? { walletBalance: walletFallback } : {};
         }
     }
 
