@@ -45,6 +45,17 @@ export interface TradingServiceConfig {
     tradingMode?: string;
 }
 
+export interface AegisRuntimeSnapshot {
+    tradingMode: string;
+    isRunning: boolean;
+    tradesToday: number;
+    consecutiveLosses: number;
+    dailyStartBalance: number | null;
+    dailyPnlPct?: number;
+    lastTradeDayReset: number;
+    liquidityStressBySymbol: Record<string, number>;
+}
+
 export class TradingService {
     private isRunning = false;
     private tradesToday = 0;
@@ -91,6 +102,22 @@ export class TradingService {
             this.getAegisTurboYamlConfig(),
             this.getAegisTurboRegimeConfig(symbol)
         );
+    }
+
+    getAegisRuntimeSnapshot(): AegisRuntimeSnapshot {
+        const liquidityStressBySymbol: Record<string, number> = {};
+        for (const symbol of Object.keys(this.detector)) {
+            liquidityStressBySymbol[symbol] = this.detector[symbol]?.getLiquidityStress() ?? 0;
+        }
+        return {
+            tradingMode: this.getTradingMode(),
+            isRunning: this.isRunning,
+            tradesToday: this.tradesToday,
+            consecutiveLosses: this.consecutiveLosses,
+            dailyStartBalance: this.dailyStartBalance,
+            lastTradeDayReset: this.lastTradeDayReset,
+            liquidityStressBySymbol
+        };
     }
 
     async start(startLoop = true): Promise<void> {

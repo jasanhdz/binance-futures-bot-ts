@@ -23,6 +23,13 @@ function numberEnv(name: string): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
+function csvEnv(name: string): string[] {
+  return (process.env[name] || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // EXPORTED CONFIG
 // ═══════════════════════════════════════════════════════════════════════════
@@ -73,6 +80,10 @@ export const CONFIG = {
   AEGIS_TURBO_MAX_TRADES_PER_DAY: numberEnv('AEGIS_TURBO_MAX_TRADES_PER_DAY'),
   AEGIS_TURBO_DAILY_LOSS_STOP_PCT: numberEnv('AEGIS_TURBO_DAILY_LOSS_STOP_PCT'),
   AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES: numberEnv('AEGIS_TURBO_MAX_CONSECUTIVE_LOSSES'),
+
+  // --- Telegram inbound commands (ENV, disabled by default) ---
+  TELEGRAM_COMMANDS_ENABLED: process.env.TELEGRAM_COMMANDS_ENABLED === '1',
+  TELEGRAM_ALLOWED_CHAT_IDS: csvEnv('TELEGRAM_ALLOWED_CHAT_IDS'),
 
   // --- Re-entry Logic (YAML) ---
   REENTER_ON_TP: trading.reenter_on_tp,

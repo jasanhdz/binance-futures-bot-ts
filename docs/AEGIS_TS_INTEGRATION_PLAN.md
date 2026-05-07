@@ -185,6 +185,14 @@ npm run analyze:aegis-turbo -- --date 2026-05-07 --symbol ETHUSDT
 
 The analyzer reads the JSONL history and writes reports under `reports/` by default. Reports include summary PnL, win rate, profit factor, score buckets, exit reasons, symbol/side breakdowns, portfolio snapshots, warnings for corrupted JSONL lines, and both JSON and Markdown output.
 
+## Telegram Commands
+
+Fecha: 2026-05-07.
+
+Inbound Telegram commands are implemented as a read-only long polling listener. They are disabled by default and require both `TELEGRAM_COMMANDS_ENABLED=1` and non-empty `TELEGRAM_ALLOWED_CHAT_IDS`.
+
+Full command documentation lives in `docs/AEGIS_TELEGRAM_COMMANDS.md`.
+
 Operational notes:
 
 - The analyzer can filter by `--symbol`, analyze all symbols, or use date ranges depending on CLI options.

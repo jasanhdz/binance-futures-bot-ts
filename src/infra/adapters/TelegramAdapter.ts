@@ -1,4 +1,8 @@
 export class TelegramService {
+    static getAlertBotToken(): string {
+        return this.ALERT_BOT_TOKEN;
+    }
+
     private static get ALERT_BOT_TOKEN(): string {
         return process.env.TELEGRAM_BOT_TOKEN || "";
     }
@@ -95,6 +99,26 @@ export class TelegramService {
 
     static async sendAlert(message: string) {
         await this.send(this.ALERT_BOT_TOKEN, message);
+    }
+
+    static async sendPlainTextToChat(chatId: string, message: string, token = this.ALERT_BOT_TOKEN) {
+        if (!token || !chatId) {
+            console.warn("⚠️ Telegram plain text skipped: Missing TOKEN or chatId");
+            return;
+        }
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, text: message }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+        } catch (error) {
+            console.error("❌ Error en Telegram Plain Text Gateway:", error);
+        }
     }
 
     static async sendSystemLog(message: string) {

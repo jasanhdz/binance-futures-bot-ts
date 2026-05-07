@@ -19,6 +19,9 @@ import { TradingService, TradingServiceConfig } from './app/services/TradingServ
 import { MLService } from './app/ports/MLService';
 import { Notifier } from './app/ports/Notifier';
 import { CONFIG } from './infra/config/environment';
+import { TelegramCommandHandlers } from './app/telegram/TelegramCommandHandlers';
+import { TelegramCommandRouter } from './app/telegram/TelegramCommandRouter';
+import { TelegramBotCommandListener } from './infra/telegram/TelegramBotCommandListener';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ADAPTER WRAPPERS (to match port interfaces)
@@ -89,21 +92,51 @@ async function main() {
         tradingConfig
     );
 
+    const commandListener = CONFIG.TELEGRAM_COMMANDS_ENABLED && CONFIG.TELEGRAM_ALLOWED_CHAT_IDS.length > 0
+        ? new TelegramBotCommandListener({
+            token: TelegramService.getAlertBotToken(),
+            logger,
+            router: new TelegramCommandRouter(
+                new TelegramCommandHandlers({
+                    exchange,
+                    mlService,
+                    state: stateStore,
+                    configManager,
+                    logger,
+                    tradingMode: tradingConfig.tradingMode || CONFIG.TRADING_MODE,
+                    liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
+                    getRuntimeSnapshot: () => tradingService.getAegisRuntimeSnapshot(),
+                    getActiveSymbols: () => tradingConfig.symbols
+                }),
+                {
+                    allowedChatIds: CONFIG.TELEGRAM_ALLOWED_CHAT_IDS
+                }
+            )
+        })
+        : null;
+
+    if (CONFIG.TELEGRAM_COMMANDS_ENABLED && CONFIG.TELEGRAM_ALLOWED_CHAT_IDS.length === 0) {
+        logger.warn('telegram_commands_disabled_no_allowed_chats', {});
+    }
+
     // Handle graceful shutdown
     process.on('SIGINT', () => {
         console.log('\n⚠️ Received SIGINT, stopping bot...');
+        commandListener?.stop();
         tradingService.stop();
         process.exit(0);
     });
 
     process.on('SIGTERM', () => {
         console.log('\n⚠️ Received SIGTERM, stopping bot...');
+        commandListener?.stop();
         tradingService.stop();
         process.exit(0);
     });
 
     // Start trading
     try {
+        commandListener?.start();
         await tradingService.start();
     } catch (error) {
         console.error('❌ Fatal error:', error);

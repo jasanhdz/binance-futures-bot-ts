@@ -1,0 +1,455 @@
+import { Side } from '../../domain/types';
+import { AegisPredictionResponse, AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import {
+    AegisAccountMessageInput,
+    AegisPositionMessageInput,
+    AegisSymbolSignalMessageInput,
+    formatAccountMessage,
+    formatAllSignalsMessage,
+    formatConfigMessage,
+    formatPositionsMessage,
+    formatSymbolSignalMessage
+} from '../messages/AegisMessageFormatter';
+import { formatAegisReason } from '../messages/AegisReasonFormatter';
+import { analyzeAegisTurboHistory } from '../../tools/analyzeAegisTurboHistory';
+import { CONFIG } from '../../infra/config/environment';
+import { TelegramCommandHandlerDeps, TelegramCommandHandlersPort } from './TelegramCommandTypes';
+
+type CloseOrder = {
+    type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
+    stopPrice: number;
+};
+
+function finiteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
+}
+
+function formatPct(value?: number, signed = false): string {
+    if (!finiteNumber(value)) return 'N/D';
+    const pct = value * 100;
+    return `${signed && pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+}
+
+function formatUsd(value?: number): string {
+    if (!finiteNumber(value)) return 'N/D';
+    return value >= 0 ? `$${value.toFixed(2)} USDT` : `-$${Math.abs(value).toFixed(2)} USDT`;
+}
+
+function formatPrice(value?: number): string {
+    return finiteNumber(value) ? `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/D';
+}
+
+function formatNumber(value?: number, digits = 3): string {
+    return finiteNumber(value) ? value.toFixed(digits) : 'N/D';
+}
+
+function boolText(value?: boolean): string {
+    return value ? 'Sí' : 'No';
+}
+
+function todayIsoDate(): string {
+    return new Date().toISOString().slice(0, 10);
+}
+
+function baseAssetFromSymbol(symbol: string): string {
+    const upper = symbol.toUpperCase();
+    const quote = ['USDT', 'USDC', 'BUSD', 'FDUSD', 'USD'].find((asset) => upper.endsWith(asset));
+    return quote ? upper.slice(0, -quote.length) : upper;
+}
+
+function calculateRoe(side: Side, entryPrice: number, markPrice: number, leverage: number): number | undefined {
+    if (entryPrice <= 0 || leverage <= 0 || !Number.isFinite(markPrice)) return undefined;
+    return side === 'SHORT'
+        ? (entryPrice - markPrice) / entryPrice * leverage
+        : (markPrice - entryPrice) / entryPrice * leverage;
+}
+
+function pnlFromRoe(margin: number | undefined, roe: number | undefined): number | undefined {
+    if (!finiteNumber(margin) || !finiteNumber(roe)) return undefined;
+    return margin * roe;
+}
+
+function turboFromSignal(signal: AegisTradingSignal): any {
+    return signal.metadata?.aegis?.turbo ?? signal.aegis?.turbo;
+}
+
+function signalInputFromTurbo(symbol: string, turbo: any): AegisSymbolSignalMessageInput {
+    const raw = turbo?.raw ?? turbo;
+    const gated = turbo?.gated;
+    const freshness = raw?.freshness ?? turbo?.freshness;
+    return {
+        symbol,
+        rawAction: raw?.action ?? turbo?.action ?? 'HOLD',
+        rawScore: raw?.turbo_score ?? turbo?.turbo_score,
+        gatedAction: gated?.action ?? turbo?.action ?? 'HOLD',
+        votes: raw?.votes ?? turbo?.votes,
+        reason: gated?.reason ?? raw?.reason ?? turbo?.reason,
+        freshnessIsFresh: typeof freshness?.is_fresh === 'boolean'
+            ? freshness.is_fresh
+            : typeof freshness?.fresh === 'boolean'
+                ? freshness.fresh
+                : undefined
+    };
+}
+
+export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
+    constructor(private readonly deps: TelegramCommandHandlerDeps) {}
+
+    handleHelp(): string {
+        return `🤖 AEGIS TELEGRAM COMMANDS\n\n` +
+            `/help - Mostrar comandos\n` +
+            `/status - Estado del bot\n` +
+            `/account - Cuenta y balances\n` +
+            `/positions - Posiciones activas\n` +
+            `/config - Configuración efectiva\n` +
+            `/signal SYMBOL - Señal de un símbolo\n` +
+            `/signals - Señales de símbolos activos\n` +
+            `/risk - Riesgo y límites\n` +
+            `/brackets - Estado de brackets\n` +
+            `/report today - Resumen de hoy\n\n` +
+            `Solo lectura. No abre, cierra ni modifica operaciones.`;
+    }
+
+    async handleStatus(): Promise<string> {
+        const runtime = this.runtime();
+        const symbols = this.getActiveAegisSymbols();
+        let apiStatus = 'ERROR';
+        try {
+            apiStatus = await this.deps.mlService.checkHealth() ? 'OK' : 'ERROR';
+        } catch {
+            apiStatus = 'ERROR';
+        }
+
+        const positions = await this.readActivePositions();
+        let lastSignal = 'N/D';
+        try {
+            const symbol = symbols[0];
+            if (symbol) {
+                const signal = await this.deps.mlService.getSignal(symbol);
+                const turbo = turboFromSignal(signal);
+                const raw = turbo?.raw ?? turbo;
+                const gated = turbo?.gated;
+                lastSignal = `${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | ${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}`;
+            }
+        } catch {
+            lastSignal = 'ERROR';
+        }
+
+        return `📡 STATUS AEGIS\n\n` +
+            `• Bot: online\n` +
+            `• Running: ${boolText(runtime.isRunning)}\n` +
+            `• Trading mode: ${this.deps.tradingMode}\n` +
+            `• Live enabled: ${boolText(this.deps.liveEnabled)}\n` +
+            `• Aegis API: ${apiStatus}\n` +
+            `• Símbolos activos: ${symbols.join(', ') || 'N/D'}\n` +
+            `• Posiciones abiertas: ${positions.length}\n` +
+            `• Última señal: ${lastSignal}`;
+    }
+
+    async handleAccount(): Promise<string> {
+        const runtime = this.runtime();
+        const account = await this.readAccount();
+        const dailyPnlPct = runtime.dailyPnlPct
+            ?? (finiteNumber(account.walletBalance) && finiteNumber(runtime.dailyStartBalance) && runtime.dailyStartBalance > 0
+                ? (account.walletBalance - runtime.dailyStartBalance) / runtime.dailyStartBalance
+                : undefined);
+        return `${formatAccountMessage(account)}\n` +
+            `• Unrealized PnL: ${formatUsd(account.unrealizedPnlTotal)}\n` +
+            `• Trades hoy: ${runtime.tradesToday ?? 0}\n` +
+            `• Pérdidas consecutivas: ${runtime.consecutiveLosses ?? 0}\n` +
+            `• Daily PnL: ${formatPct(dailyPnlPct, true)}`;
+    }
+
+    async handlePositions(): Promise<string> {
+        return formatPositionsMessage({ activePositions: await this.readActivePositions() });
+    }
+
+    async handleConfig(): Promise<string> {
+        const symbol = this.getActiveAegisSymbols()[0];
+        const regime = this.regimeConfig(symbol);
+        const turbo = this.turboConfig();
+        const maxHoldMs = regime?.maxHoldMs ?? 0;
+
+        const configMessage = formatConfigMessage({
+            leverage: regime?.leverage ?? 0,
+            entryThreshold: regime?.entryThreshold ?? 0,
+            maxHoldHours: maxHoldMs / 3600000,
+            trailingEnabled: (regime?.trailingActivationRoe ?? 0) > 0,
+            trailingActivationRoe: regime?.trailingActivationRoe,
+            trailingCallbackRoe: regime?.trailingCallbackRoe,
+            stopRoe: regime?.hardStopRoe,
+            takeProfitRoe: regime?.tpRoe,
+            maxTradesPerDay: turbo?.max_trades_per_day,
+            dailyLossStopPct: turbo?.daily_loss_stop_pct,
+            maxConsecutiveLosses: turbo?.max_consecutive_losses,
+            requireBrackets: turbo?.require_brackets
+        });
+
+        return `${configMessage}\n` +
+            `• Aegis enabled: ${boolText(turbo?.enabled)}\n` +
+            `• Aegis live enabled: ${boolText(turbo?.live_enabled)}\n` +
+            `• Allow short: ${boolText(turbo?.allow_short)}\n` +
+            `• Position fraction cap: ${formatPct(turbo?.position_fraction_cap)}\n` +
+            `• Cooldown: ${finiteNumber(turbo?.min_cooldown_ms) ? `${(turbo.min_cooldown_ms / 60000).toFixed(1)} min` : 'N/D'}\n` +
+            `• Close if bracket fails: ${boolText(turbo?.close_if_bracket_fails)}`;
+    }
+
+    async handleSignal(symbol?: string): Promise<string> {
+        const normalized = this.normalizeSymbol(symbol || this.getActiveAegisSymbols()[0]);
+        if (!normalized) return `Uso: /signal ETHUSDT`;
+
+        try {
+            const signal = await this.readSignal(normalized);
+            const turbo = turboFromSignal(signal);
+            const raw = turbo?.raw ?? turbo;
+            const gated = turbo?.gated;
+            const freshness = raw?.freshness ?? turbo?.freshness;
+            const threshold = this.regimeConfig(normalized)?.entryThreshold;
+            return `${formatSymbolSignalMessage(signalInputFromTurbo(normalized, turbo))}\n` +
+                `• Threshold: ${formatPct(threshold)}\n` +
+                `• Production allowed: ${boolText(signal.metadata?.aegis?.prod?.allowed ?? signal.aegis?.prod?.allowed ?? turbo?.production_allowed)}\n` +
+                `• Execute Python: ${boolText(turbo?.execute ?? turbo?.would_execute ?? raw?.would_execute)}\n` +
+                `• Feature timestamp: ${freshness?.feature_timestamp ?? freshness?.timestamp ?? 'N/D'}\n` +
+                `• Reason raw: ${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}`;
+        } catch (error) {
+            this.deps.logger?.warn('telegram_signal_failed', { symbol: normalized, error: String(error) });
+            return `🛰️ SIGNAL ${normalized}\n• ERROR`;
+        }
+    }
+
+    async handleSignals(): Promise<string> {
+        const rows: string[] = [];
+        for (const symbol of this.getActiveAegisSymbols()) {
+            try {
+                const signal = await this.readSignal(symbol);
+                const turbo = turboFromSignal(signal);
+                const raw = turbo?.raw ?? turbo;
+                const gated = turbo?.gated;
+                const freshness = raw?.freshness ?? turbo?.freshness;
+                const fresh = (freshness?.is_fresh ?? freshness?.fresh) === true ? 'fresco' : 'N/D';
+                const votes = raw?.votes ?? turbo?.votes ?? {};
+                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}`);
+            } catch {
+                rows.push(`${symbol} | ERROR`);
+            }
+        }
+        return rows.length > 0 ? `🛰️ SEÑALES\n${rows.join('\n')}` : formatAllSignalsMessage({ signals: [] });
+    }
+
+    async handleRisk(): Promise<string> {
+        const runtime = this.runtime();
+        const account = await this.readAccount();
+        const symbol = this.getActiveAegisSymbols()[0];
+        const turbo = this.turboConfig();
+        const state = this.deps.state.get();
+        const cooldownMs = turbo?.min_cooldown_ms;
+        const sinceExitMs = state.lastExitAt ? Date.now() - state.lastExitAt : undefined;
+        const cooldownActive = finiteNumber(cooldownMs) && finiteNumber(sinceExitMs) && sinceExitMs < cooldownMs;
+        const liquidity = symbol ? runtime.liquidityStressBySymbol?.[symbol] : undefined;
+        const dailyPnlPct = runtime.dailyPnlPct
+            ?? (finiteNumber(account.walletBalance) && finiteNumber(runtime.dailyStartBalance) && runtime.dailyStartBalance > 0
+                ? (account.walletBalance - runtime.dailyStartBalance) / runtime.dailyStartBalance
+                : undefined);
+
+        return `🛡️ RIESGO AEGIS\n\n` +
+            `• Trades hoy: ${runtime.tradesToday ?? 0} / ${turbo?.max_trades_per_day ?? 'N/D'}\n` +
+            `• Pérdidas consecutivas: ${runtime.consecutiveLosses ?? 0} / ${turbo?.max_consecutive_losses ?? 'N/D'}\n` +
+            `• Daily PnL: ${formatPct(dailyPnlPct, true)}\n` +
+            `• Daily loss stop: ${formatPct(turbo?.daily_loss_stop_pct)}\n` +
+            `• Cooldown: ${cooldownActive ? 'ACTIVO' : 'OK'}\n` +
+            `• Liquidity stress: ${finiteNumber(liquidity) ? formatPct(liquidity) : 'N/D'}\n` +
+            `• Require brackets: ${boolText(turbo?.require_brackets)}\n` +
+            `• Close if bracket fails: ${boolText(turbo?.close_if_bracket_fails)}\n` +
+            `• Shorts: ${turbo?.allow_short ? 'ON' : 'OFF'}`;
+    }
+
+    async handleBrackets(): Promise<string> {
+        const positions = await this.readPositionsWithOrders();
+        if (positions.length === 0) return `🛡️ BRACKETS\n• Sin posiciones activas`;
+
+        const blocks = positions.map(({ position, orders }) => {
+            const sl = orders.find((order) => order.type.includes('STOP'));
+            const tp = orders.find((order) => order.type.includes('TAKE_PROFIT'));
+            const alert = !sl || !tp ? '\n• ALERTA: bracket faltante' : '';
+            return `🛡️ ${position.symbol} | ${position.side}\n` +
+                `• SL activo: ${sl ? 'Sí' : 'No'} ${sl ? formatPrice(sl.stopPrice) : ''}\n` +
+                `• TP activo: ${tp ? 'Sí' : 'No'} ${tp ? formatPrice(tp.stopPrice) : ''}${alert}`;
+        });
+        return blocks.join('\n\n');
+    }
+
+    async handleReportToday(): Promise<string> {
+        try {
+            const report = await analyzeAegisTurboHistory({
+                date: todayIsoDate(),
+                allSymbols: true,
+                writeReports: false
+            });
+            const summary: any = report.summary ?? {};
+            if (!summary.total_trades && !summary.closed_trades) return 'No hay trades registrados hoy.';
+            const symbols = Object.keys(report.by_symbol ?? {});
+            return `📊 REPORTE AEGIS HOY\n\n` +
+                `• Trades: ${summary.total_trades ?? 0}\n` +
+                `• Cerrados: ${summary.closed_trades ?? 0}\n` +
+                `• Win rate: ${finiteNumber(summary.win_rate) ? `${summary.win_rate.toFixed(1)}%` : 'N/D'}\n` +
+                `• Net PnL: ${finiteNumber(summary.net_pnl) ? `$${summary.net_pnl.toFixed(2)} USDT` : 'N/D'}\n` +
+                `• Profit factor: ${finiteNumber(summary.profit_factor) ? summary.profit_factor.toFixed(2) : 'N/D'}\n` +
+                `• Best ROE: ${finiteNumber(summary.best_trade_roe) ? `${summary.best_trade_roe.toFixed(1)}%` : 'N/D'}\n` +
+                `• Worst ROE: ${finiteNumber(summary.worst_trade_roe) ? `${summary.worst_trade_roe.toFixed(1)}%` : 'N/D'}\n` +
+                `• Symbols: ${symbols.join(', ') || 'N/D'}`;
+        } catch (error) {
+            this.deps.logger?.warn('telegram_report_today_failed', { error: String(error) });
+            return 'No hay trades registrados hoy.';
+        }
+    }
+
+    getActiveAegisSymbols(): string[] {
+        const configured = this.deps.getActiveSymbols?.()
+            ?? (typeof (this.deps.configManager as any).getActiveSymbols === 'function'
+                ? (this.deps.configManager as any).getActiveSymbols()
+                : undefined);
+        const symbols = Array.isArray(configured) && configured.length > 0
+            ? configured
+            : CONFIG.SYMBOLS?.length ? CONFIG.SYMBOLS : ['ETHUSDT'];
+        return [...new Set(symbols.map((symbol) => this.normalizeSymbol(symbol)).filter(Boolean))];
+    }
+
+    private async readAccount(): Promise<AegisAccountMessageInput & { unrealizedPnlTotal?: number }> {
+        const snapshot = typeof this.deps.exchange.getUSDTAccountSnapshot === 'function'
+            ? await this.deps.exchange.getUSDTAccountSnapshot()
+            : undefined;
+        const wallet = snapshot?.walletBalance ?? await this.safeWalletBalance();
+        return {
+            walletBalance: wallet,
+            equityTotal: snapshot?.equityTotal,
+            availableBalance: snapshot?.availableBalance,
+            unrealizedPnlTotal: snapshot?.unrealizedPnlTotal
+        };
+    }
+
+    private async safeWalletBalance(): Promise<number | undefined> {
+        try {
+            return await this.deps.exchange.getUSDTBalance();
+        } catch {
+            return undefined;
+        }
+    }
+
+    private async readActivePositions(): Promise<AegisPositionMessageInput[]> {
+        const rows = await this.readPositionsWithOrders();
+        return rows.map(({ position, markPrice, orders }) => {
+            const tp = orders.find((order) => order.type.includes('TAKE_PROFIT'));
+            const sl = orders.find((order) => order.type.includes('STOP'));
+            return {
+                symbol: position.symbol,
+                side: position.side,
+                size: position.qtyAbs,
+                margin: position.margin,
+                roi: position.roe,
+                pnl: position.pnl,
+                durationHours: position.durationHours,
+                tpPrice: tp?.stopPrice,
+                slPrice: sl?.stopPrice,
+                tpRoe: position.tpRoe,
+                slRoe: position.slRoe,
+                baseAsset: baseAssetFromSymbol(position.symbol)
+            };
+        });
+    }
+
+    private async readPositionsWithOrders(): Promise<Array<{
+        position: {
+            symbol: string;
+            side: Side;
+            qtyAbs?: number;
+            margin?: number;
+            roe?: number;
+            pnl?: number;
+            durationHours?: number;
+            tpRoe?: number;
+            slRoe?: number;
+        };
+        markPrice?: number;
+        orders: CloseOrder[];
+    }>> {
+        const state = this.deps.state.get();
+        const output: Array<{ position: any; markPrice?: number; orders: CloseOrder[] }> = [];
+        for (const symbol of this.getActiveAegisSymbols()) {
+            for (const side of ['LONG', 'SHORT'] as Side[]) {
+                const position = await this.deps.exchange.readActivePosition(symbol, side).catch(() => null);
+                if (!position) continue;
+                const markPrice = await this.deps.exchange.getMarkPrice(symbol).catch(() => undefined);
+                const margin = position.isolatedMargin
+                    ?? (position.entryPrice > 0 && position.leverage > 0 ? (position.entryPrice * position.qtyAbs) / position.leverage : undefined);
+                const roe = finiteNumber(position.roePct)
+                    ? position.roePct / 100
+                    : finiteNumber(markPrice)
+                        ? calculateRoe(side, position.entryPrice, markPrice, position.leverage)
+                        : undefined;
+                const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side).catch(() => []);
+                const sameStatePosition = state.lastSide === side && (state.mode === 'LONG_RIDE' || state.mode === 'SHORT_RIDE');
+                output.push({
+                    position: {
+                        symbol,
+                        side,
+                        qtyAbs: position.qtyAbs,
+                        margin,
+                        roe,
+                        pnl: position.unrealizedPnl ?? pnlFromRoe(margin, roe),
+                        durationHours: sameStatePosition && state.lastEntryAt ? (Date.now() - state.lastEntryAt) / 3600000 : undefined,
+                        tpRoe: sameStatePosition ? state.lastTakeProfitRoe : undefined,
+                        slRoe: sameStatePosition ? state.lastStopRoe : undefined
+                    },
+                    markPrice,
+                    orders
+                });
+            }
+        }
+        return output;
+    }
+
+    private async readSignal(symbol: string): Promise<AegisTradingSignal> {
+        if (typeof this.deps.mlService.getAegisPrediction === 'function') {
+            const prediction = await this.deps.mlService.getAegisPrediction(symbol);
+            return this.signalFromPrediction(symbol, prediction);
+        }
+        return this.deps.mlService.getSignal(symbol);
+    }
+
+    private signalFromPrediction(symbol: string, prediction: AegisPredictionResponse): AegisTradingSignal {
+        return {
+            symbol,
+            action: 'PASS',
+            confidence: 0,
+            source: 'AEGIS_TURBO',
+            longProb: prediction.long_prob ?? 0,
+            shortProb: prediction.short_prob ?? 0,
+            neutralProb: prediction.neutral_prob ?? 0,
+            closeProb: prediction.close_prob,
+            smart_leverage: prediction.smart_leverage,
+            features: prediction.features,
+            aegis: prediction.aegis,
+            metadata: { aegis: prediction.aegis, meta_verdict: prediction.meta_verdict, rawPrediction: prediction }
+        };
+    }
+
+    private regimeConfig(symbol?: string) {
+        return typeof (this.deps.configManager as any).getRegimeConfig === 'function'
+            ? (this.deps.configManager as any).getRegimeConfig('AEGIS_TURBO', symbol)
+            : undefined;
+    }
+
+    private turboConfig() {
+        return typeof (this.deps.configManager as any).getAegisTurboConfig === 'function'
+            ? (this.deps.configManager as any).getAegisTurboConfig()
+            : undefined;
+    }
+
+    private runtime() {
+        return this.deps.getRuntimeSnapshot?.() ?? { tradingMode: this.deps.tradingMode };
+    }
+
+    private normalizeSymbol(symbol?: string): string {
+        return String(symbol || '').trim().toUpperCase();
+    }
+}
