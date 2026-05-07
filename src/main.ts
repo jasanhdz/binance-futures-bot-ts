@@ -66,17 +66,26 @@ async function main() {
     const mlService: MLService = new AegisMLService();
     const notifier = new TelegramNotifier();
     const configManager = new NinjaConfigManager();
+    configManager.validateSingleLiveAegisSymbol();
+
+    const activeAegisSymbols = configManager.getActiveAegisSymbols();
+    const legacyActiveSymbols = configManager.getActiveSymbols();
+    const tradingSymbols = activeAegisSymbols.length > 0
+        ? activeAegisSymbols
+        : legacyActiveSymbols.length > 0
+            ? legacyActiveSymbols
+            : ['ETHUSDT'];
 
     // Trading configuration
     const tradingConfig: TradingServiceConfig = {
-        symbols: configManager.getActiveSymbols().length > 0
-            ? configManager.getActiveSymbols()
-            : ['ETHUSDT'],
+        symbols: tradingSymbols,
         tickIntervalMs: configManager.system.tick_interval_ms || 10000,
-        maxTradesPerDay: configManager.system.max_trades_per_day || 100
+        maxTradesPerDay: configManager.system.max_trades_per_day || 100,
+        tradingMode: CONFIG.TRADING_MODE
     };
 
     console.log(`📊 Active symbols: ${tradingConfig.symbols.join(', ')}`);
+    console.log(`🧭 Aegis symbol modes: ${Object.values(configManager.getAegisSymbolConfigs()).map(({ symbol, mode }) => `${symbol}:${mode}`).join(', ') || 'N/D'}`);
     console.log(`⏱️  Tick interval: ${tradingConfig.tickIntervalMs}ms`);
 
     // Create trading service

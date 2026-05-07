@@ -31,6 +31,7 @@ function prediction(symbol = 'ETHUSDT', score = 0.632, reason = 'rawrecentlongag
 }
 
 function makeHandlers(overrides: Record<string, any> = {}) {
+    const symbolModes = overrides.symbolModes ?? Object.fromEntries((overrides.symbols ?? ['ETHUSDT']).map((symbol: string) => [symbol, 'LIVE']));
     const exchange = {
         getUSDTBalance: vi.fn().mockResolvedValue(500),
         getUSDTAccountSnapshot: vi.fn().mockResolvedValue(overrides.accountSnapshot ?? {}),
@@ -53,6 +54,12 @@ function makeHandlers(overrides: Record<string, any> = {}) {
     };
     const configManager = {
         getActiveSymbols: vi.fn(() => overrides.symbols ?? ['ETHUSDT']),
+        getAegisSymbolConfigs: vi.fn(() => Object.fromEntries(Object.entries(symbolModes).map(([symbol, mode]) => [
+            symbol,
+            { symbol, enabled: mode !== 'OFF', mode }
+        ]))),
+        getActiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode !== 'OFF').map(([symbol]) => symbol)),
+        getSymbolMode: vi.fn((symbol: string) => symbolModes[symbol] ?? 'SHADOW'),
         getRegimeConfig: vi.fn(() => ({
             leverage: 20,
             entryThreshold: 0.60,
@@ -116,6 +123,31 @@ describe('TelegramCommandHandlers', () => {
 
         expect(text).toContain('ETHUSDT | LONG | score 63.2%');
         expect(text).toContain('BTCUSDT | LONG | score 28.4%');
+    });
+
+    it('/signals lists LIVE and SHADOW symbols without scanning OFF symbols', async () => {
+        const { handlers, mlService } = makeHandlers({
+            symbolModes: { ETHUSDT: 'LIVE', BTCUSDT: 'SHADOW', SOLUSDT: 'OFF' }
+        });
+
+        const text = await handlers.handleSignals();
+
+        expect(text).toContain('ETHUSDT | LONG');
+        expect(text).toContain('BTCUSDT | LONG');
+        expect(text).not.toContain('SOLUSDT');
+        expect(mlService.getAegisPrediction).not.toHaveBeenCalledWith('SOLUSDT');
+    });
+
+    it('/status shows configured symbol modes including OFF', async () => {
+        const { handlers } = makeHandlers({
+            symbolModes: { ETHUSDT: 'LIVE', BTCUSDT: 'SHADOW', SOLUSDT: 'OFF' }
+        });
+
+        const text = await handlers.handleStatus();
+
+        expect(text).toContain('ETHUSDT LIVE');
+        expect(text).toContain('BTCUSDT SHADOW');
+        expect(text).toContain('SOLUSDT OFF');
     });
 
     it('/positions shows Ninguna when there are no active positions', async () => {

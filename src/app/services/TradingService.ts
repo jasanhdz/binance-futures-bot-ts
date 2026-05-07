@@ -12,7 +12,7 @@ import {
     buildAegisMicroLiveGateConfigFromEnv,
     shouldEnterAegisTurboMicroLive
 } from '../../domain/services/AegisMicroLiveGate';
-import { AegisTurboYamlConfig, NinjaConfigManager } from '../../infra/config/ConfigLoader';
+import { AegisSymbolMode, AegisTurboYamlConfig, NinjaConfigManager } from '../../infra/config/ConfigLoader';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
@@ -104,6 +104,33 @@ export class TradingService {
         );
     }
 
+    private getSymbolMode(symbol: string): AegisSymbolMode {
+        const manager = this.deps.configManager as any;
+        return typeof manager.getSymbolMode === 'function'
+            ? manager.getSymbolMode(symbol)
+            : 'LIVE';
+    }
+
+    private getLiveAegisSymbols(): string[] {
+        const manager = this.deps.configManager as any;
+        return typeof manager.getLiveAegisSymbols === 'function'
+            ? manager.getLiveAegisSymbols()
+            : [this.config.symbols[0]].filter(Boolean);
+    }
+
+    private canExecuteLive(symbol: string): boolean {
+        const turbo = this.getAegisTurboYamlConfig();
+        return this.getTradingMode() === 'AEGIS_TURBO_MICRO_LIVE'
+            && CONFIG.AEGIS_LIVE_ENABLED === true
+            && this.getSymbolMode(symbol) === 'LIVE'
+            && turbo?.enabled === true
+            && turbo?.live_enabled === true;
+    }
+
+    private liveSymbolForGlobalState(): string | undefined {
+        return this.getLiveAegisSymbols()[0] ?? this.config.symbols[0];
+    }
+
     getAegisRuntimeSnapshot(): AegisRuntimeSnapshot {
         const liquidityStressBySymbol: Record<string, number> = {};
         for (const symbol of Object.keys(this.detector)) {
@@ -122,6 +149,10 @@ export class TradingService {
 
     async start(startLoop = true): Promise<void> {
         const { logger, notifier, mlService, state, configManager, exchange } = this.deps;
+        const manager = configManager as any;
+        if (typeof manager.validateSingleLiveAegisSymbol === 'function') {
+            manager.validateSingleLiveAegisSymbol();
+        }
         const tradingMode = this.getTradingMode();
         const isTurbo = tradingMode === 'AEGIS_TURBO_MICRO_LIVE';
         let startupWalletBalance: number | null = null;
@@ -332,9 +363,28 @@ export class TradingService {
     private async processSymbol(symbol: string): Promise<void> {
         this.lastAlivePulseMs = Date.now();
         const botState = this.deps.state.get();
+        const symbolMode = this.getSymbolMode(symbol);
 
         try {
+            if (symbolMode === 'OFF') {
+                return;
+            }
+
+            if (symbolMode !== 'LIVE') {
+                await this.scanShadowOnly(symbol);
+                return;
+            }
+
             if (botState.mode !== 'IDLE') {
+                const liveSymbol = this.liveSymbolForGlobalState();
+                if (symbol !== liveSymbol) {
+                    this.deps.logger.warn('aegis_skip_manage_position_global_state_symbol_mismatch', {
+                        symbol,
+                        liveSymbol,
+                        stateMode: botState.mode
+                    });
+                    return;
+                }
                 await this.managePosition(symbol, botState);
                 if (this.deps.state.get().mode === 'IDLE') {
                     await this.lookForEntry(symbol);
@@ -345,6 +395,24 @@ export class TradingService {
         } catch (error) {
             this.deps.logger.warn('Process error', { symbol, error: String(error) });
         }
+    }
+
+    private async scanShadowOnly(symbol: string): Promise<void> {
+        const signal = await this.deps.mlService.getSignal(symbol);
+        const signalId = generateSignalId(symbol);
+        this.logAegisScan(symbol, signal);
+        await this.logAegisTradeEvent(symbol, 'SIGNAL_RECEIVED', {
+            metadata: { signalId, symbolMode: this.getSymbolMode(symbol), shadowOnly: true }
+        });
+        await this.logAegisTurboSignal(symbol, signal, {
+            signalId,
+            executed: false,
+            metadata: {
+                symbol_mode: this.getSymbolMode(symbol),
+                shadow_only: true,
+                ignored_reason: 'symbol_not_live'
+            }
+        });
     }
 
     private logAegisScan(symbol: string, signal: AegisTradingSignal): void {
@@ -553,6 +621,15 @@ export class TradingService {
                 return;
             }
 
+            if (this.getSymbolMode(symbol) !== 'LIVE') {
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    executed: false,
+                    metadata: { ignored_reason: 'symbol_not_live', symbol_mode: this.getSymbolMode(symbol) }
+                });
+                return;
+            }
+
             const balance = await exchange.getUSDTBalance();
             if (this.dailyStartBalance === null || this.dailyStartBalance <= 0) {
                 this.dailyStartBalance = balance;
@@ -619,6 +696,20 @@ export class TradingService {
                 return;
             }
 
+            const turboYaml = this.getAegisTurboYamlConfig();
+            if (turboYaml && turboYaml.enabled !== true) {
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    gate: { ...gateDecision, allowed: false, reason: 'aegis_turbo_yaml_disabled' },
+                    executed: false,
+                    metadata: { ignored_reason: 'aegis_turbo_yaml_disabled' }
+                });
+                await this.logAegisTradeEvent(symbol, 'GATE_DENIED', {
+                    reason: 'aegis_turbo_yaml_disabled'
+                });
+                return;
+            }
+
             if (this.getAegisTurboYamlConfig()?.live_enabled !== true) {
                 await this.logAegisTurboSignal(symbol, signal, {
                     signalId,
@@ -649,6 +740,16 @@ export class TradingService {
                     dailyPnlPct,
                     dailyLossStopPct: gateConfig.dailyLossStopPct,
                     tradingMode
+                });
+                return;
+            }
+
+            if (!this.canExecuteLive(symbol)) {
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    gate: { ...gateDecision, allowed: false, reason: 'symbol_live_execution_disabled' },
+                    executed: false,
+                    metadata: { symbol_mode: this.getSymbolMode(symbol) }
                 });
                 return;
             }
@@ -716,6 +817,17 @@ export class TradingService {
         let openedSide: Side | null = null;
 
         try {
+            if (!this.canExecuteLive(symbol)) {
+                logger.warn('aegis_live_execution_blocked_by_symbol_mode', {
+                    symbol,
+                    symbolMode: this.getSymbolMode(symbol),
+                    tradingMode: this.getTradingMode(),
+                    liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
+                    yamlEnabled: yaml?.enabled === true,
+                    yamlLiveEnabled: yaml?.live_enabled === true
+                });
+                return;
+            }
             if (!gate.allowed || (gate.side !== 'LONG' && gate.side !== 'SHORT')) return;
             const leverage = gate.leverage;
             const positionFraction = gate.positionFraction;

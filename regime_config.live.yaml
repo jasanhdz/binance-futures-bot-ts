@@ -4,6 +4,17 @@
 SYMBOLS:
   ETHUSDT: 1.0
 
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+  BTCUSDT:
+    enabled: true
+    mode: SHADOW
+  SOLUSDT:
+    enabled: false
+    mode: OFF
+
 TRADING:
   capital_usage_default: 1.0        
   min_wallet_reserve_usdt: 0         

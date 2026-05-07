@@ -113,6 +113,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
     async handleStatus(): Promise<string> {
         const runtime = this.runtime();
         const symbols = this.getActiveAegisSymbols();
+        const symbolModes = this.getConfiguredAegisSymbolModes();
         let apiStatus = 'ERROR';
         try {
             apiStatus = await this.deps.mlService.checkHealth() ? 'OK' : 'ERROR';
@@ -141,7 +142,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `⚡ Trading mode: **${this.deps.tradingMode}**\n` +
             `🟢 Live enabled: **${boolText(this.deps.liveEnabled)}**\n` +
             `🧠 Aegis API: **${apiStatus}**\n` +
-            `🪙 Símbolos activos: **${symbols.join(', ') || 'N/D'}**\n` +
+            `🪙 Símbolos: **${symbolModes.join(' | ') || symbols.join(', ') || 'N/D'}**\n` +
             `💼 Posiciones abiertas: **${positions.length}**\n` +
             `🛰️ Última señal: **${lastSignal}**`;
     }
@@ -188,6 +189,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         return `${configMessage}\n` +
             `✅ Aegis enabled: **${boolText(turbo?.enabled)}**\n` +
             `🟢 Aegis live enabled: **${boolText(turbo?.live_enabled)}**\n` +
+            `🧭 Symbol modes: **${this.getConfiguredAegisSymbolModes().join(' | ') || 'N/D'}**\n` +
             `📉 Allow short: **${boolText(turbo?.allow_short)}**\n` +
             `💼 Position fraction cap: **${formatPct(turbo?.position_fraction_cap)}**\n` +
             `⏲️ Cooldown: **${finiteNumber(turbo?.min_cooldown_ms) ? `${(turbo.min_cooldown_ms / 60000).toFixed(1)} min` : 'N/D'}**\n` +
@@ -304,14 +306,32 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
     }
 
     getActiveAegisSymbols(): string[] {
-        const configured = this.deps.getActiveSymbols?.()
-            ?? (typeof (this.deps.configManager as any).getActiveSymbols === 'function'
-                ? (this.deps.configManager as any).getActiveSymbols()
-                : undefined);
+        const manager = this.deps.configManager as any;
+        const configured = typeof manager.getActiveAegisSymbols === 'function'
+            ? manager.getActiveAegisSymbols()
+            : this.deps.getActiveSymbols?.()
+                ?? (typeof manager.getActiveSymbols === 'function'
+                    ? manager.getActiveSymbols()
+                    : undefined);
         const symbols = Array.isArray(configured) && configured.length > 0
             ? configured
             : CONFIG.SYMBOLS?.length ? CONFIG.SYMBOLS : ['ETHUSDT'];
         return [...new Set(symbols.map((symbol) => this.normalizeSymbol(symbol)).filter(Boolean))];
+    }
+
+    private getConfiguredAegisSymbolModes(): string[] {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisSymbolConfigs === 'function') {
+            const configs = Object.values(manager.getAegisSymbolConfigs() || {}) as Array<{ symbol: string; mode: string }>;
+            return configs
+                .filter((config) => config?.symbol)
+                .map((config) => `${this.normalizeSymbol(config.symbol)} ${config.mode || 'SHADOW'}`);
+        }
+
+        return this.getActiveAegisSymbols().map((symbol) => {
+            const mode = typeof manager.getSymbolMode === 'function' ? manager.getSymbolMode(symbol) : 'LIVE';
+            return `${symbol} ${mode}`;
+        });
     }
 
     private async readAccount(): Promise<AegisAccountMessageInput & { unrealizedPnlTotal?: number }> {
@@ -387,7 +407,9 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                         ? calculateRoe(side, position.entryPrice, markPrice, position.leverage)
                         : undefined;
                 const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side).catch(() => []);
-                const sameStatePosition = state.lastSide === side && (state.mode === 'LONG_RIDE' || state.mode === 'SHORT_RIDE');
+                const sameStatePosition = symbol === this.getLiveAegisSymbolForGlobalState()
+                    && state.lastSide === side
+                    && (state.mode === 'LONG_RIDE' || state.mode === 'SHORT_RIDE');
                 output.push({
                     position: {
                         symbol,
@@ -443,6 +465,14 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         return typeof (this.deps.configManager as any).getAegisTurboConfig === 'function'
             ? (this.deps.configManager as any).getAegisTurboConfig()
             : undefined;
+    }
+
+    private getLiveAegisSymbolForGlobalState(): string | undefined {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getLiveAegisSymbols === 'function') {
+            return manager.getLiveAegisSymbols()[0];
+        }
+        return this.getActiveAegisSymbols()[0];
     }
 
     private runtime() {

@@ -76,9 +76,25 @@ export interface AegisTurboYamlConfig {
     close_if_bracket_fails?: boolean;
 }
 
+export type AegisSymbolMode = 'OFF' | 'SHADOW' | 'LIVE';
+
+export interface AegisSymbolYamlConfig {
+    enabled?: boolean;
+    mode?: AegisSymbolMode | string;
+}
+
+export interface AegisSymbolConfig {
+    symbol: string;
+    enabled: boolean;
+    mode: AegisSymbolMode;
+}
+
 export interface NinjaYamlConfig {
     SYMBOLS?: {
         [symbol: string]: number;  // Capital allocation (0-1)
+    };
+    symbols?: {
+        [symbol: string]: AegisSymbolYamlConfig;
     };
     TRADING?: TradingConfig;
     SYSTEM: SystemConfig;
@@ -203,8 +219,58 @@ export class NinjaConfigManager {
      * Get list of ALL symbols from YAML config (for reference)
      */
     getSymbols(): string[] {
-        if (!this.config.SYMBOLS) return [];
-        return Object.keys(this.config.SYMBOLS);
+        const legacySymbols = Object.keys(this.config.SYMBOLS || {});
+        const aegisSymbols = Object.keys(this.config.symbols || {});
+        return [...new Set([...legacySymbols, ...aegisSymbols].map((symbol) => this.normalizeSymbol(symbol)).filter(Boolean))];
+    }
+
+    getAegisSymbolConfigs(): Record<string, AegisSymbolConfig> {
+        const legacySymbols = Object.keys(this.config.SYMBOLS || {});
+        const configured = this.config.symbols || {};
+        const allSymbols = [...new Set([...legacySymbols, ...Object.keys(configured)])];
+        const result: Record<string, AegisSymbolConfig> = {};
+
+        for (const rawSymbol of allSymbols) {
+            const symbol = this.normalizeSymbol(rawSymbol);
+            if (!symbol) continue;
+            const rawConfig = configured[rawSymbol] ?? configured[symbol] ?? {};
+            const enabled = rawConfig.enabled !== false;
+            const mode = enabled ? this.normalizeSymbolMode(rawConfig.mode) : 'OFF';
+            result[symbol] = { symbol, enabled, mode };
+        }
+
+        return result;
+    }
+
+    getActiveAegisSymbols(): string[] {
+        return Object.values(this.getAegisSymbolConfigs())
+            .filter((config) => config.enabled && config.mode !== 'OFF')
+            .map((config) => config.symbol);
+    }
+
+    getLiveAegisSymbols(): string[] {
+        return Object.values(this.getAegisSymbolConfigs())
+            .filter((config) => config.enabled && config.mode === 'LIVE')
+            .map((config) => config.symbol);
+    }
+
+    getShadowAegisSymbols(): string[] {
+        return Object.values(this.getAegisSymbolConfigs())
+            .filter((config) => config.enabled && config.mode === 'SHADOW')
+            .map((config) => config.symbol);
+    }
+
+    getSymbolMode(symbol: string): AegisSymbolMode {
+        const normalized = this.normalizeSymbol(symbol);
+        if (!normalized) return 'OFF';
+        return this.getAegisSymbolConfigs()[normalized]?.mode ?? 'SHADOW';
+    }
+
+    validateSingleLiveAegisSymbol(): void {
+        const liveSymbols = this.getLiveAegisSymbols();
+        if (liveSymbols.length > 1) {
+            throw new Error('Multi-symbol LIVE is not safe yet: only one LIVE symbol is allowed until portfolio state is implemented.');
+        }
     }
 
     /**
@@ -411,8 +477,21 @@ export class NinjaConfigManager {
                     close_if_bracket_fails: true
                 }
             },
+            symbols: {},
             SYMBOL_OVERRIDES: {}
         };
+    }
+
+    private normalizeSymbol(symbol?: string): string {
+        return (symbol || '').trim().toUpperCase();
+    }
+
+    private normalizeSymbolMode(mode?: AegisSymbolMode | string): AegisSymbolMode {
+        const normalized = (mode || 'SHADOW').trim().toUpperCase();
+        if (normalized === 'OFF' || normalized === 'SHADOW' || normalized === 'LIVE') {
+            return normalized;
+        }
+        return 'SHADOW';
     }
 }
 

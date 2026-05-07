@@ -91,6 +91,8 @@ function validSignal(): AegisTradingSignal {
 function makeHarness(options: {
     liveEnabled?: boolean;
     yaml?: any;
+	    symbols?: string[];
+	    symbolModes?: Record<string, 'OFF' | 'SHADOW' | 'LIVE'>;
 	    closeOrders?: any[];
 	    balance?: number;
 	    readActivePosition?: any;
@@ -162,11 +164,27 @@ function makeHarness(options: {
         reset: vi.fn()
     };
     const notifier = { sendMessage: vi.fn(), sendAlert: vi.fn() };
+    const symbolModes = options.symbolModes ?? { ETHUSDT: 'LIVE' as const };
     const configManager = {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
         getRegimeConfig: vi.fn(() => regimeConfig()),
+        getSymbolMode: vi.fn((symbol: string) => symbolModes[symbol] ?? 'SHADOW'),
+        getLiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode === 'LIVE').map(([symbol]) => symbol)),
+        getActiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode !== 'OFF').map(([symbol]) => symbol)),
+        validateSingleLiveAegisSymbol: vi.fn(() => {
+            if (Object.values(symbolModes).filter((mode) => mode === 'LIVE').length > 1) {
+                throw new Error('Multi-symbol LIVE is not safe yet: only one LIVE symbol is allowed until portfolio state is implemented.');
+            }
+        }),
         system: { enable_sentinel: false },
         trading: { fee_buffer_pct: 0.05 }
+    };
+    const historyLogger = {
+        logSignal: vi.fn().mockResolvedValue(undefined),
+        logTradeEvent: vi.fn().mockResolvedValue(undefined),
+        logAccountSnapshot: vi.fn().mockResolvedValue(undefined),
+        logTradeOpen: vi.fn().mockResolvedValue(undefined),
+        logTradeClose: vi.fn().mockResolvedValue(undefined)
     };
     const service = new TradingService(
         {
@@ -179,17 +197,18 @@ function makeHarness(options: {
             logger,
             state,
             notifier,
-            configManager: configManager as any
+            configManager: configManager as any,
+            historyLogger: historyLogger as any
         },
         {
-            symbols: ['ETHUSDT'],
+            symbols: options.symbols ?? ['ETHUSDT'],
             tickIntervalMs: 0,
             maxTradesPerDay: 100,
             tradingMode: 'AEGIS_TURBO_MICRO_LIVE'
         }
     );
 
-	    return { exchange, logger, notifier, service, state };
+	    return { exchange, historyLogger, logger, notifier, service, state };
 	}
 
 describe('TradingService Aegis live execution', () => {
@@ -400,6 +419,47 @@ describe('TradingService Aegis live execution', () => {
             reason: 'aegis_live_disabled'
         }));
         expect(exchange.marketOpen).not.toHaveBeenCalled();
+    });
+
+    it('scans a SHADOW symbol without live exchange execution or state mutation', async () => {
+        const { exchange, historyLogger, service, state } = makeHarness({
+            symbols: ['ETHUSDT', 'BTCUSDT'],
+            symbolModes: { ETHUSDT: 'LIVE', BTCUSDT: 'SHADOW' }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(state.set).not.toHaveBeenCalled();
+        expect(historyLogger.logSignal).toHaveBeenCalledWith(expect.objectContaining({
+            symbol: 'BTCUSDT',
+            executed: false,
+            metadata: expect.objectContaining({ shadow_only: true })
+        }));
+    });
+
+    it('does not manage the global ETH BotState while scanning a SHADOW BTC symbol', async () => {
+        const { exchange, service, state } = makeHarness({
+            symbols: ['ETHUSDT', 'BTCUSDT'],
+            symbolModes: { ETHUSDT: 'LIVE', BTCUSDT: 'SHADOW' },
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 3000,
+                lastLeverage: 20,
+                lastEntryAt: Date.now(),
+                lastPeakPrice: 3000
+            }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.readActivePosition).not.toHaveBeenCalledWith('BTCUSDT', 'LONG');
+        expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({ mode: 'IDLE' }));
     });
 
     it('does not open when YAML live is disabled', async () => {
