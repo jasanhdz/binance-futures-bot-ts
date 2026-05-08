@@ -12,8 +12,32 @@ symbols:
     enabled: true
     mode: SHADOW
   SOLUSDT:
-    enabled: false
-    mode: OFF
+    enabled: true
+    mode: SHADOW
+  BNBUSDT:
+    enabled: true
+    mode: SHADOW
+  XRPUSDT:
+    enabled: true
+    mode: SHADOW
+  DOGEUSDT:
+    enabled: true
+    mode: SHADOW
+  ADAUSDT:
+    enabled: true
+    mode: SHADOW
+  AVAXUSDT:
+    enabled: true
+    mode: SHADOW
+  LINKUSDT:
+    enabled: true
+    mode: SHADOW
+  SUIUSDT:
+    enabled: true
+    mode: SHADOW
+  LTCUSDT:
+    enabled: true
+    mode: SHADOW
 
 TRADING:
   capital_usage_default: 1.0        

@@ -106,6 +106,19 @@ function makeHandlers(overrides: Record<string, any> = {}) {
 }
 
 describe('TelegramCommandHandlers', () => {
+    const massShadowSymbols = [
+        'BTCUSDT',
+        'SOLUSDT',
+        'BNBUSDT',
+        'XRPUSDT',
+        'DOGEUSDT',
+        'ADAUSDT',
+        'AVAXUSDT',
+        'LINKUSDT',
+        'SUIUSDT',
+        'LTCUSDT'
+    ];
+
     it('/signal ETHUSDT calls ML and formats reason', async () => {
         const { handlers, mlService } = makeHandlers();
 
@@ -136,6 +149,23 @@ describe('TelegramCommandHandlers', () => {
         expect(text).toContain('BTCUSDT | LONG');
         expect(text).not.toContain('SOLUSDT');
         expect(mlService.getAegisPrediction).not.toHaveBeenCalledWith('SOLUSDT');
+    });
+
+    it('/signals handles one LIVE plus ten SHADOW onboarding symbols', async () => {
+        const symbolModes = Object.fromEntries([
+            ['ETHUSDT', 'LIVE'],
+            ...massShadowSymbols.map((symbol) => [symbol, 'SHADOW'])
+        ]);
+        const { handlers, mlService } = makeHandlers({ symbolModes });
+
+        const text = await handlers.handleSignals();
+
+        expect(text).toContain('ETHUSDT | LONG');
+        for (const symbol of massShadowSymbols) {
+            expect(text).toContain(`${symbol} | LONG`);
+            expect(mlService.getAegisPrediction).toHaveBeenCalledWith(symbol);
+        }
+        expect(mlService.getAegisPrediction).toHaveBeenCalledTimes(11);
     });
 
     it('/status shows configured symbol modes including OFF', async () => {

@@ -43,6 +43,19 @@ SYMBOL_OVERRIDES: {}
 }
 
 describe('NinjaConfigManager Aegis symbol modes', () => {
+    const massShadowSymbols = [
+        'BTCUSDT',
+        'SOLUSDT',
+        'BNBUSDT',
+        'XRPUSDT',
+        'DOGEUSDT',
+        'ADAUSDT',
+        'AVAXUSDT',
+        'LINKUSDT',
+        'SUIUSDT',
+        'LTCUSDT'
+    ];
+
     afterEach(() => {
         for (const filePath of tempFiles.splice(0)) {
             try {
@@ -103,5 +116,23 @@ symbols:
         expect(() => config.validateSingleLiveAegisSymbol()).toThrow(
             'Multi-symbol LIVE is not safe yet: only one LIVE symbol is allowed until portfolio state is implemented.'
         );
+    });
+
+    it('accepts one LIVE symbol with ten SHADOW onboarding symbols', () => {
+        const shadowYaml = massShadowSymbols
+            .map((symbol) => `  ${symbol}:\n    enabled: true\n    mode: SHADOW`)
+            .join('\n');
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+${shadowYaml}
+`));
+
+        expect(config.getLiveAegisSymbols()).toEqual(['ETHUSDT']);
+        expect(config.getShadowAegisSymbols()).toEqual(massShadowSymbols);
+        expect(config.getActiveAegisSymbols()).toEqual(['ETHUSDT', ...massShadowSymbols]);
+        expect(() => config.validateSingleLiveAegisSymbol()).not.toThrow();
     });
 });
