@@ -102,7 +102,7 @@ symbols:
         expect(config.getSymbolMode('SOLUSDT')).toBe('OFF');
     });
 
-    it('fails validation when more than one symbol is LIVE', () => {
+    it('permits validation when more than one symbol is LIVE', () => {
         const config = new NinjaConfigManager(writeConfig(`
 symbols:
   ETHUSDT:
@@ -113,9 +113,8 @@ symbols:
     mode: LIVE
 `));
 
-        expect(() => config.validateSingleLiveAegisSymbol()).toThrow(
-            'Multi-symbol LIVE is not safe yet: only one LIVE symbol is allowed until portfolio state is implemented.'
-        );
+        expect(config.getLiveAegisSymbols()).toEqual(['ETHUSDT', 'BTCUSDT']);
+        expect(() => config.validateSingleLiveAegisSymbol()).not.toThrow();
     });
 
     it('accepts one LIVE symbol with ten SHADOW onboarding symbols', () => {

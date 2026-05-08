@@ -102,6 +102,8 @@ function makeHarness(options: {
 	    closeSideMarketSafeReject?: boolean;
 	    markPrice?: number;
 	    initialState?: any;
+	    symbolStates?: Record<string, any>;
+	    accountSnapshot?: any;
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
@@ -126,6 +128,11 @@ function makeHarness(options: {
 	    }
 	    const exchange = {
 	        getUSDTBalance: vi.fn().mockResolvedValue(options.balance ?? 20),
+        getUSDTAccountSnapshot: vi.fn().mockResolvedValue(options.accountSnapshot ?? {
+            walletBalance: options.balance ?? 20,
+            availableBalance: options.balance ?? 20,
+            equityTotal: options.balance ?? 20
+        }),
         getMarkPrice: vi.fn().mockResolvedValue(options.markPrice ?? 3000),
         getSymbolFilters: vi.fn().mockResolvedValue({ qtyPrecision: 3, pricePrecision: 2, minNotional: 5, tickSize: 0.01, stepSize: 0.001 }),
         setLeverage: vi.fn().mockResolvedValue(undefined),
@@ -162,7 +169,39 @@ function makeHarness(options: {
             return currentState;
         }),
         reset: vi.fn()
-    };
+    } as any;
+    if (options.symbolStates) {
+        const stores = new Map<string, any>();
+        for (const [symbol, initial] of Object.entries(options.symbolStates)) {
+            let scopedState: any = initial;
+            stores.set(symbol, {
+                get: vi.fn(() => scopedState),
+                set: vi.fn((patch: any) => {
+                    scopedState = { ...scopedState, ...patch };
+                    return scopedState;
+                }),
+                reset: vi.fn(() => {
+                    scopedState = { mode: 'IDLE' };
+                })
+            });
+        }
+        state.forSymbol = vi.fn((symbol: string) => {
+            if (!stores.has(symbol)) {
+                let scopedState: any = { mode: 'IDLE', currentRegime: 'AEGIS_TURBO', lastExitAt: Date.now() - 20 * 60 * 1000 };
+                stores.set(symbol, {
+                    get: vi.fn(() => scopedState),
+                    set: vi.fn((patch: any) => {
+                        scopedState = { ...scopedState, ...patch };
+                        return scopedState;
+                    }),
+                    reset: vi.fn(() => {
+                        scopedState = { mode: 'IDLE' };
+                    })
+                });
+            }
+            return stores.get(symbol);
+        });
+    }
     const notifier = { sendMessage: vi.fn(), sendAlert: vi.fn() };
     const symbolModes = options.symbolModes ?? { ETHUSDT: 'LIVE' as const };
     const configManager = {
@@ -171,11 +210,7 @@ function makeHarness(options: {
         getSymbolMode: vi.fn((symbol: string) => symbolModes[symbol] ?? 'SHADOW'),
         getLiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode === 'LIVE').map(([symbol]) => symbol)),
         getActiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode !== 'OFF').map(([symbol]) => symbol)),
-        validateSingleLiveAegisSymbol: vi.fn(() => {
-            if (Object.values(symbolModes).filter((mode) => mode === 'LIVE').length > 1) {
-                throw new Error('Multi-symbol LIVE is not safe yet: only one LIVE symbol is allowed until portfolio state is implemented.');
-            }
-        }),
+        validateSingleLiveAegisSymbol: vi.fn(),
         system: { enable_sentinel: false },
         trading: { fee_buffer_pct: 0.05 }
     };
@@ -229,7 +264,7 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.getUSDTBalance).toHaveBeenCalled();
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 AEGIS TURBO MICRO-LIVE ✅'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧠 MICRO-LIVE | Live ON | Shorts OFF'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet $565.39 | Equity N/D | Disp. N/D'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet $565.39 | Equity $565.39 | Disp. $565.39'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 Posiciones\nNinguna'));
     });
 
@@ -259,7 +294,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.start(false);
 
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet $500.00 | Equity N/D | Disp. N/D'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet $500.00 | Equity $500.00 | Disp. $500.00'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 ETHUSDT LONG 📈'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ROI -6.7% | PnL -$10.00 | 0.5h'));
     });
@@ -300,7 +335,7 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('SL: $2977.50 (-15.0% ROE)'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('TP: $3037.50 (+25.0% ROE)'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Score: 72.0% / 60.0%'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Equity total: N/D'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Equity total: $20.00'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('✅ Brackets confirmados'));
 	    });
 
@@ -334,6 +369,25 @@ describe('TradingService Aegis live execution', () => {
 	        }));
 	        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.021);
 	    });
+
+    it('does not treat isolated margin usage as daily loss when equity is unchanged', async () => {
+        const { exchange, logger, service } = makeHarness({
+            balance: 15,
+            accountSnapshot: {
+                walletBalance: 20,
+                availableBalance: 15,
+                equityTotal: 20
+            }
+        });
+        (service as any).dailyStartBalance = 20;
+
+        await service.tick('ETHUSDT');
+
+        expect(logger.info).not.toHaveBeenCalledWith('aegis_micro_live_gate_denied', expect.objectContaining({
+            reason: 'daily_loss_stop_reached'
+        }));
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.017);
+    });
 
 	    it('retries readActivePosition after marketOpen until the position is confirmed', async () => {
 	        const position = {
@@ -460,6 +514,38 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.readActivePosition).not.toHaveBeenCalledWith('BTCUSDT', 'LONG');
         expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({ mode: 'IDLE' }));
+    });
+
+    it('allows a LIVE BTC entry while ETH has its own active symbol state', async () => {
+        const { exchange, logger, service } = makeHarness({
+            symbols: ['ETHUSDT', 'BTCUSDT'],
+            symbolModes: { ETHUSDT: 'LIVE', BTCUSDT: 'LIVE' },
+            symbolStates: {
+                ETHUSDT: {
+                    mode: 'LONG_RIDE',
+                    currentRegime: 'AEGIS_TURBO',
+                    lastStrategy: 'AEGIS_TURBO',
+                    lastSide: 'LONG',
+                    lastEntryPrice: 3000,
+                    lastLeverage: 20,
+                    lastEntryAt: Date.now(),
+                    lastPeakPrice: 3000
+                },
+                BTCUSDT: {
+                    mode: 'IDLE',
+                    currentRegime: 'AEGIS_TURBO',
+                    lastExitAt: Date.now() - 20 * 60 * 1000
+                }
+            }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'LONG', 0.022);
+        expect(logger.warn).not.toHaveBeenCalledWith(
+            'aegis_skip_manage_position_global_state_symbol_mismatch',
+            expect.anything()
+        );
     });
 
     it('does not open when YAML live is disabled', async () => {

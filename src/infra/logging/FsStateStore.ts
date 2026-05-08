@@ -63,6 +63,10 @@ export class FsStateStore implements StateStore {
     this.scheduleDiskWrite();
   }
 
+  forSymbol(symbol: string): StateStore {
+    return new FsStateStore(`${this.key}_${sanitizeKey(symbol)}`, this.scope);
+  }
+
   /**
    * Mecanismo de escritura no bloqueante con debounce simple.
    * Si ya estamos guardando, marcamos 'pendingSave' para guardar de nuevo al terminar.

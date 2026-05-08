@@ -243,7 +243,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         const account = await this.readAccount();
         const symbol = this.getActiveAegisSymbols()[0];
         const turbo = this.turboConfig();
-        const state = this.deps.state.get();
+        const state = this.stateForSymbol(symbol).get();
         const cooldownMs = turbo?.min_cooldown_ms;
         const sinceExitMs = state.lastExitAt ? Date.now() - state.lastExitAt : undefined;
         const cooldownActive = finiteNumber(cooldownMs) && finiteNumber(sinceExitMs) && sinceExitMs < cooldownMs;
@@ -392,9 +392,9 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         markPrice?: number;
         orders: CloseOrder[];
     }>> {
-        const state = this.deps.state.get();
         const output: Array<{ position: any; markPrice?: number; orders: CloseOrder[] }> = [];
         for (const symbol of this.getActiveAegisSymbols()) {
+            const state = this.stateForSymbol(symbol).get();
             for (const side of ['LONG', 'SHORT'] as Side[]) {
                 const position = await this.deps.exchange.readActivePosition(symbol, side).catch(() => null);
                 if (!position) continue;
@@ -407,8 +407,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                         ? calculateRoe(side, position.entryPrice, markPrice, position.leverage)
                         : undefined;
                 const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side).catch(() => []);
-                const sameStatePosition = symbol === this.getLiveAegisSymbolForGlobalState()
-                    && state.lastSide === side
+                const sameStatePosition = state.lastSide === side
                     && (state.mode === 'LONG_RIDE' || state.mode === 'SHORT_RIDE');
                 output.push({
                     position: {
@@ -467,12 +466,12 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             : undefined;
     }
 
-    private getLiveAegisSymbolForGlobalState(): string | undefined {
-        const manager = this.deps.configManager as any;
-        if (typeof manager.getLiveAegisSymbols === 'function') {
-            return manager.getLiveAegisSymbols()[0];
-        }
-        return this.getActiveAegisSymbols()[0];
+    private stateForSymbol(symbol?: string) {
+        const normalized = this.normalizeSymbol(symbol);
+        const state = this.deps.state as any;
+        return normalized && typeof state.forSymbol === 'function'
+            ? state.forSymbol(normalized)
+            : this.deps.state;
     }
 
     private runtime() {

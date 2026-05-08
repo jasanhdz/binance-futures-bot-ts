@@ -267,10 +267,8 @@ export class NinjaConfigManager {
     }
 
     validateSingleLiveAegisSymbol(): void {
-        const liveSymbols = this.getLiveAegisSymbols();
-        if (liveSymbols.length > 1) {
-            throw new Error('Multi-symbol LIVE is not safe yet: only one LIVE symbol is allowed until portfolio state is implemented.');
-        }
+        // Multi-symbol LIVE is intentionally allowed by configuration. Runtime
+        // position/state safety is managed by the trading service and exchange guards.
     }
 
     /**

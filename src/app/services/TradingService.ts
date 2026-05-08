@@ -61,6 +61,7 @@ export class TradingService {
     private tradesToday = 0;
     private lastTradeDayReset = 0;
     private dailyStartBalance: number | null = null;
+    private lastDailyPnlPct: number | undefined;
     private consecutiveLosses = 0;
     private lastEntryBalance = INITIAL_BALANCE;
     private peakBalance = INITIAL_BALANCE;
@@ -70,6 +71,7 @@ export class TradingService {
     private hardWatchdogTimer: NodeJS.Timeout | null = null;
     private detector: Record<string, LiquidityVoidDetector> = {};
     private readonly historyLogger: AegisTurboHistoryLogger;
+    private readonly symbolStateStores = new Map<string, StateStore>();
 
     constructor(
         private deps: TradingServiceDeps,
@@ -127,8 +129,93 @@ export class TradingService {
             && turbo?.live_enabled === true;
     }
 
-    private liveSymbolForGlobalState(): string | undefined {
-        return this.getLiveAegisSymbols()[0] ?? this.config.symbols[0];
+    private normalizeSymbol(symbol: string): string {
+        return String(symbol || '').trim().toUpperCase();
+    }
+
+    private stateForSymbol(symbol: string): StateStore {
+        const normalized = this.normalizeSymbol(symbol);
+        const scopedFactory = this.deps.state.forSymbol;
+        if (typeof scopedFactory !== 'function') return this.deps.state;
+        const cached = this.symbolStateStores.get(normalized);
+        if (cached) return cached;
+        const scoped = scopedFactory.call(this.deps.state, normalized);
+        this.symbolStateStores.set(normalized, scoped);
+        return scoped;
+    }
+
+    private async migrateLegacyGlobalStateToFirstLiveSymbol(): Promise<void> {
+        if (typeof this.deps.state.forSymbol !== 'function') return;
+        const legacyState = this.deps.state.get();
+        if (legacyState.mode === 'IDLE') return;
+        const symbol = this.getLiveAegisSymbols()[0] ?? this.config.symbols[0];
+        if (!symbol) return;
+
+        const symbolState = this.stateForSymbol(symbol);
+        if (symbolState.get().mode !== 'IDLE') return;
+
+        symbolState.set(legacyState);
+        this.deps.state.set({
+            mode: 'IDLE',
+            lastExitAt: legacyState.lastExitAt ?? Date.now(),
+            lastExitReason: 'MIGRATED_TO_SYMBOL_STATE'
+        });
+        this.deps.logger.warn('aegis_legacy_global_state_migrated_to_symbol', {
+            symbol,
+            stateMode: legacyState.mode,
+            lastSide: legacyState.lastSide
+        });
+    }
+
+    private async attachOpenExchangePositionsToSymbolState(): Promise<void> {
+        if (typeof this.deps.state.forSymbol !== 'function') return;
+        for (const symbol of this.getLiveAegisSymbols()) {
+            const symbolState = this.stateForSymbol(symbol);
+            if (symbolState.get().mode !== 'IDLE') continue;
+
+            for (const side of ['LONG', 'SHORT'] as Side[]) {
+                const position = await this.deps.exchange.readActivePosition(symbol, side).catch(() => null);
+                if (!position) continue;
+
+                const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
+                const leverage = position.leverage || this.getAegisTurboGateConfig(symbol).leverageCap;
+                const entryPrice = position.entryPrice || await this.deps.exchange.getMarkPrice(symbol);
+                const margin = position.isolatedMargin
+                    ?? (entryPrice > 0 && leverage > 0 && position.qtyAbs > 0 ? (entryPrice * position.qtyAbs) / leverage : undefined);
+                const tradeId = generateTradeId(symbol);
+
+                symbolState.set({
+                    mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+                    lastSide: side,
+                    lastEntryPrice: entryPrice,
+                    lastLeverage: leverage,
+                    lastActualLeverage: leverage,
+                    lastEntryAt: Date.now(),
+                    lastEntryQty: position.qtyAbs,
+                    lastEntryMargin: margin,
+                    posSideMode: position.sideMode,
+                    currentRegime: 'AEGIS_TURBO',
+                    lastStrategy: 'AEGIS_TURBO',
+                    lastTradeId: tradeId,
+                    lastPeakPrice: entryPrice,
+                    peakRoe: 0,
+                    lowestRoe: 0,
+                    lastStopRoe: regimeConfig?.hardStopRoe ?? -0.15,
+                    lastTakeProfitRoe: regimeConfig?.tpRoe ?? 0.25,
+                    lastTrailingActivationRoe: regimeConfig?.trailingActivationRoe ?? 0.15,
+                    lastTrailingCallbackRoe: regimeConfig?.trailingCallbackRoe ?? 0.08,
+                    lastBracketStatus: 'PENDING'
+                });
+                this.deps.logger.warn('aegis_attached_symbol_state_to_open_position', {
+                    symbol,
+                    side,
+                    qtyAbs: position.qtyAbs,
+                    entryPrice,
+                    leverage
+                });
+                break;
+            }
+        }
     }
 
     getAegisRuntimeSnapshot(): AegisRuntimeSnapshot {
@@ -142,13 +229,14 @@ export class TradingService {
             tradesToday: this.tradesToday,
             consecutiveLosses: this.consecutiveLosses,
             dailyStartBalance: this.dailyStartBalance,
+            dailyPnlPct: this.lastDailyPnlPct,
             lastTradeDayReset: this.lastTradeDayReset,
             liquidityStressBySymbol
         };
     }
 
     async start(startLoop = true): Promise<void> {
-        const { logger, notifier, mlService, state, configManager, exchange } = this.deps;
+        const { logger, notifier, mlService, configManager, exchange } = this.deps;
         const manager = configManager as any;
         if (typeof manager.validateSingleLiveAegisSymbol === 'function') {
             manager.validateSingleLiveAegisSymbol();
@@ -194,20 +282,26 @@ export class TradingService {
         const turboRaw = turbo?.raw as any;
         const turboGated = turbo?.gated;
         const freshness = turboRaw?.freshness ?? (turbo as any)?.freshness;
-        const startupPositions: AegisPositionMessageInput[] = [];
+        await this.migrateLegacyGlobalStateToFirstLiveSymbol();
+        await this.attachOpenExchangePositionsToSymbolState();
 
-        const botState = state.get();
-        if (botState.mode !== 'IDLE') {
-            const side = botState.lastSide as Side;
-            const markPrice = await exchange.getMarkPrice(firstSymbol);
-            const position = await exchange.readActivePosition(firstSymbol, side);
-            const entryPrice = botState.lastEntryPrice || position?.entryPrice || markPrice;
-            const leverage = botState.lastLeverage || position?.leverage || gateConfig.leverageCap;
-            const qtyAbs = botState.lastEntryQty || position?.qtyAbs || 0;
-            const marginUsed = botState.lastEntryMargin
+        const startupPositions: AegisPositionMessageInput[] = [];
+        for (const symbol of this.getLiveAegisSymbols()) {
+            const symbolState = this.stateForSymbol(symbol).get();
+            if (symbolState.mode === 'IDLE') continue;
+
+            const side = symbolState.lastSide as Side;
+            const symbolGateConfig = this.getAegisTurboGateConfig(symbol);
+            const symbolRegimeConfig = this.getAegisTurboRegimeConfig(symbol);
+            const markPrice = await exchange.getMarkPrice(symbol);
+            const position = await exchange.readActivePosition(symbol, side);
+            const entryPrice = symbolState.lastEntryPrice || position?.entryPrice || markPrice;
+            const leverage = symbolState.lastLeverage || position?.leverage || symbolGateConfig.leverageCap;
+            const qtyAbs = symbolState.lastEntryQty || position?.qtyAbs || 0;
+            const marginUsed = symbolState.lastEntryMargin
                 || position?.isolatedMargin
                 || (entryPrice > 0 && leverage > 0 && qtyAbs > 0 ? (entryPrice * qtyAbs) / leverage : 0);
-            const durationMs = botState.lastEntryAt ? Date.now() - botState.lastEntryAt : 0;
+            const durationMs = symbolState.lastEntryAt ? Date.now() - symbolState.lastEntryAt : 0;
             const roi = side === 'SHORT'
                 ? (entryPrice - markPrice) / entryPrice * leverage
                 : (markPrice - entryPrice) / entryPrice * leverage;
@@ -215,14 +309,14 @@ export class TradingService {
                 ? position.unrealizedPnl
                 : this.pnlFromRoe(marginUsed, roi);
             const approximateBalance = startupWalletBalance !== null ? startupWalletBalance + marginUsed + pnl : null;
-            const openOrders = await exchange.listCloseOrdersForSide(firstSymbol, side);
+            const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
             const tpOrder = openOrders.find(order => order.type.includes('TAKE_PROFIT'));
             const slOrder = openOrders.find(order => order.type.includes('STOP'));
-            const stopRoe = botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15;
-            const takeProfitRoe = botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25;
+            const stopRoe = symbolState.lastStopRoe ?? symbolRegimeConfig?.hardStopRoe ?? -0.15;
+            const takeProfitRoe = symbolState.lastTakeProfitRoe ?? symbolRegimeConfig?.tpRoe ?? 0.25;
 
             startupPositions.push({
-                symbol: firstSymbol,
+                symbol,
                 side,
                 size: qtyAbs,
                 margin: marginUsed,
@@ -235,7 +329,7 @@ export class TradingService {
                 slRoe: stopRoe
             });
             await this.logAegisAccountSnapshot({
-                symbol: firstSymbol,
+                symbol,
                 walletBalance: startupAccount.walletBalance ?? startupWalletBalance ?? undefined,
                 availableBalance: startupAccount.availableBalance,
                 unrealizedPnl: pnl,
@@ -250,9 +344,11 @@ export class TradingService {
                 metadata: { event: 'startup' }
             });
             if (approximateBalance !== null && startupAccount.equityTotal === undefined) {
-                logger.debug('startup_approximate_balance', { symbol: firstSymbol, approximateBalance });
+                logger.debug('startup_approximate_balance', { symbol, approximateBalance });
             }
-        } else {
+        }
+
+        if (startupPositions.length === 0) {
             await this.logAegisAccountSnapshot({
                 symbol: firstSymbol,
                 walletBalance: startupAccount.walletBalance ?? startupWalletBalance ?? undefined,
@@ -362,7 +458,8 @@ export class TradingService {
 
     private async processSymbol(symbol: string): Promise<void> {
         this.lastAlivePulseMs = Date.now();
-        const botState = this.deps.state.get();
+        const symbolState = this.stateForSymbol(symbol);
+        const botState = symbolState.get();
         const symbolMode = this.getSymbolMode(symbol);
 
         try {
@@ -376,17 +473,8 @@ export class TradingService {
             }
 
             if (botState.mode !== 'IDLE') {
-                const liveSymbol = this.liveSymbolForGlobalState();
-                if (symbol !== liveSymbol) {
-                    this.deps.logger.warn('aegis_skip_manage_position_global_state_symbol_mismatch', {
-                        symbol,
-                        liveSymbol,
-                        stateMode: botState.mode
-                    });
-                    return;
-                }
-                await this.managePosition(symbol, botState);
-                if (this.deps.state.get().mode === 'IDLE') {
+                await this.managePosition(symbol, botState, symbolState);
+                if (symbolState.get().mode === 'IDLE') {
                     await this.lookForEntry(symbol);
                 }
             } else {
@@ -578,7 +666,7 @@ export class TradingService {
         signal: AegisTradingSignal,
         dailyPnlPct?: number
     ): AegisMicroLiveGateDecision {
-        const botState = this.deps.state.get();
+        const botState = this.stateForSymbol(symbol).get();
         const timeSinceLastExitMs = Date.now() - (botState.lastExitAt || 0);
         const liquidityStress = this.detector[symbol]?.getLiquidityStress() || 0;
 
@@ -598,7 +686,8 @@ export class TradingService {
     }
 
     private async lookForEntry(symbol: string): Promise<void> {
-        const { mlService, exchange, logger, state } = this.deps;
+        const { mlService, exchange, logger } = this.deps;
+        const symbolState = this.stateForSymbol(symbol);
         const tradingMode = this.getTradingMode();
 
         try {
@@ -631,12 +720,17 @@ export class TradingService {
             }
 
             const balance = await exchange.getUSDTBalance();
+            const accountSnapshot = await this.readEntryAccountSnapshot(balance);
+            const dailyEquity = accountSnapshot.equityTotal
+                ?? accountSnapshot.walletBalance
+                ?? balance;
             if (this.dailyStartBalance === null || this.dailyStartBalance <= 0) {
-                this.dailyStartBalance = balance;
+                this.dailyStartBalance = dailyEquity;
             }
             const dailyPnlPct = this.dailyStartBalance > 0
-                ? (balance - this.dailyStartBalance) / this.dailyStartBalance
+                ? (dailyEquity - this.dailyStartBalance) / this.dailyStartBalance
                 : undefined;
+            this.lastDailyPnlPct = dailyPnlPct;
             const gateConfig = this.getAegisTurboGateConfig(symbol);
             const gateDecision = this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
             if (!gateDecision.allowed) {
@@ -671,6 +765,8 @@ export class TradingService {
                     balance,
                     dailyStartBalance: this.dailyStartBalance,
                     dailyPnlPct,
+                    dailyEquity,
+                    availableBalance: balance,
                     dailyLossStopPct: gateConfig.dailyLossStopPct,
                     tradingMode
                 });
@@ -738,6 +834,8 @@ export class TradingService {
                     balance,
                     dailyStartBalance: this.dailyStartBalance,
                     dailyPnlPct,
+                    dailyEquity,
+                    availableBalance: balance,
                     dailyLossStopPct: gateConfig.dailyLossStopPct,
                     tradingMode
                 });
@@ -754,7 +852,7 @@ export class TradingService {
                 return;
             }
 
-            if (!gateDecision.side || state.get().mode !== 'IDLE') return;
+            if (!gateDecision.side || symbolState.get().mode !== 'IDLE') return;
             if (this.tradesToday >= gateConfig.maxTradesPerDay) return;
             if (await exchange.hasOpenPosition(symbol, 'ANY')) {
                 logger.warn('aegis_real_position_already_open', { symbol });
@@ -811,7 +909,8 @@ export class TradingService {
         gate: AegisMicroLiveGateDecision,
         tradeId: string
     ): Promise<void> {
-        const { exchange, logger, state, notifier, configManager } = this.deps;
+        const { exchange, logger, notifier, configManager } = this.deps;
+        const symbolState = this.stateForSymbol(symbol);
         const yaml = this.getAegisTurboYamlConfig();
         let opened = false;
         let openedSide: Side | null = null;
@@ -933,7 +1032,7 @@ export class TradingService {
                         reason: 'AEGIS_BRACKET_FAILED',
                         metadata: { stopPrice, tpPrice, slOk, tpOk }
                     });
-                    state.set({
+                    symbolState.set({
                         mode: 'IDLE',
                         lastExitAt: Date.now(),
                         lastExitReason: 'AEGIS_BRACKET_FAILED',
@@ -977,7 +1076,7 @@ export class TradingService {
                         reason: 'AEGIS_BRACKET_FAILED',
                         metadata: { stopPrice, tpPrice, slOk, tpOk, bracketStatus }
                     });
-                    state.set({
+                    symbolState.set({
                         mode: 'IDLE',
                         lastExitAt: Date.now(),
                         lastExitReason: 'AEGIS_BRACKET_FAILED',
@@ -999,7 +1098,7 @@ export class TradingService {
                 metadata: { stopPrice, tpPrice, slOk, tpOk, bracketStatus }
             });
             const openedAtMs = await exchange.getServerTime();
-            state.set({
+            symbolState.set({
                 mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                 lastSide: side,
                 lastEntryPrice: entryPrice,
@@ -1124,7 +1223,7 @@ export class TradingService {
                             reason: 'AEGIS_ENTRY_ERROR_CLOSED',
                             metadata: { error: String(error), qtyAbs: position.qtyAbs }
                         });
-                        state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_ENTRY_ERROR_CLOSED' });
+                        symbolState.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_ENTRY_ERROR_CLOSED' });
                         await notifier.sendMessage(
                             `⚠️ **AEGIS ENTRY FAILED**\n` +
                             `Symbol: ${symbol}\n` +
@@ -1220,8 +1319,8 @@ export class TradingService {
         };
     }
 
-    private async managePosition(symbol: string, botState: BotState): Promise<void> {
-        const { exchange, logger, state, notifier } = this.deps;
+    private async managePosition(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
+        const { exchange, logger, notifier } = this.deps;
         const side = botState.lastSide as Side;
         const entryPrice = botState.lastEntryPrice || 0;
         const leverage = botState.lastLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
@@ -1241,13 +1340,13 @@ export class TradingService {
                     consecutiveLosses: this.consecutiveLosses
                 });
                 await this.notifyExit(symbol, side, 'SL/TP', botState, { exitPrice: markPrice, finalRoe, pnl });
-                state.set({ mode: 'IDLE', lastExitAt: Date.now() });
+                symbolState.set({ mode: 'IDLE', lastExitAt: Date.now() });
                 return;
             }
 
             if (this.getAegisTurboYamlConfig()?.require_brackets !== false) {
                 try {
-                    await this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position);
+                    await this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, botState);
                 } catch (bracketError) {
                     logger.error('aegis_bracket_recreate_failed', { symbol, side, error: String(bracketError) });
                     await notifier.sendAlert(
@@ -1263,7 +1362,7 @@ export class TradingService {
             if (candle) {
                 peakPrice = side === 'SHORT' ? Math.min(peakPrice, candle.low) : Math.max(peakPrice, candle.high);
             }
-            if (peakPrice !== botState.lastPeakPrice) state.set({ lastPeakPrice: peakPrice });
+            if (peakPrice !== botState.lastPeakPrice) symbolState.set({ lastPeakPrice: peakPrice });
 
             const currentRoe = side === 'SHORT'
                 ? (entryPrice - markPrice) / entryPrice * leverage
@@ -1271,7 +1370,7 @@ export class TradingService {
             const updatedPeakRoe = Math.max(botState.peakRoe || 0, currentRoe);
             const updatedLowestRoe = Math.min(botState.lowestRoe || 0, currentRoe);
             if (updatedPeakRoe !== botState.peakRoe || updatedLowestRoe !== botState.lowestRoe) {
-                state.set({ peakRoe: updatedPeakRoe, lowestRoe: updatedLowestRoe });
+                symbolState.set({ peakRoe: updatedPeakRoe, lowestRoe: updatedLowestRoe });
             }
 
             const serverNow = await exchange.getServerTime();
@@ -1280,7 +1379,7 @@ export class TradingService {
             const maxHoldMs = regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
             if (tradeDuration > maxHoldMs && currentRoe > 0.02) {
                 await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AEGIS_TIME_LIMIT');
-                state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_TIME_LIMIT' });
+                symbolState.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_TIME_LIMIT' });
                 await this.notifyExit(symbol, side, 'TIME_LIMIT', botState);
                 return;
             }
@@ -1293,7 +1392,7 @@ export class TradingService {
                     const atr = calculateATR(klines, 14);
                     if (atr) {
                         currentAtr = atr;
-                        state.set({ lastAtrFetchedAt: now, lastAtrValue: atr });
+                        symbolState.set({ lastAtrFetchedAt: now, lastAtrValue: atr });
                     }
                 } catch { }
             }
@@ -1346,7 +1445,7 @@ export class TradingService {
                         await (exchange as any).cancelStopOrdersForSide(symbol, side);
                     }
                     await exchange.placeStopClose(symbol, side, trailingPrice);
-                    state.set({ lastTrailStop: trailingPrice });
+                    symbolState.set({ lastTrailStop: trailingPrice });
                     logger.info('aegis_trailing_stop_updated', { symbol, side, trailingPrice });
                     await this.logAegisTradeEvent(symbol, 'SL_MOVED', {
                         tradeId: botState.lastTradeId,
@@ -1359,7 +1458,7 @@ export class TradingService {
                 }
             } else if (action.type === 'CLOSE_MARKET') {
                 await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, action.reason);
-                state.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: action.reason });
+                symbolState.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: action.reason });
                 const pnl = this.pnlFromRoe(this.entryMargin(botState), currentRoe);
                 await this.notifyExit(symbol, side, action.reason, botState, { exitPrice: markPrice, finalRoe: currentRoe, pnl });
             }
@@ -1465,7 +1564,8 @@ export class TradingService {
         side: Side,
         entryPrice: number,
         leverage: number,
-        position: PositionInfo
+        position: PositionInfo,
+        botState: BotState
     ): Promise<void> {
         const { exchange, logger } = this.deps;
         const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
@@ -1473,7 +1573,7 @@ export class TradingService {
         const hasTP = openOrders.some(order => order.type.includes('TAKE_PROFIT'));
         if (hasSL && hasTP) return;
         await this.logAegisTradeEvent(symbol, 'BRACKET_MISSING', {
-            tradeId: this.deps.state.get().lastTradeId,
+            tradeId: botState.lastTradeId,
             reason: !hasSL && !hasTP ? 'SL_AND_TP_MISSING' : !hasSL ? 'SL_MISSING' : 'TP_MISSING',
             metadata: { hasSL, hasTP }
         });
@@ -1485,7 +1585,7 @@ export class TradingService {
                 this.bracketPrice(
                     side,
                     entryPrice,
-                    this.deps.state.get().lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15,
+                    botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15,
                     leverage,
                     'STOP'
                 ),
@@ -1494,7 +1594,7 @@ export class TradingService {
             await exchange.placeStopClose(symbol, side, stopPrice, position.qtyAbs);
             logger.info('aegis_turbo_brackets_created', { symbol, side, stopPrice, recreated: true });
             await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
-                tradeId: this.deps.state.get().lastTradeId,
+                tradeId: botState.lastTradeId,
                 newStop: stopPrice,
                 reason: 'SL_RECREATED'
             });
@@ -1504,7 +1604,7 @@ export class TradingService {
                 this.bracketPrice(
                     side,
                     entryPrice,
-                    this.deps.state.get().lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25,
+                    botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25,
                     leverage,
                     'TP'
                 ),
@@ -1513,7 +1613,7 @@ export class TradingService {
             await exchange.placeTpClose(symbol, side, tpPrice, position.qtyAbs);
             logger.info('aegis_turbo_brackets_created', { symbol, side, tpPrice, recreated: true });
             await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
-                tradeId: this.deps.state.get().lastTradeId,
+                tradeId: botState.lastTradeId,
                 newTp: tpPrice,
                 reason: 'TP_RECREATED'
             });
@@ -1704,6 +1804,7 @@ export class TradingService {
         if (today > this.lastTradeDayReset) {
             this.tradesToday = 0;
             this.dailyStartBalance = null;
+            this.lastDailyPnlPct = undefined;
             this.lastTradeDayReset = today;
         }
     }

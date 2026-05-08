@@ -10,34 +10,34 @@ symbols:
     mode: LIVE
   BTCUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   SOLUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   BNBUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   XRPUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   DOGEUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   ADAUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   AVAXUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   LINKUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   SUIUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
   LTCUSDT:
     enabled: true
-    mode: SHADOW
+    mode: LIVE
 
 TRADING:
   capital_usage_default: 1.0        
