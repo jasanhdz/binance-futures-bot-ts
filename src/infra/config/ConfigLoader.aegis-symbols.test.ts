@@ -143,13 +143,13 @@ ${shadowYaml}
         const leverageBySymbol = {
             ETHUSDT: 20,
             BTCUSDT: 20,
-            SOLUSDT: 15,
+            SOLUSDT: 20,
             BNBUSDT: 15,
-            XRPUSDT: 15,
+            XRPUSDT: 20,
             DOGEUSDT: 10,
-            ADAUSDT: 12,
-            AVAXUSDT: 12,
-            LINKUSDT: 12,
+            ADAUSDT: 20,
+            AVAXUSDT: 20,
+            LINKUSDT: 20,
             SUIUSDT: 8,
             LTCUSDT: 15
         };
@@ -162,25 +162,25 @@ ${shadowYaml}
       leverage: 20
   SOLUSDT:
     AEGIS_TURBO:
-      leverage: 15
+      leverage: 20
   BNBUSDT:
     AEGIS_TURBO:
       leverage: 15
   XRPUSDT:
     AEGIS_TURBO:
-      leverage: 15
+      leverage: 20
   DOGEUSDT:
     AEGIS_TURBO:
       leverage: 10
   ADAUSDT:
     AEGIS_TURBO:
-      leverage: 12
+      leverage: 20
   AVAXUSDT:
     AEGIS_TURBO:
-      leverage: 12
+      leverage: 20
   LINKUSDT:
     AEGIS_TURBO:
-      leverage: 12
+      leverage: 20
   SUIUSDT:
     AEGIS_TURBO:
       leverage: 8
