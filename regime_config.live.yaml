@@ -83,4 +83,37 @@ aegis:
     require_brackets: true
     close_if_bracket_fails: true
 
-SYMBOL_OVERRIDES: {}
+SYMBOL_OVERRIDES:
+  ETHUSDT:
+    AEGIS_TURBO:
+      leverage: 20
+  BTCUSDT:
+    AEGIS_TURBO:
+      leverage: 20
+  SOLUSDT:
+    AEGIS_TURBO:
+      leverage: 15
+  BNBUSDT:
+    AEGIS_TURBO:
+      leverage: 15
+  XRPUSDT:
+    AEGIS_TURBO:
+      leverage: 15
+  DOGEUSDT:
+    AEGIS_TURBO:
+      leverage: 10
+  ADAUSDT:
+    AEGIS_TURBO:
+      leverage: 12
+  AVAXUSDT:
+    AEGIS_TURBO:
+      leverage: 12
+  LINKUSDT:
+    AEGIS_TURBO:
+      leverage: 12
+  SUIUSDT:
+    AEGIS_TURBO:
+      leverage: 8
+  LTCUSDT:
+    AEGIS_TURBO:
+      leverage: 15

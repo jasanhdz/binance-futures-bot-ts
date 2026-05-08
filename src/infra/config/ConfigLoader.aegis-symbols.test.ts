@@ -6,7 +6,7 @@ import { NinjaConfigManager } from './ConfigLoader';
 
 const tempFiles: string[] = [];
 
-function writeConfig(symbolsYaml: string): string {
+function writeConfig(symbolsYaml: string, symbolOverridesYaml = '{}'): string {
     const filePath = path.join(os.tmpdir(), `aegis-symbols-${Date.now()}-${Math.random()}.yaml`);
     fs.writeFileSync(filePath, `
 SYMBOLS:
@@ -36,7 +36,7 @@ aegis:
     enabled: true
     live_enabled: true
 ${symbolsYaml}
-SYMBOL_OVERRIDES: {}
+SYMBOL_OVERRIDES: ${symbolOverridesYaml}
 `);
     tempFiles.push(filePath);
     return filePath;
@@ -134,5 +134,72 @@ ${shadowYaml}
         expect(config.getShadowAegisSymbols()).toEqual(massShadowSymbols);
         expect(config.getActiveAegisSymbols()).toEqual(['ETHUSDT', ...massShadowSymbols]);
         expect(() => config.validateSingleLiveAegisSymbol()).not.toThrow();
+    });
+
+    it('applies conservative AEGIS_TURBO leverage overrides per onboarding symbol', () => {
+        const shadowYaml = massShadowSymbols
+            .map((symbol) => `  ${symbol}:\n    enabled: true\n    mode: SHADOW`)
+            .join('\n');
+        const leverageBySymbol = {
+            ETHUSDT: 20,
+            BTCUSDT: 20,
+            SOLUSDT: 15,
+            BNBUSDT: 15,
+            XRPUSDT: 15,
+            DOGEUSDT: 10,
+            ADAUSDT: 12,
+            AVAXUSDT: 12,
+            LINKUSDT: 12,
+            SUIUSDT: 8,
+            LTCUSDT: 15
+        };
+        const overrideYaml = `
+  ETHUSDT:
+    AEGIS_TURBO:
+      leverage: 20
+  BTCUSDT:
+    AEGIS_TURBO:
+      leverage: 20
+  SOLUSDT:
+    AEGIS_TURBO:
+      leverage: 15
+  BNBUSDT:
+    AEGIS_TURBO:
+      leverage: 15
+  XRPUSDT:
+    AEGIS_TURBO:
+      leverage: 15
+  DOGEUSDT:
+    AEGIS_TURBO:
+      leverage: 10
+  ADAUSDT:
+    AEGIS_TURBO:
+      leverage: 12
+  AVAXUSDT:
+    AEGIS_TURBO:
+      leverage: 12
+  LINKUSDT:
+    AEGIS_TURBO:
+      leverage: 12
+  SUIUSDT:
+    AEGIS_TURBO:
+      leverage: 8
+  LTCUSDT:
+    AEGIS_TURBO:
+      leverage: 15`;
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+${shadowYaml}
+`, overrideYaml));
+
+        for (const [symbol, leverage] of Object.entries(leverageBySymbol)) {
+            expect(config.getRegimeConfig('AEGIS_TURBO', symbol).leverage).toBe(leverage);
+        }
+        expect(config.getRegimeConfig('AEGIS_TURBO', 'UNKNOWNUSDT').leverage).toBe(20);
+        expect(config.getRegimeConfig('AEGIS_TURBO', 'SUIUSDT').hardStopRoe).toBe(-0.40);
+        expect(config.getRegimeConfig('AEGIS_TURBO', 'SUIUSDT').entryThreshold).toBe(0.60);
     });
 });
