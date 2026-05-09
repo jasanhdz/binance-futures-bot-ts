@@ -136,6 +136,22 @@ describe('analyzeAegisTurboHistory', () => {
         expect(Object.keys(report.by_symbol)).toEqual(['ETHUSDT', 'BTCUSDT']);
     });
 
+    it('counts Aegis Exit Eye events', async () => {
+        await writeEvents([
+            exitEyeEvent('AEGIS_EXIT_EYE_SHADOW_PROTECT', 0.14, 0.05),
+            exitEyeEvent('AEGIS_EXIT_EYE_SHADOW_CLOSE', 0.18, 0.04),
+            exitEyeEvent('AEGIS_EXIT_EYE_CLOSE_POSITION', 0.12, 0.07)
+        ]);
+
+        const report = await run();
+
+        expect(report.summary.exit_eye_shadow_protect_count).toBe(1);
+        expect(report.summary.exit_eye_shadow_close_count).toBe(1);
+        expect(report.summary.exit_eye_close_count).toBe(1);
+        expect(report.summary.avg_roe_when_exit_eye_triggered).toBeCloseTo(0.146667);
+        expect(report.summary.avg_giveback_when_exit_eye_triggered).toBeCloseTo(0.053333);
+    });
+
     async function run() {
         return analyzeAegisTurboHistory({
             date: '2026-05-06',
@@ -161,6 +177,28 @@ describe('analyzeAegisTurboHistory', () => {
             path.join(logsDir, 'turbo_trades_2026-05-06.jsonl'),
             `${rows.map(row => JSON.stringify(row)).join('\n')}\n`
         );
+    }
+
+    async function writeEvents(rows: Array<Record<string, unknown>>) {
+        await fs.writeFile(
+            path.join(logsDir, 'turbo_trade_events_2026-05-06.jsonl'),
+            `${rows.map(row => JSON.stringify(row)).join('\n')}\n`
+        );
+    }
+
+    function exitEyeEvent(event: string, roe: number, givebackRoe: number) {
+        return {
+            timestamp: '2026-05-06T10:10:00.000Z',
+            symbol: 'ETHUSDT',
+            strategy: 'AEGIS_TURBO',
+            mode: 'AEGIS_TURBO_MICRO_LIVE',
+            event,
+            roe,
+            metadata: {
+                currentRoe: roe,
+                givebackRoe
+            }
+        };
     }
 
     function openTrade(tradeId: string, symbol: string, score: number) {

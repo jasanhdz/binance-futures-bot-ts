@@ -76,6 +76,29 @@ export interface AegisTurboYamlConfig {
     close_if_bracket_fails?: boolean;
 }
 
+export type AegisExitEyeMode = 'OFF' | 'SHADOW' | 'PROTECT' | 'CLOSE';
+
+export interface AegisExitEyeYamlConfig {
+    enabled: boolean;
+    mode: AegisExitEyeMode;
+    min_roe_to_protect: number;
+    min_peak_roe_to_protect: number;
+    min_giveback_from_peak_roe: number;
+    neutral_votes_to_protect: number;
+    opposite_votes_to_close: number;
+    min_roe_to_close_on_opposite: number;
+    min_peak_roe_to_close_on_opposite: number;
+    close_on_neutral_decay: boolean;
+    neutral_close_votes: number;
+    min_roe_to_close_on_neutral: number;
+    min_peak_roe_to_close_on_neutral: number;
+    min_giveback_to_close_on_neutral: number;
+    require_consecutive_neutral_close: number;
+    require_consecutive_neutral: number;
+    require_consecutive_opposite: number;
+    min_minutes_in_trade: number;
+}
+
 export type AegisSymbolMode = 'OFF' | 'SHADOW' | 'LIVE';
 
 export interface AegisSymbolYamlConfig {
@@ -105,6 +128,7 @@ export interface NinjaYamlConfig {
     };
     aegis?: {
         turbo?: AegisTurboYamlConfig;
+        exit_eye?: Partial<AegisExitEyeYamlConfig>;
     };
     SYMBOL_OVERRIDES?: {
         [symbol: string]: {
@@ -367,6 +391,30 @@ export class NinjaConfigManager {
         return this.config.aegis?.turbo;
     }
 
+    getAegisExitEyeConfig(): AegisExitEyeYamlConfig {
+        const raw = this.config.aegis?.exit_eye || {};
+        return {
+            enabled: raw.enabled ?? false,
+            mode: this.normalizeExitEyeMode(raw.mode),
+            min_roe_to_protect: this.finiteNumber(raw.min_roe_to_protect, 0.08),
+            min_peak_roe_to_protect: this.finiteNumber(raw.min_peak_roe_to_protect, 0.12),
+            min_giveback_from_peak_roe: this.finiteNumber(raw.min_giveback_from_peak_roe, 0.04),
+            neutral_votes_to_protect: Math.max(0, Math.floor(this.finiteNumber(raw.neutral_votes_to_protect, 2))),
+            opposite_votes_to_close: Math.max(0, Math.floor(this.finiteNumber(raw.opposite_votes_to_close, 2))),
+            min_roe_to_close_on_opposite: this.finiteNumber(raw.min_roe_to_close_on_opposite, 0.06),
+            min_peak_roe_to_close_on_opposite: this.finiteNumber(raw.min_peak_roe_to_close_on_opposite, 0.10),
+            close_on_neutral_decay: raw.close_on_neutral_decay === true,
+            neutral_close_votes: Math.max(0, Math.floor(this.finiteNumber(raw.neutral_close_votes, 3))),
+            min_roe_to_close_on_neutral: this.finiteNumber(raw.min_roe_to_close_on_neutral, 0.08),
+            min_peak_roe_to_close_on_neutral: this.finiteNumber(raw.min_peak_roe_to_close_on_neutral, 0.12),
+            min_giveback_to_close_on_neutral: this.finiteNumber(raw.min_giveback_to_close_on_neutral, 0.04),
+            require_consecutive_neutral_close: Math.max(1, Math.floor(this.finiteNumber(raw.require_consecutive_neutral_close, 2))),
+            require_consecutive_neutral: Math.max(1, Math.floor(this.finiteNumber(raw.require_consecutive_neutral, 2))),
+            require_consecutive_opposite: Math.max(1, Math.floor(this.finiteNumber(raw.require_consecutive_opposite, 1))),
+            min_minutes_in_trade: Math.max(0, this.finiteNumber(raw.min_minutes_in_trade, 3)),
+        };
+    }
+
     /**
      * THE MAGIC: Merges Base Regime Config + Symbol-Specific Overrides
      */
@@ -397,6 +445,7 @@ export class NinjaConfigManager {
             tpRoe: mergedConfig.tp_roe,
             entryThreshold: mergedConfig.entry_threshold,
             maxHoldMs: mergedConfig.max_trade_duration_ms || mergedConfig.max_hold_ms,
+            beRoe: mergedConfig.be_roe,
             trailingActivationRoe: mergedConfig.trailing_activation_roe,
             trailingCallbackRoe: mergedConfig.trailing_callback_roe,
             forbiddenHours: mergedConfig.forbidden_hours,
@@ -424,7 +473,7 @@ export class NinjaConfigManager {
      */
     private getDefaultRegimeConfig(regime: RegimeType): RegimeConfig {
         const defaults: Record<RegimeType, RegimeConfig> = {
-            AEGIS_TURBO: { leverage: 15, entryThreshold: 0.50, hardStopRoe: -0.15, tpRoe: 0.25, maxHoldMs: 28800000 }
+            AEGIS_TURBO: { leverage: 15, entryThreshold: 0.50, hardStopRoe: -0.15, tpRoe: 0.25, maxHoldMs: 28800000, beRoe: 0.10 }
         };
         return defaults[regime] || defaults.AEGIS_TURBO;
     }
@@ -473,6 +522,26 @@ export class NinjaConfigManager {
                     max_liquidity_stress: 0.70,
                     require_brackets: true,
                     close_if_bracket_fails: true
+                },
+                exit_eye: {
+                    enabled: false,
+                    mode: 'OFF',
+                    min_roe_to_protect: 0.08,
+                    min_peak_roe_to_protect: 0.12,
+                    min_giveback_from_peak_roe: 0.04,
+                    neutral_votes_to_protect: 2,
+                    opposite_votes_to_close: 2,
+                    min_roe_to_close_on_opposite: 0.06,
+                    min_peak_roe_to_close_on_opposite: 0.10,
+                    close_on_neutral_decay: false,
+                    neutral_close_votes: 3,
+                    min_roe_to_close_on_neutral: 0.08,
+                    min_peak_roe_to_close_on_neutral: 0.12,
+                    min_giveback_to_close_on_neutral: 0.04,
+                    require_consecutive_neutral_close: 2,
+                    require_consecutive_neutral: 2,
+                    require_consecutive_opposite: 1,
+                    min_minutes_in_trade: 3
                 }
             },
             symbols: {},
@@ -490,6 +559,18 @@ export class NinjaConfigManager {
             return normalized;
         }
         return 'SHADOW';
+    }
+
+    private normalizeExitEyeMode(mode?: AegisExitEyeMode | string): AegisExitEyeMode {
+        const normalized = (mode || 'OFF').trim().toUpperCase();
+        if (normalized === 'OFF' || normalized === 'SHADOW' || normalized === 'PROTECT' || normalized === 'CLOSE') {
+            return normalized;
+        }
+        return 'OFF';
+    }
+
+    private finiteNumber(value: unknown, fallback: number): number {
+        return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
     }
 }
 

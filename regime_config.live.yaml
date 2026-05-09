@@ -70,13 +70,32 @@ REGIMES:
     use_exit_agent: false
 
 aegis:
+  exit_eye:
+    enabled: true
+    mode: CLOSE
+    min_roe_to_protect: 0.08
+    min_peak_roe_to_protect: 0.12
+    min_giveback_from_peak_roe: 0.04
+    neutral_votes_to_protect: 2
+    opposite_votes_to_close: 2
+    min_roe_to_close_on_opposite: 0.06
+    min_peak_roe_to_close_on_opposite: 0.10
+    close_on_neutral_decay: true
+    neutral_close_votes: 3
+    min_roe_to_close_on_neutral: 0.08
+    min_peak_roe_to_close_on_neutral: 0.12
+    min_giveback_to_close_on_neutral: 0.04
+    require_consecutive_neutral_close: 2
+    require_consecutive_neutral: 2
+    require_consecutive_opposite: 1
+    min_minutes_in_trade: 3
   turbo:
     enabled: true
     live_enabled: true
     allow_short: true
     position_fraction_cap: 1.0
     max_trades_per_day: 99
-    max_consecutive_losses: 2
+    max_consecutive_losses: 10
     daily_loss_stop_pct: 0.10
     min_cooldown_ms: 900000
     max_liquidity_stress: 0.70

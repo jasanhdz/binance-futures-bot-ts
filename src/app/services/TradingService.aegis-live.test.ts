@@ -45,6 +45,7 @@ function regimeConfig(overrides: Record<string, unknown> = {}) {
         tpRoe: 0.25,
         entryThreshold: 0.60,
         maxHoldMs: 8 * 60 * 60 * 1000,
+        beRoe: 0.08,
         trailingActivationRoe: 0.15,
         trailingCallbackRoe: 0.08,
         ...overrides
@@ -101,9 +102,12 @@ function makeHarness(options: {
 	    placeTpCloseReject?: boolean;
 	    closeSideMarketSafeReject?: boolean;
 	    markPrice?: number;
+        lastCandle?: any;
 	    initialState?: any;
 	    symbolStates?: Record<string, any>;
 	    accountSnapshot?: any;
+        regime?: any;
+        guardian?: any;
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
@@ -146,12 +150,13 @@ function makeHarness(options: {
 	            ? vi.fn().mockRejectedValue(new Error('tp failed'))
 	            : vi.fn().mockResolvedValue(true),
 	        listCloseOrdersForSide: vi.fn().mockResolvedValue(closeOrders),
-	        closeSideMarketSafe: options.closeSideMarketSafeReject
-	            ? vi.fn().mockRejectedValue(new Error('close failed'))
-	            : vi.fn().mockResolvedValue(undefined),
+        closeSideMarketSafe: options.closeSideMarketSafeReject
+            ? vi.fn().mockRejectedValue(new Error('close failed'))
+            : vi.fn().mockResolvedValue(undefined),
+        cancelStopOrdersForSide: vi.fn().mockResolvedValue(undefined),
         hasOpenPosition: vi.fn().mockResolvedValue(false),
         getServerTime: vi.fn().mockResolvedValue(Date.now()),
-        getLastCandle: vi.fn().mockResolvedValue(null),
+        getLastCandle: vi.fn().mockResolvedValue(options.lastCandle ?? null),
         getCandles: vi.fn().mockResolvedValue([]),
         subscribeToCandles: vi.fn()
     };
@@ -170,11 +175,11 @@ function makeHarness(options: {
         }),
         reset: vi.fn()
     } as any;
+    const symbolStores = new Map<string, any>();
     if (options.symbolStates) {
-        const stores = new Map<string, any>();
         for (const [symbol, initial] of Object.entries(options.symbolStates)) {
             let scopedState: any = initial;
-            stores.set(symbol, {
+            symbolStores.set(symbol, {
                 get: vi.fn(() => scopedState),
                 set: vi.fn((patch: any) => {
                     scopedState = { ...scopedState, ...patch };
@@ -186,9 +191,9 @@ function makeHarness(options: {
             });
         }
         state.forSymbol = vi.fn((symbol: string) => {
-            if (!stores.has(symbol)) {
+            if (!symbolStores.has(symbol)) {
                 let scopedState: any = { mode: 'IDLE', currentRegime: 'AEGIS_TURBO', lastExitAt: Date.now() - 20 * 60 * 1000 };
-                stores.set(symbol, {
+                symbolStores.set(symbol, {
                     get: vi.fn(() => scopedState),
                     set: vi.fn((patch: any) => {
                         scopedState = { ...scopedState, ...patch };
@@ -199,14 +204,23 @@ function makeHarness(options: {
                     })
                 });
             }
-            return stores.get(symbol);
+            return symbolStores.get(symbol);
         });
     }
     const notifier = { sendMessage: vi.fn(), sendAlert: vi.fn() };
     const symbolModes = options.symbolModes ?? { ETHUSDT: 'LIVE' as const };
     const configManager = {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
-        getRegimeConfig: vi.fn(() => regimeConfig()),
+        getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
+        getGuardianConfig: vi.fn(() => options.guardian ?? {
+            beTriggerRoe: (options.regime ?? regimeConfig()).beRoe ?? 0.10,
+            beOffsetPct: 0.003,
+            trailingDev: 0.015,
+            trailingActivationRoe: (options.regime ?? regimeConfig()).trailingActivationRoe ?? 0.15,
+            trailingCallbackRoe: (options.regime ?? regimeConfig()).trailingCallbackRoe ?? 0.08,
+            useAtrTrailing: true,
+            atrMultiplier: 1.5
+        }),
         getSymbolMode: vi.fn((symbol: string) => symbolModes[symbol] ?? 'SHADOW'),
         getLiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode === 'LIVE').map(([symbol]) => symbol)),
         getActiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode !== 'OFF').map(([symbol]) => symbol)),
@@ -243,7 +257,7 @@ function makeHarness(options: {
         }
     );
 
-	    return { exchange, historyLogger, logger, notifier, service, state };
+	    return { exchange, historyLogger, logger, notifier, service, state, configManager, symbolStores };
 	}
 
 describe('TradingService Aegis live execution', () => {
@@ -631,5 +645,280 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5, 0.01);
         expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5, 0.01);
+    });
+
+    it('executes MOVE_SL_BE for a LONG position', async () => {
+        const { exchange, historyLogger, service, state } = makeHarness({
+            markPrice: 100.45,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 105 }
+            ],
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'be-long',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0,
+                lastStopPrice: 98,
+                lastBreakEvenRoe: 0.08,
+                lastTrailingActivationRoe: 0.15,
+                lastTrailingCallbackRoe: 0.08
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.cancelStopOrdersForSide).toHaveBeenCalledWith('ETHUSDT', 'LONG');
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 100.3);
+        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'BREAK_EVEN_EXECUTED',
+            reason: 'MOVE_SL_BE',
+            new_stop: 100.3
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SL_MOVED',
+            reason: 'MOVE_SL_BE',
+            new_stop: 100.3
+        }));
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            breakEvenExecuted: true,
+            lastBreakEvenStop: 100.3,
+            lastStopPrice: 100.3
+        }));
+    });
+
+    it('executes MOVE_SL_BE for a SHORT position', async () => {
+        const { exchange, historyLogger, service, state } = makeHarness({
+            markPrice: 99.55,
+            readActivePosition: { sideMode: 'SHORT', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 102 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 95 }
+            ],
+            initialState: {
+                mode: 'SHORT_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'SHORT',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'be-short',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0,
+                lastStopPrice: 102,
+                lastBreakEvenRoe: 0.08,
+                lastTrailingActivationRoe: 0.15,
+                lastTrailingCallbackRoe: 0.08
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.cancelStopOrdersForSide).toHaveBeenCalledWith('ETHUSDT', 'SHORT');
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'SHORT', 99.7);
+        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'BREAK_EVEN_EXECUTED',
+            reason: 'MOVE_SL_BE',
+            new_stop: 99.7
+        }));
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            breakEvenExecuted: true,
+            lastBreakEvenStop: 99.7,
+            lastStopPrice: 99.7
+        }));
+    });
+
+    it('does not execute break-even twice', async () => {
+        const { exchange, service } = makeHarness({
+            markPrice: 100.45,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'be-dup',
+                lastPeakPrice: 100,
+                peakRoe: 0.09,
+                lowestRoe: 0,
+                breakEvenExecuted: true,
+                lastBreakEvenStop: 100.3,
+                lastTrailStop: 100.3,
+                lastStopPrice: 100.3,
+                lastBreakEvenRoe: 0.08
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+    });
+
+    it('uses be_roe from YAML/config before the fallback threshold', async () => {
+        const { exchange, configManager, service } = makeHarness({
+            markPrice: 100.45,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            regime: regimeConfig({ beRoe: 0.08 }),
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'be-yaml',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0,
+                lastStopPrice: 98
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(configManager.getGuardianConfig).toHaveBeenCalledWith('AEGIS_TURBO', 'ETHUSDT');
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 100.3);
+    });
+
+    it('falls back to 0.10 BE threshold when config omits be_roe', async () => {
+        const { exchange, service } = makeHarness({
+            markPrice: 100.45,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            regime: regimeConfig({ beRoe: undefined }),
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'be-fallback',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0,
+                lastStopPrice: 98
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+    });
+
+    it('logs and alerts when MOVE_SL_BE fails without marking state as executed', async () => {
+        const { exchange, logger, notifier, service, state } = makeHarness({
+            markPrice: 100.45,
+            placeStopCloseReject: true,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'be-fail',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0,
+                lastStopPrice: 98,
+                lastBreakEvenRoe: 0.08
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(logger.error).toHaveBeenCalledWith('aegis_break_even_stop_move_failed', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            attemptedStopPrice: 100.3
+        }));
+        expect(notifier.sendAlert).toHaveBeenCalledWith('AEGIS BREAK-EVEN FAILED', expect.stringContaining('ETHUSDT LONG'));
+        expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({ breakEvenExecuted: true }));
+    });
+
+    it('keeps break-even state scoped to the active symbol', async () => {
+        const { exchange, service, symbolStores } = makeHarness({
+            symbols: ['ADAUSDT', 'ETHUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE', ETHUSDT: 'LIVE' },
+            markPrice: 100.45,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            symbolStates: {
+                ADAUSDT: {
+                    mode: 'LONG_RIDE',
+                    currentRegime: 'AEGIS_TURBO',
+                    lastStrategy: 'AEGIS_TURBO',
+                    lastSide: 'LONG',
+                    lastEntryPrice: 100,
+                    lastLeverage: 20,
+                    lastEntryAt: Date.now() - 10 * 60 * 1000,
+                    lastEntryQty: 1,
+                    lastEntryMargin: 5,
+                    lastTradeId: 'be-ada',
+                    lastPeakPrice: 100,
+                    peakRoe: 0,
+                    lowestRoe: 0,
+                    lastStopPrice: 98,
+                    lastBreakEvenRoe: 0.08
+                },
+                ETHUSDT: {
+                    mode: 'LONG_RIDE',
+                    currentRegime: 'AEGIS_TURBO',
+                    lastStrategy: 'AEGIS_TURBO',
+                    lastSide: 'LONG',
+                    lastEntryPrice: 200,
+                    lastLeverage: 20,
+                    lastEntryAt: Date.now() - 10 * 60 * 1000,
+                    lastEntryQty: 1,
+                    lastEntryMargin: 10,
+                    lastTradeId: 'eth-open',
+                    lastPeakPrice: 200,
+                    peakRoe: 0,
+                    lowestRoe: 0,
+                    lastStopPrice: 196,
+                    lastBreakEvenRoe: 0.08
+                }
+            }
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ADAUSDT', 'LONG', 100.3);
+        expect(symbolStores.get('ADAUSDT')?.get()).toEqual(expect.objectContaining({ breakEvenExecuted: true, lastBreakEvenStop: 100.3 }));
+        expect(symbolStores.get('ETHUSDT')?.get()).not.toEqual(expect.objectContaining({ breakEvenExecuted: true }));
     });
 });

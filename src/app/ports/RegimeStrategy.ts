@@ -13,6 +13,7 @@ export interface RegimeConfig {
     tpRoe: number;
     entryThreshold: number;
     maxHoldMs?: number;
+    beRoe?: number;
     trailingActivationRoe?: number;
     trailingCallbackRoe?: number;
     forbiddenHours?: number[];

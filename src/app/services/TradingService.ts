@@ -4,7 +4,7 @@ import { Logger } from '../ports/Logger';
 import { StateStore } from '../ports/StateStore';
 import { Notifier } from '../ports/Notifier';
 import { BotState, Side } from '../../domain/types';
-import { evaluateGuardianAction, GuardianConfig } from '../../domain/services/ProfitGuardian';
+import { DEFAULT_GUARDIAN_CONFIG, evaluateGuardianAction, GuardianConfig } from '../../domain/services/ProfitGuardian';
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
 import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
 import {
@@ -12,7 +12,17 @@ import {
     buildAegisMicroLiveGateConfigFromEnv,
     shouldEnterAegisTurboMicroLive
 } from '../../domain/services/AegisMicroLiveGate';
-import { AegisSymbolMode, AegisTurboYamlConfig, NinjaConfigManager } from '../../infra/config/ConfigLoader';
+import {
+    AegisExitEyeYamlConfig,
+    AegisSymbolMode,
+    AegisTurboYamlConfig,
+    NinjaConfigManager
+} from '../../infra/config/ConfigLoader';
+import {
+    AegisExitEyeDecision,
+    AegisExitEyeVotes,
+    evaluateAegisExitEye
+} from '../../domain/services/AegisExitEye';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
@@ -27,6 +37,8 @@ import { AegisPositionMessageInput, formatAegisStartupMessage } from '../message
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
+const EXIT_EYE_SIGNAL_TTL_MS = 15000;
+const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
 export interface TradingServiceDeps {
     exchange: Exchange;
@@ -72,6 +84,7 @@ export class TradingService {
     private detector: Record<string, LiquidityVoidDetector> = {};
     private readonly historyLogger: AegisTurboHistoryLogger;
     private readonly symbolStateStores = new Map<string, StateStore>();
+    private readonly exitEyeSignalCache = new Map<string, { at: number; signal: AegisTradingSignal }>();
 
     constructor(
         private deps: TradingServiceDeps,
@@ -91,6 +104,33 @@ export class TradingService {
             : undefined;
     }
 
+    private getAegisExitEyeConfig(): AegisExitEyeYamlConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisExitEyeConfig === 'function') {
+            return manager.getAegisExitEyeConfig();
+        }
+        return {
+            enabled: false,
+            mode: 'OFF',
+            min_roe_to_protect: 0.08,
+            min_peak_roe_to_protect: 0.12,
+            min_giveback_from_peak_roe: 0.04,
+            neutral_votes_to_protect: 2,
+            opposite_votes_to_close: 2,
+            min_roe_to_close_on_opposite: 0.06,
+            min_peak_roe_to_close_on_opposite: 0.10,
+            close_on_neutral_decay: false,
+            neutral_close_votes: 3,
+            min_roe_to_close_on_neutral: 0.08,
+            min_peak_roe_to_close_on_neutral: 0.12,
+            min_giveback_to_close_on_neutral: 0.04,
+            require_consecutive_neutral_close: 2,
+            require_consecutive_neutral: 2,
+            require_consecutive_opposite: 1,
+            min_minutes_in_trade: 3
+        };
+    }
+
     private getAegisTurboRegimeConfig(symbol?: string): RegimeConfig | undefined {
         const manager = this.deps.configManager as any;
         return typeof manager.getRegimeConfig === 'function'
@@ -104,6 +144,20 @@ export class TradingService {
             this.getAegisTurboYamlConfig(),
             this.getAegisTurboRegimeConfig(symbol)
         );
+    }
+
+    private getAegisGuardianConfig(symbol: string, regimeConfig?: RegimeConfig): GuardianConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getGuardianConfig === 'function') {
+            return manager.getGuardianConfig('AEGIS_TURBO', symbol);
+        }
+        return {
+            ...DEFAULT_GUARDIAN_CONFIG,
+            beTriggerRoe: regimeConfig?.beRoe ?? DEFAULT_GUARDIAN_CONFIG.beTriggerRoe,
+            trailingActivationRoe: regimeConfig?.trailingActivationRoe ?? DEFAULT_GUARDIAN_CONFIG.trailingActivationRoe,
+            trailingCallbackRoe: regimeConfig?.trailingCallbackRoe ?? DEFAULT_GUARDIAN_CONFIG.trailingCallbackRoe,
+            atrMultiplier: 1.5
+        };
     }
 
     private getSymbolMode(symbol: string): AegisSymbolMode {
@@ -204,7 +258,9 @@ export class TradingService {
                     lastTakeProfitRoe: regimeConfig?.tpRoe ?? 0.25,
                     lastTrailingActivationRoe: regimeConfig?.trailingActivationRoe ?? 0.15,
                     lastTrailingCallbackRoe: regimeConfig?.trailingCallbackRoe ?? 0.08,
-                    lastBracketStatus: 'PENDING'
+                    lastBracketStatus: 'PENDING',
+                    exitEyeNeutralCount: 0,
+                    exitEyeOppositeCount: 0
                 });
                 this.deps.logger.warn('aegis_attached_symbol_state_to_open_position', {
                     symbol,
@@ -1098,6 +1154,8 @@ export class TradingService {
                 metadata: { stopPrice, tpPrice, slOk, tpOk, bracketStatus }
             });
             const openedAtMs = await exchange.getServerTime();
+            const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
+            const guardianConfig = this.getAegisGuardianConfig(symbol, regimeConfig);
             symbolState.set({
                 mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                 lastSide: side,
@@ -1119,13 +1177,21 @@ export class TradingService {
                 lastAegisGatedReason: gate.gatedReason,
                 lastAegisGatedBlockedBy: gate.gatedBlockedBy,
                 lastStopRoe: gate.stopRoe,
+                lastStopPrice: stopPrice,
+                lastBreakEvenRoe: guardianConfig.beTriggerRoe,
+                breakEvenArmed: false,
+                breakEvenExecuted: false,
+                lastBreakEvenStop: undefined,
+                lastBreakEvenAt: undefined,
                 lastTakeProfitRoe: gate.takeProfitRoe,
                 lastTrailingActivationRoe: gate.trailingActivationRoe,
                 lastTrailingCallbackRoe: gate.trailingCallbackRoe,
                 lastPositionFraction: positionFraction,
                 lastRequestedLeverage: gate.leverage,
                 lastActualLeverage: leverage,
-                lastBracketStatus: 'OK'
+                lastBracketStatus: 'OK',
+                exitEyeNeutralCount: 0,
+                exitEyeOppositeCount: 0
             });
             await this.historyLogger.logTradeOpen({
                 trade_id: tradeId,
@@ -1319,6 +1385,272 @@ export class TradingService {
         };
     }
 
+    private async getExitEyeSignal(symbol: string): Promise<AegisTradingSignal | null> {
+        const cached = this.exitEyeSignalCache.get(symbol);
+        const now = Date.now();
+        if (cached && now - cached.at < EXIT_EYE_SIGNAL_TTL_MS) {
+            return cached.signal;
+        }
+        try {
+            const signal = await this.deps.mlService.getSignal(symbol);
+            this.exitEyeSignalCache.set(symbol, { at: now, signal });
+            return signal;
+        } catch (error) {
+            this.deps.logger.warn('aegis_exit_eye_signal_unavailable', { symbol, error: String(error) });
+            return null;
+        }
+    }
+
+    private extractExitEyeSignal(signal: AegisTradingSignal | null): {
+        currentTurboAction?: string;
+        rawAction?: string;
+        gatedAction?: string;
+        turboScore?: number;
+        votes?: AegisExitEyeVotes;
+        reason?: string;
+    } {
+        const aegis = signal?.metadata?.aegis ?? signal?.aegis;
+        const turbo = aegis?.turbo as any;
+        const raw = turbo?.raw;
+        const gated = turbo?.gated;
+        return {
+            currentTurboAction: turbo?.action ?? gated?.action ?? raw?.action,
+            rawAction: raw?.action,
+            gatedAction: gated?.action,
+            turboScore: raw?.turbo_score ?? turbo?.turbo_score,
+            votes: raw?.votes ?? turbo?.votes,
+            reason: gated?.reason ?? raw?.reason ?? turbo?.reason,
+        };
+    }
+
+    private updateExitEyeCounters(
+        side: Side,
+        botState: BotState,
+        symbolState: StateStore,
+        signal: {
+            currentTurboAction?: string;
+            rawAction?: string;
+            gatedAction?: string;
+            turboScore?: number;
+            votes?: AegisExitEyeVotes;
+            reason?: string;
+        },
+        config: AegisExitEyeYamlConfig
+    ): { neutralCount: number; neutralCloseCount: number; oppositeCount: number } {
+        const action = String(signal.currentTurboAction || '').toUpperCase();
+        const rawAction = String(signal.rawAction || '').toUpperCase();
+        const gatedAction = String(signal.gatedAction || '').toUpperCase();
+        const votes = signal.votes || {};
+        const neutralCondition = action !== side && Number(votes.neutral ?? 0) >= config.neutral_votes_to_protect;
+        const neutralCloseCondition = action !== side && Number(votes.neutral ?? 0) >= config.neutral_close_votes;
+        const oppositeAction = side === 'LONG' ? 'SHORT' : 'LONG';
+        const oppositeVotes = side === 'LONG' ? Number(votes.short ?? 0) : Number(votes.long ?? 0);
+        const oppositeCondition = (
+            action === oppositeAction
+            || rawAction === oppositeAction
+            || gatedAction === oppositeAction
+        ) && oppositeVotes >= config.opposite_votes_to_close;
+        const neutralCount = neutralCondition ? (botState.exitEyeNeutralCount || 0) + 1 : 0;
+        const neutralCloseCount = neutralCloseCondition ? (botState.exitEyeNeutralCloseCount || 0) + 1 : 0;
+        const oppositeCount = oppositeCondition ? (botState.exitEyeOppositeCount || 0) + 1 : 0;
+        symbolState.set({
+            exitEyeNeutralCount: neutralCount,
+            exitEyeNeutralCloseCount: neutralCloseCount,
+            exitEyeOppositeCount: oppositeCount
+        });
+        return { neutralCount, neutralCloseCount, oppositeCount };
+    }
+
+    private async evaluateExitEyeForPosition(input: {
+        symbol: string;
+        side: Side;
+        botState: BotState;
+        symbolState: StateStore;
+        position: PositionInfo;
+        markPrice: number;
+        currentRoe: number;
+        peakRoe: number;
+        lowestRoe: number;
+        tradeDurationMs: number;
+    }): Promise<boolean> {
+        const config = this.getAegisExitEyeConfig();
+        if (!config.enabled || config.mode === 'OFF') return false;
+
+        const signal = await this.getExitEyeSignal(input.symbol);
+        const exitSignal = this.extractExitEyeSignal(signal);
+        const counters = this.updateExitEyeCounters(input.side, input.botState, input.symbolState, exitSignal, config);
+        const decision = evaluateAegisExitEye({
+            enabled: config.enabled,
+            mode: config.mode,
+            symbol: input.symbol,
+            positionSide: input.side,
+            currentRoe: input.currentRoe,
+            peakRoe: input.peakRoe,
+            lowestRoe: input.lowestRoe,
+            minutesInTrade: input.tradeDurationMs / 60000,
+            currentTurboAction: exitSignal.currentTurboAction,
+            rawAction: exitSignal.rawAction,
+            gatedAction: exitSignal.gatedAction,
+            turboScore: exitSignal.turboScore,
+            votes: exitSignal.votes,
+            entryThreshold: this.getAegisTurboGateConfig(input.symbol).minScore,
+            currentReason: exitSignal.reason,
+            minRoeToProtect: config.min_roe_to_protect,
+            minPeakRoeToProtect: config.min_peak_roe_to_protect,
+            minGivebackFromPeakRoe: config.min_giveback_from_peak_roe,
+            neutralVotesToProtect: config.neutral_votes_to_protect,
+            oppositeVotesToClose: config.opposite_votes_to_close,
+            minRoeToCloseOnOpposite: config.min_roe_to_close_on_opposite,
+            minPeakRoeToCloseOnOpposite: config.min_peak_roe_to_close_on_opposite,
+            closeOnNeutralDecay: config.close_on_neutral_decay,
+            neutralCloseVotes: config.neutral_close_votes,
+            minRoeToCloseOnNeutral: config.min_roe_to_close_on_neutral,
+            minPeakRoeToCloseOnNeutral: config.min_peak_roe_to_close_on_neutral,
+            minGivebackToCloseOnNeutral: config.min_giveback_to_close_on_neutral,
+            requireConsecutiveNeutralClose: config.require_consecutive_neutral_close,
+            requireConsecutiveNeutral: config.require_consecutive_neutral,
+            requireConsecutiveOpposite: config.require_consecutive_opposite,
+            consecutiveNeutralCount: counters.neutralCount,
+            consecutiveNeutralCloseCount: counters.neutralCloseCount,
+            consecutiveOppositeCount: counters.oppositeCount,
+            minMinutesInTrade: config.min_minutes_in_trade
+        });
+
+        if (decision.action === 'NONE') return false;
+
+        await this.handleExitEyeDecision(input, decision);
+        return decision.action === 'CLOSE_POSITION' && decision.shouldClose;
+    }
+
+    private async handleExitEyeDecision(input: {
+        symbol: string;
+        side: Side;
+        botState: BotState;
+        symbolState: StateStore;
+        position: PositionInfo;
+        markPrice: number;
+        currentRoe: number;
+        peakRoe: number;
+        lowestRoe: number;
+    }, decision: AegisExitEyeDecision): Promise<void> {
+        const event = this.exitEyeEventName(decision.action);
+        const metadata = {
+            decision,
+            currentRoe: input.currentRoe,
+            peakRoe: input.peakRoe,
+            givebackRoe: decision.metadata.givebackRoe,
+            currentTurboAction: decision.metadata.currentTurboAction,
+            rawAction: decision.metadata.rawAction,
+            gatedAction: decision.metadata.gatedAction,
+            turboScore: decision.metadata.turboScore,
+            votes: decision.metadata.votes,
+            reason: decision.reason,
+            protectSkipped: decision.action === 'PROTECT_PROFIT' ? true : undefined,
+            protectSkipReason: decision.action === 'PROTECT_PROFIT'
+                ? 'protect_not_available_without_safe_stop_move_helper'
+                : undefined
+        };
+        input.symbolState.set({
+            lastExitEyeAction: decision.action,
+            lastExitEyeReason: decision.reason,
+            lastExitEyeAt: Date.now()
+        });
+        await this.logAegisTradeEvent(input.symbol, event, {
+            tradeId: input.botState.lastTradeId,
+            price: input.markPrice,
+            roe: input.currentRoe,
+            reason: decision.reason,
+            metadata
+        });
+        const logPayload = {
+            symbol: input.symbol,
+            side: input.side,
+            action: decision.action,
+            shouldClose: decision.shouldClose,
+            shouldProtect: decision.shouldProtect,
+            reason: decision.reason,
+            currentRoe: input.currentRoe,
+            peakRoe: input.peakRoe,
+            givebackRoe: decision.metadata.givebackRoe,
+            mode: this.getAegisExitEyeConfig().mode
+        };
+        if (decision.action === 'CLOSE_POSITION') {
+            this.deps.logger.warn('aegis_exit_eye_decision', logPayload);
+        } else {
+            this.deps.logger.info('aegis_exit_eye_decision', logPayload);
+        }
+
+        if (decision.action === 'CLOSE_POSITION' && decision.shouldClose && input.currentRoe > 0) {
+            const exitReason = decision.reason === 'neutral_momentum_decay_profit_exit'
+                ? 'AEGIS_EXIT_EYE_NEUTRAL_DECAY'
+                : 'AEGIS_EXIT_EYE_OPPOSITE_SIGNAL';
+            await this.deps.exchange.closeSideMarketSafe(
+                input.symbol,
+                input.side,
+                input.position.qtyAbs,
+                input.position.sideMode,
+                exitReason
+            );
+            input.symbolState.set({
+                mode: 'IDLE',
+                lastExitAt: Date.now(),
+                lastExitReason: exitReason
+            });
+            const pnl = this.pnlFromRoe(this.entryMargin(input.botState), input.currentRoe);
+            await this.notifyExit(input.symbol, input.side, exitReason, input.botState, {
+                exitPrice: input.markPrice,
+                finalRoe: input.currentRoe,
+                pnl
+            });
+            await this.sendExitEyeTelegram(input.symbol, input.side, decision, true);
+            return;
+        }
+
+        await this.sendExitEyeTelegram(input.symbol, input.side, decision, false, input.symbolState);
+    }
+
+    private exitEyeEventName(action: AegisExitEyeDecision['action']): string {
+        return `AEGIS_EXIT_EYE_${action}`;
+    }
+
+    private async sendExitEyeTelegram(
+        symbol: string,
+        side: Side,
+        decision: AegisExitEyeDecision,
+        force: boolean,
+        symbolState?: StateStore
+    ): Promise<void> {
+        const state = symbolState?.get();
+        const now = Date.now();
+        if (!force && state?.lastExitEyeTelegramAt && now - state.lastExitEyeTelegramAt < EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS) {
+            return;
+        }
+        if (symbolState) symbolState.set({ lastExitEyeTelegramAt: now });
+        const votes = decision.metadata.votes || {};
+        if (force && decision.reason === 'neutral_momentum_decay_profit_exit') {
+            await this.deps.notifier.sendMessage(
+                `👁️ **AEGIS EXIT EYE**\n` +
+                `${symbol} ${side} ${side === 'LONG' ? '📈' : '📉'}\n` +
+                `Cierre por pérdida de momentum\n` +
+                `ROE: ${this.formatRoe(decision.metadata.currentRoe)} | Peak: ${this.formatRoe(decision.metadata.peakRoe)}\n` +
+                `Señal actual: ${decision.metadata.currentTurboAction ?? 'N/D'} | Votes L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0}\n` +
+                `Motivo: neutralidad fuerte + devolución de profit`
+            );
+            return;
+        }
+        const suggested = decision.action.includes('CLOSE') ? 'CERRAR' : 'PROTEGER GANANCIA';
+        const modeLine = force ? 'CLOSE ejecutado' : `Modo: ${this.getAegisExitEyeConfig().mode}, no se cerró`;
+        await this.deps.notifier.sendMessage(
+            `👁️ **AEGIS EXIT EYE**\n` +
+            `${symbol} ${side} ${side === 'LONG' ? '📈' : '📉'}\n` +
+            `Acción sugerida: ${suggested}\n` +
+            `ROE actual: ${this.formatRoe(decision.metadata.currentRoe)} | Peak: ${this.formatRoe(decision.metadata.peakRoe)}\n` +
+            `Señal actual: ${decision.metadata.currentTurboAction ?? 'N/D'} | Votes L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0}\n` +
+            `Motivo: ${decision.reason}\n` +
+            modeLine
+        );
+    }
+
     private async managePosition(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
         const { exchange, logger, notifier } = this.deps;
         const side = botState.lastSide as Side;
@@ -1376,6 +1708,20 @@ export class TradingService {
             const serverNow = await exchange.getServerTime();
             const tradeDuration = botState.lastEntryAt ? serverNow - botState.lastEntryAt : 0;
             const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
+            const exitEyeClosed = await this.evaluateExitEyeForPosition({
+                symbol,
+                side,
+                botState: symbolState.get(),
+                symbolState,
+                position,
+                markPrice,
+                currentRoe,
+                peakRoe: updatedPeakRoe,
+                lowestRoe: updatedLowestRoe,
+                tradeDurationMs: tradeDuration
+            });
+            if (exitEyeClosed) return;
+
             const maxHoldMs = regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
             if (tradeDuration > maxHoldMs && currentRoe > 0.02) {
                 await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AEGIS_TIME_LIMIT');
@@ -1397,22 +1743,32 @@ export class TradingService {
                 } catch { }
             }
 
+            const baseGuardianConfig = this.getAegisGuardianConfig(symbol, regimeConfig);
             const guardianConfig: GuardianConfig = {
-                beTriggerRoe: 0.10,
-                beOffsetPct: 0.003,
-                trailingDev: 0.015,
-                trailingActivationRoe: botState.lastTrailingActivationRoe ?? regimeConfig?.trailingActivationRoe ?? 0.15,
-                trailingCallbackRoe: botState.lastTrailingCallbackRoe ?? regimeConfig?.trailingCallbackRoe ?? 0.08,
+                ...baseGuardianConfig,
+                beTriggerRoe: botState.lastBreakEvenRoe
+                    ?? baseGuardianConfig.beTriggerRoe
+                    ?? DEFAULT_GUARDIAN_CONFIG.beTriggerRoe,
+                trailingActivationRoe: botState.lastTrailingActivationRoe
+                    ?? baseGuardianConfig.trailingActivationRoe
+                    ?? 0.15,
+                trailingCallbackRoe: botState.lastTrailingCallbackRoe
+                    ?? baseGuardianConfig.trailingCallbackRoe
+                    ?? 0.08,
                 useAtrTrailing: true,
                 atrMultiplier: 1.5
             };
             const previousPeakRoe = botState.peakRoe ?? 0;
             if (previousPeakRoe < guardianConfig.beTriggerRoe && updatedPeakRoe >= guardianConfig.beTriggerRoe) {
+                symbolState.set({
+                    breakEvenArmed: true,
+                    lastBreakEvenRoe: guardianConfig.beTriggerRoe
+                });
                 await this.logAegisTradeEvent(symbol, 'BREAK_EVEN_ARMED', {
                     tradeId: botState.lastTradeId,
                     price: markPrice,
                     roe: currentRoe,
-                    metadata: { peakRoe: updatedPeakRoe }
+                    metadata: { peakRoe: updatedPeakRoe, beRoe: guardianConfig.beTriggerRoe }
                 });
             }
             if (
@@ -1435,9 +1791,108 @@ export class TradingService {
                 leverage,
                 peakRoe: updatedPeakRoe,
                 atrValue: currentAtr
-            }, guardianConfig, undefined);
+            }, guardianConfig, botState.lastTrailStop ?? botState.lastBreakEvenStop ?? botState.lastStopPrice);
 
-            if (action.type === 'MOVE_SL_TRAILING' && action.price) {
+            if (action.type === 'MOVE_SL_BE' && action.price) {
+                const filters = await exchange.getSymbolFilters(symbol, leverage);
+                const breakEvenPrice = this.roundPrice(action.price, filters);
+                const existingStop = botState.lastTrailStop ?? botState.lastBreakEvenStop ?? botState.lastStopPrice;
+                const shouldMoveBreakEven = !botState.breakEvenExecuted && this.isBetterStop(side, breakEvenPrice, existingStop);
+                if (shouldMoveBreakEven) {
+                    try {
+                        if (typeof (exchange as any).cancelStopOrdersForSide === 'function') {
+                            await (exchange as any).cancelStopOrdersForSide(symbol, side);
+                        }
+                        await exchange.placeStopClose(symbol, side, breakEvenPrice);
+                        symbolState.set({
+                            breakEvenArmed: true,
+                            breakEvenExecuted: true,
+                            lastBreakEvenAt: Date.now(),
+                            lastBreakEvenRoe: guardianConfig.beTriggerRoe,
+                            lastBreakEvenStop: breakEvenPrice,
+                            lastTrailStop: breakEvenPrice,
+                            lastStopPrice: breakEvenPrice
+                        });
+                        logger.info('aegis_break_even_stop_moved', {
+                            symbol,
+                            side,
+                            entryPrice,
+                            oldStopPrice: existingStop,
+                            newStopPrice: breakEvenPrice,
+                            currentRoe,
+                            peakRoe: updatedPeakRoe,
+                            beRoe: guardianConfig.beTriggerRoe
+                        });
+                        await this.logAegisTradeEvent(symbol, 'BREAK_EVEN_EXECUTED', {
+                            tradeId: botState.lastTradeId,
+                            price: markPrice,
+                            roe: currentRoe,
+                            oldStop: existingStop,
+                            newStop: breakEvenPrice,
+                            reason: 'MOVE_SL_BE',
+                            metadata: {
+                                symbol,
+                                side,
+                                entryPrice,
+                                oldStopPrice: existingStop,
+                                newStopPrice: breakEvenPrice,
+                                currentRoe,
+                                peakRoe: updatedPeakRoe,
+                                beRoe: guardianConfig.beTriggerRoe,
+                                reason: 'MOVE_SL_BE'
+                            }
+                        });
+                        await this.logAegisTradeEvent(symbol, 'SL_MOVED', {
+                            tradeId: botState.lastTradeId,
+                            price: markPrice,
+                            roe: currentRoe,
+                            oldStop: existingStop,
+                            newStop: breakEvenPrice,
+                            reason: 'MOVE_SL_BE'
+                        });
+                        await notifier.sendMessage(
+                            `🟢 **BREAK-EVEN ACTIVADO**\n` +
+                            `${symbol} ${side}\n` +
+                            `SL movido a BE: $${breakEvenPrice}\n` +
+                            `ROE: ${this.formatRoe(currentRoe)}`
+                        );
+                    } catch (breakEvenError) {
+                        logger.error('aegis_break_even_stop_move_failed', {
+                            symbol,
+                            side,
+                            entryPrice,
+                            attemptedStopPrice: breakEvenPrice,
+                            currentRoe,
+                            peakRoe: updatedPeakRoe,
+                            beRoe: guardianConfig.beTriggerRoe,
+                            error: String(breakEvenError)
+                        });
+                        await this.logAegisTradeEvent(symbol, 'BREAK_EVEN_FAILED', {
+                            tradeId: botState.lastTradeId,
+                            price: markPrice,
+                            roe: currentRoe,
+                            oldStop: existingStop,
+                            newStop: breakEvenPrice,
+                            reason: 'MOVE_SL_BE_FAILED',
+                            metadata: {
+                                symbol,
+                                side,
+                                entryPrice,
+                                oldStopPrice: existingStop,
+                                newStopPrice: breakEvenPrice,
+                                currentRoe,
+                                peakRoe: updatedPeakRoe,
+                                beRoe: guardianConfig.beTriggerRoe,
+                                error: String(breakEvenError)
+                            }
+                        });
+                        await notifier.sendAlert(
+                            'AEGIS BREAK-EVEN FAILED',
+                            `${symbol} ${side}\nSL BE: ${breakEvenPrice}\n${String(breakEvenError).slice(0, 180)}`
+                        );
+                    }
+                }
+            } else if (action.type === 'MOVE_SL_TRAILING' && action.price) {
                 const filters = await exchange.getSymbolFilters(symbol, leverage);
                 const trailingPrice = this.roundPrice(action.price, filters);
                 if (this.isBetterStop(side, trailingPrice, botState.lastTrailStop)) {
@@ -1445,7 +1900,7 @@ export class TradingService {
                         await (exchange as any).cancelStopOrdersForSide(symbol, side);
                     }
                     await exchange.placeStopClose(symbol, side, trailingPrice);
-                    symbolState.set({ lastTrailStop: trailingPrice });
+                    symbolState.set({ lastTrailStop: trailingPrice, lastStopPrice: trailingPrice });
                     logger.info('aegis_trailing_stop_updated', { symbol, side, trailingPrice });
                     await this.logAegisTradeEvent(symbol, 'SL_MOVED', {
                         tradeId: botState.lastTradeId,

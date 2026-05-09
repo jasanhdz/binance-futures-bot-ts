@@ -119,6 +119,7 @@ function buildReport(input: {
     const fees = closes.map(trade => numberOrZero(trade.fees_estimated)).reduce(sum, 0);
     const startingBalance = firstFinite(input.snapshots.map(snapshot => snapshot.wallet_balance ?? snapshot.available_balance));
     const endingBalance = lastFinite(input.snapshots.map(snapshot => snapshot.wallet_balance ?? snapshot.available_balance));
+    const exitEye = buildExitEyeStats(input.events);
 
     const summary = {
         date: input.dates.length === 1 ? input.dates[0] : undefined,
@@ -152,7 +153,8 @@ function buildReport(input: {
         ending_balance: round(endingBalance),
         portfolio_return_pct: startingBalance && endingBalance
             ? round(((endingBalance - startingBalance) / startingBalance) * 100)
-            : null
+            : null,
+        ...exitEye
     };
 
     return {
@@ -244,6 +246,19 @@ function buildSignalStats(signals: AegisTurboSignalHistoryInput[], events: Aegis
     };
 }
 
+function buildExitEyeStats(events: AegisTurboTradeEventInput[]): Record<string, unknown> {
+    const exitEyeEvents = events.filter(event => String(event.event || '').startsWith('AEGIS_EXIT_EYE_'));
+    const roeValues = exitEyeEvents.map(event => finiteNumber(event.roe ?? event.metadata?.currentRoe)).filter(isNumber);
+    const givebackValues = exitEyeEvents.map(event => finiteNumber(event.metadata?.givebackRoe)).filter(isNumber);
+    return {
+        exit_eye_shadow_protect_count: exitEyeEvents.filter(event => event.event === 'AEGIS_EXIT_EYE_SHADOW_PROTECT').length,
+        exit_eye_shadow_close_count: exitEyeEvents.filter(event => event.event === 'AEGIS_EXIT_EYE_SHADOW_CLOSE').length,
+        exit_eye_close_count: exitEyeEvents.filter(event => event.event === 'AEGIS_EXIT_EYE_CLOSE_POSITION').length,
+        avg_roe_when_exit_eye_triggered: round(avg(roeValues)),
+        avg_giveback_when_exit_eye_triggered: round(avg(givebackValues))
+    };
+}
+
 function buildPortfolioStats(snapshots: AegisAccountSnapshotInput[], opens: AegisTurboTradeOpenInput[]): Record<string, unknown> {
     const maxSimultaneousPositions = max(snapshots.map(snapshot => finiteNumber(snapshot.open_positions_count)).filter(isNumber)) ?? 0;
     return {
@@ -276,6 +291,8 @@ function renderMarkdown(report: AnalyzerReport, dates: string[]): string {
 - Profit factor: ${formatPf(summary.profit_factor)}
 - Avg ROE: ${formatPct(summary.avg_roe)}
 - Max DD estimated: ${formatPct(summary.max_drawdown_estimated)}
+- Exit Eye shadow protect/close/real close: ${summary.exit_eye_shadow_protect_count ?? 0}/${summary.exit_eye_shadow_close_count ?? 0}/${summary.exit_eye_close_count ?? 0}
+- Exit Eye avg ROE/giveback: ${formatPct(summary.avg_roe_when_exit_eye_triggered)} / ${formatPct(summary.avg_giveback_when_exit_eye_triggered)}
 
 ## By Symbol
 | Symbol | Trades | Win Rate | Net PnL | PF | Avg ROE | Best Bucket |

@@ -73,6 +73,12 @@ export type BotState = {
   // Aegis Turbo position metadata
   lastStrategy?: 'AEGIS_TURBO';
   lastStopRoe?: number;
+  lastBreakEvenRoe?: number;
+  breakEvenArmed?: boolean;
+  breakEvenExecuted?: boolean;
+  lastBreakEvenStop?: number;
+  lastBreakEvenAt?: number;
+  lastStopPrice?: number;
   lastTakeProfitRoe?: number;
   lastTrailingActivationRoe?: number;
   lastTrailingCallbackRoe?: number;
@@ -84,6 +90,15 @@ export type BotState = {
   lastRequestedLeverage?: number;
   lastActualLeverage?: number;
   lastBracketStatus?: 'PENDING' | 'OK' | 'FAILED_CLOSED';
+
+  // Aegis Exit Eye v0.1 runtime counters
+  exitEyeNeutralCount?: number;
+  exitEyeNeutralCloseCount?: number;
+  exitEyeOppositeCount?: number;
+  lastExitEyeAction?: string;
+  lastExitEyeReason?: string;
+  lastExitEyeAt?: number;
+  lastExitEyeTelegramAt?: number;
 
   shadowPos?: ShadowPosition | null; // <-- For shadow trading
 };
