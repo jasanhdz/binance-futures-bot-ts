@@ -1798,7 +1798,25 @@ export class TradingService {
                 const breakEvenPrice = this.roundPrice(action.price, filters);
                 const existingStop = botState.lastTrailStop ?? botState.lastBreakEvenStop ?? botState.lastStopPrice;
                 const shouldMoveBreakEven = !botState.breakEvenExecuted && this.isBetterStop(side, breakEvenPrice, existingStop);
+                const wouldTriggerImmediately = side === 'LONG'
+                    ? breakEvenPrice >= markPrice
+                    : breakEvenPrice <= markPrice;
                 if (shouldMoveBreakEven) {
+                    if (wouldTriggerImmediately) {
+                        if (this.shouldLogError(symbol, 'AEGIS_BE_IMMEDIATE_TRIGGER_SKIP', 60000)) {
+                            logger.warn('aegis_break_even_stop_move_skipped_immediate_trigger', {
+                                symbol,
+                                side,
+                                entryPrice,
+                                markPrice,
+                                attemptedStopPrice: breakEvenPrice,
+                                currentRoe,
+                                peakRoe: updatedPeakRoe,
+                                beRoe: guardianConfig.beTriggerRoe
+                            });
+                        }
+                        return;
+                    }
                     try {
                         if (typeof (exchange as any).cancelStopOrdersForSide === 'function') {
                             await (exchange as any).cancelStopOrdersForSide(symbol, side);

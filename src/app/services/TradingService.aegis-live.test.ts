@@ -777,6 +777,43 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
     });
 
+    it('skips MOVE_SL_BE when the stop would immediately trigger for a LONG', async () => {
+        const { exchange, logger, service, state } = makeHarness({
+            markPrice: 99.5,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'be-immediate',
+                lastPeakPrice: 100.45,
+                peakRoe: 0.09,
+                lowestRoe: 0,
+                lastStopPrice: 98,
+                lastBreakEvenRoe: 0.08
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.cancelStopOrdersForSide).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({ breakEvenExecuted: true }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_break_even_stop_move_skipped_immediate_trigger', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            side: 'LONG',
+            markPrice: 99.5,
+            attemptedStopPrice: 100.3
+        }));
+    });
+
     it('uses be_roe from YAML/config before the fallback threshold', async () => {
         const { exchange, configManager, service } = makeHarness({
             markPrice: 100.45,
