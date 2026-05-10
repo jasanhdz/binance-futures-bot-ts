@@ -169,7 +169,12 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         const symbol = this.getActiveAegisSymbols()[0];
         const regime = this.regimeConfig(symbol);
         const turbo = this.turboConfig();
+        const portfolioRisk = this.portfolioRiskConfig();
+        const shortGate = this.shortGateConfig();
         const maxHoldMs = regime?.maxHoldMs ?? 0;
+        const portfolioRiskLine = portfolioRisk?.enabled
+            ? `🧱 Portfolio risk: **ON** | max pos ${portfolioRisk?.max_open_positions ?? 'N/D'} | same dir ${portfolioRisk?.max_same_direction_positions ?? 'N/D'} | margin ${formatPct(portfolioRisk?.max_margin_used_pct)} | notional/equity ${formatNumber(portfolioRisk?.max_notional_to_equity, 1)}x\n`
+            : `🧱 Portfolio risk: **OFF**\n`;
 
         const configMessage = formatConfigMessage({
             leverage: regime?.leverage ?? 0,
@@ -192,6 +197,9 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `🧭 Symbol modes: **${this.getConfiguredAegisSymbolModes().join(' | ') || 'N/D'}**\n` +
             `📉 Allow short: **${boolText(turbo?.allow_short)}**\n` +
             `💼 Position fraction cap: **${formatPct(turbo?.position_fraction_cap)}**\n` +
+            portfolioRiskLine +
+            `🎯 Short gate: **${boolText(shortGate?.enabled)}** | ${shortGate?.mode ?? 'N/D'} | min score ${formatPct(shortGate?.min_score)} | votes ${shortGate?.require_votes ?? 'N/D'}/3 | size x${formatNumber(shortGate?.position_fraction_multiplier, 2)} | max lev ${shortGate?.max_leverage ?? 'N/D'}x\n` +
+            `⛔ Short blocked: **${shortGate?.block_symbols?.join(', ') || 'Ninguno'}**\n` +
             `⏲️ Cooldown: **${finiteNumber(turbo?.min_cooldown_ms) ? `${(turbo.min_cooldown_ms / 60000).toFixed(1)} min` : 'N/D'}**\n` +
             `🧯 Close if bracket fails: **${boolText(turbo?.close_if_bracket_fails)}**`;
     }
@@ -244,6 +252,29 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         const symbol = this.getActiveAegisSymbols()[0];
         const turbo = this.turboConfig();
         const state = this.stateForSymbol(symbol).get();
+        const portfolioRisk = this.portfolioRiskConfig();
+        const shortGate = this.shortGateConfig();
+        const positions = await this.readPositionsWithOrders();
+        const longCount = positions.filter((row) => row.position.side === 'LONG').length;
+        const shortCount = positions.filter((row) => row.position.side === 'SHORT').length;
+        const marginUsed = positions.reduce((sum, row) => sum + (row.position.margin ?? 0), 0);
+        const notional = positions.reduce((sum, row) => sum + (row.position.notional ?? 0), 0);
+        const equityBase = finiteNumber(account.equityTotal) && account.equityTotal > 0
+            ? account.equityTotal
+            : account.walletBalance;
+        const marginUsedPct = finiteNumber(equityBase) && equityBase > 0 ? marginUsed / equityBase : undefined;
+        const notionalToEquity = finiteNumber(equityBase) && equityBase > 0 ? notional / equityBase : undefined;
+        const portfolioRiskLines = portfolioRisk?.enabled
+            ? `🧱 Portfolio risk: **ON**\n` +
+                `💼 Open positions: **${positions.length} / ${portfolioRisk?.max_open_positions ?? 'N/D'}**\n` +
+                `📈 LONG/SHORT: **${longCount}/${shortCount}** | max same direction **${portfolioRisk?.max_same_direction_positions ?? 'N/D'}**\n` +
+                `🧮 Margin used: **${formatPct(marginUsedPct)} / ${formatPct(portfolioRisk?.max_margin_used_pct)}**\n` +
+                `⚖️ Notional/equity: **${formatNumber(notionalToEquity, 2)}x / ${formatNumber(portfolioRisk?.max_notional_to_equity, 1)}x**\n`
+            : `🧱 Portfolio risk: **OFF**\n` +
+                `💼 Open positions: **${positions.length}**\n` +
+                `📈 LONG/SHORT: **${longCount}/${shortCount}**\n` +
+                `🧮 Margin used: **${formatPct(marginUsedPct)}**\n` +
+                `⚖️ Notional/equity: **${formatNumber(notionalToEquity, 2)}x**\n`;
         const cooldownMs = turbo?.min_cooldown_ms;
         const sinceExitMs = state.lastExitAt ? Date.now() - state.lastExitAt : undefined;
         const cooldownActive = finiteNumber(cooldownMs) && finiteNumber(sinceExitMs) && sinceExitMs < cooldownMs;
@@ -260,6 +291,9 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `🚨 Daily loss stop: **${formatPct(turbo?.daily_loss_stop_pct)}**\n` +
             `⏲️ Cooldown: **${cooldownActive ? 'ACTIVO' : 'OK'}**\n` +
             `🌊 Liquidity stress: **${finiteNumber(liquidity) ? formatPct(liquidity) : 'N/D'}**\n` +
+            portfolioRiskLines +
+            `🎯 Short gate: **${shortGate?.mode ?? 'N/D'}** | min score **${formatPct(shortGate?.min_score)}** | votes **${shortGate?.require_votes ?? 'N/D'}/3** | max lev **${shortGate?.max_leverage ?? 'N/D'}x** | size **${formatNumber(shortGate?.position_fraction_multiplier, 2)}x**\n` +
+            `⛔ Short blocked: **${shortGate?.block_symbols?.join(', ') || 'Ninguno'}**\n` +
             `🧷 Require brackets: **${boolText(turbo?.require_brackets)}**\n` +
             `🧯 Close if bracket fails: **${boolText(turbo?.close_if_bracket_fails)}**\n` +
             `📉 Shorts: **${turbo?.allow_short ? 'ON' : 'OFF'}**`;
@@ -383,6 +417,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             side: Side;
             qtyAbs?: number;
             margin?: number;
+            notional?: number;
             roe?: number;
             pnl?: number;
             durationHours?: number;
@@ -401,6 +436,9 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 const markPrice = await this.deps.exchange.getMarkPrice(symbol).catch(() => undefined);
                 const margin = position.isolatedMargin
                     ?? (position.entryPrice > 0 && position.leverage > 0 ? (position.entryPrice * position.qtyAbs) / position.leverage : undefined);
+                const notional = finiteNumber(markPrice)
+                    ? markPrice * position.qtyAbs
+                    : position.entryPrice * position.qtyAbs;
                 const roe = finiteNumber(position.roePct)
                     ? position.roePct / 100
                     : finiteNumber(markPrice)
@@ -415,6 +453,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                         side,
                         qtyAbs: position.qtyAbs,
                         margin,
+                        notional,
                         roe,
                         pnl: position.unrealizedPnl ?? pnlFromRoe(margin, roe),
                         durationHours: sameStatePosition && state.lastEntryAt ? (Date.now() - state.lastEntryAt) / 3600000 : undefined,
@@ -464,6 +503,18 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         return typeof (this.deps.configManager as any).getAegisTurboConfig === 'function'
             ? (this.deps.configManager as any).getAegisTurboConfig()
             : undefined;
+    }
+
+    private portfolioRiskConfig() {
+        return typeof (this.deps.configManager as any).getAegisPortfolioRiskConfig === 'function'
+            ? (this.deps.configManager as any).getAegisPortfolioRiskConfig()
+            : { enabled: false };
+    }
+
+    private shortGateConfig() {
+        return typeof (this.deps.configManager as any).getAegisShortGateConfig === 'function'
+            ? (this.deps.configManager as any).getAegisShortGateConfig()
+            : { enabled: false, block_symbols: [] };
     }
 
     private stateForSymbol(symbol?: string) {

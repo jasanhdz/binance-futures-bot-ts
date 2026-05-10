@@ -80,7 +80,20 @@ function makeHandlers(overrides: Record<string, any> = {}) {
             min_cooldown_ms: 15 * 60 * 1000,
             require_brackets: true,
             close_if_bracket_fails: true
-        }))
+        })),
+        getAegisPortfolioRiskConfig: vi.fn(() => overrides.portfolioRisk ?? {
+            enabled: false
+        }),
+        getAegisShortGateConfig: vi.fn(() => overrides.shortGate ?? {
+            enabled: true,
+            mode: 'PREMIUM_ONLY',
+            min_score: 0.80,
+            require_votes: 3,
+            position_fraction_multiplier: 1.0,
+            max_leverage: 10,
+            block_symbols: [],
+            allow_if_regime_bearish: false
+        })
     };
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const handlers = new TelegramCommandHandlers({
@@ -193,6 +206,39 @@ describe('TelegramCommandHandlers', () => {
 
         expect(text).toContain('🎚️ Entry threshold: **60.0%**');
         expect(text).toContain('⚖️ Leverage: **20x**');
+    });
+
+    it('/risk shows portfolio risk OFF', async () => {
+        const { handlers } = makeHandlers();
+
+        const text = await handlers.handleRisk();
+
+        expect(text).toContain('Portfolio risk: **OFF**');
+        expect(text).toContain('Open positions: **0**');
+    });
+
+    it('/risk shows short gate', async () => {
+        const { handlers } = makeHandlers();
+
+        const text = await handlers.handleRisk();
+
+        expect(text).toContain('Short gate: **PREMIUM_ONLY**');
+        expect(text).toContain('min score **80.0%**');
+        expect(text).toContain('votes **3/3**');
+        expect(text).toContain('max lev **10x**');
+        expect(text).toContain('size **1.00x**');
+        expect(text).toContain('Short blocked: **Ninguno**');
+    });
+
+    it('/config shows short gate', async () => {
+        const { handlers } = makeHandlers();
+
+        const text = await handlers.handleConfig();
+
+        expect(text).toContain('Short gate: **Sí** | PREMIUM_ONLY');
+        expect(text).toContain('min score 80.0%');
+        expect(text).toContain('size x1.00');
+        expect(text).toContain('Short blocked: **Ninguno**');
     });
 
     it('/account handles missing fields as N/D', async () => {
