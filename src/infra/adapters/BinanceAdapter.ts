@@ -364,6 +364,19 @@ export class BinanceExchange implements Exchange {
     return candles.length > 0 ? candles[candles.length - 1] : null;
   }
 
+  getCachedCandles(symbol: string, interval: string, limit: number): Candle[] {
+    const normalizedSymbol = String(symbol || '').toUpperCase();
+    const candles = this.candleCache.get(this.cacheKey(normalizedSymbol, interval))?.candles || [];
+    const wsCandle = interval === '5m' ? this.wsCandleCache[normalizedSymbol] : undefined;
+    const merged = wsCandle
+      ? [
+        ...candles.filter((candle) => candle.openTime !== wsCandle.openTime),
+        wsCandle,
+      ]
+      : candles;
+    return merged.slice(-Math.max(0, limit));
+  }
+
   public subscribeToCandles(symbol: string) {
     this.wsManager.connectCandles(symbol, '5m', (wsCandle) => {
       // Base candle processing

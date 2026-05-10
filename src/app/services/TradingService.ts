@@ -3,7 +3,7 @@ import { MLService } from '../ports/MLService';
 import { Logger } from '../ports/Logger';
 import { StateStore } from '../ports/StateStore';
 import { Notifier } from '../ports/Notifier';
-import { BotState, Side } from '../../domain/types';
+import { BotState, Candle, Side } from '../../domain/types';
 import { DEFAULT_GUARDIAN_CONFIG, evaluateGuardianAction, GuardianConfig } from '../../domain/services/ProfitGuardian';
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
 import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
@@ -14,6 +14,9 @@ import {
 } from '../../domain/services/AegisMicroLiveGate';
 import {
     AegisExitEyeYamlConfig,
+    AegisEntryQualityGateRuntimeConfig,
+    AegisPortfolioRiskYamlConfig,
+    AegisShortGateYamlConfig,
     AegisSymbolMode,
     AegisTurboYamlConfig,
     NinjaConfigManager
@@ -34,6 +37,12 @@ import {
 } from '../../infra/logging/AegisTurboHistoryLogger';
 import { formatAegisTurboEntryMessage } from './formatAegisTurboEntryMessage';
 import { AegisPositionMessageInput, formatAegisStartupMessage } from '../messages/AegisMessageFormatter';
+import { AegisShortGate } from '../../domain/services/AegisShortGate';
+import { AegisPortfolioRiskGuard } from '../../domain/services/AegisPortfolioRiskGuard';
+import {
+    AegisEntryQualityGateDecision,
+    evaluateAegisEntryQualityGate
+} from '../../domain/services/AegisEntryQualityGate';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -128,6 +137,62 @@ export class TradingService {
             require_consecutive_neutral: 2,
             require_consecutive_opposite: 1,
             min_minutes_in_trade: 3
+        };
+    }
+
+    private getAegisPortfolioRiskConfig(): Required<AegisPortfolioRiskYamlConfig> {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisPortfolioRiskConfig === 'function') {
+            return manager.getAegisPortfolioRiskConfig();
+        }
+        return {
+            enabled: false,
+            max_open_positions: 0,
+            max_same_direction_positions: 0,
+            max_margin_used_pct: 0,
+            max_notional_to_equity: 0
+        };
+    }
+
+    private getAegisShortGateConfig(): Required<AegisShortGateYamlConfig> {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisShortGateConfig === 'function') {
+            return manager.getAegisShortGateConfig();
+        }
+        return {
+            enabled: false,
+            mode: 'PREMIUM_ONLY',
+            min_score: 0,
+            require_votes: 0,
+            position_fraction_multiplier: 1,
+            max_leverage: 0,
+            block_symbols: [],
+            allow_if_regime_bearish: false
+        };
+    }
+
+    private getEntryQualityGateConfig(symbol?: string): AegisEntryQualityGateRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getEntryQualityGateConfig === 'function') {
+            return manager.getEntryQualityGateConfig(symbol);
+        }
+        return {
+            enabled: false,
+            mode: 'OFF',
+            config: {
+                minScoreLong: 0.65,
+                minScoreShort: 0.70,
+                requireMomentumConfirm: false,
+                antiFallingKnifeEnabled: false,
+                antiFallingKnifeLookbackCandles: 3,
+                maxAdverseRecentReturn: 0.003,
+                overextensionEnabled: false,
+                emaDistanceLimit: 0.006,
+                volatilityEnabled: false,
+                maxAtrPercentile: 0.75,
+                require3of3WhenSymbolFlagged: false,
+                flaggedSymbols: []
+            }
         };
     }
 
@@ -916,21 +981,7 @@ export class TradingService {
             }
 
             const tradeId = generateTradeId(symbol);
-            await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: gateDecision, executed: true });
-            await this.logAegisTradeEvent(symbol, 'GATE_ALLOWED', {
-                tradeId,
-                reason: gateDecision.reason,
-                metadata: {
-                    side: gateDecision.side,
-                    leverage: gateDecision.leverage,
-                    positionFraction: gateDecision.positionFraction,
-                    stopRoe: gateDecision.stopRoe,
-                    takeProfitRoe: gateDecision.takeProfitRoe,
-                    trailingActivationRoe: gateDecision.trailingActivationRoe,
-                    trailingCallbackRoe: gateDecision.trailingCallbackRoe
-                }
-            });
-            await this.openAegisTurboPosition(symbol, signal, gateDecision, tradeId);
+            await this.openAegisTurboPosition(symbol, signal, gateDecision, tradeId, signalId);
         } catch (error) {
             if (this.shouldLogError(symbol, 'AEGIS_LOOK_FOR_ENTRY', 60000)) {
                 logger.error('Aegis lookForEntry error', { error: String(error) });
@@ -959,11 +1010,183 @@ export class TradingService {
         });
     }
 
+    private async readAegisPortfolioExposure(): Promise<{
+        openPositions: number;
+        longPositions: number;
+        shortPositions: number;
+        marginUsed: number;
+        notional: number;
+    }> {
+        let openPositions = 0;
+        let longPositions = 0;
+        let shortPositions = 0;
+        let marginUsed = 0;
+        let notional = 0;
+
+        for (const symbol of this.getLiveAegisSymbols()) {
+            for (const side of ['LONG', 'SHORT'] as Side[]) {
+                const position = await this.deps.exchange.readActivePosition(symbol, side).catch(() => null);
+                if (!position) continue;
+                openPositions++;
+                if (side === 'LONG') longPositions++;
+                if (side === 'SHORT') shortPositions++;
+                const markPrice = await this.deps.exchange.getMarkPrice(symbol).catch(() => position.entryPrice);
+                const positionMargin = position.isolatedMargin
+                    ?? (position.entryPrice > 0 && position.leverage > 0 && position.qtyAbs > 0
+                        ? (position.entryPrice * position.qtyAbs) / position.leverage
+                        : 0);
+                marginUsed += positionMargin;
+                notional += (markPrice || position.entryPrice || 0) * position.qtyAbs;
+            }
+        }
+
+        return { openPositions, longPositions, shortPositions, marginUsed, notional };
+    }
+
+    private getCachedEntryQualityCandles(symbol: string): Candle[] {
+        const cachedCandles = this.deps.exchange.getCachedCandles?.(symbol, '5m', 40);
+        return Array.isArray(cachedCandles) ? cachedCandles : [];
+    }
+
+    private buildEntryQualityMarketContext(symbol: string): {
+        recentCandles: Candle[];
+        currentPrice?: number;
+        emaFast?: number;
+        atrPct?: number;
+        atrPercentile?: number;
+    } {
+        const recentCandles = this.getCachedEntryQualityCandles(symbol)
+            .filter((candle) => this.isValidCandle(candle));
+        const currentPrice = recentCandles.length > 0
+            ? recentCandles[recentCandles.length - 1].close
+            : undefined;
+        const emaFast = this.calculateEmaFast(recentCandles, 9);
+        const atr = calculateATR(recentCandles, 14);
+        const atrPct = atr !== null && currentPrice && currentPrice > 0
+            ? atr / currentPrice
+            : undefined;
+        const atrPercentile = this.calculateAtrPercentile(recentCandles);
+
+        return {
+            recentCandles,
+            currentPrice,
+            emaFast,
+            atrPct,
+            atrPercentile
+        };
+    }
+
+    private isValidCandle(candle: Candle): boolean {
+        return Number.isFinite(candle.open)
+            && Number.isFinite(candle.high)
+            && Number.isFinite(candle.low)
+            && Number.isFinite(candle.close)
+            && candle.close > 0;
+    }
+
+    private calculateEmaFast(candles: Candle[], period: number): number | undefined {
+        if (candles.length < period) return undefined;
+        const multiplier = 2 / (period + 1);
+        const closes = candles.map((candle) => candle.close);
+        let ema = closes.slice(0, period).reduce((sum, close) => sum + close, 0) / period;
+        for (const close of closes.slice(period)) {
+            ema = (close - ema) * multiplier + ema;
+        }
+        return ema;
+    }
+
+    private calculateAtrPercentile(candles: Candle[]): number | undefined {
+        if (candles.length < 15) return undefined;
+        const trPctValues: number[] = [];
+        for (let i = 1; i < candles.length; i++) {
+            const current = candles[i];
+            const previous = candles[i - 1];
+            if (!previous.close || previous.close <= 0) continue;
+            const trueRange = Math.max(
+                current.high - current.low,
+                Math.abs(current.high - previous.close),
+                Math.abs(current.low - previous.close)
+            );
+            trPctValues.push(trueRange / previous.close);
+        }
+        if (trPctValues.length < 2) return undefined;
+        const current = trPctValues[trPctValues.length - 1];
+        const belowOrEqual = trPctValues.filter((value) => value <= current).length;
+        return belowOrEqual / trPctValues.length;
+    }
+
+    private async evaluateAndLogEntryQualityGate(
+        symbol: string,
+        side: Side,
+        gate: AegisMicroLiveGateDecision,
+        tradeId?: string
+    ): Promise<AegisEntryQualityGateDecision> {
+        const runtimeConfig = this.getEntryQualityGateConfig(symbol);
+        const marketContext = this.buildEntryQualityMarketContext(symbol);
+        const decision = evaluateAegisEntryQualityGate({
+            enabled: runtimeConfig.enabled,
+            mode: runtimeConfig.mode,
+            symbol,
+            side,
+            turboScore: gate.turboScore ?? 0,
+            votes: gate.votes,
+            ...marketContext,
+            config: runtimeConfig.config
+        });
+
+        await this.logEntryQualityGateDecision(symbol, side, decision, runtimeConfig.mode, tradeId);
+        return decision;
+    }
+
+    private async logEntryQualityGateDecision(
+        symbol: string,
+        side: Side,
+        decision: AegisEntryQualityGateDecision,
+        mode: string,
+        tradeId?: string
+    ): Promise<void> {
+        const event = decision.action === 'SHADOW_BLOCK'
+            ? 'ENTRY_QUALITY_GATE_SHADOW_BLOCK'
+            : decision.action === 'SHADOW_ALLOW'
+                ? 'ENTRY_QUALITY_GATE_SHADOW_ALLOW'
+                : decision.action === 'BLOCK'
+                    ? 'ENTRY_QUALITY_GATE_DENIED'
+                    : 'ENTRY_QUALITY_GATE_ALLOW';
+        const metadata = {
+            ...decision.metadata,
+            symbol,
+            side,
+            action: decision.action,
+            reason: decision.reason,
+            mode,
+            shadowDidNotBlock: decision.action === 'SHADOW_BLOCK' ? true : undefined
+        };
+
+        await this.logAegisTradeEvent(symbol, event, {
+            tradeId,
+            reason: decision.reason,
+            metadata
+        });
+
+        if (decision.action === 'SHADOW_BLOCK') {
+            this.deps.logger.info('aegis_entry_quality_shadow_block', metadata);
+            return;
+        }
+        if (decision.action === 'SHADOW_ALLOW') {
+            this.deps.logger.debug('aegis_entry_quality_shadow_allow', metadata);
+            return;
+        }
+        if (decision.action === 'BLOCK') {
+            this.deps.logger.info('aegis_entry_quality_denied', metadata);
+        }
+    }
+
     private async openAegisTurboPosition(
         symbol: string,
         signal: AegisTradingSignal,
         gate: AegisMicroLiveGateDecision,
-        tradeId: string
+        tradeId: string,
+        signalId?: string
     ): Promise<void> {
         const { exchange, logger, notifier, configManager } = this.deps;
         const symbolState = this.stateForSymbol(symbol);
@@ -984,9 +1207,82 @@ export class TradingService {
                 return;
             }
             if (!gate.allowed || (gate.side !== 'LONG' && gate.side !== 'SHORT')) return;
-            const leverage = gate.leverage;
-            const positionFraction = gate.positionFraction;
+            const side = gate.side;
+            const shortGateDecision = AegisShortGate.evaluate({
+                symbol,
+                side,
+                turboScore: gate.turboScore,
+                votes: gate.votes,
+                leverage: gate.leverage,
+                positionFraction: gate.positionFraction,
+                config: this.getAegisShortGateConfig()
+            });
+            if (!shortGateDecision.allowed) {
+                const deniedGate = { ...gate, allowed: false, reason: shortGateDecision.reason };
+                await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: deniedGate, executed: false });
+                await this.logAegisTradeEvent(symbol, 'SHORT_GATE_DENIED', {
+                    tradeId,
+                    reason: shortGateDecision.reason,
+                    metadata: {
+                        symbol,
+                        score: gate.turboScore,
+                        votes: gate.votes,
+                        reason: shortGateDecision.reason,
+                        minScore: shortGateDecision.metadata.minScore,
+                        requireVotes: shortGateDecision.metadata.requireVotes
+                    }
+                });
+                logger.warn('aegis_short_gate_denied', {
+                    symbol,
+                    side,
+                    reason: shortGateDecision.reason,
+                    turboScore: gate.turboScore,
+                    votes: gate.votes,
+                    metadata: shortGateDecision.metadata
+                });
+                return;
+            }
+
+            const leverage = shortGateDecision.adjustedLeverage;
+            const positionFraction = shortGateDecision.adjustedPositionFraction;
+            const effectiveGate: AegisMicroLiveGateDecision = {
+                ...gate,
+                leverage,
+                positionFraction
+            };
             if (leverage <= 0 || positionFraction <= 0) return;
+
+            const entryQualityDecision = await this.evaluateAndLogEntryQualityGate(
+                symbol,
+                side,
+                effectiveGate,
+                tradeId
+            );
+            if (!entryQualityDecision.allowed) {
+                const deniedGate = { ...effectiveGate, allowed: false, reason: entryQualityDecision.reason };
+                await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: deniedGate, executed: false });
+                return;
+            }
+
+            if (side === 'SHORT' && shortGateDecision.reason === 'short_allowed_premium') {
+                await this.logAegisTradeEvent(symbol, 'SHORT_GATE_ADJUSTED', {
+                    tradeId,
+                    reason: shortGateDecision.reason,
+                    metadata: {
+                        originalLeverage: gate.leverage,
+                        adjustedLeverage: leverage,
+                        originalPositionFraction: gate.positionFraction,
+                        adjustedPositionFraction: positionFraction
+                    }
+                });
+                logger.warn('aegis_short_gate_adjusted', {
+                    symbol,
+                    originalLeverage: gate.leverage,
+                    adjustedLeverage: leverage,
+                    originalPositionFraction: gate.positionFraction,
+                    adjustedPositionFraction: positionFraction
+                });
+            }
 
             const wallet = await exchange.getUSDTBalance();
             const entryAccount = await this.readEntryAccountSnapshot(wallet);
@@ -997,6 +1293,50 @@ export class TradingService {
             const margin = effectiveWallet * positionFraction;
             const notional = margin * leverage;
             const quantity = this.roundQuantity(notional / markPrice, filters);
+
+            const portfolioRiskConfig = this.getAegisPortfolioRiskConfig();
+            if (portfolioRiskConfig.enabled === true) {
+                const exposure = await this.readAegisPortfolioExposure();
+                const portfolioDecision = AegisPortfolioRiskGuard.evaluate({
+                    symbol,
+                    side,
+                    currentOpenPositions: exposure.openPositions,
+                    currentLongPositions: exposure.longPositions,
+                    currentShortPositions: exposure.shortPositions,
+                    walletBalance: entryAccount.walletBalance ?? wallet,
+                    equityTotal: entryAccount.equityTotal ?? entryAccount.walletBalance ?? wallet,
+                    currentMarginUsed: exposure.marginUsed,
+                    currentNotional: exposure.notional,
+                    newTradeEstimatedMargin: margin,
+                    newTradeEstimatedNotional: notional,
+                    config: portfolioRiskConfig
+                });
+                if (!portfolioDecision.allowed) {
+                    const deniedGate = { ...effectiveGate, allowed: false, reason: portfolioDecision.reason };
+                    await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: deniedGate, executed: false });
+                    await this.logAegisTradeEvent(symbol, 'PORTFOLIO_RISK_DENIED', {
+                        tradeId,
+                        reason: portfolioDecision.reason,
+                        metadata: {
+                            symbol,
+                            side,
+                            reason: portfolioDecision.reason,
+                            openPositions: portfolioDecision.metadata.openPositions,
+                            sameDirectionPositions: portfolioDecision.metadata.sameDirectionPositions,
+                            marginUsedPct: portfolioDecision.metadata.marginUsedPct,
+                            notionalToEquity: portfolioDecision.metadata.notionalToEquity,
+                            limits: portfolioDecision.metadata.limits
+                        }
+                    });
+                    logger.warn('aegis_portfolio_risk_denied', {
+                        symbol,
+                        side,
+                        reason: portfolioDecision.reason,
+                        metadata: portfolioDecision.metadata
+                    });
+                    return;
+                }
+            }
 
             if (quantity <= 0 || quantity * markPrice < filters.minNotional) {
                 logger.warn('aegis_position_too_small', {
@@ -1009,10 +1349,24 @@ export class TradingService {
                 return;
             }
 
+            await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: effectiveGate, executed: true });
+            await this.logAegisTradeEvent(symbol, 'GATE_ALLOWED', {
+                tradeId,
+                reason: effectiveGate.reason,
+                metadata: {
+                    side: effectiveGate.side,
+                    leverage: effectiveGate.leverage,
+                    positionFraction: effectiveGate.positionFraction,
+                    stopRoe: effectiveGate.stopRoe,
+                    takeProfitRoe: effectiveGate.takeProfitRoe,
+                    trailingActivationRoe: effectiveGate.trailingActivationRoe,
+                    trailingCallbackRoe: effectiveGate.trailingCallbackRoe
+                }
+            });
+
             await exchange.setLeverage(symbol, leverage);
             await exchange.ensureMarginType(symbol, 'ISOLATED');
 
-            const side = gate.side;
             await this.logAegisTradeEvent(symbol, 'ORDER_SUBMITTED', {
                 tradeId,
                 price: markPrice,
@@ -1054,8 +1408,8 @@ export class TradingService {
 
             const entryPrice = positionData.entryPrice || result.avgPrice;
             const marginUsed = positionData.isolatedMargin || margin;
-            const stopPrice = this.roundPrice(this.bracketPrice(side, entryPrice, gate.stopRoe, leverage, 'STOP'), filters);
-            const tpPrice = this.roundPrice(this.bracketPrice(side, entryPrice, gate.takeProfitRoe, leverage, 'TP'), filters);
+            const stopPrice = this.roundPrice(this.bracketPrice(side, entryPrice, effectiveGate.stopRoe, leverage, 'STOP'), filters);
+            const tpPrice = this.roundPrice(this.bracketPrice(side, entryPrice, effectiveGate.takeProfitRoe, leverage, 'TP'), filters);
 
             const requireBrackets = yaml?.require_brackets !== false;
             const closeIfBracketFails = yaml?.close_if_bracket_fails !== false;
@@ -1171,23 +1525,23 @@ export class TradingService {
                 lastEntryWallet: wallet,
                 lastEntryMargin: marginUsed,
                 lastEntryQty: positionData.qtyAbs || quantity,
-                lastMlProb: gate.turboScore,
-                lastAegisTurboScore: gate.turboScore,
-                lastAegisRawReason: gate.rawReason,
-                lastAegisGatedReason: gate.gatedReason,
-                lastAegisGatedBlockedBy: gate.gatedBlockedBy,
-                lastStopRoe: gate.stopRoe,
+                lastMlProb: effectiveGate.turboScore,
+                lastAegisTurboScore: effectiveGate.turboScore,
+                lastAegisRawReason: effectiveGate.rawReason,
+                lastAegisGatedReason: effectiveGate.gatedReason,
+                lastAegisGatedBlockedBy: effectiveGate.gatedBlockedBy,
+                lastStopRoe: effectiveGate.stopRoe,
                 lastStopPrice: stopPrice,
                 lastBreakEvenRoe: guardianConfig.beTriggerRoe,
                 breakEvenArmed: false,
                 breakEvenExecuted: false,
                 lastBreakEvenStop: undefined,
                 lastBreakEvenAt: undefined,
-                lastTakeProfitRoe: gate.takeProfitRoe,
-                lastTrailingActivationRoe: gate.trailingActivationRoe,
-                lastTrailingCallbackRoe: gate.trailingCallbackRoe,
+                lastTakeProfitRoe: effectiveGate.takeProfitRoe,
+                lastTrailingActivationRoe: effectiveGate.trailingActivationRoe,
+                lastTrailingCallbackRoe: effectiveGate.trailingCallbackRoe,
                 lastPositionFraction: positionFraction,
-                lastRequestedLeverage: gate.leverage,
+                lastRequestedLeverage: effectiveGate.leverage,
                 lastActualLeverage: leverage,
                 lastBracketStatus: 'OK',
                 exitEyeNeutralCount: 0,
@@ -1207,20 +1561,22 @@ export class TradingService {
                 position_fraction: positionFraction,
                 margin_estimated: marginUsed,
                 notional_estimated: (positionData.qtyAbs || quantity) * entryPrice,
-                turbo_score: gate.turboScore,
-                votes: gate.votes,
-                stop_roe: gate.stopRoe,
-                take_profit_roe: gate.takeProfitRoe,
-                trailing_activation_roe: gate.trailingActivationRoe,
-                trailing_callback_roe: gate.trailingCallbackRoe,
+                turbo_score: effectiveGate.turboScore,
+                votes: effectiveGate.votes,
+                stop_roe: effectiveGate.stopRoe,
+                take_profit_roe: effectiveGate.takeProfitRoe,
+                trailing_activation_roe: effectiveGate.trailingActivationRoe,
+                trailing_callback_roe: effectiveGate.trailingCallbackRoe,
                 sl_price: stopPrice,
                 tp_price: tpPrice,
                 brackets_confirmed: true,
                 status: 'OPEN',
                 metadata: {
-                    rawReason: gate.rawReason,
-                    gatedReason: gate.gatedReason,
-                    gatedBlockedBy: gate.gatedBlockedBy,
+                    rawReason: effectiveGate.rawReason,
+                    gatedReason: effectiveGate.gatedReason,
+                    gatedBlockedBy: effectiveGate.gatedBlockedBy,
+                    originalLeverage: gate.leverage,
+                    originalPositionFraction: gate.positionFraction,
                     orderId: result?.orderId,
                     estimated: true
                 }
@@ -1252,9 +1608,9 @@ export class TradingService {
                 margin: marginUsed,
                 leverage,
                 positionFraction,
-                turboScore: gate.turboScore,
-                votes: gate.votes,
-                rawReason: gate.rawReason
+                turboScore: effectiveGate.turboScore,
+                votes: effectiveGate.votes,
+                rawReason: effectiveGate.rawReason
             });
             logger.info('aegis_turbo_brackets_created', { symbol, side, stopPrice, tpPrice });
 
@@ -1270,12 +1626,12 @@ export class TradingService {
                     leverage,
                     stopPrice,
                     tpPrice,
-                    gate,
+                    gate: effectiveGate,
                     filters
                 })
             );
             logger.info('📱 [TELEGRAM_REPORT] AEGIS ENTRY SENT', {
-                message: `🔥 AEGIS TURBO ENTRY\n${symbol} | ${side}\n...score: ${this.formatScore(gate.turboScore)}`
+                message: `🔥 AEGIS TURBO ENTRY\n${symbol} | ${side}\n...score: ${this.formatScore(effectiveGate.turboScore)}`
             });
         } catch (error) {
             logger.error('aegis_entry_error_closed', { symbol, error: String(error) });

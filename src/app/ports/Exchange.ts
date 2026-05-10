@@ -59,6 +59,7 @@ export interface Exchange {
   getServerTime(): Promise<number>;
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   getLastCandle(symbol: string): Promise<Candle | null>;
+  getCachedCandles?(symbol: string, interval: string, limit: number): Candle[];
   subscribeToCandles(symbol: string): void;
   subscribeToPartialDepth?(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void): void;
   getMarkPrice(symbol: string): Promise<number>;

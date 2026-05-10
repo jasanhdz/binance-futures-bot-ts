@@ -201,4 +201,199 @@ ${shadowYaml}
         expect(config.getRegimeConfig('AEGIS_TURBO', 'SUIUSDT').hardStopRoe).toBe(-0.40);
         expect(config.getRegimeConfig('AEGIS_TURBO', 'SUIUSDT').entryThreshold).toBe(0.60);
     });
+
+    it('defaults portfolio risk and short gate to disabled', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisPortfolioRiskConfig()).toMatchObject({ enabled: false });
+        expect(config.getAegisShortGateConfig()).toMatchObject({ enabled: false });
+    });
+
+    it('parses portfolio risk and short gate config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  portfolio_risk:
+    enabled: true
+    max_open_positions: 4
+    max_same_direction_positions: 3
+    max_margin_used_pct: 0.45
+    max_notional_to_equity: 10
+  short_gate:
+    enabled: true
+    mode: PREMIUM_ONLY
+    min_score: 0.80
+    require_votes: 3
+    position_fraction_multiplier: 0.50
+    max_leverage: 10
+    block_symbols:
+      - solusdt
+      - AVAXUSDT
+    allow_if_regime_bearish: false
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisPortfolioRiskConfig()).toEqual({
+            enabled: true,
+            max_open_positions: 4,
+            max_same_direction_positions: 3,
+            max_margin_used_pct: 0.45,
+            max_notional_to_equity: 10
+        });
+        expect(config.getAegisShortGateConfig()).toEqual({
+            enabled: true,
+            mode: 'PREMIUM_ONLY',
+            min_score: 0.80,
+            require_votes: 3,
+            position_fraction_multiplier: 0.50,
+            max_leverage: 10,
+            block_symbols: ['SOLUSDT', 'AVAXUSDT'],
+            allow_if_regime_bearish: false
+        });
+    });
+
+    it('parses operational policy with portfolio off and no blocked shorts', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  portfolio_risk:
+    enabled: false
+  short_gate:
+    enabled: true
+    mode: PREMIUM_ONLY
+    min_score: 0.80
+    require_votes: 3
+    position_fraction_multiplier: 1.0
+    max_leverage: 10
+    block_symbols: []
+    allow_if_regime_bearish: false
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisPortfolioRiskConfig().enabled).toBe(false);
+        expect(config.getAegisShortGateConfig()).toMatchObject({
+            enabled: true,
+            mode: 'PREMIUM_ONLY',
+            min_score: 0.80,
+            require_votes: 3,
+            position_fraction_multiplier: 1.0,
+            max_leverage: 10,
+            block_symbols: [],
+            allow_if_regime_bearish: false
+        });
+    });
+
+    it('parses full entry quality gate config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_quality_gate:
+    enabled: true
+    mode: SHADOW
+    min_score_long: 0.65
+    min_score_short: 0.70
+    require_momentum_confirm: true
+    anti_falling_knife:
+      enabled: true
+      lookback_candles: 3
+      max_adverse_recent_return: 0.003
+    overextension:
+      enabled: true
+      ema_distance_limit: 0.006
+    volatility:
+      enabled: true
+      max_atr_percentile: 0.75
+    require_3of3_when_symbol_flagged: true
+    flagged_symbols:
+      - dogeusdt
+      - ETHUSDT
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getEntryQualityGateConfig()).toEqual({
+            enabled: true,
+            mode: 'SHADOW',
+            config: {
+                minScoreLong: 0.65,
+                minScoreShort: 0.70,
+                requireMomentumConfirm: true,
+                antiFallingKnifeEnabled: true,
+                antiFallingKnifeLookbackCandles: 3,
+                maxAdverseRecentReturn: 0.003,
+                overextensionEnabled: true,
+                emaDistanceLimit: 0.006,
+                volatilityEnabled: true,
+                maxAtrPercentile: 0.75,
+                require3of3WhenSymbolFlagged: true,
+                flaggedSymbols: ['DOGEUSDT', 'ETHUSDT']
+            }
+        });
+    });
+
+    it('uses safe entry quality defaults when config is absent', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getEntryQualityGateConfig()).toEqual({
+            enabled: false,
+            mode: 'OFF',
+            config: {
+                minScoreLong: 0.65,
+                minScoreShort: 0.70,
+                requireMomentumConfirm: false,
+                antiFallingKnifeEnabled: false,
+                antiFallingKnifeLookbackCandles: 3,
+                maxAdverseRecentReturn: 0.003,
+                overextensionEnabled: false,
+                emaDistanceLimit: 0.006,
+                volatilityEnabled: false,
+                maxAtrPercentile: 0.75,
+                require3of3WhenSymbolFlagged: false,
+                flaggedSymbols: []
+            }
+        });
+    });
+
+    it('parses entry quality mode SHADOW correctly', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_quality_gate:
+    enabled: true
+    mode: shadow
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getEntryQualityGateConfig().mode).toBe('SHADOW');
+    });
+
+    it('parses entry quality flagged_symbols correctly', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_quality_gate:
+    enabled: true
+    mode: SHADOW
+    flagged_symbols:
+      - solusdt
+      - LTCUSDT
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getEntryQualityGateConfig().config.flaggedSymbols).toEqual(['SOLUSDT', 'LTCUSDT']);
+    });
 });

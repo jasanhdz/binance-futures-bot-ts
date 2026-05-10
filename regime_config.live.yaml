@@ -70,6 +70,39 @@ REGIMES:
     use_exit_agent: false
 
 aegis:
+  portfolio_risk:
+    enabled: false
+  short_gate:
+    enabled: true
+    mode: PREMIUM_ONLY
+    min_score: 0.80
+    require_votes: 3
+    position_fraction_multiplier: 1.0
+    max_leverage: 10
+    block_symbols: []
+    allow_if_regime_bearish: false
+  entry_quality_gate:
+    enabled: true
+    mode: SHADOW
+    min_score_long: 0.65
+    min_score_short: 0.70
+    require_momentum_confirm: true
+    anti_falling_knife:
+      enabled: true
+      lookback_candles: 3
+      max_adverse_recent_return: 0.003
+    overextension:
+      enabled: true
+      ema_distance_limit: 0.006
+    volatility:
+      enabled: true
+      max_atr_percentile: 0.75
+    require_3of3_when_symbol_flagged: true
+    flagged_symbols:
+      - DOGEUSDT
+      - ETHUSDT
+      - LTCUSDT
+      - SOLUSDT
   exit_eye:
     enabled: true
     mode: CLOSE

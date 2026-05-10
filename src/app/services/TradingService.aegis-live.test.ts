@@ -89,6 +89,81 @@ function validSignal(): AegisTradingSignal {
     };
 }
 
+function shortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTradingSignal {
+    return {
+        symbol,
+        action: 'PASS',
+        confidence: 0,
+        source: 'AEGIS_TURBO',
+        longProb: 0.10,
+        shortProb: 0.80,
+        neutralProb: 0.10,
+        metadata: {
+            aegis: {
+                turbo: {
+                    raw: {
+                        action: 'SHORT',
+                        would_execute: true,
+                        turbo_score: score,
+                        leverage_suggestion: 20,
+                        position_fraction: 0.20,
+                        votes: { long: 0, short: shortVotes, neutral: 3 - shortVotes },
+                        reason: 'raw_short_agreement'
+                    },
+                    gated: {
+                        action: 'SHORT',
+                        would_execute: true,
+                        reason: 'raw_short_agreement',
+                        blocked_by: null
+                    },
+                    stop_roe: -0.15,
+                    take_profit_roe: 0.25,
+                    trailing_activation_roe: 0.15,
+                    trailing_callback_roe: 0.08
+                }
+            }
+        }
+    };
+}
+
+function entryQualityConfig(overrides: Record<string, any> = {}) {
+    const { config: configOverrides = {}, ...rest } = overrides;
+    return {
+        enabled: false,
+        mode: 'OFF',
+        config: {
+            minScoreLong: 0.65,
+            minScoreShort: 0.70,
+            requireMomentumConfirm: true,
+            antiFallingKnifeEnabled: true,
+            antiFallingKnifeLookbackCandles: 3,
+            maxAdverseRecentReturn: 0.003,
+            overextensionEnabled: true,
+            emaDistanceLimit: 0.006,
+            volatilityEnabled: true,
+            maxAtrPercentile: 0.75,
+            require3of3WhenSymbolFlagged: false,
+            flaggedSymbols: [],
+            ...configOverrides
+        },
+        ...rest
+    };
+}
+
+function cachedCandles(closes: number[]) {
+    return closes.map((close, index) => ({
+        openTime: index,
+        timestamp: index,
+        open: close,
+        high: close * 1.001,
+        low: close * 0.999,
+        close,
+        volume: 100,
+        buyVolume: 50,
+        closeTime: index + 1
+    }));
+}
+
 function makeHarness(options: {
     liveEnabled?: boolean;
     yaml?: any;
@@ -108,6 +183,11 @@ function makeHarness(options: {
 	    accountSnapshot?: any;
         regime?: any;
         guardian?: any;
+        signal?: AegisTradingSignal;
+        portfolioRisk?: any;
+        shortGate?: any;
+        entryQuality?: any;
+        cachedCandles?: any[];
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
@@ -158,6 +238,7 @@ function makeHarness(options: {
         getServerTime: vi.fn().mockResolvedValue(Date.now()),
         getLastCandle: vi.fn().mockResolvedValue(options.lastCandle ?? null),
         getCandles: vi.fn().mockResolvedValue([]),
+        getCachedCandles: vi.fn().mockReturnValue(options.cachedCandles ?? []),
         subscribeToCandles: vi.fn()
     };
     const logger = {
@@ -211,6 +292,9 @@ function makeHarness(options: {
     const symbolModes = options.symbolModes ?? { ETHUSDT: 'LIVE' as const };
     const configManager = {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
+        getAegisPortfolioRiskConfig: vi.fn(() => options.portfolioRisk ?? { enabled: false }),
+        getAegisShortGateConfig: vi.fn(() => options.shortGate ?? { enabled: false }),
+        getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
         getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
         getGuardianConfig: vi.fn(() => options.guardian ?? {
             beTriggerRoe: (options.regime ?? regimeConfig()).beRoe ?? 0.10,
@@ -239,7 +323,7 @@ function makeHarness(options: {
         {
             exchange: exchange as any,
             mlService: {
-                getSignal: vi.fn().mockResolvedValue(validSignal()),
+                getSignal: vi.fn().mockResolvedValue(options.signal ?? validSignal()),
                 getExitSignal: vi.fn(),
                 checkHealth: vi.fn()
             },
@@ -580,6 +664,395 @@ describe('TradingService Aegis live execution', () => {
 
         expect(logger.warn).toHaveBeenCalledWith('aegis_position_too_small', expect.any(Object));
         expect(exchange.marketOpen).not.toHaveBeenCalled();
+    });
+
+    it('blocks SHORT before exchange mutation when score is below premium threshold', async () => {
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: shortSignal('BTCUSDT', 0.79, 3),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SHORT_GATE_DENIED',
+            reason: 'short_score_below_premium_threshold'
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_short_gate_denied', expect.objectContaining({
+            symbol: 'BTCUSDT',
+            reason: 'short_score_below_premium_threshold'
+        }));
+    });
+
+    it('blocks SHORT before exchange mutation when votes are below required', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: shortSignal('BTCUSDT', 0.84, 2),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SHORT_GATE_DENIED',
+            reason: 'short_votes_below_required'
+        }));
+    });
+
+    it('uses adjusted leverage and preserves position fraction when SHORT premium passes', async () => {
+        const { exchange, historyLogger, logger, service, state } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: shortSignal('BTCUSDT', 0.84, 3),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('BTCUSDT', 10);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.012);
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            lastRequestedLeverage: 10,
+            lastActualLeverage: 10,
+            lastPositionFraction: 0.20
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SHORT_GATE_ADJUSTED',
+            metadata: expect.objectContaining({
+                originalLeverage: 20,
+                adjustedLeverage: 10,
+                originalPositionFraction: 0.20,
+                adjustedPositionFraction: 0.20
+            })
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_short_gate_adjusted', expect.objectContaining({
+            symbol: 'BTCUSDT',
+            adjustedLeverage: 10,
+            adjustedPositionFraction: 0.20
+        }));
+    });
+
+    it('does not block a SHORT symbol when block_symbols is empty', async () => {
+        const { exchange, service } = makeHarness({
+            symbols: ['AVAXUSDT'],
+            symbolModes: { AVAXUSDT: 'LIVE' },
+            signal: shortSignal('AVAXUSDT', 0.91, 3),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            }
+        });
+
+        await service.tick('AVAXUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('AVAXUSDT', 'SHORT', 0.012);
+    });
+
+    it('blocks by portfolio cap before marketOpen', async () => {
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            portfolioRisk: {
+                enabled: true,
+                max_open_positions: 0,
+                max_same_direction_positions: 3,
+                max_margin_used_pct: 0.45,
+                max_notional_to_equity: 10
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PORTFOLIO_RISK_DENIED',
+            reason: 'max_open_positions_reached'
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_portfolio_risk_denied', expect.objectContaining({
+            reason: 'max_open_positions_reached'
+        }));
+    });
+
+    it('keeps LONG entry working when portfolio risk allows', async () => {
+        const position = {
+            sideMode: 'LONG',
+            qtyAbs: 0.01,
+            entryPrice: 3000,
+            leverage: 20,
+            isolatedMargin: 2
+        };
+        const { exchange, service } = makeHarness({
+            readActivePositionSequence: [null, null, position],
+            portfolioRisk: {
+                enabled: true,
+                max_open_positions: 4,
+                max_same_direction_positions: 3,
+                max_margin_used_pct: 0.45,
+                max_notional_to_equity: 10
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.ensureMarginType).toHaveBeenCalledWith('ETHUSDT', 'ISOLATED');
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+    });
+
+    it('portfolio_risk.enabled=false allows entry despite restrictive limits', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            portfolioRisk: {
+                enabled: false,
+                max_open_positions: 0,
+                max_same_direction_positions: 0,
+                max_margin_used_pct: 0.01,
+                max_notional_to_equity: 0.01
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PORTFOLIO_RISK_DENIED'
+        }));
+    });
+
+    it('LONG is not affected by enabled short gate', async () => {
+        const { exchange, service } = makeHarness({
+            shortGate: {
+                enabled: true,
+                min_score: 0.99,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: ['ETHUSDT']
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+    });
+
+    it('in SHADOW, ENTRY_QUALITY_GATE_SHADOW_BLOCK does not prevent marketOpen', async () => {
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW',
+                config: { minScoreLong: 0.90 }
+            })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_QUALITY_GATE_SHADOW_BLOCK',
+            reason: 'score_below_entry_quality_threshold',
+            metadata: expect.objectContaining({
+                action: 'SHADOW_BLOCK',
+                shadowDidNotBlock: true
+            })
+        }));
+        expect(logger.info).toHaveBeenCalledWith('aegis_entry_quality_shadow_block', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            reason: 'score_below_entry_quality_threshold'
+        }));
+    });
+
+    it('in ENFORCE, ENTRY_QUALITY_GATE_DENIED prevents marketOpen', async () => {
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'ENFORCE',
+                config: { minScoreLong: 0.90 }
+            })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_QUALITY_GATE_DENIED',
+            reason: 'score_below_entry_quality_threshold'
+        }));
+        expect(logger.info).toHaveBeenCalledWith('aegis_entry_quality_denied', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            reason: 'score_below_entry_quality_threshold'
+        }));
+    });
+
+    it('records history event in SHADOW', async () => {
+        const { historyLogger, service } = makeHarness({
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW',
+                config: {
+                    requireMomentumConfirm: false,
+                    antiFallingKnifeEnabled: false,
+                    overextensionEnabled: false,
+                    volatilityEnabled: false
+                }
+            })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_QUALITY_GATE_SHADOW_ALLOW',
+            reason: 'entry_quality_passed',
+            metadata: expect.objectContaining({
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                mode: 'SHADOW'
+            })
+        }));
+    });
+
+    it('LONG limpio sigue normal', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW',
+                config: {
+                    requireMomentumConfirm: false,
+                    antiFallingKnifeEnabled: false,
+                    overextensionEnabled: false,
+                    volatilityEnabled: false
+                }
+            })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_QUALITY_GATE_SHADOW_ALLOW'
+        }));
+    });
+
+    it('SHORT limpio sigue pasando por ShortGate y EntryQualityGate', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: shortSignal('BTCUSDT', 0.84, 3),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            },
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW',
+                config: {
+                    requireMomentumConfirm: false,
+                    antiFallingKnifeEnabled: false,
+                    overextensionEnabled: false,
+                    volatilityEnabled: false
+                }
+            })
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('BTCUSDT', 10);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.012);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SHORT_GATE_ADJUSTED'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_QUALITY_GATE_SHADOW_ALLOW',
+            metadata: expect.objectContaining({ side: 'SHORT' })
+        }));
+    });
+
+    it('does not call Binance REST candles to calculate entry quality gate', async () => {
+        const { exchange, service } = makeHarness({
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW',
+                config: { minScoreLong: 0.90 }
+            }),
+            cachedCandles: cachedCandles([100, 100.1, 100.2, 100.3])
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.getCachedCandles).toHaveBeenCalledWith('ETHUSDT', '5m', 40);
+        expect(exchange.getCandles).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).toHaveBeenCalled();
+    });
+
+    it('records history event when portfolio risk blocks', async () => {
+        const { historyLogger, service } = makeHarness({
+            readActivePositionSequence: [null, null],
+            portfolioRisk: {
+                enabled: true,
+                max_open_positions: 0,
+                max_same_direction_positions: 3,
+                max_margin_used_pct: 0.45,
+                max_notional_to_equity: 10
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PORTFOLIO_RISK_DENIED',
+            metadata: expect.objectContaining({
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                reason: 'max_open_positions_reached',
+                openPositions: 0,
+                limits: expect.any(Object)
+            })
+        }));
     });
 
 	    it('closes if stop placement throws after market open', async () => {

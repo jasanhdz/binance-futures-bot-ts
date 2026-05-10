@@ -76,6 +76,71 @@ export interface AegisTurboYamlConfig {
     close_if_bracket_fails?: boolean;
 }
 
+export interface AegisPortfolioRiskYamlConfig {
+    enabled?: boolean;
+    max_open_positions?: number;
+    max_same_direction_positions?: number;
+    max_margin_used_pct?: number;
+    max_notional_to_equity?: number;
+}
+
+export type AegisEntryQualityGateMode = 'OFF' | 'SHADOW' | 'ENFORCE';
+
+export interface AegisEntryQualityGateYamlConfig {
+    enabled?: boolean;
+    mode?: AegisEntryQualityGateMode | string;
+    min_score_long?: number;
+    min_score_short?: number;
+    require_momentum_confirm?: boolean;
+    anti_falling_knife?: {
+        enabled?: boolean;
+        lookback_candles?: number;
+        max_adverse_recent_return?: number;
+    };
+    overextension?: {
+        enabled?: boolean;
+        ema_distance_limit?: number;
+    };
+    volatility?: {
+        enabled?: boolean;
+        max_atr_percentile?: number;
+    };
+    require_3of3_when_symbol_flagged?: boolean;
+    flagged_symbols?: string[];
+}
+
+export interface AegisEntryQualityGateRuntimeConfig {
+    enabled: boolean;
+    mode: AegisEntryQualityGateMode;
+    config: {
+        minScoreLong: number;
+        minScoreShort: number;
+        requireMomentumConfirm: boolean;
+        antiFallingKnifeEnabled: boolean;
+        antiFallingKnifeLookbackCandles: number;
+        maxAdverseRecentReturn: number;
+        overextensionEnabled: boolean;
+        emaDistanceLimit: number;
+        volatilityEnabled: boolean;
+        maxAtrPercentile: number;
+        require3of3WhenSymbolFlagged: boolean;
+        flaggedSymbols: string[];
+    };
+}
+
+export type AegisShortGateMode = 'PREMIUM_ONLY';
+
+export interface AegisShortGateYamlConfig {
+    enabled?: boolean;
+    mode?: AegisShortGateMode | string;
+    min_score?: number;
+    require_votes?: number;
+    position_fraction_multiplier?: number;
+    max_leverage?: number;
+    block_symbols?: string[];
+    allow_if_regime_bearish?: boolean;
+}
+
 export type AegisExitEyeMode = 'OFF' | 'SHADOW' | 'PROTECT' | 'CLOSE';
 
 export interface AegisExitEyeYamlConfig {
@@ -129,6 +194,9 @@ export interface NinjaYamlConfig {
     aegis?: {
         turbo?: AegisTurboYamlConfig;
         exit_eye?: Partial<AegisExitEyeYamlConfig>;
+        portfolio_risk?: AegisPortfolioRiskYamlConfig;
+        short_gate?: AegisShortGateYamlConfig;
+        entry_quality_gate?: AegisEntryQualityGateYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
         [symbol: string]: {
@@ -391,6 +459,65 @@ export class NinjaConfigManager {
         return this.config.aegis?.turbo;
     }
 
+    getAegisPortfolioRiskConfig(): Required<AegisPortfolioRiskYamlConfig> {
+        const raw = this.config.aegis?.portfolio_risk || {};
+        return {
+            enabled: raw.enabled === true,
+            max_open_positions: Math.max(0, Math.floor(this.finiteNumber(raw.max_open_positions, 0))),
+            max_same_direction_positions: Math.max(0, Math.floor(this.finiteNumber(raw.max_same_direction_positions, 0))),
+            max_margin_used_pct: Math.max(0, this.finiteNumber(raw.max_margin_used_pct, 0)),
+            max_notional_to_equity: Math.max(0, this.finiteNumber(raw.max_notional_to_equity, 0)),
+        };
+    }
+
+    getAegisShortGateConfig(): Required<AegisShortGateYamlConfig> {
+        const raw = this.config.aegis?.short_gate || {};
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeShortGateMode(raw.mode),
+            min_score: Math.max(0, this.finiteNumber(raw.min_score, 0)),
+            require_votes: Math.max(0, Math.floor(this.finiteNumber(raw.require_votes, 0))),
+            position_fraction_multiplier: Math.max(0, this.finiteNumber(raw.position_fraction_multiplier, 1)),
+            max_leverage: Math.max(0, this.finiteNumber(raw.max_leverage, 0)),
+            block_symbols: Array.isArray(raw.block_symbols)
+                ? raw.block_symbols.map((symbol) => this.normalizeSymbol(symbol)).filter(Boolean)
+                : [],
+            allow_if_regime_bearish: raw.allow_if_regime_bearish === true,
+        };
+    }
+
+    getEntryQualityGateConfig(_symbol?: string): AegisEntryQualityGateRuntimeConfig {
+        const raw = this.config.aegis?.entry_quality_gate || {};
+        const flaggedSymbols = Array.isArray(raw.flagged_symbols)
+            ? raw.flagged_symbols.map((item) => this.normalizeSymbol(item)).filter(Boolean)
+            : [];
+
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeEntryQualityGateMode(raw.mode),
+            config: {
+                minScoreLong: Math.max(0, this.finiteNumber(raw.min_score_long, 0.65)),
+                minScoreShort: Math.max(0, this.finiteNumber(raw.min_score_short, 0.70)),
+                requireMomentumConfirm: raw.require_momentum_confirm === true,
+                antiFallingKnifeEnabled: raw.anti_falling_knife?.enabled === true,
+                antiFallingKnifeLookbackCandles: Math.max(
+                    1,
+                    Math.floor(this.finiteNumber(raw.anti_falling_knife?.lookback_candles, 3))
+                ),
+                maxAdverseRecentReturn: Math.max(
+                    0,
+                    this.finiteNumber(raw.anti_falling_knife?.max_adverse_recent_return, 0.003)
+                ),
+                overextensionEnabled: raw.overextension?.enabled === true,
+                emaDistanceLimit: Math.max(0, this.finiteNumber(raw.overextension?.ema_distance_limit, 0.006)),
+                volatilityEnabled: raw.volatility?.enabled === true,
+                maxAtrPercentile: Math.max(0, this.finiteNumber(raw.volatility?.max_atr_percentile, 0.75)),
+                require3of3WhenSymbolFlagged: raw.require_3of3_when_symbol_flagged === true,
+                flaggedSymbols
+            }
+        };
+    }
+
     getAegisExitEyeConfig(): AegisExitEyeYamlConfig {
         const raw = this.config.aegis?.exit_eye || {};
         return {
@@ -542,6 +669,16 @@ export class NinjaConfigManager {
                     require_consecutive_neutral: 2,
                     require_consecutive_opposite: 1,
                     min_minutes_in_trade: 3
+                },
+                portfolio_risk: {
+                    enabled: false
+                },
+                short_gate: {
+                    enabled: false
+                },
+                entry_quality_gate: {
+                    enabled: false,
+                    mode: 'OFF'
                 }
             },
             symbols: {},
@@ -564,6 +701,22 @@ export class NinjaConfigManager {
     private normalizeExitEyeMode(mode?: AegisExitEyeMode | string): AegisExitEyeMode {
         const normalized = (mode || 'OFF').trim().toUpperCase();
         if (normalized === 'OFF' || normalized === 'SHADOW' || normalized === 'PROTECT' || normalized === 'CLOSE') {
+            return normalized;
+        }
+        return 'OFF';
+    }
+
+    private normalizeShortGateMode(mode?: AegisShortGateMode | string): AegisShortGateMode {
+        const normalized = (mode || 'PREMIUM_ONLY').trim().toUpperCase();
+        if (normalized === 'PREMIUM_ONLY') {
+            return normalized;
+        }
+        return 'PREMIUM_ONLY';
+    }
+
+    private normalizeEntryQualityGateMode(mode?: AegisEntryQualityGateMode | string): AegisEntryQualityGateMode {
+        const normalized = (mode || 'OFF').trim().toUpperCase();
+        if (normalized === 'OFF' || normalized === 'SHADOW' || normalized === 'ENFORCE') {
             return normalized;
         }
         return 'OFF';
