@@ -73,6 +73,16 @@ function turboFromSignal(signal: AegisTradingSignal): any {
     return signal.metadata?.aegis?.turbo ?? signal.aegis?.turbo;
 }
 
+function entryQualityModelFromSignal(signal: AegisTradingSignal): any {
+    return signal.metadata?.aegis?.entry_quality_model ?? signal.aegis?.entry_quality_model;
+}
+
+function formatEntryQualityModelLine(signal: AegisTradingSignal): string {
+    const eq = entryQualityModelFromSignal(signal);
+    if (!eq) return '';
+    return `🧪 EQ: **${formatPct(eq.entry_quality_score)}** | Tail: **${formatPct(eq.tail_risk_score)}** | Rec: **${eq.recommendation ?? 'N/D'}**\n`;
+}
+
 function signalInputFromTurbo(symbol: string, turbo: any): AegisSymbolSignalMessageInput {
     const raw = turbo?.raw ?? turbo;
     const gated = turbo?.gated;
@@ -219,6 +229,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 `🎚️ Threshold: **${formatPct(threshold)}**\n` +
                 `✅ Production allowed: **${boolText(signal.metadata?.aegis?.prod?.allowed ?? signal.aegis?.prod?.allowed ?? turbo?.production_allowed)}**\n` +
                 `🐍 Execute Python: **${boolText(turbo?.execute ?? turbo?.would_execute ?? raw?.would_execute)}**\n` +
+                formatEntryQualityModelLine(signal) +
                 `🕒 Feature timestamp: **${freshness?.feature_timestamp ?? freshness?.timestamp ?? 'N/D'}**\n` +
                 `🧾 Reason raw: **${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}**`;
         } catch (error) {
@@ -238,7 +249,11 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 const freshness = raw?.freshness ?? turbo?.freshness;
                 const fresh = (freshness?.is_fresh ?? freshness?.fresh) === true ? 'fresco' : 'N/D';
                 const votes = raw?.votes ?? turbo?.votes ?? {};
-                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}`);
+                const eq = entryQualityModelFromSignal(signal);
+                const eqText = eq
+                    ? ` | EQ ${formatPct(eq.entry_quality_score)} Tail ${formatPct(eq.tail_risk_score)} ${eq.recommendation ?? 'N/D'}`
+                    : '';
+                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}${eqText}`);
             } catch {
                 rows.push(`${symbol} | ERROR`);
             }

@@ -89,6 +89,29 @@ function validSignal(): AegisTradingSignal {
     };
 }
 
+function validSignalWithShadowEntryQuality(): AegisTradingSignal {
+    const signal = validSignal();
+    return {
+        ...signal,
+        metadata: {
+            ...signal.metadata,
+            aegis: {
+                ...signal.metadata?.aegis,
+                entry_quality_model: {
+                    mode: 'SHADOW',
+                    execute: false,
+                    production_allowed: false,
+                    status: 'RESEARCH_CANDIDATE_NOT_LIVE',
+                    entry_quality_score: 0.20,
+                    tail_risk_score: 0.90,
+                    recommendation: 'BLOCK_SHADOW',
+                    reason: 'quality_low_and_tail_high'
+                }
+            }
+        }
+    };
+}
+
 function shortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTradingSignal {
     return {
         symbol,
@@ -1027,6 +1050,18 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.getCachedCandles).toHaveBeenCalledWith('ETHUSDT', '5m', 40);
         expect(exchange.getCandles).not.toHaveBeenCalled();
         expect(exchange.marketOpen).toHaveBeenCalled();
+    });
+
+    it('does not use model shadow entry_quality_model metadata to block marketOpen', async () => {
+        const { exchange, service } = makeHarness({
+            signal: validSignalWithShadowEntryQuality(),
+            entryQuality: entryQualityConfig({ enabled: false, mode: 'OFF' })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
     });
 
     it('records history event when portfolio risk blocks', async () => {

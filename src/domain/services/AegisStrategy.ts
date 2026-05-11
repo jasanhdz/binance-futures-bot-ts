@@ -81,6 +81,27 @@ export interface AegisProdBlock {
   reason?: string;
 }
 
+export interface AegisEntryQualityModelBlock {
+  mode?: 'SHADOW' | string;
+  execute?: boolean;
+  production_allowed?: boolean;
+  status?: string;
+  symbol?: string;
+  model_version?: string;
+  model_scope?: 'symbol' | 'global' | 'none' | string;
+  entry_quality_score?: number | null;
+  tail_risk_score?: number | null;
+  recommendation?: 'ALLOW_SHADOW' | 'BLOCK_SHADOW' | 'INSUFFICIENT_DATA' | 'MODEL_ERROR' | string;
+  reason?: string;
+  thresholds?: {
+    quality_min?: number;
+    tail_max?: number;
+  };
+  feature_status?: 'ok' | 'partial' | 'insufficient' | string;
+  missing_features?: string[];
+  latency_ms?: number;
+}
+
 export interface AegisBlock {
   candidate?: string;
   candidate_status?: string;
@@ -88,6 +109,7 @@ export interface AegisBlock {
   prod?: AegisProdBlock;
   shadow?: AegisShadowBlock;
   turbo?: AegisTurboBlock;
+  entry_quality_model?: AegisEntryQualityModelBlock;
 }
 
 export interface AegisPredictionResponse {

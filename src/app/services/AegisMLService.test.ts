@@ -20,6 +20,22 @@ describe('AegisMLService', () => {
                     execute: false,
                     reason: 'shadow_observation'
                 },
+                entry_quality_model: {
+                    mode: 'SHADOW',
+                    execute: false,
+                    production_allowed: false,
+                    status: 'RESEARCH_CANDIDATE_NOT_LIVE',
+                    symbol: 'ETHUSDT',
+                    model_version: 'v020',
+                    model_scope: 'symbol',
+                    entry_quality_score: 0.64,
+                    tail_risk_score: 0.37,
+                    recommendation: 'ALLOW_SHADOW',
+                    reason: 'quality_above_threshold_tail_ok',
+                    feature_status: 'partial',
+                    missing_features: ['ema_9'],
+                    latency_ms: 4.2
+                },
                 turbo: {
                     raw: {
                         action: 'LONG',
@@ -50,6 +66,8 @@ describe('AegisMLService', () => {
         expect(signal.longProb).toBe(0.72);
         expect(signal.smart_leverage).toBe(0);
         expect(signal.metadata?.aegis).toBe(prediction.aegis);
+        expect(signal.metadata?.aegis?.entry_quality_model).toBe(prediction.aegis?.entry_quality_model);
+        expect(signal.metadata?.aegis?.entry_quality_model?.execute).toBe(false);
         expect(signal.metadata?.rawPrediction).toBe(prediction);
     });
 });

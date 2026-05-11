@@ -30,6 +30,24 @@ function prediction(symbol = 'ETHUSDT', score = 0.632, reason = 'rawrecentlongag
     };
 }
 
+function predictionWithEntryQuality(symbol = 'ETHUSDT') {
+    const base = prediction(symbol);
+    return {
+        ...base,
+        aegis: {
+            ...base.aegis,
+            entry_quality_model: {
+                mode: 'SHADOW',
+                execute: false,
+                production_allowed: false,
+                entry_quality_score: 0.64,
+                tail_risk_score: 0.37,
+                recommendation: 'ALLOW_SHADOW'
+            }
+        }
+    };
+}
+
 function makeHandlers(overrides: Record<string, any> = {}) {
     const symbolModes = overrides.symbolModes ?? Object.fromEntries((overrides.symbols ?? ['ETHUSDT']).map((symbol: string) => [symbol, 'LIVE']));
     const exchange = {
@@ -142,6 +160,17 @@ describe('TelegramCommandHandlers', () => {
         expect(text).toContain('Acuerdo LONG reciente 2/3');
     });
 
+    it('/signal shows entry quality model when present', async () => {
+        const { handlers, mlService } = makeHandlers();
+        mlService.getAegisPrediction.mockResolvedValueOnce(predictionWithEntryQuality('ETHUSDT'));
+
+        const text = await handlers.handleSignal('ETHUSDT');
+
+        expect(text).toContain('EQ: **64.0%**');
+        expect(text).toContain('Tail: **37.0%**');
+        expect(text).toContain('Rec: **ALLOW_SHADOW**');
+    });
+
     it('/signals supports multiple symbols', async () => {
         const { handlers } = makeHandlers({ symbols: ['ETHUSDT', 'BTCUSDT'] });
 
@@ -149,6 +178,15 @@ describe('TelegramCommandHandlers', () => {
 
         expect(text).toContain('ETHUSDT | LONG | score 63.2%');
         expect(text).toContain('BTCUSDT | LONG | score 28.4%');
+    });
+
+    it('/signals does not break when entry quality model is missing', async () => {
+        const { handlers } = makeHandlers({ symbols: ['ETHUSDT'] });
+
+        const text = await handlers.handleSignals();
+
+        expect(text).toContain('ETHUSDT | LONG | score 63.2%');
+        expect(text).not.toContain('EQ N/D');
     });
 
     it('/signals lists LIVE and SHADOW symbols without scanning OFF symbols', async () => {
