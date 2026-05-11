@@ -99,6 +99,13 @@ export interface AegisEntryQualityModelBlock {
   };
   feature_status?: 'ok' | 'partial' | 'insufficient' | string;
   missing_features?: string[];
+  feature_parity_pct?: number | null;
+  missing_features_count?: number | null;
+  approximated_features?: string[];
+  critical_missing_groups?: string[];
+  feature_build_latency_ms?: number | null;
+  model_latency_ms?: number | null;
+  total_latency_ms?: number | null;
   latency_ms?: number;
 }
 
