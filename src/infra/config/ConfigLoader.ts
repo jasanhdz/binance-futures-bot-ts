@@ -67,6 +67,7 @@ export interface AegisTurboYamlConfig {
     live_enabled?: boolean;
     allow_short?: boolean;
     position_fraction_cap?: number;
+    position_fraction_overrides?: AegisPositionFractionOverrideRuleYamlConfig[];
     max_trades_per_day?: number;
     max_consecutive_losses?: number;
     daily_loss_stop_pct?: number;
@@ -74,6 +75,22 @@ export interface AegisTurboYamlConfig {
     max_liquidity_stress?: number;
     require_brackets?: boolean;
     close_if_bracket_fails?: boolean;
+}
+
+export interface AegisPositionFractionOverrideRuleYamlConfig {
+    name?: string;
+    symbol?: string;
+    symbols?: string[];
+    long?: number;
+    short?: number;
+}
+
+export interface AegisPositionFractionOverride {
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    positionFraction: number;
+    ruleIndex: number;
+    ruleName?: string;
 }
 
 export interface AegisPortfolioRiskYamlConfig {
@@ -459,6 +476,45 @@ export class NinjaConfigManager {
         return this.config.aegis?.turbo;
     }
 
+    getAegisPositionFractionOverride(symbol: string, side: 'LONG' | 'SHORT'): AegisPositionFractionOverride | undefined {
+        const normalizedSymbol = this.normalizeSymbol(symbol);
+        const normalizedSide = side === 'SHORT' ? 'SHORT' : 'LONG';
+        const sideKey = normalizedSide === 'LONG' ? 'long' : 'short';
+        const rules = this.config.aegis?.turbo?.position_fraction_overrides;
+        if (!normalizedSymbol || !Array.isArray(rules)) {
+            return undefined;
+        }
+
+        for (let index = 0; index < rules.length; index++) {
+            const rule = rules[index];
+            const configuredSymbols = [
+                ...(rule.symbol ? [rule.symbol] : []),
+                ...(Array.isArray(rule.symbols) ? rule.symbols : [])
+            ]
+                .map((item) => this.normalizeSymbol(item))
+                .filter(Boolean);
+
+            if (!configuredSymbols.includes(normalizedSymbol)) {
+                continue;
+            }
+
+            const rawPositionFraction = rule[sideKey];
+            if (!this.isFiniteNumber(rawPositionFraction)) {
+                continue;
+            }
+
+            return {
+                symbol: normalizedSymbol,
+                side: normalizedSide,
+                positionFraction: Math.min(1, Math.max(0, rawPositionFraction)),
+                ruleIndex: index,
+                ruleName: typeof rule.name === 'string' && rule.name.trim() ? rule.name.trim() : undefined
+            };
+        }
+
+        return undefined;
+    }
+
     getAegisPortfolioRiskConfig(): Required<AegisPortfolioRiskYamlConfig> {
         const raw = this.config.aegis?.portfolio_risk || {};
         return {
@@ -642,6 +698,7 @@ export class NinjaConfigManager {
                     live_enabled: false,
                     allow_short: false,
                     position_fraction_cap: 0.10,
+                    position_fraction_overrides: [],
                     max_trades_per_day: 1,
                     max_consecutive_losses: 1,
                     daily_loss_stop_pct: 0.10,
@@ -723,7 +780,11 @@ export class NinjaConfigManager {
     }
 
     private finiteNumber(value: unknown, fallback: number): number {
-        return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+        return this.isFiniteNumber(value) ? value : fallback;
+    }
+
+    private isFiniteNumber(value: unknown): value is number {
+        return typeof value === 'number' && Number.isFinite(value);
     }
 }
 

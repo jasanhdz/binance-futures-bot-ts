@@ -209,6 +209,7 @@ function makeHarness(options: {
         signal?: AegisTradingSignal;
         portfolioRisk?: any;
         shortGate?: any;
+        positionFractionOverride?: any;
         entryQuality?: any;
         cachedCandles?: any[];
 	} = {}) {
@@ -317,6 +318,7 @@ function makeHarness(options: {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
         getAegisPortfolioRiskConfig: vi.fn(() => options.portfolioRisk ?? { enabled: false }),
         getAegisShortGateConfig: vi.fn(() => options.shortGate ?? { enabled: false }),
+        getAegisPositionFractionOverride: vi.fn(() => options.positionFractionOverride),
         getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
         getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
         getGuardianConfig: vi.fn(() => options.guardian ?? {
@@ -490,6 +492,42 @@ describe('TradingService Aegis live execution', () => {
 	        }));
 	        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.021);
 	    });
+
+    it('overrides ML position fraction for a configured LONG symbol before sizing the order', async () => {
+        const { exchange, historyLogger, logger, service, state } = makeHarness({
+            positionFractionOverride: {
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                positionFraction: 0.10,
+                ruleIndex: 0,
+                ruleName: 'majors-example'
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.012);
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            lastPositionFraction: 0.10
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'POSITION_FRACTION_OVERRIDE_APPLIED',
+            reason: 'configured_position_fraction_override',
+            metadata: expect.objectContaining({
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                mlPositionFraction: 0.18,
+                overriddenPositionFraction: 0.10,
+                ruleName: 'majors-example'
+            })
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_position_fraction_override_applied', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            side: 'LONG',
+            mlPositionFraction: 0.18,
+            overriddenPositionFraction: 0.10
+        }));
+    });
 
     it('does not treat isolated margin usage as daily loss when equity is unchanged', async () => {
         const { exchange, logger, service } = makeHarness({
@@ -785,6 +823,45 @@ describe('TradingService Aegis live execution', () => {
             symbol: 'BTCUSDT',
             adjustedLeverage: 10,
             adjustedPositionFraction: 0.20
+        }));
+    });
+
+    it('overrides ML position fraction for SHORT before short gate leverage adjustment', async () => {
+        const { exchange, historyLogger, service, state } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: shortSignal('BTCUSDT', 0.84, 3),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            },
+            positionFractionOverride: {
+                symbol: 'BTCUSDT',
+                side: 'SHORT',
+                positionFraction: 0.06,
+                ruleIndex: 1,
+                ruleName: 'majors-example'
+            }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('BTCUSDT', 10);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.003);
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            lastPositionFraction: 0.06
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SHORT_GATE_ADJUSTED',
+            metadata: expect.objectContaining({
+                originalPositionFraction: 0.06,
+                adjustedPositionFraction: 0.06
+            })
         }));
     });
 
@@ -1151,8 +1228,8 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5, 0.01);
-        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5, 0.01);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
     });
 
     it('executes MOVE_SL_BE for a LONG position', async () => {

@@ -15,6 +15,7 @@ import {
 import {
     AegisExitEyeYamlConfig,
     AegisEntryQualityGateRuntimeConfig,
+    AegisPositionFractionOverride,
     AegisPortfolioRiskYamlConfig,
     AegisShortGateYamlConfig,
     AegisSymbolMode,
@@ -169,6 +170,13 @@ export class TradingService {
             block_symbols: [],
             allow_if_regime_bearish: false
         };
+    }
+
+    private getAegisPositionFractionOverride(symbol: string, side: Side): AegisPositionFractionOverride | undefined {
+        const manager = this.deps.configManager as any;
+        return typeof manager.getAegisPositionFractionOverride === 'function'
+            ? manager.getAegisPositionFractionOverride(symbol, side)
+            : undefined;
     }
 
     private getEntryQualityGateConfig(symbol?: string): AegisEntryQualityGateRuntimeConfig {
@@ -1208,17 +1216,43 @@ export class TradingService {
             }
             if (!gate.allowed || (gate.side !== 'LONG' && gate.side !== 'SHORT')) return;
             const side = gate.side;
+            const positionFractionOverride = this.getAegisPositionFractionOverride(symbol, side);
+            const gateAfterPositionOverride: AegisMicroLiveGateDecision = positionFractionOverride
+                ? { ...gate, positionFraction: positionFractionOverride.positionFraction }
+                : gate;
+            if (positionFractionOverride) {
+                await this.logAegisTradeEvent(symbol, 'POSITION_FRACTION_OVERRIDE_APPLIED', {
+                    tradeId,
+                    reason: 'configured_position_fraction_override',
+                    metadata: {
+                        symbol,
+                        side,
+                        mlPositionFraction: gate.positionFraction,
+                        overriddenPositionFraction: positionFractionOverride.positionFraction,
+                        ruleIndex: positionFractionOverride.ruleIndex,
+                        ruleName: positionFractionOverride.ruleName
+                    }
+                });
+                logger.warn('aegis_position_fraction_override_applied', {
+                    symbol,
+                    side,
+                    mlPositionFraction: gate.positionFraction,
+                    overriddenPositionFraction: positionFractionOverride.positionFraction,
+                    ruleIndex: positionFractionOverride.ruleIndex,
+                    ruleName: positionFractionOverride.ruleName
+                });
+            }
             const shortGateDecision = AegisShortGate.evaluate({
                 symbol,
                 side,
-                turboScore: gate.turboScore,
-                votes: gate.votes,
-                leverage: gate.leverage,
-                positionFraction: gate.positionFraction,
+                turboScore: gateAfterPositionOverride.turboScore,
+                votes: gateAfterPositionOverride.votes,
+                leverage: gateAfterPositionOverride.leverage,
+                positionFraction: gateAfterPositionOverride.positionFraction,
                 config: this.getAegisShortGateConfig()
             });
             if (!shortGateDecision.allowed) {
-                const deniedGate = { ...gate, allowed: false, reason: shortGateDecision.reason };
+                const deniedGate = { ...gateAfterPositionOverride, allowed: false, reason: shortGateDecision.reason };
                 await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: deniedGate, executed: false });
                 await this.logAegisTradeEvent(symbol, 'SHORT_GATE_DENIED', {
                     tradeId,
@@ -1246,7 +1280,7 @@ export class TradingService {
             const leverage = shortGateDecision.adjustedLeverage;
             const positionFraction = shortGateDecision.adjustedPositionFraction;
             const effectiveGate: AegisMicroLiveGateDecision = {
-                ...gate,
+                ...gateAfterPositionOverride,
                 leverage,
                 positionFraction
             };
@@ -1269,17 +1303,17 @@ export class TradingService {
                     tradeId,
                     reason: shortGateDecision.reason,
                     metadata: {
-                        originalLeverage: gate.leverage,
+                        originalLeverage: gateAfterPositionOverride.leverage,
                         adjustedLeverage: leverage,
-                        originalPositionFraction: gate.positionFraction,
+                        originalPositionFraction: gateAfterPositionOverride.positionFraction,
                         adjustedPositionFraction: positionFraction
                     }
                 });
                 logger.warn('aegis_short_gate_adjusted', {
                     symbol,
-                    originalLeverage: gate.leverage,
+                    originalLeverage: gateAfterPositionOverride.leverage,
                     adjustedLeverage: leverage,
-                    originalPositionFraction: gate.positionFraction,
+                    originalPositionFraction: gateAfterPositionOverride.positionFraction,
                     adjustedPositionFraction: positionFraction
                 });
             }
@@ -1577,6 +1611,11 @@ export class TradingService {
                     gatedBlockedBy: effectiveGate.gatedBlockedBy,
                     originalLeverage: gate.leverage,
                     originalPositionFraction: gate.positionFraction,
+                    positionFractionOverride: positionFractionOverride ? {
+                        ruleIndex: positionFractionOverride.ruleIndex,
+                        ruleName: positionFractionOverride.ruleName,
+                        overriddenPositionFraction: positionFractionOverride.positionFraction
+                    } : undefined,
                     orderId: result?.orderId,
                     estimated: true
                 }
@@ -2420,7 +2459,7 @@ export class TradingService {
                 ),
                 filters
             );
-            await exchange.placeStopClose(symbol, side, stopPrice, position.qtyAbs);
+            await exchange.placeStopClose(symbol, side, stopPrice);
             logger.info('aegis_turbo_brackets_created', { symbol, side, stopPrice, recreated: true });
             await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
                 tradeId: botState.lastTradeId,
@@ -2439,7 +2478,7 @@ export class TradingService {
                 ),
                 filters
             );
-            await exchange.placeTpClose(symbol, side, tpPrice, position.qtyAbs);
+            await exchange.placeTpClose(symbol, side, tpPrice);
             logger.info('aegis_turbo_brackets_created', { symbol, side, tpPrice, recreated: true });
             await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
                 tradeId: botState.lastTradeId,

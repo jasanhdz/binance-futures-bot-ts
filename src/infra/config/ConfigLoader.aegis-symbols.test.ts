@@ -258,6 +258,70 @@ symbols:
         });
     });
 
+    it('resolves Aegis Turbo position fraction overrides by symbol group and side', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+    position_fraction_overrides:
+      - name: majors
+        symbols:
+          - btcusdt
+          - ETHUSDT
+        long: 0.16
+        short: 0.08
+      - name: link-only
+        symbol: LINKUSDT
+        long: 0.12
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+  BTCUSDT:
+    enabled: true
+    mode: LIVE
+  LINKUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisPositionFractionOverride('BTCUSDT', 'LONG')).toEqual({
+            symbol: 'BTCUSDT',
+            side: 'LONG',
+            positionFraction: 0.16,
+            ruleIndex: 0,
+            ruleName: 'majors'
+        });
+        expect(config.getAegisPositionFractionOverride('ethusdt', 'SHORT')).toEqual({
+            symbol: 'ETHUSDT',
+            side: 'SHORT',
+            positionFraction: 0.08,
+            ruleIndex: 0,
+            ruleName: 'majors'
+        });
+        expect(config.getAegisPositionFractionOverride('LINKUSDT', 'LONG')).toMatchObject({
+            symbol: 'LINKUSDT',
+            side: 'LONG',
+            positionFraction: 0.12,
+            ruleName: 'link-only'
+        });
+        expect(config.getAegisPositionFractionOverride('LINKUSDT', 'SHORT')).toBeUndefined();
+        expect(config.getAegisPositionFractionOverride('ADAUSDT', 'LONG')).toBeUndefined();
+    });
+
+    it('clamps configured position fraction overrides to wallet fraction bounds', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+    position_fraction_overrides:
+      - symbol: ADAUSDT
+        long: 1.5
+        short: -0.1
+symbols:
+  ADAUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisPositionFractionOverride('ADAUSDT', 'LONG')?.positionFraction).toBe(1);
+        expect(config.getAegisPositionFractionOverride('ADAUSDT', 'SHORT')?.positionFraction).toBe(0);
+    });
+
     it('parses operational policy with portfolio off and no blocked shorts', () => {
         const config = new NinjaConfigManager(writeConfig(`
   portfolio_risk:

@@ -123,7 +123,7 @@ Exit message:
 
 ## Runtime Sizing Source
 
-Fecha: 2026-05-06.
+Fecha: 2026-05-11.
 
 `raw.position_fraction` is not calculated in this TypeScript bot. It is produced by the Python Aegis API and consumed here as part of the Turbo metadata.
 
@@ -137,6 +137,7 @@ Aegis Python:
 
 TypeScript bot:
   -> gate.positionFraction = min(raw.position_fraction, position_fraction_cap)
+  -> optional position_fraction_overrides can replace gate.positionFraction by symbol + side
   -> margin = wallet * (1 - fee_buffer_pct) * gate.positionFraction
   -> notional = margin * leverage
 ```
@@ -145,8 +146,20 @@ Operational meaning:
 
 - `SYMBOLS.ETHUSDT: 1.0` and `TRADING.capital_usage_default: 1.0` do not force full-wallet Aegis Turbo entries.
 - `aegis.turbo.position_fraction_cap: 1.0` means "allow up to 100% if Aegis asks for it"; it does not rewrite Aegis sizing.
-- To change the normal/premium fraction, edit `aegis_alpha/configs/turbo.yaml` in the parent `trading_system` repo.
+- To change the normal/premium fraction globally, edit `aegis_alpha/configs/turbo.yaml` in the parent `trading_system` repo.
+- To override only specific symbols and sides in the TypeScript bot, set `aegis.turbo.position_fraction_overrides` in the active YAML. The first matching rule wins, `symbols` can hold one or many symbols, and `long` / `short` are wallet fractions from `0.0` to `1.0`.
 - After the Python service has the hot-reload code loaded once, future YAML edits do not require a Python restart.
+
+Example:
+
+```yaml
+aegis:
+  turbo:
+    position_fraction_overrides:
+      - name: majors_link_btc_eth_ada_long
+        symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT]
+        long: 0.50
+```
 
 Documentation rule:
 

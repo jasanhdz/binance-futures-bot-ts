@@ -672,7 +672,8 @@ export class BinanceExchange implements Exchange {
   async placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    const rawParams: any = {
+    const standardParams = this.buildStandardCloseTriggerParams(symbol, side, 'STOP_MARKET', stopPrice, hedge, qty);
+    const algoParams: any = {
       symbol,
       side: side === 'LONG' ? 'SELL' : 'BUY',
       type: 'STOP_MARKET',
@@ -683,30 +684,61 @@ export class BinanceExchange implements Exchange {
     };
 
     if (qty) {
-      rawParams.quantity = String(qty);
-      rawParams.reduceOnly = 'true';
+      algoParams.quantity = String(qty);
+      if (!hedge) algoParams.reduceOnly = 'true';
     } else {
-      rawParams.closePosition = 'true';
+      algoParams.closePosition = 'true';
     }
 
-    if (hedge) rawParams.positionSide = side;
+    if (hedge) algoParams.positionSide = side;
 
     const t0 = Date.now();
     try {
-      await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
-      this.log.debug('api_stop_upsert', { ms: Date.now() - t0, symbol, side, stopPrice });
+      await this.enqueue(() => this.cli.futuresOrder(standardParams));
+      this.log.debug('api_stop_upsert', { ms: Date.now() - t0, symbol, side, stopPrice, placement: 'standard_order' });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
-      // Wait to see if error is a duplicate position side error
       if (BinanceExchange.posSideMismatch(e)) {
-        delete rawParams.positionSide;
-        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
+        const fallbackParams = { ...standardParams };
+        delete fallbackParams.positionSide;
+        await this.enqueue(() => this.cli.futuresOrder(fallbackParams));
         this.hedgeCache = undefined;
-        this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice });
+        this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice, placement: 'standard_order_without_position_side' });
         return true;
       }
-      throw e;
+      return this.placeStopCloseAlgoFallback(symbol, side, stopPrice, algoParams, e, t0);
+    }
+  }
+
+  private async placeStopCloseAlgoFallback(
+    symbol: string,
+    side: Side,
+    stopPrice: number,
+    algoParams: any,
+    cause: any,
+    startedAt: number,
+  ): Promise<boolean> {
+    this.log.warn('api_stop_standard_order_failed_using_algo_fallback', {
+      symbol,
+      side,
+      stopPrice,
+      error: String(cause),
+    });
+    try {
+      await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+      this.log.debug('api_stop_upsert', { ms: Date.now() - startedAt, symbol, side, stopPrice, placement: 'algo_fallback' });
+      return true;
+    } catch (fallbackError: any) {
+      noteRateLimitFromError(fallbackError);
+      if (BinanceExchange.posSideMismatch(fallbackError)) {
+        delete algoParams.positionSide;
+        await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+        this.hedgeCache = undefined;
+        this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice, placement: 'algo_without_position_side' });
+        return true;
+      }
+      throw fallbackError;
     }
   }
 
@@ -767,7 +799,8 @@ export class BinanceExchange implements Exchange {
   async placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    const rawParams: any = {
+    const standardParams = this.buildStandardCloseTriggerParams(symbol, side, 'TAKE_PROFIT_MARKET', triggerPrice, hedge, qty);
+    const algoParams: any = {
       symbol,
       side: side === 'LONG' ? 'SELL' : 'BUY',
       type: 'TAKE_PROFIT_MARKET',
@@ -778,29 +811,87 @@ export class BinanceExchange implements Exchange {
     };
 
     if (qty) {
-      rawParams.quantity = String(qty);
-      rawParams.reduceOnly = 'true';
+      algoParams.quantity = String(qty);
+      if (!hedge) algoParams.reduceOnly = 'true';
     } else {
-      rawParams.closePosition = 'true';
+      algoParams.closePosition = 'true';
     }
 
-    if (hedge) rawParams.positionSide = side;
+    if (hedge) algoParams.positionSide = side;
 
     const t0 = Date.now();
     try {
-      await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
-      this.log.debug('api_tp_upsert', { ms: Date.now() - t0, symbol, side, tp: triggerPrice });
+      await this.enqueue(() => this.cli.futuresOrder(standardParams));
+      this.log.debug('api_tp_upsert', { ms: Date.now() - t0, symbol, side, tp: triggerPrice, placement: 'standard_order' });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
-        delete rawParams.positionSide;
-        await this.enqueue(() => this.placeAlgoOrderRaw(rawParams));
+        const fallbackParams = { ...standardParams };
+        delete fallbackParams.positionSide;
+        await this.enqueue(() => this.cli.futuresOrder(fallbackParams));
         this.hedgeCache = undefined;
-        this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice });
+        this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice, placement: 'standard_order_without_position_side' });
         return true;
       }
-      throw e;
+      return this.placeTpCloseAlgoFallback(symbol, side, triggerPrice, algoParams, e, t0);
+    }
+  }
+
+  private buildStandardCloseTriggerParams(
+    symbol: string,
+    side: Side,
+    type: 'STOP_MARKET' | 'TAKE_PROFIT_MARKET',
+    triggerPrice: number,
+    hedge: boolean,
+    qty?: number,
+  ): any {
+    const params: any = {
+      symbol,
+      side: side === 'LONG' ? 'SELL' : 'BUY',
+      type,
+      stopPrice: this.formatPrice(symbol, triggerPrice),
+      workingType: 'MARK_PRICE',
+      newOrderRespType: 'RESULT' as const,
+    };
+    if (qty) {
+      params.quantity = String(qty);
+      if (!hedge) params.reduceOnly = 'true';
+    } else {
+      params.closePosition = 'true';
+    }
+    if (hedge) params.positionSide = side;
+    return params;
+  }
+
+  private async placeTpCloseAlgoFallback(
+    symbol: string,
+    side: Side,
+    triggerPrice: number,
+    algoParams: any,
+    cause: any,
+    startedAt: number,
+  ): Promise<boolean> {
+    this.log.warn('api_tp_standard_order_failed_using_algo_fallback', {
+      symbol,
+      side,
+      tp: triggerPrice,
+      error: String(cause),
+    });
+    try {
+      await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+      this.log.debug('api_tp_upsert', { ms: Date.now() - startedAt, symbol, side, tp: triggerPrice, placement: 'algo_fallback' });
+      return true;
+    } catch (fallbackError: any) {
+      noteRateLimitFromError(fallbackError);
+      if (BinanceExchange.posSideMismatch(fallbackError)) {
+        delete algoParams.positionSide;
+        await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+        this.hedgeCache = undefined;
+        this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice, placement: 'algo_without_position_side' });
+        return true;
+      }
+      throw fallbackError;
     }
   }
 

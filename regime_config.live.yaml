@@ -127,6 +127,12 @@ aegis:
     live_enabled: true
     allow_short: true
     position_fraction_cap: 1.0
+    # Optional bot-side sizing overrides. When a rule matches symbol + side,
+    # the bot uses this fraction instead of Aegis ML raw.position_fraction.
+    position_fraction_overrides:
+      - name: majors_link_btc_eth_ada_long
+        symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT]
+        long: 0.50
     max_trades_per_day: 99
     max_consecutive_losses: 10
     daily_loss_stop_pct: 0.10
