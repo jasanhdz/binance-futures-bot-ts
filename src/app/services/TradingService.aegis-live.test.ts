@@ -209,6 +209,7 @@ function makeHarness(options: {
         signal?: AegisTradingSignal;
         portfolioRisk?: any;
         shortGate?: any;
+        eventRisk?: any;
         positionFractionOverride?: any;
         entryQuality?: any;
         cachedCandles?: any[];
@@ -318,6 +319,25 @@ function makeHarness(options: {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
         getAegisPortfolioRiskConfig: vi.fn(() => options.portfolioRisk ?? { enabled: false }),
         getAegisShortGateConfig: vi.fn(() => options.shortGate ?? { enabled: false }),
+        getAegisEventRiskConfig: vi.fn(() => options.eventRisk ?? {
+            enabled: false,
+            mode: 'NORMAL',
+            enforce: false,
+            manual_override_enabled: false,
+            caution: {
+                min_quality_score: 0.65,
+                max_tail_risk_score: 0.45,
+                require_btc_eth_confirmation: true
+            },
+            risk_off: {
+                min_quality_score: 0.75,
+                max_tail_risk_score: 0.35,
+                allow_only_a_plus: true
+            },
+            manual_only: {
+                block_new_entries: false
+            }
+        }),
         getAegisPositionFractionOverride: vi.fn(() => options.positionFractionOverride),
         getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
         getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
@@ -1047,6 +1067,114 @@ describe('TradingService Aegis live execution', () => {
                 symbol: 'ETHUSDT',
                 side: 'LONG',
                 mode: 'SHADOW'
+            })
+        }));
+    });
+
+    it('event risk enforce=false nunca impide marketOpen', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            eventRisk: {
+                enabled: true,
+                mode: 'MANUAL_ONLY',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: true
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: true
+                }
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'EVENT_RISK_SHADOW_BLOCK',
+            reason: 'manual_only_requires_approval',
+            metadata: expect.objectContaining({
+                mode: 'MANUAL_ONLY',
+                enforce: false,
+                shadowDidNotBlock: true
+            })
+        }));
+    });
+
+    it('event risk enforce=true manual_only impide marketOpen', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            eventRisk: {
+                enabled: true,
+                mode: 'MANUAL_ONLY',
+                enforce: true,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: true
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: true
+                }
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'EVENT_RISK_DENIED',
+            reason: 'manual_only_requires_approval'
+        }));
+    });
+
+    it('event risk registra evento allow en LONG normal', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            eventRisk: {
+                enabled: true,
+                mode: 'NORMAL',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: true
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'EVENT_RISK_SHADOW_ALLOW',
+            reason: 'event_risk_normal',
+            metadata: expect.objectContaining({
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                mode: 'NORMAL'
             })
         }));
     });

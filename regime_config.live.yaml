@@ -70,6 +70,21 @@ REGIMES:
     use_exit_agent: false
 
 aegis:
+  event_risk:
+    enabled: true
+    mode: NORMAL
+    enforce: false
+    manual_override_enabled: true
+    caution:
+      min_quality_score: 0.65
+      max_tail_risk_score: 0.45
+      require_btc_eth_confirmation: true
+    risk_off:
+      min_quality_score: 0.75
+      max_tail_risk_score: 0.35
+      allow_only_a_plus: true
+    manual_only:
+      block_new_entries: false
   portfolio_risk:
     enabled: false
   short_gate:

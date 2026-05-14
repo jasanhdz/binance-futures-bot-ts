@@ -13,6 +13,7 @@ export type TelegramCommandName =
     | 'signal'
     | 'signals'
     | 'risk'
+    | 'riskmode'
     | 'brackets'
     | 'report';
 
@@ -67,6 +68,7 @@ export interface TelegramCommandHandlersPort {
     handleSignal(symbol?: string): Promise<string>;
     handleSignals(): Promise<string>;
     handleRisk(): Promise<string>;
+    handleRiskMode(mode?: string): Promise<string> | string;
     handleBrackets(): Promise<string>;
     handleReportToday(): Promise<string>;
 }

@@ -212,6 +212,11 @@ symbols:
 
         expect(config.getAegisPortfolioRiskConfig()).toMatchObject({ enabled: false });
         expect(config.getAegisShortGateConfig()).toMatchObject({ enabled: false });
+        expect(config.getAegisEventRiskConfig()).toMatchObject({
+            enabled: false,
+            mode: 'NORMAL',
+            enforce: false
+        });
     });
 
     it('parses portfolio risk and short gate config', () => {
@@ -256,6 +261,53 @@ symbols:
             block_symbols: ['SOLUSDT', 'AVAXUSDT'],
             allow_if_regime_bearish: false
         });
+    });
+
+    it('parses event risk config and supports runtime mode override', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  event_risk:
+    enabled: true
+    mode: RISK_OFF
+    enforce: false
+    manual_override_enabled: true
+    caution:
+      min_quality_score: 0.66
+      max_tail_risk_score: 0.44
+      require_btc_eth_confirmation: true
+    risk_off:
+      min_quality_score: 0.77
+      max_tail_risk_score: 0.33
+      allow_only_a_plus: true
+    manual_only:
+      block_new_entries: false
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisEventRiskConfig()).toEqual({
+            enabled: true,
+            mode: 'RISK_OFF',
+            enforce: false,
+            manual_override_enabled: true,
+            caution: {
+                min_quality_score: 0.66,
+                max_tail_risk_score: 0.44,
+                require_btc_eth_confirmation: true
+            },
+            risk_off: {
+                min_quality_score: 0.77,
+                max_tail_risk_score: 0.33,
+                allow_only_a_plus: true
+            },
+            manual_only: {
+                block_new_entries: false
+            }
+        });
+
+        expect(config.setAegisEventRiskMode('MANUAL_ONLY').mode).toBe('MANUAL_ONLY');
+        expect(config.getAegisEventRiskConfig().mode).toBe('MANUAL_ONLY');
     });
 
     it('resolves Aegis Turbo position fraction overrides by symbol group and side', () => {

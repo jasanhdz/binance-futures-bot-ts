@@ -12,6 +12,7 @@ function handlers(): TelegramCommandHandlersPort {
         handleSignal: vi.fn(async () => 'SIGNAL'),
         handleSignals: vi.fn(async () => 'SIGNALS'),
         handleRisk: vi.fn(async () => 'RISK'),
+        handleRiskMode: vi.fn(async () => 'RISKMODE'),
         handleBrackets: vi.fn(async () => 'BRACKETS'),
         handleReportToday: vi.fn(async () => 'REPORT')
     };
@@ -60,5 +61,14 @@ describe('TelegramCommandRouter', () => {
         await router.handleMessage({ chatId: '123', text: '/signal ETHUSDT' });
 
         expect(h.handleSignal).toHaveBeenCalledWith('ETHUSDT');
+    });
+
+    it('passes /riskmode argument to handler for authorized chat', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await router.handleMessage({ chatId: '123', text: '/riskmode RISK_OFF' });
+
+        expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF');
     });
 });

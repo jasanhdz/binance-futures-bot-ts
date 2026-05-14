@@ -111,7 +111,47 @@ function makeHandlers(overrides: Record<string, any> = {}) {
             max_leverage: 10,
             block_symbols: [],
             allow_if_regime_bearish: false
-        })
+        }),
+        getAegisEventRiskConfig: vi.fn(() => overrides.eventRisk ?? {
+            enabled: true,
+            mode: 'NORMAL',
+            enforce: false,
+            manual_override_enabled: true,
+            caution: {
+                min_quality_score: 0.65,
+                max_tail_risk_score: 0.45,
+                require_btc_eth_confirmation: true
+            },
+            risk_off: {
+                min_quality_score: 0.75,
+                max_tail_risk_score: 0.35,
+                allow_only_a_plus: true
+            },
+            manual_only: {
+                block_new_entries: false
+            }
+        }),
+        setAegisEventRiskMode: vi.fn((mode: string) => ({
+            ...(overrides.eventRisk ?? {
+                enabled: true,
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: true
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            }),
+            mode
+        }))
     };
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
     const handlers = new TelegramCommandHandlers({
@@ -133,7 +173,7 @@ function makeHandlers(overrides: Record<string, any> = {}) {
         }),
         getActiveSymbols: () => overrides.symbols ?? ['ETHUSDT']
     });
-    return { handlers, exchange, mlService, state, configManager };
+    return { handlers, exchange, mlService, state, configManager, logger };
 }
 
 describe('TelegramCommandHandlers', () => {
@@ -253,6 +293,8 @@ describe('TelegramCommandHandlers', () => {
 
         expect(text).toContain('Portfolio risk: **OFF**');
         expect(text).toContain('Open positions: **0**');
+        expect(text).toContain('Event Risk: **NORMAL**');
+        expect(text).toContain('enforce **No**');
     });
 
     it('/risk shows short gate', async () => {
@@ -277,6 +319,60 @@ describe('TelegramCommandHandlers', () => {
         expect(text).toContain('min score 80.0%');
         expect(text).toContain('size x1.00');
         expect(text).toContain('Short blocked: **Ninguno**');
+        expect(text).toContain('Event Risk: **Sí** | mode **NORMAL**');
+        expect(text).toContain('Event Risk rules: CAUTION');
+    });
+
+    it('/riskmode muestra Event Risk actual', async () => {
+        const { handlers } = makeHandlers();
+
+        const text = await handlers.handleRiskMode();
+
+        expect(text).toContain('Event Risk Mode');
+        expect(text).toContain('Mode: **NORMAL**');
+        expect(text).toContain('Manual override: **Sí**');
+    });
+
+    it('/riskmode cambia modo y loggea cuando está autorizado por config', async () => {
+        const { handlers, configManager, logger } = makeHandlers();
+
+        const text = await handlers.handleRiskMode('RISK_OFF');
+
+        expect(configManager.setAegisEventRiskMode).toHaveBeenCalledWith('RISK_OFF');
+        expect(logger.warn).toHaveBeenCalledWith('EVENT_RISK_MODE_CHANGED', expect.objectContaining({
+            previousMode: 'NORMAL',
+            mode: 'RISK_OFF'
+        }));
+        expect(text).toContain('Nuevo: **RISK_OFF**');
+    });
+
+    it('/riskmode no cambia si manual override está desactivado', async () => {
+        const { handlers, configManager } = makeHandlers({
+            eventRisk: {
+                enabled: true,
+                mode: 'NORMAL',
+                enforce: false,
+                manual_override_enabled: false,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: true
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            }
+        });
+
+        const text = await handlers.handleRiskMode('CAUTION');
+
+        expect(configManager.setAegisEventRiskMode).not.toHaveBeenCalled();
+        expect(text).toContain('manual override está desactivado');
     });
 
     it('/account handles missing fields as N/D', async () => {

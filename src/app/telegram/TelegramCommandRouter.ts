@@ -15,6 +15,7 @@ const KNOWN_COMMANDS: TelegramCommandName[] = [
     'signal',
     'signals',
     'risk',
+    'riskmode',
     'brackets',
     'report'
 ];
@@ -70,6 +71,8 @@ export class TelegramCommandRouter {
                 return this.handlers.handleSignals();
             case 'risk':
                 return this.handlers.handleRisk();
+            case 'riskmode':
+                return this.handlers.handleRiskMode(command.args[0]);
             case 'brackets':
                 return this.handlers.handleBrackets();
             case 'report':

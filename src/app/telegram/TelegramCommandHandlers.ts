@@ -47,6 +47,19 @@ function boolText(value?: boolean): string {
     return value ? 'Sí' : 'No';
 }
 
+function normalizeEventRiskMode(mode?: string): 'NORMAL' | 'CAUTION' | 'RISK_OFF' | 'MANUAL_ONLY' | undefined {
+    const normalized = String(mode || '').trim().toUpperCase();
+    if (
+        normalized === 'NORMAL'
+        || normalized === 'CAUTION'
+        || normalized === 'RISK_OFF'
+        || normalized === 'MANUAL_ONLY'
+    ) {
+        return normalized;
+    }
+    return undefined;
+}
+
 function todayIsoDate(): string {
     return new Date().toISOString().slice(0, 10);
 }
@@ -115,6 +128,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `🛰️ /signal ETHUSDT - Señal de un símbolo\n` +
             `📊 /signals - Señales de símbolos activos\n` +
             `🛡️ /risk - Riesgo y límites\n` +
+            `🌐 /riskmode - Ver/cambiar Event Risk\n` +
             `🧷 /brackets - Estado de brackets\n` +
             `📈 /report today - Resumen de hoy\n\n` +
             `🔒 **Solo lectura**. No abre, cierra ni modifica operaciones.`;
@@ -181,6 +195,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         const turbo = this.turboConfig();
         const portfolioRisk = this.portfolioRiskConfig();
         const shortGate = this.shortGateConfig();
+        const eventRisk = this.eventRiskConfig();
         const maxHoldMs = regime?.maxHoldMs ?? 0;
         const portfolioRiskLine = portfolioRisk?.enabled
             ? `🧱 Portfolio risk: **ON** | max pos ${portfolioRisk?.max_open_positions ?? 'N/D'} | same dir ${portfolioRisk?.max_same_direction_positions ?? 'N/D'} | margin ${formatPct(portfolioRisk?.max_margin_used_pct)} | notional/equity ${formatNumber(portfolioRisk?.max_notional_to_equity, 1)}x\n`
@@ -208,6 +223,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `📉 Allow short: **${boolText(turbo?.allow_short)}**\n` +
             `💼 Position fraction cap: **${formatPct(turbo?.position_fraction_cap)}**\n` +
             portfolioRiskLine +
+            this.formatEventRiskConfigLine(eventRisk) +
             `🎯 Short gate: **${boolText(shortGate?.enabled)}** | ${shortGate?.mode ?? 'N/D'} | min score ${formatPct(shortGate?.min_score)} | votes ${shortGate?.require_votes ?? 'N/D'}/3 | size x${formatNumber(shortGate?.position_fraction_multiplier, 2)} | max lev ${shortGate?.max_leverage ?? 'N/D'}x\n` +
             `⛔ Short blocked: **${shortGate?.block_symbols?.join(', ') || 'Ninguno'}**\n` +
             `⏲️ Cooldown: **${finiteNumber(turbo?.min_cooldown_ms) ? `${(turbo.min_cooldown_ms / 60000).toFixed(1)} min` : 'N/D'}**\n` +
@@ -269,6 +285,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         const state = this.stateForSymbol(symbol).get();
         const portfolioRisk = this.portfolioRiskConfig();
         const shortGate = this.shortGateConfig();
+        const eventRisk = this.eventRiskConfig();
         const positions = await this.readPositionsWithOrders();
         const longCount = positions.filter((row) => row.position.side === 'LONG').length;
         const shortCount = positions.filter((row) => row.position.side === 'SHORT').length;
@@ -307,11 +324,52 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `⏲️ Cooldown: **${cooldownActive ? 'ACTIVO' : 'OK'}**\n` +
             `🌊 Liquidity stress: **${finiteNumber(liquidity) ? formatPct(liquidity) : 'N/D'}**\n` +
             portfolioRiskLines +
+            this.formatEventRiskRiskBlock(eventRisk) +
             `🎯 Short gate: **${shortGate?.mode ?? 'N/D'}** | min score **${formatPct(shortGate?.min_score)}** | votes **${shortGate?.require_votes ?? 'N/D'}/3** | max lev **${shortGate?.max_leverage ?? 'N/D'}x** | size **${formatNumber(shortGate?.position_fraction_multiplier, 2)}x**\n` +
             `⛔ Short blocked: **${shortGate?.block_symbols?.join(', ') || 'Ninguno'}**\n` +
             `🧷 Require brackets: **${boolText(turbo?.require_brackets)}**\n` +
             `🧯 Close if bracket fails: **${boolText(turbo?.close_if_bracket_fails)}**\n` +
             `📉 Shorts: **${turbo?.allow_short ? 'ON' : 'OFF'}**`;
+    }
+
+    handleRiskMode(mode?: string): string {
+        const current = this.eventRiskConfig();
+        const nextMode = normalizeEventRiskMode(mode);
+        if (!mode) {
+            return `🌐 **Event Risk Mode**\n\n` +
+                `Mode: **${current.mode ?? 'NORMAL'}**\n` +
+                `Enabled: **${boolText(current.enabled)}**\n` +
+                `Enforce: **${boolText(current.enforce)}**\n` +
+                `Manual override: **${boolText(current.manual_override_enabled)}**\n\n` +
+                `Uso: /riskmode NORMAL | CAUTION | RISK_OFF | MANUAL_ONLY`;
+        }
+
+        if (!nextMode) {
+            return `Modo inválido. Usa: NORMAL, CAUTION, RISK_OFF o MANUAL_ONLY.`;
+        }
+
+        if (current.manual_override_enabled !== true) {
+            return `Event Risk manual override está desactivado. Cambia el modo por YAML.`;
+        }
+
+        const manager = this.deps.configManager as any;
+        if (typeof manager.setAegisEventRiskMode !== 'function') {
+            return `Event Risk solo lectura en este runtime. Cambia el modo por YAML.`;
+        }
+
+        const previousMode = current.mode ?? 'NORMAL';
+        const updated = manager.setAegisEventRiskMode(nextMode);
+        this.deps.logger?.warn('EVENT_RISK_MODE_CHANGED', {
+            previousMode,
+            mode: updated?.mode ?? nextMode,
+            enabled: updated?.enabled,
+            enforce: updated?.enforce
+        });
+
+        return `🌐 **Event Risk Mode Changed**\n\n` +
+            `Anterior: **${previousMode}**\n` +
+            `Nuevo: **${updated?.mode ?? nextMode}**\n` +
+            `Enforce: **${boolText(updated?.enforce)}**`;
     }
 
     async handleBrackets(): Promise<string> {
@@ -530,6 +588,42 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         return typeof (this.deps.configManager as any).getAegisShortGateConfig === 'function'
             ? (this.deps.configManager as any).getAegisShortGateConfig()
             : { enabled: false, block_symbols: [] };
+    }
+
+    private eventRiskConfig() {
+        return typeof (this.deps.configManager as any).getAegisEventRiskConfig === 'function'
+            ? (this.deps.configManager as any).getAegisEventRiskConfig()
+            : {
+                enabled: false,
+                mode: 'NORMAL',
+                enforce: false,
+                manual_override_enabled: false,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: true
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            };
+    }
+
+    private formatEventRiskConfigLine(eventRisk: any): string {
+        return `🌐 Event Risk: **${boolText(eventRisk?.enabled)}** | mode **${eventRisk?.mode ?? 'NORMAL'}** | enforce **${boolText(eventRisk?.enforce)}** | manual **${boolText(eventRisk?.manual_override_enabled)}**\n` +
+            `🌐 Event Risk rules: CAUTION Q>=${formatPct(eventRisk?.caution?.min_quality_score)} Tail<=${formatPct(eventRisk?.caution?.max_tail_risk_score)} BTC/ETH ${boolText(eventRisk?.caution?.require_btc_eth_confirmation)} | RISK_OFF Q>=${formatPct(eventRisk?.risk_off?.min_quality_score)} Tail<=${formatPct(eventRisk?.risk_off?.max_tail_risk_score)} A+ ${boolText(eventRisk?.risk_off?.allow_only_a_plus)} | MANUAL block ${boolText(eventRisk?.manual_only?.block_new_entries)}\n`;
+    }
+
+    private formatEventRiskRiskBlock(eventRisk: any): string {
+        return `🌐 Event Risk: **${eventRisk?.mode ?? 'NORMAL'}** | enabled **${boolText(eventRisk?.enabled)}** | enforce **${boolText(eventRisk?.enforce)}** | manual override **${boolText(eventRisk?.manual_override_enabled)}**\n` +
+            `🧪 CAUTION: Q>=**${formatPct(eventRisk?.caution?.min_quality_score)}** Tail<=**${formatPct(eventRisk?.caution?.max_tail_risk_score)}** BTC/ETH **${boolText(eventRisk?.caution?.require_btc_eth_confirmation)}**\n` +
+            `🚫 RISK_OFF: Q>=**${formatPct(eventRisk?.risk_off?.min_quality_score)}** Tail<=**${formatPct(eventRisk?.risk_off?.max_tail_risk_score)}** A+ **${boolText(eventRisk?.risk_off?.allow_only_a_plus)}**\n` +
+            `🧑‍💻 MANUAL_ONLY block entries: **${boolText(eventRisk?.manual_only?.block_new_entries)}**\n`;
     }
 
     private stateForSymbol(symbol?: string) {

@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 
 import { RegimeType, RegimeConfig } from '../../app/ports/RegimeStrategy';
+import { EventRiskMode } from '../../domain/services/AegisEventRiskOverlay';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -158,6 +159,46 @@ export interface AegisShortGateYamlConfig {
     allow_if_regime_bearish?: boolean;
 }
 
+export interface AegisEventRiskYamlConfig {
+    enabled?: boolean;
+    mode?: EventRiskMode | string;
+    enforce?: boolean;
+    manual_override_enabled?: boolean;
+    caution?: {
+        min_quality_score?: number;
+        max_tail_risk_score?: number;
+        require_btc_eth_confirmation?: boolean;
+    };
+    risk_off?: {
+        min_quality_score?: number;
+        max_tail_risk_score?: number;
+        allow_only_a_plus?: boolean;
+    };
+    manual_only?: {
+        block_new_entries?: boolean;
+    };
+}
+
+export interface AegisEventRiskRuntimeConfig {
+    enabled: boolean;
+    mode: EventRiskMode;
+    enforce: boolean;
+    manual_override_enabled: boolean;
+    caution: {
+        min_quality_score: number;
+        max_tail_risk_score: number;
+        require_btc_eth_confirmation: boolean;
+    };
+    risk_off: {
+        min_quality_score: number;
+        max_tail_risk_score: number;
+        allow_only_a_plus: boolean;
+    };
+    manual_only: {
+        block_new_entries: boolean;
+    };
+}
+
 export type AegisExitEyeMode = 'OFF' | 'SHADOW' | 'PROTECT' | 'CLOSE';
 
 export interface AegisExitEyeYamlConfig {
@@ -213,6 +254,7 @@ export interface NinjaYamlConfig {
         exit_eye?: Partial<AegisExitEyeYamlConfig>;
         portfolio_risk?: AegisPortfolioRiskYamlConfig;
         short_gate?: AegisShortGateYamlConfig;
+        event_risk?: AegisEventRiskYamlConfig;
         entry_quality_gate?: AegisEntryQualityGateYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
@@ -542,6 +584,41 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisEventRiskConfig(): AegisEventRiskRuntimeConfig {
+        const raw = this.config.aegis?.event_risk || {};
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeEventRiskMode(raw.mode),
+            enforce: raw.enforce === true,
+            manual_override_enabled: raw.manual_override_enabled === true,
+            caution: {
+                min_quality_score: Math.max(0, this.finiteNumber(raw.caution?.min_quality_score, 0.65)),
+                max_tail_risk_score: Math.max(0, this.finiteNumber(raw.caution?.max_tail_risk_score, 0.45)),
+                require_btc_eth_confirmation: raw.caution?.require_btc_eth_confirmation === true
+            },
+            risk_off: {
+                min_quality_score: Math.max(0, this.finiteNumber(raw.risk_off?.min_quality_score, 0.75)),
+                max_tail_risk_score: Math.max(0, this.finiteNumber(raw.risk_off?.max_tail_risk_score, 0.35)),
+                allow_only_a_plus: raw.risk_off?.allow_only_a_plus === true
+            },
+            manual_only: {
+                block_new_entries: raw.manual_only?.block_new_entries === true
+            }
+        };
+    }
+
+    setAegisEventRiskMode(mode: EventRiskMode | string): AegisEventRiskRuntimeConfig {
+        const normalizedMode = this.normalizeEventRiskMode(mode);
+        if (!this.config.aegis) {
+            this.config.aegis = {};
+        }
+        this.config.aegis.event_risk = {
+            ...(this.config.aegis.event_risk || {}),
+            mode: normalizedMode
+        };
+        return this.getAegisEventRiskConfig();
+    }
+
     getEntryQualityGateConfig(_symbol?: string): AegisEntryQualityGateRuntimeConfig {
         const raw = this.config.aegis?.entry_quality_gate || {};
         const flaggedSymbols = Array.isArray(raw.flagged_symbols)
@@ -733,6 +810,25 @@ export class NinjaConfigManager {
                 short_gate: {
                     enabled: false
                 },
+                event_risk: {
+                    enabled: false,
+                    mode: 'NORMAL',
+                    enforce: false,
+                    manual_override_enabled: false,
+                    caution: {
+                        min_quality_score: 0.65,
+                        max_tail_risk_score: 0.45,
+                        require_btc_eth_confirmation: true
+                    },
+                    risk_off: {
+                        min_quality_score: 0.75,
+                        max_tail_risk_score: 0.35,
+                        allow_only_a_plus: true
+                    },
+                    manual_only: {
+                        block_new_entries: false
+                    }
+                },
                 entry_quality_gate: {
                     enabled: false,
                     mode: 'OFF'
@@ -777,6 +873,19 @@ export class NinjaConfigManager {
             return normalized;
         }
         return 'OFF';
+    }
+
+    private normalizeEventRiskMode(mode?: EventRiskMode | string): EventRiskMode {
+        const normalized = (mode || 'NORMAL').trim().toUpperCase();
+        if (
+            normalized === 'NORMAL'
+            || normalized === 'CAUTION'
+            || normalized === 'RISK_OFF'
+            || normalized === 'MANUAL_ONLY'
+        ) {
+            return normalized;
+        }
+        return 'NORMAL';
     }
 
     private finiteNumber(value: unknown, fallback: number): number {

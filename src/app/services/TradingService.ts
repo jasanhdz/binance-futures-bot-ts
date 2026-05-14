@@ -15,6 +15,7 @@ import {
 import {
     AegisExitEyeYamlConfig,
     AegisEntryQualityGateRuntimeConfig,
+    AegisEventRiskRuntimeConfig,
     AegisPositionFractionOverride,
     AegisPortfolioRiskYamlConfig,
     AegisShortGateYamlConfig,
@@ -44,6 +45,10 @@ import {
     AegisEntryQualityGateDecision,
     evaluateAegisEntryQualityGate
 } from '../../domain/services/AegisEntryQualityGate';
+import {
+    AegisEventRiskOverlay,
+    AegisEventRiskOverlayDecision
+} from '../../domain/services/AegisEventRiskOverlay';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -172,6 +177,32 @@ export class TradingService {
         };
     }
 
+    private getAegisEventRiskConfig(): AegisEventRiskRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisEventRiskConfig === 'function') {
+            return manager.getAegisEventRiskConfig();
+        }
+        return {
+            enabled: false,
+            mode: 'NORMAL',
+            enforce: false,
+            manual_override_enabled: false,
+            caution: {
+                min_quality_score: 0.65,
+                max_tail_risk_score: 0.45,
+                require_btc_eth_confirmation: true
+            },
+            risk_off: {
+                min_quality_score: 0.75,
+                max_tail_risk_score: 0.35,
+                allow_only_a_plus: true
+            },
+            manual_only: {
+                block_new_entries: false
+            }
+        };
+    }
+
     private getAegisPositionFractionOverride(symbol: string, side: Side): AegisPositionFractionOverride | undefined {
         const manager = this.deps.configManager as any;
         return typeof manager.getAegisPositionFractionOverride === 'function'
@@ -258,6 +289,10 @@ export class TradingService {
 
     private normalizeSymbol(symbol: string): string {
         return String(symbol || '').trim().toUpperCase();
+    }
+
+    private finiteNumber(value: unknown): value is number {
+        return typeof value === 'number' && Number.isFinite(value);
     }
 
     private stateForSymbol(symbol: string): StateStore {
@@ -1189,6 +1224,104 @@ export class TradingService {
         }
     }
 
+    private extractEntryQualityModel(signal: AegisTradingSignal): {
+        entryQualityScore?: number;
+        tailRiskScore?: number;
+    } {
+        const aegis = signal.metadata?.aegis ?? signal.aegis;
+        const eq = aegis?.entry_quality_model;
+        const shadow = aegis?.shadow;
+        return {
+            entryQualityScore: this.finiteNumber((eq as any)?.entry_quality_score)
+                ? Number((eq as any).entry_quality_score)
+                : undefined,
+            tailRiskScore: this.finiteNumber((eq as any)?.tail_risk_score)
+                ? Number((eq as any).tail_risk_score)
+                : this.finiteNumber((shadow as any)?.tail_risk_score)
+                    ? Number((shadow as any).tail_risk_score)
+                    : undefined
+        };
+    }
+
+    private isAltSymbol(symbol: string): boolean {
+        const normalized = this.normalizeSymbol(symbol);
+        return normalized !== 'BTCUSDT' && normalized !== 'ETHUSDT';
+    }
+
+    private evaluateAegisEventRiskOverlay(
+        symbol: string,
+        side: Side,
+        signal: AegisTradingSignal,
+        gate: AegisMicroLiveGateDecision
+    ): AegisEventRiskOverlayDecision {
+        const config = this.getAegisEventRiskConfig();
+        const modelScores = this.extractEntryQualityModel(signal);
+        return AegisEventRiskOverlay.evaluate({
+            enabled: config.enabled,
+            mode: config.mode,
+            enforce: config.enforce,
+            symbol,
+            side,
+            turboScore: gate.turboScore ?? 0,
+            entryQualityScore: modelScores.entryQualityScore,
+            tailRiskScore: modelScores.tailRiskScore,
+            isAltSymbol: this.isAltSymbol(symbol),
+            config: {
+                caution: {
+                    minQualityScore: config.caution.min_quality_score,
+                    maxTailRiskScore: config.caution.max_tail_risk_score,
+                    requireBtcEthConfirmation: config.caution.require_btc_eth_confirmation
+                },
+                riskOff: {
+                    minQualityScore: config.risk_off.min_quality_score,
+                    maxTailRiskScore: config.risk_off.max_tail_risk_score,
+                    allowOnlyAPlus: config.risk_off.allow_only_a_plus
+                },
+                manualOnly: {
+                    blockNewEntries: config.manual_only.block_new_entries
+                }
+            }
+        });
+    }
+
+    private async logAegisEventRiskDecision(
+        symbol: string,
+        decision: AegisEventRiskOverlayDecision,
+        tradeId?: string
+    ): Promise<void> {
+        const event = decision.action === 'BLOCK'
+            ? 'EVENT_RISK_DENIED'
+            : decision.action === 'SHADOW_CAUTION'
+                ? 'EVENT_RISK_SHADOW_CAUTION'
+                : decision.action === 'ALLOW'
+                    ? 'EVENT_RISK_SHADOW_ALLOW'
+                    : 'EVENT_RISK_SHADOW_BLOCK';
+        const metadata = {
+            ...decision.metadata,
+            action: decision.action,
+            reason: decision.reason,
+            wouldBlock: decision.wouldBlock,
+            allowed: decision.allowed,
+            shadowDidNotBlock: decision.wouldBlock && decision.allowed ? true : undefined
+        };
+
+        await this.logAegisTradeEvent(symbol, event, {
+            tradeId,
+            reason: decision.reason,
+            metadata
+        });
+
+        if (decision.action === 'BLOCK') {
+            this.deps.logger.warn('aegis_event_risk_denied', metadata);
+            return;
+        }
+        if (decision.wouldBlock) {
+            this.deps.logger.info('aegis_event_risk_shadow_block', metadata);
+            return;
+        }
+        this.deps.logger.debug('aegis_event_risk_shadow_allow', metadata);
+    }
+
     private async openAegisTurboPosition(
         symbol: string,
         signal: AegisTradingSignal,
@@ -1295,6 +1428,23 @@ export class TradingService {
             if (!entryQualityDecision.allowed) {
                 const deniedGate = { ...effectiveGate, allowed: false, reason: entryQualityDecision.reason };
                 await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: deniedGate, executed: false });
+                return;
+            }
+
+            const eventRiskDecision = this.evaluateAegisEventRiskOverlay(symbol, side, signal, effectiveGate);
+            await this.logAegisEventRiskDecision(symbol, eventRiskDecision, tradeId);
+            if (!eventRiskDecision.allowed) {
+                const deniedGate = { ...effectiveGate, allowed: false, reason: eventRiskDecision.reason };
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: deniedGate,
+                    executed: false,
+                    metadata: {
+                        event_risk_mode: eventRiskDecision.mode,
+                        event_risk_action: eventRiskDecision.action
+                    }
+                });
                 return;
             }
 
