@@ -109,6 +109,22 @@ export interface AegisEntryQualityModelBlock {
   latency_ms?: number;
 }
 
+export interface AegisEventRiskAutoBlock {
+  mode?: 'SHADOW' | string;
+  suggested_mode?: 'NORMAL' | 'CAUTION' | 'RISK_OFF' | 'MANUAL_ONLY' | string;
+  confidence?: number | null;
+  reasons?: string[];
+  btc_context?: Record<string, unknown>;
+  eth_context?: Record<string, unknown>;
+  market_context?: Record<string, unknown>;
+  execute?: boolean;
+  production_allowed?: boolean;
+  does_not_change_event_risk_mode?: boolean;
+  latency_ms?: number | null;
+  last_update?: string | null;
+  cache_status?: Record<string, unknown>;
+}
+
 export interface AegisBlock {
   candidate?: string;
   candidate_status?: string;
@@ -117,6 +133,7 @@ export interface AegisBlock {
   shadow?: AegisShadowBlock;
   turbo?: AegisTurboBlock;
   entry_quality_model?: AegisEntryQualityModelBlock;
+  event_risk_auto?: AegisEventRiskAutoBlock;
 }
 
 export interface AegisPredictionResponse {

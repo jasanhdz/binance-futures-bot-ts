@@ -96,3 +96,56 @@ Campos principales:
 ## Alcance v0.1
 
 No toca modelos Python, Aegis API, PM2, `.env` ni órdenes manuales. La integración vive solo del lado TS antes de `marketOpen`.
+
+## Auto Detector SHADOW
+
+`Aegis Event Risk Auto Detector v0.1` vive del lado Python y aparece en `/ml-v2/predict` como:
+
+```json
+{
+  "aegis": {
+    "event_risk_auto": {
+      "mode": "SHADOW",
+      "suggested_mode": "CAUTION",
+      "confidence": 0.72,
+      "reasons": ["btc_weak_or_hold"],
+      "execute": false,
+      "production_allowed": false,
+      "does_not_change_event_risk_mode": true
+    }
+  }
+}
+```
+
+La diferencia clave:
+
+- `event_risk.mode` es el modo real actual del overlay manual/configurable.
+- `event_risk_auto.suggested_mode` es solo una sugerencia automática en shadow.
+
+El detector automático no cambia el modo real, no bloquea entradas y no decide dirección. Usa contexto estructurado local de BTC/ETH/turbo/frescura/modelos shadow cuando está disponible. No usa noticias, scraping ni APIs externas en v0.1.
+
+También aparece en `/debug/runtime`:
+
+```json
+{
+  "event_risk_auto": {
+    "last_suggested_mode": "CAUTION",
+    "confidence": 0.72,
+    "reasons": ["btc_weak_or_hold"],
+    "last_update": "2026-05-14T00:00:00+00:00",
+    "cache_status": {"status": "warm", "evaluations": 1}
+  }
+}
+```
+
+En Telegram, `/signal SYMBOL` muestra una línea opcional:
+
+```text
+EventRisk: CAUTION 72.0%
+```
+
+Para analizar:
+
+```bash
+rg '"event_risk_auto"' logs/aegis/turbo_shadow_$(date -u +%Y%m%d).jsonl
+```

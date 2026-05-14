@@ -90,10 +90,20 @@ function entryQualityModelFromSignal(signal: AegisTradingSignal): any {
     return signal.metadata?.aegis?.entry_quality_model ?? signal.aegis?.entry_quality_model;
 }
 
+function eventRiskAutoFromSignal(signal: AegisTradingSignal): any {
+    return signal.metadata?.aegis?.event_risk_auto ?? signal.aegis?.event_risk_auto;
+}
+
 function formatEntryQualityModelLine(signal: AegisTradingSignal): string {
     const eq = entryQualityModelFromSignal(signal);
     if (!eq) return '';
     return `🧪 EQ: **${formatPct(eq.entry_quality_score)}** | Tail: **${formatPct(eq.tail_risk_score)}** | Rec: **${eq.recommendation ?? 'N/D'}**\n`;
+}
+
+function formatEventRiskAutoLine(signal: AegisTradingSignal): string {
+    const eventRisk = eventRiskAutoFromSignal(signal);
+    if (!eventRisk) return '';
+    return `🌐 EventRisk: **${eventRisk.suggested_mode ?? 'N/D'}** ${formatPct(eventRisk.confidence)} | ${Array.isArray(eventRisk.reasons) ? eventRisk.reasons.slice(0, 2).join(', ') : 'N/D'}\n`;
 }
 
 function signalInputFromTurbo(symbol: string, turbo: any): AegisSymbolSignalMessageInput {
@@ -246,6 +256,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 `✅ Production allowed: **${boolText(signal.metadata?.aegis?.prod?.allowed ?? signal.aegis?.prod?.allowed ?? turbo?.production_allowed)}**\n` +
                 `🐍 Execute Python: **${boolText(turbo?.execute ?? turbo?.would_execute ?? raw?.would_execute)}**\n` +
                 formatEntryQualityModelLine(signal) +
+                formatEventRiskAutoLine(signal) +
                 `🕒 Feature timestamp: **${freshness?.feature_timestamp ?? freshness?.timestamp ?? 'N/D'}**\n` +
                 `🧾 Reason raw: **${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}**`;
         } catch (error) {
@@ -269,7 +280,11 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 const eqText = eq
                     ? ` | EQ ${formatPct(eq.entry_quality_score)} Tail ${formatPct(eq.tail_risk_score)} ${eq.recommendation ?? 'N/D'}`
                     : '';
-                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}${eqText}`);
+                const eventRisk = eventRiskAutoFromSignal(signal);
+                const eventRiskText = eventRisk
+                    ? ` | ER ${eventRisk.suggested_mode ?? 'N/D'} ${formatPct(eventRisk.confidence)}`
+                    : '';
+                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}${eqText}${eventRiskText}`);
             } catch {
                 rows.push(`${symbol} | ERROR`);
             }

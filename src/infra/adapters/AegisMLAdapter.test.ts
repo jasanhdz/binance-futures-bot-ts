@@ -56,4 +56,35 @@ describe('AegisMLServiceClient', () => {
         expect(response.aegis?.entry_quality_model).toBeUndefined();
         expect(response.aegis?.turbo?.action).toBe('HOLD');
     });
+
+    it('preserves event_risk_auto when present', async () => {
+        const post = vi.fn().mockResolvedValue({
+            data: {
+                symbol: 'ETHUSDT',
+                long_prob: 0.1,
+                short_prob: 0.2,
+                neutral_prob: 0.7,
+                aegis: {
+                    event_risk_auto: {
+                        mode: 'SHADOW',
+                        suggested_mode: 'CAUTION',
+                        confidence: 0.72,
+                        reasons: ['btc_weak_or_hold'],
+                        execute: false,
+                        production_allowed: false,
+                        does_not_change_event_risk_mode: true
+                    }
+                }
+            }
+        });
+        vi.mocked(axios.create).mockReturnValue({ post, get: vi.fn() } as any);
+
+        const client = new AegisMLServiceClient();
+        const response = await client.fetchPrediction({ symbol: 'ETHUSDT' });
+
+        expect(response.aegis?.event_risk_auto?.mode).toBe('SHADOW');
+        expect(response.aegis?.event_risk_auto?.suggested_mode).toBe('CAUTION');
+        expect(response.aegis?.event_risk_auto?.execute).toBe(false);
+        expect(response.aegis?.event_risk_auto?.does_not_change_event_risk_mode).toBe(true);
+    });
 });

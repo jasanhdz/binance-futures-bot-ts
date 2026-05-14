@@ -48,6 +48,25 @@ function predictionWithEntryQuality(symbol = 'ETHUSDT') {
     };
 }
 
+function predictionWithEventRiskAuto(symbol = 'ETHUSDT') {
+    const base = prediction(symbol);
+    return {
+        ...base,
+        aegis: {
+            ...base.aegis,
+            event_risk_auto: {
+                mode: 'SHADOW',
+                suggested_mode: 'CAUTION',
+                confidence: 0.72,
+                reasons: ['btc_weak_or_hold'],
+                execute: false,
+                production_allowed: false,
+                does_not_change_event_risk_mode: true
+            }
+        }
+    };
+}
+
 function makeHandlers(overrides: Record<string, any> = {}) {
     const symbolModes = overrides.symbolModes ?? Object.fromEntries((overrides.symbols ?? ['ETHUSDT']).map((symbol: string) => [symbol, 'LIVE']));
     const exchange = {
@@ -209,6 +228,17 @@ describe('TelegramCommandHandlers', () => {
         expect(text).toContain('EQ: **64.0%**');
         expect(text).toContain('Tail: **37.0%**');
         expect(text).toContain('Rec: **ALLOW_SHADOW**');
+    });
+
+    it('/signal shows event risk auto when present', async () => {
+        const { handlers, mlService } = makeHandlers();
+        mlService.getAegisPrediction.mockResolvedValueOnce(predictionWithEventRiskAuto('ETHUSDT'));
+
+        const text = await handlers.handleSignal('ETHUSDT');
+
+        expect(text).toContain('EventRisk: **CAUTION**');
+        expect(text).toContain('72.0%');
+        expect(text).toContain('btc_weak_or_hold');
     });
 
     it('/signals supports multiple symbols', async () => {
