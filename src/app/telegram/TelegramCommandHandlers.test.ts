@@ -67,6 +67,29 @@ function predictionWithEventRiskAuto(symbol = 'ETHUSDT') {
     };
 }
 
+function predictionWithDecisionBrain(symbol = 'ETHUSDT') {
+    const base = prediction(symbol);
+    return {
+        ...base,
+        aegis: {
+            ...base.aegis,
+            decision_brain: {
+                mode: 'SHADOW',
+                status: 'RESEARCH_CANDIDATE_NOT_LIVE',
+                model_version: 'v010',
+                decision: 'DO_NOT_ENTER',
+                enter_now_prob: 0.18,
+                wait_confirmation_prob: 0.22,
+                manual_only_prob: 0.08,
+                do_not_enter_prob: 0.52,
+                recommendation: 'DO_NOT_ENTER_SHADOW',
+                execute: false,
+                production_allowed: false
+            }
+        }
+    };
+}
+
 function makeHandlers(overrides: Record<string, any> = {}) {
     const symbolModes = overrides.symbolModes ?? Object.fromEntries((overrides.symbols ?? ['ETHUSDT']).map((symbol: string) => [symbol, 'LIVE']));
     const exchange = {
@@ -239,6 +262,19 @@ describe('TelegramCommandHandlers', () => {
         expect(text).toContain('EventRisk: **CAUTION**');
         expect(text).toContain('72.0%');
         expect(text).toContain('btc_weak_or_hold');
+    });
+
+    it('/signal shows decision brain when present', async () => {
+        const { handlers, mlService } = makeHandlers();
+        mlService.getAegisPrediction.mockResolvedValueOnce(predictionWithDecisionBrain('ETHUSDT'));
+
+        const text = await handlers.handleSignal('ETHUSDT');
+
+        expect(text).toContain('DecisionBrain: **DO_NOT_ENTER**');
+        expect(text).toContain('52.0%');
+        expect(text).toContain('Enter 18.0%');
+        expect(text).toContain('Wait 22.0%');
+        expect(text).toContain('Manual 8.0%');
     });
 
     it('/signals supports multiple symbols', async () => {

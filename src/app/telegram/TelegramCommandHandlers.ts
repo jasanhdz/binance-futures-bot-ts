@@ -94,6 +94,25 @@ function eventRiskAutoFromSignal(signal: AegisTradingSignal): any {
     return signal.metadata?.aegis?.event_risk_auto ?? signal.aegis?.event_risk_auto;
 }
 
+function decisionBrainFromSignal(signal: AegisTradingSignal): any {
+    return signal.metadata?.aegis?.decision_brain ?? signal.aegis?.decision_brain;
+}
+
+function decisionBrainTopProb(brain: any): number | undefined {
+    switch (brain?.decision) {
+        case 'ENTER_NOW':
+            return brain.enter_now_prob;
+        case 'WAIT_CONFIRMATION':
+            return brain.wait_confirmation_prob;
+        case 'MANUAL_ONLY':
+            return brain.manual_only_prob;
+        case 'DO_NOT_ENTER':
+            return brain.do_not_enter_prob;
+        default:
+            return undefined;
+    }
+}
+
 function formatEntryQualityModelLine(signal: AegisTradingSignal): string {
     const eq = entryQualityModelFromSignal(signal);
     if (!eq) return '';
@@ -104,6 +123,12 @@ function formatEventRiskAutoLine(signal: AegisTradingSignal): string {
     const eventRisk = eventRiskAutoFromSignal(signal);
     if (!eventRisk) return '';
     return `🌐 EventRisk: **${eventRisk.suggested_mode ?? 'N/D'}** ${formatPct(eventRisk.confidence)} | ${Array.isArray(eventRisk.reasons) ? eventRisk.reasons.slice(0, 2).join(', ') : 'N/D'}\n`;
+}
+
+function formatDecisionBrainLine(signal: AegisTradingSignal): string {
+    const brain = decisionBrainFromSignal(signal);
+    if (!brain) return '';
+    return `🧠 DecisionBrain: **${brain.decision ?? 'N/D'}** ${formatPct(decisionBrainTopProb(brain))} | Enter ${formatPct(brain.enter_now_prob)} | Wait ${formatPct(brain.wait_confirmation_prob)} | Manual ${formatPct(brain.manual_only_prob)}\n`;
 }
 
 function signalInputFromTurbo(symbol: string, turbo: any): AegisSymbolSignalMessageInput {
@@ -257,6 +282,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 `🐍 Execute Python: **${boolText(turbo?.execute ?? turbo?.would_execute ?? raw?.would_execute)}**\n` +
                 formatEntryQualityModelLine(signal) +
                 formatEventRiskAutoLine(signal) +
+                formatDecisionBrainLine(signal) +
                 `🕒 Feature timestamp: **${freshness?.feature_timestamp ?? freshness?.timestamp ?? 'N/D'}**\n` +
                 `🧾 Reason raw: **${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}**`;
         } catch (error) {
@@ -284,7 +310,11 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 const eventRiskText = eventRisk
                     ? ` | ER ${eventRisk.suggested_mode ?? 'N/D'} ${formatPct(eventRisk.confidence)}`
                     : '';
-                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}${eqText}${eventRiskText}`);
+                const brain = decisionBrainFromSignal(signal);
+                const brainText = brain
+                    ? ` | DB ${brain.decision ?? 'N/D'} ${formatPct(decisionBrainTopProb(brain))}`
+                    : '';
+                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}${eqText}${eventRiskText}${brainText}`);
             } catch {
                 rows.push(`${symbol} | ERROR`);
             }

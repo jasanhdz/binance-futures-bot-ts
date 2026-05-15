@@ -125,6 +125,32 @@ export interface AegisEventRiskAutoBlock {
   cache_status?: Record<string, unknown>;
 }
 
+export interface AegisDecisionBrainBlock {
+  mode?: 'SHADOW' | string;
+  execute?: boolean;
+  production_allowed?: boolean;
+  status?: string;
+  model_version?: string;
+  symbol?: string;
+  side?: 'LONG' | 'SHORT' | 'HOLD' | 'UNKNOWN' | string | null;
+  decision?: 'ENTER_NOW' | 'WAIT_CONFIRMATION' | 'MANUAL_ONLY' | 'DO_NOT_ENTER' | 'UNKNOWN' | string;
+  enter_now_prob?: number | null;
+  wait_confirmation_prob?: number | null;
+  manual_only_prob?: number | null;
+  do_not_enter_prob?: number | null;
+  recommendation?: string;
+  reason?: string;
+  feature_status?: 'ok' | 'partial' | 'insufficient' | string;
+  feature_parity_pct?: number | null;
+  missing_features_count?: number | null;
+  missing_features?: string[];
+  critical_missing_groups?: string[];
+  feature_build_latency_ms?: number | null;
+  model_latency_ms?: number | null;
+  total_latency_ms?: number | null;
+  latency_ms?: number | null;
+}
+
 export interface AegisBlock {
   candidate?: string;
   candidate_status?: string;
@@ -134,6 +160,7 @@ export interface AegisBlock {
   turbo?: AegisTurboBlock;
   entry_quality_model?: AegisEntryQualityModelBlock;
   event_risk_auto?: AegisEventRiskAutoBlock;
+  decision_brain?: AegisDecisionBrainBlock;
 }
 
 export interface AegisPredictionResponse {
