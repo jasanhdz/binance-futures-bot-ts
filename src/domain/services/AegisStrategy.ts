@@ -145,6 +145,11 @@ export interface AegisDecisionBrainBlock {
   missing_features_count?: number | null;
   missing_features?: string[];
   critical_missing_groups?: string[];
+  available_feature_groups?: string[];
+  approximated_features?: string[];
+  missing_features_by_group?: Record<string, string[]>;
+  feature_group_coverage_pct?: Record<string, number>;
+  feature_warnings?: string[];
   feature_build_latency_ms?: number | null;
   model_latency_ms?: number | null;
   total_latency_ms?: number | null;
