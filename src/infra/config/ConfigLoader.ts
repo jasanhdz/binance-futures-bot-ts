@@ -11,6 +11,7 @@ import * as yaml from 'js-yaml';
 
 import { RegimeType, RegimeConfig } from '../../app/ports/RegimeStrategy';
 import { EventRiskMode } from '../../domain/services/AegisEventRiskOverlay';
+import { AegisDecisionEnforcementMode } from '../../domain/services/AegisDecisionEnforcement';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -199,6 +200,46 @@ export interface AegisEventRiskRuntimeConfig {
     };
 }
 
+export interface AegisDecisionEnforcementYamlConfig {
+    enabled?: boolean;
+    mode?: AegisDecisionEnforcementMode | string;
+    block_do_not_enter?: boolean;
+    block_wait_confirmation?: boolean;
+    block_manual_only?: boolean;
+    block_entry_quality_shadow_block_when_event_risk?: {
+        enabled?: boolean;
+        event_modes?: Array<EventRiskMode | string>;
+    };
+    event_risk_enforcement?: {
+        caution_blocks_weak_entries?: boolean;
+        risk_off_blocks_non_a_plus?: boolean;
+        manual_only_blocks_all_new_entries?: boolean;
+    };
+    block_caution_would_block_unless_a_plus?: boolean;
+    block_all_entry_quality_shadow_block?: boolean;
+    block_all_tail_risk_high?: boolean;
+}
+
+export interface AegisDecisionEnforcementRuntimeConfig {
+    enabled: boolean;
+    mode: AegisDecisionEnforcementMode;
+    block_do_not_enter: boolean;
+    block_wait_confirmation: boolean;
+    block_manual_only: boolean;
+    block_entry_quality_shadow_block_when_event_risk: {
+        enabled: boolean;
+        event_modes: EventRiskMode[];
+    };
+    event_risk_enforcement: {
+        caution_blocks_weak_entries: boolean;
+        risk_off_blocks_non_a_plus: boolean;
+        manual_only_blocks_all_new_entries: boolean;
+    };
+    block_caution_would_block_unless_a_plus: boolean;
+    block_all_entry_quality_shadow_block: boolean;
+    block_all_tail_risk_high: boolean;
+}
+
 export type AegisExitEyeMode = 'OFF' | 'SHADOW' | 'PROTECT' | 'CLOSE';
 
 export interface AegisExitEyeYamlConfig {
@@ -255,6 +296,7 @@ export interface NinjaYamlConfig {
         portfolio_risk?: AegisPortfolioRiskYamlConfig;
         short_gate?: AegisShortGateYamlConfig;
         event_risk?: AegisEventRiskYamlConfig;
+        decision_enforcement?: AegisDecisionEnforcementYamlConfig;
         entry_quality_gate?: AegisEntryQualityGateYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
@@ -607,6 +649,31 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisDecisionEnforcementConfig(): AegisDecisionEnforcementRuntimeConfig {
+        const raw = this.config.aegis?.decision_enforcement || {};
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeDecisionEnforcementMode(raw.mode),
+            block_do_not_enter: raw.block_do_not_enter === true,
+            block_wait_confirmation: raw.block_wait_confirmation === true,
+            block_manual_only: raw.block_manual_only === true,
+            block_entry_quality_shadow_block_when_event_risk: {
+                enabled: raw.block_entry_quality_shadow_block_when_event_risk?.enabled === true,
+                event_modes: Array.isArray(raw.block_entry_quality_shadow_block_when_event_risk?.event_modes)
+                    ? raw.block_entry_quality_shadow_block_when_event_risk.event_modes.map((mode) => this.normalizeEventRiskMode(mode))
+                    : []
+            },
+            event_risk_enforcement: {
+                caution_blocks_weak_entries: raw.event_risk_enforcement?.caution_blocks_weak_entries === true,
+                risk_off_blocks_non_a_plus: raw.event_risk_enforcement?.risk_off_blocks_non_a_plus === true,
+                manual_only_blocks_all_new_entries: raw.event_risk_enforcement?.manual_only_blocks_all_new_entries === true
+            },
+            block_caution_would_block_unless_a_plus: raw.block_caution_would_block_unless_a_plus === true,
+            block_all_entry_quality_shadow_block: raw.block_all_entry_quality_shadow_block === true,
+            block_all_tail_risk_high: raw.block_all_tail_risk_high === true
+        };
+    }
+
     setAegisEventRiskMode(mode: EventRiskMode | string): AegisEventRiskRuntimeConfig {
         const normalizedMode = this.normalizeEventRiskMode(mode);
         if (!this.config.aegis) {
@@ -829,6 +896,25 @@ export class NinjaConfigManager {
                         block_new_entries: false
                     }
                 },
+                decision_enforcement: {
+                    enabled: false,
+                    mode: 'OFF',
+                    block_do_not_enter: false,
+                    block_wait_confirmation: false,
+                    block_manual_only: false,
+                    block_entry_quality_shadow_block_when_event_risk: {
+                        enabled: false,
+                        event_modes: []
+                    },
+                    event_risk_enforcement: {
+                        caution_blocks_weak_entries: false,
+                        risk_off_blocks_non_a_plus: false,
+                        manual_only_blocks_all_new_entries: false
+                    },
+                    block_caution_would_block_unless_a_plus: false,
+                    block_all_entry_quality_shadow_block: false,
+                    block_all_tail_risk_high: false
+                },
                 entry_quality_gate: {
                     enabled: false,
                     mode: 'OFF'
@@ -870,6 +956,14 @@ export class NinjaConfigManager {
     private normalizeEntryQualityGateMode(mode?: AegisEntryQualityGateMode | string): AegisEntryQualityGateMode {
         const normalized = (mode || 'OFF').trim().toUpperCase();
         if (normalized === 'OFF' || normalized === 'SHADOW' || normalized === 'ENFORCE') {
+            return normalized;
+        }
+        return 'OFF';
+    }
+
+    private normalizeDecisionEnforcementMode(mode?: AegisDecisionEnforcementMode | string): AegisDecisionEnforcementMode {
+        const normalized = (mode || 'OFF').trim().toUpperCase();
+        if (normalized === 'CONSERVATIVE') {
             return normalized;
         }
         return 'OFF';

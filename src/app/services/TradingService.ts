@@ -16,6 +16,7 @@ import {
     AegisExitEyeYamlConfig,
     AegisEntryQualityGateRuntimeConfig,
     AegisEventRiskRuntimeConfig,
+    AegisDecisionEnforcementRuntimeConfig,
     AegisPositionFractionOverride,
     AegisPortfolioRiskYamlConfig,
     AegisShortGateYamlConfig,
@@ -49,11 +50,16 @@ import {
     AegisEventRiskOverlay,
     AegisEventRiskOverlayDecision
 } from '../../domain/services/AegisEventRiskOverlay';
+import {
+    AegisDecisionEnforcement,
+    AegisDecisionEnforcementDecision
+} from '../../domain/services/AegisDecisionEnforcement';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 const EXIT_EYE_SIGNAL_TTL_MS = 15000;
 const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+const DECISION_ENFORCEMENT_TELEGRAM_COOLDOWN_MS = 5 * 60 * 1000;
 
 export interface TradingServiceDeps {
     exchange: Exchange;
@@ -100,6 +106,7 @@ export class TradingService {
     private readonly historyLogger: AegisTurboHistoryLogger;
     private readonly symbolStateStores = new Map<string, StateStore>();
     private readonly exitEyeSignalCache = new Map<string, { at: number; signal: AegisTradingSignal }>();
+    private readonly decisionEnforcementTelegramCache = new Map<string, number>();
 
     constructor(
         private deps: TradingServiceDeps,
@@ -200,6 +207,32 @@ export class TradingService {
             manual_only: {
                 block_new_entries: false
             }
+        };
+    }
+
+    private getAegisDecisionEnforcementConfig(): AegisDecisionEnforcementRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisDecisionEnforcementConfig === 'function') {
+            return manager.getAegisDecisionEnforcementConfig();
+        }
+        return {
+            enabled: false,
+            mode: 'OFF',
+            block_do_not_enter: false,
+            block_wait_confirmation: false,
+            block_manual_only: false,
+            block_entry_quality_shadow_block_when_event_risk: {
+                enabled: false,
+                event_modes: []
+            },
+            event_risk_enforcement: {
+                caution_blocks_weak_entries: false,
+                risk_off_blocks_non_a_plus: false,
+                manual_only_blocks_all_new_entries: false
+            },
+            block_caution_would_block_unless_a_plus: false,
+            block_all_entry_quality_shadow_block: false,
+            block_all_tail_risk_high: false
         };
     }
 
@@ -1243,6 +1276,10 @@ export class TradingService {
         };
     }
 
+    private getAegisSignalBlock(signal: AegisTradingSignal) {
+        return signal.metadata?.aegis ?? signal.aegis;
+    }
+
     private isAltSymbol(symbol: string): boolean {
         const normalized = this.normalizeSymbol(symbol);
         return normalized !== 'BTCUSDT' && normalized !== 'ETHUSDT';
@@ -1320,6 +1357,73 @@ export class TradingService {
             return;
         }
         this.deps.logger.debug('aegis_event_risk_shadow_allow', metadata);
+    }
+
+    private evaluateAegisDecisionEnforcement(
+        symbol: string,
+        side: Side,
+        signal: AegisTradingSignal,
+        gate: AegisMicroLiveGateDecision,
+        entryQualityDecision: AegisEntryQualityGateDecision,
+        eventRiskDecision: AegisEventRiskOverlayDecision
+    ): AegisDecisionEnforcementDecision {
+        const aegis = this.getAegisSignalBlock(signal);
+        const config = this.getAegisDecisionEnforcementConfig();
+        const eventRiskConfig = this.getAegisEventRiskConfig();
+
+        return AegisDecisionEnforcement.evaluate({
+            symbol,
+            side,
+            turboScore: gate.turboScore,
+            decisionBrain: aegis?.decision_brain,
+            entryQualityModel: aegis?.entry_quality_model,
+            entryQualityGate: entryQualityDecision,
+            eventRiskMode: eventRiskDecision.mode,
+            eventRiskWouldBlock: eventRiskDecision.wouldBlock,
+            eventRiskReason: eventRiskDecision.reason,
+            eventRiskAuto: aegis?.event_risk_auto,
+            isAltSymbol: this.isAltSymbol(symbol),
+            config,
+            riskOffTailMax: eventRiskConfig.risk_off.max_tail_risk_score
+        });
+    }
+
+    private async logAegisDecisionEnforcementDenied(
+        symbol: string,
+        decision: AegisDecisionEnforcementDecision,
+        tradeId?: string
+    ): Promise<void> {
+        const metadata = {
+            ...decision.metadata,
+            reason: decision.reason,
+            allowed: decision.allowed
+        };
+        await this.logAegisTradeEvent(symbol, 'DECISION_ENFORCEMENT_DENIED', {
+            tradeId,
+            reason: decision.reason,
+            metadata
+        });
+        this.deps.logger.warn('aegis_decision_enforcement_denied', metadata);
+    }
+
+    private async notifyDecisionEnforcementDenied(symbol: string, decision: AegisDecisionEnforcementDecision): Promise<void> {
+        const key = `${symbol}:${decision.reason}`;
+        const now = Date.now();
+        const last = this.decisionEnforcementTelegramCache.get(key) ?? 0;
+        if (now - last < DECISION_ENFORCEMENT_TELEGRAM_COOLDOWN_MS) return;
+        this.decisionEnforcementTelegramCache.set(key, now);
+
+        await this.deps.notifier.sendMessage(
+            `🛡️ Entrada bloqueada por protección Aegis\n` +
+            `${symbol} ${decision.metadata.side} | ${decision.reason}\n` +
+            `Grade ${decision.metadata.setupGrade} | DB ${decision.metadata.decisionBrainDecision ?? 'N/D'} | EQ ${decision.metadata.entryQualityRecommendation ?? decision.metadata.entryQualityGateAction ?? 'N/D'} | EventRisk ${decision.metadata.eventRiskMode}`
+        ).catch((error) => {
+            this.deps.logger.warn('aegis_decision_enforcement_telegram_failed', {
+                symbol,
+                reason: decision.reason,
+                error: error instanceof Error ? error.message : String(error)
+            });
+        });
     }
 
     private async openAegisTurboPosition(
@@ -1448,6 +1552,37 @@ export class TradingService {
                 return;
             }
 
+            const decisionEnforcement = this.evaluateAegisDecisionEnforcement(
+                symbol,
+                side,
+                signal,
+                effectiveGate,
+                entryQualityDecision,
+                eventRiskDecision
+            );
+            if (!decisionEnforcement.allowed) {
+                const deniedGate = { ...effectiveGate, allowed: false, reason: decisionEnforcement.reason };
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: deniedGate,
+                    executed: false,
+                    metadata: {
+                        decision_enforcement_reason: decisionEnforcement.reason,
+                        decision_brain_decision: decisionEnforcement.metadata.decisionBrainDecision,
+                        entry_quality_recommendation: decisionEnforcement.metadata.entryQualityRecommendation,
+                        event_risk_mode: decisionEnforcement.metadata.eventRiskMode,
+                        event_risk_reason: decisionEnforcement.metadata.eventRiskReason,
+                        event_risk_would_block: decisionEnforcement.metadata.eventRiskWouldBlock,
+                        is_a_plus: decisionEnforcement.metadata.aPlus,
+                        setup_grade: decisionEnforcement.metadata.setupGrade
+                    }
+                });
+                await this.logAegisDecisionEnforcementDenied(symbol, decisionEnforcement, tradeId);
+                await this.notifyDecisionEnforcementDenied(symbol, decisionEnforcement);
+                return;
+            }
+
             if (side === 'SHORT' && shortGateDecision.reason === 'short_allowed_premium') {
                 await this.logAegisTradeEvent(symbol, 'SHORT_GATE_ADJUSTED', {
                     tradeId,
@@ -1533,7 +1668,22 @@ export class TradingService {
                 return;
             }
 
-            await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: effectiveGate, executed: true });
+            await this.logAegisTurboSignal(symbol, signal, {
+                signalId,
+                tradeId,
+                gate: effectiveGate,
+                executed: true,
+                metadata: {
+                    decision_enforcement_reason: decisionEnforcement.reason,
+                    setup_grade: decisionEnforcement.metadata.setupGrade,
+                    is_a_plus: decisionEnforcement.metadata.aPlus,
+                    decision_brain_decision: decisionEnforcement.metadata.decisionBrainDecision,
+                    entry_quality_recommendation: decisionEnforcement.metadata.entryQualityRecommendation,
+                    event_risk_mode: decisionEnforcement.metadata.eventRiskMode,
+                    event_risk_reason: decisionEnforcement.metadata.eventRiskReason,
+                    event_risk_would_block: decisionEnforcement.metadata.eventRiskWouldBlock
+                }
+            });
             await this.logAegisTradeEvent(symbol, 'GATE_ALLOWED', {
                 tradeId,
                 reason: effectiveGate.reason,
@@ -1544,7 +1694,16 @@ export class TradingService {
                     stopRoe: effectiveGate.stopRoe,
                     takeProfitRoe: effectiveGate.takeProfitRoe,
                     trailingActivationRoe: effectiveGate.trailingActivationRoe,
-                    trailingCallbackRoe: effectiveGate.trailingCallbackRoe
+                    trailingCallbackRoe: effectiveGate.trailingCallbackRoe,
+                    decisionEnforcementReason: decisionEnforcement.reason,
+                    setupGrade: decisionEnforcement.metadata.setupGrade,
+                    aPlus: decisionEnforcement.metadata.aPlus,
+                    decisionBrainDecision: decisionEnforcement.metadata.decisionBrainDecision,
+                    entryQualityRecommendation: decisionEnforcement.metadata.entryQualityRecommendation,
+                    tailRiskScore: decisionEnforcement.metadata.tailRiskScore,
+                    eventRiskMode: decisionEnforcement.metadata.eventRiskMode,
+                    eventRiskReason: decisionEnforcement.metadata.eventRiskReason,
+                    eventRiskWouldBlock: decisionEnforcement.metadata.eventRiskWouldBlock
                 }
             });
 

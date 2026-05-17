@@ -72,7 +72,7 @@ REGIMES:
 aegis:
   event_risk:
     enabled: true
-    mode: NORMAL
+    mode: CAUTION
     enforce: false
     manual_override_enabled: true
     caution:
@@ -85,6 +85,25 @@ aegis:
       allow_only_a_plus: true
     manual_only:
       block_new_entries: false
+  decision_enforcement:
+    enabled: true
+    mode: CONSERVATIVE
+    block_do_not_enter: true
+    block_wait_confirmation: true
+    block_manual_only: true
+    block_entry_quality_shadow_block_when_event_risk:
+      enabled: true
+      event_modes:
+        - CAUTION
+        - RISK_OFF
+        - MANUAL_ONLY
+    event_risk_enforcement:
+      caution_blocks_weak_entries: true
+      risk_off_blocks_non_a_plus: true
+      manual_only_blocks_all_new_entries: true
+    block_caution_would_block_unless_a_plus: true
+    block_all_entry_quality_shadow_block: true
+    block_all_tail_risk_high: false
   portfolio_risk:
     enabled: false
   short_gate:

@@ -112,6 +112,47 @@ function validSignalWithShadowEntryQuality(): AegisTradingSignal {
     };
 }
 
+function validSignalWithDecisionBrain(decision: string, entryQualityRecommendation = 'ALLOW_SHADOW'): AegisTradingSignal {
+    const signal = validSignal();
+    return {
+        ...signal,
+        metadata: {
+            ...signal.metadata,
+            aegis: {
+                ...signal.metadata?.aegis,
+                decision_brain: {
+                    mode: 'SHADOW',
+                    execute: false,
+                    production_allowed: false,
+                    decision,
+                    enter_now_prob: decision === 'ENTER_NOW' ? 0.8 : 0.1,
+                    wait_confirmation_prob: decision === 'WAIT_CONFIRMATION' ? 0.8 : 0.1,
+                    manual_only_prob: decision === 'MANUAL_ONLY' ? 0.8 : 0.1,
+                    do_not_enter_prob: decision === 'DO_NOT_ENTER' ? 0.8 : 0.1
+                },
+                entry_quality_model: {
+                    mode: 'SHADOW',
+                    execute: false,
+                    production_allowed: false,
+                    status: 'RESEARCH_CANDIDATE_NOT_LIVE',
+                    entry_quality_score: entryQualityRecommendation === 'ALLOW_SHADOW' ? 0.82 : 0.2,
+                    tail_risk_score: entryQualityRecommendation === 'ALLOW_SHADOW' ? 0.2 : 0.8,
+                    recommendation: entryQualityRecommendation
+                },
+                event_risk_auto: {
+                    mode: 'SHADOW',
+                    suggested_mode: 'NORMAL',
+                    confidence: 0.8,
+                    btc_context: { action: 'LONG', score: 0.8 },
+                    eth_context: { action: 'LONG', score: 0.8 },
+                    execute: false,
+                    production_allowed: false
+                }
+            }
+        }
+    };
+}
+
 function shortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTradingSignal {
     return {
         symbol,
@@ -173,6 +214,29 @@ function entryQualityConfig(overrides: Record<string, any> = {}) {
     };
 }
 
+function decisionEnforcementConfig(overrides: Record<string, any> = {}) {
+    return {
+        enabled: true,
+        mode: 'CONSERVATIVE',
+        block_do_not_enter: true,
+        block_wait_confirmation: true,
+        block_manual_only: true,
+        block_entry_quality_shadow_block_when_event_risk: {
+            enabled: true,
+            event_modes: ['CAUTION', 'RISK_OFF', 'MANUAL_ONLY']
+        },
+        event_risk_enforcement: {
+            caution_blocks_weak_entries: true,
+            risk_off_blocks_non_a_plus: true,
+            manual_only_blocks_all_new_entries: true
+        },
+        block_caution_would_block_unless_a_plus: true,
+        block_all_entry_quality_shadow_block: true,
+        block_all_tail_risk_high: false,
+        ...overrides
+    };
+}
+
 function cachedCandles(closes: number[]) {
     return closes.map((close, index) => ({
         openTime: index,
@@ -210,6 +274,7 @@ function makeHarness(options: {
         portfolioRisk?: any;
         shortGate?: any;
         eventRisk?: any;
+        decisionEnforcement?: any;
         positionFractionOverride?: any;
         entryQuality?: any;
         cachedCandles?: any[];
@@ -337,6 +402,25 @@ function makeHarness(options: {
             manual_only: {
                 block_new_entries: false
             }
+        }),
+        getAegisDecisionEnforcementConfig: vi.fn(() => options.decisionEnforcement ?? {
+            enabled: false,
+            mode: 'OFF',
+            block_do_not_enter: false,
+            block_wait_confirmation: false,
+            block_manual_only: false,
+            block_entry_quality_shadow_block_when_event_risk: {
+                enabled: false,
+                event_modes: []
+            },
+            event_risk_enforcement: {
+                caution_blocks_weak_entries: false,
+                risk_off_blocks_non_a_plus: false,
+                manual_only_blocks_all_new_entries: false
+            },
+            block_caution_would_block_unless_a_plus: false,
+            block_all_entry_quality_shadow_block: false,
+            block_all_tail_risk_high: false
         }),
         getAegisPositionFractionOverride: vi.fn(() => options.positionFractionOverride),
         getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
@@ -1267,6 +1351,313 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
         expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+    });
+
+    it('decision enforcement blocks DO_NOT_ENTER before setLeverage and marketOpen', async () => {
+        const { exchange, historyLogger, notifier, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'decision_brain_do_not_enter',
+            metadata: expect.objectContaining({
+                decisionBrainDecision: 'DO_NOT_ENTER',
+                entryQualityRecommendation: 'ALLOW_SHADOW',
+                eventRiskMode: 'NORMAL'
+            })
+        }));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Entrada bloqueada por protección Aegis'));
+    });
+
+    it('decision enforcement blocks WAIT_CONFIRMATION before marketOpen', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('WAIT_CONFIRMATION'),
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'decision_brain_wait_confirmation'
+        }));
+    });
+
+    it('decision enforcement blocks EntryQuality BLOCK_SHADOW when EventRisk is NORMAL', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('ENTER_NOW', 'BLOCK_SHADOW'),
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'entry_quality_shadow_block_hard_denied',
+            metadata: expect.objectContaining({
+                entryQualityRecommendation: 'BLOCK_SHADOW',
+                eventRiskMode: 'NORMAL'
+            })
+        }));
+    });
+
+    it('decision enforcement blocks EntryQuality BLOCK_SHADOW when EventRisk is CAUTION', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('ENTER_NOW', 'BLOCK_SHADOW'),
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: false
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            },
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'entry_quality_shadow_block_hard_denied',
+            metadata: expect.objectContaining({
+                entryQualityRecommendation: 'BLOCK_SHADOW',
+                eventRiskMode: 'CAUTION'
+            })
+        }));
+    });
+
+    it('decision enforcement blocks CAUTION weak setup before setLeverage and marketOpen', async () => {
+        const signal = validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW');
+        (signal.metadata!.aegis!.entry_quality_model as any).tail_risk_score = 0.62;
+        const { exchange, historyLogger, service } = makeHarness({
+            signal,
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: false
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            },
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'event_risk_caution_denied_weak_setup',
+            metadata: expect.objectContaining({
+                eventRiskMode: 'CAUTION',
+                eventRiskReason: 'caution_tail_too_high',
+                eventRiskWouldBlock: true,
+                aPlus: false,
+                setupGrade: 'WEAK',
+                decisionBrainDecision: 'ENTER_NOW',
+                entryQualityRecommendation: 'ALLOW_SHADOW'
+            })
+        }));
+    });
+
+    it('decision enforcement allows CAUTION wouldBlock A+ candidate when no other rule blocks', async () => {
+        const signal = validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW');
+        (signal.metadata!.aegis!.turbo!.raw as any).turbo_score = 0.95;
+        (signal.metadata!.aegis!.entry_quality_model as any).entry_quality_score = 0.60;
+        (signal.metadata!.aegis!.entry_quality_model as any).tail_risk_score = 0.20;
+        const { exchange, historyLogger, service } = makeHarness({
+            signal,
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: false
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            },
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'GATE_ALLOWED',
+            metadata: expect.objectContaining({
+                decisionEnforcementReason: 'event_risk_caution_allowed_strong_setup',
+                setupGrade: 'A_PLUS',
+                eventRiskMode: 'CAUTION',
+                eventRiskWouldBlock: true
+            })
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'EVENT_RISK_SHADOW_CAUTION',
+            reason: 'caution_quality_too_low',
+            metadata: expect.objectContaining({
+                wouldBlock: true,
+                allowed: true
+            })
+        }));
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED'
+        }));
+    });
+
+    it('decision enforcement blocks RISK_OFF non-A+ setup', async () => {
+        const signal = validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW');
+        (signal.metadata!.aegis!.turbo!.raw as any).turbo_score = 0.95;
+        (signal.metadata!.aegis!.entry_quality_model as any).tail_risk_score = 0.8;
+        const { exchange, historyLogger, service } = makeHarness({
+            signal,
+            eventRisk: {
+                enabled: true,
+                mode: 'RISK_OFF',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: false
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            },
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'event_risk_risk_off_denied_non_a_plus'
+        }));
+    });
+
+    it('decision enforcement allows ENTER_NOW A+ in RISK_OFF', async () => {
+        const signal = validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW');
+        (signal.metadata!.aegis!.turbo!.raw as any).turbo_score = 0.95;
+        const { exchange, historyLogger, service } = makeHarness({
+            signal,
+            eventRisk: {
+                enabled: true,
+                mode: 'RISK_OFF',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: {
+                    min_quality_score: 0.65,
+                    max_tail_risk_score: 0.45,
+                    require_btc_eth_confirmation: false
+                },
+                risk_off: {
+                    min_quality_score: 0.75,
+                    max_tail_risk_score: 0.35,
+                    allow_only_a_plus: true
+                },
+                manual_only: {
+                    block_new_entries: false
+                }
+            },
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'GATE_ALLOWED',
+            metadata: expect.objectContaining({
+                decisionEnforcementReason: 'event_risk_risk_off_allowed_a_plus',
+                setupGrade: 'A_PLUS',
+                eventRiskMode: 'RISK_OFF'
+            })
+        }));
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED'
+        }));
+    });
+
+    it('decision enforcement does not affect open position management', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
+            decisionEnforcement: decisionEnforcementConfig(),
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 3000,
+                lastEntryQty: 0.01,
+                lastEntryAt: Date.now() - 5 * 60 * 1000,
+                peakRoe: 0.02
+            },
+            readActivePosition: {
+                sideMode: 'LONG',
+                qtyAbs: 0.01,
+                entryPrice: 3000,
+                leverage: 20,
+                isolatedMargin: 2,
+                unrealizedPnl: 0.1
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED'
+        }));
     });
 
     it('records history event when portfolio risk blocks', async () => {

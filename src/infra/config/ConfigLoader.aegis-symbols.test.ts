@@ -310,6 +310,86 @@ symbols:
         expect(config.getAegisEventRiskConfig().mode).toBe('MANUAL_ONLY');
     });
 
+    it('loads CAUTION as YAML default while runtime riskmode override remains temporary', () => {
+        const filePath = writeConfig(`
+  event_risk:
+    enabled: true
+    mode: CAUTION
+    enforce: false
+    manual_override_enabled: true
+    caution:
+      min_quality_score: 0.65
+      max_tail_risk_score: 0.45
+      require_btc_eth_confirmation: true
+    risk_off:
+      min_quality_score: 0.75
+      max_tail_risk_score: 0.35
+      allow_only_a_plus: true
+    manual_only:
+      block_new_entries: false
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`);
+        const config = new NinjaConfigManager(filePath);
+
+        expect(config.getAegisEventRiskConfig().mode).toBe('CAUTION');
+        expect(config.setAegisEventRiskMode('NORMAL').mode).toBe('NORMAL');
+        expect(config.setAegisEventRiskMode('RISK_OFF').mode).toBe('RISK_OFF');
+
+        const restartedConfig = new NinjaConfigManager(filePath);
+        expect(restartedConfig.getAegisEventRiskConfig().mode).toBe('CAUTION');
+    });
+
+    it('parses decision enforcement conservative config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  decision_enforcement:
+    enabled: true
+    mode: CONSERVATIVE
+    block_do_not_enter: true
+    block_wait_confirmation: true
+    block_manual_only: true
+    block_entry_quality_shadow_block_when_event_risk:
+      enabled: true
+      event_modes:
+        - CAUTION
+        - RISK_OFF
+        - MANUAL_ONLY
+    event_risk_enforcement:
+      caution_blocks_weak_entries: true
+      risk_off_blocks_non_a_plus: true
+      manual_only_blocks_all_new_entries: true
+    block_caution_would_block_unless_a_plus: true
+    block_all_entry_quality_shadow_block: false
+    block_all_tail_risk_high: false
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisDecisionEnforcementConfig()).toEqual({
+            enabled: true,
+            mode: 'CONSERVATIVE',
+            block_do_not_enter: true,
+            block_wait_confirmation: true,
+            block_manual_only: true,
+            block_entry_quality_shadow_block_when_event_risk: {
+                enabled: true,
+                event_modes: ['CAUTION', 'RISK_OFF', 'MANUAL_ONLY']
+            },
+            event_risk_enforcement: {
+                caution_blocks_weak_entries: true,
+                risk_off_blocks_non_a_plus: true,
+                manual_only_blocks_all_new_entries: true
+            },
+            block_caution_would_block_unless_a_plus: true,
+            block_all_entry_quality_shadow_block: false,
+            block_all_tail_risk_high: false
+        });
+    });
+
     it('resolves Aegis Turbo position fraction overrides by symbol group and side', () => {
         const config = new NinjaConfigManager(writeConfig(`
     position_fraction_overrides:
