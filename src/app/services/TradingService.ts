@@ -21,6 +21,7 @@ import {
     AegisPortfolioRiskYamlConfig,
     AegisShortGateYamlConfig,
     AegisSymbolMode,
+    AegisTelegramNotificationsRuntimeConfig,
     AegisTurboYamlConfig,
     NinjaConfigManager
 } from '../../infra/config/ConfigLoader';
@@ -54,12 +55,15 @@ import {
     AegisDecisionEnforcement,
     AegisDecisionEnforcementDecision
 } from '../../domain/services/AegisDecisionEnforcement';
+import {
+    AegisTelegramBlockNotifier,
+    DEFAULT_AEGIS_BLOCK_NOTIFICATION_CONFIG
+} from './AegisTelegramBlockNotifier';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 const EXIT_EYE_SIGNAL_TTL_MS = 15000;
 const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
-const DECISION_ENFORCEMENT_TELEGRAM_COOLDOWN_MS = 5 * 60 * 1000;
 
 export interface TradingServiceDeps {
     exchange: Exchange;
@@ -106,7 +110,7 @@ export class TradingService {
     private readonly historyLogger: AegisTurboHistoryLogger;
     private readonly symbolStateStores = new Map<string, StateStore>();
     private readonly exitEyeSignalCache = new Map<string, { at: number; signal: AegisTradingSignal }>();
-    private readonly decisionEnforcementTelegramCache = new Map<string, number>();
+    private readonly aegisTelegramBlockNotifier = new AegisTelegramBlockNotifier();
 
     constructor(
         private deps: TradingServiceDeps,
@@ -233,6 +237,16 @@ export class TradingService {
             block_caution_would_block_unless_a_plus: false,
             block_all_entry_quality_shadow_block: false,
             block_all_tail_risk_high: false
+        };
+    }
+
+    private getAegisTelegramNotificationsConfig(): AegisTelegramNotificationsRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisTelegramNotificationsConfig === 'function') {
+            return manager.getAegisTelegramNotificationsConfig();
+        }
+        return {
+            block_dedupe: DEFAULT_AEGIS_BLOCK_NOTIFICATION_CONFIG
         };
     }
 
@@ -1407,16 +1421,61 @@ export class TradingService {
     }
 
     private async notifyDecisionEnforcementDenied(symbol: string, decision: AegisDecisionEnforcementDecision): Promise<void> {
-        const key = `${symbol}:${decision.reason}`;
         const now = Date.now();
-        const last = this.decisionEnforcementTelegramCache.get(key) ?? 0;
-        if (now - last < DECISION_ENFORCEMENT_TELEGRAM_COOLDOWN_MS) return;
-        this.decisionEnforcementTelegramCache.set(key, now);
+        const blockDedupeConfig = this.getAegisTelegramNotificationsConfig().block_dedupe;
+        const notification = this.aegisTelegramBlockNotifier.decide({
+            timestamp: now,
+            symbol,
+            side: decision.metadata.side,
+            reason: decision.reason,
+            eventRiskMode: decision.metadata.eventRiskMode,
+            setupGrade: decision.metadata.setupGrade,
+            decisionBrain: decision.metadata.decisionBrainDecision,
+            entryQuality: decision.metadata.entryQualityRecommendation ?? decision.metadata.entryQualityGateAction,
+            tailRiskScore: decision.metadata.tailRiskScore ?? undefined,
+            turboScore: decision.metadata.turboScore,
+            source: 'DECISION_ENFORCEMENT_DENIED'
+        }, blockDedupeConfig);
+
+        const notificationMetadata = {
+            dedupeKey: notification.dedupeKey,
+            symbol,
+            side: decision.metadata.side,
+            reason: decision.reason,
+            notificationType: notification.notificationType,
+            suppressedCount: notification.suppressedCount,
+            lastNotifiedAt: notification.lastNotifiedAt,
+            cooldownMinutes: blockDedupeConfig.cooldown_minutes,
+            eventRiskMode: decision.metadata.eventRiskMode,
+            setupGrade: decision.metadata.setupGrade,
+            decisionBrainDecision: decision.metadata.decisionBrainDecision,
+            entryQualityRecommendation: decision.metadata.entryQualityRecommendation,
+            entryQualityGateAction: decision.metadata.entryQualityGateAction
+        };
+
+        if (!notification.shouldNotify) {
+            this.deps.logger.info('telegram_block_notification_suppressed', notificationMetadata);
+            await this.logAegisTradeEvent(symbol, 'telegram_block_notification_suppressed', {
+                reason: decision.reason,
+                metadata: notificationMetadata
+            });
+            return;
+        }
+
+        if (notification.notificationType === 'SUMMARY') {
+            this.deps.logger.info('telegram_block_notification_summary_sent', notificationMetadata);
+            await this.logAegisTradeEvent(symbol, 'telegram_block_notification_summary_sent', {
+                reason: decision.reason,
+                metadata: notificationMetadata
+            });
+        }
 
         await this.deps.notifier.sendMessage(
-            `🛡️ Entrada bloqueada por protección Aegis\n` +
-            `${symbol} ${decision.metadata.side} | ${decision.reason}\n` +
-            `Grade ${decision.metadata.setupGrade} | DB ${decision.metadata.decisionBrainDecision ?? 'N/D'} | EQ ${decision.metadata.entryQualityRecommendation ?? decision.metadata.entryQualityGateAction ?? 'N/D'} | EventRisk ${decision.metadata.eventRiskMode}`
+            notification.message ?? (
+                `🛡️ Entrada bloqueada\n` +
+                `${symbol} ${decision.metadata.side}\n` +
+                `Motivo: ${decision.reason}`
+            )
         ).catch((error) => {
             this.deps.logger.warn('aegis_decision_enforcement_telegram_failed', {
                 symbol,

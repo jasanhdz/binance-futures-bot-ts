@@ -240,6 +240,30 @@ export interface AegisDecisionEnforcementRuntimeConfig {
     block_all_tail_risk_high: boolean;
 }
 
+export interface AegisTelegramBlockDedupeYamlConfig {
+    enabled?: boolean;
+    cooldown_minutes?: number;
+    summary_threshold?: number;
+    max_cache_entries?: number;
+    include_suppressed_count?: boolean;
+}
+
+export interface AegisTelegramBlockDedupeRuntimeConfig {
+    enabled: boolean;
+    cooldown_minutes: number;
+    summary_threshold: number;
+    max_cache_entries: number;
+    include_suppressed_count: boolean;
+}
+
+export interface AegisTelegramNotificationsYamlConfig {
+    block_dedupe?: AegisTelegramBlockDedupeYamlConfig;
+}
+
+export interface AegisTelegramNotificationsRuntimeConfig {
+    block_dedupe: AegisTelegramBlockDedupeRuntimeConfig;
+}
+
 export type AegisExitEyeMode = 'OFF' | 'SHADOW' | 'PROTECT' | 'CLOSE';
 
 export interface AegisExitEyeYamlConfig {
@@ -297,6 +321,7 @@ export interface NinjaYamlConfig {
         short_gate?: AegisShortGateYamlConfig;
         event_risk?: AegisEventRiskYamlConfig;
         decision_enforcement?: AegisDecisionEnforcementYamlConfig;
+        telegram_notifications?: AegisTelegramNotificationsYamlConfig;
         entry_quality_gate?: AegisEntryQualityGateYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
@@ -674,6 +699,19 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisTelegramNotificationsConfig(): AegisTelegramNotificationsRuntimeConfig {
+        const raw = this.config.aegis?.telegram_notifications?.block_dedupe || {};
+        return {
+            block_dedupe: {
+                enabled: raw.enabled !== false,
+                cooldown_minutes: Math.max(1, this.finiteNumber(raw.cooldown_minutes, 15)),
+                summary_threshold: Math.max(1, Math.floor(this.finiteNumber(raw.summary_threshold, 25))),
+                max_cache_entries: Math.max(1, Math.floor(this.finiteNumber(raw.max_cache_entries, 1000))),
+                include_suppressed_count: raw.include_suppressed_count !== false
+            }
+        };
+    }
+
     setAegisEventRiskMode(mode: EventRiskMode | string): AegisEventRiskRuntimeConfig {
         const normalizedMode = this.normalizeEventRiskMode(mode);
         if (!this.config.aegis) {
@@ -914,6 +952,15 @@ export class NinjaConfigManager {
                     block_caution_would_block_unless_a_plus: false,
                     block_all_entry_quality_shadow_block: false,
                     block_all_tail_risk_high: false
+                },
+                telegram_notifications: {
+                    block_dedupe: {
+                        enabled: true,
+                        cooldown_minutes: 15,
+                        summary_threshold: 25,
+                        max_cache_entries: 1000,
+                        include_suppressed_count: true
+                    }
                 },
                 entry_quality_gate: {
                     enabled: false,

@@ -275,6 +275,7 @@ function makeHarness(options: {
         shortGate?: any;
         eventRisk?: any;
         decisionEnforcement?: any;
+        telegramNotifications?: any;
         positionFractionOverride?: any;
         entryQuality?: any;
         cachedCandles?: any[];
@@ -422,6 +423,15 @@ function makeHarness(options: {
             block_all_entry_quality_shadow_block: false,
             block_all_tail_risk_high: false
         }),
+        getAegisTelegramNotificationsConfig: vi.fn(() => options.telegramNotifications ?? {
+            block_dedupe: {
+                enabled: true,
+                cooldown_minutes: 15,
+                summary_threshold: 25,
+                max_cache_entries: 1000,
+                include_suppressed_count: true
+            }
+        }),
         getAegisPositionFractionOverride: vi.fn(() => options.positionFractionOverride),
         getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
         getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
@@ -448,14 +458,15 @@ function makeHarness(options: {
         logTradeOpen: vi.fn().mockResolvedValue(undefined),
         logTradeClose: vi.fn().mockResolvedValue(undefined)
     };
+    const mlService = {
+        getSignal: vi.fn().mockResolvedValue(options.signal ?? validSignal()),
+        getExitSignal: vi.fn(),
+        checkHealth: vi.fn()
+    };
     const service = new TradingService(
         {
             exchange: exchange as any,
-            mlService: {
-                getSignal: vi.fn().mockResolvedValue(options.signal ?? validSignal()),
-                getExitSignal: vi.fn(),
-                checkHealth: vi.fn()
-            },
+            mlService: mlService as any,
             logger,
             state,
             notifier,
@@ -470,7 +481,7 @@ function makeHarness(options: {
         }
     );
 
-	    return { exchange, historyLogger, logger, notifier, service, state, configManager, symbolStores };
+	    return { exchange, historyLogger, logger, mlService, notifier, service, state, configManager, symbolStores };
 	}
 
 describe('TradingService Aegis live execution', () => {
@@ -1375,6 +1386,66 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Entrada bloqueada por protección Aegis'));
     });
 
+    it('dedupes repeated DECISION_ENFORCEMENT_DENIED Telegram while keeping history and logs', async () => {
+        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+        const { exchange, historyLogger, logger, notifier, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
+            decisionEnforcement: decisionEnforcementConfig(),
+            telegramNotifications: {
+                block_dedupe: {
+                    enabled: true,
+                    cooldown_minutes: 15,
+                    summary_threshold: 25,
+                    max_cache_entries: 1000,
+                    include_suppressed_count: true
+                }
+            }
+        });
+
+        await service.tick('ETHUSDT');
+        await service.tick('ETHUSDT');
+        nowSpy.mockRestore();
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'decision_brain_do_not_enter'
+        }));
+        const deniedEvents = historyLogger.logTradeEvent.mock.calls.filter(([event]) => (
+            event.event === 'DECISION_ENFORCEMENT_DENIED'
+        ));
+        expect(deniedEvents).toHaveLength(2);
+        expect(logger.warn).toHaveBeenCalledWith('aegis_decision_enforcement_denied', expect.any(Object));
+        expect(logger.info).toHaveBeenCalledWith('telegram_block_notification_suppressed', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            reason: 'decision_brain_do_not_enter',
+            suppressedCount: 1
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'telegram_block_notification_suppressed',
+            reason: 'decision_brain_do_not_enter'
+        }));
+    });
+
+    it('sends a new block Telegram when the denial reason changes', async () => {
+        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+        const { mlService, notifier, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
+            decisionEnforcement: decisionEnforcementConfig()
+        });
+        mlService.getSignal
+            .mockResolvedValueOnce(validSignalWithDecisionBrain('DO_NOT_ENTER'))
+            .mockResolvedValueOnce(validSignalWithDecisionBrain('WAIT_CONFIRMATION'));
+
+        await service.tick('ETHUSDT');
+        await service.tick('ETHUSDT');
+        nowSpy.mockRestore();
+
+        expect(notifier.sendMessage).toHaveBeenCalledTimes(2);
+        expect(notifier.sendMessage).toHaveBeenLastCalledWith(expect.stringContaining('Cambio: reason decision_brain_do_not_enter -> decision_brain_wait_confirmation'));
+    });
+
     it('decision enforcement blocks WAIT_CONFIRMATION before marketOpen', async () => {
         const { exchange, historyLogger, service } = makeHarness({
             signal: validSignalWithDecisionBrain('WAIT_CONFIRMATION'),
@@ -1721,6 +1792,7 @@ describe('TradingService Aegis live execution', () => {
 	        }));
 	        expect(logger.error).toHaveBeenCalledWith('aegis_bracket_creation_failed', expect.any(Object));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('BRACKET FAILED'));
+        expect(logger.info).not.toHaveBeenCalledWith('telegram_block_notification_suppressed', expect.any(Object));
     });
 
     it('recreates missing Aegis brackets from state values while managing an open position', async () => {

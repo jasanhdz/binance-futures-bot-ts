@@ -104,6 +104,13 @@ aegis:
     block_caution_would_block_unless_a_plus: true
     block_all_entry_quality_shadow_block: true
     block_all_tail_risk_high: false
+  telegram_notifications:
+    block_dedupe:
+      enabled: true
+      cooldown_minutes: 15
+      summary_threshold: 25
+      max_cache_entries: 1000
+      include_suppressed_count: true
   portfolio_risk:
     enabled: false
   short_gate:

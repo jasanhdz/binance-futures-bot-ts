@@ -217,6 +217,15 @@ symbols:
             mode: 'NORMAL',
             enforce: false
         });
+        expect(config.getAegisTelegramNotificationsConfig()).toEqual({
+            block_dedupe: {
+                enabled: true,
+                cooldown_minutes: 15,
+                summary_threshold: 25,
+                max_cache_entries: 1000,
+                include_suppressed_count: true
+            }
+        });
     });
 
     it('parses portfolio risk and short gate config', () => {
@@ -387,6 +396,32 @@ symbols:
             block_caution_would_block_unless_a_plus: true,
             block_all_entry_quality_shadow_block: false,
             block_all_tail_risk_high: false
+        });
+    });
+
+    it('parses Aegis Telegram block dedupe notification config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  telegram_notifications:
+    block_dedupe:
+      enabled: false
+      cooldown_minutes: 10
+      summary_threshold: 12
+      max_cache_entries: 50
+      include_suppressed_count: false
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisTelegramNotificationsConfig()).toEqual({
+            block_dedupe: {
+                enabled: false,
+                cooldown_minutes: 10,
+                summary_threshold: 12,
+                max_cache_entries: 50,
+                include_suppressed_count: false
+            }
         });
     });
 
