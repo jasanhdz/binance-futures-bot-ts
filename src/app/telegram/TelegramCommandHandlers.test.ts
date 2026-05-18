@@ -248,7 +248,8 @@ function makeHandlers(overrides: Record<string, any> = {}) {
             dailyStartBalance: null,
             liquidityStressBySymbol: {}
         }),
-        getActiveSymbols: () => overrides.symbols ?? ['ETHUSDT']
+        getActiveSymbols: () => overrides.symbols ?? ['ETHUSDT'],
+        blocksReportService: overrides.blocksReportService
     });
     return { handlers, exchange, mlService, state, configManager, logger };
 }
@@ -630,5 +631,58 @@ describe('TelegramCommandHandlers', () => {
 
         expect(text).toContain('🧠 Aegis API: **ERROR**');
         expect(text).toContain('🛰️ Última señal: **ERROR**');
+    });
+
+    it('/blocks llama summary', async () => {
+        const blocksReportService = { buildTelegramMessages: vi.fn(async () => ['SUMMARY']) };
+        const { handlers } = makeHandlers({ blocksReportService });
+
+        await expect(handlers.handleBlocks([])).resolves.toEqual(['SUMMARY']);
+        expect(blocksReportService.buildTelegramMessages).toHaveBeenCalledWith([]);
+    });
+
+    it('/blocks 4h funciona', async () => {
+        const blocksReportService = { buildTelegramMessages: vi.fn(async () => ['4H']) };
+        const { handlers } = makeHandlers({ blocksReportService });
+
+        await handlers.handleBlocks(['4h']);
+
+        expect(blocksReportService.buildTelegramMessages).toHaveBeenCalledWith(['4h']);
+    });
+
+    it('/blocks LINKUSDT funciona', async () => {
+        const blocksReportService = { buildTelegramMessages: vi.fn(async () => ['LINK']) };
+        const { handlers } = makeHandlers({ blocksReportService });
+
+        await handlers.handleBlocks(['LINKUSDT']);
+
+        expect(blocksReportService.buildTelegramMessages).toHaveBeenCalledWith(['LINKUSDT']);
+    });
+
+    it('/blocks detail LINKUSDT funciona', async () => {
+        const blocksReportService = { buildTelegramMessages: vi.fn(async () => ['DETAIL']) };
+        const { handlers } = makeHandlers({ blocksReportService });
+
+        await handlers.handleBlocks(['detail', 'LINKUSDT']);
+
+        expect(blocksReportService.buildTelegramMessages).toHaveBeenCalledWith(['detail', 'LINKUSDT']);
+    });
+
+    it('/blocks near-miss funciona', async () => {
+        const blocksReportService = { buildTelegramMessages: vi.fn(async () => ['NEAR']) };
+        const { handlers } = makeHandlers({ blocksReportService });
+
+        await handlers.handleBlocks(['near-miss', '2h']);
+
+        expect(blocksReportService.buildTelegramMessages).toHaveBeenCalledWith(['near-miss', '2h']);
+    });
+
+    it('/blocks inválido muestra ayuda compacta', async () => {
+        const blocksReportService = { buildTelegramMessages: vi.fn(async () => ['Uso: /blocks [15m|30m|1h|2h|4h|6h|12h|24h]']) };
+        const { handlers } = makeHandlers({ blocksReportService });
+
+        const text = await handlers.handleBlocks(['wat', 'nope']);
+
+        expect(text).toEqual(['Uso: /blocks [15m|30m|1h|2h|4h|6h|12h|24h]']);
     });
 });

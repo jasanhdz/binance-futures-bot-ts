@@ -2,6 +2,7 @@ import {
     ParsedTelegramCommand,
     TelegramCommandHandlersPort,
     TelegramCommandName,
+    TelegramCommandResponse,
     TelegramCommandRouterOptions,
     TelegramInboundMessage
 } from './TelegramCommandTypes';
@@ -19,7 +20,8 @@ const KNOWN_COMMANDS: TelegramCommandName[] = [
     'risk',
     'riskmode',
     'brackets',
-    'report'
+    'report',
+    'blocks'
 ];
 
 export class TelegramCommandRouter {
@@ -37,7 +39,7 @@ export class TelegramCommandRouter {
         this.now = options.now ?? Date.now;
     }
 
-    async handleMessage(message: TelegramInboundMessage): Promise<string | undefined> {
+    async handleMessage(message: TelegramInboundMessage): Promise<TelegramCommandResponse | undefined> {
         if (!message.text || !message.text.trim().startsWith('/')) return undefined;
 
         if (this.allowedChatIds.size === 0) {
@@ -85,6 +87,8 @@ export class TelegramCommandRouter {
                 return command.args[0]?.toLowerCase() === 'today'
                     ? this.handlers.handleReportToday()
                     : this.handlers.handleHelp();
+            case 'blocks':
+                return this.handlers.handleBlocks(command.args);
             default:
                 return this.handlers.handleHelp();
         }

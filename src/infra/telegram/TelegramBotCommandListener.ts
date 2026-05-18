@@ -96,6 +96,9 @@ export class TelegramBotCommandListener {
             fromUsername: update.message?.from?.username
         });
         if (!response) return;
-        await TelegramService.sendPlainTextToChat(String(chatId), response, this.options.token);
+        const messages = Array.isArray(response) ? response : [response];
+        for (const message of messages) {
+            await TelegramService.sendPlainTextToChat(String(chatId), message, this.options.token);
+        }
     }
 }

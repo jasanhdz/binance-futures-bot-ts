@@ -3,6 +3,7 @@ import { Logger } from '../ports/Logger';
 import { MLService } from '../ports/MLService';
 import { StateStore } from '../ports/StateStore';
 import { NinjaConfigManager } from '../../infra/config/ConfigLoader';
+import { AegisBlocksReportService } from './AegisBlocksReportService';
 
 export type TelegramCommandName =
     | 'help'
@@ -17,7 +18,10 @@ export type TelegramCommandName =
     | 'risk'
     | 'riskmode'
     | 'brackets'
-    | 'report';
+    | 'report'
+    | 'blocks';
+
+export type TelegramCommandResponse = string | string[];
 
 export interface TelegramInboundMessage {
     chatId: string;
@@ -53,6 +57,7 @@ export interface TelegramCommandHandlerDeps {
     liveEnabled: boolean;
     getRuntimeSnapshot?: () => AegisRuntimeSnapshot;
     getActiveSymbols?: () => string[];
+    blocksReportService?: AegisBlocksReportService;
 }
 
 export interface TelegramCommandRouterOptions {
@@ -62,17 +67,18 @@ export interface TelegramCommandRouterOptions {
 }
 
 export interface TelegramCommandHandlersPort {
-    handleHelp(): Promise<string> | string;
-    handleStatus(): Promise<string>;
-    handleAccount(): Promise<string>;
-    handlePositions(): Promise<string>;
-    handleTrade(symbol?: string): Promise<string>;
-    handleTrades(): Promise<string>;
-    handleConfig(): Promise<string>;
-    handleSignal(symbol?: string): Promise<string>;
-    handleSignals(): Promise<string>;
-    handleRisk(): Promise<string>;
-    handleRiskMode(mode?: string): Promise<string> | string;
-    handleBrackets(): Promise<string>;
-    handleReportToday(): Promise<string>;
+    handleHelp(): Promise<TelegramCommandResponse> | TelegramCommandResponse;
+    handleStatus(): Promise<TelegramCommandResponse>;
+    handleAccount(): Promise<TelegramCommandResponse>;
+    handlePositions(): Promise<TelegramCommandResponse>;
+    handleTrade(symbol?: string): Promise<TelegramCommandResponse>;
+    handleTrades(): Promise<TelegramCommandResponse>;
+    handleConfig(): Promise<TelegramCommandResponse>;
+    handleSignal(symbol?: string): Promise<TelegramCommandResponse>;
+    handleSignals(): Promise<TelegramCommandResponse>;
+    handleRisk(): Promise<TelegramCommandResponse>;
+    handleRiskMode(mode?: string): Promise<TelegramCommandResponse> | TelegramCommandResponse;
+    handleBrackets(): Promise<TelegramCommandResponse>;
+    handleReportToday(): Promise<TelegramCommandResponse>;
+    handleBlocks(args?: string[]): Promise<TelegramCommandResponse>;
 }

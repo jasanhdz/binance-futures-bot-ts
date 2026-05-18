@@ -16,7 +16,8 @@ function handlers(): TelegramCommandHandlersPort {
         handleRisk: vi.fn(async () => 'RISK'),
         handleRiskMode: vi.fn(async () => 'RISKMODE'),
         handleBrackets: vi.fn(async () => 'BRACKETS'),
-        handleReportToday: vi.fn(async () => 'REPORT')
+        handleReportToday: vi.fn(async () => 'REPORT'),
+        handleBlocks: vi.fn(async () => 'BLOCKS')
     };
 }
 
@@ -89,5 +90,30 @@ describe('TelegramCommandRouter', () => {
         await router.handleMessage({ chatId: '123', text: '/riskmode RISK_OFF' });
 
         expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF');
+    });
+
+    it('routes /blocks to handler for authorized chat', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await expect(router.handleMessage({ chatId: '123', text: '/blocks' })).resolves.toBe('BLOCKS');
+        expect(h.handleBlocks).toHaveBeenCalledWith([]);
+    });
+
+    it('passes /blocks arguments to handler', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await router.handleMessage({ chatId: '123', text: '/blocks detail LINKUSDT' });
+
+        expect(h.handleBlocks).toHaveBeenCalledWith(['detail', 'LINKUSDT']);
+    });
+
+    it('keeps unauthorized /blocks blocked by router', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await expect(router.handleMessage({ chatId: '999', text: '/blocks' })).resolves.toBe('Unauthorized.');
+        expect(h.handleBlocks).not.toHaveBeenCalled();
     });
 });

@@ -52,6 +52,15 @@ No implementan:
 /risk
 /brackets
 /report today
+/blocks
+/blocks 4h
+/blocks LINKUSDT
+/blocks LINKUSDT 6h
+/blocks reasons 24h
+/blocks symbols
+/blocks detail ADAUSDT
+/blocks top
+/blocks near-miss 2h
 ```
 
 ## Salidas
@@ -182,6 +191,91 @@ Si no hay datos:
 No hay trades registrados hoy.
 ```
 
+`/blocks`
+
+Reporte read-only bajo demanda de bloqueos de entrada Aegis. Lee JSONL locales en
+`logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl`; no consulta Binance, no modifica
+estado y no ejecuta operaciones.
+
+Ventanas soportadas:
+
+- `15m`
+- `30m`
+- `1h`
+- `2h`
+- `4h`
+- `6h`
+- `12h`
+- `24h`
+
+Default: `1h`. Máximo: `24h`.
+
+Formas:
+
+- `/blocks`: resumen de la última hora para todos los símbolos.
+- `/blocks 4h`: resumen de las últimas 4 horas.
+- `/blocks LINKUSDT`: resumen de última hora para `LINKUSDT`.
+- `/blocks LINKUSDT 6h`: resumen de `LINKUSDT` en 6 horas.
+- `/blocks reasons 24h`: ranking por razón de bloqueo.
+- `/blocks symbols`: ranking por símbolo.
+- `/blocks detail ADAUSDT`: últimos bloqueos relevantes del símbolo.
+- `/blocks top`: top combinado de símbolos/razones.
+- `/blocks near-miss 2h`: bloqueadas que estuvieron más cerca de pasar.
+
+Eventos y razones incluidas como bloqueos:
+
+- `DECISION_ENFORCEMENT_DENIED`
+- `ENTRY_QUALITY_GATE_SHADOW_BLOCK`
+- `ENTRY_QUALITY_GATE_DENIED`
+- `EVENT_RISK_SHADOW_BLOCK`
+- `EVENT_RISK_DENIED`
+- `event_risk_caution_denied_weak_setup`
+- `event_risk_caution_would_block_denied`
+- `event_risk_risk_off_denied_non_a_plus`
+- `entry_quality_shadow_block_hard_denied`
+- `decision_brain_wait_confirmation`
+- `decision_brain_do_not_enter`
+- `decision_brain_manual_only`
+- `short_score_below_premium_threshold`
+- `short_votes_below_required`
+- `turbo_score_below_threshold`
+- `raw_would_execute_false`
+
+También cuenta eventos permitidos en la misma ventana:
+
+- `GATE_ALLOWED`
+- `ORDER_SUBMITTED`
+- `POSITION_CONFIRMED`
+- `BRACKETS_CONFIRMED`
+- `TRADE_CLOSED`
+
+Ejemplo compacto:
+
+```text
+🛡️ Bloqueos Aegis — última 1h
+
+Total: 318
+
+Por símbolo:
+• LINKUSDT: 72
+• ADAUSDT: 61
+
+Por razón:
+• entry_quality_shadow_block_hard_denied: 141
+• decision_brain_wait_confirmation: 83
+
+Permitidas en ventana:
+• GATE_ALLOWED: 2
+• ORDER_SUBMITTED: 2
+```
+
+`/blocks detail SYMBOL` muestra los últimos eventos relevantes con score, grade,
+DecisionBrain, EntryQuality, TailRisk y motivo. `/blocks near-miss` ordena candidatos
+por `A_PLUS`, score alto, EntryQuality `ALLOW`/`ALLOW_SHADOW` y TailRisk bajo.
+
+Los reportes Telegram son resúmenes operativos. Los logs completos siguen estando en
+JSONL para auditoría y análisis offline.
+
 ## Implementación
 
 Módulos:
@@ -189,6 +283,7 @@ Módulos:
 - `src/app/telegram/TelegramCommandRouter.ts`
 - `src/app/telegram/TelegramCommandHandlers.ts`
 - `src/app/telegram/TelegramCommandTypes.ts`
+- `src/app/telegram/AegisBlocksReportService.ts`
 - `src/infra/telegram/TelegramBotCommandListener.ts`
 
 El listener se integra en `src/main.ts` solo cuando está activado por env y hay chats autorizados.

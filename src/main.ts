@@ -21,6 +21,7 @@ import { Notifier } from './app/ports/Notifier';
 import { CONFIG } from './infra/config/environment';
 import { TelegramCommandHandlers } from './app/telegram/TelegramCommandHandlers';
 import { TelegramCommandRouter } from './app/telegram/TelegramCommandRouter';
+import { AegisBlocksReportService } from './app/telegram/AegisBlocksReportService';
 import { TelegramBotCommandListener } from './infra/telegram/TelegramBotCommandListener';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -115,7 +116,8 @@ async function main() {
                     tradingMode: tradingConfig.tradingMode || CONFIG.TRADING_MODE,
                     liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
                     getRuntimeSnapshot: () => tradingService.getAegisRuntimeSnapshot(),
-                    getActiveSymbols: () => tradingConfig.symbols
+                    getActiveSymbols: () => tradingConfig.symbols,
+                    blocksReportService: new AegisBlocksReportService()
                 }),
                 {
                     allowedChatIds: CONFIG.TELEGRAM_ALLOWED_CHAT_IDS

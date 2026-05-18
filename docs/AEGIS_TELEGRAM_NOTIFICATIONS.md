@@ -90,6 +90,45 @@ If `enabled: false`, the dedupe layer is bypassed and every block notification i
 the previous Telegram notification for that key. Logs and JSONL history still contain
 the individual blocked events.
 
+## On-Demand Block Reports
+
+Telegram also supports manual read-only reports:
+
+```text
+/blocks
+/blocks SYMBOL
+/blocks reasons
+/blocks symbols
+/blocks detail SYMBOL
+/blocks near-miss
+```
+
+Examples:
+
+```text
+/blocks 4h
+/blocks LINKUSDT 6h
+/blocks reasons 24h
+/blocks detail ADAUSDT
+/blocks near-miss 2h
+```
+
+These commands do not send automatic alerts and do not change the dedupe rules above.
+They read local `logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl` files and summarize
+the selected time window. The Telegram report is intentionally compact; the JSONL logs
+remain the complete source for audit, replay, and offline analysis.
+
+`/blocks` also counts allowed/execution events in the same window:
+
+- `GATE_ALLOWED`
+- `ORDER_SUBMITTED`
+- `POSITION_CONFIRMED`
+- `BRACKETS_CONFIRMED`
+- `TRADE_CLOSED`
+
+This helps distinguish "everything is blocked" from "entries were filtered but some
+operations still passed".
+
 ## Manual Validation
 
 Do not restart PM2 automatically from Codex. Manual restart commands:

@@ -14,6 +14,7 @@ import { formatAegisReason } from '../messages/AegisReasonFormatter';
 import { analyzeAegisTurboHistory } from '../../tools/analyzeAegisTurboHistory';
 import { CONFIG } from '../../infra/config/environment';
 import { TelegramCommandHandlerDeps, TelegramCommandHandlersPort } from './TelegramCommandTypes';
+import { AegisBlocksReportService } from './AegisBlocksReportService';
 
 type CloseOrder = {
     type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
@@ -210,7 +211,8 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `🛡️ /risk - Riesgo y límites\n` +
             `🌐 /riskmode - Ver/cambiar Event Risk\n` +
             `🧷 /brackets - Estado de brackets\n` +
-            `📈 /report today - Resumen de hoy\n\n` +
+            `📈 /report today - Resumen de hoy\n` +
+            `🛡️ /blocks - Bloqueos Aegis bajo demanda\n\n` +
             `🔒 **Solo lectura**. No abre, cierra ni modifica operaciones.`;
     }
 
@@ -525,6 +527,16 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         } catch (error) {
             this.deps.logger?.warn('telegram_report_today_failed', { error: String(error) });
             return 'No hay trades registrados hoy.';
+        }
+    }
+
+    async handleBlocks(args: string[] = []): Promise<string | string[]> {
+        try {
+            const service = this.deps.blocksReportService ?? new AegisBlocksReportService();
+            return await service.buildTelegramMessages(args);
+        } catch (error) {
+            this.deps.logger?.warn('telegram_blocks_report_failed', { error: String(error) });
+            return 'No se pudo generar el reporte de bloqueos.';
         }
     }
 
