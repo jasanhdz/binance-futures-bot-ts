@@ -90,6 +90,22 @@ function predictionWithDecisionBrain(symbol = 'ETHUSDT') {
     };
 }
 
+function predictionWithCleanEntryGuard(symbol = 'ETHUSDT') {
+    const base = prediction(symbol);
+    return {
+        ...base,
+        aegis: {
+            ...base.aegis,
+            clean_entry_guard: {
+                decision: 'SHADOW_WAIT_CONFIRMATION',
+                clean: false,
+                dirty: true,
+                reasons: ['clean_entry_insufficient_data', 'clean_entry_event_risk_would_block']
+            }
+        }
+    };
+}
+
 function makeHandlers(overrides: Record<string, any> = {}) {
     const symbolModes = overrides.symbolModes ?? Object.fromEntries((overrides.symbols ?? ['ETHUSDT']).map((symbol: string) => [symbol, 'LIVE']));
     const activePositions = overrides.activePositions ?? {};
@@ -311,6 +327,16 @@ describe('TelegramCommandHandlers', () => {
         expect(text).toContain('Enter 18.0%');
         expect(text).toContain('Wait 22.0%');
         expect(text).toContain('Manual 8.0%');
+    });
+
+    it('/signal shows clean entry guard metadata when present', async () => {
+        const { handlers, mlService } = makeHandlers();
+        mlService.getAegisPrediction.mockResolvedValueOnce(predictionWithCleanEntryGuard('ETHUSDT'));
+
+        const text = await handlers.handleSignal('ETHUSDT');
+
+        expect(text).toContain('CleanEntry: **WAIT_SHADOW**');
+        expect(text).toContain('clean_entry_insufficient_data + clean_entry_event_risk_would_block');
     });
 
     it('/signals supports multiple symbols', async () => {

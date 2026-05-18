@@ -80,7 +80,9 @@ const BLOCK_EVENTS = new Set([
     'ENTRY_QUALITY_GATE_SHADOW_BLOCK',
     'ENTRY_QUALITY_GATE_DENIED',
     'EVENT_RISK_SHADOW_BLOCK',
-    'EVENT_RISK_DENIED'
+    'EVENT_RISK_DENIED',
+    'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
+    'CLEAN_ENTRY_GUARD_SHADOW_WAIT'
 ]);
 
 const BLOCK_REASONS = new Set([
@@ -94,7 +96,16 @@ const BLOCK_REASONS = new Set([
     'short_score_below_premium_threshold',
     'short_votes_below_required',
     'turbo_score_below_threshold',
-    'raw_would_execute_false'
+    'raw_would_execute_false',
+    'clean_entry_wait_confirmation',
+    'clean_entry_shadow_wait',
+    'clean_entry_insufficient_data',
+    'clean_entry_event_risk_would_block',
+    'clean_entry_tail_risk_high',
+    'clean_entry_quality_not_allow',
+    'clean_entry_decision_brain_not_enter_now',
+    'clean_entry_missing_critical_data',
+    'clean_entry_tail_risk_above_clean_max'
 ]);
 
 const ALLOWED_EVENTS = new Set([
@@ -298,25 +309,26 @@ function isBlockRow(row: JsonRecord): boolean {
 
 function extractBlockSample(row: JsonRecord): AegisBlockSample {
     const metadata = row.metadata ?? {};
+    const cleanEntryGuard = metadata.cleanEntryGuard ?? {};
     const checks = metadata.checks ?? {};
     const event = stableText(row.event);
-    const reason = stableText(row.reason ?? metadata.reason ?? metadata.eventRiskReason ?? event);
+    const reason = stableText(row.reason ?? metadata.reason ?? cleanEntryGuard.reasons?.[0] ?? metadata.eventRiskReason ?? event);
     return {
         timestamp: timestampText(row),
         symbol: stableText(row.symbol ?? metadata.symbol).toUpperCase(),
-        side: normalizeSide(metadata.side ?? row.side ?? row.raw_action ?? row.final_action),
+        side: normalizeSide(metadata.side ?? cleanEntryGuard.side ?? row.side ?? row.raw_action ?? row.final_action),
         reason,
         event,
-        setupGrade: nullableText(metadata.setupGrade ?? metadata.setup_grade ?? row.setupGrade ?? row.setup_grade),
-        turboScore: finiteNumber(metadata.turboScore ?? metadata.turbo_score ?? row.turbo_score ?? checks.turboScore),
-        votes: normalizeVotes(metadata.votes ?? row.votes),
-        decisionBrain: nullableText(metadata.decisionBrainDecision ?? metadata.decision_brain_decision ?? metadata.decisionBrain ?? metadata.decision_brain?.decision),
-        entryQuality: nullableText(metadata.entryQualityRecommendation ?? metadata.entry_quality_recommendation ?? metadata.entryQualityGateAction ?? metadata.action ?? metadata.entryQuality),
-        entryQualityScore: finiteNumber(metadata.entryQualityScore ?? metadata.entry_quality_score ?? checks.entryQualityScore),
-        tailRiskScore: finiteNumber(metadata.tailRiskScore ?? metadata.tail_risk_score ?? checks.tailRiskScore),
-        eventRiskMode: nullableText(metadata.eventRiskMode ?? metadata.event_risk_mode ?? (event.startsWith('EVENT_RISK') ? metadata.mode : undefined)),
-        eventRiskReason: nullableText(metadata.eventRiskReason ?? metadata.event_risk_reason ?? (event.startsWith('EVENT_RISK') ? metadata.reason : undefined)),
-        eventRiskWouldBlock: nullableBoolean(metadata.eventRiskWouldBlock ?? metadata.event_risk_would_block ?? metadata.wouldBlock ?? checks.eventRiskWouldBlock),
+        setupGrade: nullableText(metadata.setupGrade ?? metadata.setup_grade ?? cleanEntryGuard.setupGrade ?? row.setupGrade ?? row.setup_grade),
+        turboScore: finiteNumber(metadata.turboScore ?? metadata.turbo_score ?? cleanEntryGuard.turboScore ?? row.turbo_score ?? checks.turboScore),
+        votes: normalizeVotes(metadata.votes ?? cleanEntryGuard.votes ?? row.votes),
+        decisionBrain: nullableText(metadata.decisionBrainDecision ?? metadata.decision_brain_decision ?? cleanEntryGuard.decisionBrain ?? metadata.decisionBrain ?? metadata.decision_brain?.decision),
+        entryQuality: nullableText(metadata.entryQualityRecommendation ?? metadata.entry_quality_recommendation ?? cleanEntryGuard.entryQualityRecommendation ?? metadata.entryQualityGateAction ?? metadata.action ?? metadata.entryQuality),
+        entryQualityScore: finiteNumber(metadata.entryQualityScore ?? metadata.entry_quality_score ?? cleanEntryGuard.entryQualityScore ?? checks.entryQualityScore),
+        tailRiskScore: finiteNumber(metadata.tailRiskScore ?? metadata.tail_risk_score ?? cleanEntryGuard.tailRiskScore ?? checks.tailRiskScore),
+        eventRiskMode: nullableText(metadata.eventRiskMode ?? metadata.event_risk_mode ?? cleanEntryGuard.eventRiskMode ?? (event.startsWith('EVENT_RISK') ? metadata.mode : undefined)),
+        eventRiskReason: nullableText(metadata.eventRiskReason ?? metadata.event_risk_reason ?? cleanEntryGuard.eventRiskReason ?? (event.startsWith('EVENT_RISK') ? metadata.reason : undefined)),
+        eventRiskWouldBlock: nullableBoolean(metadata.eventRiskWouldBlock ?? metadata.event_risk_would_block ?? cleanEntryGuard.eventRiskWouldBlock ?? metadata.wouldBlock ?? checks.eventRiskWouldBlock),
         aPlus: nullableBoolean(metadata.aPlus ?? metadata.is_a_plus ?? checks.aPlus),
         rawWouldExecute: nullableBoolean(metadata.rawWouldExecute ?? metadata.raw_would_execute ?? row.raw_would_execute),
         source: nullableText(metadata.source ?? event),

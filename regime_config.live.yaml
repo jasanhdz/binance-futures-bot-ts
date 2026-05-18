@@ -104,6 +104,32 @@ aegis:
     block_caution_would_block_unless_a_plus: true
     block_all_entry_quality_shadow_block: true
     block_all_tail_risk_high: false
+  clean_entry_guard:
+    enabled: true
+    mode: ENFORCE
+    apply_to:
+      long: true
+      short: true
+    dirty_conditions:
+      block_when_entry_quality_insufficient: true
+      block_when_event_risk_would_block: true
+      block_when_tail_risk_gte: 0.45
+      block_when_entry_quality_not_allow: true
+    require_clean_for_premium_symbols: true
+    clean_conditions:
+      require_decision_brain_enter_now: true
+      require_entry_quality_allow: true
+      require_no_insufficient_data: true
+      require_event_risk_would_block_false: true
+      max_tail_risk_score: 0.40
+    exception:
+      allow_extreme_momentum_in_shadow_only: true
+      min_turbo_score: 0.97
+      require_votes_3_of_3: true
+      max_tail_risk_score: 0.35
+    telemetry:
+      log_all_evaluations: true
+      include_in_entry_metadata: true
   telegram_notifications:
     automatic_block_alerts_enabled: false
     block_dedupe:

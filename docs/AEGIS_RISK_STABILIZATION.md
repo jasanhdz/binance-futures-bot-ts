@@ -6,6 +6,8 @@ Aegis Turbo sigue operando multi-symbol en vivo. La política actual desactiva l
 
 Profit Protection v1 está activo como capa de salida: no bloquea entradas ni cambia sizing, pero permite mover el SL de posiciones abiertas cuando Break-Even o Exit Eye detectan profit protegible. Ver `docs/AEGIS_PROFIT_PROTECTION.md`.
 
+Clean Entry Confirmation Guard v1 está activo como capa posterior a Decision Enforcement. En `ENFORCE`, una señal aprobada pero sucia se convierte en `WAIT_CONFIRMATION` antes de `setLeverage`/`marketOpen`; no cambia dirección, sizing de entradas limpias, brackets ni salidas. Ver `docs/AEGIS_CLEAN_ENTRY_GUARD.md`.
+
 Decisión activa:
 
 - Portfolio risk: OFF.
@@ -14,6 +16,7 @@ Decisión activa:
 - SHORTS no están apagados.
 - SHORTS no tienen size reducido.
 - SHORTS deben cumplir señal premium.
+- Clean Entry Guard: ENFORCE, exige entrada limpia para LONG/SHORT.
 
 ## SHORT premium mode
 
@@ -60,12 +63,19 @@ Eventos en `logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl`:
 
 - `SHORT_GATE_DENIED`: SHORT bloqueado por score o votos.
 - `SHORT_GATE_ADJUSTED`: SHORT permitido con metadata de leverage/position fraction original y ajustado.
+- `CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION`: señal direccional aprobada, pero entrada no limpia; se espera confirmación.
+- `CLEAN_ENTRY_GUARD_ALLOW`: entrada limpia permitida.
 - `PORTFOLIO_RISK_DENIED`: no esperado mientras `portfolio_risk.enabled=false`.
 
 Razones principales:
 
 - `short_score_below_premium_threshold`
 - `short_votes_below_required`
+- `clean_entry_wait_confirmation`
+- `clean_entry_insufficient_data`
+- `clean_entry_event_risk_would_block`
+- `clean_entry_tail_risk_high`
+- `clean_entry_quality_not_allow`
 
 ## Endurecer o relajar
 
@@ -92,3 +102,4 @@ La configuración live inicial:
 - portfolio risk OFF
 - SHORT premium activo: score mínimo `0.80`, votos `3/3`, size `100%`, leverage máximo `10x`
 - SHORT blocked symbols: ninguno
+- Clean Entry Guard activo en `ENFORCE`

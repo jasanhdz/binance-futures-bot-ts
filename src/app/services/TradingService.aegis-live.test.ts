@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../../infra/config/environment';
 import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import { DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG } from '../../domain/services/AegisCleanEntryGuard';
 import { TradingService } from './TradingService';
 
 const originalConfig = { ...CONFIG };
@@ -237,6 +238,33 @@ function decisionEnforcementConfig(overrides: Record<string, any> = {}) {
     };
 }
 
+function cleanEntryGuardConfig(overrides: Record<string, any> = {}) {
+    return {
+        ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG,
+        ...overrides,
+        applyTo: {
+            ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG.applyTo,
+            ...(overrides.applyTo ?? {})
+        },
+        dirtyConditions: {
+            ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG.dirtyConditions,
+            ...(overrides.dirtyConditions ?? {})
+        },
+        cleanConditions: {
+            ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG.cleanConditions,
+            ...(overrides.cleanConditions ?? {})
+        },
+        exception: {
+            ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG.exception,
+            ...(overrides.exception ?? {})
+        },
+        telemetry: {
+            ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG.telemetry,
+            ...(overrides.telemetry ?? {})
+        }
+    };
+}
+
 function cachedCandles(closes: number[]) {
     return closes.map((close, index) => ({
         openTime: index,
@@ -275,6 +303,7 @@ function makeHarness(options: {
         shortGate?: any;
         eventRisk?: any;
         decisionEnforcement?: any;
+        cleanEntryGuard?: any;
         telegramNotifications?: any;
         positionFractionOverride?: any;
         entryQuality?: any;
@@ -444,6 +473,7 @@ function makeHarness(options: {
             immediate_trigger_buffer_pct: 0.001
         })),
         getAegisPositionFractionOverride: vi.fn(() => options.positionFractionOverride),
+        getAegisCleanEntryGuardConfig: vi.fn(() => options.cleanEntryGuard ?? cleanEntryGuardConfig({ enabled: false })),
         getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
         getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
         getGuardianConfig: vi.fn(() => options.guardian ?? {
@@ -652,6 +682,115 @@ describe('TradingService Aegis live execution', () => {
             side: 'LONG',
             mlPositionFraction: 0.18,
             overriddenPositionFraction: 0.10
+        }));
+    });
+
+    it('clean entry guard SHADOW records wait confirmation but does not block marketOpen', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            signal: validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW'),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'SHADOW' }),
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW'
+            })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'CLEAN_ENTRY_GUARD_SHADOW_WAIT',
+            reason: 'clean_entry_shadow_wait',
+            metadata: expect.objectContaining({
+                cleanEntryGuard: expect.objectContaining({
+                    decision: 'SHADOW_WAIT_CONFIRMATION',
+                    allowed: true,
+                    wouldBlock: true,
+                    reasons: expect.arrayContaining(['clean_entry_insufficient_data'])
+                })
+            })
+        }));
+    });
+
+    it('clean entry guard ENFORCE blocks before setLeverage and marketOpen on insufficient_data', async () => {
+        const { exchange, historyLogger, service, state } = makeHarness({
+            signal: validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW'),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW'
+            })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(state.set).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
+            reason: 'clean_entry_wait_confirmation',
+            metadata: expect.objectContaining({
+                cleanEntryGuard: expect.objectContaining({
+                    decision: 'WAIT_CONFIRMATION',
+                    allowed: false,
+                    wouldBlock: true,
+                    reasons: expect.arrayContaining(['clean_entry_insufficient_data'])
+                })
+            })
+        }));
+    });
+
+    it('clean entry guard ENFORCE lets clean entries keep leverage sizing and brackets', async () => {
+        const { exchange, historyLogger, service, state } = makeHarness({
+            signal: validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW'),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW',
+                config: {
+                    requireMomentumConfirm: false,
+                    antiFallingKnifeEnabled: false,
+                    overextensionEnabled: false,
+                    volatilityEnabled: false
+                }
+            })
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            lastActualLeverage: 20,
+            lastPositionFraction: 0.18,
+            lastBracketStatus: 'OK'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'GATE_ALLOWED',
+            metadata: expect.objectContaining({
+                cleanEntryGuard: expect.objectContaining({
+                    decision: 'ALLOW_CLEAN',
+                    clean: true,
+                    dirty: false
+                }),
+                positionFraction: 0.18,
+                leverage: 20
+            })
+        }));
+        expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(expect.objectContaining({
+            leverage: 20,
+            position_fraction: 0.18,
+            metadata: expect.objectContaining({
+                cleanEntryGuard: expect.objectContaining({
+                    decision: 'ALLOW_CLEAN'
+                })
+            })
         }));
     });
 

@@ -17,6 +17,7 @@ import {
     AegisEntryQualityGateRuntimeConfig,
     AegisEventRiskRuntimeConfig,
     AegisDecisionEnforcementRuntimeConfig,
+    AegisCleanEntryGuardRuntimeConfig,
     AegisPositionFractionOverride,
     AegisPortfolioRiskYamlConfig,
     AegisProfitProtectionRuntimeConfig,
@@ -60,6 +61,11 @@ import {
     AegisTelegramBlockNotifier,
     DEFAULT_AEGIS_BLOCK_NOTIFICATION_CONFIG
 } from './AegisTelegramBlockNotifier';
+import {
+    DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG,
+    AegisCleanEntryGuardOutput,
+    evaluateAegisCleanEntryGuard
+} from '../../domain/services/AegisCleanEntryGuard';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -287,6 +293,14 @@ export class TradingService {
         return typeof manager.getAegisPositionFractionOverride === 'function'
             ? manager.getAegisPositionFractionOverride(symbol, side)
             : undefined;
+    }
+
+    private getAegisCleanEntryGuardConfig(): AegisCleanEntryGuardRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisCleanEntryGuardConfig === 'function') {
+            return manager.getAegisCleanEntryGuardConfig();
+        }
+        return DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG;
     }
 
     private getEntryQualityGateConfig(symbol?: string): AegisEntryQualityGateRuntimeConfig {
@@ -1532,6 +1546,45 @@ export class TradingService {
         });
     }
 
+    private recommendationFromEntryQualityGateAction(action?: string): string | undefined {
+        const normalized = String(action || '').trim().toUpperCase();
+        if (normalized === 'ALLOW' || normalized === 'SHADOW_ALLOW') return 'ALLOW_SHADOW';
+        if (normalized === 'BLOCK' || normalized === 'SHADOW_BLOCK') return 'BLOCK_SHADOW';
+        return undefined;
+    }
+
+    private async logAegisCleanEntryGuardDecision(
+        symbol: string,
+        decision: AegisCleanEntryGuardOutput,
+        tradeId: string
+    ): Promise<void> {
+        const shouldLog = decision.metadata.enabled
+            && (
+                decision.metadata.dirty
+                || decision.metadata.mode === 'ENFORCE'
+                || decision.metadata.decision === 'ALLOW_CLEAN'
+            );
+        if (!shouldLog) return;
+
+        const event = decision.decision === 'ALLOW_CLEAN'
+            ? (decision.mode === 'SHADOW' ? 'CLEAN_ENTRY_GUARD_SHADOW_ALLOW' : 'CLEAN_ENTRY_GUARD_ALLOW')
+            : (decision.mode === 'SHADOW' ? 'CLEAN_ENTRY_GUARD_SHADOW_WAIT' : 'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION');
+        const reason = decision.decision === 'WAIT_CONFIRMATION'
+            ? 'clean_entry_wait_confirmation'
+            : decision.decision === 'SHADOW_WAIT_CONFIRMATION'
+                ? 'clean_entry_shadow_wait'
+                : 'clean_entry_allow';
+
+        await this.logAegisTradeEvent(symbol, event, {
+            tradeId,
+            reason,
+            metadata: {
+                ...decision.metadata,
+                cleanEntryGuard: decision.metadata
+            }
+        });
+    }
+
     private async openAegisTurboPosition(
         symbol: string,
         signal: AegisTradingSignal,
@@ -1709,6 +1762,47 @@ export class TradingService {
                 });
             }
 
+            const cleanEntryGuard = evaluateAegisCleanEntryGuard({
+                ...this.getAegisCleanEntryGuardConfig(),
+                symbol,
+                side,
+                turboScore: effectiveGate.turboScore,
+                votes: effectiveGate.votes,
+                setupGrade: decisionEnforcement.metadata.setupGrade,
+                decisionBrain: decisionEnforcement.metadata.decisionBrainDecision,
+                entryQualityRecommendation: decisionEnforcement.metadata.entryQualityRecommendation
+                    ?? this.recommendationFromEntryQualityGateAction(entryQualityDecision.action),
+                entryQualityGateReason: decisionEnforcement.metadata.entryQualityGateReason ?? entryQualityDecision.reason,
+                entryQualityScore: decisionEnforcement.metadata.entryQualityScore,
+                tailRiskScore: decisionEnforcement.metadata.tailRiskScore ?? eventRiskDecision.metadata.tailRiskScore,
+                eventRiskMode: decisionEnforcement.metadata.eventRiskMode,
+                eventRiskWouldBlock: decisionEnforcement.metadata.eventRiskWouldBlock,
+                eventRiskReason: decisionEnforcement.metadata.eventRiskReason,
+                isPremiumSymbol: positionFractionOverride !== undefined
+            });
+            await this.logAegisCleanEntryGuardDecision(symbol, cleanEntryGuard, tradeId);
+            if (!cleanEntryGuard.allowed) {
+                const deniedGate = { ...effectiveGate, allowed: false, reason: 'clean_entry_wait_confirmation' };
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: deniedGate,
+                    executed: false,
+                    metadata: {
+                        cleanEntryGuard: cleanEntryGuard.metadata,
+                        clean_entry_guard_decision: cleanEntryGuard.decision,
+                        clean_entry_guard_reasons: cleanEntryGuard.reasons
+                    }
+                });
+                logger.info('aegis_clean_entry_guard_wait_confirmation', {
+                    symbol,
+                    side,
+                    reasons: cleanEntryGuard.reasons,
+                    metadata: cleanEntryGuard.metadata
+                });
+                return;
+            }
+
             const wallet = await exchange.getUSDTBalance();
             const entryAccount = await this.readEntryAccountSnapshot(wallet);
             const feeBufferPct = configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05;
@@ -1781,6 +1875,7 @@ export class TradingService {
                 executed: true,
                 metadata: {
                     decision_enforcement_reason: decisionEnforcement.reason,
+                    cleanEntryGuard: cleanEntryGuard.metadata,
                     setup_grade: decisionEnforcement.metadata.setupGrade,
                     is_a_plus: decisionEnforcement.metadata.aPlus,
                     decision_brain_decision: decisionEnforcement.metadata.decisionBrainDecision,
@@ -1802,6 +1897,7 @@ export class TradingService {
                     trailingActivationRoe: effectiveGate.trailingActivationRoe,
                     trailingCallbackRoe: effectiveGate.trailingCallbackRoe,
                     decisionEnforcementReason: decisionEnforcement.reason,
+                    cleanEntryGuard: cleanEntryGuard.metadata,
                     setupGrade: decisionEnforcement.metadata.setupGrade,
                     aPlus: decisionEnforcement.metadata.aPlus,
                     decisionBrainDecision: decisionEnforcement.metadata.decisionBrainDecision,
@@ -1824,6 +1920,7 @@ export class TradingService {
                     quantity,
                     leverage,
                     positionFraction,
+                    cleanEntryGuard: cleanEntryGuard.metadata,
                     marginEstimated: margin,
                     notionalEstimated: notional
                 }
@@ -2031,6 +2128,7 @@ export class TradingService {
                         ruleName: positionFractionOverride.ruleName,
                         overriddenPositionFraction: positionFractionOverride.positionFraction
                     } : undefined,
+                    cleanEntryGuard: cleanEntryGuard.metadata,
                     orderId: result?.orderId,
                     estimated: true
                 }

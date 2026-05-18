@@ -142,6 +142,10 @@ function decisionBrainFromSignal(signal: AegisTradingSignal): any {
     return signal.metadata?.aegis?.decision_brain ?? signal.aegis?.decision_brain;
 }
 
+function cleanEntryGuardFromSignal(signal: AegisTradingSignal): any {
+    return signal.metadata?.aegis?.clean_entry_guard ?? signal.aegis?.clean_entry_guard;
+}
+
 function decisionBrainTopProb(brain: any): number | undefined {
     switch (brain?.decision) {
         case 'ENTER_NOW':
@@ -173,6 +177,20 @@ function formatDecisionBrainLine(signal: AegisTradingSignal): string {
     const brain = decisionBrainFromSignal(signal);
     if (!brain) return '';
     return `🧠 DecisionBrain: **${brain.decision ?? 'N/D'}** ${formatPct(decisionBrainTopProb(brain))} | Enter ${formatPct(brain.enter_now_prob)} | Wait ${formatPct(brain.wait_confirmation_prob)} | Manual ${formatPct(brain.manual_only_prob)}\n`;
+}
+
+function formatCleanEntryGuardLine(signal: AegisTradingSignal): string {
+    const guard = cleanEntryGuardFromSignal(signal);
+    if (!guard) return '';
+    const status = guard.clean === true
+        ? 'CLEAN'
+        : guard.decision === 'SHADOW_WAIT_CONFIRMATION'
+            ? 'WAIT_SHADOW'
+            : guard.decision ?? 'N/D';
+    const reasons = Array.isArray(guard.reasons) && guard.reasons.length > 0
+        ? ` / ${guard.reasons.slice(0, 2).join(' + ')}`
+        : '';
+    return `🧼 CleanEntry: **${status}**${reasons}\n`;
 }
 
 function signalInputFromTurbo(symbol: string, turbo: any): AegisSymbolSignalMessageInput {
@@ -356,6 +374,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 formatEntryQualityModelLine(signal) +
                 formatEventRiskAutoLine(signal) +
                 formatDecisionBrainLine(signal) +
+                formatCleanEntryGuardLine(signal) +
                 `🕒 Feature timestamp: **${freshness?.feature_timestamp ?? freshness?.timestamp ?? 'N/D'}**\n` +
                 `🧾 Reason raw: **${formatAegisReason(gated?.reason ?? raw?.reason ?? turbo?.reason)}**`;
         } catch (error) {

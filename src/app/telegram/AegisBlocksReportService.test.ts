@@ -187,4 +187,82 @@ describe('AegisBlocksReportService', () => {
         expect(report.bySide).toMatchObject({ 'N/D': 1 });
         expect(report.samples[0].tailRiskScore).toBeNull();
     });
+
+    it('/blocks cuenta clean_entry_wait_confirmation', async () => {
+        await writeEvents([
+            event({
+                event: 'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
+                reason: 'clean_entry_wait_confirmation',
+                metadata: {
+                    cleanEntryGuard: {
+                        symbol: 'LINKUSDT',
+                        side: 'LONG',
+                        decision: 'WAIT_CONFIRMATION',
+                        reasons: ['clean_entry_insufficient_data'],
+                        decisionBrain: 'ENTER_NOW',
+                        entryQualityRecommendation: 'ALLOW_SHADOW',
+                        entryQualityGateReason: 'insufficient_data',
+                        tailRiskScore: 0.33,
+                        eventRiskWouldBlock: false,
+                        setupGrade: 'A'
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(1);
+        expect(report.byReason).toMatchObject({ clean_entry_wait_confirmation: 1 });
+        expect(report.samples[0]).toMatchObject({
+            symbol: 'LINKUSDT',
+            decisionBrain: 'ENTER_NOW',
+            entryQuality: 'ALLOW_SHADOW',
+            setupGrade: 'A'
+        });
+    });
+
+    it('/blocks detail SYMBOL muestra reason clean entry nuevo', async () => {
+        await writeEvents([
+            event({
+                symbol: 'ADAUSDT',
+                event: 'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
+                reason: 'clean_entry_wait_confirmation',
+                metadata: { symbol: 'ADAUSDT', side: 'LONG' }
+            })
+        ]);
+
+        const messages = await service().buildTelegramMessages(['detail', 'ADAUSDT']);
+
+        expect(messages.join('\n')).toContain('clean_entry_wait_confirmation');
+    });
+
+    it('/blocks near-miss puede incluir clean entry wait', async () => {
+        await writeEvents([
+            event({
+                symbol: 'LINKUSDT',
+                event: 'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
+                reason: 'clean_entry_wait_confirmation',
+                metadata: {
+                    cleanEntryGuard: {
+                        symbol: 'LINKUSDT',
+                        side: 'LONG',
+                        turboScore: 0.91,
+                        setupGrade: 'A',
+                        decisionBrain: 'ENTER_NOW',
+                        entryQualityRecommendation: 'ALLOW_SHADOW',
+                        tailRiskScore: 0.39,
+                        eventRiskWouldBlock: false
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'near-miss', windowMinutes: 60 });
+
+        expect(report.nearMisses[0]).toMatchObject({
+            symbol: 'LINKUSDT',
+            reason: 'clean_entry_wait_confirmation'
+        });
+    });
 });

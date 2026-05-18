@@ -142,6 +142,7 @@ Muestra:
 - feature timestamp
 - production allowed
 - execute/would execute reportado por Python
+- CleanEntry si la metadata está disponible en la señal
 
 `/signals`
 
@@ -229,6 +230,8 @@ Eventos y razones incluidas como bloqueos:
 - `ENTRY_QUALITY_GATE_DENIED`
 - `EVENT_RISK_SHADOW_BLOCK`
 - `EVENT_RISK_DENIED`
+- `CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION`
+- `CLEAN_ENTRY_GUARD_SHADOW_WAIT`
 - `event_risk_caution_denied_weak_setup`
 - `event_risk_caution_would_block_denied`
 - `event_risk_risk_off_denied_non_a_plus`
@@ -240,6 +243,14 @@ Eventos y razones incluidas como bloqueos:
 - `short_votes_below_required`
 - `turbo_score_below_threshold`
 - `raw_would_execute_false`
+- `clean_entry_wait_confirmation`
+- `clean_entry_shadow_wait`
+- `clean_entry_insufficient_data`
+- `clean_entry_event_risk_would_block`
+- `clean_entry_tail_risk_high`
+- `clean_entry_quality_not_allow`
+- `clean_entry_decision_brain_not_enter_now`
+- `clean_entry_missing_critical_data`
 
 También cuenta eventos permitidos en la misma ventana:
 

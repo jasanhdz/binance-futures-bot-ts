@@ -95,6 +95,74 @@ export interface AegisPositionFractionOverride {
     ruleName?: string;
 }
 
+export type AegisCleanEntryGuardMode = 'SHADOW' | 'ENFORCE';
+
+export interface AegisCleanEntryGuardYamlConfig {
+    enabled?: boolean;
+    mode?: AegisCleanEntryGuardMode | string;
+    apply_to?: {
+        long?: boolean;
+        short?: boolean;
+    };
+    dirty_conditions?: {
+        block_when_entry_quality_insufficient?: boolean;
+        block_when_event_risk_would_block?: boolean;
+        block_when_tail_risk_gte?: number;
+        block_when_entry_quality_not_allow?: boolean;
+    };
+    require_clean_for_premium_symbols?: boolean;
+    clean_conditions?: {
+        require_decision_brain_enter_now?: boolean;
+        require_entry_quality_allow?: boolean;
+        require_no_insufficient_data?: boolean;
+        require_event_risk_would_block_false?: boolean;
+        max_tail_risk_score?: number;
+    };
+    exception?: {
+        allow_extreme_momentum_in_shadow_only?: boolean;
+        min_turbo_score?: number;
+        require_votes_3_of_3?: boolean;
+        max_tail_risk_score?: number;
+    };
+    telemetry?: {
+        log_all_evaluations?: boolean;
+        include_in_entry_metadata?: boolean;
+    };
+}
+
+export interface AegisCleanEntryGuardRuntimeConfig {
+    enabled: boolean;
+    mode: AegisCleanEntryGuardMode;
+    applyTo: {
+        long: boolean;
+        short: boolean;
+    };
+    dirtyConditions: {
+        blockWhenEntryQualityInsufficient: boolean;
+        blockWhenEventRiskWouldBlock: boolean;
+        blockWhenTailRiskGte: number;
+        blockWhenEntryQualityNotAllow: boolean;
+    };
+    requireCleanForPremiumSymbols: boolean;
+    cleanConditions: {
+        requireDecisionBrainEnterNow: boolean;
+        requireEntryQualityAllow: boolean;
+        requireNoInsufficientData: boolean;
+        requireEventRiskWouldBlockFalse: boolean;
+        maxTailRiskScore: number;
+    };
+    exception: {
+        allowExtremeMomentumInShadowOnly: boolean;
+        minTurboScore: number;
+        requireVotes3Of3: boolean;
+        maxTailRiskScore: number;
+    };
+    telemetry: {
+        logAllEvaluations: boolean;
+        includeInEntryMetadata: boolean;
+    };
+}
+
 export interface AegisPortfolioRiskYamlConfig {
     enabled?: boolean;
     max_open_positions?: number;
@@ -343,6 +411,7 @@ export interface NinjaYamlConfig {
         short_gate?: AegisShortGateYamlConfig;
         event_risk?: AegisEventRiskYamlConfig;
         decision_enforcement?: AegisDecisionEnforcementYamlConfig;
+        clean_entry_guard?: AegisCleanEntryGuardYamlConfig;
         telegram_notifications?: AegisTelegramNotificationsYamlConfig;
         profit_protection?: AegisProfitProtectionYamlConfig;
         entry_quality_gate?: AegisEntryQualityGateYamlConfig;
@@ -722,6 +791,42 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisCleanEntryGuardConfig(): AegisCleanEntryGuardRuntimeConfig {
+        const raw = this.config.aegis?.clean_entry_guard || {};
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeCleanEntryGuardMode(raw.mode),
+            applyTo: {
+                long: raw.apply_to?.long !== false,
+                short: raw.apply_to?.short !== false
+            },
+            dirtyConditions: {
+                blockWhenEntryQualityInsufficient: raw.dirty_conditions?.block_when_entry_quality_insufficient !== false,
+                blockWhenEventRiskWouldBlock: raw.dirty_conditions?.block_when_event_risk_would_block !== false,
+                blockWhenTailRiskGte: Math.max(0, this.finiteNumber(raw.dirty_conditions?.block_when_tail_risk_gte, 0.45)),
+                blockWhenEntryQualityNotAllow: raw.dirty_conditions?.block_when_entry_quality_not_allow !== false
+            },
+            requireCleanForPremiumSymbols: raw.require_clean_for_premium_symbols !== false,
+            cleanConditions: {
+                requireDecisionBrainEnterNow: raw.clean_conditions?.require_decision_brain_enter_now !== false,
+                requireEntryQualityAllow: raw.clean_conditions?.require_entry_quality_allow !== false,
+                requireNoInsufficientData: raw.clean_conditions?.require_no_insufficient_data !== false,
+                requireEventRiskWouldBlockFalse: raw.clean_conditions?.require_event_risk_would_block_false !== false,
+                maxTailRiskScore: Math.max(0, this.finiteNumber(raw.clean_conditions?.max_tail_risk_score, 0.40))
+            },
+            exception: {
+                allowExtremeMomentumInShadowOnly: raw.exception?.allow_extreme_momentum_in_shadow_only !== false,
+                minTurboScore: Math.max(0, this.finiteNumber(raw.exception?.min_turbo_score, 0.97)),
+                requireVotes3Of3: raw.exception?.require_votes_3_of_3 !== false,
+                maxTailRiskScore: Math.max(0, this.finiteNumber(raw.exception?.max_tail_risk_score, 0.35))
+            },
+            telemetry: {
+                logAllEvaluations: raw.telemetry?.log_all_evaluations === true,
+                includeInEntryMetadata: raw.telemetry?.include_in_entry_metadata !== false
+            }
+        };
+    }
+
     getAegisTelegramNotificationsConfig(): AegisTelegramNotificationsRuntimeConfig {
         const notifications = this.config.aegis?.telegram_notifications || {};
         const raw = notifications.block_dedupe || {};
@@ -991,6 +1096,38 @@ export class NinjaConfigManager {
                     block_all_entry_quality_shadow_block: false,
                     block_all_tail_risk_high: false
                 },
+                clean_entry_guard: {
+                    enabled: false,
+                    mode: 'SHADOW',
+                    apply_to: {
+                        long: true,
+                        short: true
+                    },
+                    dirty_conditions: {
+                        block_when_entry_quality_insufficient: true,
+                        block_when_event_risk_would_block: true,
+                        block_when_tail_risk_gte: 0.45,
+                        block_when_entry_quality_not_allow: true
+                    },
+                    require_clean_for_premium_symbols: true,
+                    clean_conditions: {
+                        require_decision_brain_enter_now: true,
+                        require_entry_quality_allow: true,
+                        require_no_insufficient_data: true,
+                        require_event_risk_would_block_false: true,
+                        max_tail_risk_score: 0.40
+                    },
+                    exception: {
+                        allow_extreme_momentum_in_shadow_only: true,
+                        min_turbo_score: 0.97,
+                        require_votes_3_of_3: true,
+                        max_tail_risk_score: 0.35
+                    },
+                    telemetry: {
+                        log_all_evaluations: false,
+                        include_in_entry_metadata: true
+                    }
+                },
                 telegram_notifications: {
                     block_dedupe: {
                         enabled: true,
@@ -1061,6 +1198,14 @@ export class NinjaConfigManager {
             return normalized;
         }
         return 'OFF';
+    }
+
+    private normalizeCleanEntryGuardMode(mode?: AegisCleanEntryGuardMode | string): AegisCleanEntryGuardMode {
+        const normalized = (mode || 'SHADOW').trim().toUpperCase();
+        if (normalized === 'ENFORCE') {
+            return 'ENFORCE';
+        }
+        return 'SHADOW';
     }
 
     private normalizeEventRiskMode(mode?: EventRiskMode | string): EventRiskMode {

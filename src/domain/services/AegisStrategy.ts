@@ -166,6 +166,7 @@ export interface AegisBlock {
   entry_quality_model?: AegisEntryQualityModelBlock;
   event_risk_auto?: AegisEventRiskAutoBlock;
   decision_brain?: AegisDecisionBrainBlock;
+  clean_entry_guard?: Record<string, unknown>;
 }
 
 export interface AegisPredictionResponse {

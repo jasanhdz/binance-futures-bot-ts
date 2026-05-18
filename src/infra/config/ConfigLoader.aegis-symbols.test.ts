@@ -400,6 +400,91 @@ symbols:
         });
     });
 
+    it('uses safe clean entry guard defaults when config is absent', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisCleanEntryGuardConfig()).toMatchObject({
+            enabled: false,
+            mode: 'SHADOW',
+            dirtyConditions: {
+                blockWhenTailRiskGte: 0.45
+            },
+            cleanConditions: {
+                maxTailRiskScore: 0.40
+            }
+        });
+    });
+
+    it('parses clean entry guard config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  clean_entry_guard:
+    enabled: true
+    mode: ENFORCE
+    apply_to:
+      long: true
+      short: false
+    dirty_conditions:
+      block_when_entry_quality_insufficient: true
+      block_when_event_risk_would_block: true
+      block_when_tail_risk_gte: 0.46
+      block_when_entry_quality_not_allow: true
+    require_clean_for_premium_symbols: true
+    clean_conditions:
+      require_decision_brain_enter_now: true
+      require_entry_quality_allow: true
+      require_no_insufficient_data: true
+      require_event_risk_would_block_false: true
+      max_tail_risk_score: 0.39
+    exception:
+      allow_extreme_momentum_in_shadow_only: true
+      min_turbo_score: 0.98
+      require_votes_3_of_3: true
+      max_tail_risk_score: 0.34
+    telemetry:
+      log_all_evaluations: true
+      include_in_entry_metadata: true
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisCleanEntryGuardConfig()).toEqual({
+            enabled: true,
+            mode: 'ENFORCE',
+            applyTo: { long: true, short: false },
+            dirtyConditions: {
+                blockWhenEntryQualityInsufficient: true,
+                blockWhenEventRiskWouldBlock: true,
+                blockWhenTailRiskGte: 0.46,
+                blockWhenEntryQualityNotAllow: true
+            },
+            requireCleanForPremiumSymbols: true,
+            cleanConditions: {
+                requireDecisionBrainEnterNow: true,
+                requireEntryQualityAllow: true,
+                requireNoInsufficientData: true,
+                requireEventRiskWouldBlockFalse: true,
+                maxTailRiskScore: 0.39
+            },
+            exception: {
+                allowExtremeMomentumInShadowOnly: true,
+                minTurboScore: 0.98,
+                requireVotes3Of3: true,
+                maxTailRiskScore: 0.34
+            },
+            telemetry: {
+                logAllEvaluations: true,
+                includeInEntryMetadata: true
+            }
+        });
+    });
+
     it('parses Aegis Telegram block dedupe notification config', () => {
         const config = new NinjaConfigManager(writeConfig(`
   telegram_notifications:
