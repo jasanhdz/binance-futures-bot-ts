@@ -1,4 +1,4 @@
-# Aegis Exit Eye v0.1
+# Aegis Exit Eye v0.2
 
 Aegis Exit Eye is a profit-protection layer for open Aegis Turbo positions. It watches the current Aegis Turbo signal while a trade is already open and detects momentum loss after the trade has already been in profit.
 
@@ -34,8 +34,55 @@ REGIMES:
 The layers have different jobs:
 
 - Break-even protects near entry before trailing is eligible.
+- ProtectProfit locks part of an existing gain when Exit Eye detects momentum decay before trailing is eligible.
 - Trailing captures larger gains after `trailing_activation_roe`.
 - Exit Eye detects profitable momentum decay from the live Aegis signal.
+
+## Profit Protection Hotfix v1
+
+`aegis.profit_protection` controls the safe stop move used by Exit Eye:
+
+```yaml
+aegis:
+  profit_protection:
+    enabled: true
+    protect_profit_enabled: true
+    min_peak_roe_to_protect: 0.08
+    protect_giveback_roe: 0.05
+    min_locked_roe: 0.01
+    be_offset_pct: 0.003
+    immediate_trigger_buffer_pct: 0.001
+```
+
+For `PROTECT_PROFIT`, the first target is:
+
+```text
+protectedRoe = max(min_locked_roe, peakRoe - protect_giveback_roe)
+```
+
+If that target would place the stop beyond the current mark and trigger immediately, the bot caps the stop to a safe price behind the mark using `immediate_trigger_buffer_pct`. If the capped stop still does not improve the previous stop, or still has immediate-trigger risk, the move is skipped and the existing SL remains untouched.
+
+Safety rules:
+
+- validates active position, side, quantity, entry and leverage
+- checks immediate trigger risk before touching the old stop
+- places the new stop before canceling the old stop
+- cancels only previous stop orders by id
+- does not cancel TP
+- logs a bracket verification warning if SL or TP cannot be seen after the move
+- does not mark protection executed when exchange placement fails
+
+Events:
+
+- `AEGIS_EXIT_EYE_PROTECT_PROFIT`
+- `AEGIS_EXIT_EYE_PROTECT_PROFIT_EXECUTED`
+- `AEGIS_EXIT_EYE_PROTECT_PROFIT_SKIPPED`
+- `PROTECT_PROFIT_EXECUTED`
+- `PROTECT_PROFIT_STOP_MOVED`
+- `PROTECT_PROFIT_SKIPPED`
+- `SAFE_STOP_MOVE_SKIPPED`
+- `SAFE_STOP_MOVE_FAILED`
+- `SL_MOVED`
 
 ## Modes
 
@@ -49,7 +96,9 @@ Default live config mode. Exit Eye logs what it would have done and can send a c
 
 `PROTECT`
 
-Exit Eye can request profit protection, but v0.1 does not have a dedicated safe stop-move helper. It logs `protect_not_available_without_safe_stop_move_helper` and does not cancel brackets or close market.
+Exit Eye can request real profit protection. `TradingService` calculates a protected stop, calls `safeMoveCloseStop`, places the new reduce-only close stop first, then cancels only the previous stop orders. TP orders are not canceled.
+
+The old v0.1 skip reason `protect_not_available_without_safe_stop_move_helper` should no longer appear for live `PROTECT_PROFIT` decisions.
 
 `CLOSE`
 

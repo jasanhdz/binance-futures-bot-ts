@@ -425,6 +425,33 @@ symbols:
         });
     });
 
+    it('parses Aegis profit protection config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  profit_protection:
+    enabled: true
+    protect_profit_enabled: false
+    min_peak_roe_to_protect: 0.09
+    protect_giveback_roe: 0.045
+    min_locked_roe: 0.015
+    be_offset_pct: 0.004
+    immediate_trigger_buffer_pct: 0.002
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisProfitProtectionConfig()).toEqual({
+            enabled: true,
+            protect_profit_enabled: false,
+            min_peak_roe_to_protect: 0.09,
+            protect_giveback_roe: 0.045,
+            min_locked_roe: 0.015,
+            be_offset_pct: 0.004,
+            immediate_trigger_buffer_pct: 0.002
+        });
+    });
+
     it('resolves Aegis Turbo position fraction overrides by symbol group and side', () => {
         const config = new NinjaConfigManager(writeConfig(`
     position_fraction_overrides:

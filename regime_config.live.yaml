@@ -111,6 +111,14 @@ aegis:
       summary_threshold: 25
       max_cache_entries: 1000
       include_suppressed_count: true
+  profit_protection:
+    enabled: true
+    protect_profit_enabled: true
+    min_peak_roe_to_protect: 0.08
+    protect_giveback_roe: 0.05
+    min_locked_roe: 0.01
+    be_offset_pct: 0.003
+    immediate_trigger_buffer_pct: 0.001
   portfolio_risk:
     enabled: false
   short_gate:

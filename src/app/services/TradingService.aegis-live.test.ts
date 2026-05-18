@@ -317,10 +317,11 @@ function makeHarness(options: {
 	        placeStopClose: options.placeStopCloseReject
 	            ? vi.fn().mockRejectedValue(new Error('stop failed'))
 	            : vi.fn().mockResolvedValue(true),
-	        placeTpClose: options.placeTpCloseReject
-	            ? vi.fn().mockRejectedValue(new Error('tp failed'))
-	            : vi.fn().mockResolvedValue(true),
-	        listCloseOrdersForSide: vi.fn().mockResolvedValue(closeOrders),
+        placeTpClose: options.placeTpCloseReject
+            ? vi.fn().mockRejectedValue(new Error('tp failed'))
+            : vi.fn().mockResolvedValue(true),
+        listCloseOrdersForSide: vi.fn().mockResolvedValue(closeOrders),
+        cancelOrderById: vi.fn().mockResolvedValue(undefined),
         closeSideMarketSafe: options.closeSideMarketSafeReject
             ? vi.fn().mockRejectedValue(new Error('close failed'))
             : vi.fn().mockResolvedValue(undefined),
@@ -432,6 +433,15 @@ function makeHarness(options: {
                 include_suppressed_count: true
             }
         }),
+        getAegisProfitProtectionConfig: vi.fn(() => ({
+            enabled: true,
+            protect_profit_enabled: true,
+            min_peak_roe_to_protect: 0.08,
+            protect_giveback_roe: 0.05,
+            min_locked_roe: 0.01,
+            be_offset_pct: 0.003,
+            immediate_trigger_buffer_pct: 0.001
+        })),
         getAegisPositionFractionOverride: vi.fn(() => options.positionFractionOverride),
         getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
         getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
@@ -1854,8 +1864,10 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.cancelStopOrdersForSide).toHaveBeenCalledWith('ETHUSDT', 'LONG');
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 100.3);
+        expect(exchange.cancelStopOrdersForSide).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'sl');
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 100.3, 1);
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
         expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
         expect(exchange.marketOpen).not.toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -1906,8 +1918,9 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.cancelStopOrdersForSide).toHaveBeenCalledWith('ETHUSDT', 'SHORT');
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'SHORT', 99.7);
+        expect(exchange.cancelStopOrdersForSide).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'sl');
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'SHORT', 99.7, 1);
         expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'BREAK_EVEN_EXECUTED',
@@ -1957,6 +1970,10 @@ describe('TradingService Aegis live execution', () => {
         const { exchange, logger, service, state } = makeHarness({
             markPrice: 99.5,
             readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 105 }
+            ],
             initialState: {
                 mode: 'LONG_RIDE',
                 currentRegime: 'AEGIS_TURBO',
@@ -1982,11 +1999,12 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
         expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({ breakEvenExecuted: true }));
-        expect(logger.warn).toHaveBeenCalledWith('aegis_break_even_stop_move_skipped_immediate_trigger', expect.objectContaining({
+        expect(logger.warn).toHaveBeenCalledWith('aegis_safe_stop_move_skipped', expect.objectContaining({
             symbol: 'ETHUSDT',
             side: 'LONG',
             markPrice: 99.5,
-            attemptedStopPrice: 100.3
+            newStopPrice: 100.3,
+            skipReason: 'immediate_trigger_risk'
         }));
     });
 
@@ -1994,6 +2012,10 @@ describe('TradingService Aegis live execution', () => {
         const { exchange, configManager, service } = makeHarness({
             markPrice: 100.45,
             readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 105 }
+            ],
             regime: regimeConfig({ beRoe: 0.08 }),
             initialState: {
                 mode: 'LONG_RIDE',
@@ -2016,7 +2038,7 @@ describe('TradingService Aegis live execution', () => {
         await service.tick('ETHUSDT');
 
         expect(configManager.getGuardianConfig).toHaveBeenCalledWith('AEGIS_TURBO', 'ETHUSDT');
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 100.3);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 100.3, 1);
     });
 
     it('falls back to 0.10 BE threshold when config omits be_roe', async () => {
@@ -2053,6 +2075,10 @@ describe('TradingService Aegis live execution', () => {
             markPrice: 100.45,
             placeStopCloseReject: true,
             readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 105 }
+            ],
             initialState: {
                 mode: 'LONG_RIDE',
                 currentRegime: 'AEGIS_TURBO',
@@ -2090,6 +2116,10 @@ describe('TradingService Aegis live execution', () => {
             symbolModes: { ADAUSDT: 'LIVE', ETHUSDT: 'LIVE' },
             markPrice: 100.45,
             readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 105 }
+            ],
             symbolStates: {
                 ADAUSDT: {
                     mode: 'LONG_RIDE',
@@ -2130,7 +2160,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ADAUSDT');
 
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ADAUSDT', 'LONG', 100.3);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ADAUSDT', 'LONG', 100.3, 1);
         expect(symbolStores.get('ADAUSDT')?.get()).toEqual(expect.objectContaining({ breakEvenExecuted: true, lastBreakEvenStop: 100.3 }));
         expect(symbolStores.get('ETHUSDT')?.get()).not.toEqual(expect.objectContaining({ breakEvenExecuted: true }));
     });

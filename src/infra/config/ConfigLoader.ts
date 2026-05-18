@@ -264,6 +264,26 @@ export interface AegisTelegramNotificationsRuntimeConfig {
     block_dedupe: AegisTelegramBlockDedupeRuntimeConfig;
 }
 
+export interface AegisProfitProtectionYamlConfig {
+    enabled?: boolean;
+    protect_profit_enabled?: boolean;
+    min_peak_roe_to_protect?: number;
+    protect_giveback_roe?: number;
+    min_locked_roe?: number;
+    be_offset_pct?: number;
+    immediate_trigger_buffer_pct?: number;
+}
+
+export interface AegisProfitProtectionRuntimeConfig {
+    enabled: boolean;
+    protect_profit_enabled: boolean;
+    min_peak_roe_to_protect: number;
+    protect_giveback_roe: number;
+    min_locked_roe: number;
+    be_offset_pct: number;
+    immediate_trigger_buffer_pct: number;
+}
+
 export type AegisExitEyeMode = 'OFF' | 'SHADOW' | 'PROTECT' | 'CLOSE';
 
 export interface AegisExitEyeYamlConfig {
@@ -322,6 +342,7 @@ export interface NinjaYamlConfig {
         event_risk?: AegisEventRiskYamlConfig;
         decision_enforcement?: AegisDecisionEnforcementYamlConfig;
         telegram_notifications?: AegisTelegramNotificationsYamlConfig;
+        profit_protection?: AegisProfitProtectionYamlConfig;
         entry_quality_gate?: AegisEntryQualityGateYamlConfig;
     };
     SYMBOL_OVERRIDES?: {
@@ -780,6 +801,19 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisProfitProtectionConfig(): AegisProfitProtectionRuntimeConfig {
+        const raw = this.config.aegis?.profit_protection || {};
+        return {
+            enabled: raw.enabled ?? true,
+            protect_profit_enabled: raw.protect_profit_enabled ?? true,
+            min_peak_roe_to_protect: Math.max(0, this.finiteNumber(raw.min_peak_roe_to_protect, 0.08)),
+            protect_giveback_roe: Math.max(0, this.finiteNumber(raw.protect_giveback_roe, 0.05)),
+            min_locked_roe: Math.max(0, this.finiteNumber(raw.min_locked_roe, 0.01)),
+            be_offset_pct: Math.max(0, this.finiteNumber(raw.be_offset_pct, 0.003)),
+            immediate_trigger_buffer_pct: Math.max(0, this.finiteNumber(raw.immediate_trigger_buffer_pct, 0.001))
+        };
+    }
+
     /**
      * THE MAGIC: Merges Base Regime Config + Symbol-Specific Overrides
      */
@@ -961,6 +995,15 @@ export class NinjaConfigManager {
                         max_cache_entries: 1000,
                         include_suppressed_count: true
                     }
+                },
+                profit_protection: {
+                    enabled: true,
+                    protect_profit_enabled: true,
+                    min_peak_roe_to_protect: 0.08,
+                    protect_giveback_roe: 0.05,
+                    min_locked_roe: 0.01,
+                    be_offset_pct: 0.003,
+                    immediate_trigger_buffer_pct: 0.001
                 },
                 entry_quality_gate: {
                     enabled: false,

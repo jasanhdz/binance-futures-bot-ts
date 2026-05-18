@@ -19,6 +19,7 @@ import {
     AegisDecisionEnforcementRuntimeConfig,
     AegisPositionFractionOverride,
     AegisPortfolioRiskYamlConfig,
+    AegisProfitProtectionRuntimeConfig,
     AegisShortGateYamlConfig,
     AegisSymbolMode,
     AegisTelegramNotificationsRuntimeConfig,
@@ -64,6 +65,20 @@ const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 const EXIT_EYE_SIGNAL_TTL_MS = 15000;
 const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+
+type SafeStopMoveReason = 'MOVE_SL_BE' | 'PROTECT_PROFIT' | 'MOVE_SL_TRAILING';
+type SafeStopMoveSkipReason =
+    | 'immediate_trigger_risk'
+    | 'stop_not_improved'
+    | 'missing_position'
+    | 'missing_entry'
+    | 'missing_leverage'
+    | 'missing_quantity'
+    | 'exchange_error';
+
+type SafeStopMoveResult =
+    | { moved: true; oldStopPrice?: number; newStopPrice: number; exchangeOrderId?: string; hasSLAfter?: boolean; hasTPAfter?: boolean }
+    | { moved: false; reason: SafeStopMoveSkipReason; oldStopPrice?: number; newStopPrice: number; error?: string; hasSLAfter?: boolean; hasTPAfter?: boolean };
 
 export interface TradingServiceDeps {
     exchange: Exchange;
@@ -154,6 +169,22 @@ export class TradingService {
             require_consecutive_neutral: 2,
             require_consecutive_opposite: 1,
             min_minutes_in_trade: 3
+        };
+    }
+
+    private getAegisProfitProtectionConfig(): AegisProfitProtectionRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisProfitProtectionConfig === 'function') {
+            return manager.getAegisProfitProtectionConfig();
+        }
+        return {
+            enabled: true,
+            protect_profit_enabled: true,
+            min_peak_roe_to_protect: 0.08,
+            protect_giveback_roe: 0.05,
+            min_locked_roe: 0.01,
+            be_offset_pct: 0.003,
+            immediate_trigger_buffer_pct: 0.001
         };
     }
 
@@ -2285,6 +2316,369 @@ export class TradingService {
         return decision.action === 'CLOSE_POSITION' && decision.shouldClose;
     }
 
+    private wouldStopTriggerImmediately(side: Side, stopPrice: number, markPrice: number, bufferPct: number): boolean {
+        if (!Number.isFinite(stopPrice) || !Number.isFinite(markPrice) || markPrice <= 0) return true;
+        return side === 'LONG'
+            ? stopPrice >= markPrice * (1 - bufferPct)
+            : stopPrice <= markPrice * (1 + bufferPct);
+    }
+
+    private async safeMoveCloseStop(params: {
+        symbol: string;
+        side: Side;
+        tradeId?: string;
+        entryPrice: number;
+        markPrice: number;
+        leverage: number;
+        quantity: number;
+        position: PositionInfo;
+        newStopPrice: number;
+        currentRoe: number;
+        peakRoe: number;
+        protectedRoe?: number;
+        reason: SafeStopMoveReason;
+    }): Promise<SafeStopMoveResult> {
+        const { exchange, logger } = this.deps;
+        const profitConfig = this.getAegisProfitProtectionConfig();
+        const baseMetadata = {
+            symbol: params.symbol,
+            side: params.side,
+            tradeId: params.tradeId,
+            entryPrice: params.entryPrice,
+            markPrice: params.markPrice,
+            newStopPrice: params.newStopPrice,
+            peakRoe: params.peakRoe,
+            currentRoe: params.currentRoe,
+            protectedRoe: params.protectedRoe,
+            reason: params.reason
+        };
+
+        const skip = async (
+            reason: SafeStopMoveSkipReason,
+            oldStopPrice?: number,
+            extra: Record<string, unknown> = {}
+        ): Promise<SafeStopMoveResult> => {
+            const metadata = { ...baseMetadata, oldStopPrice, skipReason: reason, ...extra };
+            logger.warn('aegis_safe_stop_move_skipped', metadata);
+            await this.logAegisTradeEvent(params.symbol, 'SAFE_STOP_MOVE_SKIPPED', {
+                tradeId: params.tradeId,
+                price: params.markPrice,
+                roe: params.currentRoe,
+                oldStop: oldStopPrice,
+                newStop: params.newStopPrice,
+                reason,
+                metadata
+            });
+            return { moved: false, reason, oldStopPrice, newStopPrice: params.newStopPrice };
+        };
+
+        if (!Number.isFinite(params.entryPrice) || params.entryPrice <= 0) {
+            return skip('missing_entry');
+        }
+        if (!Number.isFinite(params.leverage) || params.leverage <= 0) {
+            return skip('missing_leverage');
+        }
+        if (!Number.isFinite(params.quantity) || params.quantity <= 0 || !params.position?.qtyAbs) {
+            return skip('missing_quantity');
+        }
+
+        const livePosition = await exchange.readActivePosition(params.symbol, params.side);
+        if (!livePosition || livePosition.qtyAbs <= 0) {
+            return skip('missing_position');
+        }
+
+        const beforeOrders = await exchange.listCloseOrdersForSide(params.symbol, params.side);
+        const oldStops = beforeOrders.filter((order) => order.type === 'STOP_MARKET' || order.type === 'STOP');
+        const oldStopPrice = oldStops.length
+            ? (params.side === 'LONG'
+                ? Math.max(...oldStops.map((order) => order.stopPrice))
+                : Math.min(...oldStops.map((order) => order.stopPrice)))
+            : undefined;
+
+        const stopImproved = this.isBetterStop(params.side, params.newStopPrice, oldStopPrice);
+        if (!stopImproved) {
+            return skip('stop_not_improved', oldStopPrice, { stopImproved });
+        }
+
+        const immediateTriggerRisk = this.wouldStopTriggerImmediately(
+            params.side,
+            params.newStopPrice,
+            params.markPrice,
+            profitConfig.immediate_trigger_buffer_pct
+        );
+        if (immediateTriggerRisk) {
+            return skip('immediate_trigger_risk', oldStopPrice, { immediateTriggerRisk });
+        }
+
+        try {
+            await exchange.placeStopClose(params.symbol, params.side, params.newStopPrice, livePosition.qtyAbs);
+            for (const stop of oldStops) {
+                if (typeof exchange.cancelOrderById === 'function') {
+                    await exchange.cancelOrderById(params.symbol, stop.orderId);
+                }
+            }
+
+            const afterOrders = await exchange.listCloseOrdersForSide(params.symbol, params.side);
+            const hasSLAfter = afterOrders.some((order) => order.type === 'STOP_MARKET' || order.type === 'STOP');
+            const hasTPAfter = afterOrders.some((order) => order.type === 'TAKE_PROFIT_MARKET' || order.type === 'TAKE_PROFIT');
+            if (!hasSLAfter || !hasTPAfter) {
+                logger.warn('aegis_safe_stop_move_bracket_verify_warning', {
+                    ...baseMetadata,
+                    oldStopPrice,
+                    hasSLAfter,
+                    hasTPAfter
+                });
+            }
+
+            logger.info('aegis_safe_stop_moved', {
+                ...baseMetadata,
+                oldStopPrice,
+                hasSLAfter,
+                hasTPAfter
+            });
+            await this.logAegisTradeEvent(params.symbol, 'SL_MOVED', {
+                tradeId: params.tradeId,
+                price: params.markPrice,
+                roe: params.currentRoe,
+                oldStop: oldStopPrice,
+                newStop: params.newStopPrice,
+                reason: params.reason,
+                metadata: {
+                    ...baseMetadata,
+                    oldStopPrice,
+                    hasSLAfter,
+                    hasTPAfter,
+                    stopImproved: true,
+                    immediateTriggerRisk: false
+                }
+            });
+            return { moved: true, oldStopPrice, newStopPrice: params.newStopPrice, hasSLAfter, hasTPAfter };
+        } catch (error) {
+            const metadata = { ...baseMetadata, oldStopPrice, error: String(error) };
+            logger.error('aegis_safe_stop_move_failed', metadata);
+            await this.logAegisTradeEvent(params.symbol, 'SAFE_STOP_MOVE_FAILED', {
+                tradeId: params.tradeId,
+                price: params.markPrice,
+                roe: params.currentRoe,
+                oldStop: oldStopPrice,
+                newStop: params.newStopPrice,
+                reason: 'exchange_error',
+                metadata
+            });
+            return {
+                moved: false,
+                reason: 'exchange_error',
+                oldStopPrice,
+                newStopPrice: params.newStopPrice,
+                error: String(error)
+            };
+        }
+    }
+
+    private protectedStopPrice(input: {
+        side: Side;
+        entryPrice: number;
+        leverage: number;
+        currentRoe: number;
+        peakRoe: number;
+    }): { protectedRoe: number; stopPrice: number } {
+        const config = this.getAegisProfitProtectionConfig();
+        const targetProtectedRoe = Math.max(
+            config.min_locked_roe,
+            input.peakRoe - config.protect_giveback_roe
+        );
+        const maxSafeRoeAtCurrentPrice = input.currentRoe - (config.immediate_trigger_buffer_pct * input.leverage);
+        const protectedRoe = Math.max(
+            config.min_locked_roe,
+            Math.min(targetProtectedRoe, maxSafeRoeAtCurrentPrice)
+        );
+        const move = protectedRoe / input.leverage;
+        const stopPrice = input.side === 'LONG'
+            ? input.entryPrice * (1 + move)
+            : input.entryPrice * (1 - move);
+        return { protectedRoe, stopPrice };
+    }
+
+    private async executeProtectProfitStopMove(input: {
+        symbol: string;
+        side: Side;
+        botState: BotState;
+        symbolState: StateStore;
+        position: PositionInfo;
+        markPrice: number;
+        currentRoe: number;
+        peakRoe: number;
+        decision: AegisExitEyeDecision;
+    }): Promise<SafeStopMoveResult> {
+        const config = this.getAegisProfitProtectionConfig();
+        const entryPrice = input.botState.lastEntryPrice || input.position.entryPrice || 0;
+        const leverage = input.botState.lastLeverage || input.position.leverage || this.getAegisTurboGateConfig(input.symbol).leverageCap;
+        const filters = await this.deps.exchange.getSymbolFilters(input.symbol, leverage);
+        const tradeId = input.botState.lastTradeId;
+
+        if (!config.enabled || !config.protect_profit_enabled || input.peakRoe < config.min_peak_roe_to_protect) {
+            const result: SafeStopMoveResult = {
+                moved: false,
+                reason: 'stop_not_improved',
+                newStopPrice: input.botState.lastStopPrice || 0
+            };
+            await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_SKIPPED', {
+                tradeId,
+                price: input.markPrice,
+                roe: input.currentRoe,
+                reason: 'profit_protection_disabled_or_peak_too_low',
+                metadata: {
+                    symbol: input.symbol,
+                    side: input.side,
+                    currentRoe: input.currentRoe,
+                    peakRoe: input.peakRoe,
+                    enabled: config.enabled,
+                    protectProfitEnabled: config.protect_profit_enabled,
+                    minPeakRoeToProtect: config.min_peak_roe_to_protect
+                }
+            });
+            return result;
+        }
+
+        const protectedStop = this.protectedStopPrice({
+            side: input.side,
+            entryPrice,
+            leverage,
+            currentRoe: input.currentRoe,
+            peakRoe: input.peakRoe
+        });
+        let newStopPrice = this.roundPrice(protectedStop.stopPrice, filters);
+        const buffer = config.immediate_trigger_buffer_pct;
+        const tickSize = filters.tickSize > 0 ? filters.tickSize : 10 ** -filters.pricePrecision;
+        if (input.side === 'LONG') {
+            const maxSafeStop = input.markPrice * (1 - buffer);
+            if (newStopPrice >= maxSafeStop) {
+                newStopPrice = this.roundPrice(maxSafeStop - tickSize, filters);
+            }
+        } else {
+            const minSafeStop = input.markPrice * (1 + buffer);
+            if (newStopPrice <= minSafeStop) {
+                newStopPrice = this.roundPrice(minSafeStop + tickSize, filters);
+            }
+        }
+        const actualProtectedRoe = input.side === 'LONG'
+            ? ((newStopPrice - entryPrice) / entryPrice) * leverage
+            : ((entryPrice - newStopPrice) / entryPrice) * leverage;
+        const result = await this.safeMoveCloseStop({
+            symbol: input.symbol,
+            side: input.side,
+            tradeId,
+            entryPrice,
+            markPrice: input.markPrice,
+            leverage,
+            quantity: input.position.qtyAbs,
+            position: input.position,
+            newStopPrice,
+            currentRoe: input.currentRoe,
+            peakRoe: input.peakRoe,
+            protectedRoe: actualProtectedRoe,
+            reason: 'PROTECT_PROFIT'
+        });
+
+        if (result.moved) {
+            input.symbolState.set({
+                lastTrailStop: result.newStopPrice,
+                lastStopPrice: result.newStopPrice,
+                lastExitEyeAction: input.decision.action,
+                lastExitEyeReason: input.decision.reason,
+                lastExitEyeAt: Date.now()
+            });
+            await this.logAegisTradeEvent(input.symbol, 'AEGIS_EXIT_EYE_PROTECT_PROFIT_EXECUTED', {
+                tradeId,
+                price: input.markPrice,
+                roe: input.currentRoe,
+                oldStop: result.oldStopPrice,
+                newStop: result.newStopPrice,
+                reason: input.decision.reason,
+                metadata: {
+                    protectedRoe: actualProtectedRoe,
+                    peakRoe: input.peakRoe,
+                    currentRoe: input.currentRoe,
+                    oldStopPrice: result.oldStopPrice,
+                    newStopPrice: result.newStopPrice
+                }
+            });
+            await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_EXECUTED', {
+                tradeId,
+                price: input.markPrice,
+                roe: input.currentRoe,
+                oldStop: result.oldStopPrice,
+                newStop: result.newStopPrice,
+                reason: input.decision.reason,
+                metadata: {
+                    protectedRoe: actualProtectedRoe,
+                    peakRoe: input.peakRoe,
+                    currentRoe: input.currentRoe,
+                    oldStopPrice: result.oldStopPrice,
+                    newStopPrice: result.newStopPrice
+                }
+            });
+            await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_STOP_MOVED', {
+                tradeId,
+                price: input.markPrice,
+                roe: input.currentRoe,
+                oldStop: result.oldStopPrice,
+                newStop: result.newStopPrice,
+                reason: 'PROTECT_PROFIT',
+                metadata: {
+                    protectedRoe: actualProtectedRoe,
+                    peakRoe: input.peakRoe,
+                    currentRoe: input.currentRoe
+                }
+            });
+            await this.deps.notifier.sendMessage(
+                `🛡️ **Ganancia protegida**\n` +
+                `${input.symbol} ${input.side}\n` +
+                `Peak: ${this.formatRoe(input.peakRoe)}\n` +
+                `Actual: ${this.formatRoe(input.currentRoe)}\n` +
+                `SL movido a: $${result.newStopPrice}\n` +
+                `Ganancia protegida aprox: ${this.formatRoe(actualProtectedRoe)}`
+            );
+        } else {
+            await this.logAegisTradeEvent(input.symbol, 'AEGIS_EXIT_EYE_PROTECT_PROFIT_SKIPPED', {
+                tradeId,
+                price: input.markPrice,
+                roe: input.currentRoe,
+                oldStop: result.oldStopPrice,
+                newStop: result.newStopPrice,
+                reason: result.reason,
+                metadata: {
+                    protectedRoe: actualProtectedRoe,
+                    peakRoe: input.peakRoe,
+                    currentRoe: input.currentRoe,
+                    error: result.error
+                }
+            });
+            await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_SKIPPED', {
+                tradeId,
+                price: input.markPrice,
+                roe: input.currentRoe,
+                oldStop: result.oldStopPrice,
+                newStop: result.newStopPrice,
+                reason: result.reason,
+                metadata: {
+                    protectedRoe: actualProtectedRoe,
+                    peakRoe: input.peakRoe,
+                    currentRoe: input.currentRoe,
+                    error: result.error
+                }
+            });
+            if (result.reason === 'exchange_error') {
+                await this.deps.notifier.sendAlert(
+                    'AEGIS PROTECT PROFIT FAILED',
+                    `${input.symbol} ${input.side}\nSL protegido: ${result.newStopPrice}\n${String(result.error || '').slice(0, 180)}`
+                );
+            }
+        }
+
+        return result;
+    }
+
     private async handleExitEyeDecision(input: {
         symbol: string;
         side: Side;
@@ -2307,11 +2701,7 @@ export class TradingService {
             gatedAction: decision.metadata.gatedAction,
             turboScore: decision.metadata.turboScore,
             votes: decision.metadata.votes,
-            reason: decision.reason,
-            protectSkipped: decision.action === 'PROTECT_PROFIT' ? true : undefined,
-            protectSkipReason: decision.action === 'PROTECT_PROFIT'
-                ? 'protect_not_available_without_safe_stop_move_helper'
-                : undefined
+            reason: decision.reason
         };
         input.symbolState.set({
             lastExitEyeAction: decision.action,
@@ -2341,6 +2731,14 @@ export class TradingService {
             this.deps.logger.warn('aegis_exit_eye_decision', logPayload);
         } else {
             this.deps.logger.info('aegis_exit_eye_decision', logPayload);
+        }
+
+        if (decision.action === 'PROTECT_PROFIT' && decision.shouldProtect) {
+            await this.executeProtectProfitStopMove({
+                ...input,
+                decision
+            });
+            return;
         }
 
         if (decision.action === 'CLOSE_POSITION' && decision.shouldClose && input.currentRoe > 0) {
@@ -2561,30 +2959,23 @@ export class TradingService {
                 const breakEvenPrice = this.roundPrice(action.price, filters);
                 const existingStop = botState.lastTrailStop ?? botState.lastBreakEvenStop ?? botState.lastStopPrice;
                 const shouldMoveBreakEven = !botState.breakEvenExecuted && this.isBetterStop(side, breakEvenPrice, existingStop);
-                const wouldTriggerImmediately = side === 'LONG'
-                    ? breakEvenPrice >= markPrice
-                    : breakEvenPrice <= markPrice;
                 if (shouldMoveBreakEven) {
-                    if (wouldTriggerImmediately) {
-                        if (this.shouldLogError(symbol, 'AEGIS_BE_IMMEDIATE_TRIGGER_SKIP', 60000)) {
-                            logger.warn('aegis_break_even_stop_move_skipped_immediate_trigger', {
-                                symbol,
-                                side,
-                                entryPrice,
-                                markPrice,
-                                attemptedStopPrice: breakEvenPrice,
-                                currentRoe,
-                                peakRoe: updatedPeakRoe,
-                                beRoe: guardianConfig.beTriggerRoe
-                            });
-                        }
-                        return;
-                    }
-                    try {
-                        if (typeof (exchange as any).cancelStopOrdersForSide === 'function') {
-                            await (exchange as any).cancelStopOrdersForSide(symbol, side);
-                        }
-                        await exchange.placeStopClose(symbol, side, breakEvenPrice);
+                    const moveResult = await this.safeMoveCloseStop({
+                        symbol,
+                        side,
+                        tradeId: botState.lastTradeId,
+                        entryPrice,
+                        markPrice,
+                        leverage,
+                        quantity: position.qtyAbs,
+                        position,
+                        newStopPrice: breakEvenPrice,
+                        currentRoe,
+                        peakRoe: updatedPeakRoe,
+                        protectedRoe: guardianConfig.beTriggerRoe,
+                        reason: 'MOVE_SL_BE'
+                    });
+                    if (moveResult.moved) {
                         symbolState.set({
                             breakEvenArmed: true,
                             breakEvenExecuted: true,
@@ -2598,7 +2989,7 @@ export class TradingService {
                             symbol,
                             side,
                             entryPrice,
-                            oldStopPrice: existingStop,
+                            oldStopPrice: moveResult.oldStopPrice ?? existingStop,
                             newStopPrice: breakEvenPrice,
                             currentRoe,
                             peakRoe: updatedPeakRoe,
@@ -2608,14 +2999,14 @@ export class TradingService {
                             tradeId: botState.lastTradeId,
                             price: markPrice,
                             roe: currentRoe,
-                            oldStop: existingStop,
+                            oldStop: moveResult.oldStopPrice ?? existingStop,
                             newStop: breakEvenPrice,
                             reason: 'MOVE_SL_BE',
                             metadata: {
                                 symbol,
                                 side,
                                 entryPrice,
-                                oldStopPrice: existingStop,
+                                oldStopPrice: moveResult.oldStopPrice ?? existingStop,
                                 newStopPrice: breakEvenPrice,
                                 currentRoe,
                                 peakRoe: updatedPeakRoe,
@@ -2623,21 +3014,13 @@ export class TradingService {
                                 reason: 'MOVE_SL_BE'
                             }
                         });
-                        await this.logAegisTradeEvent(symbol, 'SL_MOVED', {
-                            tradeId: botState.lastTradeId,
-                            price: markPrice,
-                            roe: currentRoe,
-                            oldStop: existingStop,
-                            newStop: breakEvenPrice,
-                            reason: 'MOVE_SL_BE'
-                        });
                         await notifier.sendMessage(
                             `🟢 **BREAK-EVEN ACTIVADO**\n` +
                             `${symbol} ${side}\n` +
                             `SL movido a BE: $${breakEvenPrice}\n` +
                             `ROE: ${this.formatRoe(currentRoe)}`
                         );
-                    } catch (breakEvenError) {
+                    } else if (moveResult.reason === 'exchange_error') {
                         logger.error('aegis_break_even_stop_move_failed', {
                             symbol,
                             side,
@@ -2646,30 +3029,30 @@ export class TradingService {
                             currentRoe,
                             peakRoe: updatedPeakRoe,
                             beRoe: guardianConfig.beTriggerRoe,
-                            error: String(breakEvenError)
+                            error: moveResult.error
                         });
                         await this.logAegisTradeEvent(symbol, 'BREAK_EVEN_FAILED', {
                             tradeId: botState.lastTradeId,
                             price: markPrice,
                             roe: currentRoe,
-                            oldStop: existingStop,
+                            oldStop: moveResult.oldStopPrice ?? existingStop,
                             newStop: breakEvenPrice,
                             reason: 'MOVE_SL_BE_FAILED',
                             metadata: {
                                 symbol,
                                 side,
                                 entryPrice,
-                                oldStopPrice: existingStop,
+                                oldStopPrice: moveResult.oldStopPrice ?? existingStop,
                                 newStopPrice: breakEvenPrice,
                                 currentRoe,
                                 peakRoe: updatedPeakRoe,
                                 beRoe: guardianConfig.beTriggerRoe,
-                                error: String(breakEvenError)
+                                error: moveResult.error
                             }
                         });
                         await notifier.sendAlert(
                             'AEGIS BREAK-EVEN FAILED',
-                            `${symbol} ${side}\nSL BE: ${breakEvenPrice}\n${String(breakEvenError).slice(0, 180)}`
+                            `${symbol} ${side}\nSL BE: ${breakEvenPrice}\n${String(moveResult.error || '').slice(0, 180)}`
                         );
                     }
                 }

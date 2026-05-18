@@ -4,6 +4,8 @@
 
 Aegis Turbo sigue operando multi-symbol en vivo. La política actual desactiva los caps de portfolio y conserva únicamente un filtro premium para SHORTS.
 
+Profit Protection v1 está activo como capa de salida: no bloquea entradas ni cambia sizing, pero permite mover el SL de posiciones abiertas cuando Break-Even o Exit Eye detectan profit protegible. Ver `docs/AEGIS_PROFIT_PROTECTION.md`.
+
 Decisión activa:
 
 - Portfolio risk: OFF.

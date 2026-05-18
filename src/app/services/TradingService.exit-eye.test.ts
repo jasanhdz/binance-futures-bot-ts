@@ -74,6 +74,9 @@ function makeHarness(options: {
     closeOnNeutralDecay?: boolean;
     exitSignal?: AegisTradingSignal;
     stateOverrides?: Partial<BotState>;
+    closeOrders?: any[];
+    placeStopCloseReject?: boolean;
+    profitProtection?: any;
 }) {
     (CONFIG as any).TRADING_MODE = 'AEGIS_TURBO_MICRO_LIVE';
     (CONFIG as any).AEGIS_LIVE_ENABLED = true;
@@ -133,11 +136,14 @@ function makeHarness(options: {
             qtyPrecision: 3,
             minNotional: 5
         })),
-        placeStopClose: vi.fn(),
+        placeStopClose: options.placeStopCloseReject
+            ? vi.fn().mockRejectedValue(new Error('stop failed'))
+            : vi.fn(),
         placeTpClose: vi.fn(),
         closeSideMarketSafe,
         cancelStopOrdersForSide,
-        listCloseOrdersForSide: vi.fn(async () => []),
+        cancelOrderById: vi.fn(),
+        listCloseOrdersForSide: vi.fn(async () => options.closeOrders ?? []),
         subscribeToCandles: vi.fn()
     };
     const logger = {
@@ -196,6 +202,15 @@ function makeHarness(options: {
                 require_consecutive_neutral: 2,
                 require_consecutive_opposite: 1,
                 min_minutes_in_trade: 3
+            })),
+            getAegisProfitProtectionConfig: vi.fn(() => options.profitProtection ?? ({
+                enabled: true,
+                protect_profit_enabled: true,
+                min_peak_roe_to_protect: 0.08,
+                protect_giveback_roe: 0.05,
+                min_locked_roe: 0.01,
+                be_offset_pct: 0.003,
+                immediate_trigger_buffer_pct: 0.001
             })),
             getRegimeConfig: vi.fn(() => ({
                 leverage,
@@ -271,16 +286,165 @@ describe('TradingService Aegis Exit Eye', () => {
         }));
     });
 
-    it('in PROTECT mode without safe stop move helper does not close or cancel brackets', async () => {
-        const { service, exchange, historyLogger } = makeHarness({ mode: 'PROTECT', currentRoe: 0.12 });
+    it('in PROTECT mode moves stop to protect profit without closing or canceling TP', async () => {
+        const { service, exchange, historyLogger, notifier, state } = makeHarness({ mode: 'PROTECT', currentRoe: 0.12 });
 
         await service.tick('LINKUSDT');
 
         expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
         expect(exchange.cancelStopOrdersForSide).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('LINKUSDT', 'LONG', 105.88, 1);
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Ganancia protegida'));
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            lastStopPrice: 105.88,
+            lastTrailStop: 105.88
+        }));
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'AEGIS_EXIT_EYE_PROTECT_PROFIT'
         }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'AEGIS_EXIT_EYE_PROTECT_PROFIT_EXECUTED',
+            new_stop: 105.88
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SL_MOVED',
+            reason: 'PROTECT_PROFIT',
+            new_stop: 105.88
+        }));
+    });
+
+    it('protects an ADA-like LONG after peak 14.5% and current 8.8% without immediate trigger', async () => {
+        const { service, exchange, historyLogger } = makeHarness({
+            mode: 'PROTECT',
+            currentRoe: 0.088,
+            peakRoe: 0.145,
+            exitSignal: neutralSignal(),
+            stateOverrides: {
+                exitEyeNeutralCount: 1,
+                lastTradeId: 'ada-like',
+                lastStopPrice: 98
+            },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 125 }
+            ]
+        });
+
+        await service.tick('LINKUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('LINKUSDT', 'LONG', 104.29, 1);
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('LINKUSDT', 'sl');
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROTECT_PROFIT_STOP_MOVED',
+            reason: 'PROTECT_PROFIT',
+            new_stop: 104.29
+        }));
+    });
+
+    it('protects a SHORT profit with the correct stop direction', async () => {
+        const { service, exchange, historyLogger } = makeHarness({
+            mode: 'PROTECT',
+            side: 'SHORT',
+            currentRoe: 0.18,
+            peakRoe: 0.20,
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 102 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 90 }
+            ],
+            stateOverrides: { lastStopPrice: 102 }
+        });
+
+        await service.tick('LINKUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('LINKUSDT', 'SHORT', 92.5, 1);
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('LINKUSDT', 'sl');
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SL_MOVED',
+            reason: 'PROTECT_PROFIT',
+            new_stop: 92.5
+        }));
+    });
+
+    it('skips PROTECT_PROFIT when the protected stop does not improve the existing stop', async () => {
+        const { service, exchange, historyLogger, logger } = makeHarness({
+            mode: 'PROTECT',
+            currentRoe: 0.12,
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 106 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 125 }
+            ],
+            stateOverrides: { lastStopPrice: 106 }
+        });
+
+        await service.tick('LINKUSDT');
+
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith('aegis_safe_stop_move_skipped', expect.objectContaining({
+            skipReason: 'stop_not_improved'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROTECT_PROFIT_SKIPPED',
+            reason: 'stop_not_improved'
+        }));
+    });
+
+    it('caps PROTECT_PROFIT below mark when target protected ROE would trigger immediately', async () => {
+        const { service, exchange, historyLogger } = makeHarness({
+            mode: 'PROTECT',
+            currentRoe: 0.081,
+            peakRoe: 0.20,
+            profitProtection: {
+                enabled: true,
+                protect_profit_enabled: true,
+                min_peak_roe_to_protect: 0.08,
+                protect_giveback_roe: 0.05,
+                min_locked_roe: 0.10,
+                be_offset_pct: 0.003,
+                immediate_trigger_buffer_pct: 0.001
+            },
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 125 }
+            ],
+            stateOverrides: { lastStopPrice: 98 }
+        });
+
+        await service.tick('LINKUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('LINKUSDT', 'LONG', 103.94, 1);
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('LINKUSDT', 'sl');
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROTECT_PROFIT_STOP_MOVED',
+            new_stop: 103.94
+        }));
+    });
+
+    it('does not mark PROTECT_PROFIT executed when exchange stop placement fails', async () => {
+        const { service, exchange, historyLogger, notifier, state } = makeHarness({
+            mode: 'PROTECT',
+            currentRoe: 0.12,
+            placeStopCloseReject: true,
+            closeOrders: [
+                { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 98 },
+                { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 125 }
+            ],
+            stateOverrides: { lastStopPrice: 98 }
+        });
+
+        await service.tick('LINKUSDT');
+
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'AEGIS_EXIT_EYE_PROTECT_PROFIT_EXECUTED'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROTECT_PROFIT_SKIPPED',
+            reason: 'exchange_error'
+        }));
+        expect(notifier.sendAlert).toHaveBeenCalledWith('AEGIS PROTECT PROFIT FAILED', expect.stringContaining('LINKUSDT LONG'));
+        expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({ lastStopPrice: 105.88 }));
     });
 
     it('in CLOSE mode does not close neutral decay when config forbids it', async () => {
