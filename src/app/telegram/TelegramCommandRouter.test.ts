@@ -8,6 +8,8 @@ function handlers(): TelegramCommandHandlersPort {
         handleStatus: vi.fn(async () => 'STATUS'),
         handleAccount: vi.fn(async () => 'ACCOUNT'),
         handlePositions: vi.fn(async () => 'POSITIONS'),
+        handleTrade: vi.fn(async () => 'TRADE'),
+        handleTrades: vi.fn(async () => 'TRADES'),
         handleConfig: vi.fn(async () => 'CONFIG'),
         handleSignal: vi.fn(async () => 'SIGNAL'),
         handleSignals: vi.fn(async () => 'SIGNALS'),
@@ -61,6 +63,23 @@ describe('TelegramCommandRouter', () => {
         await router.handleMessage({ chatId: '123', text: '/signal ETHUSDT' });
 
         expect(h.handleSignal).toHaveBeenCalledWith('ETHUSDT');
+    });
+
+    it('passes /trade symbol argument to handler for authorized chat', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await router.handleMessage({ chatId: '123', text: '/trade LINKUSDT' });
+
+        expect(h.handleTrade).toHaveBeenCalledWith('LINKUSDT');
+    });
+
+    it('routes /trades to handler for authorized chat', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await expect(router.handleMessage({ chatId: '123', text: '/trades' })).resolves.toBe('TRADES');
+        expect(h.handleTrades).toHaveBeenCalled();
     });
 
     it('passes /riskmode argument to handler for authorized chat', async () => {

@@ -11,6 +11,8 @@ const KNOWN_COMMANDS: TelegramCommandName[] = [
     'status',
     'account',
     'positions',
+    'trade',
+    'trades',
     'config',
     'signal',
     'signals',
@@ -63,6 +65,10 @@ export class TelegramCommandRouter {
                 return this.handlers.handleAccount();
             case 'positions':
                 return this.handlers.handlePositions();
+            case 'trade':
+                return this.handlers.handleTrade(command.args[0]);
+            case 'trades':
+                return this.handlers.handleTrades();
             case 'config':
                 return this.handlers.handleConfig();
             case 'signal':

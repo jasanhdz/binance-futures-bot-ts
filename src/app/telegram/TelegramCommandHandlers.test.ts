@@ -92,14 +92,26 @@ function predictionWithDecisionBrain(symbol = 'ETHUSDT') {
 
 function makeHandlers(overrides: Record<string, any> = {}) {
     const symbolModes = overrides.symbolModes ?? Object.fromEntries((overrides.symbols ?? ['ETHUSDT']).map((symbol: string) => [symbol, 'LIVE']));
+    const activePositions = overrides.activePositions ?? {};
+    const closeOrdersBySymbolSide = overrides.closeOrdersBySymbolSide ?? {};
     const exchange = {
         getUSDTBalance: vi.fn().mockResolvedValue(500),
         getUSDTAccountSnapshot: vi.fn().mockResolvedValue(overrides.accountSnapshot ?? {}),
-        readActivePosition: vi.fn().mockResolvedValue(null),
-        getMarkPrice: vi.fn().mockResolvedValue(3000),
-        listCloseOrdersForSide: vi.fn().mockResolvedValue([]),
+        readActivePosition: vi.fn(async (symbol: string, side: string) => {
+            if (typeof overrides.readActivePosition === 'function') {
+                return overrides.readActivePosition(symbol, side);
+            }
+            return activePositions[`${symbol}:${side}`] ?? activePositions[symbol]?.[side] ?? null;
+        }),
+        getMarkPrice: vi.fn(async (symbol: string) => overrides.markPrices?.[symbol] ?? 3000),
+        listCloseOrdersForSide: vi.fn(async (symbol: string, side: string) => (
+            closeOrdersBySymbolSide[`${symbol}:${side}`] ?? overrides.closeOrders ?? []
+        )),
+        marketOpen: vi.fn(),
         placeStopClose: vi.fn(),
-        placeTpClose: vi.fn()
+        placeTpClose: vi.fn(),
+        cancelOrderById: vi.fn(),
+        closeSideMarketSafe: vi.fn()
     };
     const mlService = {
         getAegisPrediction: vi.fn(async (symbol: string) => prediction(symbol, symbol === 'BTCUSDT' ? 0.284 : 0.632)),
@@ -107,10 +119,24 @@ function makeHandlers(overrides: Record<string, any> = {}) {
         getExitSignal: vi.fn(),
         checkHealth: vi.fn().mockResolvedValue(true)
     };
+    const defaultState = { mode: 'IDLE', currentRegime: 'AEGIS_TURBO' };
+    const stateStores = new Map<string, any>();
+    for (const [symbol, value] of Object.entries(overrides.statesBySymbol ?? {})) {
+        stateStores.set(symbol, {
+            get: vi.fn(() => value),
+            set: vi.fn(),
+            reset: vi.fn()
+        });
+    }
     const state = {
-        get: vi.fn(() => overrides.state ?? { mode: 'IDLE', currentRegime: 'AEGIS_TURBO' }),
+        get: vi.fn(() => overrides.state ?? defaultState),
         set: vi.fn(),
-        reset: vi.fn()
+        reset: vi.fn(),
+        forSymbol: vi.fn((symbol: string) => stateStores.get(symbol) ?? {
+            get: vi.fn(() => overrides.state ?? defaultState),
+            set: vi.fn(),
+            reset: vi.fn()
+        })
     };
     const configManager = {
         getActiveSymbols: vi.fn(() => overrides.symbols ?? ['ETHUSDT']),
@@ -172,6 +198,15 @@ function makeHandlers(overrides: Record<string, any> = {}) {
             manual_only: {
                 block_new_entries: false
             }
+        }),
+        getAegisProfitProtectionConfig: vi.fn(() => overrides.profitProtection ?? {
+            enabled: true,
+            protect_profit_enabled: true,
+            min_peak_roe_to_protect: 0.08,
+            protect_giveback_roe: 0.05,
+            min_locked_roe: 0.01,
+            be_offset_pct: 0.003,
+            immediate_trigger_buffer_pct: 0.001
         }),
         setAegisEventRiskMode: vi.fn((mode: string) => ({
             ...(overrides.eventRisk ?? {
@@ -343,6 +378,124 @@ describe('TelegramCommandHandlers', () => {
         await expect(handlers.handlePositions()).resolves.toContain('🟢 **Ninguna**');
     });
 
+    it('/trade SYMBOL with active position shows peakRoe and lowestRoe', async () => {
+        const { handlers, exchange } = makeHandlers({
+            symbols: ['ETHUSDT'],
+            activePositions: {
+                ETHUSDT: {
+                    LONG: {
+                        sideMode: 'LONG',
+                        qtyAbs: 0.5,
+                        entryPrice: 100,
+                        leverage: 20,
+                        isolatedMargin: 2.5,
+                        unrealizedPnl: 0.75,
+                        roePct: 30
+                    }
+                }
+            },
+            markPrices: { ETHUSDT: 101.5 },
+            statesBySymbol: {
+                ETHUSDT: {
+                    mode: 'LONG_RIDE',
+                    lastSide: 'LONG',
+                    lastEntryAt: Date.now() - 90 * 60 * 1000,
+                    lastTradeId: 'AEGIS-TURBO-ETHUSDT-1',
+                    peakRoe: 0.145,
+                    lowestRoe: -0.038,
+                    breakEvenArmed: true,
+                    breakEvenExecuted: false,
+                    lastBreakEvenStop: 100.3,
+                    lastStopPrice: 99.5,
+                    lastTrailStop: 100.3,
+                    lastTrailingActivationRoe: 0.15
+                }
+            },
+            closeOrdersBySymbolSide: {
+                'ETHUSDT:LONG': [
+                    { orderId: 'sl-1', type: 'STOP_MARKET', stopPrice: 99.5 },
+                    { orderId: 'tp-1', type: 'TAKE_PROFIT_MARKET', stopPrice: 103.1 }
+                ]
+            }
+        });
+
+        const text = await handlers.handleTrade('ETHUSDT');
+
+        expect(text).toContain('Trade Status');
+        expect(text).toContain('ETHUSDT **LONG**');
+        expect(text).toContain('ROE actual: **+30.0%**');
+        expect(text).toContain('Peak: **+14.5%**');
+        expect(text).toContain('Worst: **-3.8%**');
+        expect(text).toContain('MFE/MAE: **+14.5% / -3.8%**');
+        expect(text).toContain('BE: **armado**');
+        expect(text).toContain('Protect: **activo');
+        expect(text).toContain('SL: **$99.500**');
+        expect(text).toContain('TP: **$103.10**');
+        expect(text).toContain('Trade ID: **AEGIS-TURBO-ETHUSDT-1**');
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+    });
+
+    it('/trade SYMBOL without active position responds without error', async () => {
+        const { handlers } = makeHandlers();
+
+        await expect(handlers.handleTrade('LINKUSDT')).resolves.toBe('No hay posición activa para LINKUSDT');
+    });
+
+    it('/trades lists multiple open positions with peaks and protection summary', async () => {
+        const { handlers } = makeHandlers({
+            symbols: ['ETHUSDT', 'LINKUSDT'],
+            activePositions: {
+                ETHUSDT: {
+                    LONG: {
+                        sideMode: 'LONG',
+                        qtyAbs: 0.5,
+                        entryPrice: 100,
+                        leverage: 20,
+                        isolatedMargin: 2.5,
+                        unrealizedPnl: 0.75,
+                        roePct: 30
+                    }
+                },
+                LINKUSDT: {
+                    SHORT: {
+                        sideMode: 'SHORT',
+                        qtyAbs: 10,
+                        entryPrice: 20,
+                        leverage: 10,
+                        isolatedMargin: 20,
+                        unrealizedPnl: -1,
+                        roePct: -5
+                    }
+                }
+            },
+            markPrices: { ETHUSDT: 101.5, LINKUSDT: 20.1 },
+            statesBySymbol: {
+                ETHUSDT: {
+                    mode: 'LONG_RIDE',
+                    lastSide: 'LONG',
+                    peakRoe: 0.145,
+                    lowestRoe: -0.038,
+                    breakEvenArmed: true
+                },
+                LINKUSDT: {
+                    mode: 'SHORT_RIDE',
+                    lastSide: 'SHORT',
+                    peakRoe: 0.02,
+                    lowestRoe: -0.05
+                }
+            }
+        });
+
+        const text = await handlers.handleTrades();
+
+        expect(text).toContain('ETHUSDT | LONG | ROE +30.0% | Peak +14.5% | Worst -3.8%');
+        expect(text).toContain('LINKUSDT | SHORT | ROE -5.0% | Peak +2.0% | Worst -5.0%');
+        expect(text).toContain('BE arm');
+    });
+
     it('/config shows threshold from REGIMES.AEGIS_TURBO', async () => {
         const { handlers } = makeHandlers();
 
@@ -458,6 +611,14 @@ describe('TelegramCommandHandlers', () => {
 
         expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.placeTpClose).not.toHaveBeenCalled();
+    });
+
+    it('/trade does not break /positions', async () => {
+        const { handlers } = makeHandlers();
+
+        await handlers.handleTrade('ETHUSDT');
+
+        await expect(handlers.handlePositions()).resolves.toContain('🟢 **Ninguna**');
     });
 
     it('/status handles Aegis API failure without throwing', async () => {

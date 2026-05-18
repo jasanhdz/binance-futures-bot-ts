@@ -20,6 +20,36 @@ type CloseOrder = {
     stopPrice: number;
 };
 
+type TradeStatusDetails = {
+    symbol: string;
+    side: Side;
+    entryPrice?: number;
+    markPrice?: number;
+    quantity?: number;
+    margin?: number;
+    leverage?: number;
+    currentRoe?: number;
+    currentPnl?: number;
+    durationHours?: number;
+    tradeId?: string;
+    mode?: string;
+    peakRoe?: number;
+    lowestRoe?: number;
+    breakEvenArmed: boolean;
+    breakEvenExecuted: boolean;
+    lastBreakEvenStop?: number;
+    lastStopPrice?: number;
+    lastTrailStop?: number;
+    trailingActive: boolean;
+    trailingActivationRoe?: number;
+    protectProfitActive: boolean;
+    minPeakRoeToProtect?: number;
+    slPrice?: number;
+    tpPrice?: number;
+    hasSL: boolean;
+    hasTP: boolean;
+};
+
 function finiteNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value);
 }
@@ -37,6 +67,13 @@ function formatUsd(value?: number): string {
 
 function formatPrice(value?: number): string {
     return finiteNumber(value) ? `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/D';
+}
+
+function formatTradePrice(value?: number): string {
+    if (!finiteNumber(value)) return 'N/D';
+    const abs = Math.abs(value);
+    const digits = abs < 1 ? 6 : abs < 10 ? 4 : abs < 100 ? 3 : 2;
+    return `$${value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
 function formatNumber(value?: number, digits = 3): string {
@@ -80,6 +117,12 @@ function calculateRoe(side: Side, entryPrice: number, markPrice: number, leverag
 function pnlFromRoe(margin: number | undefined, roe: number | undefined): number | undefined {
     if (!finiteNumber(margin) || !finiteNumber(roe)) return undefined;
     return margin * roe;
+}
+
+function formatDurationHours(value?: number): string {
+    if (!finiteNumber(value)) return 'N/D';
+    if (value < 1) return `${Math.max(0, value * 60).toFixed(0)}m`;
+    return `${value.toFixed(2)}h`;
 }
 
 function turboFromSignal(signal: AegisTradingSignal): any {
@@ -159,6 +202,8 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `📡 /status - Estado del bot\n` +
             `💰 /account - Cuenta y balances\n` +
             `💼 /positions - Posiciones activas\n` +
+            `📌 /trade ETHUSDT - Detalle de operación activa\n` +
+            `📋 /trades - Resumen de operaciones activas\n` +
             `⚙️ /config - Configuración efectiva\n` +
             `🛰️ /signal ETHUSDT - Señal de un símbolo\n` +
             `📊 /signals - Señales de símbolos activos\n` +
@@ -222,6 +267,32 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
 
     async handlePositions(): Promise<string> {
         return formatPositionsMessage({ activePositions: await this.readActivePositions() });
+    }
+
+    async handleTrade(symbol?: string): Promise<string> {
+        const normalized = this.normalizeSymbol(symbol);
+        if (!normalized) return `Uso: /trade ETHUSDT`;
+
+        const status = await this.readTradeStatus(normalized);
+        if (!status) return `No hay posición activa para ${normalized}`;
+
+        return this.formatTradeStatus(status);
+    }
+
+    async handleTrades(): Promise<string> {
+        const statuses = await this.readOpenTradeStatuses();
+        if (statuses.length === 0) return `📋 **Trades activos**\n🟢 **Sin posiciones activas**`;
+
+        const lines = statuses.map((status) => {
+            const protection = [
+                `BE ${status.breakEvenExecuted ? 'exec' : status.breakEvenArmed ? 'arm' : 'no'}`,
+                `Prot ${status.protectProfitActive ? 'sí' : 'no'}`,
+                `Tr ${status.trailingActive ? 'sí' : 'no'}`
+            ].join(' | ');
+            return `${status.symbol} | ${status.side} | ROE ${formatPct(status.currentRoe, true)} | Peak ${formatPct(status.peakRoe, true)} | Worst ${formatPct(status.lowestRoe, true)} | PnL ${formatUsd(status.currentPnl)} | ${protection}`;
+        });
+
+        return `📋 **Trades activos**\n${lines.join('\n')}`;
     }
 
     async handleConfig(): Promise<string> {
@@ -586,6 +657,139 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         return output;
     }
 
+    private async readOpenTradeStatuses(): Promise<TradeStatusDetails[]> {
+        const statuses: TradeStatusDetails[] = [];
+        for (const symbol of this.getActiveAegisSymbols()) {
+            const status = await this.readTradeStatus(symbol);
+            if (status) statuses.push(status);
+        }
+        return statuses;
+    }
+
+    private async readTradeStatus(symbol: string): Promise<TradeStatusDetails | null> {
+        const stateStore = this.stateForSymbol(symbol);
+        const state = stateStore.get();
+        const preferredSides: Side[] = state.lastSide === 'SHORT'
+            ? ['SHORT', 'LONG']
+            : ['LONG', 'SHORT'];
+
+        for (const side of preferredSides) {
+            const position = await this.deps.exchange.readActivePosition(symbol, side).catch(() => null);
+            if (!position) continue;
+
+            const markPrice = await this.deps.exchange.getMarkPrice(symbol).catch(() => undefined);
+            const entryPrice = position.entryPrice;
+            const leverage = position.leverage;
+            const quantity = position.qtyAbs;
+            const margin = position.isolatedMargin
+                ?? (entryPrice > 0 && leverage > 0 && quantity > 0 ? (entryPrice * quantity) / leverage : undefined);
+            const currentRoe = finiteNumber(position.roePct)
+                ? position.roePct / 100
+                : finiteNumber(markPrice)
+                    ? calculateRoe(side, entryPrice, markPrice, leverage)
+                    : undefined;
+            const currentPnl = position.unrealizedPnl ?? pnlFromRoe(margin, currentRoe);
+            const sameStatePosition = state.lastSide === side
+                && (state.mode === 'LONG_RIDE' || state.mode === 'SHORT_RIDE');
+            const durationHours = sameStatePosition && state.lastEntryAt
+                ? (Date.now() - state.lastEntryAt) / 3600000
+                : undefined;
+            const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side).catch(() => []);
+            const sl = orders.find((order) => order.type.includes('STOP'));
+            const tp = orders.find((order) => order.type.includes('TAKE_PROFIT'));
+            const regime = this.regimeConfig(symbol);
+            const profitProtection = this.profitProtectionConfig();
+            const peakRoe = sameStatePosition ? state.peakRoe : undefined;
+            const lowestRoe = sameStatePosition ? state.lowestRoe : undefined;
+            const trailingActivationRoe = state.lastTrailingActivationRoe
+                ?? regime?.trailingActivationRoe
+                ?? 0.15;
+            const trailingActive = finiteNumber(state.lastTrailStop)
+                || (finiteNumber(currentRoe) && currentRoe >= trailingActivationRoe)
+                || (finiteNumber(peakRoe) && peakRoe >= trailingActivationRoe);
+            const protectProfitEligible = profitProtection.enabled === true
+                && profitProtection.protect_profit_enabled === true
+                && finiteNumber(peakRoe)
+                && peakRoe >= profitProtection.min_peak_roe_to_protect;
+
+            return {
+                symbol,
+                side,
+                entryPrice,
+                markPrice,
+                quantity,
+                margin,
+                leverage,
+                currentRoe,
+                currentPnl,
+                durationHours,
+                tradeId: sameStatePosition ? state.lastTradeId : undefined,
+                mode: state.mode,
+                peakRoe,
+                lowestRoe,
+                breakEvenArmed: state.breakEvenArmed === true,
+                breakEvenExecuted: state.breakEvenExecuted === true,
+                lastBreakEvenStop: state.lastBreakEvenStop,
+                lastStopPrice: state.lastStopPrice,
+                lastTrailStop: state.lastTrailStop,
+                trailingActive,
+                trailingActivationRoe,
+                protectProfitActive: protectProfitEligible,
+                minPeakRoeToProtect: profitProtection.min_peak_roe_to_protect,
+                slPrice: sl?.stopPrice,
+                tpPrice: tp?.stopPrice,
+                hasSL: Boolean(sl),
+                hasTP: Boolean(tp)
+            };
+        }
+
+        return null;
+    }
+
+    private formatTradeStatus(status: TradeStatusDetails): string {
+        const bracketWarning = !status.hasSL || !status.hasTP
+            ? `\n🚨 **WARNING:** bracket faltante`
+            : '';
+        const beText = status.breakEvenExecuted
+            ? 'ejecutado'
+            : status.breakEvenArmed
+                ? 'armado'
+                : 'no';
+        const protectText = status.protectProfitActive
+            ? `activo (peak >= ${formatPct(status.minPeakRoeToProtect, true)})`
+            : `no (min ${formatPct(status.minPeakRoeToProtect, true)})`;
+        const trailingText = status.trailingActive
+            ? `activo (desde ${formatPct(status.trailingActivationRoe, true)})`
+            : `no (desde ${formatPct(status.trailingActivationRoe, true)})`;
+
+        return `📌 **Trade Status**\n` +
+            `${status.symbol} **${status.side}**\n\n` +
+            `Entrada: **${formatTradePrice(status.entryPrice)}**\n` +
+            `Mark: **${formatTradePrice(status.markPrice)}**\n` +
+            `Cantidad: **${formatNumber(status.quantity, 6)}**\n` +
+            `Margen: **${formatUsd(status.margin)}**\n` +
+            `Leverage: **${finiteNumber(status.leverage) ? `${status.leverage}x` : 'N/D'}**\n` +
+            `ROE actual: **${formatPct(status.currentRoe, true)}**\n` +
+            `PnL: **${formatUsd(status.currentPnl)}**\n\n` +
+            `**Picos:**\n` +
+            `Peak: **${formatPct(status.peakRoe, true)}**\n` +
+            `Worst: **${formatPct(status.lowestRoe, true)}**\n` +
+            `MFE/MAE: **${formatPct(status.peakRoe, true)} / ${formatPct(status.lowestRoe, true)}**\n\n` +
+            `**Protección:**\n` +
+            `BE: **${beText}**\n` +
+            `Last BE stop: **${formatTradePrice(status.lastBreakEvenStop)}**\n` +
+            `Protect: **${protectText}**\n` +
+            `Trailing: **${trailingText}**\n` +
+            `Last SL state: **${formatTradePrice(status.lastStopPrice)}**\n` +
+            `Last trail stop: **${formatTradePrice(status.lastTrailStop)}**\n\n` +
+            `**Brackets:**\n` +
+            `SL: **${status.hasSL ? formatTradePrice(status.slPrice) : 'FALTA'}**\n` +
+            `TP: **${status.hasTP ? formatTradePrice(status.tpPrice) : 'FALTA'}**${bracketWarning}\n\n` +
+            `Duración: **${formatDurationHours(status.durationHours)}**\n` +
+            `Trade ID: **${status.tradeId ?? 'N/D'}**\n` +
+            `State: **${status.mode ?? 'N/D'}**`;
+    }
+
     private async readSignal(symbol: string): Promise<AegisTradingSignal> {
         if (typeof this.deps.mlService.getAegisPrediction === 'function') {
             const prediction = await this.deps.mlService.getAegisPrediction(symbol);
@@ -656,6 +860,20 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 manual_only: {
                     block_new_entries: false
                 }
+            };
+    }
+
+    private profitProtectionConfig() {
+        return typeof (this.deps.configManager as any).getAegisProfitProtectionConfig === 'function'
+            ? (this.deps.configManager as any).getAegisProfitProtectionConfig()
+            : {
+                enabled: true,
+                protect_profit_enabled: true,
+                min_peak_roe_to_protect: 0.08,
+                protect_giveback_roe: 0.05,
+                min_locked_roe: 0.01,
+                be_offset_pct: 0.003,
+                immediate_trigger_buffer_pct: 0.001
             };
     }
 

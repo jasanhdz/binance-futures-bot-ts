@@ -9,6 +9,8 @@ export type TelegramCommandName =
     | 'status'
     | 'account'
     | 'positions'
+    | 'trade'
+    | 'trades'
     | 'config'
     | 'signal'
     | 'signals'
@@ -64,6 +66,8 @@ export interface TelegramCommandHandlersPort {
     handleStatus(): Promise<string>;
     handleAccount(): Promise<string>;
     handlePositions(): Promise<string>;
+    handleTrade(symbol?: string): Promise<string>;
+    handleTrades(): Promise<string>;
     handleConfig(): Promise<string>;
     handleSignal(symbol?: string): Promise<string>;
     handleSignals(): Promise<string>;
