@@ -277,6 +277,7 @@ export class TradingService {
             return manager.getAegisTelegramNotificationsConfig();
         }
         return {
+            automatic_block_alerts_enabled: false,
             block_dedupe: DEFAULT_AEGIS_BLOCK_NOTIFICATION_CONFIG
         };
     }
@@ -1453,7 +1454,22 @@ export class TradingService {
 
     private async notifyDecisionEnforcementDenied(symbol: string, decision: AegisDecisionEnforcementDecision): Promise<void> {
         const now = Date.now();
-        const blockDedupeConfig = this.getAegisTelegramNotificationsConfig().block_dedupe;
+        const telegramNotificationsConfig = this.getAegisTelegramNotificationsConfig();
+        if (!telegramNotificationsConfig.automatic_block_alerts_enabled) {
+            this.deps.logger.debug('telegram_block_notification_auto_disabled', {
+                symbol,
+                side: decision.metadata.side,
+                reason: decision.reason,
+                eventRiskMode: decision.metadata.eventRiskMode,
+                setupGrade: decision.metadata.setupGrade,
+                decisionBrainDecision: decision.metadata.decisionBrainDecision,
+                entryQualityRecommendation: decision.metadata.entryQualityRecommendation,
+                entryQualityGateAction: decision.metadata.entryQualityGateAction
+            });
+            return;
+        }
+
+        const blockDedupeConfig = telegramNotificationsConfig.block_dedupe;
         const notification = this.aegisTelegramBlockNotifier.decide({
             timestamp: now,
             symbol,

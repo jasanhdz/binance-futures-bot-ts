@@ -218,6 +218,7 @@ symbols:
             enforce: false
         });
         expect(config.getAegisTelegramNotificationsConfig()).toEqual({
+            automatic_block_alerts_enabled: false,
             block_dedupe: {
                 enabled: true,
                 cooldown_minutes: 15,
@@ -402,6 +403,7 @@ symbols:
     it('parses Aegis Telegram block dedupe notification config', () => {
         const config = new NinjaConfigManager(writeConfig(`
   telegram_notifications:
+    automatic_block_alerts_enabled: true
     block_dedupe:
       enabled: false
       cooldown_minutes: 10
@@ -415,6 +417,7 @@ symbols:
 `));
 
         expect(config.getAegisTelegramNotificationsConfig()).toEqual({
+            automatic_block_alerts_enabled: true,
             block_dedupe: {
                 enabled: false,
                 cooldown_minutes: 10,

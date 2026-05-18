@@ -1,10 +1,15 @@
 # AEGIS Telegram Notifications
 
-## Block Dedupe
+## Block Alerts
 
-Aegis live block notifications use an in-memory dedupe/rate-limit layer before Telegram.
-This only affects Telegram delivery for repeated entry-block messages. Trading decisions,
-history events, and normal logs remain complete.
+Aegis entry-block Telegram alerts are disabled by default in live config. Blocked
+entries remain available through JSONL logs and the `/blocks` on-demand Telegram
+commands.
+
+When `automatic_block_alerts_enabled: true`, Aegis live block notifications use an
+in-memory dedupe/rate-limit layer before Telegram. This only affects Telegram delivery
+for repeated entry-block messages. Trading decisions, history events, and normal logs
+remain complete.
 
 The dedupe key is:
 
@@ -51,6 +56,7 @@ Those alerts remain independent from repeated weak-entry block suppression.
 
 Telegram sends when:
 
+- `automatic_block_alerts_enabled: true`
 - a block key is seen for the first time
 - the same symbol/side changes reason, EventRisk mode, DecisionBrain, EntryQuality, or setup grade
 - the same block repeats after the cooldown
@@ -70,6 +76,7 @@ Live config:
 ```yaml
 aegis:
   telegram_notifications:
+    automatic_block_alerts_enabled: false
     block_dedupe:
       enabled: true
       cooldown_minutes: 15
@@ -78,11 +85,14 @@ aegis:
       include_suppressed_count: true
 ```
 
-Defaults are the same as the live config above. The cache is memory-only and resets on
-process restart. `max_cache_entries` prevents unbounded growth; oldest block keys are
-evicted first.
+`automatic_block_alerts_enabled: false` means Decision Enforcement block alerts are not
+sent automatically. Use `/blocks`, `/blocks detail SYMBOL`, and `/blocks near-miss`
+instead.
 
-If `enabled: false`, the dedupe layer is bypassed and every block notification is sent.
+If automatic block alerts are explicitly re-enabled, the cache is memory-only and resets
+on process restart. `max_cache_entries` prevents unbounded growth; oldest block keys are
+evicted first. If `block_dedupe.enabled: false` while automatic alerts are enabled, the
+dedupe layer is bypassed and every block notification is sent.
 
 ## Reading Telegram
 
@@ -113,10 +123,9 @@ Examples:
 /blocks near-miss 2h
 ```
 
-These commands do not send automatic alerts and do not change the dedupe rules above.
-They read local `logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl` files and summarize
-the selected time window. The Telegram report is intentionally compact; the JSONL logs
-remain the complete source for audit, replay, and offline analysis.
+These commands read local `logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl` files and
+summarize the selected time window. The Telegram report is intentionally compact; the
+JSONL logs remain the complete source for audit, replay, and offline analysis.
 
 `/blocks` also counts allowed/execution events in the same window:
 

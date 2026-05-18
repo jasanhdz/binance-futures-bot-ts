@@ -257,10 +257,12 @@ export interface AegisTelegramBlockDedupeRuntimeConfig {
 }
 
 export interface AegisTelegramNotificationsYamlConfig {
+    automatic_block_alerts_enabled?: boolean;
     block_dedupe?: AegisTelegramBlockDedupeYamlConfig;
 }
 
 export interface AegisTelegramNotificationsRuntimeConfig {
+    automatic_block_alerts_enabled: boolean;
     block_dedupe: AegisTelegramBlockDedupeRuntimeConfig;
 }
 
@@ -721,8 +723,10 @@ export class NinjaConfigManager {
     }
 
     getAegisTelegramNotificationsConfig(): AegisTelegramNotificationsRuntimeConfig {
-        const raw = this.config.aegis?.telegram_notifications?.block_dedupe || {};
+        const notifications = this.config.aegis?.telegram_notifications || {};
+        const raw = notifications.block_dedupe || {};
         return {
+            automatic_block_alerts_enabled: notifications.automatic_block_alerts_enabled === true,
             block_dedupe: {
                 enabled: raw.enabled !== false,
                 cooldown_minutes: Math.max(1, this.finiteNumber(raw.cooldown_minutes, 15)),

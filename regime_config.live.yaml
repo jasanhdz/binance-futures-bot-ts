@@ -105,6 +105,7 @@ aegis:
     block_all_entry_quality_shadow_block: true
     block_all_tail_risk_high: false
   telegram_notifications:
+    automatic_block_alerts_enabled: false
     block_dedupe:
       enabled: true
       cooldown_minutes: 15

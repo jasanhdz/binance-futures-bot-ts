@@ -425,6 +425,7 @@ function makeHarness(options: {
             block_all_tail_risk_high: false
         }),
         getAegisTelegramNotificationsConfig: vi.fn(() => options.telegramNotifications ?? {
+            automatic_block_alerts_enabled: false,
             block_dedupe: {
                 enabled: true,
                 cooldown_minutes: 15,
@@ -1375,7 +1376,7 @@ describe('TradingService Aegis live execution', () => {
     });
 
     it('decision enforcement blocks DO_NOT_ENTER before setLeverage and marketOpen', async () => {
-        const { exchange, historyLogger, notifier, service } = makeHarness({
+        const { exchange, historyLogger, logger, notifier, service } = makeHarness({
             signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
             decisionEnforcement: decisionEnforcementConfig()
         });
@@ -1393,7 +1394,11 @@ describe('TradingService Aegis live execution', () => {
                 eventRiskMode: 'NORMAL'
             })
         }));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Entrada bloqueada por protección Aegis'));
+        expect(notifier.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('Entrada bloqueada por protección Aegis'));
+        expect(logger.debug).toHaveBeenCalledWith('telegram_block_notification_auto_disabled', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            reason: 'decision_brain_do_not_enter'
+        }));
     });
 
     it('dedupes repeated DECISION_ENFORCEMENT_DENIED Telegram while keeping history and logs', async () => {
@@ -1402,6 +1407,7 @@ describe('TradingService Aegis live execution', () => {
             signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
             decisionEnforcement: decisionEnforcementConfig(),
             telegramNotifications: {
+                automatic_block_alerts_enabled: true,
                 block_dedupe: {
                     enabled: true,
                     cooldown_minutes: 15,
@@ -1442,7 +1448,17 @@ describe('TradingService Aegis live execution', () => {
         const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
         const { mlService, notifier, service } = makeHarness({
             signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
-            decisionEnforcement: decisionEnforcementConfig()
+            decisionEnforcement: decisionEnforcementConfig(),
+            telegramNotifications: {
+                automatic_block_alerts_enabled: true,
+                block_dedupe: {
+                    enabled: true,
+                    cooldown_minutes: 15,
+                    summary_threshold: 25,
+                    max_cache_entries: 1000,
+                    include_suppressed_count: true
+                }
+            }
         });
         mlService.getSignal
             .mockResolvedValueOnce(validSignalWithDecisionBrain('DO_NOT_ENTER'))
