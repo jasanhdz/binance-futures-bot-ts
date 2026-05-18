@@ -180,7 +180,7 @@ aegis:
     # the bot uses this fraction instead of Aegis ML raw.position_fraction.
     position_fraction_overrides:
       - name: majors_link_btc_eth_ada_long
-        symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT]
+        symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT, XRPUSDT, BNBUSDT, DOGEUSDT]
         long: 0.50
     max_trades_per_day: 99
     max_consecutive_losses: 10

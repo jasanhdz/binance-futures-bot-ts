@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CONFIG } from '../config/environment';
 import { AegisMLServiceClient } from './AegisMLAdapter';
 
 vi.mock('axios', () => ({
@@ -9,6 +10,10 @@ vi.mock('axios', () => ({
 }));
 
 describe('AegisMLServiceClient', () => {
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
     it('preserves entry_quality_model when present', async () => {
         const post = vi.fn().mockResolvedValue({
             data: {
@@ -33,7 +38,7 @@ describe('AegisMLServiceClient', () => {
         const client = new AegisMLServiceClient();
         const response = await client.fetchPrediction({ symbol: 'ETHUSDT' });
 
-        expect(post).toHaveBeenCalledWith('/ml-v2/predict', { symbol: 'ETHUSDT' });
+        expect(post).toHaveBeenCalledWith('/ml-v2/predict', { symbol: 'ETHUSDT' }, { timeout: CONFIG.ML_PREDICT_TIMEOUT_MS });
         expect(response.aegis?.entry_quality_model?.mode).toBe('SHADOW');
         expect(response.aegis?.entry_quality_model?.execute).toBe(false);
     });
@@ -121,5 +126,35 @@ describe('AegisMLServiceClient', () => {
         expect(response.aegis?.decision_brain?.decision).toBe('DO_NOT_ENTER');
         expect(response.aegis?.decision_brain?.execute).toBe(false);
         expect(response.aegis?.decision_brain?.production_allowed).toBe(false);
+    });
+
+    it('returns defensive HOLD prediction when predict times out', async () => {
+        const post = vi.fn().mockRejectedValue(new Error('timeout of 5000ms exceeded'));
+        vi.mocked(axios.create).mockReturnValue({ post, get: vi.fn() } as any);
+
+        const client = new AegisMLServiceClient();
+        const response = await client.fetchPrediction({ symbol: 'LINKUSDT' });
+
+        expect(response.symbol).toBe('LINKUSDT');
+        expect(response.meta_verdict).toBe('AEGIS_ML_FALLBACK_HOLD');
+        expect(response.neutral_prob).toBe(1);
+        expect(response.aegis?.turbo?.raw?.would_execute).toBe(false);
+        expect(response.aegis?.turbo?.gated?.blocked_by).toBe('ml_client_fallback');
+        expect(response.aegis?.decision_brain?.decision).toBe('DO_NOT_ENTER');
+        expect(response.metadata?.fallback).toBe(true);
+    });
+
+    it('uses bounded route-specific timeouts', async () => {
+        const post = vi.fn().mockResolvedValue({ data: { action: 'HOLD', confidence: 0.5 } });
+        const get = vi.fn().mockResolvedValue({ status: 200 });
+        vi.mocked(axios.create).mockReturnValue({ post, get } as any);
+
+        const client = new AegisMLServiceClient();
+        await client.getExitSignal({ symbol: 'ETHUSDT' });
+        await client.checkHealth();
+
+        expect(axios.create).toHaveBeenCalledWith(expect.objectContaining({ timeout: CONFIG.ML_PREDICT_TIMEOUT_MS }));
+        expect(post).toHaveBeenCalledWith('/ml-v2/exit_signal', { symbol: 'ETHUSDT' }, { timeout: CONFIG.ML_EXIT_SIGNAL_TIMEOUT_MS });
+        expect(get).toHaveBeenCalledWith('/health', { timeout: CONFIG.ML_HEALTH_TIMEOUT_MS });
     });
 });

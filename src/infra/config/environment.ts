@@ -69,6 +69,9 @@ export const CONFIG = {
   // --- ML Service (ENV) ---
   ML_SERVICE_URL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8001',
   ML_HISTORY_BARS: Number(process.env.ML_HISTORY_BARS ?? 512),
+  ML_PREDICT_TIMEOUT_MS: numberEnv('ML_PREDICT_TIMEOUT_MS') ?? 12_000,
+  ML_EXIT_SIGNAL_TIMEOUT_MS: numberEnv('ML_EXIT_SIGNAL_TIMEOUT_MS') ?? 8_000,
+  ML_HEALTH_TIMEOUT_MS: numberEnv('ML_HEALTH_TIMEOUT_MS') ?? 3_000,
 
   // --- Aegis TS Integration (ENV) ---
   TRADING_MODE: process.env.TRADING_MODE || 'AEGIS_SHADOW',
