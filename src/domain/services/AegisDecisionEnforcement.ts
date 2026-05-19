@@ -70,8 +70,22 @@ export interface AegisDecisionEnforcementDecision {
         decisionBrainDecision?: string;
         decisionBrainRecommendation?: string;
         entryQualityRecommendation?: string;
+        entryQualityModelRecommendation?: string;
+        entryQualityModelScore?: number | null;
+        entryQualityModelFeatureStatus?: string;
+        entryQualityModelFeatureParityPct?: number | null;
+        entryQualityModelMissingFeaturesCount?: number | null;
+        entryQualityModelScope?: string;
+        entryQualityModelVersion?: string;
+        featureStatus?: string;
+        featureParityPct?: number | null;
+        missingFeaturesCount?: number | null;
+        modelScope?: string;
+        modelVersion?: string;
         entryQualityGateAction?: string;
         entryQualityGateReason?: string;
+        entryQualityRuleGateDecision?: string;
+        entryQualityRuleGateReason?: string;
         eventRiskWouldBlock?: boolean;
         eventRiskReason?: string;
         entryQualityScore?: number | null;
@@ -162,8 +176,22 @@ function baseMetadata(
         decisionBrainDecision: input.decisionBrain?.decision,
         decisionBrainRecommendation: input.decisionBrain?.recommendation,
         entryQualityRecommendation: input.entryQualityModel?.recommendation,
+        entryQualityModelRecommendation: input.entryQualityModel?.recommendation,
+        entryQualityModelScore: input.entryQualityModel?.entry_quality_score,
+        entryQualityModelFeatureStatus: input.entryQualityModel?.feature_status,
+        entryQualityModelFeatureParityPct: input.entryQualityModel?.feature_parity_pct,
+        entryQualityModelMissingFeaturesCount: input.entryQualityModel?.missing_features_count,
+        entryQualityModelScope: input.entryQualityModel?.model_scope,
+        entryQualityModelVersion: input.entryQualityModel?.model_version,
+        featureStatus: input.entryQualityModel?.feature_status,
+        featureParityPct: input.entryQualityModel?.feature_parity_pct,
+        missingFeaturesCount: input.entryQualityModel?.missing_features_count,
+        modelScope: input.entryQualityModel?.model_scope,
+        modelVersion: input.entryQualityModel?.model_version,
         entryQualityGateAction: input.entryQualityGate?.action,
         entryQualityGateReason: input.entryQualityGate?.reason,
+        entryQualityRuleGateDecision: input.entryQualityGate?.action,
+        entryQualityRuleGateReason: input.entryQualityGate?.reason,
         eventRiskWouldBlock: input.eventRiskWouldBlock,
         eventRiskReason: input.eventRiskReason,
         entryQualityScore: input.entryQualityModel?.entry_quality_score,
@@ -220,6 +248,7 @@ function hasMissingDecisionBrain(input: AegisDecisionEnforcementInput): boolean 
 
 function isEntryQualityAllow(input: AegisDecisionEnforcementInput): boolean {
     return normalizedRecommendation(input.entryQualityModel) === 'ALLOW_SHADOW'
+        || normalizedRecommendation(input.entryQualityModel) === 'ALLOW'
         || input.entryQualityGate?.action === 'SHADOW_ALLOW'
         || input.entryQualityGate?.action === 'ALLOW';
 }
@@ -229,7 +258,7 @@ function setupGrade(input: AegisDecisionEnforcementInput): AegisDecisionSetupGra
 
     const tailRisk = extractTailRisk(input);
     const dbEnterNow = normalizedDecision(input.decisionBrain) === 'ENTER_NOW';
-    const eqAllow = normalizedRecommendation(input.entryQualityModel) === 'ALLOW_SHADOW';
+    const eqAllow = isEntryQualityAllow(input);
     const turboScore = input.turboScore;
     const tailAvailable = finiteNumber(tailRisk);
     const turboAvailable = finiteNumber(turboScore);

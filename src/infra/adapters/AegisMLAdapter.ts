@@ -141,6 +141,8 @@ function buildDefensivePrediction(symbol: string, error: unknown): AegisPredicti
         recommendation: 'MODEL_ERROR',
         reason,
         feature_status: 'insufficient',
+        feature_parity_pct: 0,
+        missing_features_count: 0,
         missing_features: [],
         model_scope: 'none',
         latency_ms: 0,

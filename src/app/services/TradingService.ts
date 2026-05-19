@@ -1762,6 +1762,8 @@ export class TradingService {
                 });
             }
 
+            const aegisBlockForCleanEntry = this.getAegisSignalBlock(signal);
+            const entryQualityModelForCleanEntry = aegisBlockForCleanEntry?.entry_quality_model;
             const cleanEntryGuard = evaluateAegisCleanEntryGuard({
                 ...this.getAegisCleanEntryGuardConfig(),
                 symbol,
@@ -1770,9 +1772,38 @@ export class TradingService {
                 votes: effectiveGate.votes,
                 setupGrade: decisionEnforcement.metadata.setupGrade,
                 decisionBrain: decisionEnforcement.metadata.decisionBrainDecision,
-                entryQualityRecommendation: decisionEnforcement.metadata.entryQualityRecommendation
+                entryQualityRecommendation: decisionEnforcement.metadata.entryQualityModelRecommendation
+                    ?? decisionEnforcement.metadata.entryQualityRecommendation
                     ?? this.recommendationFromEntryQualityGateAction(entryQualityDecision.action),
-                entryQualityGateReason: decisionEnforcement.metadata.entryQualityGateReason ?? entryQualityDecision.reason,
+                entryQualityGateAction: decisionEnforcement.metadata.entryQualityRuleGateDecision ?? entryQualityDecision.action,
+                entryQualityGateReason: decisionEnforcement.metadata.entryQualityRuleGateReason ?? entryQualityDecision.reason,
+                entryQualityModelPresent: entryQualityModelForCleanEntry !== undefined,
+                entryQualityModelRecommendation: decisionEnforcement.metadata.entryQualityModelRecommendation
+                    ?? entryQualityModelForCleanEntry?.recommendation,
+                entryQualityModelScore: decisionEnforcement.metadata.entryQualityModelScore
+                    ?? entryQualityModelForCleanEntry?.entry_quality_score,
+                entryQualityModelFeatureStatus: decisionEnforcement.metadata.entryQualityModelFeatureStatus
+                    ?? entryQualityModelForCleanEntry?.feature_status,
+                entryQualityModelFeatureParityPct: decisionEnforcement.metadata.entryQualityModelFeatureParityPct
+                    ?? entryQualityModelForCleanEntry?.feature_parity_pct,
+                entryQualityModelMissingFeaturesCount: decisionEnforcement.metadata.entryQualityModelMissingFeaturesCount
+                    ?? entryQualityModelForCleanEntry?.missing_features_count,
+                entryQualityModelScope: decisionEnforcement.metadata.entryQualityModelScope
+                    ?? entryQualityModelForCleanEntry?.model_scope,
+                entryQualityModelVersion: decisionEnforcement.metadata.entryQualityModelVersion
+                    ?? entryQualityModelForCleanEntry?.model_version,
+                featureStatus: decisionEnforcement.metadata.entryQualityModelFeatureStatus
+                    ?? entryQualityModelForCleanEntry?.feature_status,
+                featureParityPct: decisionEnforcement.metadata.entryQualityModelFeatureParityPct
+                    ?? entryQualityModelForCleanEntry?.feature_parity_pct,
+                missingFeaturesCount: decisionEnforcement.metadata.entryQualityModelMissingFeaturesCount
+                    ?? entryQualityModelForCleanEntry?.missing_features_count,
+                modelScope: decisionEnforcement.metadata.entryQualityModelScope
+                    ?? entryQualityModelForCleanEntry?.model_scope,
+                modelVersion: decisionEnforcement.metadata.entryQualityModelVersion
+                    ?? entryQualityModelForCleanEntry?.model_version,
+                entryQualityRuleGateReason: decisionEnforcement.metadata.entryQualityRuleGateReason ?? entryQualityDecision.reason,
+                entryQualityRuleGateDecision: decisionEnforcement.metadata.entryQualityRuleGateDecision ?? entryQualityDecision.action,
                 entryQualityScore: decisionEnforcement.metadata.entryQualityScore,
                 tailRiskScore: decisionEnforcement.metadata.tailRiskScore ?? eventRiskDecision.metadata.tailRiskScore,
                 eventRiskMode: decisionEnforcement.metadata.eventRiskMode,

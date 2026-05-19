@@ -17,6 +17,9 @@ export interface AegisCleanEntryGuardVotes {
 export interface AegisCleanEntryGuardConfig {
     enabled: boolean;
     mode: AegisCleanEntryGuardMode;
+    useEntryQualityModelAsSourceOfTruth: boolean;
+    ignoreRuleGateInsufficientDataWhenModelOk: boolean;
+    minFeatureParityPct: number;
     applyTo: {
         long: boolean;
         short: boolean;
@@ -56,6 +59,22 @@ export interface AegisCleanEntryGuardInput extends AegisCleanEntryGuardConfig {
     decisionBrain?: string;
     entryQualityRecommendation?: string;
     entryQualityGateReason?: string;
+    entryQualityGateAction?: string;
+    entryQualityModelPresent?: boolean;
+    entryQualityModelRecommendation?: string;
+    entryQualityModelScore?: number | null;
+    entryQualityModelFeatureStatus?: string;
+    entryQualityModelFeatureParityPct?: number | null;
+    entryQualityModelMissingFeaturesCount?: number | null;
+    entryQualityModelScope?: string;
+    entryQualityModelVersion?: string;
+    featureStatus?: string;
+    featureParityPct?: number | null;
+    missingFeaturesCount?: number | null;
+    modelScope?: string;
+    modelVersion?: string;
+    entryQualityRuleGateReason?: string;
+    entryQualityRuleGateDecision?: string;
     entryQualityScore?: number | null;
     tailRiskScore?: number | null;
     eventRiskMode?: string;
@@ -89,6 +108,22 @@ export interface AegisCleanEntryGuardOutput {
         decisionBrain?: string;
         entryQualityRecommendation?: string;
         entryQualityGateReason?: string;
+        entryQualityGateAction?: string;
+        entryQualityModelPresent?: boolean;
+        entryQualityModelRecommendation?: string;
+        entryQualityModelScore?: number | null;
+        entryQualityModelFeatureStatus?: string;
+        entryQualityModelFeatureParityPct?: number | null;
+        entryQualityModelMissingFeaturesCount?: number | null;
+        entryQualityModelScope?: string;
+        entryQualityModelVersion?: string;
+        featureStatus?: string;
+        featureParityPct?: number | null;
+        missingFeaturesCount?: number | null;
+        modelScope?: string;
+        modelVersion?: string;
+        entryQualityRuleGateReason?: string;
+        entryQualityRuleGateDecision?: string;
         entryQualityScore?: number | null;
         tailRiskScore?: number | null;
         eventRiskMode?: string;
@@ -96,12 +131,16 @@ export interface AegisCleanEntryGuardOutput {
         eventRiskReason?: string;
         isPremiumSymbol?: boolean;
         extremeMomentumCandidate?: boolean;
+        clean_entry_rule_gate_insufficient_context_ignored_due_to_model_ok?: boolean;
     };
 }
 
 export const DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG: AegisCleanEntryGuardConfig = {
     enabled: false,
     mode: 'SHADOW',
+    useEntryQualityModelAsSourceOfTruth: true,
+    ignoreRuleGateInsufficientDataWhenModelOk: true,
+    minFeatureParityPct: 95,
     applyTo: {
         long: true,
         short: true
@@ -160,7 +199,7 @@ function appliesToSide(input: AegisCleanEntryGuardInput): boolean {
 
 function hasCriticalMissingData(input: AegisCleanEntryGuardInput): boolean {
     return !normalized(input.decisionBrain)
-        || !normalized(input.entryQualityRecommendation)
+        || !normalized(input.entryQualityModelRecommendation ?? input.entryQualityRecommendation)
         || input.eventRiskWouldBlock === undefined
         || !finiteNumber(input.tailRiskScore);
 }
@@ -179,9 +218,38 @@ export function evaluateAegisCleanEntryGuard(input: AegisCleanEntryGuardInput): 
     const disabled = input.enabled !== true || !appliesToSide(input);
     const reasons: string[] = [];
     const decisionBrain = normalized(input.decisionBrain);
-    const entryQualityRecommendation = normalized(input.entryQualityRecommendation);
-    const entryQualityGateReason = normalized(input.entryQualityGateReason);
+    const entryQualityModelRecommendation = normalized(input.entryQualityModelRecommendation ?? input.entryQualityRecommendation);
+    const entryQualityRecommendation = entryQualityModelRecommendation;
+    const entryQualityModelFeatureStatus = normalized(input.entryQualityModelFeatureStatus ?? input.featureStatus);
+    const entryQualityRuleGateReason = normalized(input.entryQualityRuleGateReason ?? input.entryQualityGateReason);
+    const entryQualityRuleGateDecision = normalized(input.entryQualityRuleGateDecision ?? input.entryQualityGateAction);
+    const entryQualityGateReason = entryQualityRuleGateReason;
     const eventRiskMode = normalized(input.eventRiskMode);
+    const entryQualityModelScore = finiteNumber(input.entryQualityModelScore)
+        ? input.entryQualityModelScore
+        : input.entryQualityScore;
+    const rawFeatureParityPct = input.entryQualityModelFeatureParityPct ?? input.featureParityPct;
+    const featureParityPct = finiteNumber(rawFeatureParityPct) ? rawFeatureParityPct : undefined;
+    const minFeatureParityPct = finiteNumber(input.minFeatureParityPct) ? input.minFeatureParityPct : 95;
+    const inferredModelPresent = Boolean(
+        entryQualityModelRecommendation
+        || finiteNumber(entryQualityModelScore)
+        || finiteNumber(input.tailRiskScore)
+        || entryQualityModelFeatureStatus
+        || featureParityPct !== undefined
+    );
+    const modelPresent = input.entryQualityModelPresent !== undefined
+        ? input.entryQualityModelPresent === true
+        : inferredModelPresent;
+    const modelFeaturesOk = modelPresent
+        && entryQualityModelFeatureStatus === 'OK'
+        && featureParityPct !== undefined
+        && featureParityPct >= minFeatureParityPct
+        && finiteNumber(entryQualityModelScore)
+        && finiteNumber(input.tailRiskScore);
+    const useModelSourceOfTruth = input.useEntryQualityModelAsSourceOfTruth !== false;
+    const ignoreRuleInsufficientWhenModelOk = input.ignoreRuleGateInsufficientDataWhenModelOk !== false;
+    const ruleGateInsufficientData = isInsufficientData(entryQualityRuleGateReason);
 
     if (disabled) {
         return buildOutput(input, {
@@ -201,10 +269,16 @@ export function evaluateAegisCleanEntryGuard(input: AegisCleanEntryGuardInput): 
     }
 
     if (
-        input.dirtyConditions.blockWhenEntryQualityInsufficient
-        && isInsufficientData(entryQualityGateReason)
+        useModelSourceOfTruth
+        && !modelFeaturesOk
     ) {
-        reasons.push('clean_entry_insufficient_data');
+        reasons.push('clean_entry_model_features_missing');
+    } else if (
+        input.dirtyConditions.blockWhenEntryQualityInsufficient
+        && ruleGateInsufficientData
+        && !(useModelSourceOfTruth && ignoreRuleInsufficientWhenModelOk && modelFeaturesOk)
+    ) {
+        reasons.push('clean_entry_rule_gate_insufficient_context');
     }
 
     if (
@@ -216,24 +290,20 @@ export function evaluateAegisCleanEntryGuard(input: AegisCleanEntryGuardInput): 
 
     if (
         finiteNumber(input.tailRiskScore)
-        && input.tailRiskScore >= input.dirtyConditions.blockWhenTailRiskGte
+        && (
+            input.tailRiskScore > input.cleanConditions.maxTailRiskScore
+            || input.tailRiskScore >= input.dirtyConditions.blockWhenTailRiskGte
+        )
     ) {
         reasons.push('clean_entry_tail_risk_high');
     }
 
     if (
-        finiteNumber(input.tailRiskScore)
-        && input.tailRiskScore > input.cleanConditions.maxTailRiskScore
-        && input.tailRiskScore < input.dirtyConditions.blockWhenTailRiskGte
-    ) {
-        reasons.push('clean_entry_tail_risk_above_clean_max');
-    }
-
-    if (
         input.dirtyConditions.blockWhenEntryQualityNotAllow
+        && (!useModelSourceOfTruth || modelFeaturesOk)
         && !isEntryQualityAllow(entryQualityRecommendation)
     ) {
-        reasons.push('clean_entry_quality_not_allow');
+        reasons.push('clean_entry_model_block_shadow');
     }
 
     if (decisionBrain !== 'ENTER_NOW') {
@@ -242,8 +312,13 @@ export function evaluateAegisCleanEntryGuard(input: AegisCleanEntryGuardInput): 
 
     const clean = !missingCriticalData
         && (!input.cleanConditions.requireDecisionBrainEnterNow || decisionBrain === 'ENTER_NOW')
+        && (!useModelSourceOfTruth || modelFeaturesOk)
         && (!input.cleanConditions.requireEntryQualityAllow || isEntryQualityAllow(entryQualityRecommendation))
-        && (!input.cleanConditions.requireNoInsufficientData || !isInsufficientData(entryQualityGateReason))
+        && (
+            !input.cleanConditions.requireNoInsufficientData
+            || !ruleGateInsufficientData
+            || (useModelSourceOfTruth && ignoreRuleInsufficientWhenModelOk && modelFeaturesOk)
+        )
         && (!input.cleanConditions.requireEventRiskWouldBlockFalse || input.eventRiskWouldBlock === false)
         && finiteNumber(input.tailRiskScore)
         && input.tailRiskScore <= input.cleanConditions.maxTailRiskScore;
@@ -313,13 +388,33 @@ export function evaluateAegisCleanEntryGuard(input: AegisCleanEntryGuardInput): 
             decisionBrain,
             entryQualityRecommendation,
             entryQualityGateReason,
-            entryQualityScore: source.entryQualityScore,
+            entryQualityGateAction: source.entryQualityGateAction,
+            entryQualityModelPresent: modelPresent,
+            entryQualityModelRecommendation,
+            entryQualityModelScore,
+            entryQualityModelFeatureStatus,
+            entryQualityModelFeatureParityPct: featureParityPct,
+            entryQualityModelMissingFeaturesCount: source.entryQualityModelMissingFeaturesCount ?? source.missingFeaturesCount,
+            entryQualityModelScope: source.entryQualityModelScope ?? source.modelScope,
+            entryQualityModelVersion: source.entryQualityModelVersion ?? source.modelVersion,
+            featureStatus: entryQualityModelFeatureStatus,
+            featureParityPct,
+            missingFeaturesCount: source.entryQualityModelMissingFeaturesCount ?? source.missingFeaturesCount,
+            modelScope: source.entryQualityModelScope ?? source.modelScope,
+            modelVersion: source.entryQualityModelVersion ?? source.modelVersion,
+            entryQualityRuleGateReason,
+            entryQualityRuleGateDecision,
+            entryQualityScore: entryQualityModelScore,
             tailRiskScore: source.tailRiskScore,
             eventRiskMode,
             eventRiskWouldBlock: source.eventRiskWouldBlock,
             eventRiskReason: source.eventRiskReason,
             isPremiumSymbol: source.isPremiumSymbol,
-            extremeMomentumCandidate: isExtremeMomentumCandidate(source)
+            extremeMomentumCandidate: isExtremeMomentumCandidate(source),
+            clean_entry_rule_gate_insufficient_context_ignored_due_to_model_ok:
+                ruleGateInsufficientData && useModelSourceOfTruth && ignoreRuleInsufficientWhenModelOk && modelFeaturesOk
+                    ? true
+                    : undefined
         };
 
         return {

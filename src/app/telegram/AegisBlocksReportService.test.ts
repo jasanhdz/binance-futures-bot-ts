@@ -188,7 +188,7 @@ describe('AegisBlocksReportService', () => {
         expect(report.samples[0].tailRiskScore).toBeNull();
     });
 
-    it('/blocks cuenta clean_entry_wait_confirmation', async () => {
+    it('/blocks cuenta la razón específica de Clean Entry', async () => {
         await writeEvents([
             event({
                 event: 'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
@@ -198,12 +198,12 @@ describe('AegisBlocksReportService', () => {
                         symbol: 'LINKUSDT',
                         side: 'LONG',
                         decision: 'WAIT_CONFIRMATION',
-                        reasons: ['clean_entry_insufficient_data'],
+                        reasons: ['clean_entry_event_risk_would_block'],
                         decisionBrain: 'ENTER_NOW',
                         entryQualityRecommendation: 'ALLOW_SHADOW',
-                        entryQualityGateReason: 'insufficient_data',
+                        entryQualityRuleGateReason: 'insufficient_data',
                         tailRiskScore: 0.33,
-                        eventRiskWouldBlock: false,
+                        eventRiskWouldBlock: true,
                         setupGrade: 'A'
                     }
                 }
@@ -213,9 +213,10 @@ describe('AegisBlocksReportService', () => {
         const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
 
         expect(report.totalBlocks).toBe(1);
-        expect(report.byReason).toMatchObject({ clean_entry_wait_confirmation: 1 });
+        expect(report.byReason).toMatchObject({ clean_entry_event_risk_would_block: 1 });
         expect(report.samples[0]).toMatchObject({
             symbol: 'LINKUSDT',
+            reason: 'clean_entry_event_risk_would_block',
             decisionBrain: 'ENTER_NOW',
             entryQuality: 'ALLOW_SHADOW',
             setupGrade: 'A'

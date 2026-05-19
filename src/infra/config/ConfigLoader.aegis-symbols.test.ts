@@ -411,6 +411,9 @@ symbols:
         expect(config.getAegisCleanEntryGuardConfig()).toMatchObject({
             enabled: false,
             mode: 'SHADOW',
+            useEntryQualityModelAsSourceOfTruth: true,
+            ignoreRuleGateInsufficientDataWhenModelOk: true,
+            minFeatureParityPct: 95,
             dirtyConditions: {
                 blockWhenTailRiskGte: 0.45
             },
@@ -425,6 +428,9 @@ symbols:
   clean_entry_guard:
     enabled: true
     mode: ENFORCE
+    use_entry_quality_model_as_source_of_truth: true
+    ignore_rule_gate_insufficient_data_when_model_ok: true
+    min_feature_parity_pct: 96
     apply_to:
       long: true
       short: false
@@ -457,6 +463,9 @@ symbols:
         expect(config.getAegisCleanEntryGuardConfig()).toEqual({
             enabled: true,
             mode: 'ENFORCE',
+            useEntryQualityModelAsSourceOfTruth: true,
+            ignoreRuleGateInsufficientDataWhenModelOk: true,
+            minFeatureParityPct: 96,
             applyTo: { long: true, short: false },
             dirtyConditions: {
                 blockWhenEntryQualityInsufficient: true,

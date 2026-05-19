@@ -106,7 +106,12 @@ function validSignalWithShadowEntryQuality(): AegisTradingSignal {
                     entry_quality_score: 0.20,
                     tail_risk_score: 0.90,
                     recommendation: 'BLOCK_SHADOW',
-                    reason: 'quality_low_and_tail_high'
+                    reason: 'quality_low_and_tail_high',
+                    feature_status: 'ok',
+                    feature_parity_pct: 100,
+                    missing_features_count: 0,
+                    model_scope: 'global',
+                    model_version: 'v020'
                 }
             }
         }
@@ -138,7 +143,12 @@ function validSignalWithDecisionBrain(decision: string, entryQualityRecommendati
                     status: 'RESEARCH_CANDIDATE_NOT_LIVE',
                     entry_quality_score: entryQualityRecommendation === 'ALLOW_SHADOW' ? 0.82 : 0.2,
                     tail_risk_score: entryQualityRecommendation === 'ALLOW_SHADOW' ? 0.2 : 0.8,
-                    recommendation: entryQualityRecommendation
+                    recommendation: entryQualityRecommendation,
+                    feature_status: 'ok',
+                    feature_parity_pct: 100,
+                    missing_features_count: 0,
+                    model_scope: 'global',
+                    model_version: 'v020'
                 },
                 event_risk_auto: {
                     mode: 'SHADOW',
@@ -685,7 +695,7 @@ describe('TradingService Aegis live execution', () => {
         }));
     });
 
-    it('clean entry guard SHADOW records wait confirmation but does not block marketOpen', async () => {
+    it('clean entry guard SHADOW ignores legacy rule insufficient_data when Python model is ok', async () => {
         const { exchange, historyLogger, service } = makeHarness({
             signal: validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW'),
             cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'SHADOW' }),
@@ -699,20 +709,22 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'CLEAN_ENTRY_GUARD_SHADOW_WAIT',
-            reason: 'clean_entry_shadow_wait',
+            event: 'CLEAN_ENTRY_GUARD_SHADOW_ALLOW',
+            reason: 'clean_entry_allow',
             metadata: expect.objectContaining({
                 cleanEntryGuard: expect.objectContaining({
-                    decision: 'SHADOW_WAIT_CONFIRMATION',
+                    decision: 'ALLOW_CLEAN',
                     allowed: true,
-                    wouldBlock: true,
-                    reasons: expect.arrayContaining(['clean_entry_insufficient_data'])
+                    wouldBlock: false,
+                    reasons: [],
+                    entryQualityRuleGateReason: 'INSUFFICIENT_DATA',
+                    clean_entry_rule_gate_insufficient_context_ignored_due_to_model_ok: true
                 })
             })
         }));
     });
 
-    it('clean entry guard ENFORCE blocks before setLeverage and marketOpen on insufficient_data', async () => {
+    it('clean entry guard ENFORCE does not block on legacy rule insufficient_data when Python model is ok', async () => {
         const { exchange, historyLogger, service, state } = makeHarness({
             signal: validSignalWithDecisionBrain('ENTER_NOW', 'ALLOW_SHADOW'),
             cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
@@ -724,21 +736,19 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).not.toHaveBeenCalled();
-        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
-        expect(exchange.marketOpen).not.toHaveBeenCalled();
-        expect(exchange.placeStopClose).not.toHaveBeenCalled();
-        expect(exchange.placeTpClose).not.toHaveBeenCalled();
-        expect(state.set).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(state.set).toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
-            reason: 'clean_entry_wait_confirmation',
+            event: 'CLEAN_ENTRY_GUARD_ALLOW',
+            reason: 'clean_entry_allow',
             metadata: expect.objectContaining({
                 cleanEntryGuard: expect.objectContaining({
-                    decision: 'WAIT_CONFIRMATION',
-                    allowed: false,
-                    wouldBlock: true,
-                    reasons: expect.arrayContaining(['clean_entry_insufficient_data'])
+                    decision: 'ALLOW_CLEAN',
+                    allowed: true,
+                    wouldBlock: false,
+                    reasons: [],
+                    entryQualityRuleGateReason: 'INSUFFICIENT_DATA',
+                    clean_entry_rule_gate_insufficient_context_ignored_due_to_model_ok: true
                 })
             })
         }));

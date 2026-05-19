@@ -100,6 +100,9 @@ export type AegisCleanEntryGuardMode = 'SHADOW' | 'ENFORCE';
 export interface AegisCleanEntryGuardYamlConfig {
     enabled?: boolean;
     mode?: AegisCleanEntryGuardMode | string;
+    use_entry_quality_model_as_source_of_truth?: boolean;
+    ignore_rule_gate_insufficient_data_when_model_ok?: boolean;
+    min_feature_parity_pct?: number;
     apply_to?: {
         long?: boolean;
         short?: boolean;
@@ -133,6 +136,9 @@ export interface AegisCleanEntryGuardYamlConfig {
 export interface AegisCleanEntryGuardRuntimeConfig {
     enabled: boolean;
     mode: AegisCleanEntryGuardMode;
+    useEntryQualityModelAsSourceOfTruth: boolean;
+    ignoreRuleGateInsufficientDataWhenModelOk: boolean;
+    minFeatureParityPct: number;
     applyTo: {
         long: boolean;
         short: boolean;
@@ -796,6 +802,9 @@ export class NinjaConfigManager {
         return {
             enabled: raw.enabled === true,
             mode: this.normalizeCleanEntryGuardMode(raw.mode),
+            useEntryQualityModelAsSourceOfTruth: raw.use_entry_quality_model_as_source_of_truth !== false,
+            ignoreRuleGateInsufficientDataWhenModelOk: raw.ignore_rule_gate_insufficient_data_when_model_ok !== false,
+            minFeatureParityPct: Math.max(0, this.finiteNumber(raw.min_feature_parity_pct, 95)),
             applyTo: {
                 long: raw.apply_to?.long !== false,
                 short: raw.apply_to?.short !== false
@@ -1099,6 +1108,9 @@ export class NinjaConfigManager {
                 clean_entry_guard: {
                     enabled: false,
                     mode: 'SHADOW',
+                    use_entry_quality_model_as_source_of_truth: true,
+                    ignore_rule_gate_insufficient_data_when_model_ok: true,
+                    min_feature_parity_pct: 95,
                     apply_to: {
                         long: true,
                         short: true
