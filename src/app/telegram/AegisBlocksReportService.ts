@@ -29,6 +29,13 @@ export type AegisBlockSample = {
         finalDecision: string | null;
         finalReason: string | null;
     } | null;
+    regime: {
+        label: string | null;
+        confidence: number | null;
+        reason: string | null;
+        source: string | null;
+        wouldBlock: boolean | null;
+    } | null;
     probeMode: {
         enabled: boolean | null;
         allowed: boolean | null;
@@ -136,7 +143,23 @@ const BLOCK_REASONS = new Set([
     'probe_min_minutes_between_entries',
     'probe_entries_per_hour_exceeded',
     'probe_open_probe_positions_exceeded',
-    'probe_total_open_positions_exceeded'
+    'probe_total_open_positions_exceeded',
+    'regime_trade_allowed',
+    'regime_disabled',
+    'regime_shadow_would_block',
+    'regime_chop_block',
+    'regime_risk_off_block',
+    'regime_exhaustion_block',
+    'regime_high_vol_risk_block',
+    'regime_unknown_block',
+    'regime_low_confidence',
+    'regime_btc_eth_not_aligned',
+    'regime_alt_long_btc_short_block',
+    'regime_alt_short_btc_long_block',
+    'regime_tail_risk_high',
+    'regime_stale_snapshot',
+    'regime_model_unavailable',
+    'regime_invalid_source'
 ]);
 
 const ALLOWED_EVENTS = new Set([
@@ -349,11 +372,12 @@ function isBlockRow(row: JsonRecord): boolean {
 
 function extractBlockSample(row: JsonRecord): AegisBlockSample {
     const metadata = row.metadata ?? {};
+    const event = stableText(row.event);
     const cleanEntryGuard = metadata.cleanEntryGuard ?? {};
     const probeMode = metadata.probeMode ?? cleanEntryGuard.probeMode ?? {};
-    const entryPolicy = metadata.entryPolicy ?? {};
+    const entryPolicy = metadata.entryPolicy ?? (event === 'ENTRY_POLICY_DECISION' ? metadata : {});
+    const regime = entryPolicy.regime ?? metadata.regime ?? {};
     const checks = metadata.checks ?? {};
-    const event = stableText(row.event);
     const cleanEntryReason = event.startsWith('CLEAN_ENTRY_GUARD') ? cleanEntryGuard.reasons?.[0] : undefined;
     const probeReason = event.startsWith('PROBE_MODE') ? probeMode.reason : undefined;
     const reason = stableText(probeReason ?? cleanEntryReason ?? entryPolicy.finalReason ?? row.reason ?? metadata.reason ?? cleanEntryGuard.reasons?.[0] ?? metadata.eventRiskReason ?? event);
@@ -376,6 +400,13 @@ function extractBlockSample(row: JsonRecord): AegisBlockSample {
         entryPolicy: Object.keys(entryPolicy).length > 0 ? {
             finalDecision: nullableText(entryPolicy.finalDecision),
             finalReason: nullableText(entryPolicy.finalReason)
+        } : null,
+        regime: Object.keys(regime).length > 0 ? {
+            label: nullableText(regime.regime ?? regime.label),
+            confidence: finiteNumber(regime.confidence),
+            reason: nullableText(regime.reason),
+            source: nullableText(regime.source),
+            wouldBlock: nullableBoolean(regime.wouldBlock)
         } : null,
         probeMode: Object.keys(probeMode).length > 0 ? {
             enabled: nullableBoolean(probeMode.enabled),
@@ -485,6 +516,9 @@ function appendSamples(lines: string[], samples: AegisBlockSample[]): void {
         if (sample.entryPolicy) {
             lines.push(`   EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`);
         }
+        if (sample.regime) {
+            lines.push(`   Regime: ${sample.regime.label ?? 'N/D'} ${formatPct(sample.regime.confidence)} | ${sample.regime.reason ?? 'N/D'}`);
+        }
         lines.push(`   Motivo: ${formatReason(sample)}`);
         if (index < Math.min(samples.length, 5) - 1) lines.push('');
     });
@@ -504,6 +538,9 @@ function appendNearMisses(lines: string[], samples: AegisBlockSample[]): void {
         }
         if (sample.entryPolicy) {
             lines.push(`EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`);
+        }
+        if (sample.regime) {
+            lines.push(`Regime: ${sample.regime.label ?? 'N/D'} ${formatPct(sample.regime.confidence)} | ${sample.regime.reason ?? 'N/D'}`);
         }
         lines.push(`Bloqueo: ${formatReason(sample)}`);
     });

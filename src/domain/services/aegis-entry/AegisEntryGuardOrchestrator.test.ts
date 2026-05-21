@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AegisDecisionEnforcementRuntimeConfig } from '../AegisDecisionEnforcement';
 import { DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG } from '../AegisCleanEntryGuard';
+import { DEFAULT_AEGIS_REGIME_GUARD_CONFIG } from '../AegisRegimeGuard';
 import { AegisEntryGuardOrchestrator } from './AegisEntryGuardOrchestrator';
 import {
     AegisEntryContext,
@@ -29,6 +30,7 @@ const decisionEnforcementConfig: AegisDecisionEnforcementRuntimeConfig = {
 };
 
 const guardNames: AegisEntryGuardName[] = [
+    'regime',
     'short_gate',
     'entry_quality',
     'event_risk',
@@ -41,6 +43,7 @@ function policy(overrides: Partial<AegisEntryPolicyRuntimeConfig['guards']> = {}
     return {
         enabled: true,
         guards: {
+            regime: { enabled: true, mode: 'SHADOW' },
             short_gate: { enabled: true, mode: 'ENFORCE' },
             entry_quality: { enabled: true, mode: 'ENFORCE' },
             event_risk: { enabled: true, mode: 'ENFORCE' },
@@ -164,6 +167,21 @@ function baseContext(overrides: Partial<AegisEntryContext> = {}): AegisEntryCont
                 reasons: ['test']
             }
         },
+        regime: {
+            config: {
+                ...DEFAULT_AEGIS_REGIME_GUARD_CONFIG,
+                enabled: true,
+                mode: 'ENFORCE',
+                blockWhen: ['CHOP', 'EXHAUSTION', 'RISK_OFF', 'HIGH_VOL_RISK', 'UNKNOWN']
+            },
+            btcAction: 'LONG',
+            btcScore: 0.82,
+            btcVotes: { long: 3, short: 0, neutral: 0 },
+            ethAction: 'LONG',
+            ethScore: 0.80,
+            ethVotes: { long: 3, short: 0, neutral: 0 },
+            snapshotAgeSeconds: 60
+        },
         cleanEntry: {
             config: {
                 ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG,
@@ -237,6 +255,100 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.finalDecision).toBe('ALLOW');
         expect(result.shouldOpen).toBe(true);
         expect(result.guards.every((guard) => guard.enabled === false)).toBe(true);
+    });
+
+    it('blocks first when Regime ENFORCE denies', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(
+            baseContext({
+                regime: {
+                    ...baseContext().regime!,
+                    btcAction: 'SHORT',
+                    ethAction: 'LONG'
+                }
+            }),
+            policy({ regime: { enabled: true, mode: 'ENFORCE' } })
+        );
+
+        expect(result.finalDecision).toBe('DENY');
+        expect(result.deniedBy).toBe('regime');
+        expect(result.finalReason).toBe('regime_alt_long_btc_short_block');
+        expect(result.guards.map((guard) => guard.name)).toEqual(guardNames);
+        expect(result.guards.find((guard) => guard.name === 'short_gate')?.reason).toBe('short_gate_not_evaluated');
+    });
+
+    it('records Regime SHADOW deny without blocking', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(
+            baseContext({
+                regime: {
+                    ...baseContext().regime!,
+                    btcAction: 'SHORT',
+                    ethAction: 'LONG'
+                }
+            }),
+            policy({ regime: { enabled: true, mode: 'SHADOW' } })
+        );
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.guards.find((guard) => guard.name === 'regime')).toMatchObject({
+            decision: 'SHADOW_DENY',
+            wouldBlock: true,
+            enforced: false
+        });
+    });
+
+    it('does not block ML_MODEL unavailable while Regime is SHADOW', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(
+            baseContext({
+                regime: {
+                    ...baseContext().regime!,
+                    config: {
+                        ...baseContext().regime!.config,
+                        source: 'ML_MODEL'
+                    }
+                }
+            }),
+            policy({ regime: { enabled: true, mode: 'SHADOW' } })
+        );
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.decisions.regime).toMatchObject({
+            source: 'ML_MODEL',
+            reason: 'regime_model_unavailable',
+            wouldBlock: true
+        });
+        expect(result.guards.find((guard) => guard.name === 'regime')).toMatchObject({
+            decision: 'SHADOW_DENY',
+            enforced: false
+        });
+    });
+
+    it('does not block when Regime is OFF', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(
+            baseContext({
+                regime: {
+                    ...baseContext().regime!,
+                    btcAction: 'SHORT',
+                    ethAction: 'LONG'
+                }
+            }),
+            policy({ regime: { enabled: false, mode: 'OFF' } })
+        );
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.guards.find((guard) => guard.name === 'regime')?.enabled).toBe(false);
+    });
+
+    it('continues normally when Regime allows', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(baseContext(), policy({
+            regime: { enabled: true, mode: 'ENFORCE' }
+        }));
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.decisions.regime?.regime).toBe('MOMENTUM_UP');
+        expect(result.metadata.regime).toMatchObject({
+            regime: 'MOMENTUM_UP',
+            source: 'HYBRID_HEURISTIC'
+        });
     });
 
     it('records SHADOW wouldBlock without blocking', () => {

@@ -10,12 +10,13 @@ La capa no toca Binance, no abre ordenes, no cambia sizing por si sola y no modi
 
 Orden deterministico:
 
-1. `short_gate`
-2. `entry_quality`
-3. `event_risk`
-4. `decision_brain`
-5. `clean_entry`
-6. `probe_mode`
+1. `regime`
+2. `short_gate`
+3. `entry_quality`
+4. `event_risk`
+5. `decision_brain`
+6. `clean_entry`
+7. `probe_mode`
 
 Cada guard devuelve:
 
@@ -49,6 +50,9 @@ aegis:
   entry_policy:
     enabled: true
     guards:
+      regime:
+        enabled: true
+        mode: SHADOW
       decision_brain:
         enabled: true
         mode: ENFORCE
@@ -71,6 +75,7 @@ aegis:
 
 Las configs legacy siguen siendo la fuente de parametros finos:
 
+- `aegis.regime_guard`
 - `aegis.clean_entry_guard`
 - `aegis.probe_mode`
 - `aegis.event_risk`
@@ -104,6 +109,21 @@ aegis:
         mode: SHADOW
 ```
 
+Poner Regime Guard en observacion, que es el default prudente de v1:
+
+```yaml
+aegis:
+  entry_policy:
+    guards:
+      regime:
+        enabled: true
+        mode: SHADOW
+  regime_guard:
+    enabled: true
+    mode: SHADOW
+    source: HYBRID_HEURISTIC
+```
+
 Mantener Probe Mode registrando denegaciones sin permitir entradas:
 
 ```yaml
@@ -129,6 +149,16 @@ Cada intento relevante genera metadata compacta y trace completo:
     "setupGrade": "WEAK"
   },
   "guards": {
+    "regime": {
+      "mode": "SHADOW",
+      "decision": "SHADOW_DENY",
+      "reason": "regime_shadow_would_block",
+      "metadata": {
+        "regime": "CHOP",
+        "confidence": 0.7,
+        "source": "HYBRID_HEURISTIC"
+      }
+    },
     "decision_brain": {
       "mode": "ENFORCE",
       "decision": "ALLOW",
@@ -146,6 +176,8 @@ Cada intento relevante genera metadata compacta y trace completo:
 ```
 
 El trace completo va a JSONL. Telegram muestra un resumen compacto para no saturar `/blocks`.
+
+`ENTRY_POLICY_DECISION` incluye tambien un resumen `entryPolicy.regime` con label, confidence, source, BTC/ETH context, tail risk, event risk y razon. Esto deja preparada la base para un dataset de regimen sin cambiar la estrategia live.
 
 ## Agregar un guard futuro
 

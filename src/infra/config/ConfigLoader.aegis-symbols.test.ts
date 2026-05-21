@@ -352,6 +352,129 @@ symbols:
         expect(restartedConfig.getAegisEventRiskConfig().mode).toBe('CAUTION');
     });
 
+    it('parses regime guard config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  regime_guard:
+    enabled: true
+    mode: ENFORCE
+    source: ML_MODEL
+    allow_when:
+      - MOMENTUM_UP
+      - TREND_DOWN
+    block_when:
+      - CHOP
+      - UNKNOWN
+    min_confidence: 0.72
+    max_snapshot_age_seconds: 600
+    high_tail_risk_threshold: 0.41
+    require_btc_eth_alignment_for_alts: false
+    allow_alt_long_when_btc_short: true
+    allow_alt_short_when_btc_long: true
+    telemetry:
+      log_all_evaluations: true
+      include_in_entry_metadata: false
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisRegimeGuardConfig()).toEqual({
+            enabled: true,
+            mode: 'ENFORCE',
+            source: 'ML_MODEL',
+            allowWhen: ['MOMENTUM_UP', 'TREND_DOWN'],
+            blockWhen: ['CHOP', 'UNKNOWN'],
+            minConfidence: 0.72,
+            maxSnapshotAgeSeconds: 600,
+            requireBtcEthAlignmentForAlts: false,
+            allowAltLongWhenBtcShort: true,
+            allowAltShortWhenBtcLong: true,
+            highTailRiskThreshold: 0.41,
+            telemetry: {
+                logAllEvaluations: true,
+                includeInEntryMetadata: false
+            }
+        });
+    });
+
+    it('uses safe regime guard defaults and normalizes invalid values', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  regime_guard:
+    enabled: true
+    mode: INVALID
+    source: BROKEN
+    allow_when:
+      - NOPE
+    block_when:
+      - ALSO_NOPE
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisRegimeGuardConfig()).toMatchObject({
+            enabled: true,
+            mode: 'SHADOW',
+            source: 'HYBRID_HEURISTIC',
+            allowWhen: ['MOMENTUM_UP', 'MOMENTUM_DOWN', 'BREAKOUT_UP', 'BREAKOUT_DOWN', 'TREND_UP', 'TREND_DOWN'],
+            blockWhen: ['RISK_OFF', 'HIGH_VOL_RISK'],
+            minConfidence: 0.60,
+            maxSnapshotAgeSeconds: 900,
+            highTailRiskThreshold: 0.45,
+            requireBtcEthAlignmentForAlts: true,
+            allowAltLongWhenBtcShort: false,
+            allowAltShortWhenBtcLong: false
+        });
+    });
+
+    it('parses entry_policy regime guard OFF, SHADOW and ENFORCE', () => {
+        const shadowConfig = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    enabled: true
+    guards:
+      regime:
+        enabled: true
+        mode: SHADOW
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+        const enforceConfig = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    enabled: true
+    guards:
+      regime:
+        enabled: true
+        mode: ENFORCE
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+        const offConfig = new NinjaConfigManager(writeConfig(`
+  regime_guard:
+    enabled: true
+    mode: SHADOW
+  entry_policy:
+    enabled: true
+    guards:
+      regime:
+        enabled: false
+        mode: OFF
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(shadowConfig.getAegisEntryPolicyConfig().guards.regime).toEqual({ enabled: true, mode: 'SHADOW' });
+        expect(enforceConfig.getAegisEntryPolicyConfig().guards.regime).toEqual({ enabled: true, mode: 'ENFORCE' });
+        expect(offConfig.getAegisEntryPolicyConfig().guards.regime).toEqual({ enabled: false, mode: 'OFF' });
+    });
+
     it('parses decision enforcement conservative config', () => {
         const config = new NinjaConfigManager(writeConfig(`
   decision_enforcement:
@@ -455,6 +578,9 @@ symbols:
   entry_policy:
     enabled: true
     guards:
+      regime:
+        enabled: true
+        mode: SHADOW
       decision_brain:
         enabled: true
         mode: ENFORCE
@@ -482,6 +608,7 @@ symbols:
         expect(config.getAegisEntryPolicyConfig()).toEqual({
             enabled: true,
             guards: {
+                regime: { enabled: true, mode: 'SHADOW' },
                 decision_brain: { enabled: true, mode: 'ENFORCE' },
                 entry_quality: { enabled: true, mode: 'SHADOW' },
                 event_risk: { enabled: false, mode: 'OFF' },
@@ -503,6 +630,9 @@ symbols:
   event_risk:
     enabled: true
     mode: CAUTION
+  regime_guard:
+    enabled: true
+    mode: SHADOW
   clean_entry_guard:
     enabled: true
     mode: ENFORCE
@@ -521,6 +651,7 @@ symbols:
         expect(config.getAegisEntryPolicyConfig()).toEqual({
             enabled: true,
             guards: {
+                regime: { enabled: true, mode: 'SHADOW' },
                 decision_brain: { enabled: true, mode: 'ENFORCE' },
                 entry_quality: { enabled: true, mode: 'SHADOW' },
                 event_risk: { enabled: true, mode: 'SHADOW' },
@@ -575,6 +706,7 @@ symbols:
         expect(config.getAegisEntryPolicyConfig()).toEqual({
             enabled: true,
             guards: {
+                regime: { enabled: false, mode: 'SHADOW' },
                 decision_brain: { enabled: false, mode: 'ENFORCE' },
                 entry_quality: { enabled: false, mode: 'OFF' },
                 event_risk: { enabled: false, mode: 'SHADOW' },

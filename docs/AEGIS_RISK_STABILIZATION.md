@@ -10,9 +10,12 @@ Clean Entry Confirmation Guard v1 está activo como capa posterior a Decision En
 
 Las capas de entrada se coordinan desde `aegis.entry_policy`. Esta policy no cambia thresholds ni estrategia; solo define si cada guard corre en `OFF`, `SHADOW` o `ENFORCE`. Ver `docs/AEGIS_ENTRY_POLICY.md`.
 
+Regime Guard v1 queda activo en `SHADOW` como cadenero observacional. Evalua si el regimen de mercado parece apto para operar la señal, pero no bloquea live mientras siga en `SHADOW`. Ver `docs/AEGIS_REGIME_GUARD.md`.
+
 Decisión activa:
 
 - Portfolio risk: OFF.
+- Regime Guard: SHADOW, solo recolecta evidencia.
 - El bot puede abrir nuevas posiciones aunque ya existan otras abiertas.
 - Todos los símbolos pueden participar.
 - SHORTS no están apagados.
@@ -64,6 +67,7 @@ No deberían generarse eventos nuevos `PORTFOLIO_RISK_DENIED` mientras esta secc
 Eventos en `logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl`:
 
 - `ENTRY_POLICY_DECISION`: trace estandar de todos los guards de entrada.
+- `regime_*`: razones del Regime Guard dentro de `ENTRY_POLICY_DECISION`, reales solo si la decision final no es `ALLOW`.
 - `SHORT_GATE_DENIED`: SHORT bloqueado por score o votos.
 - `SHORT_GATE_ADJUSTED`: SHORT permitido con metadata de leverage/position fraction original y ajustado.
 - `CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION`: señal direccional aprobada, pero entrada no limpia; se espera confirmación.
@@ -79,6 +83,13 @@ Razones principales:
 - `clean_entry_event_risk_would_block`
 - `clean_entry_tail_risk_high`
 - `clean_entry_quality_not_allow`
+- `regime_shadow_would_block`
+- `regime_chop_block`
+- `regime_risk_off_block`
+- `regime_tail_risk_high`
+- `regime_btc_eth_not_aligned`
+- `regime_alt_long_btc_short_block`
+- `regime_alt_short_btc_long_block`
 
 ## Endurecer o relajar
 
@@ -103,6 +114,7 @@ Para bloquear símbolos específicos en el futuro, agregar símbolos a `block_sy
 La configuración live inicial:
 
 - portfolio risk OFF
+- Regime Guard en SHADOW con source `HYBRID_HEURISTIC`
 - SHORT premium activo: score mínimo `0.80`, votos `3/3`, size `100%`, leverage máximo `10x`
 - SHORT blocked symbols: ninguno
 - Clean Entry Guard activo en `ENFORCE`

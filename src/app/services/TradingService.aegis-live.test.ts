@@ -164,6 +164,44 @@ function validSignalWithDecisionBrain(decision: string, entryQualityRecommendati
     };
 }
 
+function signalWithRegimeContext(input: {
+    symbol?: string;
+    turboScore?: number;
+    votes?: { long?: number; short?: number; neutral?: number };
+    setupGrade?: string;
+    btcAction?: string;
+    ethAction?: string;
+} = {}): AegisTradingSignal {
+    const signal = validSignalWithDecisionBrain('ENTER_NOW');
+    return {
+        ...signal,
+        symbol: input.symbol ?? signal.symbol,
+        metadata: {
+            ...signal.metadata,
+            aegis: {
+                ...signal.metadata?.aegis,
+                turbo: {
+                    ...signal.metadata?.aegis?.turbo,
+                    raw: {
+                        ...signal.metadata?.aegis?.turbo?.raw,
+                        turbo_score: input.turboScore ?? 0.94,
+                        votes: input.votes ?? { long: 3, short: 0, neutral: 0 }
+                    }
+                },
+                clean_entry_guard: {
+                    setupGrade: input.setupGrade ?? 'A'
+                },
+                event_risk_auto: {
+                    ...signal.metadata?.aegis?.event_risk_auto,
+                    btc_context: { action: input.btcAction ?? 'LONG', score: 0.82, votes: { long: 3, short: 0, neutral: 0 } },
+                    eth_context: { action: input.ethAction ?? 'LONG', score: 0.80, votes: { long: 3, short: 0, neutral: 0 } },
+                    snapshot_age_seconds: 60
+                } as any
+            }
+        }
+    };
+}
+
 function shortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTradingSignal {
     return {
         symbol,
@@ -222,6 +260,42 @@ function entryQualityConfig(overrides: Record<string, any> = {}) {
             ...configOverrides
         },
         ...rest
+    };
+}
+
+function regimeGuardConfig(overrides: Record<string, any> = {}) {
+    return {
+        enabled: true,
+        mode: 'SHADOW',
+        source: 'HYBRID_HEURISTIC',
+        allowWhen: ['MOMENTUM_UP', 'MOMENTUM_DOWN', 'BREAKOUT_UP', 'BREAKOUT_DOWN', 'TREND_UP', 'TREND_DOWN'],
+        blockWhen: ['CHOP', 'EXHAUSTION', 'RISK_OFF', 'HIGH_VOL_RISK', 'UNKNOWN'],
+        minConfidence: 0.60,
+        maxSnapshotAgeSeconds: 900,
+        requireBtcEthAlignmentForAlts: true,
+        allowAltLongWhenBtcShort: false,
+        allowAltShortWhenBtcLong: false,
+        highTailRiskThreshold: 0.45,
+        telemetry: {
+            logAllEvaluations: true,
+            includeInEntryMetadata: true
+        },
+        ...overrides
+    };
+}
+
+function entryPolicyWithRegime(mode: 'OFF' | 'SHADOW' | 'ENFORCE') {
+    return {
+        enabled: true,
+        guards: {
+            regime: { enabled: mode !== 'OFF', mode },
+            short_gate: { enabled: false, mode: 'OFF' },
+            entry_quality: { enabled: false, mode: 'OFF' },
+            event_risk: { enabled: false, mode: 'OFF' },
+            decision_brain: { enabled: false, mode: 'OFF' },
+            clean_entry: { enabled: false, mode: 'OFF' },
+            probe_mode: { enabled: false, mode: 'OFF' }
+        }
     };
 }
 
@@ -362,6 +436,7 @@ function makeHarness(options: {
         portfolioRisk?: any;
         shortGate?: any;
         eventRisk?: any;
+        regimeGuard?: any;
         decisionEnforcement?: any;
         cleanEntryGuard?: any;
         probeMode?: any;
@@ -494,6 +569,23 @@ function makeHarness(options: {
             },
             manual_only: {
                 block_new_entries: false
+            }
+        }),
+        getAegisRegimeGuardConfig: vi.fn(() => options.regimeGuard ?? {
+            enabled: false,
+            mode: 'SHADOW',
+            source: 'HYBRID_HEURISTIC',
+            allowWhen: ['MOMENTUM_UP', 'MOMENTUM_DOWN', 'BREAKOUT_UP', 'BREAKOUT_DOWN', 'TREND_UP', 'TREND_DOWN'],
+            blockWhen: ['RISK_OFF', 'HIGH_VOL_RISK'],
+            minConfidence: 0.60,
+            maxSnapshotAgeSeconds: 900,
+            requireBtcEthAlignmentForAlts: true,
+            allowAltLongWhenBtcShort: false,
+            allowAltShortWhenBtcLong: false,
+            highTailRiskThreshold: 0.45,
+            telemetry: {
+                logAllEvaluations: false,
+                includeInEntryMetadata: true
             }
         }),
         getAegisDecisionEnforcementConfig: vi.fn(() => options.decisionEnforcement ?? {
@@ -1605,6 +1697,85 @@ describe('TradingService Aegis live execution', () => {
                         enforced: false,
                         wouldBlock: true
                     })
+                })
+            })
+        }));
+    });
+
+    it('Regime ENFORCE deny blocks before exchange mutation and records ENTRY_POLICY_DECISION', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: signalWithRegimeContext({ symbol: 'ADAUSDT', btcAction: 'SHORT', ethAction: 'LONG' }),
+            regimeGuard: regimeGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            entryPolicy: entryPolicyWithRegime('ENFORCE')
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_POLICY_DECISION',
+            reason: 'regime_alt_long_btc_short_block',
+            metadata: expect.objectContaining({
+                finalDecision: 'DENY',
+                finalReason: 'regime_alt_long_btc_short_block',
+                regime: expect.objectContaining({
+                    regime: 'RISK_OFF',
+                    wouldBlock: true,
+                    source: 'HYBRID_HEURISTIC'
+                })
+            })
+        }));
+    });
+
+    it('Regime SHADOW_DENY does not block by itself and keeps metadata', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: signalWithRegimeContext({ symbol: 'ADAUSDT', btcAction: 'SHORT', ethAction: 'LONG' }),
+            regimeGuard: regimeGuardConfig({ enabled: true, mode: 'SHADOW' }),
+            entryPolicy: entryPolicyWithRegime('SHADOW')
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_POLICY_DECISION',
+            reason: 'all_enforced_guards_allowed',
+            metadata: expect.objectContaining({
+                finalDecision: 'ALLOW',
+                regime: expect.objectContaining({
+                    decision: 'SHADOW_DENY',
+                    wouldBlock: true,
+                    reason: 'regime_shadow_would_block'
+                })
+            })
+        }));
+    });
+
+    it('Regime ALLOW in ENFORCE continues normal flow', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            signal: signalWithRegimeContext(),
+            regimeGuard: regimeGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            entryPolicy: entryPolicyWithRegime('ENFORCE')
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_POLICY_DECISION',
+            metadata: expect.objectContaining({
+                regime: expect.objectContaining({
+                    regime: 'MOMENTUM_UP',
+                    decision: 'ALLOW'
                 })
             })
         }));

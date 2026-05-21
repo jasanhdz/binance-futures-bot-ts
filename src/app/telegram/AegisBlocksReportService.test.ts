@@ -373,4 +373,75 @@ describe('AegisBlocksReportService', () => {
         });
         expect(messages.join('\n')).toContain('EntryPolicy: WAIT_CONFIRMATION | probe_min_minutes_between_entries');
     });
+
+    it('/blocks muestra regime metadata en ENTRY_POLICY_DECISION y near-miss', async () => {
+        await writeEvents([
+            event({
+                symbol: 'ADAUSDT',
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'regime_alt_long_btc_short_block',
+                metadata: {
+                    symbol: 'ADAUSDT',
+                    side: 'LONG',
+                    turboScore: 0.94,
+                    setupGrade: 'A',
+                    finalDecision: 'DENY',
+                    finalReason: 'regime_alt_long_btc_short_block',
+                    regime: {
+                        regime: 'RISK_OFF',
+                        confidence: 0.78,
+                        reason: 'regime_alt_long_btc_short_block',
+                        source: 'HYBRID_HEURISTIC',
+                        wouldBlock: true
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'near-miss', windowMinutes: 60 });
+        const messages = await service().buildTelegramMessages(['near-miss']);
+
+        expect(report.totalBlocks).toBe(1);
+        expect(report.byReason).toMatchObject({ regime_alt_long_btc_short_block: 1 });
+        expect(report.nearMisses[0].entryPolicy).toMatchObject({
+            finalDecision: 'DENY',
+            finalReason: 'regime_alt_long_btc_short_block'
+        });
+        expect(report.nearMisses[0].regime).toMatchObject({
+            label: 'RISK_OFF',
+            confidence: 0.78,
+            reason: 'regime_alt_long_btc_short_block',
+            source: 'HYBRID_HEURISTIC',
+            wouldBlock: true
+        });
+        expect(messages.join('\n')).toContain('Regime: RISK_OFF 78.0% | regime_alt_long_btc_short_block');
+    });
+
+    it('/blocks no cuenta ENTRY_POLICY_DECISION ALLOW aunque regime sea SHADOW_DENY', async () => {
+        await writeEvents([
+            event({
+                symbol: 'ADAUSDT',
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'all_enforced_guards_allowed',
+                metadata: {
+                    symbol: 'ADAUSDT',
+                    side: 'LONG',
+                    finalDecision: 'ALLOW',
+                    finalReason: 'all_enforced_guards_allowed',
+                    regime: {
+                        regime: 'CHOP',
+                        confidence: 0.70,
+                        decision: 'SHADOW_DENY',
+                        reason: 'regime_shadow_would_block',
+                        source: 'HYBRID_HEURISTIC',
+                        wouldBlock: true
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(0);
+    });
 });

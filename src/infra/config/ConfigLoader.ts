@@ -19,6 +19,13 @@ import {
     AegisEntryPolicyMode,
     AegisEntryPolicyRuntimeConfig
 } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
+import {
+    AegisRegimeGuardConfig,
+    AegisRegimeGuardMode,
+    AegisRegimeLabel,
+    AegisRegimeSource,
+    DEFAULT_AEGIS_REGIME_GUARD_CONFIG
+} from '../../domain/services/AegisRegimeGuard';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -281,6 +288,24 @@ export interface AegisEventRiskRuntimeConfig {
     };
 }
 
+export interface AegisRegimeGuardYamlConfig {
+    enabled?: boolean;
+    mode?: AegisRegimeGuardMode | string;
+    source?: AegisRegimeSource | string;
+    allow_when?: Array<AegisRegimeLabel | string>;
+    block_when?: Array<AegisRegimeLabel | string>;
+    min_confidence?: number;
+    max_snapshot_age_seconds?: number;
+    require_btc_eth_alignment_for_alts?: boolean;
+    allow_alt_long_when_btc_short?: boolean;
+    allow_alt_short_when_btc_long?: boolean;
+    high_tail_risk_threshold?: number;
+    telemetry?: {
+        log_all_evaluations?: boolean;
+        include_in_entry_metadata?: boolean;
+    };
+}
+
 export interface AegisProbeModeYamlConfig {
     enabled?: boolean;
     mode?: AegisProbeModeMode | string;
@@ -453,6 +478,7 @@ export interface NinjaYamlConfig {
         portfolio_risk?: AegisPortfolioRiskYamlConfig;
         short_gate?: AegisShortGateYamlConfig;
         event_risk?: AegisEventRiskYamlConfig;
+        regime_guard?: AegisRegimeGuardYamlConfig;
         entry_policy?: AegisEntryPolicyYamlConfig;
         probe_mode?: AegisProbeModeYamlConfig;
         decision_enforcement?: AegisDecisionEnforcementYamlConfig;
@@ -811,16 +837,42 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisRegimeGuardConfig(): AegisRegimeGuardConfig {
+        const raw = this.config.aegis?.regime_guard || {};
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeRegimeGuardMode(raw.mode),
+            source: this.normalizeRegimeSource(raw.source),
+            allowWhen: this.normalizeRegimeList(raw.allow_when, DEFAULT_AEGIS_REGIME_GUARD_CONFIG.allowWhen),
+            blockWhen: this.normalizeRegimeList(raw.block_when, DEFAULT_AEGIS_REGIME_GUARD_CONFIG.blockWhen),
+            minConfidence: Math.max(0, this.finiteNumber(raw.min_confidence, DEFAULT_AEGIS_REGIME_GUARD_CONFIG.minConfidence)),
+            maxSnapshotAgeSeconds: Math.max(0, this.finiteNumber(raw.max_snapshot_age_seconds, DEFAULT_AEGIS_REGIME_GUARD_CONFIG.maxSnapshotAgeSeconds)),
+            requireBtcEthAlignmentForAlts: raw.require_btc_eth_alignment_for_alts !== false,
+            allowAltLongWhenBtcShort: raw.allow_alt_long_when_btc_short === true,
+            allowAltShortWhenBtcLong: raw.allow_alt_short_when_btc_long === true,
+            highTailRiskThreshold: Math.max(0, this.finiteNumber(raw.high_tail_risk_threshold, DEFAULT_AEGIS_REGIME_GUARD_CONFIG.highTailRiskThreshold)),
+            telemetry: {
+                logAllEvaluations: raw.telemetry?.log_all_evaluations === true,
+                includeInEntryMetadata: raw.telemetry?.include_in_entry_metadata !== false
+            }
+        };
+    }
+
     getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
         const raw = this.config.aegis?.entry_policy || {};
         const guards = raw.guards || {};
         const entryQualityGate = this.getEntryQualityGateConfig();
         const eventRisk = this.getAegisEventRiskConfig();
+        const regimeGuard = this.getAegisRegimeGuardConfig();
         const cleanEntry = this.getAegisCleanEntryGuardConfig();
         const probeMode = this.getAegisProbeModeConfig();
         return {
             enabled: raw.enabled !== false,
             guards: {
+                regime: this.normalizeEntryGuardPolicy(guards.regime, {
+                    enabled: regimeGuard.enabled,
+                    mode: regimeGuard.mode
+                }),
                 decision_brain: this.normalizeEntryGuardPolicy(guards.decision_brain, {
                     enabled: this.getAegisDecisionEnforcementConfig().enabled,
                     mode: 'ENFORCE'
@@ -1190,6 +1242,23 @@ export class NinjaConfigManager {
                         block_new_entries: false
                     }
                 },
+                regime_guard: {
+                    enabled: false,
+                    mode: 'SHADOW',
+                    source: 'HYBRID_HEURISTIC',
+                    allow_when: [...DEFAULT_AEGIS_REGIME_GUARD_CONFIG.allowWhen],
+                    block_when: [...DEFAULT_AEGIS_REGIME_GUARD_CONFIG.blockWhen],
+                    min_confidence: DEFAULT_AEGIS_REGIME_GUARD_CONFIG.minConfidence,
+                    max_snapshot_age_seconds: DEFAULT_AEGIS_REGIME_GUARD_CONFIG.maxSnapshotAgeSeconds,
+                    require_btc_eth_alignment_for_alts: DEFAULT_AEGIS_REGIME_GUARD_CONFIG.requireBtcEthAlignmentForAlts,
+                    allow_alt_long_when_btc_short: DEFAULT_AEGIS_REGIME_GUARD_CONFIG.allowAltLongWhenBtcShort,
+                    allow_alt_short_when_btc_long: DEFAULT_AEGIS_REGIME_GUARD_CONFIG.allowAltShortWhenBtcLong,
+                    high_tail_risk_threshold: DEFAULT_AEGIS_REGIME_GUARD_CONFIG.highTailRiskThreshold,
+                    telemetry: {
+                        log_all_evaluations: false,
+                        include_in_entry_metadata: true
+                    }
+                },
                 decision_enforcement: {
                     enabled: false,
                     mode: 'OFF',
@@ -1330,6 +1399,48 @@ export class NinjaConfigManager {
             return normalized;
         }
         return 'OFF';
+    }
+
+    private normalizeRegimeGuardMode(mode?: AegisRegimeGuardMode | string): AegisRegimeGuardMode {
+        const normalized = String(mode || 'SHADOW').trim().toUpperCase();
+        if (normalized === 'OFF' || normalized === 'SHADOW' || normalized === 'ENFORCE') {
+            return normalized;
+        }
+        return 'SHADOW';
+    }
+
+    private normalizeRegimeSource(source?: AegisRegimeSource | string): AegisRegimeSource {
+        const normalized = String(source || 'HYBRID_HEURISTIC').trim().toUpperCase();
+        if (normalized === 'ML_MODEL') return 'ML_MODEL';
+        return 'HYBRID_HEURISTIC';
+    }
+
+    private normalizeRegimeLabel(value?: AegisRegimeLabel | string): AegisRegimeLabel | undefined {
+        const normalized = String(value || '').trim().toUpperCase();
+        if (
+            normalized === 'MOMENTUM_UP'
+            || normalized === 'MOMENTUM_DOWN'
+            || normalized === 'BREAKOUT_UP'
+            || normalized === 'BREAKOUT_DOWN'
+            || normalized === 'TREND_UP'
+            || normalized === 'TREND_DOWN'
+            || normalized === 'CHOP'
+            || normalized === 'EXHAUSTION'
+            || normalized === 'RISK_OFF'
+            || normalized === 'HIGH_VOL_RISK'
+            || normalized === 'UNKNOWN'
+        ) {
+            return normalized;
+        }
+        return undefined;
+    }
+
+    private normalizeRegimeList(values: Array<AegisRegimeLabel | string> | undefined, fallback: AegisRegimeLabel[]): AegisRegimeLabel[] {
+        if (!Array.isArray(values)) return [...fallback];
+        const normalized = values
+            .map((value) => this.normalizeRegimeLabel(value))
+            .filter((value): value is AegisRegimeLabel => Boolean(value));
+        return normalized.length > 0 ? normalized : [...fallback];
     }
 
     private normalizeEntryPolicyMode(mode?: AegisEntryPolicyMode | string, fallback: AegisEntryPolicyMode = 'OFF'): AegisEntryPolicyMode {

@@ -73,6 +73,9 @@ aegis:
   entry_policy:
     enabled: true
     guards:
+      regime:
+        enabled: true
+        mode: SHADOW
       decision_brain:
         enabled: true
         mode: ENFORCE
@@ -94,6 +97,32 @@ aegis:
       short_gate:
         enabled: true
         mode: ENFORCE
+  regime_guard:
+    enabled: true
+    mode: SHADOW
+    source: HYBRID_HEURISTIC
+    allow_when:
+      - MOMENTUM_UP
+      - MOMENTUM_DOWN
+      - BREAKOUT_UP
+      - BREAKOUT_DOWN
+      - TREND_UP
+      - TREND_DOWN
+    block_when:
+      - CHOP
+      - EXHAUSTION
+      - RISK_OFF
+      - HIGH_VOL_RISK
+      - UNKNOWN
+    min_confidence: 0.60
+    max_snapshot_age_seconds: 900
+    high_tail_risk_threshold: 0.45
+    require_btc_eth_alignment_for_alts: true
+    allow_alt_long_when_btc_short: false
+    allow_alt_short_when_btc_long: false
+    telemetry:
+      log_all_evaluations: true
+      include_in_entry_metadata: true
   event_risk:
     enabled: true
     mode: CAUTION

@@ -62,6 +62,10 @@ import {
     AegisProbeModeRuntimeConfig
 } from '../../domain/services/AegisProbeMode';
 import {
+    AegisRegimeGuardConfig,
+    DEFAULT_AEGIS_REGIME_GUARD_CONFIG
+} from '../../domain/services/AegisRegimeGuard';
+import {
     AegisEntryContext,
     AegisEntryDecisionResult,
     AegisEntryPolicyRuntimeConfig
@@ -330,6 +334,14 @@ export class TradingService {
         };
     }
 
+    private getAegisRegimeGuardConfig(): AegisRegimeGuardConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisRegimeGuardConfig === 'function') {
+            return manager.getAegisRegimeGuardConfig();
+        }
+        return DEFAULT_AEGIS_REGIME_GUARD_CONFIG;
+    }
+
     private getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
         const manager = this.deps.configManager as any;
         if (typeof manager.getAegisEntryPolicyConfig === 'function') {
@@ -337,11 +349,16 @@ export class TradingService {
         }
         const entryQualityGate = this.getEntryQualityGateConfig();
         const eventRisk = this.getAegisEventRiskConfig();
+        const regimeGuard = this.getAegisRegimeGuardConfig();
         const cleanEntry = this.getAegisCleanEntryGuardConfig();
         const probeMode = this.getAegisProbeModeConfig();
         return {
             enabled: true,
             guards: {
+                regime: {
+                    enabled: regimeGuard.enabled,
+                    mode: regimeGuard.enabled ? regimeGuard.mode : 'OFF'
+                },
                 decision_brain: {
                     enabled: this.getAegisDecisionEnforcementConfig().enabled,
                     mode: this.getAegisDecisionEnforcementConfig().enabled ? 'ENFORCE' : 'OFF'
@@ -1635,6 +1652,27 @@ export class TradingService {
         return this.finiteNumber(value) ? Number(value) : undefined;
     }
 
+    private contextVotes(context: Record<string, unknown> | undefined): { long?: number; short?: number; neutral?: number } | undefined {
+        const value = context?.votes;
+        if (!value || typeof value !== 'object') return undefined;
+        const votes = value as Record<string, unknown>;
+        return {
+            long: this.finiteNumber(votes.long) ? Number(votes.long) : undefined,
+            short: this.finiteNumber(votes.short) ? Number(votes.short) : undefined,
+            neutral: this.finiteNumber(votes.neutral) ? Number(votes.neutral) : undefined
+        };
+    }
+
+    private contextSnapshotAgeSeconds(eventRiskAuto: Record<string, unknown> | undefined): number | undefined {
+        const direct = eventRiskAuto?.snapshot_age_seconds ?? eventRiskAuto?.snapshotAgeSeconds;
+        if (this.finiteNumber(direct)) return Number(direct);
+        const snapshotTs = eventRiskAuto?.snapshot_timestamp_ms ?? eventRiskAuto?.snapshotTimestampMs ?? eventRiskAuto?.generated_at_ms;
+        if (this.finiteNumber(snapshotTs)) {
+            return Math.max(0, (Date.now() - Number(snapshotTs)) / 1000);
+        }
+        return undefined;
+    }
+
     private async buildAegisEntryContext(input: {
         symbol: string;
         side: Side;
@@ -1646,6 +1684,9 @@ export class TradingService {
         const entryQualityRuntimeConfig = this.getEntryQualityGateConfig(input.symbol);
         const eventRiskConfig = this.getAegisEventRiskConfig();
         const eventRiskAuto = aegis?.event_risk_auto;
+        const eventRiskAutoRecord = eventRiskAuto as Record<string, unknown> | undefined;
+        const btcContext = eventRiskAuto?.btc_context as Record<string, unknown> | undefined;
+        const ethContext = eventRiskAuto?.eth_context as Record<string, unknown> | undefined;
         const globalState = this.deps.state.get();
         const stateExposure = this.countStateOpenPositions();
         const lastStopLossAt = this.mostRecentStopLossAt();
@@ -1660,7 +1701,10 @@ export class TradingService {
             finalAction: aegis?.turbo?.gated?.action ?? aegis?.turbo?.action ?? input.signal.action,
             turboScore: input.gate.turboScore ?? 0,
             votes: input.gate.votes,
-            setupGrade: undefined,
+            setupGrade: (aegis?.clean_entry_guard as any)?.setupGrade
+                ?? ((aegis as any)?.decision_enforcement)?.setupGrade
+                ?? (aegis?.turbo as any)?.setupGrade
+                ?? (aegis?.turbo as any)?.setup_grade,
             leverage: input.gate.leverage,
             requestedPositionFraction: input.gate.positionFraction,
             basePositionFraction: input.baseGate.positionFraction,
@@ -1697,10 +1741,10 @@ export class TradingService {
                 wouldBlock: undefined,
                 confidence: eventRiskAuto?.confidence ?? undefined,
                 auto: eventRiskAuto,
-                btcAction: this.contextAction(eventRiskAuto?.btc_context),
-                btcScore: this.contextScore(eventRiskAuto?.btc_context),
-                ethAction: this.contextAction(eventRiskAuto?.eth_context),
-                ethScore: this.contextScore(eventRiskAuto?.eth_context),
+                btcAction: this.contextAction(btcContext),
+                btcScore: this.contextScore(btcContext),
+                ethAction: this.contextAction(ethContext),
+                ethScore: this.contextScore(ethContext),
                 isAltSymbol: this.isAltSymbol(input.symbol),
                 config: {
                     caution: {
@@ -1717,6 +1761,17 @@ export class TradingService {
                         blockNewEntries: eventRiskConfig.manual_only.block_new_entries
                     }
                 }
+            },
+            regime: {
+                config: this.getAegisRegimeGuardConfig(),
+                btcAction: this.contextAction(btcContext),
+                btcScore: this.contextScore(btcContext),
+                btcVotes: this.contextVotes(btcContext),
+                ethAction: this.contextAction(ethContext),
+                ethScore: this.contextScore(ethContext),
+                ethVotes: this.contextVotes(ethContext),
+                marketDistribution: undefined,
+                snapshotAgeSeconds: this.contextSnapshotAgeSeconds(eventRiskAutoRecord)
             },
             cleanEntry: {
                 metadata: aegis?.clean_entry_guard as AegisCleanEntryGuardOutput['metadata'] | undefined,
@@ -1850,6 +1905,18 @@ export class TradingService {
                     turboScore: gate.turboScore,
                     votes: gate.votes,
                     metadata: shortGateDecision.metadata
+                });
+                return;
+            }
+
+            if (!entryDecision.shouldOpen && entryDecision.deniedBy === 'regime') {
+                const deniedGate = { ...gateAfterPositionOverride, allowed: false, reason: entryDecision.finalReason };
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: deniedGate,
+                    executed: false,
+                    metadata: { entryPolicy: entryDecision.metadata }
                 });
                 return;
             }

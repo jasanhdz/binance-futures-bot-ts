@@ -31,9 +31,38 @@ export function buildAegisEntryDecisionTrace(input: {
 }
 
 export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace): Record<string, unknown> {
+    const regime = trace.guards.regime;
+    const regimeMetadata = regime?.metadata ?? {};
     return {
+        symbol: trace.symbol,
+        side: trace.side,
+        turboScore: trace.turbo.score,
+        votes: trace.turbo.votes,
+        setupGrade: trace.turbo.setupGrade,
         finalDecision: trace.finalDecision,
         finalReason: trace.finalReason,
+        regime: regime ? {
+            enabled: regime.enabled,
+            mode: regime.mode,
+            decision: regime.decision,
+            reason: regime.reason,
+            wouldBlock: regime.wouldBlock,
+            enforced: regime.enforced,
+            regime: regimeMetadata.regime,
+            confidence: regimeMetadata.confidence,
+            source: regimeMetadata.source,
+            btcAction: regimeMetadata.btcAction,
+            btcScore: regimeMetadata.btcScore,
+            ethAction: regimeMetadata.ethAction,
+            ethScore: regimeMetadata.ethScore,
+            entryQualityScore: regimeMetadata.entryQualityScore,
+            tailRiskScore: regimeMetadata.tailRiskScore,
+            eventRiskMode: regimeMetadata.eventRiskMode,
+            snapshotAgeSeconds: regimeMetadata.snapshotAgeSeconds,
+            modelScope: regimeMetadata.modelScope,
+            modelVersion: regimeMetadata.modelVersion,
+            modelUnavailable: regimeMetadata.modelUnavailable
+        } : undefined,
         guards: Object.fromEntries(
             Object.entries(trace.guards).map(([name, guard]) => [
                 name,

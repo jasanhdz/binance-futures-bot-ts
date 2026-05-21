@@ -12,11 +12,13 @@ import { AegisDecisionEnforcementDecision, AegisDecisionEnforcementRuntimeConfig
 import { AegisCleanEntryGuardConfig, AegisCleanEntryGuardOutput } from '../AegisCleanEntryGuard';
 import { AegisProbeModeDecision, AegisProbeModeRuntimeConfig } from '../AegisProbeMode';
 import { AegisShortGateConfig, AegisShortGateDecision } from '../AegisShortGate';
+import { AegisRegimeDecision, AegisRegimeGuardConfig } from '../AegisRegimeGuard';
 
 export type AegisEntryPolicyMode = 'OFF' | 'SHADOW' | 'ENFORCE';
 export type AegisEntryFinalDecision = 'ALLOW' | 'DENY' | 'WAIT_CONFIRMATION';
 
 export type AegisEntryGuardName =
+    | 'regime'
     | 'short_gate'
     | 'entry_quality'
     | 'event_risk'
@@ -114,6 +116,21 @@ export interface AegisEntryContext {
         confidence?: string | number;
         auto?: AegisEventRiskAutoBlock;
     };
+    regime?: {
+        config: AegisRegimeGuardConfig;
+        btcAction?: string;
+        btcScore?: number;
+        btcVotes?: { long?: number; short?: number; neutral?: number };
+        ethAction?: string;
+        ethScore?: number;
+        ethVotes?: { long?: number; short?: number; neutral?: number };
+        marketDistribution?: {
+            long?: number;
+            short?: number;
+            hold?: number;
+        };
+        snapshotAgeSeconds?: number;
+    };
     cleanEntry?: {
         metadata?: AegisCleanEntryGuardOutput['metadata'];
         config: AegisCleanEntryGuardConfig;
@@ -170,6 +187,7 @@ export interface AegisEntryDecisionResult {
     adjustedLeverage: number;
     adjustedPositionFraction: number;
     decisions: {
+        regime?: AegisRegimeDecision;
         shortGate?: AegisShortGateDecision;
         entryQuality?: AegisEntryQualityGateDecision;
         eventRisk?: AegisEventRiskOverlayDecision;

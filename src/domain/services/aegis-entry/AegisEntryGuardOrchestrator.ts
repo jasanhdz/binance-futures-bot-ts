@@ -12,6 +12,7 @@ import {
     compactAegisEntryDecisionMetadata
 } from './AegisEntryDecisionTrace';
 import { ShortGateGuardAdapter } from './guards/ShortGateGuardAdapter';
+import { RegimeGuardAdapter } from './guards/RegimeGuardAdapter';
 import { EntryQualityGuardAdapter } from './guards/EntryQualityGuardAdapter';
 import { EventRiskGuardAdapter } from './guards/EventRiskGuardAdapter';
 import { DecisionBrainGuardAdapter } from './guards/DecisionBrainGuardAdapter';
@@ -24,6 +25,16 @@ import { ProbeModeGuardAdapter } from './guards/ProbeModeGuardAdapter';
 function defaultGuard(name: AegisEntryGuardName): AegisEntryGuardResult {
     return guardDisabledResult(name, `${name}_not_evaluated`);
 }
+
+const ENTRY_GUARD_ORDER: AegisEntryGuardName[] = [
+    'regime',
+    'short_gate',
+    'entry_quality',
+    'event_risk',
+    'decision_brain',
+    'clean_entry',
+    'probe_mode'
+];
 
 function finalize(input: {
     context: AegisEntryContext;
@@ -69,7 +80,7 @@ export class AegisEntryGuardOrchestrator {
         let adjustedPositionFraction = context.requestedPositionFraction;
 
         if (policy.enabled !== true) {
-            for (const name of ['short_gate', 'entry_quality', 'event_risk', 'decision_brain', 'clean_entry', 'probe_mode'] as AegisEntryGuardName[]) {
+            for (const name of ENTRY_GUARD_ORDER) {
                 guards.push(guardDisabledResult(name, 'entry_policy_disabled'));
             }
             return finalize({
@@ -78,6 +89,33 @@ export class AegisEntryGuardOrchestrator {
                 finalReason: 'entry_policy_disabled',
                 allowedBy: 'entry_policy',
                 guards,
+                adjustedLeverage,
+                adjustedPositionFraction,
+                decisions
+            });
+        }
+
+        const regime = RegimeGuardAdapter.evaluate(
+            context,
+            policy.guards.regime ?? { enabled: false, mode: 'OFF' }
+        );
+        guards.push(regime.guard);
+        decisions.regime = regime.decision;
+        if (regime.guard.enforced && regime.guard.wouldBlock) {
+            return finalize({
+                context,
+                finalDecision: 'DENY',
+                finalReason: regime.decision?.reason ?? regime.guard.reason,
+                deniedBy: 'regime',
+                guards: [
+                    ...guards,
+                    defaultGuard('short_gate'),
+                    defaultGuard('entry_quality'),
+                    defaultGuard('event_risk'),
+                    defaultGuard('decision_brain'),
+                    defaultGuard('clean_entry'),
+                    defaultGuard('probe_mode')
+                ],
                 adjustedLeverage,
                 adjustedPositionFraction,
                 decisions
