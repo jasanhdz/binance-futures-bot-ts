@@ -12,6 +12,7 @@ import * as yaml from 'js-yaml';
 import { RegimeType, RegimeConfig } from '../../app/ports/RegimeStrategy';
 import { EventRiskMode } from '../../domain/services/AegisEventRiskOverlay';
 import { AegisDecisionEnforcementMode } from '../../domain/services/AegisDecisionEnforcement';
+import { AegisProbeModeMode, AegisProbeModeRuntimeConfig } from '../../domain/services/AegisProbeMode';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -274,6 +275,26 @@ export interface AegisEventRiskRuntimeConfig {
     };
 }
 
+export interface AegisProbeModeYamlConfig {
+    enabled?: boolean;
+    mode?: AegisProbeModeMode | string;
+    apply_when_event_risk?: Array<EventRiskMode | string>;
+    min_turbo_score?: number;
+    min_votes_agreement?: number;
+    max_tail_risk_score?: number;
+    require_decision_brain?: string;
+    require_entry_quality_allow?: boolean;
+    require_feature_status_ok?: boolean;
+    min_feature_parity_pct?: number;
+    allow_if_blocked_only_by?: string[];
+    max_probe_entries_per_hour?: number;
+    min_minutes_between_probe_entries?: number;
+    max_open_probe_positions?: number;
+    max_total_open_positions_when_probe?: number;
+    block_after_consecutive_losses?: number;
+    block_after_recent_stop_loss_minutes?: number;
+}
+
 export interface AegisDecisionEnforcementYamlConfig {
     enabled?: boolean;
     mode?: AegisDecisionEnforcementMode | string;
@@ -416,6 +437,7 @@ export interface NinjaYamlConfig {
         portfolio_risk?: AegisPortfolioRiskYamlConfig;
         short_gate?: AegisShortGateYamlConfig;
         event_risk?: AegisEventRiskYamlConfig;
+        probe_mode?: AegisProbeModeYamlConfig;
         decision_enforcement?: AegisDecisionEnforcementYamlConfig;
         clean_entry_guard?: AegisCleanEntryGuardYamlConfig;
         telegram_notifications?: AegisTelegramNotificationsYamlConfig;
@@ -769,6 +791,33 @@ export class NinjaConfigManager {
             manual_only: {
                 block_new_entries: raw.manual_only?.block_new_entries === true
             }
+        };
+    }
+
+    getAegisProbeModeConfig(): AegisProbeModeRuntimeConfig {
+        const raw = this.config.aegis?.probe_mode || {};
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeProbeMode(raw.mode),
+            apply_when_event_risk: Array.isArray(raw.apply_when_event_risk)
+                ? raw.apply_when_event_risk.map((mode) => this.normalizeEventRiskMode(mode))
+                : ['CAUTION'],
+            min_turbo_score: Math.max(0, this.finiteNumber(raw.min_turbo_score, 0.90)),
+            min_votes_agreement: Math.max(0, Math.floor(this.finiteNumber(raw.min_votes_agreement, 2))),
+            max_tail_risk_score: Math.max(0, this.finiteNumber(raw.max_tail_risk_score, 0.30)),
+            require_decision_brain: String(raw.require_decision_brain || 'ENTER_NOW').trim().toUpperCase(),
+            require_entry_quality_allow: raw.require_entry_quality_allow !== false,
+            require_feature_status_ok: raw.require_feature_status_ok !== false,
+            min_feature_parity_pct: Math.max(0, this.finiteNumber(raw.min_feature_parity_pct, 95)),
+            allow_if_blocked_only_by: Array.isArray(raw.allow_if_blocked_only_by)
+                ? raw.allow_if_blocked_only_by.map((reason) => String(reason || '').trim()).filter(Boolean)
+                : ['clean_entry_event_risk_would_block', 'caution_btc_eth_not_confirmed'],
+            max_probe_entries_per_hour: Math.max(1, Math.floor(this.finiteNumber(raw.max_probe_entries_per_hour, 1))),
+            min_minutes_between_probe_entries: Math.max(0, this.finiteNumber(raw.min_minutes_between_probe_entries, 60)),
+            max_open_probe_positions: Math.max(1, Math.floor(this.finiteNumber(raw.max_open_probe_positions, 1))),
+            max_total_open_positions_when_probe: Math.max(1, Math.floor(this.finiteNumber(raw.max_total_open_positions_when_probe, 2))),
+            block_after_consecutive_losses: Math.max(1, Math.floor(this.finiteNumber(raw.block_after_consecutive_losses, 2))),
+            block_after_recent_stop_loss_minutes: Math.max(0, this.finiteNumber(raw.block_after_recent_stop_loss_minutes, 60))
         };
     }
 
@@ -1218,6 +1267,14 @@ export class NinjaConfigManager {
             return 'ENFORCE';
         }
         return 'SHADOW';
+    }
+
+    private normalizeProbeMode(mode?: AegisProbeModeMode | string): AegisProbeModeMode {
+        const normalized = (mode || 'OFF').trim().toUpperCase();
+        if (normalized === 'ENFORCE' || normalized === 'SHADOW') {
+            return normalized;
+        }
+        return 'OFF';
     }
 
     private normalizeEventRiskMode(mode?: EventRiskMode | string): EventRiskMode {

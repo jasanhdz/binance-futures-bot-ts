@@ -61,7 +61,12 @@ const CURRENT_LEVEL: Level = (process.env.LOG_LEVEL as Level) ?? 'info';
 const LOG_TO_FILE = process.env.LOG_TO_FILE !== '0';
 const LOG_RETAIN_DAYS = Number(process.env.LOG_RETAIN_DAYS ?? 7);
 const PRETTY = process.env.LOG_PRETTY === '1'; // ⟵ activa modo humano
+const TELEGRAM_ERROR_DEDUPE_MS = Math.max(
+  60_000,
+  Number(process.env.TELEGRAM_SYSTEM_ERROR_DEDUPE_MS ?? 15 * 60_000),
+);
 let FILE_LOGGING_DISABLED = false;
+const telegramErrorLastSent = new Map<string, number>();
 
 // ===== Helpers =====
 function ensureLogDir() {
@@ -105,6 +110,43 @@ function append(file: string, line: string) {
     }
     console.error(color.error('❌ Error escribiendo log: ' + err));
   });
+}
+
+function compactForDedupe(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return `${value.name}:${value.message}`;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function telegramErrorDedupeKey(msg: string, ctx?: any): string {
+  const error = ctx?.error ?? ctx?.err ?? ctx?.reason ?? ctx;
+  return `${msg}:${compactForDedupe(error)}`.slice(0, 500);
+}
+
+function shouldSendTelegramError(msg: string, ctx?: any): boolean {
+  const now = Date.now();
+  const key = telegramErrorDedupeKey(msg, ctx);
+  const lastSent = telegramErrorLastSent.get(key);
+  if (lastSent !== undefined && now - lastSent < TELEGRAM_ERROR_DEDUPE_MS) return false;
+  telegramErrorLastSent.set(key, now);
+
+  if (telegramErrorLastSent.size > 500) {
+    const cutoff = now - TELEGRAM_ERROR_DEDUPE_MS;
+    for (const [entryKey, timestamp] of telegramErrorLastSent.entries()) {
+      if (timestamp < cutoff) telegramErrorLastSent.delete(entryKey);
+    }
+  }
+
+  return true;
+}
+
+export function resetFsLoggerTelegramDedupeForTests(): void {
+  telegramErrorLastSent.clear();
 }
 
 // ===== Colores ANSI simples (sin dependencias) =====
@@ -495,9 +537,11 @@ function write(level: Level, msg: string, ctx?: any) {
 
   // 3) Telegram System Log (Errors & Warnings)
   if (level === 'error') {
-    const ctxStr = ctx ? `\n\`\`\`json\n${JSON.stringify(ctx, null, 2)}\n\`\`\`` : '';
-    TelegramService.sendSystemLog(`🔴 *SYSTEM ERROR* 🔴\n\n*Type:* ${msg}${ctxStr}`)
-      .catch((e: any) => console.error('[FsLogger] Failed to send Telegram error:', e));
+    if (shouldSendTelegramError(msg, ctx)) {
+      const ctxStr = ctx ? `\n\`\`\`json\n${JSON.stringify(ctx, null, 2)}\n\`\`\`` : '';
+      TelegramService.sendSystemLog(`🔴 *SYSTEM ERROR* 🔴\n\n*Type:* ${msg}${ctxStr}`)
+        .catch((e: any) => console.error('[FsLogger] Failed to send Telegram error:', e));
+    }
   } else if (level === 'warn') {
     // Optional: Uncomment to send warnings too, or filter specific ones
     // const ctxStr = ctx ? `\n\`\`\`json\n${JSON.stringify(ctx, null, 2)}\n\`\`\`` : '';

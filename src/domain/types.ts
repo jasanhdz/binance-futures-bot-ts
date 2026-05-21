@@ -91,6 +91,13 @@ export type BotState = {
   lastActualLeverage?: number;
   lastBracketStatus?: 'PENDING' | 'OK' | 'FAILED_CLOSED';
 
+  // Aegis Probe Mode v1 runtime metadata
+  probeModeActive?: boolean;
+  lastProbeAt?: number;
+  lastProbeTradeId?: string;
+  probeEntryTimestamps?: number[];
+  lastStopLossAt?: number;
+
   // Aegis Exit Eye v0.1 runtime counters
   exitEyeNeutralCount?: number;
   exitEyeNeutralCloseCount?: number;

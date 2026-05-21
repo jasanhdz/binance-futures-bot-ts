@@ -25,6 +25,11 @@ export type AegisBlockSample = {
     eventRiskMode: string | null;
     eventRiskReason: string | null;
     eventRiskWouldBlock: boolean | null;
+    probeMode: {
+        enabled: boolean | null;
+        allowed: boolean | null;
+        reason: string | null;
+    } | null;
     aPlus: boolean | null;
     rawWouldExecute: boolean | null;
     source: string | null;
@@ -82,7 +87,8 @@ const BLOCK_EVENTS = new Set([
     'EVENT_RISK_SHADOW_BLOCK',
     'EVENT_RISK_DENIED',
     'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
-    'CLEAN_ENTRY_GUARD_SHADOW_WAIT'
+    'CLEAN_ENTRY_GUARD_SHADOW_WAIT',
+    'PROBE_MODE_DENIED'
 ]);
 
 const BLOCK_REASONS = new Set([
@@ -105,7 +111,27 @@ const BLOCK_REASONS = new Set([
     'clean_entry_model_block_shadow',
     'clean_entry_tail_risk_high',
     'clean_entry_decision_brain_not_enter_now',
-    'clean_entry_missing_critical_data'
+    'clean_entry_missing_critical_data',
+    'probe_event_risk_mode_not_allowed',
+    'probe_event_risk_risk_off',
+    'probe_event_risk_manual_only',
+    'probe_decision_brain_not_enter_now',
+    'probe_entry_quality_not_allow',
+    'probe_entry_quality_block_shadow',
+    'probe_feature_status_not_ok',
+    'probe_feature_parity_too_low',
+    'probe_tail_risk_too_high',
+    'probe_turbo_score_too_low',
+    'probe_votes_too_low',
+    'probe_setup_grade_not_clean',
+    'probe_clean_entry_block_reasons_not_allowed',
+    'probe_same_symbol_position_open',
+    'probe_recent_stop_loss',
+    'probe_consecutive_losses',
+    'probe_min_minutes_between_entries',
+    'probe_entries_per_hour_exceeded',
+    'probe_open_probe_positions_exceeded',
+    'probe_total_open_positions_exceeded'
 ]);
 
 const ALLOWED_EVENTS = new Set([
@@ -113,6 +139,7 @@ const ALLOWED_EVENTS = new Set([
     'ORDER_SUBMITTED',
     'POSITION_CONFIRMED',
     'BRACKETS_CONFIRMED',
+    'PROBE_MODE_ALLOWED',
     'TRADE_CLOSED'
 ]);
 
@@ -310,10 +337,12 @@ function isBlockRow(row: JsonRecord): boolean {
 function extractBlockSample(row: JsonRecord): AegisBlockSample {
     const metadata = row.metadata ?? {};
     const cleanEntryGuard = metadata.cleanEntryGuard ?? {};
+    const probeMode = metadata.probeMode ?? cleanEntryGuard.probeMode ?? {};
     const checks = metadata.checks ?? {};
     const event = stableText(row.event);
     const cleanEntryReason = event.startsWith('CLEAN_ENTRY_GUARD') ? cleanEntryGuard.reasons?.[0] : undefined;
-    const reason = stableText(cleanEntryReason ?? row.reason ?? metadata.reason ?? cleanEntryGuard.reasons?.[0] ?? metadata.eventRiskReason ?? event);
+    const probeReason = event.startsWith('PROBE_MODE') ? probeMode.reason : undefined;
+    const reason = stableText(probeReason ?? cleanEntryReason ?? row.reason ?? metadata.reason ?? cleanEntryGuard.reasons?.[0] ?? metadata.eventRiskReason ?? event);
     return {
         timestamp: timestampText(row),
         symbol: stableText(row.symbol ?? metadata.symbol).toUpperCase(),
@@ -330,6 +359,11 @@ function extractBlockSample(row: JsonRecord): AegisBlockSample {
         eventRiskMode: nullableText(metadata.eventRiskMode ?? metadata.event_risk_mode ?? cleanEntryGuard.eventRiskMode ?? (event.startsWith('EVENT_RISK') ? metadata.mode : undefined)),
         eventRiskReason: nullableText(metadata.eventRiskReason ?? metadata.event_risk_reason ?? cleanEntryGuard.eventRiskReason ?? (event.startsWith('EVENT_RISK') ? metadata.reason : undefined)),
         eventRiskWouldBlock: nullableBoolean(metadata.eventRiskWouldBlock ?? metadata.event_risk_would_block ?? cleanEntryGuard.eventRiskWouldBlock ?? metadata.wouldBlock ?? checks.eventRiskWouldBlock),
+        probeMode: Object.keys(probeMode).length > 0 ? {
+            enabled: nullableBoolean(probeMode.enabled),
+            allowed: nullableBoolean(probeMode.allowed),
+            reason: nullableText(probeMode.reason)
+        } : null,
         aPlus: nullableBoolean(metadata.aPlus ?? metadata.is_a_plus ?? checks.aPlus),
         rawWouldExecute: nullableBoolean(metadata.rawWouldExecute ?? metadata.raw_would_execute ?? row.raw_would_execute),
         source: nullableText(metadata.source ?? event),
@@ -427,6 +461,9 @@ function appendSamples(lines: string[], samples: AegisBlockSample[]): void {
     samples.slice(0, 5).forEach((sample, index) => {
         lines.push(`${index + 1}) ${sample.side} | Score ${formatPct(sample.turboScore)} | Grade ${sample.setupGrade ?? 'N/D'}`);
         lines.push(`   DB: ${sample.decisionBrain ?? 'N/D'} | EQ: ${sample.entryQuality ?? 'N/D'} | Tail: ${formatPct(sample.tailRiskScore)}`);
+        if (sample.probeMode) {
+            lines.push(`   Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`);
+        }
         lines.push(`   Motivo: ${formatReason(sample)}`);
         if (index < Math.min(samples.length, 5) - 1) lines.push('');
     });
@@ -441,6 +478,9 @@ function appendNearMisses(lines: string[], samples: AegisBlockSample[]): void {
         lines.push('', `${index + 1}) ${sample.symbol} ${sample.side}`);
         lines.push(`Score: ${formatPct(sample.turboScore)} | Grade ${sample.setupGrade ?? 'N/D'}`);
         lines.push(`DB: ${sample.decisionBrain ?? 'N/D'} | EQ: ${sample.entryQuality ?? 'N/D'} | Tail: ${formatPct(sample.tailRiskScore)}`);
+        if (sample.probeMode) {
+            lines.push(`Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`);
+        }
         lines.push(`Bloqueo: ${formatReason(sample)}`);
     });
 }

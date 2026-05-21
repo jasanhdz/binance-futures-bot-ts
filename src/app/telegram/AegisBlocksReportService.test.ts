@@ -163,12 +163,13 @@ describe('AegisBlocksReportService', () => {
         await writeEvents([
             event(),
             event({ event: 'GATE_ALLOWED', reason: 'ok' }),
-            event({ event: 'ORDER_SUBMITTED', reason: 'ok' })
+            event({ event: 'ORDER_SUBMITTED', reason: 'ok' }),
+            event({ event: 'PROBE_MODE_ALLOWED', reason: 'probe_allowed' })
         ]);
 
         const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
 
-        expect(report.allowedEvents).toMatchObject({ GATE_ALLOWED: 1, ORDER_SUBMITTED: 1 });
+        expect(report.allowedEvents).toMatchObject({ GATE_ALLOWED: 1, ORDER_SUBMITTED: 1, PROBE_MODE_ALLOWED: 1 });
     });
 
     it('soporta campos faltantes', async () => {
@@ -265,5 +266,45 @@ describe('AegisBlocksReportService', () => {
             symbol: 'LINKUSDT',
             reason: 'clean_entry_wait_confirmation'
         });
+    });
+
+    it('/blocks reconoce PROBE_MODE_DENIED y muestra metadata en near-miss', async () => {
+        await writeEvents([
+            event({
+                symbol: 'ADAUSDT',
+                event: 'PROBE_MODE_DENIED',
+                reason: 'probe_tail_risk_too_high',
+                metadata: {
+                    symbol: 'ADAUSDT',
+                    side: 'LONG',
+                    turboScore: 0.94,
+                    tailRiskScore: 0.31,
+                    setupGrade: 'A',
+                    decisionBrainDecision: 'ENTER_NOW',
+                    entryQualityModelRecommendation: 'ALLOW_SHADOW',
+                    eventRiskMode: 'CAUTION',
+                    probeMode: {
+                        enabled: true,
+                        allowed: false,
+                        reason: 'probe_tail_risk_too_high'
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'near-miss', windowMinutes: 60 });
+        const messages = await service().buildTelegramMessages(['near-miss']);
+
+        expect(report.totalBlocks).toBe(1);
+        expect(report.byReason).toMatchObject({ probe_tail_risk_too_high: 1 });
+        expect(report.nearMisses[0]).toMatchObject({
+            symbol: 'ADAUSDT',
+            probeMode: {
+                enabled: true,
+                allowed: false,
+                reason: 'probe_tail_risk_too_high'
+            }
+        });
+        expect(messages.join('\n')).toContain('Probe: DENY | probe_tail_risk_too_high');
     });
 });

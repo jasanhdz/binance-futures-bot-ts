@@ -275,6 +275,56 @@ function cleanEntryGuardConfig(overrides: Record<string, any> = {}) {
     };
 }
 
+function probeModeConfig(overrides: Record<string, any> = {}) {
+    return {
+        enabled: true,
+        mode: 'ENFORCE',
+        apply_when_event_risk: ['CAUTION'],
+        min_turbo_score: 0.90,
+        min_votes_agreement: 2,
+        max_tail_risk_score: 0.30,
+        require_decision_brain: 'ENTER_NOW',
+        require_entry_quality_allow: true,
+        require_feature_status_ok: true,
+        min_feature_parity_pct: 95,
+        allow_if_blocked_only_by: ['clean_entry_event_risk_would_block', 'caution_btc_eth_not_confirmed'],
+        max_probe_entries_per_hour: 1,
+        min_minutes_between_probe_entries: 60,
+        max_open_probe_positions: 1,
+        max_total_open_positions_when_probe: 2,
+        block_after_consecutive_losses: 2,
+        block_after_recent_stop_loss_minutes: 60,
+        ...overrides
+    };
+}
+
+function probeSignal(overrides: Record<string, any> = {}): AegisTradingSignal {
+    const signal = validSignalWithDecisionBrain(overrides.decision ?? 'ENTER_NOW', overrides.entryQualityRecommendation ?? 'ALLOW_SHADOW');
+    signal.symbol = overrides.symbol ?? 'ADAUSDT';
+    const aegis = signal.metadata!.aegis as any;
+    aegis.turbo.raw.turbo_score = overrides.turboScore ?? 0.94;
+    aegis.turbo.raw.votes = overrides.votes ?? { long: 2, short: 1, neutral: 0 };
+    aegis.turbo.gated.action = 'LONG';
+    aegis.entry_quality_model = {
+        ...aegis.entry_quality_model,
+        recommendation: overrides.entryQualityRecommendation ?? 'ALLOW_SHADOW',
+        entry_quality_score: overrides.entryQualityScore ?? 0.82,
+        tail_risk_score: overrides.tailRiskScore ?? 0.20,
+        feature_status: overrides.featureStatus ?? 'ok',
+        feature_parity_pct: overrides.featureParityPct ?? 100
+    };
+    aegis.event_risk_auto = {
+        mode: 'SHADOW',
+        suggested_mode: 'CAUTION',
+        confidence: 0.8,
+        btc_context: { action: 'SHORT', score: 0.62 },
+        eth_context: { action: 'LONG', score: 0.61 },
+        execute: false,
+        production_allowed: false
+    };
+    return signal;
+}
+
 function cachedCandles(closes: number[]) {
     return closes.map((close, index) => ({
         openTime: index,
@@ -314,6 +364,7 @@ function makeHarness(options: {
         eventRisk?: any;
         decisionEnforcement?: any;
         cleanEntryGuard?: any;
+        probeMode?: any;
         telegramNotifications?: any;
         positionFractionOverride?: any;
         entryQuality?: any;
@@ -484,6 +535,7 @@ function makeHarness(options: {
         })),
         getAegisPositionFractionOverride: vi.fn(() => options.positionFractionOverride),
         getAegisCleanEntryGuardConfig: vi.fn(() => options.cleanEntryGuard ?? cleanEntryGuardConfig({ enabled: false })),
+        getAegisProbeModeConfig: vi.fn(() => options.probeMode ?? probeModeConfig({ enabled: false, mode: 'OFF' })),
         getEntryQualityGateConfig: vi.fn(() => options.entryQuality ?? entryQualityConfig()),
         getRegimeConfig: vi.fn(() => options.regime ?? regimeConfig()),
         getGuardianConfig: vi.fn(() => options.guardian ?? {
@@ -799,6 +851,245 @@ describe('TradingService Aegis live execution', () => {
             metadata: expect.objectContaining({
                 cleanEntryGuard: expect.objectContaining({
                     decision: 'ALLOW_CLEAN'
+                })
+            })
+        }));
+    });
+
+    it('Probe Mode allows CAUTION setup when CleanEntry only blocks on EventRisk', async () => {
+        const { exchange, historyLogger, notifier, service, state } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: probeSignal({ symbol: 'ADAUSDT' }),
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: { min_quality_score: 0.65, max_tail_risk_score: 0.45, require_btc_eth_confirmation: true },
+                risk_off: { min_quality_score: 0.75, max_tail_risk_score: 0.35, allow_only_a_plus: true },
+                manual_only: { block_new_entries: false }
+            },
+            decisionEnforcement: decisionEnforcementConfig(),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            probeMode: probeModeConfig()
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.022);
+        expect(exchange.placeStopClose).toHaveBeenCalled();
+        expect(exchange.placeTpClose).toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_ALLOWED',
+            reason: 'probe_allowed',
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({
+                    allowed: true,
+                    eventRiskMode: 'CAUTION',
+                    cleanEntryReasons: ['clean_entry_event_risk_would_block']
+                })
+            })
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'GATE_ALLOWED',
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({ allowed: true })
+            })
+        }));
+        expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(expect.objectContaining({
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({ allowed: true }),
+                cleanEntryGuard: expect.objectContaining({ decision: 'WAIT_CONFIRMATION' })
+            })
+        }));
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            probeModeActive: true,
+            lastProbeTradeId: expect.any(String)
+        }));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧪 Probe Mode permitió entrada'));
+    });
+
+    it('Probe Mode denial leaves ProfitProtection ExitEye and brackets untouched', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: probeSignal({ symbol: 'ADAUSDT', tailRiskScore: 0.31 }),
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: { min_quality_score: 0.65, max_tail_risk_score: 0.45, require_btc_eth_confirmation: true },
+                risk_off: { min_quality_score: 0.75, max_tail_risk_score: 0.35, allow_only_a_plus: true },
+                manual_only: { block_new_entries: false }
+            },
+            decisionEnforcement: decisionEnforcementConfig(),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            probeMode: probeModeConfig()
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_DENIED',
+            reason: 'probe_tail_risk_too_high',
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({ allowed: false })
+            })
+        }));
+    });
+
+    it('Probe Mode records denied when DecisionBrain MANUAL_ONLY blocks before CleanEntry', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: probeSignal({ symbol: 'ADAUSDT', decision: 'MANUAL_ONLY' }),
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: { min_quality_score: 0.65, max_tail_risk_score: 0.45, require_btc_eth_confirmation: true },
+                risk_off: { min_quality_score: 0.75, max_tail_risk_score: 0.35, allow_only_a_plus: true },
+                manual_only: { block_new_entries: false }
+            },
+            decisionEnforcement: decisionEnforcementConfig(),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            probeMode: probeModeConfig()
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'decision_brain_manual_only'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_DENIED',
+            reason: 'probe_decision_brain_not_enter_now',
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({
+                    allowed: false,
+                    decisionBrain: 'MANUAL_ONLY'
+                })
+            })
+        }));
+    });
+
+    it('Probe Mode records denied when DecisionBrain DO_NOT_ENTER blocks before CleanEntry', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: probeSignal({ symbol: 'ADAUSDT', decision: 'DO_NOT_ENTER' }),
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: { min_quality_score: 0.65, max_tail_risk_score: 0.45, require_btc_eth_confirmation: true },
+                risk_off: { min_quality_score: 0.75, max_tail_risk_score: 0.35, allow_only_a_plus: true },
+                manual_only: { block_new_entries: false }
+            },
+            decisionEnforcement: decisionEnforcementConfig(),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            probeMode: probeModeConfig()
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'decision_brain_do_not_enter'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_DENIED',
+            reason: 'probe_decision_brain_not_enter_now',
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({
+                    allowed: false,
+                    decisionBrain: 'DO_NOT_ENTER'
+                })
+            })
+        }));
+    });
+
+    it('Probe Mode records denied when EntryQuality BLOCK_SHADOW blocks before CleanEntry', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: probeSignal({ symbol: 'ADAUSDT', entryQualityRecommendation: 'BLOCK_SHADOW' }),
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: { min_quality_score: 0.65, max_tail_risk_score: 0.45, require_btc_eth_confirmation: true },
+                risk_off: { min_quality_score: 0.75, max_tail_risk_score: 0.35, allow_only_a_plus: true },
+                manual_only: { block_new_entries: false }
+            },
+            decisionEnforcement: decisionEnforcementConfig(),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            probeMode: probeModeConfig()
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'entry_quality_shadow_block_hard_denied'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_DENIED',
+            reason: 'probe_entry_quality_block_shadow',
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({
+                    allowed: false,
+                    entryQualityRecommendation: 'BLOCK_SHADOW'
+                })
+            })
+        }));
+    });
+
+    it('Probe Mode records denied when RISK_OFF blocks before CleanEntry', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: probeSignal({ symbol: 'ADAUSDT', tailRiskScore: 0.36 }),
+            eventRisk: {
+                enabled: true,
+                mode: 'RISK_OFF',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: { min_quality_score: 0.65, max_tail_risk_score: 0.45, require_btc_eth_confirmation: true },
+                risk_off: { min_quality_score: 0.75, max_tail_risk_score: 0.35, allow_only_a_plus: true },
+                manual_only: { block_new_entries: false }
+            },
+            decisionEnforcement: decisionEnforcementConfig(),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            probeMode: probeModeConfig()
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED',
+            reason: 'event_risk_risk_off_denied_non_a_plus'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_DENIED',
+            reason: 'probe_event_risk_risk_off',
+            metadata: expect.objectContaining({
+                probeMode: expect.objectContaining({
+                    allowed: false,
+                    eventRiskMode: 'RISK_OFF'
                 })
             })
         }));

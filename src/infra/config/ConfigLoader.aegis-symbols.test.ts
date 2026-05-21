@@ -400,6 +400,56 @@ symbols:
         });
     });
 
+    it('parses probe mode config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  probe_mode:
+    enabled: true
+    mode: ENFORCE
+    apply_when_event_risk:
+      - CAUTION
+    min_turbo_score: 0.91
+    min_votes_agreement: 2
+    max_tail_risk_score: 0.29
+    require_decision_brain: ENTER_NOW
+    require_entry_quality_allow: true
+    require_feature_status_ok: true
+    min_feature_parity_pct: 96
+    allow_if_blocked_only_by:
+      - clean_entry_event_risk_would_block
+      - caution_btc_eth_not_confirmed
+    max_probe_entries_per_hour: 1
+    min_minutes_between_probe_entries: 60
+    max_open_probe_positions: 1
+    max_total_open_positions_when_probe: 2
+    block_after_consecutive_losses: 2
+    block_after_recent_stop_loss_minutes: 60
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisProbeModeConfig()).toEqual({
+            enabled: true,
+            mode: 'ENFORCE',
+            apply_when_event_risk: ['CAUTION'],
+            min_turbo_score: 0.91,
+            min_votes_agreement: 2,
+            max_tail_risk_score: 0.29,
+            require_decision_brain: 'ENTER_NOW',
+            require_entry_quality_allow: true,
+            require_feature_status_ok: true,
+            min_feature_parity_pct: 96,
+            allow_if_blocked_only_by: ['clean_entry_event_risk_would_block', 'caution_btc_eth_not_confirmed'],
+            max_probe_entries_per_hour: 1,
+            min_minutes_between_probe_entries: 60,
+            max_open_probe_positions: 1,
+            max_total_open_positions_when_probe: 2,
+            block_after_consecutive_losses: 2,
+            block_after_recent_stop_loss_minutes: 60
+        });
+    });
+
     it('uses safe clean entry guard defaults when config is absent', () => {
         const config = new NinjaConfigManager(writeConfig(`
 symbols:
