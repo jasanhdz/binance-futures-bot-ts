@@ -13,6 +13,12 @@ import { RegimeType, RegimeConfig } from '../../app/ports/RegimeStrategy';
 import { EventRiskMode } from '../../domain/services/AegisEventRiskOverlay';
 import { AegisDecisionEnforcementMode } from '../../domain/services/AegisDecisionEnforcement';
 import { AegisProbeModeMode, AegisProbeModeRuntimeConfig } from '../../domain/services/AegisProbeMode';
+import {
+    AegisEntryGuardName,
+    AegisEntryGuardPolicy,
+    AegisEntryPolicyMode,
+    AegisEntryPolicyRuntimeConfig
+} from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -295,6 +301,16 @@ export interface AegisProbeModeYamlConfig {
     block_after_recent_stop_loss_minutes?: number;
 }
 
+export interface AegisEntryGuardPolicyYamlConfig {
+    enabled?: boolean;
+    mode?: AegisEntryPolicyMode | string;
+}
+
+export interface AegisEntryPolicyYamlConfig {
+    enabled?: boolean;
+    guards?: Partial<Record<AegisEntryGuardName, AegisEntryGuardPolicyYamlConfig>>;
+}
+
 export interface AegisDecisionEnforcementYamlConfig {
     enabled?: boolean;
     mode?: AegisDecisionEnforcementMode | string;
@@ -437,6 +453,7 @@ export interface NinjaYamlConfig {
         portfolio_risk?: AegisPortfolioRiskYamlConfig;
         short_gate?: AegisShortGateYamlConfig;
         event_risk?: AegisEventRiskYamlConfig;
+        entry_policy?: AegisEntryPolicyYamlConfig;
         probe_mode?: AegisProbeModeYamlConfig;
         decision_enforcement?: AegisDecisionEnforcementYamlConfig;
         clean_entry_guard?: AegisCleanEntryGuardYamlConfig;
@@ -790,6 +807,44 @@ export class NinjaConfigManager {
             },
             manual_only: {
                 block_new_entries: raw.manual_only?.block_new_entries === true
+            }
+        };
+    }
+
+    getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
+        const raw = this.config.aegis?.entry_policy || {};
+        const guards = raw.guards || {};
+        const entryQualityGate = this.getEntryQualityGateConfig();
+        const eventRisk = this.getAegisEventRiskConfig();
+        const cleanEntry = this.getAegisCleanEntryGuardConfig();
+        const probeMode = this.getAegisProbeModeConfig();
+        return {
+            enabled: raw.enabled !== false,
+            guards: {
+                decision_brain: this.normalizeEntryGuardPolicy(guards.decision_brain, {
+                    enabled: this.getAegisDecisionEnforcementConfig().enabled,
+                    mode: 'ENFORCE'
+                }),
+                entry_quality: this.normalizeEntryGuardPolicy(guards.entry_quality, {
+                    enabled: entryQualityGate.enabled,
+                    mode: entryQualityGate.mode
+                }),
+                event_risk: this.normalizeEntryGuardPolicy(guards.event_risk, {
+                    enabled: eventRisk.enabled,
+                    mode: eventRisk.enforce ? 'ENFORCE' : 'SHADOW'
+                }),
+                clean_entry: this.normalizeEntryGuardPolicy(guards.clean_entry, {
+                    enabled: cleanEntry.enabled,
+                    mode: cleanEntry.mode
+                }),
+                probe_mode: this.normalizeEntryGuardPolicy(guards.probe_mode, {
+                    enabled: probeMode.enabled,
+                    mode: probeMode.mode === 'OFF' ? 'OFF' : probeMode.mode
+                }),
+                short_gate: this.normalizeEntryGuardPolicy(guards.short_gate, {
+                    enabled: this.getAegisShortGateConfig().enabled,
+                    mode: 'ENFORCE'
+                })
             }
         };
     }
@@ -1275,6 +1330,26 @@ export class NinjaConfigManager {
             return normalized;
         }
         return 'OFF';
+    }
+
+    private normalizeEntryPolicyMode(mode?: AegisEntryPolicyMode | string, fallback: AegisEntryPolicyMode = 'OFF'): AegisEntryPolicyMode {
+        const normalized = String(mode || fallback).trim().toUpperCase();
+        if (normalized === 'ENFORCE' || normalized === 'SHADOW' || normalized === 'OFF') {
+            return normalized;
+        }
+        return fallback;
+    }
+
+    private normalizeEntryGuardPolicy(
+        raw: AegisEntryGuardPolicyYamlConfig | undefined,
+        fallback: AegisEntryGuardPolicy
+    ): AegisEntryGuardPolicy {
+        const enabled = raw?.enabled ?? fallback.enabled;
+        const mode = this.normalizeEntryPolicyMode(raw?.mode, fallback.mode);
+        return {
+            enabled: enabled === true && mode !== 'OFF',
+            mode
+        };
     }
 
     private normalizeEventRiskMode(mode?: EventRiskMode | string): EventRiskMode {

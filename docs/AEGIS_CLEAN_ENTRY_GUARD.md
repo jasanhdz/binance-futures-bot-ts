@@ -19,6 +19,17 @@ Hay dos señales distintas:
 
 ## Configuracion
 
+Clean Entry se habilita como guard de entrada desde `aegis.entry_policy.guards.clean_entry`. Sus parametros finos siguen viviendo en `aegis.clean_entry_guard` para compatibilidad.
+
+```yaml
+aegis:
+  entry_policy:
+    guards:
+      clean_entry:
+        enabled: true
+        mode: ENFORCE
+```
+
 ```yaml
 aegis:
   clean_entry_guard:
@@ -91,6 +102,8 @@ Reasons principales:
 
 - `SHADOW`: registra `CLEAN_ENTRY_GUARD_SHADOW_ALLOW` o `CLEAN_ENTRY_GUARD_SHADOW_WAIT`, pero no bloquea `marketOpen`.
 - `ENFORCE`: registra `CLEAN_ENTRY_GUARD_ALLOW` o `CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION`; si espera confirmacion corta antes de `setLeverage`, `ensureMarginType` y `marketOpen`.
+
+Dentro de Entry Policy, `OFF`, `SHADOW` y `ENFORCE` se controlan desde `aegis.entry_policy.guards.clean_entry`. Ver `docs/AEGIS_ENTRY_POLICY.md`.
 
 ## /blocks
 

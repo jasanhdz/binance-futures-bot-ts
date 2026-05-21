@@ -25,6 +25,10 @@ export type AegisBlockSample = {
     eventRiskMode: string | null;
     eventRiskReason: string | null;
     eventRiskWouldBlock: boolean | null;
+    entryPolicy: {
+        finalDecision: string | null;
+        finalReason: string | null;
+    } | null;
     probeMode: {
         enabled: boolean | null;
         allowed: boolean | null;
@@ -81,6 +85,7 @@ const WINDOW_MINUTES: Record<string, number> = {
 };
 
 const BLOCK_EVENTS = new Set([
+    'ENTRY_POLICY_DECISION',
     'DECISION_ENFORCEMENT_DENIED',
     'ENTRY_QUALITY_GATE_SHADOW_BLOCK',
     'ENTRY_QUALITY_GATE_DENIED',
@@ -331,6 +336,14 @@ function normalizeSymbol(value?: string): string | undefined {
 function isBlockRow(row: JsonRecord): boolean {
     const event = stableText(row.event);
     const reason = stableText(row.reason ?? row.metadata?.reason);
+    if (event === 'ENTRY_POLICY_DECISION') {
+        const finalDecision = stableText(row.metadata?.entryPolicy?.finalDecision ?? row.metadata?.finalDecision);
+        return finalDecision !== 'ALLOW';
+    }
+    const entryPolicyDecision = stableText(row.metadata?.entryPolicy?.finalDecision);
+    if (entryPolicyDecision !== 'N/D' && entryPolicyDecision !== 'ALLOW') {
+        return false;
+    }
     return BLOCK_EVENTS.has(event) || BLOCK_REASONS.has(reason);
 }
 
@@ -338,11 +351,12 @@ function extractBlockSample(row: JsonRecord): AegisBlockSample {
     const metadata = row.metadata ?? {};
     const cleanEntryGuard = metadata.cleanEntryGuard ?? {};
     const probeMode = metadata.probeMode ?? cleanEntryGuard.probeMode ?? {};
+    const entryPolicy = metadata.entryPolicy ?? {};
     const checks = metadata.checks ?? {};
     const event = stableText(row.event);
     const cleanEntryReason = event.startsWith('CLEAN_ENTRY_GUARD') ? cleanEntryGuard.reasons?.[0] : undefined;
     const probeReason = event.startsWith('PROBE_MODE') ? probeMode.reason : undefined;
-    const reason = stableText(probeReason ?? cleanEntryReason ?? row.reason ?? metadata.reason ?? cleanEntryGuard.reasons?.[0] ?? metadata.eventRiskReason ?? event);
+    const reason = stableText(probeReason ?? cleanEntryReason ?? entryPolicy.finalReason ?? row.reason ?? metadata.reason ?? cleanEntryGuard.reasons?.[0] ?? metadata.eventRiskReason ?? event);
     return {
         timestamp: timestampText(row),
         symbol: stableText(row.symbol ?? metadata.symbol).toUpperCase(),
@@ -359,6 +373,10 @@ function extractBlockSample(row: JsonRecord): AegisBlockSample {
         eventRiskMode: nullableText(metadata.eventRiskMode ?? metadata.event_risk_mode ?? cleanEntryGuard.eventRiskMode ?? (event.startsWith('EVENT_RISK') ? metadata.mode : undefined)),
         eventRiskReason: nullableText(metadata.eventRiskReason ?? metadata.event_risk_reason ?? cleanEntryGuard.eventRiskReason ?? (event.startsWith('EVENT_RISK') ? metadata.reason : undefined)),
         eventRiskWouldBlock: nullableBoolean(metadata.eventRiskWouldBlock ?? metadata.event_risk_would_block ?? cleanEntryGuard.eventRiskWouldBlock ?? metadata.wouldBlock ?? checks.eventRiskWouldBlock),
+        entryPolicy: Object.keys(entryPolicy).length > 0 ? {
+            finalDecision: nullableText(entryPolicy.finalDecision),
+            finalReason: nullableText(entryPolicy.finalReason)
+        } : null,
         probeMode: Object.keys(probeMode).length > 0 ? {
             enabled: nullableBoolean(probeMode.enabled),
             allowed: nullableBoolean(probeMode.allowed),
@@ -464,6 +482,9 @@ function appendSamples(lines: string[], samples: AegisBlockSample[]): void {
         if (sample.probeMode) {
             lines.push(`   Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`);
         }
+        if (sample.entryPolicy) {
+            lines.push(`   EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`);
+        }
         lines.push(`   Motivo: ${formatReason(sample)}`);
         if (index < Math.min(samples.length, 5) - 1) lines.push('');
     });
@@ -480,6 +501,9 @@ function appendNearMisses(lines: string[], samples: AegisBlockSample[]): void {
         lines.push(`DB: ${sample.decisionBrain ?? 'N/D'} | EQ: ${sample.entryQuality ?? 'N/D'} | Tail: ${formatPct(sample.tailRiskScore)}`);
         if (sample.probeMode) {
             lines.push(`Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`);
+        }
+        if (sample.entryPolicy) {
+            lines.push(`EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`);
         }
         lines.push(`Bloqueo: ${formatReason(sample)}`);
     });

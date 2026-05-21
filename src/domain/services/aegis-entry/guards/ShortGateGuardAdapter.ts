@@ -1,0 +1,58 @@
+import {
+    AegisEntryContext,
+    AegisEntryGuardPolicy,
+    AegisEntryGuardResult,
+    guardDisabledResult,
+    isGuardEnforced
+} from '../AegisEntryDecisionTypes';
+import { AegisShortGate, AegisShortGateDecision } from '../../AegisShortGate';
+
+export interface ShortGateGuardAdapterResult {
+    guard: AegisEntryGuardResult;
+    decision?: AegisShortGateDecision;
+    adjustedLeverage: number;
+    adjustedPositionFraction: number;
+}
+
+export class ShortGateGuardAdapter {
+    static evaluate(context: AegisEntryContext, policy: AegisEntryGuardPolicy): ShortGateGuardAdapterResult {
+        if (policy.enabled !== true || policy.mode === 'OFF') {
+            return {
+                guard: guardDisabledResult('short_gate'),
+                adjustedLeverage: context.leverage,
+                adjustedPositionFraction: context.requestedPositionFraction
+            };
+        }
+
+        const decision = AegisShortGate.evaluate({
+            symbol: context.symbol,
+            side: context.side,
+            turboScore: context.turboScore,
+            votes: context.votes,
+            leverage: context.leverage,
+            positionFraction: context.requestedPositionFraction,
+            config: context.shortGate.config
+        });
+        const enforced = isGuardEnforced(policy);
+        const wouldBlock = decision.allowed !== true;
+        const guard: AegisEntryGuardResult = {
+            name: 'short_gate',
+            enabled: true,
+            mode: policy.mode,
+            decision: wouldBlock ? (enforced ? 'DENY' : 'SHADOW_DENY') : 'ALLOW',
+            reason: decision.reason,
+            wouldBlock,
+            enforced,
+            metadata: decision.metadata
+        };
+
+        return {
+            guard,
+            decision,
+            adjustedLeverage: decision.allowed || !enforced ? decision.adjustedLeverage : context.leverage,
+            adjustedPositionFraction: decision.allowed || !enforced
+                ? decision.adjustedPositionFraction
+                : context.requestedPositionFraction
+        };
+    }
+}

@@ -70,6 +70,30 @@ REGIMES:
     use_exit_agent: false
 
 aegis:
+  entry_policy:
+    enabled: true
+    guards:
+      decision_brain:
+        enabled: true
+        mode: ENFORCE
+      entry_quality:
+        enabled: true
+        mode: ENFORCE
+      event_risk:
+        enabled: true
+        mode: ENFORCE
+      clean_entry:
+        enabled: true
+        mode: ENFORCE
+        use_entry_quality_model_as_source_of_truth: true
+        ignore_rule_gate_insufficient_data_when_model_ok: true
+        min_feature_parity_pct: 95
+      probe_mode:
+        enabled: true
+        mode: ENFORCE
+      short_gate:
+        enabled: true
+        mode: ENFORCE
   event_risk:
     enabled: true
     mode: CAUTION

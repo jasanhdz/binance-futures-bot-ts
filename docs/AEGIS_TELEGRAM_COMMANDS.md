@@ -225,6 +225,7 @@ Formas:
 
 Eventos y razones incluidas como bloqueos:
 
+- `ENTRY_POLICY_DECISION` cuando `finalDecision` no es `ALLOW`
 - `DECISION_ENFORCEMENT_DENIED`
 - `ENTRY_QUALITY_GATE_SHADOW_BLOCK`
 - `ENTRY_QUALITY_GATE_DENIED`
@@ -281,7 +282,7 @@ Permitidas en ventana:
 ```
 
 `/blocks detail SYMBOL` muestra los últimos eventos relevantes con score, grade,
-DecisionBrain, EntryQuality, TailRisk y motivo. `/blocks near-miss` ordena candidatos
+DecisionBrain, EntryQuality, TailRisk, EntryPolicy y motivo. `/blocks near-miss` ordena candidatos
 por `A_PLUS`, score alto, EntryQuality `ALLOW`/`ALLOW_SHADOW` y TailRisk bajo.
 
 Los reportes Telegram son resúmenes operativos. Los logs completos siguen estando en

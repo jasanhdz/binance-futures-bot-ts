@@ -307,4 +307,70 @@ describe('AegisBlocksReportService', () => {
         });
         expect(messages.join('\n')).toContain('Probe: DENY | probe_tail_risk_too_high');
     });
+
+    it('/blocks reconoce ENTRY_POLICY_DECISION denegado y muestra EntryPolicy', async () => {
+        await writeEvents([
+            event({
+                symbol: 'XRPUSDT',
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'entry_policy_decision',
+                metadata: {
+                    symbol: 'XRPUSDT',
+                    side: 'LONG',
+                    turboScore: 0.93,
+                    entryQualityRecommendation: 'ALLOW_SHADOW',
+                    tailRiskScore: 0.22,
+                    entryPolicy: {
+                        finalDecision: 'WAIT_CONFIRMATION',
+                        finalReason: 'probe_min_minutes_between_entries'
+                    }
+                }
+            }),
+            event({
+                symbol: 'BTCUSDT',
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'entry_policy_decision',
+                metadata: {
+                    symbol: 'BTCUSDT',
+                    side: 'LONG',
+                    entryPolicy: {
+                        finalDecision: 'ALLOW',
+                        finalReason: 'all_enforced_guards_allowed'
+                    }
+                }
+            }),
+            event({
+                symbol: 'XRPUSDT',
+                event: 'PROBE_MODE_DENIED',
+                reason: 'probe_min_minutes_between_entries',
+                metadata: {
+                    symbol: 'XRPUSDT',
+                    side: 'LONG',
+                    probeMode: {
+                        enabled: true,
+                        allowed: false,
+                        reason: 'probe_min_minutes_between_entries'
+                    },
+                    entryPolicy: {
+                        finalDecision: 'WAIT_CONFIRMATION',
+                        finalReason: 'probe_min_minutes_between_entries'
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'detail', symbol: 'XRPUSDT', windowMinutes: 60 });
+        const messages = await service().buildTelegramMessages(['detail', 'XRPUSDT']);
+
+        expect(report.totalBlocks).toBe(1);
+        expect(report.byReason).toMatchObject({ probe_min_minutes_between_entries: 1 });
+        expect(report.samples[0]).toMatchObject({
+            symbol: 'XRPUSDT',
+            entryPolicy: {
+                finalDecision: 'WAIT_CONFIRMATION',
+                finalReason: 'probe_min_minutes_between_entries'
+            }
+        });
+        expect(messages.join('\n')).toContain('EntryPolicy: WAIT_CONFIRMATION | probe_min_minutes_between_entries');
+    });
 });

@@ -43,34 +43,30 @@ import {
 } from '../../infra/logging/AegisTurboHistoryLogger';
 import { formatAegisTurboEntryMessage } from './formatAegisTurboEntryMessage';
 import { AegisPositionMessageInput, formatAegisStartupMessage } from '../messages/AegisMessageFormatter';
-import { AegisShortGate } from '../../domain/services/AegisShortGate';
 import { AegisPortfolioRiskGuard } from '../../domain/services/AegisPortfolioRiskGuard';
+import { AegisEntryQualityGateDecision } from '../../domain/services/AegisEntryQualityGate';
 import {
-    AegisEntryQualityGateDecision,
-    evaluateAegisEntryQualityGate
-} from '../../domain/services/AegisEntryQualityGate';
-import {
-    AegisEventRiskOverlay,
     AegisEventRiskOverlayDecision
 } from '../../domain/services/AegisEventRiskOverlay';
-import {
-    AegisDecisionEnforcement,
-    AegisDecisionEnforcementDecision
-} from '../../domain/services/AegisDecisionEnforcement';
+import { AegisDecisionEnforcementDecision } from '../../domain/services/AegisDecisionEnforcement';
 import {
     AegisTelegramBlockNotifier,
     DEFAULT_AEGIS_BLOCK_NOTIFICATION_CONFIG
 } from './AegisTelegramBlockNotifier';
 import {
     DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG,
-    AegisCleanEntryGuardOutput,
-    evaluateAegisCleanEntryGuard
+    AegisCleanEntryGuardOutput
 } from '../../domain/services/AegisCleanEntryGuard';
 import {
-    AegisProbeMode,
     AegisProbeModeDecision,
     AegisProbeModeRuntimeConfig
 } from '../../domain/services/AegisProbeMode';
+import {
+    AegisEntryContext,
+    AegisEntryDecisionResult,
+    AegisEntryPolicyRuntimeConfig
+} from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
+import { AegisEntryGuardOrchestrator } from '../../domain/services/aegis-entry/AegisEntryGuardOrchestrator';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -331,6 +327,46 @@ export class TradingService {
             max_total_open_positions_when_probe: 2,
             block_after_consecutive_losses: 2,
             block_after_recent_stop_loss_minutes: 60
+        };
+    }
+
+    private getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisEntryPolicyConfig === 'function') {
+            return manager.getAegisEntryPolicyConfig();
+        }
+        const entryQualityGate = this.getEntryQualityGateConfig();
+        const eventRisk = this.getAegisEventRiskConfig();
+        const cleanEntry = this.getAegisCleanEntryGuardConfig();
+        const probeMode = this.getAegisProbeModeConfig();
+        return {
+            enabled: true,
+            guards: {
+                decision_brain: {
+                    enabled: this.getAegisDecisionEnforcementConfig().enabled,
+                    mode: this.getAegisDecisionEnforcementConfig().enabled ? 'ENFORCE' : 'OFF'
+                },
+                entry_quality: {
+                    enabled: entryQualityGate.enabled,
+                    mode: entryQualityGate.enabled ? entryQualityGate.mode : 'OFF'
+                },
+                event_risk: {
+                    enabled: eventRisk.enabled,
+                    mode: eventRisk.enabled ? (eventRisk.enforce ? 'ENFORCE' : 'SHADOW') : 'OFF'
+                },
+                clean_entry: {
+                    enabled: cleanEntry.enabled,
+                    mode: cleanEntry.enabled ? cleanEntry.mode : 'OFF'
+                },
+                probe_mode: {
+                    enabled: probeMode.enabled,
+                    mode: probeMode.enabled ? probeMode.mode : 'OFF'
+                },
+                short_gate: {
+                    enabled: this.getAegisShortGateConfig().enabled === true,
+                    mode: this.getAegisShortGateConfig().enabled === true ? 'ENFORCE' : 'OFF'
+                }
+            }
         };
     }
 
@@ -1282,29 +1318,6 @@ export class TradingService {
         return belowOrEqual / trPctValues.length;
     }
 
-    private async evaluateAndLogEntryQualityGate(
-        symbol: string,
-        side: Side,
-        gate: AegisMicroLiveGateDecision,
-        tradeId?: string
-    ): Promise<AegisEntryQualityGateDecision> {
-        const runtimeConfig = this.getEntryQualityGateConfig(symbol);
-        const marketContext = this.buildEntryQualityMarketContext(symbol);
-        const decision = evaluateAegisEntryQualityGate({
-            enabled: runtimeConfig.enabled,
-            mode: runtimeConfig.mode,
-            symbol,
-            side,
-            turboScore: gate.turboScore ?? 0,
-            votes: gate.votes,
-            ...marketContext,
-            config: runtimeConfig.config
-        });
-
-        await this.logEntryQualityGateDecision(symbol, side, decision, runtimeConfig.mode, tradeId);
-        return decision;
-    }
-
     private async logEntryQualityGateDecision(
         symbol: string,
         side: Side,
@@ -1348,25 +1361,6 @@ export class TradingService {
         }
     }
 
-    private extractEntryQualityModel(signal: AegisTradingSignal): {
-        entryQualityScore?: number;
-        tailRiskScore?: number;
-    } {
-        const aegis = signal.metadata?.aegis ?? signal.aegis;
-        const eq = aegis?.entry_quality_model;
-        const shadow = aegis?.shadow;
-        return {
-            entryQualityScore: this.finiteNumber((eq as any)?.entry_quality_score)
-                ? Number((eq as any).entry_quality_score)
-                : undefined,
-            tailRiskScore: this.finiteNumber((eq as any)?.tail_risk_score)
-                ? Number((eq as any).tail_risk_score)
-                : this.finiteNumber((shadow as any)?.tail_risk_score)
-                    ? Number((shadow as any).tail_risk_score)
-                    : undefined
-        };
-    }
-
     private getAegisSignalBlock(signal: AegisTradingSignal) {
         return signal.metadata?.aegis ?? signal.aegis;
     }
@@ -1374,42 +1368,6 @@ export class TradingService {
     private isAltSymbol(symbol: string): boolean {
         const normalized = this.normalizeSymbol(symbol);
         return normalized !== 'BTCUSDT' && normalized !== 'ETHUSDT';
-    }
-
-    private evaluateAegisEventRiskOverlay(
-        symbol: string,
-        side: Side,
-        signal: AegisTradingSignal,
-        gate: AegisMicroLiveGateDecision
-    ): AegisEventRiskOverlayDecision {
-        const config = this.getAegisEventRiskConfig();
-        const modelScores = this.extractEntryQualityModel(signal);
-        return AegisEventRiskOverlay.evaluate({
-            enabled: config.enabled,
-            mode: config.mode,
-            enforce: config.enforce,
-            symbol,
-            side,
-            turboScore: gate.turboScore ?? 0,
-            entryQualityScore: modelScores.entryQualityScore,
-            tailRiskScore: modelScores.tailRiskScore,
-            isAltSymbol: this.isAltSymbol(symbol),
-            config: {
-                caution: {
-                    minQualityScore: config.caution.min_quality_score,
-                    maxTailRiskScore: config.caution.max_tail_risk_score,
-                    requireBtcEthConfirmation: config.caution.require_btc_eth_confirmation
-                },
-                riskOff: {
-                    minQualityScore: config.risk_off.min_quality_score,
-                    maxTailRiskScore: config.risk_off.max_tail_risk_score,
-                    allowOnlyAPlus: config.risk_off.allow_only_a_plus
-                },
-                manualOnly: {
-                    blockNewEntries: config.manual_only.block_new_entries
-                }
-            }
-        });
     }
 
     private async logAegisEventRiskDecision(
@@ -1448,35 +1406,6 @@ export class TradingService {
             return;
         }
         this.deps.logger.debug('aegis_event_risk_shadow_allow', metadata);
-    }
-
-    private evaluateAegisDecisionEnforcement(
-        symbol: string,
-        side: Side,
-        signal: AegisTradingSignal,
-        gate: AegisMicroLiveGateDecision,
-        entryQualityDecision: AegisEntryQualityGateDecision,
-        eventRiskDecision: AegisEventRiskOverlayDecision
-    ): AegisDecisionEnforcementDecision {
-        const aegis = this.getAegisSignalBlock(signal);
-        const config = this.getAegisDecisionEnforcementConfig();
-        const eventRiskConfig = this.getAegisEventRiskConfig();
-
-        return AegisDecisionEnforcement.evaluate({
-            symbol,
-            side,
-            turboScore: gate.turboScore,
-            decisionBrain: aegis?.decision_brain,
-            entryQualityModel: aegis?.entry_quality_model,
-            entryQualityGate: entryQualityDecision,
-            eventRiskMode: eventRiskDecision.mode,
-            eventRiskWouldBlock: eventRiskDecision.wouldBlock,
-            eventRiskReason: eventRiskDecision.reason,
-            eventRiskAuto: aegis?.event_risk_auto,
-            isAltSymbol: this.isAltSymbol(symbol),
-            config,
-            riskOffTailMax: eventRiskConfig.risk_off.max_tail_risk_score
-        });
     }
 
     private async logAegisDecisionEnforcementDenied(
@@ -1577,13 +1506,6 @@ export class TradingService {
         });
     }
 
-    private recommendationFromEntryQualityGateAction(action?: string): string | undefined {
-        const normalized = String(action || '').trim().toUpperCase();
-        if (normalized === 'ALLOW' || normalized === 'SHADOW_ALLOW') return 'ALLOW_SHADOW';
-        if (normalized === 'BLOCK' || normalized === 'SHADOW_BLOCK') return 'BLOCK_SHADOW';
-        return undefined;
-    }
-
     private async logAegisCleanEntryGuardDecision(
         symbol: string,
         decision: AegisCleanEntryGuardOutput,
@@ -1653,111 +1575,6 @@ export class TradingService {
         return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
     }
 
-    private cleanEntryGuardFromDecisionEnforcementDenied(
-        symbol: string,
-        side: Side,
-        effectiveGate: AegisMicroLiveGateDecision,
-        decisionEnforcement: AegisDecisionEnforcementDecision
-    ): AegisCleanEntryGuardOutput {
-        const config = this.getAegisCleanEntryGuardConfig();
-        const mode = config.mode === 'ENFORCE' ? 'ENFORCE' : 'SHADOW';
-        const reasons = [decisionEnforcement.reason];
-        const metadata: AegisCleanEntryGuardOutput['metadata'] = {
-            enabled: config.enabled,
-            mode,
-            decision: mode === 'ENFORCE' ? 'WAIT_CONFIRMATION' : 'SHADOW_WAIT_CONFIRMATION',
-            allowed: false,
-            wouldBlock: true,
-            clean: false,
-            dirty: true,
-            reasons,
-            symbol,
-            side,
-            turboScore: effectiveGate.turboScore,
-            votes: effectiveGate.votes,
-            setupGrade: decisionEnforcement.metadata.setupGrade,
-            decisionBrain: decisionEnforcement.metadata.decisionBrainDecision,
-            entryQualityRecommendation: decisionEnforcement.metadata.entryQualityModelRecommendation
-                ?? decisionEnforcement.metadata.entryQualityRecommendation,
-            entryQualityGateReason: decisionEnforcement.metadata.entryQualityRuleGateReason
-                ?? decisionEnforcement.metadata.entryQualityGateReason,
-            entryQualityGateAction: decisionEnforcement.metadata.entryQualityRuleGateDecision
-                ?? decisionEnforcement.metadata.entryQualityGateAction,
-            entryQualityModelPresent: decisionEnforcement.metadata.entryQualityModelRecommendation !== undefined,
-            entryQualityModelRecommendation: decisionEnforcement.metadata.entryQualityModelRecommendation,
-            entryQualityModelScore: decisionEnforcement.metadata.entryQualityModelScore,
-            entryQualityModelFeatureStatus: decisionEnforcement.metadata.entryQualityModelFeatureStatus,
-            entryQualityModelFeatureParityPct: decisionEnforcement.metadata.entryQualityModelFeatureParityPct,
-            entryQualityModelMissingFeaturesCount: decisionEnforcement.metadata.entryQualityModelMissingFeaturesCount,
-            entryQualityModelScope: decisionEnforcement.metadata.entryQualityModelScope,
-            entryQualityModelVersion: decisionEnforcement.metadata.entryQualityModelVersion,
-            featureStatus: decisionEnforcement.metadata.entryQualityModelFeatureStatus,
-            featureParityPct: decisionEnforcement.metadata.entryQualityModelFeatureParityPct,
-            missingFeaturesCount: decisionEnforcement.metadata.entryQualityModelMissingFeaturesCount,
-            modelScope: decisionEnforcement.metadata.entryQualityModelScope,
-            modelVersion: decisionEnforcement.metadata.entryQualityModelVersion,
-            entryQualityRuleGateReason: decisionEnforcement.metadata.entryQualityRuleGateReason,
-            entryQualityRuleGateDecision: decisionEnforcement.metadata.entryQualityRuleGateDecision,
-            entryQualityScore: decisionEnforcement.metadata.entryQualityScore,
-            tailRiskScore: decisionEnforcement.metadata.tailRiskScore,
-            eventRiskMode: decisionEnforcement.metadata.eventRiskMode,
-            eventRiskWouldBlock: decisionEnforcement.metadata.eventRiskWouldBlock,
-            eventRiskReason: decisionEnforcement.metadata.eventRiskReason
-        };
-
-        return {
-            decision: metadata.decision,
-            allowed: false,
-            wouldBlock: true,
-            reasons,
-            clean: false,
-            dirty: true,
-            mode,
-            metadata
-        };
-    }
-
-    private async evaluateAegisProbeMode(input: {
-        symbol: string;
-        side: Side;
-        effectiveGate: AegisMicroLiveGateDecision;
-        decisionEnforcement: AegisDecisionEnforcementDecision;
-        cleanEntryGuard: AegisCleanEntryGuardOutput;
-    }): Promise<AegisProbeModeDecision> {
-        const globalState = this.deps.state.get();
-        const stateExposure = this.countStateOpenPositions();
-        const sameSymbolOpen = this.stateForSymbol(input.symbol).get().mode !== 'IDLE'
-            || await this.deps.exchange.hasOpenPosition(input.symbol, 'ANY').catch(() => false);
-
-        return AegisProbeMode.evaluate({
-            config: this.getAegisProbeModeConfig(),
-            nowMs: Date.now(),
-            symbol: input.symbol,
-            side: input.side,
-            turboScore: input.effectiveGate.turboScore,
-            votes: input.effectiveGate.votes,
-            setupGrade: input.decisionEnforcement.metadata.setupGrade,
-            decisionBrain: input.decisionEnforcement.metadata.decisionBrainDecision,
-            entryQualityRecommendation: input.decisionEnforcement.metadata.entryQualityModelRecommendation
-                ?? input.decisionEnforcement.metadata.entryQualityRecommendation,
-            entryQualityGateAction: input.decisionEnforcement.metadata.entryQualityRuleGateDecision,
-            featureStatus: input.decisionEnforcement.metadata.entryQualityModelFeatureStatus,
-            featureParityPct: input.decisionEnforcement.metadata.entryQualityModelFeatureParityPct,
-            tailRiskScore: input.decisionEnforcement.metadata.tailRiskScore,
-            eventRiskMode: input.decisionEnforcement.metadata.eventRiskMode,
-            eventRiskReason: input.decisionEnforcement.metadata.eventRiskReason,
-            eventRiskWouldBlock: input.decisionEnforcement.metadata.eventRiskWouldBlock,
-            cleanEntryReasons: input.cleanEntryGuard.reasons,
-            lastProbeAt: globalState.lastProbeAt,
-            probeEntryTimestamps: globalState.probeEntryTimestamps,
-            openProbePositions: stateExposure.openProbePositions,
-            totalOpenPositions: stateExposure.totalOpenPositions,
-            sameSymbolOpen,
-            consecutiveLosses: this.consecutiveLosses,
-            lastStopLossAt: this.mostRecentStopLossAt()
-        });
-    }
-
     private async logAegisProbeModeDecision(
         symbol: string,
         decision: AegisProbeModeDecision,
@@ -1806,6 +1623,128 @@ export class TradingService {
             lastProbeTradeId: tradeId,
             probeEntryTimestamps: [...recent, openedAtMs]
         });
+    }
+
+    private contextAction(context: Record<string, unknown> | undefined): string | undefined {
+        const value = context?.action ?? context?.turbo_action ?? context?.suggested_action;
+        return value === undefined ? undefined : String(value).trim().toUpperCase();
+    }
+
+    private contextScore(context: Record<string, unknown> | undefined): number | undefined {
+        const value = context?.score ?? context?.turbo_score ?? context?.confidence;
+        return this.finiteNumber(value) ? Number(value) : undefined;
+    }
+
+    private async buildAegisEntryContext(input: {
+        symbol: string;
+        side: Side;
+        signal: AegisTradingSignal;
+        gate: AegisMicroLiveGateDecision;
+        baseGate: AegisMicroLiveGateDecision;
+    }): Promise<AegisEntryContext> {
+        const aegis = this.getAegisSignalBlock(input.signal);
+        const entryQualityRuntimeConfig = this.getEntryQualityGateConfig(input.symbol);
+        const eventRiskConfig = this.getAegisEventRiskConfig();
+        const eventRiskAuto = aegis?.event_risk_auto;
+        const globalState = this.deps.state.get();
+        const stateExposure = this.countStateOpenPositions();
+        const lastStopLossAt = this.mostRecentStopLossAt();
+        const now = Date.now();
+        const sameSymbolPositionExists = this.stateForSymbol(input.symbol).get().mode !== 'IDLE'
+            || await this.deps.exchange.hasOpenPosition(input.symbol, 'ANY').catch(() => false);
+
+        return {
+            symbol: input.symbol,
+            side: input.side,
+            rawAction: aegis?.turbo?.raw?.action ?? input.signal.action,
+            finalAction: aegis?.turbo?.gated?.action ?? aegis?.turbo?.action ?? input.signal.action,
+            turboScore: input.gate.turboScore ?? 0,
+            votes: input.gate.votes,
+            setupGrade: undefined,
+            leverage: input.gate.leverage,
+            requestedPositionFraction: input.gate.positionFraction,
+            basePositionFraction: input.baseGate.positionFraction,
+            signal: input.signal,
+            gate: input.gate,
+            decisionBrain: {
+                decision: aegis?.decision_brain?.decision,
+                confidence: aegis?.decision_brain?.enter_now_prob ?? undefined,
+                reason: aegis?.decision_brain?.reason,
+                block: aegis?.decision_brain
+            },
+            entryQuality: {
+                model: aegis?.entry_quality_model,
+                recommendation: aegis?.entry_quality_model?.recommendation,
+                entryQualityScore: aegis?.entry_quality_model?.entry_quality_score,
+                tailRiskScore: aegis?.entry_quality_model?.tail_risk_score,
+                featureStatus: aegis?.entry_quality_model?.feature_status,
+                featureParityPct: aegis?.entry_quality_model?.feature_parity_pct,
+                missingFeaturesCount: aegis?.entry_quality_model?.missing_features_count,
+                modelScope: aegis?.entry_quality_model?.model_scope,
+                modelVersion: aegis?.entry_quality_model?.model_version,
+                ruleGate: {
+                    enabled: entryQualityRuntimeConfig.enabled,
+                    mode: entryQualityRuntimeConfig.mode,
+                    config: entryQualityRuntimeConfig.config,
+                    ...this.buildEntryQualityMarketContext(input.symbol)
+                }
+            },
+            eventRisk: {
+                enabled: eventRiskConfig.enabled,
+                mode: eventRiskConfig.mode,
+                enforce: eventRiskConfig.enforce,
+                reason: undefined,
+                wouldBlock: undefined,
+                confidence: eventRiskAuto?.confidence ?? undefined,
+                auto: eventRiskAuto,
+                btcAction: this.contextAction(eventRiskAuto?.btc_context),
+                btcScore: this.contextScore(eventRiskAuto?.btc_context),
+                ethAction: this.contextAction(eventRiskAuto?.eth_context),
+                ethScore: this.contextScore(eventRiskAuto?.eth_context),
+                isAltSymbol: this.isAltSymbol(input.symbol),
+                config: {
+                    caution: {
+                        minQualityScore: eventRiskConfig.caution.min_quality_score,
+                        maxTailRiskScore: eventRiskConfig.caution.max_tail_risk_score,
+                        requireBtcEthConfirmation: eventRiskConfig.caution.require_btc_eth_confirmation
+                    },
+                    riskOff: {
+                        minQualityScore: eventRiskConfig.risk_off.min_quality_score,
+                        maxTailRiskScore: eventRiskConfig.risk_off.max_tail_risk_score,
+                        allowOnlyAPlus: eventRiskConfig.risk_off.allow_only_a_plus
+                    },
+                    manualOnly: {
+                        blockNewEntries: eventRiskConfig.manual_only.block_new_entries
+                    }
+                }
+            },
+            cleanEntry: {
+                metadata: aegis?.clean_entry_guard as AegisCleanEntryGuardOutput['metadata'] | undefined,
+                config: this.getAegisCleanEntryGuardConfig()
+            },
+            probe: {
+                config: this.getAegisProbeModeConfig()
+            },
+            shortGate: {
+                config: this.getAegisShortGateConfig()
+            },
+            decisionEnforcement: {
+                config: this.getAegisDecisionEnforcementConfig(),
+                riskOffTailMax: eventRiskConfig.risk_off.max_tail_risk_score
+            },
+            operational: {
+                consecutiveLosses: this.consecutiveLosses,
+                tradesToday: this.tradesToday,
+                openPositionsCount: stateExposure.totalOpenPositions,
+                openProbePositions: stateExposure.openProbePositions,
+                sameSymbolPositionExists,
+                recentStopLossMinutes: this.finiteNumber(lastStopLossAt) ? (now - lastStopLossAt) / 60000 : undefined,
+                lastStopLossAt,
+                lastProbeAt: globalState.lastProbeAt,
+                probeEntryTimestamps: globalState.probeEntryTimestamps,
+                timestamp: now
+            }
+        };
     }
 
     private async openAegisTurboPosition(
@@ -1862,16 +1801,33 @@ export class TradingService {
                     ruleName: positionFractionOverride.ruleName
                 });
             }
-            const shortGateDecision = AegisShortGate.evaluate({
+            const entryContext = await this.buildAegisEntryContext({
                 symbol,
                 side,
-                turboScore: gateAfterPositionOverride.turboScore,
-                votes: gateAfterPositionOverride.votes,
-                leverage: gateAfterPositionOverride.leverage,
-                positionFraction: gateAfterPositionOverride.positionFraction,
-                config: this.getAegisShortGateConfig()
+                signal,
+                gate: gateAfterPositionOverride,
+                baseGate: gate
             });
-            if (!shortGateDecision.allowed) {
+            const entryDecision = AegisEntryGuardOrchestrator.evaluate(
+                entryContext,
+                this.getAegisEntryPolicyConfig()
+            );
+            const shortGateDecision = entryDecision.decisions.shortGate;
+            const entryQualityDecision = entryDecision.decisions.entryQuality;
+            const eventRiskDecision = entryDecision.decisions.eventRisk;
+            const decisionEnforcement = entryDecision.decisions.decisionEnforcement;
+            const cleanEntryGuard = entryDecision.decisions.cleanEntry;
+            probeModeDecision = entryDecision.decisions.probeMode;
+            await this.logAegisTradeEvent(symbol, 'ENTRY_POLICY_DECISION', {
+                tradeId,
+                reason: entryDecision.finalReason,
+                metadata: {
+                    ...entryDecision.metadata,
+                    trace: entryDecision.trace
+                }
+            });
+
+            if (shortGateDecision && !shortGateDecision.allowed && entryDecision.deniedBy === 'short_gate') {
                 const deniedGate = { ...gateAfterPositionOverride, allowed: false, reason: shortGateDecision.reason };
                 await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: deniedGate, executed: false });
                 await this.logAegisTradeEvent(symbol, 'SHORT_GATE_DENIED', {
@@ -1883,7 +1839,8 @@ export class TradingService {
                         votes: gate.votes,
                         reason: shortGateDecision.reason,
                         minScore: shortGateDecision.metadata.minScore,
-                        requireVotes: shortGateDecision.metadata.requireVotes
+                        requireVotes: shortGateDecision.metadata.requireVotes,
+                        entryPolicy: entryDecision.metadata
                     }
                 });
                 logger.warn('aegis_short_gate_denied', {
@@ -1897,8 +1854,8 @@ export class TradingService {
                 return;
             }
 
-            const leverage = shortGateDecision.adjustedLeverage;
-            const positionFraction = shortGateDecision.adjustedPositionFraction;
+            const leverage = entryDecision.adjustedLeverage;
+            const positionFraction = entryDecision.adjustedPositionFraction;
             const effectiveGate: AegisMicroLiveGateDecision = {
                 ...gateAfterPositionOverride,
                 leverage,
@@ -1906,21 +1863,25 @@ export class TradingService {
             };
             if (leverage <= 0 || positionFraction <= 0) return;
 
-            const entryQualityDecision = await this.evaluateAndLogEntryQualityGate(
-                symbol,
-                side,
-                effectiveGate,
-                tradeId
-            );
-            if (!entryQualityDecision.allowed) {
+            if (entryQualityDecision) {
+                await this.logEntryQualityGateDecision(symbol, side, entryQualityDecision, this.getEntryQualityGateConfig(symbol).mode, tradeId);
+            }
+            if (entryQualityDecision && !entryQualityDecision.allowed && entryDecision.deniedBy === 'entry_quality') {
                 const deniedGate = { ...effectiveGate, allowed: false, reason: entryQualityDecision.reason };
-                await this.logAegisTurboSignal(symbol, signal, { signalId, tradeId, gate: deniedGate, executed: false });
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: deniedGate,
+                    executed: false,
+                    metadata: { entryPolicy: entryDecision.metadata }
+                });
                 return;
             }
 
-            const eventRiskDecision = this.evaluateAegisEventRiskOverlay(symbol, side, signal, effectiveGate);
-            await this.logAegisEventRiskDecision(symbol, eventRiskDecision, tradeId);
-            if (!eventRiskDecision.allowed) {
+            if (eventRiskDecision) {
+                await this.logAegisEventRiskDecision(symbol, eventRiskDecision, tradeId);
+            }
+            if (eventRiskDecision && !eventRiskDecision.allowed && entryDecision.deniedBy === 'event_risk') {
                 const deniedGate = { ...effectiveGate, allowed: false, reason: eventRiskDecision.reason };
                 await this.logAegisTurboSignal(symbol, signal, {
                     signalId,
@@ -1929,21 +1890,14 @@ export class TradingService {
                     executed: false,
                     metadata: {
                         event_risk_mode: eventRiskDecision.mode,
-                        event_risk_action: eventRiskDecision.action
+                        event_risk_action: eventRiskDecision.action,
+                        entryPolicy: entryDecision.metadata
                     }
                 });
                 return;
             }
 
-            const decisionEnforcement = this.evaluateAegisDecisionEnforcement(
-                symbol,
-                side,
-                signal,
-                effectiveGate,
-                entryQualityDecision,
-                eventRiskDecision
-            );
-            if (!decisionEnforcement.allowed) {
+            if (decisionEnforcement && !decisionEnforcement.allowed && entryDecision.deniedBy === 'decision_brain') {
                 const deniedGate = { ...effectiveGate, allowed: false, reason: decisionEnforcement.reason };
                 await this.logAegisTurboSignal(symbol, signal, {
                     signalId,
@@ -1958,29 +1912,19 @@ export class TradingService {
                         event_risk_reason: decisionEnforcement.metadata.eventRiskReason,
                         event_risk_would_block: decisionEnforcement.metadata.eventRiskWouldBlock,
                         is_a_plus: decisionEnforcement.metadata.aPlus,
-                        setup_grade: decisionEnforcement.metadata.setupGrade
+                        setup_grade: decisionEnforcement.metadata.setupGrade,
+                        entryPolicy: entryDecision.metadata
                     }
                 });
                 await this.logAegisDecisionEnforcementDenied(symbol, decisionEnforcement, tradeId);
                 await this.notifyDecisionEnforcementDenied(symbol, decisionEnforcement);
-                const cleanEntryGuard = this.cleanEntryGuardFromDecisionEnforcementDenied(
-                    symbol,
-                    side,
-                    effectiveGate,
-                    decisionEnforcement
-                );
-                probeModeDecision = await this.evaluateAegisProbeMode({
-                    symbol,
-                    side,
-                    effectiveGate,
-                    decisionEnforcement,
-                    cleanEntryGuard
-                });
-                await this.logAegisProbeModeDecision(symbol, probeModeDecision, tradeId);
+                if (probeModeDecision) {
+                    await this.logAegisProbeModeDecision(symbol, probeModeDecision, tradeId);
+                }
                 return;
             }
 
-            if (side === 'SHORT' && shortGateDecision.reason === 'short_allowed_premium') {
+            if (shortGateDecision && side === 'SHORT' && shortGateDecision.reason === 'short_allowed_premium') {
                 await this.logAegisTradeEvent(symbol, 'SHORT_GATE_ADJUSTED', {
                     tradeId,
                     reason: shortGateDecision.reason,
@@ -2000,76 +1944,25 @@ export class TradingService {
                 });
             }
 
-            const aegisBlockForCleanEntry = this.getAegisSignalBlock(signal);
-            const entryQualityModelForCleanEntry = aegisBlockForCleanEntry?.entry_quality_model;
-            const cleanEntryGuard = evaluateAegisCleanEntryGuard({
-                ...this.getAegisCleanEntryGuardConfig(),
-                symbol,
-                side,
-                turboScore: effectiveGate.turboScore,
-                votes: effectiveGate.votes,
-                setupGrade: decisionEnforcement.metadata.setupGrade,
-                decisionBrain: decisionEnforcement.metadata.decisionBrainDecision,
-                entryQualityRecommendation: decisionEnforcement.metadata.entryQualityModelRecommendation
-                    ?? decisionEnforcement.metadata.entryQualityRecommendation
-                    ?? this.recommendationFromEntryQualityGateAction(entryQualityDecision.action),
-                entryQualityGateAction: decisionEnforcement.metadata.entryQualityRuleGateDecision ?? entryQualityDecision.action,
-                entryQualityGateReason: decisionEnforcement.metadata.entryQualityRuleGateReason ?? entryQualityDecision.reason,
-                entryQualityModelPresent: entryQualityModelForCleanEntry !== undefined,
-                entryQualityModelRecommendation: decisionEnforcement.metadata.entryQualityModelRecommendation
-                    ?? entryQualityModelForCleanEntry?.recommendation,
-                entryQualityModelScore: decisionEnforcement.metadata.entryQualityModelScore
-                    ?? entryQualityModelForCleanEntry?.entry_quality_score,
-                entryQualityModelFeatureStatus: decisionEnforcement.metadata.entryQualityModelFeatureStatus
-                    ?? entryQualityModelForCleanEntry?.feature_status,
-                entryQualityModelFeatureParityPct: decisionEnforcement.metadata.entryQualityModelFeatureParityPct
-                    ?? entryQualityModelForCleanEntry?.feature_parity_pct,
-                entryQualityModelMissingFeaturesCount: decisionEnforcement.metadata.entryQualityModelMissingFeaturesCount
-                    ?? entryQualityModelForCleanEntry?.missing_features_count,
-                entryQualityModelScope: decisionEnforcement.metadata.entryQualityModelScope
-                    ?? entryQualityModelForCleanEntry?.model_scope,
-                entryQualityModelVersion: decisionEnforcement.metadata.entryQualityModelVersion
-                    ?? entryQualityModelForCleanEntry?.model_version,
-                featureStatus: decisionEnforcement.metadata.entryQualityModelFeatureStatus
-                    ?? entryQualityModelForCleanEntry?.feature_status,
-                featureParityPct: decisionEnforcement.metadata.entryQualityModelFeatureParityPct
-                    ?? entryQualityModelForCleanEntry?.feature_parity_pct,
-                missingFeaturesCount: decisionEnforcement.metadata.entryQualityModelMissingFeaturesCount
-                    ?? entryQualityModelForCleanEntry?.missing_features_count,
-                modelScope: decisionEnforcement.metadata.entryQualityModelScope
-                    ?? entryQualityModelForCleanEntry?.model_scope,
-                modelVersion: decisionEnforcement.metadata.entryQualityModelVersion
-                    ?? entryQualityModelForCleanEntry?.model_version,
-                entryQualityRuleGateReason: decisionEnforcement.metadata.entryQualityRuleGateReason ?? entryQualityDecision.reason,
-                entryQualityRuleGateDecision: decisionEnforcement.metadata.entryQualityRuleGateDecision ?? entryQualityDecision.action,
-                entryQualityScore: decisionEnforcement.metadata.entryQualityScore,
-                tailRiskScore: decisionEnforcement.metadata.tailRiskScore ?? eventRiskDecision.metadata.tailRiskScore,
-                eventRiskMode: decisionEnforcement.metadata.eventRiskMode,
-                eventRiskWouldBlock: decisionEnforcement.metadata.eventRiskWouldBlock,
-                eventRiskReason: decisionEnforcement.metadata.eventRiskReason,
-                isPremiumSymbol: positionFractionOverride !== undefined
-            });
-            await this.logAegisCleanEntryGuardDecision(symbol, cleanEntryGuard, tradeId);
-            if (!cleanEntryGuard.allowed) {
-                probeModeDecision = await this.evaluateAegisProbeMode({
-                    symbol,
-                    side,
-                    effectiveGate,
-                    decisionEnforcement,
-                    cleanEntryGuard
-                });
-                await this.logAegisProbeModeDecision(symbol, probeModeDecision, tradeId);
+            if (cleanEntryGuard) {
+                await this.logAegisCleanEntryGuardDecision(symbol, cleanEntryGuard, tradeId);
+            }
+            if (cleanEntryGuard && !cleanEntryGuard.allowed) {
+                if (probeModeDecision) {
+                    await this.logAegisProbeModeDecision(symbol, probeModeDecision, tradeId);
+                }
                 logger.info('aegis_clean_entry_guard_wait_confirmation', {
                     symbol,
                     side,
                     reasons: cleanEntryGuard.reasons,
                     metadata: {
                         ...cleanEntryGuard.metadata,
-                        probeMode: probeModeDecision.metadata
+                        probeMode: probeModeDecision?.metadata,
+                        entryPolicy: entryDecision.metadata
                     }
                 });
-                if (!probeModeDecision.allowed) {
-                    const deniedGate = { ...effectiveGate, allowed: false, reason: probeModeDecision.reason };
+                if (!probeModeDecision?.allowed) {
+                    const deniedGate = { ...effectiveGate, allowed: false, reason: entryDecision.finalReason };
                     await this.logAegisTurboSignal(symbol, signal, {
                         signalId,
                         tradeId,
@@ -2079,7 +1972,8 @@ export class TradingService {
                             cleanEntryGuard: cleanEntryGuard.metadata,
                             clean_entry_guard_decision: cleanEntryGuard.decision,
                             clean_entry_guard_reasons: cleanEntryGuard.reasons,
-                            probeMode: probeModeDecision.metadata
+                            probeMode: probeModeDecision?.metadata,
+                            entryPolicy: entryDecision.metadata
                         }
                     });
                     return;
@@ -2087,6 +1981,8 @@ export class TradingService {
                 await this.notifyProbeModeAllowed(symbol, side, probeModeDecision);
             }
 
+            const decisionMetadata = decisionEnforcement?.metadata;
+            const cleanEntryMetadata = cleanEntryGuard?.metadata;
             const wallet = await exchange.getUSDTBalance();
             const entryAccount = await this.readEntryAccountSnapshot(wallet);
             const feeBufferPct = configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05;
@@ -2158,16 +2054,17 @@ export class TradingService {
                 gate: effectiveGate,
                 executed: true,
                 metadata: {
-                    decision_enforcement_reason: decisionEnforcement.reason,
-                    cleanEntryGuard: cleanEntryGuard.metadata,
-                    setup_grade: decisionEnforcement.metadata.setupGrade,
-                    is_a_plus: decisionEnforcement.metadata.aPlus,
-                    decision_brain_decision: decisionEnforcement.metadata.decisionBrainDecision,
-                    entry_quality_recommendation: decisionEnforcement.metadata.entryQualityRecommendation,
-                    event_risk_mode: decisionEnforcement.metadata.eventRiskMode,
-                    event_risk_reason: decisionEnforcement.metadata.eventRiskReason,
-                    event_risk_would_block: decisionEnforcement.metadata.eventRiskWouldBlock,
-                    probeMode: probeModeDecision?.metadata
+                    decision_enforcement_reason: decisionEnforcement?.reason,
+                    cleanEntryGuard: cleanEntryMetadata,
+                    setup_grade: decisionMetadata?.setupGrade,
+                    is_a_plus: decisionMetadata?.aPlus,
+                    decision_brain_decision: decisionMetadata?.decisionBrainDecision,
+                    entry_quality_recommendation: decisionMetadata?.entryQualityRecommendation,
+                    event_risk_mode: decisionMetadata?.eventRiskMode,
+                    event_risk_reason: decisionMetadata?.eventRiskReason,
+                    event_risk_would_block: decisionMetadata?.eventRiskWouldBlock,
+                    probeMode: probeModeDecision?.metadata,
+                    entryPolicy: entryDecision.metadata
                 }
             });
             await this.logAegisTradeEvent(symbol, 'GATE_ALLOWED', {
@@ -2181,17 +2078,18 @@ export class TradingService {
                     takeProfitRoe: effectiveGate.takeProfitRoe,
                     trailingActivationRoe: effectiveGate.trailingActivationRoe,
                     trailingCallbackRoe: effectiveGate.trailingCallbackRoe,
-                    decisionEnforcementReason: decisionEnforcement.reason,
-                    cleanEntryGuard: cleanEntryGuard.metadata,
-                    setupGrade: decisionEnforcement.metadata.setupGrade,
-                    aPlus: decisionEnforcement.metadata.aPlus,
-                    decisionBrainDecision: decisionEnforcement.metadata.decisionBrainDecision,
-                    entryQualityRecommendation: decisionEnforcement.metadata.entryQualityRecommendation,
-                    tailRiskScore: decisionEnforcement.metadata.tailRiskScore,
-                    eventRiskMode: decisionEnforcement.metadata.eventRiskMode,
-                    eventRiskReason: decisionEnforcement.metadata.eventRiskReason,
-                    eventRiskWouldBlock: decisionEnforcement.metadata.eventRiskWouldBlock,
-                    probeMode: probeModeDecision?.metadata
+                    decisionEnforcementReason: decisionEnforcement?.reason,
+                    cleanEntryGuard: cleanEntryMetadata,
+                    setupGrade: decisionMetadata?.setupGrade,
+                    aPlus: decisionMetadata?.aPlus,
+                    decisionBrainDecision: decisionMetadata?.decisionBrainDecision,
+                    entryQualityRecommendation: decisionMetadata?.entryQualityRecommendation,
+                    tailRiskScore: decisionMetadata?.tailRiskScore,
+                    eventRiskMode: decisionMetadata?.eventRiskMode,
+                    eventRiskReason: decisionMetadata?.eventRiskReason,
+                    eventRiskWouldBlock: decisionMetadata?.eventRiskWouldBlock,
+                    probeMode: probeModeDecision?.metadata,
+                    entryPolicy: entryDecision.metadata
                 }
             });
 
@@ -2206,8 +2104,9 @@ export class TradingService {
                     quantity,
                     leverage,
                     positionFraction,
-                    cleanEntryGuard: cleanEntryGuard.metadata,
+                    cleanEntryGuard: cleanEntryMetadata,
                     probeMode: probeModeDecision?.metadata,
+                    entryPolicy: entryDecision.metadata,
                     marginEstimated: margin,
                     notionalEstimated: notional
                 }
@@ -2421,8 +2320,9 @@ export class TradingService {
                         ruleName: positionFractionOverride.ruleName,
                         overriddenPositionFraction: positionFractionOverride.positionFraction
                     } : undefined,
-                    cleanEntryGuard: cleanEntryGuard.metadata,
+                    cleanEntryGuard: cleanEntryMetadata,
                     probeMode: probeModeDecision?.metadata,
+                    entryPolicy: entryDecision.metadata,
                     orderId: result?.orderId,
                     estimated: true
                 }

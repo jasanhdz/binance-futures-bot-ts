@@ -8,6 +8,8 @@ Profit Protection v1 está activo como capa de salida: no bloquea entradas ni ca
 
 Clean Entry Confirmation Guard v1 está activo como capa posterior a Decision Enforcement. En `ENFORCE`, una señal aprobada pero sucia se convierte en `WAIT_CONFIRMATION` antes de `setLeverage`/`marketOpen`; no cambia dirección, sizing de entradas limpias, brackets ni salidas. Ver `docs/AEGIS_CLEAN_ENTRY_GUARD.md`.
 
+Las capas de entrada se coordinan desde `aegis.entry_policy`. Esta policy no cambia thresholds ni estrategia; solo define si cada guard corre en `OFF`, `SHADOW` o `ENFORCE`. Ver `docs/AEGIS_ENTRY_POLICY.md`.
+
 Decisión activa:
 
 - Portfolio risk: OFF.
@@ -61,6 +63,7 @@ No deberían generarse eventos nuevos `PORTFOLIO_RISK_DENIED` mientras esta secc
 
 Eventos en `logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl`:
 
+- `ENTRY_POLICY_DECISION`: trace estandar de todos los guards de entrada.
 - `SHORT_GATE_DENIED`: SHORT bloqueado por score o votos.
 - `SHORT_GATE_ADJUSTED`: SHORT permitido con metadata de leverage/position fraction original y ajustado.
 - `CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION`: señal direccional aprobada, pero entrada no limpia; se espera confirmación.

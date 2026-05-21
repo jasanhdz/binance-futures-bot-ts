@@ -368,6 +368,7 @@ function makeHarness(options: {
         telegramNotifications?: any;
         positionFractionOverride?: any;
         entryQuality?: any;
+        entryPolicy?: any;
         cachedCandles?: any[];
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
@@ -472,7 +473,7 @@ function makeHarness(options: {
     }
     const notifier = { sendMessage: vi.fn(), sendAlert: vi.fn() };
     const symbolModes = options.symbolModes ?? { ETHUSDT: 'LIVE' as const };
-    const configManager = {
+    const configManager: any = {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
         getAegisPortfolioRiskConfig: vi.fn(() => options.portfolioRisk ?? { enabled: false }),
         getAegisShortGateConfig: vi.fn(() => options.shortGate ?? { enabled: false }),
@@ -554,6 +555,9 @@ function makeHarness(options: {
         system: { enable_sentinel: false },
         trading: { fee_buffer_pct: 0.05 }
     };
+    if (options.entryPolicy) {
+        configManager.getAegisEntryPolicyConfig = vi.fn(() => options.entryPolicy);
+    }
     const historyLogger = {
         logSignal: vi.fn().mockResolvedValue(undefined),
         logTradeEvent: vi.fn().mockResolvedValue(undefined),
@@ -1563,6 +1567,46 @@ describe('TradingService Aegis live execution', () => {
         expect(logger.info).toHaveBeenCalledWith('aegis_entry_quality_shadow_block', expect.objectContaining({
             symbol: 'ETHUSDT',
             reason: 'score_below_entry_quality_threshold'
+        }));
+    });
+
+    it('entry_policy ENFORCE does not convert legacy EntryQuality SHADOW into marketOpen denial', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            entryQuality: entryQualityConfig({
+                enabled: true,
+                mode: 'SHADOW',
+                config: { minScoreLong: 0.90 }
+            }),
+            entryPolicy: {
+                enabled: true,
+                guards: {
+                    short_gate: { enabled: false, mode: 'OFF' },
+                    entry_quality: { enabled: true, mode: 'ENFORCE' },
+                    event_risk: { enabled: false, mode: 'OFF' },
+                    decision_brain: { enabled: false, mode: 'OFF' },
+                    clean_entry: { enabled: false, mode: 'OFF' },
+                    probe_mode: { enabled: false, mode: 'OFF' }
+                }
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_POLICY_DECISION',
+            reason: 'all_enforced_guards_allowed',
+            metadata: expect.objectContaining({
+                finalDecision: 'ALLOW',
+                guards: expect.objectContaining({
+                    entry_quality: expect.objectContaining({
+                        mode: 'SHADOW',
+                        enforced: false,
+                        wouldBlock: true
+                    })
+                })
+            })
         }));
     });
 

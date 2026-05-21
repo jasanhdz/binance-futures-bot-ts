@@ -450,6 +450,164 @@ symbols:
         });
     });
 
+    it('parses Aegis entry policy guard modes', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    enabled: true
+    guards:
+      decision_brain:
+        enabled: true
+        mode: ENFORCE
+      entry_quality:
+        enabled: true
+        mode: SHADOW
+      event_risk:
+        enabled: false
+        mode: OFF
+      clean_entry:
+        enabled: true
+        mode: ENFORCE
+      probe_mode:
+        enabled: true
+        mode: SHADOW
+      short_gate:
+        enabled: true
+        mode: ENFORCE
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisEntryPolicyConfig()).toEqual({
+            enabled: true,
+            guards: {
+                decision_brain: { enabled: true, mode: 'ENFORCE' },
+                entry_quality: { enabled: true, mode: 'SHADOW' },
+                event_risk: { enabled: false, mode: 'OFF' },
+                clean_entry: { enabled: true, mode: 'ENFORCE' },
+                probe_mode: { enabled: true, mode: 'SHADOW' },
+                short_gate: { enabled: true, mode: 'ENFORCE' }
+            }
+        });
+    });
+
+    it('defaults entry policy from legacy guard configs when entry_policy is absent', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  decision_enforcement:
+    enabled: true
+    mode: CONSERVATIVE
+  entry_quality_gate:
+    enabled: true
+    mode: SHADOW
+  event_risk:
+    enabled: true
+    mode: CAUTION
+  clean_entry_guard:
+    enabled: true
+    mode: ENFORCE
+  probe_mode:
+    enabled: true
+    mode: ENFORCE
+  short_gate:
+    enabled: true
+    mode: PREMIUM_ONLY
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisEntryPolicyConfig()).toEqual({
+            enabled: true,
+            guards: {
+                decision_brain: { enabled: true, mode: 'ENFORCE' },
+                entry_quality: { enabled: true, mode: 'SHADOW' },
+                event_risk: { enabled: true, mode: 'SHADOW' },
+                clean_entry: { enabled: true, mode: 'ENFORCE' },
+                probe_mode: { enabled: true, mode: 'ENFORCE' },
+                short_gate: { enabled: true, mode: 'ENFORCE' }
+            }
+        });
+    });
+
+    it('uses safe entry policy defaults for invalid guard modes', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    enabled: true
+    guards:
+      clean_entry:
+        enabled: true
+        mode: invalid
+      probe_mode:
+        enabled: true
+        mode: OFF
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisEntryPolicyConfig().guards.clean_entry).toEqual({
+            enabled: true,
+            mode: 'SHADOW'
+        });
+        expect(config.getAegisEntryPolicyConfig().guards.probe_mode).toEqual({
+            enabled: false,
+            mode: 'OFF'
+        });
+    });
+
+    it('allows entry_policy to enforce only clean_entry without enabling unspecified guards', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    enabled: true
+    guards:
+      clean_entry:
+        enabled: true
+        mode: ENFORCE
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisEntryPolicyConfig()).toEqual({
+            enabled: true,
+            guards: {
+                decision_brain: { enabled: false, mode: 'ENFORCE' },
+                entry_quality: { enabled: false, mode: 'OFF' },
+                event_risk: { enabled: false, mode: 'SHADOW' },
+                clean_entry: { enabled: true, mode: 'ENFORCE' },
+                probe_mode: { enabled: false, mode: 'OFF' },
+                short_gate: { enabled: false, mode: 'ENFORCE' }
+            }
+        });
+    });
+
+    it('allows entry_policy to turn clean_entry OFF explicitly', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  clean_entry_guard:
+    enabled: true
+    mode: ENFORCE
+  entry_policy:
+    enabled: true
+    guards:
+      clean_entry:
+        enabled: false
+        mode: OFF
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisEntryPolicyConfig().guards.clean_entry).toEqual({
+            enabled: false,
+            mode: 'OFF'
+        });
+    });
+
     it('uses safe clean entry guard defaults when config is absent', () => {
         const config = new NinjaConfigManager(writeConfig(`
 symbols:
