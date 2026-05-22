@@ -68,7 +68,9 @@ import {
 import {
     AegisEntryContext,
     AegisEntryDecisionResult,
-    AegisEntryPolicyRuntimeConfig
+    AegisEntryPolicyRuntimeConfig,
+    AegisMomentumRideRuntimeConfig,
+    AegisRegimeContextRuntimeConfig
 } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { AegisEntryGuardOrchestrator } from '../../domain/services/aegis-entry/AegisEntryGuardOrchestrator';
 
@@ -342,6 +344,65 @@ export class TradingService {
         return DEFAULT_AEGIS_REGIME_GUARD_CONFIG;
     }
 
+    private getAegisRegimeContextConfig(): AegisRegimeContextRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisRegimeContextConfig === 'function') {
+            return manager.getAegisRegimeContextConfig();
+        }
+        return {
+            enabled: false,
+            mode: 'SHADOW',
+            timeframe: '5m',
+            allowedFor: { momentumRide: true },
+            indicators: {
+                emaFast: 7,
+                emaMid: 25,
+                emaSlow: 99,
+                atrWindow: 14,
+                volumeWindow: 20,
+                bollingerWindow: 20,
+                adxWindow: 14,
+                choppinessWindow: 14
+            },
+            thresholds: {
+                maxChoppinessForMomentum: 55,
+                minAdxForMomentum: 18,
+                minVolumeRatioForMomentum: 1.3,
+                maxAtrPercentileForAggressive: 0.8,
+                maxExhaustionScore: 0.6
+            }
+        };
+    }
+
+    private getAegisMomentumRideConfig(): AegisMomentumRideRuntimeConfig {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisMomentumRideConfig === 'function') {
+            return manager.getAegisMomentumRideConfig();
+        }
+        return {
+            enabled: false,
+            mode: 'SHADOW',
+            allowWhenAegisDenied: false,
+            requireAegisDirectionConfirmation: true,
+            allowMomentumAgainstAegis: false,
+            requireBtcEthNotContradicting: true,
+            requireBtcEthConfirmation: false,
+            symbols: {},
+            safetyCaps: {
+                maxLeverage: 50,
+                maxPositionFraction: 0.03,
+                maxOpenMomentumPositions: 1,
+                maxTotalOpenPositionsWhenMomentum: 2,
+                maxMomentumTradesPerDay: 3,
+                maxConsecutiveMomentumLosses: 2,
+                cooldownAfterLossMinutes: 60,
+                disableSymbolAfterStopLossMinutes: 120,
+                requireBrackets: true,
+                requireProfitProtection: true
+            }
+        };
+    }
+
     private getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
         const manager = this.deps.configManager as any;
         if (typeof manager.getAegisEntryPolicyConfig === 'function') {
@@ -350,6 +411,8 @@ export class TradingService {
         const entryQualityGate = this.getEntryQualityGateConfig();
         const eventRisk = this.getAegisEventRiskConfig();
         const regimeGuard = this.getAegisRegimeGuardConfig();
+        const regimeContext = this.getAegisRegimeContextConfig();
+        const momentumRide = this.getAegisMomentumRideConfig();
         const cleanEntry = this.getAegisCleanEntryGuardConfig();
         const probeMode = this.getAegisProbeModeConfig();
         return {
@@ -358,6 +421,14 @@ export class TradingService {
                 regime: {
                     enabled: regimeGuard.enabled,
                     mode: regimeGuard.enabled ? regimeGuard.mode : 'OFF'
+                },
+                regime_context: {
+                    enabled: regimeContext.enabled,
+                    mode: regimeContext.enabled ? regimeContext.mode : 'OFF'
+                },
+                momentum_ride: {
+                    enabled: momentumRide.enabled,
+                    mode: momentumRide.enabled ? momentumRide.mode : 'OFF'
                 },
                 decision_brain: {
                     enabled: this.getAegisDecisionEnforcementConfig().enabled,
@@ -1764,6 +1835,7 @@ export class TradingService {
             },
             regime: {
                 config: this.getAegisRegimeGuardConfig(),
+                contextConfig: this.getAegisRegimeContextConfig(),
                 btcAction: this.contextAction(btcContext),
                 btcScore: this.contextScore(btcContext),
                 btcVotes: this.contextVotes(btcContext),
@@ -1773,6 +1845,7 @@ export class TradingService {
                 marketDistribution: undefined,
                 snapshotAgeSeconds: this.contextSnapshotAgeSeconds(eventRiskAutoRecord)
             },
+            momentumRideConfig: this.getAegisMomentumRideConfig(),
             cleanEntry: {
                 metadata: aegis?.clean_entry_guard as AegisCleanEntryGuardOutput['metadata'] | undefined,
                 config: this.getAegisCleanEntryGuardConfig()

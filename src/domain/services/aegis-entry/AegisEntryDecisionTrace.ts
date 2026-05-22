@@ -10,6 +10,9 @@ export function buildAegisEntryDecisionTrace(input: {
     guards: AegisEntryGuardResult[];
     finalDecision: AegisEntryFinalDecision;
     finalReason: string;
+    finalStrategy?: AegisEntryDecisionTrace['finalStrategy'];
+    strategyCandidates?: AegisEntryDecisionTrace['strategyCandidates'];
+    riskProfile?: AegisEntryDecisionTrace['riskProfile'];
 }): AegisEntryDecisionTrace {
     const guards: AegisEntryDecisionTrace['guards'] = {};
     for (const guard of input.guards) {
@@ -25,14 +28,23 @@ export function buildAegisEntryDecisionTrace(input: {
             setupGrade: input.context.setupGrade
         },
         guards,
+        strategyCandidates: input.strategyCandidates ?? {
+            momentum_ride: { decision: 'NOT_APPLICABLE', reason: 'momentum_ride_not_evaluated' },
+            aegis_turbo: { decision: input.finalDecision, reason: input.finalReason }
+        },
         finalDecision: input.finalDecision,
-        finalReason: input.finalReason
+        finalReason: input.finalReason,
+        finalStrategy: input.finalStrategy ?? (input.finalDecision === 'ALLOW' ? 'aegis_turbo' : 'none'),
+        strategy: input.finalStrategy ?? (input.finalDecision === 'ALLOW' ? 'aegis_turbo' : 'none'),
+        riskProfile: input.riskProfile
     };
 }
 
 export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace): Record<string, unknown> {
     const regime = trace.guards.regime;
     const regimeMetadata = regime?.metadata ?? {};
+    const regimeContext = trace.guards.regime_context;
+    const momentumRide = trace.guards.momentum_ride;
     return {
         symbol: trace.symbol,
         side: trace.side,
@@ -41,6 +53,10 @@ export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace
         setupGrade: trace.turbo.setupGrade,
         finalDecision: trace.finalDecision,
         finalReason: trace.finalReason,
+        finalStrategy: trace.finalStrategy,
+        strategy: trace.strategy,
+        strategyCandidates: trace.strategyCandidates,
+        riskProfile: trace.riskProfile,
         regime: regime ? {
             enabled: regime.enabled,
             mode: regime.mode,
@@ -63,6 +79,8 @@ export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace
             modelVersion: regimeMetadata.modelVersion,
             modelUnavailable: regimeMetadata.modelUnavailable
         } : undefined,
+        regimeContext: regimeContext?.metadata.regimeContext ?? regimeContext?.metadata,
+        momentumRide: momentumRide?.metadata.momentumRide ?? momentumRide?.metadata,
         guards: Object.fromEntries(
             Object.entries(trace.guards).map(([name, guard]) => [
                 name,

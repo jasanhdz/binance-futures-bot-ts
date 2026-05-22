@@ -17,7 +17,10 @@ import {
     AegisEntryGuardName,
     AegisEntryGuardPolicy,
     AegisEntryPolicyMode,
-    AegisEntryPolicyRuntimeConfig
+    AegisEntryPolicyRuntimeConfig,
+    AegisMomentumRideRuntimeConfig,
+    AegisMomentumRideSideRuntimeConfig,
+    AegisRegimeContextRuntimeConfig
 } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import {
     AegisRegimeGuardConfig,
@@ -336,6 +339,78 @@ export interface AegisEntryPolicyYamlConfig {
     guards?: Partial<Record<AegisEntryGuardName, AegisEntryGuardPolicyYamlConfig>>;
 }
 
+export interface AegisRegimeContextYamlConfig {
+    enabled?: boolean;
+    mode?: AegisEntryPolicyMode | string;
+    timeframe?: string;
+    allowed_for?: {
+        momentum_ride?: boolean;
+    };
+    indicators?: {
+        ema_fast?: number;
+        ema_mid?: number;
+        ema_slow?: number;
+        atr_window?: number;
+        volume_window?: number;
+        bollinger_window?: number;
+        adx_window?: number;
+        choppiness_window?: number;
+    };
+    thresholds?: {
+        max_choppiness_for_momentum?: number;
+        min_adx_for_momentum?: number;
+        min_volume_ratio_for_momentum?: number;
+        max_atr_percentile_for_aggressive?: number;
+        max_exhaustion_score?: number;
+    };
+}
+
+export interface AegisMomentumRideSideYamlConfig {
+    enabled?: boolean;
+    leverage?: number;
+    position_fraction?: number;
+    min_turbo_score?: number;
+    min_votes_agreement?: number;
+    min_volume_ratio?: number;
+    momentum_candles?: number;
+    max_tail_risk_score?: number;
+    allowed_regimes?: Array<AegisRegimeLabel | string>;
+    require_close_near_extreme?: boolean;
+    min_close_location?: number;
+    max_wick_ratio?: number;
+    max_overextension_pct?: number;
+}
+
+export interface AegisMomentumRideSymbolYamlConfig {
+    enabled?: boolean;
+    mode?: AegisEntryPolicyMode | string;
+    long?: AegisMomentumRideSideYamlConfig;
+    short?: AegisMomentumRideSideYamlConfig;
+}
+
+export interface AegisMomentumRideYamlConfig {
+    enabled?: boolean;
+    mode?: AegisEntryPolicyMode | string;
+    allow_momentum_when_aegis_denied?: boolean;
+    require_aegis_direction_confirmation?: boolean;
+    allow_momentum_against_aegis?: boolean;
+    require_btc_eth_not_contradicting?: boolean;
+    require_btc_eth_confirmation?: boolean;
+    symbols?: Record<string, AegisMomentumRideSymbolYamlConfig>;
+    safety_caps?: {
+        max_leverage?: number;
+        max_position_fraction?: number;
+        max_open_momentum_positions?: number;
+        max_total_open_positions_when_momentum?: number;
+        max_momentum_trades_per_day?: number;
+        max_consecutive_momentum_losses?: number;
+        cooldown_after_loss_minutes?: number;
+        disable_symbol_after_stop_loss_minutes?: number;
+        require_brackets?: boolean;
+        require_profit_protection?: boolean;
+    };
+}
+
 export interface AegisDecisionEnforcementYamlConfig {
     enabled?: boolean;
     mode?: AegisDecisionEnforcementMode | string;
@@ -479,6 +554,8 @@ export interface NinjaYamlConfig {
         short_gate?: AegisShortGateYamlConfig;
         event_risk?: AegisEventRiskYamlConfig;
         regime_guard?: AegisRegimeGuardYamlConfig;
+        regime_context?: AegisRegimeContextYamlConfig;
+        momentum_ride?: AegisMomentumRideYamlConfig;
         entry_policy?: AegisEntryPolicyYamlConfig;
         probe_mode?: AegisProbeModeYamlConfig;
         decision_enforcement?: AegisDecisionEnforcementYamlConfig;
@@ -858,12 +935,78 @@ export class NinjaConfigManager {
         };
     }
 
+    getAegisRegimeContextConfig(): AegisRegimeContextRuntimeConfig {
+        const raw = this.config.aegis?.regime_context || {};
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeEntryPolicyMode(raw.mode, 'SHADOW'),
+            timeframe: typeof raw.timeframe === 'string' && raw.timeframe.trim() ? raw.timeframe.trim() : '5m',
+            allowedFor: {
+                momentumRide: raw.allowed_for?.momentum_ride !== false
+            },
+            indicators: {
+                emaFast: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.ema_fast, 7))),
+                emaMid: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.ema_mid, 25))),
+                emaSlow: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.ema_slow, 99))),
+                atrWindow: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.atr_window, 14))),
+                volumeWindow: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.volume_window, 20))),
+                bollingerWindow: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.bollinger_window, 20))),
+                adxWindow: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.adx_window, 14))),
+                choppinessWindow: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.choppiness_window, 14)))
+            },
+            thresholds: {
+                maxChoppinessForMomentum: Math.max(0, this.finiteNumber(raw.thresholds?.max_choppiness_for_momentum, 55)),
+                minAdxForMomentum: Math.max(0, this.finiteNumber(raw.thresholds?.min_adx_for_momentum, 18)),
+                minVolumeRatioForMomentum: Math.max(0, this.finiteNumber(raw.thresholds?.min_volume_ratio_for_momentum, 1.3)),
+                maxAtrPercentileForAggressive: Math.max(0, this.finiteNumber(raw.thresholds?.max_atr_percentile_for_aggressive, 0.80)),
+                maxExhaustionScore: Math.max(0, this.finiteNumber(raw.thresholds?.max_exhaustion_score, 0.60))
+            }
+        };
+    }
+
+    getAegisMomentumRideConfig(): AegisMomentumRideRuntimeConfig {
+        const raw = this.config.aegis?.momentum_ride || {};
+        const safety = raw.safety_caps || {};
+        const maxLeverage = Math.max(1, this.finiteNumber(safety.max_leverage, 50));
+        const maxPositionFraction = Math.max(0, this.finiteNumber(safety.max_position_fraction, 0.03));
+        const symbols = Object.fromEntries(
+            Object.entries(raw.symbols || {}).map(([symbol, config]) => [
+                this.normalizeSymbol(symbol),
+                this.normalizeMomentumRideSymbolConfig(config, maxLeverage, maxPositionFraction)
+            ])
+        );
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeEntryPolicyMode(raw.mode, 'SHADOW'),
+            allowWhenAegisDenied: raw.allow_momentum_when_aegis_denied === true,
+            requireAegisDirectionConfirmation: true,
+            allowMomentumAgainstAegis: false,
+            requireBtcEthNotContradicting: raw.require_btc_eth_not_contradicting !== false,
+            requireBtcEthConfirmation: raw.require_btc_eth_confirmation === true,
+            symbols,
+            safetyCaps: {
+                maxLeverage,
+                maxPositionFraction,
+                maxOpenMomentumPositions: Math.max(1, Math.floor(this.finiteNumber(safety.max_open_momentum_positions, 1))),
+                maxTotalOpenPositionsWhenMomentum: Math.max(1, Math.floor(this.finiteNumber(safety.max_total_open_positions_when_momentum, 2))),
+                maxMomentumTradesPerDay: Math.max(1, Math.floor(this.finiteNumber(safety.max_momentum_trades_per_day, 3))),
+                maxConsecutiveMomentumLosses: Math.max(1, Math.floor(this.finiteNumber(safety.max_consecutive_momentum_losses, 2))),
+                cooldownAfterLossMinutes: Math.max(0, this.finiteNumber(safety.cooldown_after_loss_minutes, 60)),
+                disableSymbolAfterStopLossMinutes: Math.max(0, this.finiteNumber(safety.disable_symbol_after_stop_loss_minutes, 120)),
+                requireBrackets: safety.require_brackets !== false,
+                requireProfitProtection: safety.require_profit_protection !== false
+            }
+        };
+    }
+
     getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
         const raw = this.config.aegis?.entry_policy || {};
         const guards = raw.guards || {};
         const entryQualityGate = this.getEntryQualityGateConfig();
         const eventRisk = this.getAegisEventRiskConfig();
         const regimeGuard = this.getAegisRegimeGuardConfig();
+        const regimeContext = this.getAegisRegimeContextConfig();
+        const momentumRide = this.getAegisMomentumRideConfig();
         const cleanEntry = this.getAegisCleanEntryGuardConfig();
         const probeMode = this.getAegisProbeModeConfig();
         return {
@@ -872,6 +1015,14 @@ export class NinjaConfigManager {
                 regime: this.normalizeEntryGuardPolicy(guards.regime, {
                     enabled: regimeGuard.enabled,
                     mode: regimeGuard.mode
+                }),
+                regime_context: this.normalizeEntryGuardPolicy(guards.regime_context, {
+                    enabled: regimeContext.enabled,
+                    mode: regimeContext.mode
+                }),
+                momentum_ride: this.normalizeEntryGuardPolicy(guards.momentum_ride, {
+                    enabled: momentumRide.enabled,
+                    mode: momentumRide.mode
                 }),
                 decision_brain: this.normalizeEntryGuardPolicy(guards.decision_brain, {
                     enabled: this.getAegisDecisionEnforcementConfig().enabled,
@@ -1334,6 +1485,29 @@ export class NinjaConfigManager {
                 entry_quality_gate: {
                     enabled: false,
                     mode: 'OFF'
+                },
+                regime_context: {
+                    enabled: false,
+                    mode: 'SHADOW'
+                },
+                momentum_ride: {
+                    enabled: false,
+                    mode: 'SHADOW',
+                    require_aegis_direction_confirmation: true,
+                    allow_momentum_against_aegis: false,
+                    symbols: {},
+                    safety_caps: {
+                        max_leverage: 50,
+                        max_position_fraction: 0.03,
+                        max_open_momentum_positions: 1,
+                        max_total_open_positions_when_momentum: 2,
+                        max_momentum_trades_per_day: 3,
+                        max_consecutive_momentum_losses: 2,
+                        cooldown_after_loss_minutes: 60,
+                        disable_symbol_after_stop_loss_minutes: 120,
+                        require_brackets: true,
+                        require_profit_protection: true
+                    }
                 }
             },
             symbols: {},
@@ -1441,6 +1615,46 @@ export class NinjaConfigManager {
             .map((value) => this.normalizeRegimeLabel(value))
             .filter((value): value is AegisRegimeLabel => Boolean(value));
         return normalized.length > 0 ? normalized : [...fallback];
+    }
+
+    private normalizeMomentumRideSymbolConfig(
+        raw: AegisMomentumRideSymbolYamlConfig,
+        maxLeverage: number,
+        maxPositionFraction: number
+    ): AegisMomentumRideRuntimeConfig['symbols'][string] {
+        return {
+            enabled: raw.enabled === true,
+            mode: this.normalizeEntryPolicyMode(raw.mode, 'SHADOW'),
+            long: this.normalizeMomentumRideSideConfig(raw.long, 'LONG', maxLeverage, maxPositionFraction),
+            short: this.normalizeMomentumRideSideConfig(raw.short, 'SHORT', maxLeverage, maxPositionFraction)
+        };
+    }
+
+    private normalizeMomentumRideSideConfig(
+        raw: AegisMomentumRideSideYamlConfig | undefined,
+        side: 'LONG' | 'SHORT',
+        maxLeverage: number,
+        maxPositionFraction: number
+    ): AegisMomentumRideSideRuntimeConfig {
+        const fallbackRegimes: AegisRegimeLabel[] = side === 'LONG'
+            ? ['MOMENTUM_UP', 'TREND_UP', 'BREAKOUT_UP']
+            : ['MOMENTUM_DOWN', 'TREND_DOWN', 'BREAKOUT_DOWN'];
+        const momentumCandles = Math.floor(this.finiteNumber(raw?.momentum_candles, 3));
+        return {
+            enabled: raw?.enabled === true,
+            leverage: Math.min(maxLeverage, Math.max(1, this.finiteNumber(raw?.leverage, side === 'LONG' ? 20 : 10))),
+            positionFraction: Math.min(maxPositionFraction, Math.max(0, this.finiteNumber(raw?.position_fraction, 0.01))),
+            minTurboScore: Math.max(0, this.finiteNumber(raw?.min_turbo_score, side === 'LONG' ? 0.88 : 0.92)),
+            minVotesAgreement: Math.max(0, Math.floor(this.finiteNumber(raw?.min_votes_agreement, side === 'LONG' ? 2 : 3))),
+            minVolumeRatio: Math.max(0, this.finiteNumber(raw?.min_volume_ratio, side === 'LONG' ? 1.5 : 1.7)),
+            momentumCandles: momentumCandles === 2 ? 2 : 3,
+            maxTailRiskScore: Math.max(0, this.finiteNumber(raw?.max_tail_risk_score, side === 'LONG' ? 0.30 : 0.25)),
+            allowedRegimes: this.normalizeRegimeList(raw?.allowed_regimes, fallbackRegimes),
+            requireCloseNearExtreme: raw?.require_close_near_extreme !== false,
+            minCloseLocation: Math.max(0.5, Math.min(1, this.finiteNumber(raw?.min_close_location, 0.70))),
+            maxWickRatio: Math.max(0, Math.min(1, this.finiteNumber(raw?.max_wick_ratio, 0.35))),
+            maxOverextensionPct: Math.max(0, this.finiteNumber(raw?.max_overextension_pct, 0.025))
+        };
     }
 
     private normalizeEntryPolicyMode(mode?: AegisEntryPolicyMode | string, fallback: AegisEntryPolicyMode = 'OFF'): AegisEntryPolicyMode {

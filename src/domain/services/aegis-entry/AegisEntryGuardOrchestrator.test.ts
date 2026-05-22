@@ -6,7 +6,9 @@ import { AegisEntryGuardOrchestrator } from './AegisEntryGuardOrchestrator';
 import {
     AegisEntryContext,
     AegisEntryGuardName,
-    AegisEntryPolicyRuntimeConfig
+    AegisEntryPolicyRuntimeConfig,
+    AegisMomentumRideRuntimeConfig,
+    AegisRegimeContextRuntimeConfig
 } from './AegisEntryDecisionTypes';
 
 const decisionEnforcementConfig: AegisDecisionEnforcementRuntimeConfig = {
@@ -30,6 +32,8 @@ const decisionEnforcementConfig: AegisDecisionEnforcementRuntimeConfig = {
 };
 
 const guardNames: AegisEntryGuardName[] = [
+    'regime_context',
+    'momentum_ride',
     'regime',
     'short_gate',
     'entry_quality',
@@ -43,6 +47,8 @@ function policy(overrides: Partial<AegisEntryPolicyRuntimeConfig['guards']> = {}
     return {
         enabled: true,
         guards: {
+            regime_context: { enabled: false, mode: 'OFF' },
+            momentum_ride: { enabled: false, mode: 'OFF' },
             regime: { enabled: true, mode: 'SHADOW' },
             short_gate: { enabled: true, mode: 'ENFORCE' },
             entry_quality: { enabled: true, mode: 'ENFORCE' },
@@ -240,6 +246,99 @@ function baseContext(overrides: Partial<AegisEntryContext> = {}): AegisEntryCont
         },
         ...overrides
     };
+}
+
+const regimeContextConfig: AegisRegimeContextRuntimeConfig = {
+    enabled: true,
+    mode: 'SHADOW',
+    timeframe: '5m',
+    allowedFor: { momentumRide: true },
+    indicators: { emaFast: 7, emaMid: 25, emaSlow: 99, atrWindow: 14, volumeWindow: 20, bollingerWindow: 20, adxWindow: 14, choppinessWindow: 14 },
+    thresholds: { maxChoppinessForMomentum: 80, minAdxForMomentum: 0, minVolumeRatioForMomentum: 1.3, maxAtrPercentileForAggressive: 0.8, maxExhaustionScore: 0.95 }
+};
+
+const momentumRideConfig: AegisMomentumRideRuntimeConfig = {
+    enabled: true,
+    mode: 'SHADOW',
+    allowWhenAegisDenied: false,
+    requireAegisDirectionConfirmation: true,
+    allowMomentumAgainstAegis: false,
+    requireBtcEthNotContradicting: true,
+    requireBtcEthConfirmation: false,
+    symbols: {
+        ADAUSDT: {
+            enabled: true,
+            mode: 'SHADOW',
+            long: {
+                enabled: true,
+                leverage: 50,
+                positionFraction: 0.02,
+                minTurboScore: 0.85,
+                minVotesAgreement: 2,
+                minVolumeRatio: 1.3,
+                momentumCandles: 3,
+                maxTailRiskScore: 0.3,
+                allowedRegimes: ['MOMENTUM_UP', 'TREND_UP', 'BREAKOUT_UP'],
+                requireCloseNearExtreme: true,
+                minCloseLocation: 0.7,
+                maxWickRatio: 0.35,
+                maxOverextensionPct: 0.1
+            },
+            short: {
+                enabled: false,
+                leverage: 10,
+                positionFraction: 0.01,
+                minTurboScore: 0.92,
+                minVotesAgreement: 3,
+                minVolumeRatio: 1.7,
+                momentumCandles: 3,
+                maxTailRiskScore: 0.25,
+                allowedRegimes: ['MOMENTUM_DOWN', 'TREND_DOWN', 'BREAKOUT_DOWN'],
+                requireCloseNearExtreme: true,
+                minCloseLocation: 0.7,
+                maxWickRatio: 0.35,
+                maxOverextensionPct: 0.05
+            }
+        }
+    },
+    safetyCaps: {
+        maxLeverage: 50,
+        maxPositionFraction: 0.03,
+        maxOpenMomentumPositions: 1,
+        maxTotalOpenPositionsWhenMomentum: 2,
+        maxMomentumTradesPerDay: 3,
+        maxConsecutiveMomentumLosses: 2,
+        cooldownAfterLossMinutes: 60,
+        disableSymbolAfterStopLossMinutes: 120,
+        requireBrackets: true,
+        requireProfitProtection: true
+    }
+};
+
+function momentumContext(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext {
+    const candles = [
+        ...Array.from({ length: 20 }, (_, index) => ({ open: 1 + index * 0.001, high: 1.01, low: 0.99, close: 1 + index * 0.0015, volume: 100 })),
+        { open: 1.10, high: 1.12, low: 1.09, close: 1.115, volume: 130 },
+        { open: 1.115, high: 1.14, low: 1.11, close: 1.135, volume: 150 },
+        { open: 1.135, high: 1.17, low: 1.13, close: 1.165, volume: 220 }
+    ];
+    const base = baseContext();
+    return baseContext({
+        entryQuality: {
+            ...base.entryQuality,
+            ruleGate: {
+                ...base.entryQuality.ruleGate,
+                recentCandles: candles,
+                atrPercentile: 0.4
+            }
+        },
+        regime: {
+            ...base.regime!,
+            contextConfig: regimeContextConfig
+        },
+        momentumRideConfig,
+        ...overrides
+    });
 }
 
 describe('AegisEntryGuardOrchestrator', () => {
@@ -670,5 +769,276 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(Object.keys(result.trace.guards)).toEqual(guardNames);
         expect(result.metadata.finalDecision).toBe(result.finalDecision);
         expect(result.metadata.finalReason).toBe(result.finalReason);
+    });
+
+    it('con regime/momentum SHADOW mantiene ALLOW aegis_turbo y risk normal', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext(), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'SHADOW' }
+        }));
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('aegis_turbo');
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('SHADOW_ALLOW');
+        expect(result.strategyCandidates.aegis_turbo.decision).toBe('ALLOW');
+        expect(result.adjustedLeverage).toBe(20);
+        expect(result.adjustedPositionFraction).toBe(0.1);
+        expect(result.guards.find((guard) => guard.name === 'momentum_ride')?.decision).toBe('SHADOW_ALLOW');
+    });
+
+    it('Aegis normal DENY + momentum SHADOW allow conserva DENY y no abre', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            decisionBrain: {
+                decision: 'DO_NOT_ENTER',
+                block: { decision: 'DO_NOT_ENTER', do_not_enter_prob: 0.9 }
+            }
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'SHADOW' }
+        }));
+
+        expect(result.finalDecision).toBe('DENY');
+        expect(result.shouldOpen).toBe(false);
+        expect(result.finalStrategy).toBe('none');
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('SHADOW_ALLOW');
+        expect(result.strategyCandidates.aegis_turbo.decision).toBe('DENY');
+        expect(result.guards.find((guard) => guard.name === 'momentum_ride')?.decision).toBe('SHADOW_ALLOW');
+    });
+
+    it('Momentum ENFORCE ALLOW + Aegis ALLOW prioriza finalStrategy momentum_ride', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({ momentumRideConfig: enforceMomentum }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' }
+        }));
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('momentum_ride');
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('ALLOW');
+        expect(result.strategyCandidates.aegis_turbo.decision).toBe('ALLOW');
+        expect(result.riskProfile).toMatchObject({ leverage: 50, positionFraction: 0.02 });
+        expect(result.adjustedLeverage).toBe(50);
+        expect(result.adjustedPositionFraction).toBe(0.02);
+    });
+
+    it('Momentum NOT_APPLICABLE + Aegis ALLOW conserva finalStrategy aegis_turbo', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            entryQuality: {
+                ...momentumContext().entryQuality,
+                ruleGate: {
+                    ...momentumContext().entryQuality.ruleGate,
+                    recentCandles: [
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 }
+                    ]
+                }
+            }
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' }
+        }));
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('aegis_turbo');
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('NOT_APPLICABLE');
+        expect(result.adjustedLeverage).toBe(20);
+        expect(result.riskProfile).toBeUndefined();
+    });
+
+    it('Momentum DENY por regimen no bloquea Aegis ALLOW', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            momentumRideConfig: enforceMomentum,
+            regime: {
+                ...momentumContext().regime!,
+                btcAction: 'LONG',
+                ethAction: 'SHORT'
+            }
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' },
+            regime: { enabled: true, mode: 'SHADOW' }
+        }));
+
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('DENY');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('aegis_turbo');
+        expect(result.riskProfile).toBeUndefined();
+        expect(result.adjustedLeverage).toBe(20);
+    });
+
+    it('Momentum DENY por turbo contradict + Aegis ALLOW conserva finalStrategy aegis_turbo', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            momentumRideConfig: enforceMomentum,
+            rawAction: 'LONG',
+            finalAction: 'SHORT'
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' }
+        }));
+
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('DENY');
+        expect(result.strategyCandidates.momentum_ride.reason).toBe('momentum_turbo_contradict');
+        expect(result.decisions.momentumRide?.reasons).toContain('momentum_turbo_contradict');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('aegis_turbo');
+        expect(result.riskProfile).toBeUndefined();
+        expect(result.adjustedLeverage).toBe(20);
+        expect(result.adjustedPositionFraction).toBe(0.1);
+    });
+
+    it('Momentum DENY por turbo not confirmed + Aegis ALLOW conserva finalStrategy aegis_turbo', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            momentumRideConfig: enforceMomentum,
+            rawAction: 'HOLD',
+            finalAction: 'HOLD'
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' }
+        }));
+
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('DENY');
+        expect(result.strategyCandidates.momentum_ride.reason).toBe('momentum_turbo_not_confirmed');
+        expect(result.decisions.momentumRide?.reasons).toContain('momentum_turbo_not_confirmed');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('aegis_turbo');
+        expect(result.riskProfile).toBeUndefined();
+    });
+
+    it('allowWhenAegisDenied true queda reservado y no overridea Aegis DENY', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            allowWhenAegisDenied: true,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const deniedContext = momentumContext({
+            momentumRideConfig: enforceMomentum,
+            decisionBrain: {
+                decision: 'DO_NOT_ENTER',
+                block: { decision: 'DO_NOT_ENTER', do_not_enter_prob: 0.9 }
+            }
+        });
+        const denied = AegisEntryGuardOrchestrator.evaluate(deniedContext, policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' }
+        }));
+
+        expect(denied.strategyCandidates.momentum_ride.decision).toBe('ALLOW');
+        expect(denied.finalDecision).toBe('DENY');
+        expect(denied.finalStrategy).toBe('none');
+        expect(denied.riskProfile).toBeUndefined();
+        expect(denied.guards.find((guard) => guard.name === 'momentum_ride')?.metadata).toMatchObject({
+            overrideStatus: 'reserved_not_active',
+            overrideReason: 'momentum_override_reserved_not_active'
+        });
+    });
+
+    it('Momentum ENFORCE ALLOW + hard safety fail no abre momentum ni overridea Aegis DENY', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            allowWhenAegisDenied: true,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            momentumRideConfig: enforceMomentum,
+            decisionBrain: {
+                decision: 'DO_NOT_ENTER',
+                block: { decision: 'DO_NOT_ENTER', do_not_enter_prob: 0.9 }
+            },
+            operational: {
+                ...momentumContext().operational,
+                sameSymbolPositionExists: true
+            }
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' }
+        }));
+
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('DENY');
+        expect(result.decisions.momentumRide?.reasons).toContain('momentum_safety_cap_exceeded');
+        expect(result.finalDecision).toBe('DENY');
+        expect(result.finalStrategy).toBe('none');
+        expect(result.riskProfile).toBeUndefined();
+    });
+
+    it('BTC/ETH contradict niega Momentum pero no Aegis normal', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            momentumRideConfig: enforceMomentum,
+            eventRisk: {
+                ...momentumContext().eventRisk!,
+                btcAction: 'SHORT',
+                ethAction: 'LONG'
+            },
+            regime: undefined
+        }), policy({
+            regime_context: { enabled: false, mode: 'OFF' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' },
+            regime: { enabled: false, mode: 'OFF' }
+        }));
+
+        expect(result.decisions.momentumRide?.reasons).toContain('momentum_btc_eth_contradict');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('aegis_turbo');
+        expect(result.riskProfile).toBeUndefined();
     });
 });

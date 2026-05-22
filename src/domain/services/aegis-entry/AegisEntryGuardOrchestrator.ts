@@ -4,6 +4,7 @@ import {
     AegisEntryFinalDecision,
     AegisEntryGuardName,
     AegisEntryGuardResult,
+    AegisMomentumRiskProfile,
     AegisEntryPolicyRuntimeConfig,
     guardDisabledResult
 } from './AegisEntryDecisionTypes';
@@ -13,6 +14,7 @@ import {
 } from './AegisEntryDecisionTrace';
 import { ShortGateGuardAdapter } from './guards/ShortGateGuardAdapter';
 import { RegimeGuardAdapter } from './guards/RegimeGuardAdapter';
+import { RegimeContextGuardAdapter } from './guards/RegimeContextGuardAdapter';
 import { EntryQualityGuardAdapter } from './guards/EntryQualityGuardAdapter';
 import { EventRiskGuardAdapter } from './guards/EventRiskGuardAdapter';
 import { DecisionBrainGuardAdapter } from './guards/DecisionBrainGuardAdapter';
@@ -20,6 +22,7 @@ import {
     CleanEntryGuardAdapter,
     cleanEntryOutputFromDecisionEnforcementDenied
 } from './guards/CleanEntryGuardAdapter';
+import { MomentumRideGuardAdapter } from './guards/MomentumRideGuardAdapter';
 import { ProbeModeGuardAdapter } from './guards/ProbeModeGuardAdapter';
 
 function defaultGuard(name: AegisEntryGuardName): AegisEntryGuardResult {
@@ -27,6 +30,8 @@ function defaultGuard(name: AegisEntryGuardName): AegisEntryGuardResult {
 }
 
 const ENTRY_GUARD_ORDER: AegisEntryGuardName[] = [
+    'regime_context',
+    'momentum_ride',
     'regime',
     'short_gate',
     'entry_quality',
@@ -46,28 +51,59 @@ function finalize(input: {
     warnings?: string[];
     adjustedLeverage: number;
     adjustedPositionFraction: number;
+    momentumGuard?: AegisEntryGuardResult;
+    momentumRiskProfile?: AegisMomentumRiskProfile;
     decisions: AegisEntryDecisionResult['decisions'];
 }): AegisEntryDecisionResult {
+    const strategyCandidates: AegisEntryDecisionResult['strategyCandidates'] = {
+        momentum_ride: {
+            decision: input.momentumGuard?.decision ?? 'NOT_APPLICABLE',
+            reason: input.momentumGuard?.reason ?? 'momentum_ride_not_evaluated',
+            riskProfile: input.momentumRiskProfile
+        },
+        aegis_turbo: {
+            decision: input.finalDecision,
+            reason: input.finalReason
+        }
+    };
+    const momentumCanOpen = input.momentumGuard?.decision === 'ALLOW'
+        && input.momentumRiskProfile !== undefined
+        && input.finalDecision === 'ALLOW';
+    const finalDecision = momentumCanOpen ? 'ALLOW' : input.finalDecision;
+    const finalReason = momentumCanOpen ? input.momentumGuard!.reason : input.finalReason;
+    const finalStrategy = momentumCanOpen
+        ? 'momentum_ride'
+        : finalDecision === 'ALLOW' ? 'aegis_turbo' : 'none';
+    const riskProfile = momentumCanOpen ? input.momentumRiskProfile : undefined;
+    const adjustedLeverage = momentumCanOpen ? input.momentumRiskProfile!.leverage : input.adjustedLeverage;
+    const adjustedPositionFraction = momentumCanOpen ? input.momentumRiskProfile!.positionFraction : input.adjustedPositionFraction;
     const trace = buildAegisEntryDecisionTrace({
         context: input.context,
         guards: input.guards,
-        finalDecision: input.finalDecision,
-        finalReason: input.finalReason
+        finalDecision,
+        finalReason,
+        finalStrategy,
+        strategyCandidates,
+        riskProfile
     });
-    const allowed = input.finalDecision === 'ALLOW';
+    const allowed = finalDecision === 'ALLOW';
     return {
-        finalDecision: input.finalDecision,
-        finalReason: input.finalReason,
+        finalDecision,
+        finalReason,
         allowed,
         shouldOpen: allowed,
-        deniedBy: input.deniedBy,
-        allowedBy: input.allowedBy,
+        deniedBy: momentumCanOpen ? undefined : input.deniedBy,
+        allowedBy: momentumCanOpen ? 'momentum_ride' : input.allowedBy,
+        finalStrategy,
+        strategy: finalStrategy,
+        strategyCandidates,
+        riskProfile,
         guards: input.guards,
         trace,
         metadata: compactAegisEntryDecisionMetadata(trace),
         warnings: input.warnings ?? [],
-        adjustedLeverage: input.adjustedLeverage,
-        adjustedPositionFraction: input.adjustedPositionFraction,
+        adjustedLeverage,
+        adjustedPositionFraction,
         decisions: input.decisions
     };
 }
@@ -78,7 +114,6 @@ export class AegisEntryGuardOrchestrator {
         const decisions: AegisEntryDecisionResult['decisions'] = {};
         let adjustedLeverage = context.leverage;
         let adjustedPositionFraction = context.requestedPositionFraction;
-
         if (policy.enabled !== true) {
             for (const name of ENTRY_GUARD_ORDER) {
                 guards.push(guardDisabledResult(name, 'entry_policy_disabled'));
@@ -95,8 +130,31 @@ export class AegisEntryGuardOrchestrator {
             });
         }
 
-        const regime = RegimeGuardAdapter.evaluate(
+        const regimeContext = RegimeContextGuardAdapter.evaluate(
             context,
+            policy.guards.regime_context ?? { enabled: false, mode: 'OFF' }
+        );
+        guards.push(regimeContext.guard);
+        decisions.regimeContext = regimeContext.regimeContext;
+        const contextWithRegimeContext: AegisEntryContext = {
+            ...context,
+            regimeContext: regimeContext.regimeContext
+        };
+
+        const momentumRide = MomentumRideGuardAdapter.evaluate(
+            contextWithRegimeContext,
+            policy.guards.momentum_ride ?? { enabled: false, mode: 'OFF' }
+        );
+        guards.push(momentumRide.guard);
+        decisions.momentumRide = momentumRide.momentumRide;
+        const momentumRiskProfile = momentumRide.riskProfile;
+        const momentumSelection = {
+            momentumGuard: momentumRide.guard,
+            momentumRiskProfile
+        };
+
+        const regime = RegimeGuardAdapter.evaluate(
+            contextWithRegimeContext,
             policy.guards.regime ?? { enabled: false, mode: 'OFF' }
         );
         guards.push(regime.guard);
@@ -118,11 +176,12 @@ export class AegisEntryGuardOrchestrator {
                 ],
                 adjustedLeverage,
                 adjustedPositionFraction,
+                ...momentumSelection,
                 decisions
             });
         }
 
-        const shortGate = ShortGateGuardAdapter.evaluate(context, policy.guards.short_gate);
+        const shortGate = ShortGateGuardAdapter.evaluate(contextWithRegimeContext, policy.guards.short_gate);
         guards.push(shortGate.guard);
         decisions.shortGate = shortGate.decision;
         adjustedLeverage = shortGate.adjustedLeverage;
@@ -136,12 +195,13 @@ export class AegisEntryGuardOrchestrator {
                 guards: [...guards, defaultGuard('entry_quality'), defaultGuard('event_risk'), defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode')],
                 adjustedLeverage,
                 adjustedPositionFraction,
+                ...momentumSelection,
                 decisions
             });
         }
 
         const adjustedContext: AegisEntryContext = {
-            ...context,
+            ...contextWithRegimeContext,
             leverage: adjustedLeverage,
             requestedPositionFraction: adjustedPositionFraction
         };
@@ -158,6 +218,7 @@ export class AegisEntryGuardOrchestrator {
                 guards: [...guards, defaultGuard('event_risk'), defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode')],
                 adjustedLeverage,
                 adjustedPositionFraction,
+                ...momentumSelection,
                 decisions
             });
         }
@@ -174,6 +235,7 @@ export class AegisEntryGuardOrchestrator {
                 guards: [...guards, defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode')],
                 adjustedLeverage,
                 adjustedPositionFraction,
+                ...momentumSelection,
                 decisions
             });
         }
@@ -206,6 +268,7 @@ export class AegisEntryGuardOrchestrator {
                 guards: [...guards, defaultGuard('clean_entry'), probe.guard],
                 adjustedLeverage,
                 adjustedPositionFraction,
+                ...momentumSelection,
                 decisions
             });
         }
@@ -237,6 +300,7 @@ export class AegisEntryGuardOrchestrator {
                     guards,
                     adjustedLeverage,
                     adjustedPositionFraction,
+                    ...momentumSelection,
                     decisions
                 });
             }
@@ -249,6 +313,7 @@ export class AegisEntryGuardOrchestrator {
                 guards,
                 adjustedLeverage,
                 adjustedPositionFraction,
+                ...momentumSelection,
                 decisions
             });
         }
@@ -262,6 +327,7 @@ export class AegisEntryGuardOrchestrator {
             guards,
             adjustedLeverage,
             adjustedPositionFraction,
+            ...momentumSelection,
             decisions
         });
     }

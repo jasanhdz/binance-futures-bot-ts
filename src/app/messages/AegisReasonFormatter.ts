@@ -9,7 +9,22 @@ const REASON_LABELS: Record<string, string> = {
     aegis_live_disabled: 'Live deshabilitado por variable de entorno',
     daily_loss_stop_reached: 'Límite de pérdida diaria alcanzado',
     position_already_open: 'Ya existe una posición abierta',
-    allowed_aegis_turbo_micro_live: 'Señal aprobada por gate Aegis Turbo'
+    allowed_aegis_turbo_micro_live: 'Señal aprobada por gate Aegis Turbo',
+    regime_context_available: 'Contexto de régimen disponible',
+    regime_context_insufficient_data: 'Contexto de régimen sin datos suficientes',
+    momentum_pattern_detected: 'Patrón Momentum Ride detectado',
+    momentum_shadow_allow: 'Momentum Ride permitiría en shadow',
+    momentum_shadow_deny: 'Momentum Ride bloquearía en shadow',
+    momentum_regime_not_confirmed: 'Momentum Ride sin confirmación de régimen',
+    momentum_turbo_not_confirmed: 'Momentum Ride sin confirmación Turbo',
+    momentum_turbo_confirmed: 'Momentum Ride confirmado por Turbo',
+    momentum_turbo_contradict: 'Momentum Ride contradicho por Turbo',
+    momentum_side_contradict: 'Momentum Ride contradice el lado solicitado',
+    momentum_btc_eth_contradict: 'Momentum Ride contradicho por BTC/ETH',
+    momentum_btc_eth_not_confirmed: 'Momentum Ride sin confirmación BTC/ETH',
+    momentum_tail_risk_high: 'Momentum Ride con tail risk alto',
+    momentum_safety_cap_exceeded: 'Momentum Ride bloqueado por safety cap',
+    momentum_override_reserved_not_active: 'Override Momentum Ride reservado, no activo'
 };
 
 function compactReasonKey(reason: string): string {

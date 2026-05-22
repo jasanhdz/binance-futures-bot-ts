@@ -609,6 +609,8 @@ symbols:
             enabled: true,
             guards: {
                 regime: { enabled: true, mode: 'SHADOW' },
+                regime_context: { enabled: false, mode: 'SHADOW' },
+                momentum_ride: { enabled: false, mode: 'SHADOW' },
                 decision_brain: { enabled: true, mode: 'ENFORCE' },
                 entry_quality: { enabled: true, mode: 'SHADOW' },
                 event_risk: { enabled: false, mode: 'OFF' },
@@ -652,6 +654,8 @@ symbols:
             enabled: true,
             guards: {
                 regime: { enabled: true, mode: 'SHADOW' },
+                regime_context: { enabled: false, mode: 'SHADOW' },
+                momentum_ride: { enabled: false, mode: 'SHADOW' },
                 decision_brain: { enabled: true, mode: 'ENFORCE' },
                 entry_quality: { enabled: true, mode: 'SHADOW' },
                 event_risk: { enabled: true, mode: 'SHADOW' },
@@ -707,6 +711,8 @@ symbols:
             enabled: true,
             guards: {
                 regime: { enabled: false, mode: 'SHADOW' },
+                regime_context: { enabled: false, mode: 'SHADOW' },
+                momentum_ride: { enabled: false, mode: 'SHADOW' },
                 decision_brain: { enabled: false, mode: 'ENFORCE' },
                 entry_quality: { enabled: false, mode: 'OFF' },
                 event_risk: { enabled: false, mode: 'SHADOW' },
@@ -1090,5 +1096,126 @@ symbols:
 `));
 
         expect(config.getEntryQualityGateConfig().config.flaggedSymbols).toEqual(['SOLUSDT', 'LTCUSDT']);
+    });
+
+    it('parses regime_context and entry_policy guard config', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    guards:
+      regime_context:
+        enabled: true
+        mode: SHADOW
+  regime_context:
+    enabled: true
+    mode: SHADOW
+    timeframe: 5m
+    thresholds:
+      min_volume_ratio_for_momentum: 1.5
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisRegimeContextConfig()).toMatchObject({
+            enabled: true,
+            mode: 'SHADOW',
+            timeframe: '5m',
+            thresholds: expect.objectContaining({ minVolumeRatioForMomentum: 1.5 })
+        });
+        expect(config.getAegisEntryPolicyConfig().guards.regime_context).toEqual({ enabled: true, mode: 'SHADOW' });
+    });
+
+    it('parses momentum_ride global, symbol and side overrides with safe caps', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    guards:
+      momentum_ride:
+        enabled: true
+        mode: SHADOW
+  momentum_ride:
+    enabled: true
+    mode: SHADOW
+    require_aegis_direction_confirmation: true
+    allow_momentum_against_aegis: true
+    require_btc_eth_not_contradicting: true
+    require_btc_eth_confirmation: false
+    symbols:
+      xrpusdt:
+        enabled: true
+        mode: SHADOW
+        long:
+          enabled: true
+          leverage: 100
+          position_fraction: 0.10
+          min_turbo_score: 0.85
+        short:
+          enabled: false
+    safety_caps:
+      max_leverage: 50
+      max_position_fraction: 0.03
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        const momentum = config.getAegisMomentumRideConfig();
+        expect(momentum.enabled).toBe(true);
+        expect(momentum.requireAegisDirectionConfirmation).toBe(true);
+        expect(momentum.allowMomentumAgainstAegis).toBe(false);
+        expect(momentum.requireBtcEthNotContradicting).toBe(true);
+        expect(momentum.requireBtcEthConfirmation).toBe(false);
+        expect(momentum.symbols.XRPUSDT.long.enabled).toBe(true);
+        expect(momentum.symbols.XRPUSDT.long.leverage).toBe(50);
+        expect(momentum.symbols.XRPUSDT.long.positionFraction).toBe(0.03);
+        expect(momentum.symbols.XRPUSDT.long.minTurboScore).toBe(0.85);
+        expect(momentum.symbols.XRPUSDT.short.enabled).toBe(false);
+        expect(config.getAegisEntryPolicyConfig().guards.momentum_ride).toEqual({ enabled: true, mode: 'SHADOW' });
+    });
+
+    it('leaves omitted momentum LONG/SHORT sides disabled by default', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  momentum_ride:
+    enabled: true
+    mode: SHADOW
+    symbols:
+      xrpusdt:
+        enabled: true
+        mode: SHADOW
+        long:
+          leverage: 50
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        const momentum = config.getAegisMomentumRideConfig();
+        expect(momentum.symbols.XRPUSDT.long.enabled).toBe(false);
+        expect(momentum.symbols.XRPUSDT.short.enabled).toBe(false);
+    });
+
+    it('uses safe momentum defaults when config is absent or invalid', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  entry_policy:
+    guards:
+      momentum_ride:
+        enabled: true
+        mode: INVALID
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        expect(config.getAegisMomentumRideConfig()).toMatchObject({
+            enabled: false,
+            mode: 'SHADOW',
+            requireAegisDirectionConfirmation: true,
+            allowMomentumAgainstAegis: false,
+            symbols: {}
+        });
+        expect(config.getAegisEntryPolicyConfig().guards.momentum_ride).toEqual({ enabled: true, mode: 'SHADOW' });
     });
 });

@@ -159,7 +159,17 @@ const BLOCK_REASONS = new Set([
     'regime_tail_risk_high',
     'regime_stale_snapshot',
     'regime_model_unavailable',
-    'regime_invalid_source'
+    'regime_invalid_source',
+    'regime_context_insufficient_data',
+    'momentum_regime_not_confirmed',
+    'momentum_turbo_not_confirmed',
+    'momentum_turbo_contradict',
+    'momentum_side_contradict',
+    'momentum_btc_eth_contradict',
+    'momentum_btc_eth_not_confirmed',
+    'momentum_tail_risk_high',
+    'momentum_safety_cap_exceeded',
+    'momentum_override_reserved_not_active'
 ]);
 
 const ALLOWED_EVENTS = new Set([

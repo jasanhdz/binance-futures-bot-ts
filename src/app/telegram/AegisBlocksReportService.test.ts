@@ -172,6 +172,30 @@ describe('AegisBlocksReportService', () => {
         expect(report.allowedEvents).toMatchObject({ GATE_ALLOWED: 1, ORDER_SUBMITTED: 1, PROBE_MODE_ALLOWED: 1 });
     });
 
+    it('no cuenta momentum_shadow_allow como bloqueo real', async () => {
+        await writeEvents([
+            event({ event: 'MOMENTUM_RIDE_DIAGNOSTIC', reason: 'momentum_shadow_allow' }),
+            event({ event: 'MOMENTUM_RIDE_DIAGNOSTIC', reason: 'momentum_pattern_detected' }),
+            event({ event: 'MOMENTUM_RIDE_DIAGNOSTIC', reason: 'momentum_shadow_deny' }),
+            event({ event: 'MOMENTUM_RIDE_DIAGNOSTIC', reason: 'momentum_turbo_confirmed' })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(0);
+    });
+
+    it('reconoce momentum_turbo_contradict como razón diagnóstica negativa', async () => {
+        await writeEvents([
+            event({ event: 'MOMENTUM_RIDE_DIAGNOSTIC', reason: 'momentum_turbo_contradict' })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(1);
+        expect(report.byReason).toMatchObject({ momentum_turbo_contradict: 1 });
+    });
+
     it('soporta campos faltantes', async () => {
         await writeEvents([
             {
