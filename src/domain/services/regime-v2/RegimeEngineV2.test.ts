@@ -104,6 +104,67 @@ describe('RegimeEngineV2', () => {
         expect(result.reasons).toContain('breakout_volume_not_persistent');
     });
 
+    it('scores real breakdown closes below range with SHORT quality features', () => {
+        const candles = shortBreakdownCandles('CONFIRMED');
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.indicators.breakdownCloseBeyondRangePct).toBeGreaterThan(0.001);
+        expect(result.indicators.shortBreakdownQuality).toBeGreaterThan(0.3);
+        expect(result.indicators.shortSweepRisk).toBeLessThan(0.58);
+        expect(result.reasons).toContain('short_breakdown_confirmed_close');
+    });
+
+    it('marks absorbed fake breakdown when low breaks support but close returns inside range', () => {
+        const candles = shortBreakdownCandles('ABSORBED');
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.indicators.shortAbsorptionRisk).toBeGreaterThan(0.7);
+        expect(result.indicators.shortSweepRisk).toBeGreaterThan(0.7);
+        expect(result.technicalRegime).not.toBe('BREAKOUT_DOWN_EARLY');
+    });
+
+    it('marks lower wick sweep risk on breakdown attempts', () => {
+        const candles = shortBreakdownCandles('SWEEP');
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.indicators.lowerWickAgainstBreakdown).toBeGreaterThan(0.24);
+        expect(result.indicators.shortSweepRisk).toBeGreaterThan(0.24);
+        expect(result.reasons).toContain('short_lower_wick_sweep_risk');
+    });
+
+    it('adds SHORT volume persistence degradation reason', () => {
+        const candles = shortBreakdownCandles('WEAK_VOLUME');
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.indicators.shortVolumePersistence).toBeLessThan(0.34);
+        expect(result.reasons).toContain('short_volume_not_persistent');
+        expect(result.momentumEnvironment).toBe('WATCH_SHORT_MOMENTUM');
+    });
+
+    it('degrades SHORT breakdowns that are too extended below EMA25', () => {
+        const candles = shortBreakdownCandles('EXTENDED');
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.indicators.shortExtensionRisk).toBeGreaterThan(0.55);
+        expect(result.reasons).toContain('short_too_extended_from_ema25');
+        expect(result.momentumEnvironment).toBe('WATCH_SHORT_MOMENTUM');
+    });
+
+    it('rewards failed retest confirmation using only previous candles', () => {
+        const candles = shortBreakdownCandles('RETEST_CONFIRMED');
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.indicators.shortRetestScore).toBeGreaterThan(0.5);
+        expect(result.reasons).toContain('short_retest_failed_confirmed');
+        expect(result.reasons).toContain('short_continuation_quality_high');
+    });
+
     it('classifies MOMENTUM_UP_EARLY without overextension', () => {
         const candles = [
             ...Array.from({ length: 112 }, (_, index) => candle(index, 100, 100.25, 99.75, 100 + Math.sin(index / 3) * 0.05, 100)),
@@ -185,6 +246,38 @@ function trendingCandles(direction: 'UP' | 'DOWN', count: number, options: { ste
 
 function candlesFromCloses(closes: number[]): RegimeEngineV2InputCandle[] {
     return closes.map((close, index) => candle(index, close, close + 0.2, close - 0.2, close, 100));
+}
+
+function shortBreakdownCandles(kind: 'CONFIRMED' | 'ABSORBED' | 'SWEEP' | 'WEAK_VOLUME' | 'EXTENDED' | 'RETEST_CONFIRMED'): RegimeEngineV2InputCandle[] {
+    const base = Array.from({ length: 130 }, (_, index) => {
+        const price = 100 + Math.sin(index / 3) * 0.08;
+        return candle(index, price + 0.04, price + 0.35, price - 0.35, price - 0.04, 100);
+    });
+    if (kind === 'RETEST_CONFIRMED') {
+        base.push(candle(130, 99.9, 100.1, 98.9, 99.0, 180));
+        base.push(candle(131, 99.0, 99.72, 98.95, 99.45, 150));
+        base.push(candle(132, 99.45, 99.68, 99.0, 99.2, 150));
+        base.push(candle(133, 99.2, 99.35, 98.1, 98.3, 240));
+        return base;
+    }
+    if (kind === 'ABSORBED') {
+        base.push(candle(130, 100.05, 100.2, 98.35, 99.8, 250));
+        return base;
+    }
+    if (kind === 'SWEEP') {
+        base.push(candle(130, 99.75, 99.9, 97.4, 98.1, 260));
+        return base;
+    }
+    if (kind === 'WEAK_VOLUME') {
+        base.push(candle(130, 99.7, 99.8, 97.9, 98.15, 126));
+        return base;
+    }
+    if (kind === 'EXTENDED') {
+        base.push(candle(130, 99.1, 99.2, 97.0, 97.5, 320));
+        return base;
+    }
+    base.push(candle(130, 99.8, 99.9, 97.9, 98.1, 260));
+    return base;
 }
 
 function candle(index: number, open: number, high: number, low: number, close: number, volume: number): RegimeEngineV2InputCandle {

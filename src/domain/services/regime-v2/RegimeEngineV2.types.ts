@@ -89,9 +89,20 @@ export type RegimeEngineV2Indicators = {
     breakoutVolumePersistence?: number;
     breakoutFollowThroughScore?: number;
     adverseWickAgainstBreakout?: number;
+    lowerWickRatio?: number;
+    breakdownCloseBeyondRangePct?: number;
+    lowerWickAgainstBreakdown?: number;
     preBreakoutCompression?: number;
     breakoutTooExtendedFromEma25?: number;
     failedBreakoutPressure?: number;
+    shortBreakdownQuality?: number;
+    shortSweepRisk?: number;
+    shortContinuationScore?: number;
+    shortRetestScore?: number;
+    shortExtensionRisk?: number;
+    shortAbsorptionRisk?: number;
+    shortVolumePersistence?: number;
+    shortAdverseReboundRisk?: number;
 };
 
 export type RegimeEngineV2Scores = {

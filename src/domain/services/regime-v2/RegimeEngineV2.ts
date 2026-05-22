@@ -37,7 +37,10 @@ export class RegimeEngineV2 {
             });
         }
 
-        const indicators = calculateIndicators(candles);
+        const indicators = {
+            ...calculateIndicators(candles),
+            shortAdverseReboundRisk: round(shortAdverseReboundRisk(input.market))
+        };
         const scores = calculateScores(indicators);
         const technical = classifyTechnicalRegime(indicators, scores);
         const transition = classifyTransition(technical.regime, indicators, scores);
@@ -94,6 +97,7 @@ function calculateIndicators(candles: RegimeEngineV2InputCandle[]): RegimeEngine
     const upperWick = current.high - Math.max(current.open, current.close);
     const lowerWick = Math.min(current.open, current.close) - current.low;
     const body = Math.abs(current.close - current.open);
+    const closeLocation = range > 0 ? (current.close - current.low) / range : 0.5;
     const direction = current.close >= current.open ? 'LONG' : 'SHORT';
     const wickRatio = range > 0
         ? direction === 'LONG' ? upperWick / range : lowerWick / range
@@ -115,17 +119,32 @@ function calculateIndicators(candles: RegimeEngineV2InputCandle[]): RegimeEngine
         : breakoutDown && breakoutLevelDown !== undefined && current.close > 0
             ? (breakoutLevelDown - current.close) / current.close
             : undefined;
+    const breakdownCloseBeyondRangePct = breakoutLevelDown !== undefined && current.close > 0
+        ? (breakoutLevelDown - current.close) / current.close
+        : undefined;
     const breakoutStrengthPct = breakoutRange !== undefined && breakoutRange > 0 && breakoutCloseBeyondRangePct !== undefined
         ? Math.abs(breakoutCloseBeyondRangePct * current.close) / breakoutRange
         : undefined;
     const recentVolumeRatio2 = ratio(avg(volumes.slice(-3, -1)), avg(volumes.slice(-23, -3)));
     const recentVolumeRatio3 = ratio(avg(volumes.slice(-4, -1)), avg(volumes.slice(-24, -4)));
     const breakoutVolumePersistence = avgDefined([recentVolumeRatio2, recentVolumeRatio3, ratio(current.volume, avg(volumes.slice(-21, -1)))]);
+    const shortVolumePersistence = clamp01(((breakoutVolumePersistence ?? 1) - 0.85) / 0.75);
     const adverseWickAgainstBreakout = range > 0
         ? breakoutUp ? lowerWick / range
             : breakoutDown ? upperWick / range
                 : undefined
         : undefined;
+    const lowerWickRatio = range > 0 ? lowerWick / range : undefined;
+    const lowerWickAgainstBreakdown = breakoutLevelDown !== undefined && current.low < breakoutLevelDown && range > 0 ? lowerWick / range : undefined;
+    const shortAbsorptionRisk = breakoutLevelDown !== undefined && current.low < breakoutLevelDown
+        ? current.close >= breakoutLevelDown ? 1
+            : clamp01((0.0012 - Math.max(0, breakdownCloseBeyondRangePct ?? 0)) / 0.0012)
+        : 0;
+    const shortSweepRisk = clamp01(Math.max(
+        lowerWickAgainstBreakdown ?? 0,
+        shortAbsorptionRisk,
+        current.low < (breakoutLevelDown ?? -Infinity) && (range > 0 ? (current.close - current.low) / range : 0) > 0.42 ? 0.75 : 0
+    ));
     const preBreakoutCompression = previousBollingerWidth !== undefined ? 1 - (percentileRank(bollingerWidths.slice(-121, -1), previousBollingerWidth) ?? 0.5) : undefined;
     const breakoutTooExtendedFromEma25 = ema25 ? Math.abs((current.close - ema25) / ema25) > 0.034 ? 1 : 0 : undefined;
     const failedPressure = clamp01(Math.max(
@@ -143,6 +162,24 @@ function calculateIndicators(candles: RegimeEngineV2InputCandle[]): RegimeEngine
             preBreakoutCompression
         ]) ?? 0)
         : undefined;
+    const recentShortCandles = candles.slice(-3);
+    const shortContinuationScore = clamp01(avgDefined([
+        recentShortCandles.length === 3 && recentShortCandles.every((candle) => candle.close < candle.open) ? 1 : 0,
+        recentShortCandles.length === 3 && recentShortCandles[2].close < recentShortCandles[1].close && recentShortCandles[1].close < recentShortCandles[0].close ? 1 : 0,
+        closeLocation <= 0.25 ? 1 : closeLocation <= 0.36 ? 0.65 : 0,
+        shortVolumePersistence,
+        breakoutFollowThroughScore
+    ]) ?? 0);
+    const shortRetestScore = failedShortRetestScore(candles, breakoutLevelDown);
+    const shortExtensionRisk = ema25 ? clamp01(Math.max(0, (ema25 - current.close) / ema25) / 0.04) : undefined;
+    const shortBreakdownQuality = clamp01(avgDefined([
+        breakdownCloseBeyondRangePct !== undefined ? Math.max(0, breakdownCloseBeyondRangePct) / 0.004 : undefined,
+        shortVolumePersistence,
+        shortContinuationScore,
+        shortRetestScore,
+        1 - shortSweepRisk,
+        shortExtensionRisk !== undefined ? 1 - shortExtensionRisk : undefined
+    ]) ?? 0);
     const emaStackDirection = ema7 !== undefined && ema25 !== undefined && ema99 !== undefined
         ? ema7 > ema25 && ema25 > ema99 ? 'LONG'
             : ema7 < ema25 && ema25 < ema99 ? 'SHORT'
@@ -163,7 +200,7 @@ function calculateIndicators(candles: RegimeEngineV2InputCandle[]): RegimeEngine
         bollingerWidthPercentile: round(currentBollingerWidth !== undefined ? percentileRank(bollingerWidths.slice(-120), currentBollingerWidth) : undefined),
         volumeRatio: round(ratio(current.volume, avg(volumes.slice(-21, -1)))),
         volumeTrend: round(volumeTrend(volumes)),
-        closeLocation: round(range > 0 ? (current.close - current.low) / range : 0.5),
+        closeLocation: round(closeLocation),
         wickRatio: round(wickRatio),
         bodySizePercentile: round(percentileRank(bodies, bodyPct)),
         distanceFromEma25Pct: round(ema25 ? (current.close - ema25) / ema25 : undefined),
@@ -177,9 +214,19 @@ function calculateIndicators(candles: RegimeEngineV2InputCandle[]): RegimeEngine
         breakoutVolumePersistence: round(breakoutVolumePersistence),
         breakoutFollowThroughScore: round(breakoutFollowThroughScore),
         adverseWickAgainstBreakout: round(adverseWickAgainstBreakout),
+        lowerWickRatio: round(lowerWickRatio),
+        breakdownCloseBeyondRangePct: round(breakdownCloseBeyondRangePct),
+        lowerWickAgainstBreakdown: round(lowerWickAgainstBreakdown),
         preBreakoutCompression: round(preBreakoutCompression),
         breakoutTooExtendedFromEma25: breakoutTooExtendedFromEma25,
         failedBreakoutPressure: round(failedPressure),
+        shortBreakdownQuality: round(shortBreakdownQuality),
+        shortSweepRisk: round(shortSweepRisk),
+        shortContinuationScore: round(shortContinuationScore),
+        shortRetestScore: round(shortRetestScore),
+        shortExtensionRisk: round(shortExtensionRisk),
+        shortAbsorptionRisk: round(shortAbsorptionRisk),
+        shortVolumePersistence: round(shortVolumePersistence),
         // Keep previous referenced so TS does not hide accidental single-candle datasets in future edits.
         ...(previous ? {} : {})
     });
@@ -239,6 +286,7 @@ function classifyTechnicalRegime(
 
     const breakoutUpProblems = breakoutProblems(indicators, scores, 'LONG');
     const breakoutDownProblems = breakoutProblems(indicators, scores, 'SHORT');
+    const shortBreakdownProblems = shortBreakdownDegradationReasons(indicators);
 
     if (indicators.rangeBreakout === 'UP' && volumeRatio >= 1.25 && closeLocation >= 0.68 && scores.exhaustionRisk < 0.72 && absDistance <= 0.038 && (indicators.failedBreakoutCount ?? 0) <= 2) {
         if (breakoutUpProblems.length === 0) return { regime: 'BREAKOUT_UP_EARLY', direction: 'LONG', reasons: ['range_breakout_up_volume_close_location', 'breakout_v22_confirmed'] };
@@ -246,9 +294,28 @@ function classifyTechnicalRegime(
         return { regime: 'TREND_UP_PULLBACK', direction: 'LONG', reasons: [...breakoutUpProblems, 'breakout_degraded_to_watch'] };
     }
     if (indicators.rangeBreakout === 'DOWN' && volumeRatio >= 1.25 && closeLocation <= 0.32 && scores.exhaustionRisk < 0.72 && absDistance <= 0.038 && (indicators.failedBreakoutCount ?? 0) <= 2) {
-        if (breakoutDownProblems.length === 0) return { regime: 'BREAKOUT_DOWN_EARLY', direction: 'SHORT', reasons: ['range_breakout_down_volume_close_location', 'breakout_v22_confirmed'] };
-        if (breakoutDownProblems.includes('breakout_failed_pressure_high')) return { regime: 'CHOP', direction: 'NONE', reasons: [...breakoutDownProblems, 'breakout_degraded_to_avoid'] };
-        return { regime: 'TREND_DOWN_PULLBACK', direction: 'SHORT', reasons: [...breakoutDownProblems, 'breakout_degraded_to_watch'] };
+        const allBreakdownProblems = [...breakoutDownProblems, ...shortBreakdownProblems];
+        if (allBreakdownProblems.length === 0) {
+            return {
+                regime: 'BREAKOUT_DOWN_EARLY',
+                direction: 'SHORT',
+                reasons: [
+                    'range_breakout_down_volume_close_location',
+                    'breakout_v22_confirmed',
+                    'short_breakdown_confirmed_close',
+                    ...(indicators.shortRetestScore ?? 0) >= 0.55 ? ['short_retest_failed_confirmed'] : ['short_no_failed_retest'],
+                    ...(indicators.shortContinuationScore ?? 0) >= 0.65 ? ['short_continuation_quality_high'] : []
+                ]
+            };
+        }
+        if (
+            allBreakdownProblems.includes('short_breakdown_absorbed')
+            || allBreakdownProblems.includes('short_degraded_to_avoid_fake_breakdown')
+            || breakoutDownProblems.includes('breakout_failed_pressure_high')
+        ) {
+            return { regime: 'CHOP', direction: 'NONE', reasons: [...allBreakdownProblems, 'breakout_degraded_to_avoid'] };
+        }
+        return { regime: 'TREND_DOWN_PULLBACK', direction: 'SHORT', reasons: [...allBreakdownProblems, 'breakout_degraded_to_watch'] };
     }
     if (scores.chopRisk >= 0.78 && scores.trendStrength < 0.35) return { regime: 'CHOP', direction: 'NONE', reasons: ['high_choppiness_low_trend_strength'] };
     if (scores.chopRisk >= 0.62 && indicators.structure === 'MIXED' && (indicators.bollingerWidthPercentile ?? 0.5) < 0.45) {
@@ -298,6 +365,20 @@ function breakoutProblems(indicators: RegimeEngineV2Indicators, scores: RegimeEn
     return reasons;
 }
 
+function shortBreakdownDegradationReasons(indicators: RegimeEngineV2Indicators): string[] {
+    const reasons: string[] = [];
+    const retestContinuationConfirmed = (indicators.shortRetestScore ?? 0) >= 0.55 && (indicators.shortContinuationScore ?? 0) >= 0.65;
+    if ((indicators.breakdownCloseBeyondRangePct ?? 0) < 0.0014) reasons.push('short_breakdown_close_not_far_enough');
+    if ((indicators.shortAbsorptionRisk ?? 0) >= 0.72) reasons.push('short_breakdown_absorbed');
+    if ((indicators.shortSweepRisk ?? 0) >= 0.86) reasons.push('short_degraded_to_avoid_fake_breakdown');
+    else if ((indicators.shortSweepRisk ?? 0) >= 0.24) reasons.push('short_lower_wick_sweep_risk');
+    if (!retestContinuationConfirmed && (indicators.shortVolumePersistence ?? 0) < 0.34) reasons.push('short_volume_not_persistent');
+    if ((indicators.shortExtensionRisk ?? 0) >= 0.55) reasons.push('short_too_extended_from_ema25');
+    if ((indicators.shortAdverseReboundRisk ?? 0) >= 0.75) reasons.push('short_btc_eth_rebound_risk');
+    if (!retestContinuationConfirmed && (indicators.shortBreakdownQuality ?? 0) < 0.34) reasons.push('short_degraded_to_watch_false_breakout_risk');
+    return reasons;
+}
+
 function classifyTransition(
     regime: RegimeEngineV2TechnicalRegime,
     indicators: RegimeEngineV2Indicators,
@@ -336,6 +417,19 @@ function classifyMarketConfirmation(
     if (contradicts > 0 && confirms > 0) return 'MIXED';
     if (confirms > 0) return direction === 'LONG' ? 'CONFIRM_LONG' : 'CONFIRM_SHORT';
     return 'NEUTRAL';
+}
+
+function shortAdverseReboundRisk(market?: { btc?: { action?: string; score?: number; direction?: string }; eth?: { action?: string; score?: number; direction?: string } }): number | undefined {
+    const signals = [market?.btc, market?.eth].filter(Boolean) as Array<{ action?: string; score?: number; direction?: string }>;
+    if (signals.length === 0) return undefined;
+    const risks = signals.map((signal) => {
+        const direction = normalizeDirection(signal.direction ?? signal.action);
+        const score = signal.score ?? 0.55;
+        if (direction === 'LONG') return clamp01(score);
+        if (direction === 'SHORT') return 0;
+        return 0.25;
+    });
+    return avg(risks);
 }
 
 function classifyMomentumEnvironment(input: {
@@ -564,6 +658,27 @@ function failedBreakoutCount(candles: RegimeEngineV2InputCandle[]): number {
         if (low !== undefined && candle.low < low && candle.close > low) count++;
     }
     return count;
+}
+
+function failedShortRetestScore(candles: RegimeEngineV2InputCandle[], currentBreakdownLevel?: number): number | undefined {
+    if (candles.length < 45) return undefined;
+    const current = candles[candles.length - 1];
+    const start = Math.max(25, candles.length - 18);
+    let best = 0;
+    for (let i = start; i < candles.length - 2; i++) {
+        const prior = candles.slice(Math.max(0, i - 20), i);
+        const priorLow = min(prior.map((candle) => candle.low));
+        const breakdown = candles[i];
+        if (priorLow === undefined || !(breakdown.low < priorLow && breakdown.close < priorLow)) continue;
+        const retestWindow = candles.slice(i + 1, candles.length - 1);
+        const retested = retestWindow.some((candle) => candle.high >= priorLow && candle.close <= priorLow);
+        if (!retested) continue;
+        const sameLevel = currentBreakdownLevel === undefined || Math.abs(priorLow - currentBreakdownLevel) / current.close < 0.006;
+        const currentConfirms = current.close < current.open && current.close < priorLow;
+        if (sameLevel && currentConfirms) best = Math.max(best, 1);
+        else if (sameLevel || currentConfirms) best = Math.max(best, 0.55);
+    }
+    return best;
 }
 
 function marketStructure(candles: RegimeEngineV2InputCandle[]): RegimeEngineV2Indicators['structure'] {

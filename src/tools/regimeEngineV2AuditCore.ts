@@ -166,6 +166,9 @@ export type RegimeEngineV2AuditReport = {
     byPatternSideEnvironment: RegimeEngineV2MetricRow[];
     byEnvironmentTechnicalRegime: RegimeEngineV2MetricRow[];
     byEnvironmentSymbolSide: RegimeEngineV2MetricRow[];
+    byShortBreakdownQuality: RegimeEngineV2MetricRow[];
+    byShortDegradationReason: RegimeEngineV2MetricRow[];
+    byShortRetestContext: RegimeEngineV2MetricRow[];
     environmentDiagnostics: RegimeEngineV2EnvironmentDiagnosticRow[];
     walkForward: RegimeEngineV2WalkForwardRow[];
     recommendations: string[];
@@ -228,6 +231,7 @@ export function buildRegimeEngineV2AuditReport(
 ): RegimeEngineV2AuditReport {
     const { samples, sampleEvery, leverage, feeBps, slippageBps, horizons, engineLookbackCandles } = buildRegimeEngineV2AuditSamples(candlesBySymbol, options);
     const symbols = options.symbols ?? [...candlesBySymbol.keys()];
+    const shortSamples = samples.filter((sample) => sample.side === 'SHORT');
     const report: RegimeEngineV2AuditReport = {
         generatedAt: new Date().toISOString(),
         options: {
@@ -266,6 +270,9 @@ export function buildRegimeEngineV2AuditReport(
         ),
         byEnvironmentTechnicalRegime: buildMetricRows(samples, (sample) => `${sample.directionalEnvironment}|${sample.decision.technicalRegime}`, horizons),
         byEnvironmentSymbolSide: buildMetricRows(samples, (sample) => `${sample.directionalEnvironment}|${sample.symbol}|${sample.side}`, horizons),
+        byShortBreakdownQuality: buildMetricRows(shortSamples, shortBreakdownQualityBucket, horizons),
+        byShortDegradationReason: buildShortDegradationReasonRows(shortSamples, horizons),
+        byShortRetestContext: buildMetricRows(shortSamples, shortRetestContextBucket, horizons),
         environmentDiagnostics: buildEnvironmentDiagnostics(samples),
         walkForward: buildWalkForward(samples),
         recommendations: [],
@@ -619,6 +626,25 @@ function buildMetricRows(samples: RegimeEngineV2AuditSample[], keyFn: (sample: R
     return rows.sort((a, b) => a.bucket.localeCompare(b.bucket) || a.horizon.localeCompare(b.horizon));
 }
 
+function buildShortDegradationReasonRows(samples: RegimeEngineV2AuditSample[], horizons: SupportedHorizon[] = [...HORIZONS]): RegimeEngineV2MetricRow[] {
+    const reasons = new Map<string, RegimeEngineV2AuditSample[]>();
+    for (const sample of samples) {
+        const shortReasons = sample.decision.reasons.filter((reason) =>
+            reason.startsWith('short_') || reason === 'breakout_degraded_to_watch' || reason === 'breakout_degraded_to_avoid'
+        );
+        for (const reason of shortReasons) {
+            const group = reasons.get(reason);
+            if (group) group.push(sample);
+            else reasons.set(reason, [sample]);
+        }
+    }
+    const rows: RegimeEngineV2MetricRow[] = [];
+    for (const [reason, group] of reasons.entries()) {
+        for (const horizon of horizons) rows.push(metricRow(reason, group, `${horizon}m`));
+    }
+    return rows.sort((a, b) => b.count - a.count || a.bucket.localeCompare(b.bucket) || a.horizon.localeCompare(b.horizon));
+}
+
 function metricRow(bucket: string, samples: RegimeEngineV2AuditSample[], horizon: '15m' | '30m' | '60m' | '120m'): RegimeEngineV2MetricRow {
     const outcomes = samples.map((sample) => sample.outcomes[horizon]);
     const avgMfe = avg(outcomes.map((outcome) => outcome.mfeRoe).filter(isNumber));
@@ -716,7 +742,7 @@ function buildRecommendations(report: RegimeEngineV2AuditReport): string[] {
         `ALLOW_SHORT diagnostics: regimes=${allowShortDiag?.topTechnicalRegimes || 'n/a'}, symbols=${allowShortDiag?.topSymbols || 'n/a'}, p90MAE=${fmt(allowShortDiag?.p90MaeRoe)}, falseBreakout=${fmt(allowShortDiag?.falseBreakoutRate)}.`,
         `WATCH_SHORT diagnostics: regimes=${watchShortDiag?.topTechnicalRegimes || 'n/a'}, symbols=${watchShortDiag?.topSymbols || 'n/a'}, p90MAE=${fmt(watchShortDiag?.p90MaeRoe)}, falseBreakout=${fmt(watchShortDiag?.falseBreakoutRate)}.`,
         report.options.momentumPatternOnly
-            ? 'This V2.2 report is conditioned on offline Momentum Ride-like patterns, so AVOID buckets are side-specific context filters.'
+            ? 'This V2.3 report is conditioned on offline Momentum Ride-like patterns, so AVOID buckets are side-specific context filters.'
             : 'Use --momentum-pattern-only before interpreting ALLOW/WATCH/AVOID as Momentum Ride context quality.',
         'Do not move RegimeEngineV2 to live enforcement from this audit alone.',
         'Use symbol/side stability before wiring Momentum Ride allowed regimes to RegimeEngineV2.'
@@ -725,7 +751,7 @@ function buildRecommendations(report: RegimeEngineV2AuditReport): string[] {
 
 export function renderRegimeEngineV2Markdown(report: RegimeEngineV2AuditReport): string {
     return [
-        report.options.momentumPatternOnly ? '# Aegis RegimeEngineV2 V2.2 Pattern Audit' : '# Aegis RegimeEngineV2 Audit',
+        report.options.momentumPatternOnly ? '# Aegis RegimeEngineV2 V2.3 Pattern Audit' : '# Aegis RegimeEngineV2 Audit',
         '',
         `Generated: ${report.generatedAt}`,
         `Samples: ${report.counts.samples}`,
@@ -754,6 +780,15 @@ export function renderRegimeEngineV2Markdown(report: RegimeEngineV2AuditReport):
         '',
         '## ALLOW_SHORT vs WATCH_SHORT Diagnostics',
         environmentDiagnosticsTable(report.environmentDiagnostics),
+        '',
+        '## Short Breakdown Quality Buckets',
+        metricsTable(report.byShortBreakdownQuality),
+        '',
+        '## Short Degradation Reasons',
+        metricsTable(report.byShortDegradationReason),
+        '',
+        '## Short Retest Context',
+        metricsTable(report.byShortRetestContext),
         '',
         '## Performance By Technical Regime',
         metricsTable(report.byTechnicalRegime),
@@ -806,10 +841,10 @@ function walkForwardTable(rows: RegimeEngineV2WalkForwardRow[]): string {
 async function writeReports(report: RegimeEngineV2AuditReport, reportsDir: string): Promise<RegimeEngineV2AuditReport['outputFiles']> {
     await fs.mkdir(reportsDir, { recursive: true });
     const stamp = report.generatedAt.replace(/[:.]/g, '').replace(/-/g, '').slice(0, 15) + 'Z';
-    const markdown = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_audit_${stamp}.md` : `aegis_regime_engine_v2_audit_${stamp}.md`);
-    const json = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_audit_${stamp}.json` : `aegis_regime_engine_v2_audit_${stamp}.json`);
-    const csv = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_metrics_${stamp}.csv` : `aegis_regime_engine_v2_metrics_${stamp}.csv`);
-    const recommendations = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_recommendations_${stamp}.md` : `aegis_regime_engine_v2_recommendations_${stamp}.md`);
+    const markdown = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v23_audit_${stamp}.md` : `aegis_regime_engine_v2_audit_${stamp}.md`);
+    const json = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v23_audit_${stamp}.json` : `aegis_regime_engine_v2_audit_${stamp}.json`);
+    const csv = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v23_metrics_${stamp}.csv` : `aegis_regime_engine_v2_metrics_${stamp}.csv`);
+    const recommendations = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v23_recommendations_${stamp}.md` : `aegis_regime_engine_v2_recommendations_${stamp}.md`);
     await fs.writeFile(markdown, renderRegimeEngineV2Markdown(report), 'utf8');
     if (report.options.writeJson !== false) await fs.writeFile(json, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
     if (report.options.writeCsv !== false) await fs.writeFile(csv, metricsCsv(report), 'utf8');
@@ -826,6 +861,9 @@ function metricsCsv(report: RegimeEngineV2AuditReport): string {
         ...report.bySymbolSide.map((row) => ({ group: 'symbolSide', ...row })),
         ...report.byEnvironmentTechnicalRegime.map((row) => ({ group: 'environmentTechnicalRegime', ...row })),
         ...report.byEnvironmentSymbolSide.map((row) => ({ group: 'environmentSymbolSide', ...row })),
+        ...report.byShortBreakdownQuality.map((row) => ({ group: 'shortBreakdownQuality', ...row })),
+        ...report.byShortDegradationReason.map((row) => ({ group: 'shortDegradationReason', ...row })),
+        ...report.byShortRetestContext.map((row) => ({ group: 'shortRetestContext', ...row })),
         ...report.byMarketConfirmation.map((row) => ({ group: 'marketConfirmation', ...row })),
         ...report.byTransitionRisk.map((row) => ({ group: 'transitionRisk', ...row }))
     ];
@@ -883,6 +921,24 @@ function maturityBucket(regime: string): string {
     if (regime.includes('EXHAUSTED')) return 'EXHAUSTED';
     if (regime.includes('PULLBACK')) return 'PULLBACK';
     return 'OTHER';
+}
+
+function shortBreakdownQualityBucket(sample: RegimeEngineV2AuditSample): string {
+    const indicators = sample.decision.indicators;
+    if ((indicators.shortAbsorptionRisk ?? 0) >= 0.72) return 'absorbed';
+    if ((indicators.shortSweepRisk ?? 0) >= 0.24) return 'sweep';
+    const quality = indicators.shortBreakdownQuality ?? 0;
+    if (quality >= 0.66) return 'high_quality';
+    if (quality >= 0.42) return 'medium_quality';
+    return 'low_quality';
+}
+
+function shortRetestContextBucket(sample: RegimeEngineV2AuditSample): string {
+    const indicators = sample.decision.indicators;
+    if ((indicators.shortAbsorptionRisk ?? 0) >= 0.72) return 'absorbed';
+    if ((indicators.shortSweepRisk ?? 0) >= 0.24) return 'sweep';
+    if ((indicators.shortRetestScore ?? 0) >= 0.55) return 'retest_confirmed';
+    return 'no_retest';
 }
 
 function compareRows(label: string, a?: RegimeEngineV2MetricRow, b?: RegimeEngineV2MetricRow): string {

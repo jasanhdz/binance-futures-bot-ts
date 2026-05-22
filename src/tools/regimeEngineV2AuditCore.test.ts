@@ -150,6 +150,24 @@ describe('regimeEngineV2AuditCore', () => {
         expect(result.horizons).toEqual([60]);
         expect(result.engineLookbackCandles).toBe(160);
     });
+
+    it('groups SHORT V2.3 breakdown quality and degradation reasons', () => {
+        const candlesBySymbol = new Map<string, RegimeEngineV2InputCandle[]>([
+            ['BTCUSDT', patternCandles('SHORT', 190)],
+            ['ETHUSDT', patternCandles('SHORT', 190)]
+        ]);
+
+        const report = buildRegimeEngineV2AuditReport(candlesBySymbol, {
+            symbols: ['BTCUSDT', 'ETHUSDT'],
+            sampleEvery: 6,
+            momentumPatternOnly: true,
+            writeReports: false
+        });
+
+        expect(report.byShortBreakdownQuality.length).toBeGreaterThan(0);
+        expect(report.byShortRetestContext.length).toBeGreaterThan(0);
+        expect(report.byShortDegradationReason.every((row) => row.horizon)).toBe(true);
+    });
 });
 
 function testCandles(direction: 'UP' | 'DOWN', count: number, options: { finalBurst?: boolean } = {}): RegimeEngineV2InputCandle[] {

@@ -18,6 +18,14 @@ describe('regimeEngineV2MlDatasetCore', () => {
         expect(rows[0]).toHaveProperty('target_hit8_before_minus5');
         expect(rows[0]).toHaveProperty('breakoutCloseBeyondRangePct');
         expect(rows[0]).toHaveProperty('failedBreakoutPressure');
+        expect(rows[0]).toHaveProperty('shortBreakdownQuality');
+        expect(rows[0]).toHaveProperty('shortSweepRisk');
+        expect(rows[0]).toHaveProperty('shortContinuationScore');
+        expect(rows[0]).toHaveProperty('shortRetestScore');
+        expect(rows[0]).toHaveProperty('shortExtensionRisk');
+        expect(rows[0]).toHaveProperty('shortAbsorptionRisk');
+        expect(rows[0]).toHaveProperty('shortVolumePersistence');
+        expect(rows[0]).toHaveProperty('shortAdverseReboundRisk');
         expect(rows[0]).toHaveProperty('patternKind');
     });
 
