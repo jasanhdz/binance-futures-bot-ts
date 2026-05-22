@@ -1,5 +1,9 @@
 import { Side } from '../types';
 
+// Legacy/compatibility detector.
+// Keep this guard for existing runtime metadata, historical logs and previous audits.
+// RegimeEngineV2 is the new isolated OHLCV-first momentum environment detector and
+// should be used for future Momentum Ride regime validation before any live migration.
 export type AegisRegimeLabel =
     | 'MOMENTUM_UP'
     | 'MOMENTUM_DOWN'
