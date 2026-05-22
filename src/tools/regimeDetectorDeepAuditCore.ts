@@ -64,6 +64,26 @@ export type TechnicalRegimeSnapshot = {
     volatilityRisk: number;
 };
 
+export type TechnicalRegimeThresholds = {
+    minAdxForMomentum: number;
+    maxChoppinessForMomentum: number;
+    minVolumeRatioForMomentum: number;
+    maxAtrPercentileForAggressive: number;
+    maxExhaustionScore: number;
+    breakoutLookback: number;
+    emaSlopeThreshold: number;
+};
+
+export const DEFAULT_TECHNICAL_REGIME_THRESHOLDS: TechnicalRegimeThresholds = {
+    minAdxForMomentum: 20,
+    maxChoppinessForMomentum: 55,
+    minVolumeRatioForMomentum: 1.2,
+    maxAtrPercentileForAggressive: 0.92,
+    maxExhaustionScore: 0.72,
+    breakoutLookback: 20,
+    emaSlopeThreshold: 0
+};
+
 export type DeepRegimeOutcome = {
     horizonMinutes: number;
     forwardReturnRoe?: number;
@@ -119,6 +139,9 @@ export type DeepRegimeMetricRow = {
     avgTimeTo8Minutes?: number;
     avgTimeTo10Minutes?: number;
     falseBreakoutRate?: number;
+    worstMaeP75?: number;
+    worstMaeP90?: number;
+    worstMaeP95?: number;
     conclusion: 'good' | 'bad' | 'mixed' | 'insufficient';
 };
 
@@ -161,6 +184,7 @@ export type DeepRegimeAuditOptions = {
     sampleEvery?: number;
     leverage?: number;
     writeReports?: boolean;
+    thresholds?: Partial<TechnicalRegimeThresholds>;
 };
 
 const HORIZONS = [15, 30, 60, 120] as const;
@@ -177,8 +201,9 @@ export async function auditRegimeDetectorDeep(options: DeepRegimeAuditOptions = 
     const warnings: string[] = [];
     const fromMs = options.from ? parseTimestamp(options.from) : -Infinity;
     const toMs = options.to ? parseTimestamp(options.to) : Infinity;
+    const thresholds = normalizeThresholds(options.thresholds);
     const candlesBySymbol = loadCandles(dbPath, symbols, timeframe, warnings, fromMs, toMs);
-    const snapshotsBySymbol = buildSnapshotsBySymbol(candlesBySymbol);
+    const snapshotsBySymbol = buildSnapshotsBySymbol(candlesBySymbol, thresholds);
     const samples: DeepRegimeSample[] = [];
     const limit = options.limit ?? Infinity;
 
@@ -219,6 +244,7 @@ export async function auditRegimeDetectorDeep(options: DeepRegimeAuditOptions = 
             timeframe,
             leverage,
             sampleEvery,
+            thresholds,
             writeReports: options.writeReports !== false
         },
         counts: {
@@ -283,7 +309,11 @@ function buildSample(input: {
     };
 }
 
-export function classifyTechnicalRegime(candles: CandleRow[], index: number): TechnicalRegimeSnapshot {
+export function classifyTechnicalRegime(
+    candles: CandleRow[],
+    index: number,
+    thresholds: TechnicalRegimeThresholds = DEFAULT_TECHNICAL_REGIME_THRESHOLDS
+): TechnicalRegimeSnapshot {
     if (index < 100) {
         return baseSnapshot('UNKNOWN', 0.1, 'NONE', 'insufficient_history', {});
     }
@@ -313,8 +343,8 @@ export function classifyTechnicalRegime(candles: CandleRow[], index: number): Te
     const bodyPct = current.open > 0 ? Math.abs(current.close - current.open) / current.open : 0;
     const upStack = ema7 !== undefined && ema25 !== undefined && ema99 !== undefined && ema7 > ema25 && ema25 > ema99;
     const downStack = ema7 !== undefined && ema25 !== undefined && ema99 !== undefined && ema7 < ema25 && ema25 < ema99;
-    const recentHigh = max(highs.slice(-21, -1));
-    const recentLow = min(lows.slice(-21, -1));
+    const recentHigh = max(highs.slice(-(thresholds.breakoutLookback + 1), -1));
+    const recentLow = min(lows.slice(-(thresholds.breakoutLookback + 1), -1));
     const breakoutUp = recentHigh !== undefined && current.close > recentHigh;
     const breakoutDown = recentLow !== undefined && current.close < recentLow;
     const rangeBreakout: 'UP' | 'DOWN' | 'NONE' = breakoutUp ? 'UP' : breakoutDown ? 'DOWN' : 'NONE';
@@ -345,32 +375,32 @@ export function classifyTechnicalRegime(candles: CandleRow[], index: number): Te
         volatilityRisk: round(volatilityRisk) ?? volatilityRisk
     };
 
-    if ((atrPercentile ?? 0) >= 0.92) {
+    if ((atrPercentile ?? 0) >= thresholds.maxAtrPercentileForAggressive) {
         return baseSnapshot('HIGH_VOL_RISK', scoreFrom(volatilityRisk), 'NONE', 'atr_percentile_high', indicators);
     }
-    if (exhaustionRisk >= 0.72) {
+    if (exhaustionRisk >= thresholds.maxExhaustionScore) {
         const direction: Side | 'NONE' = upStack || breakoutUp ? 'LONG' : downStack || breakoutDown ? 'SHORT' : 'NONE';
         return baseSnapshot('EXHAUSTION', scoreFrom(exhaustionRisk), direction, 'overextension_or_reversal_wick', indicators);
     }
-    if (breakoutUp && (volumeRatio ?? 0) >= 1.3 && (adx ?? 0) >= 18 && (choppiness ?? 100) <= 58) {
+    if (breakoutUp && (volumeRatio ?? 0) >= thresholds.minVolumeRatioForMomentum && (adx ?? 0) >= Math.max(16, thresholds.minAdxForMomentum - 2) && (choppiness ?? 100) <= thresholds.maxChoppinessForMomentum + 3) {
         return baseSnapshot('BREAKOUT_UP', confidence([volumeRatioScore(volumeRatio), adxScore(adx), chopScore(choppiness), closeLocation]), 'LONG', 'range_breakout_up_volume_confirmed', indicators);
     }
-    if (breakoutDown && (volumeRatio ?? 0) >= 1.3 && (adx ?? 0) >= 18 && (choppiness ?? 100) <= 58) {
+    if (breakoutDown && (volumeRatio ?? 0) >= thresholds.minVolumeRatioForMomentum && (adx ?? 0) >= Math.max(16, thresholds.minAdxForMomentum - 2) && (choppiness ?? 100) <= thresholds.maxChoppinessForMomentum + 3) {
         return baseSnapshot('BREAKOUT_DOWN', confidence([volumeRatioScore(volumeRatio), adxScore(adx), chopScore(choppiness), 1 - closeLocation]), 'SHORT', 'range_breakout_down_volume_confirmed', indicators);
     }
-    if (upStack && (emaSlope ?? 0) > 0 && (adx ?? 0) >= 20 && (choppiness ?? 100) <= 55 && (volumeRatio ?? 0) >= 1.2) {
+    if (upStack && (emaSlope ?? 0) > thresholds.emaSlopeThreshold && (adx ?? 0) >= thresholds.minAdxForMomentum && (choppiness ?? 100) <= thresholds.maxChoppinessForMomentum && (volumeRatio ?? 0) >= thresholds.minVolumeRatioForMomentum) {
         return baseSnapshot('MOMENTUM_UP', confidence([adxScore(adx), chopScore(choppiness), volumeRatioScore(volumeRatio), slopeScore(emaSlope)]), 'LONG', 'ema_stack_up_adx_volume', indicators);
     }
-    if (downStack && (emaSlope ?? 0) < 0 && (adx ?? 0) >= 20 && (choppiness ?? 100) <= 55 && (volumeRatio ?? 0) >= 1.2) {
+    if (downStack && (emaSlope ?? 0) < -thresholds.emaSlopeThreshold && (adx ?? 0) >= thresholds.minAdxForMomentum && (choppiness ?? 100) <= thresholds.maxChoppinessForMomentum && (volumeRatio ?? 0) >= thresholds.minVolumeRatioForMomentum) {
         return baseSnapshot('MOMENTUM_DOWN', confidence([adxScore(adx), chopScore(choppiness), volumeRatioScore(volumeRatio), slopeScore(Math.abs(emaSlope ?? 0))]), 'SHORT', 'ema_stack_down_adx_volume', indicators);
     }
     if ((choppiness ?? 0) >= 61.8 || (adx ?? 100) < 18 || (bollingerWidth ?? 1) < 0.01) {
         return baseSnapshot('CHOP', confidence([chopRiskScore(choppiness), 1 - (adxScore(adx) ?? 0), bollingerWidth !== undefined ? Math.max(0, 1 - bollingerWidth * 50) : 0.4]), 'NONE', 'low_adx_or_high_choppiness', indicators);
     }
-    if (upStack && (emaSlope ?? 0) > 0 && (adx ?? 0) >= 18) {
+    if (upStack && (emaSlope ?? 0) > thresholds.emaSlopeThreshold && (adx ?? 0) >= Math.max(16, thresholds.minAdxForMomentum - 2)) {
         return baseSnapshot('TREND_UP', confidence([adxScore(adx), slopeScore(emaSlope), chopScore(choppiness)]), 'LONG', 'ema_stack_up', indicators);
     }
-    if (downStack && (emaSlope ?? 0) < 0 && (adx ?? 0) >= 18) {
+    if (downStack && (emaSlope ?? 0) < -thresholds.emaSlopeThreshold && (adx ?? 0) >= Math.max(16, thresholds.minAdxForMomentum - 2)) {
         return baseSnapshot('TREND_DOWN', confidence([adxScore(adx), slopeScore(Math.abs(emaSlope ?? 0)), chopScore(choppiness)]), 'SHORT', 'ema_stack_down', indicators);
     }
     if (!previous || ema7 === undefined || ema25 === undefined || ema99 === undefined || adx === undefined || choppiness === undefined) {
@@ -398,10 +428,13 @@ function baseSnapshot(
     };
 }
 
-function buildSnapshotsBySymbol(candlesBySymbol: Map<string, CandleRow[]>): Map<string, TechnicalRegimeSnapshot[]> {
+function buildSnapshotsBySymbol(
+    candlesBySymbol: Map<string, CandleRow[]>,
+    thresholds: TechnicalRegimeThresholds
+): Map<string, TechnicalRegimeSnapshot[]> {
     const output = new Map<string, TechnicalRegimeSnapshot[]>();
     for (const [symbol, candles] of candlesBySymbol.entries()) {
-        output.set(symbol, candles.map((_, index) => classifyTechnicalRegime(candles, index)));
+        output.set(symbol, candles.map((_, index) => classifyTechnicalRegime(candles, index, thresholds)));
     }
     return output;
 }
@@ -529,10 +562,16 @@ function metricRow(key: string, samples: DeepRegimeSample[], horizon: '15m' | '3
     const avgMfe = avg(outcomes.map((outcome) => outcome.mfeRoe).filter(isNumber));
     const avgMae = avg(outcomes.map((outcome) => outcome.maeRoe).filter(isNumber));
     const avgReturn = avg(outcomes.map((outcome) => outcome.forwardReturnRoe).filter(isNumber));
+    const adverseMae = outcomes.map((outcome) => Math.abs(outcome.maeRoe ?? 0)).filter(isNumber);
     const parts = key.split('|');
+    const regime = mode === 'regime' || mode === 'regimeSide'
+        ? parts[0]
+        : mode === 'symbolRegimeSide' || mode === 'monthRegime'
+            ? parts[1]
+            : undefined;
     return {
         bucket: key,
-        regime: mode.includes('regime') ? parts[mode === 'symbolRegimeSide' ? 1 : mode === 'monthRegime' ? 1 : 0] : undefined,
+        regime,
         symbol: mode === 'symbol' || mode === 'symbolRegimeSide' ? parts[0] : undefined,
         side: mode === 'regimeSide' ? parts[1] as Side : mode === 'symbolRegimeSide' ? parts[2] as Side : 'ALL',
         horizon,
@@ -549,6 +588,9 @@ function metricRow(key: string, samples: DeepRegimeSample[], horizon: '15m' | '3
         avgTimeTo8Minutes: round(avg(outcomes.map((outcome) => outcome.timeTo8Minutes).filter(isNumber))),
         avgTimeTo10Minutes: round(avg(outcomes.map((outcome) => outcome.timeTo10Minutes).filter(isNumber))),
         falseBreakoutRate: booleanRate(outcomes.map((outcome) => outcome.falseBreakout)),
+        worstMaeP75: round(percentile(adverseMae, 0.75)),
+        worstMaeP90: round(percentile(adverseMae, 0.90)),
+        worstMaeP95: round(percentile(adverseMae, 0.95)),
         conclusion: conclusion(samples.length, avgReturn, avgMfe, avgMae)
     };
 }
@@ -673,6 +715,9 @@ function renderCsv(report: DeepRegimeAuditReport): string {
         'avgTimeTo8Minutes',
         'avgTimeTo10Minutes',
         'falseBreakoutRate',
+        'worstMaeP75',
+        'worstMaeP90',
+        'worstMaeP95',
         'conclusion'
     ];
     return [
@@ -930,6 +975,13 @@ function median(values: number[]): number | undefined {
     return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+function percentile(values: number[], pct: number): number | undefined {
+    if (values.length === 0) return undefined;
+    const sorted = [...values].sort((a, b) => a - b);
+    const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * pct) - 1));
+    return sorted[index];
+}
+
 function max(values: number[]): number | undefined {
     return values.length > 0 ? Math.max(...values) : undefined;
 }
@@ -962,4 +1014,16 @@ function formatPct(value?: number): string {
 
 function formatNumber(value?: number): string {
     return value === undefined ? 'N/D' : value.toFixed(3);
+}
+
+function normalizeThresholds(input?: Partial<TechnicalRegimeThresholds>): TechnicalRegimeThresholds {
+    return {
+        minAdxForMomentum: finiteOr(input?.minAdxForMomentum, DEFAULT_TECHNICAL_REGIME_THRESHOLDS.minAdxForMomentum),
+        maxChoppinessForMomentum: finiteOr(input?.maxChoppinessForMomentum, DEFAULT_TECHNICAL_REGIME_THRESHOLDS.maxChoppinessForMomentum),
+        minVolumeRatioForMomentum: finiteOr(input?.minVolumeRatioForMomentum, DEFAULT_TECHNICAL_REGIME_THRESHOLDS.minVolumeRatioForMomentum),
+        maxAtrPercentileForAggressive: finiteOr(input?.maxAtrPercentileForAggressive, DEFAULT_TECHNICAL_REGIME_THRESHOLDS.maxAtrPercentileForAggressive),
+        maxExhaustionScore: finiteOr(input?.maxExhaustionScore, DEFAULT_TECHNICAL_REGIME_THRESHOLDS.maxExhaustionScore),
+        breakoutLookback: Math.max(2, Math.floor(finiteOr(input?.breakoutLookback, DEFAULT_TECHNICAL_REGIME_THRESHOLDS.breakoutLookback))),
+        emaSlopeThreshold: finiteOr(input?.emaSlopeThreshold, DEFAULT_TECHNICAL_REGIME_THRESHOLDS.emaSlopeThreshold)
+    };
 }
