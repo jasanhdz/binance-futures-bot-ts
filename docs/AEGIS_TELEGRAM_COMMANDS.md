@@ -65,6 +65,10 @@ No implementan:
 /momentum 1h
 /momentum detail XRPUSDT
 /momentum near-miss 2h
+/probe
+/probe 1h
+/probe detail AVAXUSDT
+/probe near-miss 24h
 ```
 
 ## Salidas
@@ -348,6 +352,24 @@ Pattern: 3 candles | Vol: 1.80x | Regime: MOMENTUM_UP | Turbo: confirmed | Tail:
    Oportunidad hipotética en shadow
 ```
 
+`/probe`
+
+Reporte read-only de Probe Mode. Audita evaluaciones permitidas y denegadas, trades abiertos
+por Probe, resultados cerrados, TailRisk bands, EventRisk reasons, CleanEntry reasons,
+setupGrade, métricas MFE/MAE/ROE y posibles inconsistencias `exit_reason_label_mismatch`.
+No cambia thresholds, no cambia YAML y no ejecuta operaciones.
+
+Formas:
+
+- `/probe`: resumen de las últimas 24 horas.
+- `/probe 1h`: resumen de la última hora.
+- `/probe AVAXUSDT`: resumen de las últimas 24 horas para `AVAXUSDT`.
+- `/probe detail AVAXUSDT`: detalle de evaluaciones/trades Probe del símbolo.
+- `/probe near-miss 24h`: candidatos Probe permitidos recientes para revisión.
+
+El reporte ayuda a medir si Probe está agregando valor o tomando riesgo malo. También separa
+el motivo real de salida del label display cuando encuentra cierres con metadata inconsistente.
+
 ## Implementación
 
 Módulos:
@@ -357,6 +379,7 @@ Módulos:
 - `src/app/telegram/TelegramCommandTypes.ts`
 - `src/app/telegram/AegisBlocksReportService.ts`
 - `src/app/telegram/AegisMomentumReportService.ts`
+- `src/app/telegram/AegisProbeReportService.ts`
 - `src/infra/telegram/TelegramBotCommandListener.ts`
 
 El listener se integra en `src/main.ts` solo cuando está activado por env y hay chats autorizados.
