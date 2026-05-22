@@ -185,15 +185,138 @@ describe('AegisBlocksReportService', () => {
         expect(report.totalBlocks).toBe(0);
     });
 
-    it('reconoce momentum_turbo_contradict como razón diagnóstica negativa', async () => {
+    it('no cuenta momentum_turbo_contradict como bloqueo si viene solo como diagnóstico Momentum', async () => {
         await writeEvents([
             event({ event: 'MOMENTUM_RIDE_DIAGNOSTIC', reason: 'momentum_turbo_contradict' })
         ]);
 
         const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
 
+        expect(report.totalBlocks).toBe(0);
+        expect(report.byReason.momentum_turbo_contradict).toBeUndefined();
+    });
+
+    it('no cuenta momentum_regime_not_confirmed si EntryPolicy final permite Aegis Turbo', async () => {
+        await writeEvents([
+            event({
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'all_enforced_guards_allowed',
+                metadata: {
+                    symbol: 'XRPUSDT',
+                    side: 'LONG',
+                    finalDecision: 'ALLOW',
+                    finalReason: 'all_enforced_guards_allowed',
+                    finalStrategy: 'aegis_turbo',
+                    strategyCandidates: {
+                        momentum_ride: { decision: 'DENY', reason: 'momentum_regime_not_confirmed' },
+                        aegis_turbo: { decision: 'ALLOW', reason: 'all_enforced_guards_allowed' }
+                    },
+                    momentumRide: {
+                        patternDetected: true,
+                        reasons: ['momentum_pattern_detected', 'momentum_regime_not_confirmed']
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(0);
+        expect(report.byReason.momentum_regime_not_confirmed).toBeUndefined();
+    });
+
+    it('no cuenta regime_context_insufficient_data como bloqueo si viene solo como diagnóstico', async () => {
+        await writeEvents([
+            event({ event: 'REGIME_CONTEXT_DIAGNOSTIC', reason: 'regime_context_insufficient_data' })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(0);
+        expect(report.byReason.regime_context_insufficient_data).toBeUndefined();
+    });
+
+    it('no cuenta regime_context_insufficient_data si EntryPolicy final permite la entrada', async () => {
+        await writeEvents([
+            event({
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'all_enforced_guards_allowed',
+                metadata: {
+                    symbol: 'XRPUSDT',
+                    side: 'LONG',
+                    finalDecision: 'ALLOW',
+                    finalReason: 'all_enforced_guards_allowed',
+                    finalStrategy: 'aegis_turbo',
+                    regimeContext: {
+                        insufficientData: true,
+                        reason: 'regime_context_insufficient_data',
+                        globalBlockingDisabled: true
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(0);
+        expect(report.byReason.regime_context_insufficient_data).toBeUndefined();
+    });
+
+    it('ENTRY_POLICY_DECISION DENY cuenta por finalReason real aunque incluya diagnóstico Momentum', async () => {
+        await writeEvents([
+            event({
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'entry_policy_decision',
+                metadata: {
+                    symbol: 'XRPUSDT',
+                    side: 'LONG',
+                    finalDecision: 'DENY',
+                    finalReason: 'decision_brain_do_not_enter',
+                    finalStrategy: 'none',
+                    strategyCandidates: {
+                        momentum_ride: { decision: 'DENY', reason: 'momentum_turbo_contradict' },
+                        aegis_turbo: { decision: 'DENY', reason: 'decision_brain_do_not_enter' }
+                    },
+                    momentumRide: {
+                        patternDetected: true,
+                        reasons: ['momentum_pattern_detected', 'momentum_turbo_contradict']
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
         expect(report.totalBlocks).toBe(1);
-        expect(report.byReason).toMatchObject({ momentum_turbo_contradict: 1 });
+        expect(report.byReason).toMatchObject({ decision_brain_do_not_enter: 1 });
+        expect(report.byReason.momentum_turbo_contradict).toBeUndefined();
+    });
+
+    it('ENTRY_POLICY_DECISION DENY cuenta por finalReason real aunque incluya diagnóstico RegimeContext', async () => {
+        await writeEvents([
+            event({
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'entry_policy_decision',
+                metadata: {
+                    symbol: 'XRPUSDT',
+                    side: 'LONG',
+                    finalDecision: 'DENY',
+                    finalReason: 'decision_brain_do_not_enter',
+                    finalStrategy: 'none',
+                    regimeContext: {
+                        insufficientData: true,
+                        reason: 'regime_context_insufficient_data',
+                        globalBlockingDisabled: true
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(1);
+        expect(report.byReason).toMatchObject({ decision_brain_do_not_enter: 1 });
+        expect(report.byReason.regime_context_insufficient_data).toBeUndefined();
     });
 
     it('soporta campos faltantes', async () => {

@@ -265,7 +265,8 @@ function makeHandlers(overrides: Record<string, any> = {}) {
             liquidityStressBySymbol: {}
         }),
         getActiveSymbols: () => overrides.symbols ?? ['ETHUSDT'],
-        blocksReportService: overrides.blocksReportService
+        blocksReportService: overrides.blocksReportService,
+        momentumReportService: overrides.momentumReportService
     });
     return { handlers, exchange, mlService, state, configManager, logger };
 }
@@ -710,5 +711,22 @@ describe('TelegramCommandHandlers', () => {
         const text = await handlers.handleBlocks(['wat', 'nope']);
 
         expect(text).toEqual(['Uso: /blocks [15m|30m|1h|2h|4h|6h|12h|24h]']);
+    });
+
+    it('/momentum llama summary', async () => {
+        const momentumReportService = { buildTelegramMessages: vi.fn(async () => ['MOMENTUM']) };
+        const { handlers } = makeHandlers({ momentumReportService });
+
+        await expect(handlers.handleMomentum([])).resolves.toEqual(['MOMENTUM']);
+        expect(momentumReportService.buildTelegramMessages).toHaveBeenCalledWith([]);
+    });
+
+    it('/momentum detail LINKUSDT funciona', async () => {
+        const momentumReportService = { buildTelegramMessages: vi.fn(async () => ['DETAIL']) };
+        const { handlers } = makeHandlers({ momentumReportService });
+
+        await handlers.handleMomentum(['detail', 'LINKUSDT']);
+
+        expect(momentumReportService.buildTelegramMessages).toHaveBeenCalledWith(['detail', 'LINKUSDT']);
     });
 });

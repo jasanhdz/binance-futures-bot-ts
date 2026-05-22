@@ -159,8 +159,14 @@ const BLOCK_REASONS = new Set([
     'regime_tail_risk_high',
     'regime_stale_snapshot',
     'regime_model_unavailable',
-    'regime_invalid_source',
-    'regime_context_insufficient_data',
+    'regime_invalid_source'
+]);
+
+const REGIME_CONTEXT_DIAGNOSTIC_REASONS = new Set([
+    'regime_context_insufficient_data'
+]);
+
+const MOMENTUM_DIAGNOSTIC_REASONS = new Set([
     'momentum_regime_not_confirmed',
     'momentum_turbo_not_confirmed',
     'momentum_turbo_contradict',
@@ -375,6 +381,9 @@ function isBlockRow(row: JsonRecord): boolean {
     }
     const entryPolicyDecision = stableText(row.metadata?.entryPolicy?.finalDecision);
     if (entryPolicyDecision !== 'N/D' && entryPolicyDecision !== 'ALLOW') {
+        return false;
+    }
+    if (REGIME_CONTEXT_DIAGNOSTIC_REASONS.has(reason) || MOMENTUM_DIAGNOSTIC_REASONS.has(reason)) {
         return false;
     }
     return BLOCK_EVENTS.has(event) || BLOCK_REASONS.has(reason);

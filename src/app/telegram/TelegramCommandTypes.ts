@@ -4,6 +4,7 @@ import { MLService } from '../ports/MLService';
 import { StateStore } from '../ports/StateStore';
 import { NinjaConfigManager } from '../../infra/config/ConfigLoader';
 import { AegisBlocksReportService } from './AegisBlocksReportService';
+import { AegisMomentumReportService } from './AegisMomentumReportService';
 
 export type TelegramCommandName =
     | 'help'
@@ -19,7 +20,8 @@ export type TelegramCommandName =
     | 'riskmode'
     | 'brackets'
     | 'report'
-    | 'blocks';
+    | 'blocks'
+    | 'momentum';
 
 export type TelegramCommandResponse = string | string[];
 
@@ -58,6 +60,7 @@ export interface TelegramCommandHandlerDeps {
     getRuntimeSnapshot?: () => AegisRuntimeSnapshot;
     getActiveSymbols?: () => string[];
     blocksReportService?: AegisBlocksReportService;
+    momentumReportService?: AegisMomentumReportService;
 }
 
 export interface TelegramCommandRouterOptions {
@@ -81,4 +84,5 @@ export interface TelegramCommandHandlersPort {
     handleBrackets(): Promise<TelegramCommandResponse>;
     handleReportToday(): Promise<TelegramCommandResponse>;
     handleBlocks(args?: string[]): Promise<TelegramCommandResponse>;
+    handleMomentum(args?: string[]): Promise<TelegramCommandResponse>;
 }

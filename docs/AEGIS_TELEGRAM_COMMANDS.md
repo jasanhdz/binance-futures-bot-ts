@@ -61,6 +61,10 @@ No implementan:
 /blocks detail ADAUSDT
 /blocks top
 /blocks near-miss 2h
+/momentum
+/momentum 1h
+/momentum detail XRPUSDT
+/momentum near-miss 2h
 ```
 
 ## Salidas
@@ -198,6 +202,11 @@ Reporte read-only bajo demanda de bloqueos de entrada Aegis. Lee JSONL locales e
 `logs/aegis/turbo_trade_events_YYYY-MM-DD.jsonl`; no consulta Binance, no modifica
 estado y no ejecuta operaciones.
 
+`/blocks` cuenta bloqueos reales del flujo final de entrada. Diagnósticos de Momentum Ride
+no cuentan como bloqueo si `finalDecision=ALLOW` o si `finalStrategy=aegis_turbo` siguió
+normalmente. Un `Momentum DENY` significa que Momentum no aplicó; no significa necesariamente
+que el bot completo haya denegado la entrada.
+
 Ventanas soportadas:
 
 - `15m`
@@ -253,6 +262,12 @@ Eventos y razones incluidas como bloqueos:
 - `clean_entry_decision_brain_not_enter_now`
 - `clean_entry_missing_critical_data`
 
+Razones Momentum como `momentum_regime_not_confirmed`, `momentum_turbo_not_confirmed`,
+`momentum_turbo_contradict`, `momentum_btc_eth_contradict`, `momentum_tail_risk_high` y
+`momentum_safety_cap_exceeded` se excluyen de `/blocks` cuando aparecen solo como diagnóstico
+de strategy candidate. Si el evento final queda denegado, `/blocks` cuenta el bloqueo por el
+`finalReason` real de `ENTRY_POLICY_DECISION`.
+
 También cuenta eventos permitidos en la misma ventana:
 
 - `GATE_ALLOWED`
@@ -288,6 +303,51 @@ por `A_PLUS`, score alto, EntryQuality `ALLOW`/`ALLOW_SHADOW` y TailRisk bajo.
 Los reportes Telegram son resúmenes operativos. Los logs completos siguen estando en
 JSONL para auditoría y análisis offline.
 
+`/momentum`
+
+Reporte read-only de Momentum Ride como strategy candidate. Usa la metadata de
+`ENTRY_POLICY_DECISION` y eventos `MOMENTUM_RIDE_DIAGNOSTIC` si existen. No envía alertas
+automáticas y no cambia el comportamiento de entrada.
+
+Formas:
+
+- `/momentum`: resumen de la última hora.
+- `/momentum 4h`: resumen de las últimas 4 horas.
+- `/momentum XRPUSDT`: resumen por símbolo.
+- `/momentum detail XRPUSDT`: últimas evaluaciones Momentum del símbolo.
+- `/momentum near-miss 2h`: mejores candidatos Momentum de las últimas 2 horas.
+
+El reporte separa:
+
+- oportunidades `SHADOW_ALLOW`
+- denies de Momentum por razón diagnóstica
+- entradas reales con `finalStrategy=momentum_ride`
+- fallback donde Momentum no aplicó y `finalStrategy=aegis_turbo`
+
+Ejemplo compacto:
+
+```text
+🎢 Momentum Ride — última 1h
+
+Total evaluaciones Momentum: 12
+Patrones detectados: 8
+Shadow allow: 3
+Shadow deny: 2
+Enforce allow: 1
+Enforce deny: 4
+Final strategy momentum_ride: 1
+Final strategy aegis_turbo después de momentum deny: 4
+
+Por razón Momentum:
+• momentum_turbo_not_confirmed: 2
+• momentum_regime_not_confirmed: 1
+
+Top candidatos:
+1) XRPUSDT LONG
+Pattern: 3 candles | Vol: 1.80x | Regime: MOMENTUM_UP | Turbo: confirmed | Tail: 0.22 | Decision: SHADOW_ALLOW
+   Oportunidad hipotética en shadow
+```
+
 ## Implementación
 
 Módulos:
@@ -296,6 +356,7 @@ Módulos:
 - `src/app/telegram/TelegramCommandHandlers.ts`
 - `src/app/telegram/TelegramCommandTypes.ts`
 - `src/app/telegram/AegisBlocksReportService.ts`
+- `src/app/telegram/AegisMomentumReportService.ts`
 - `src/infra/telegram/TelegramBotCommandListener.ts`
 
 El listener se integra en `src/main.ts` solo cuando está activado por env y hay chats autorizados.

@@ -15,6 +15,7 @@ import { analyzeAegisTurboHistory } from '../../tools/analyzeAegisTurboHistory';
 import { CONFIG } from '../../infra/config/environment';
 import { TelegramCommandHandlerDeps, TelegramCommandHandlersPort } from './TelegramCommandTypes';
 import { AegisBlocksReportService } from './AegisBlocksReportService';
+import { AegisMomentumReportService } from './AegisMomentumReportService';
 
 type CloseOrder = {
     type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
@@ -231,6 +232,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `🧷 /brackets - Estado de brackets\n` +
             `📈 /report today - Resumen de hoy\n` +
             `🛡️ /blocks - Bloqueos Aegis bajo demanda\n\n` +
+            `🎢 /momentum - Diagnóstico Momentum Ride\n\n` +
             `🔒 **Solo lectura**. No abre, cierra ni modifica operaciones.`;
     }
 
@@ -556,6 +558,16 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
         } catch (error) {
             this.deps.logger?.warn('telegram_blocks_report_failed', { error: String(error) });
             return 'No se pudo generar el reporte de bloqueos.';
+        }
+    }
+
+    async handleMomentum(args: string[] = []): Promise<string | string[]> {
+        try {
+            const service = this.deps.momentumReportService ?? new AegisMomentumReportService();
+            return await service.buildTelegramMessages(args);
+        } catch (error) {
+            this.deps.logger?.warn('telegram_momentum_report_failed', { error: String(error) });
+            return 'No se pudo generar el reporte de Momentum Ride.';
         }
     }
 

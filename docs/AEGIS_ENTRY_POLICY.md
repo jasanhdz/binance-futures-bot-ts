@@ -10,13 +10,15 @@ La capa no toca Binance, no abre ordenes, no cambia sizing por si sola y no modi
 
 Orden deterministico:
 
-1. `regime`
-2. `short_gate`
-3. `entry_quality`
-4. `event_risk`
-5. `decision_brain`
-6. `clean_entry`
-7. `probe_mode`
+1. `regime_context`
+2. `momentum_ride`
+3. `regime`
+4. `short_gate`
+5. `entry_quality`
+6. `event_risk`
+7. `decision_brain`
+8. `clean_entry`
+9. `probe_mode`
 
 Cada guard devuelve:
 
@@ -178,6 +180,28 @@ Cada intento relevante genera metadata compacta y trace completo:
 El trace completo va a JSONL. Telegram muestra un resumen compacto para no saturar `/blocks`.
 
 `ENTRY_POLICY_DECISION` incluye tambien un resumen `entryPolicy.regime` con label, confidence, source, BTC/ETH context, tail risk, event risk y razon. Esto deja preparada la base para un dataset de regimen sin cambiar la estrategia live.
+
+## Strategy candidates
+
+Entry Policy puede evaluar candidatos de estrategia además del flujo Aegis normal:
+
+- `aegis_turbo`: candidato normal de Aegis.
+- `momentum_ride`: overlay opcional con risk profile propio.
+
+El resultado final expone:
+
+- `strategyCandidates`
+- `finalStrategy`: `momentum_ride`, `aegis_turbo` o `none`
+- `riskProfile`, solo cuando `finalStrategy=momentum_ride`
+
+`RegimeContext` es middleware informativo. Incluso en `ENFORCE`, no bloquea globalmente;
+solo publica metadata para que Momentum Ride evalúe régimen técnico.
+
+Momentum Ride no puede abrir contra Aegis/Turbo ni sobre un `EntryPolicy` final `DENY`.
+Un `Momentum DENY` no significa necesariamente que el bot completo haya bloqueado la entrada:
+puede significar que Momentum no aplicó y que `aegis_turbo` continuó normalmente. Por eso
+`/blocks` reporta bloqueos finales, mientras `/momentum` reporta diagnósticos y oportunidades
+Momentum como strategy candidate.
 
 ## Agregar un guard futuro
 
