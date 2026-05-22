@@ -38,10 +38,20 @@ function parseArgs(args: string[]): CliOptions {
         else if (arg === '--fee-bps' && next) options.feeBps = Number(args[++i]);
         else if (arg === '--slippage-bps' && next) options.slippageBps = Number(args[++i]);
         else if (arg === '--limit' && next) options.limit = Number(args[++i]);
+        else if (arg === '--progress-every' && next) options.progressEvery = Number(args[++i]);
+        else if (arg === '--max-samples-per-symbol' && next) options.maxSamplesPerSymbol = Number(args[++i]);
+        else if (arg === '--engine-lookback-candles' && next) options.engineLookbackCandles = Number(args[++i]);
+        else if (arg === '--horizons' && next) options.horizons = args[++i]
+            .split(',')
+            .map((value) => Number(value.trim()))
+            .filter((value): value is 15 | 30 | 60 | 120 => value === 15 || value === 30 || value === 60 || value === 120);
         else if (arg === '--symbols' && next) options.symbols = args[++i].split(',').map((symbol) => symbol.trim().toUpperCase()).filter(Boolean);
         else if (arg === '--db' && next) options.candlesDbPath = args[++i];
         else if (arg === '--reports-dir' && next) options.reportsDir = args[++i];
         else if (arg === '--momentum-pattern-only') options.momentumPatternOnly = true;
+        else if (arg === '--fast') options.engineLookbackCandles = 220;
+        else if (arg === '--no-json') options.writeJson = false;
+        else if (arg === '--no-csv') options.writeCsv = false;
         else if (arg === '--no-reports') options.writeReports = false;
     }
     return options;
@@ -60,9 +70,16 @@ function printHelp(): void {
         '  --slippage-bps N           Round-trip slippage sensitivity input per side, default 0',
         '  --symbols A,B,C            Optional symbol list',
         '  --limit N                  Max samples',
+        '  --max-samples-per-symbol N Max accepted samples per symbol',
+        '  --progress-every N         Print progress every N accepted samples',
+        '  --horizons 15,30,60,120    Horizons to calculate',
+        '  --engine-lookback-candles N Bounded candle history per decision, default 260',
+        '  --fast                     Use a 220-candle decision lookback',
         '  --momentum-pattern-only    Evaluate only offline Momentum Ride-like patterns',
         '  --db PATH                  SQLite candles DB',
         '  --reports-dir DIR          Output reports dir, default /home/jasan/Develop',
+        '  --no-json                  Skip JSON report file',
+        '  --no-csv                   Skip CSV report file',
         '  --no-reports               Print only, do not write reports'
     ].join('\n'));
 }

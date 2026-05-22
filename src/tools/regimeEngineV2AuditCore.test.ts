@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RegimeEngineV2Decision, RegimeEngineV2InputCandle } from '../domain/services/regime-v2/RegimeEngineV2.types';
 import {
     buildRegimeEngineV2AuditReport,
+    buildRegimeEngineV2AuditSamples,
     calculateRegimeEngineV2Outcome,
     detectMomentumRidePattern,
     directionalEnvironmentBucket
@@ -127,6 +128,27 @@ describe('regimeEngineV2AuditCore', () => {
 
         expect(withCost.totalCostRoe).toBeGreaterThan(0);
         expect(withCost.forwardReturnRoe ?? 0).toBeLessThan(noCost.forwardReturnRoe ?? 0);
+    });
+
+    it('supports progress and max samples per symbol options', () => {
+        const candlesBySymbol = new Map<string, RegimeEngineV2InputCandle[]>([
+            ['BTCUSDT', patternCandles('LONG', 180)],
+            ['ETHUSDT', patternCandles('SHORT', 180)]
+        ]);
+
+        const result = buildRegimeEngineV2AuditSamples(candlesBySymbol, {
+            symbols: ['BTCUSDT', 'ETHUSDT'],
+            sampleEvery: 1,
+            momentumPatternOnly: true,
+            maxSamplesPerSymbol: 2,
+            progressEvery: 1,
+            horizons: [60],
+            engineLookbackCandles: 160
+        });
+
+        expect(result.samples.length).toBeLessThanOrEqual(4);
+        expect(result.horizons).toEqual([60]);
+        expect(result.engineLookbackCandles).toBe(160);
     });
 });
 

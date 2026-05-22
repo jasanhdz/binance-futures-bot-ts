@@ -28,7 +28,10 @@ describe('RegimeEngineV2', () => {
     it('classifies BREAKOUT_UP_EARLY with range break and volume', () => {
         const candles = [
             ...Array.from({ length: 130 }, (_, index) => candle(index, 100, 100.4, 99.6, 100 + Math.sin(index) * 0.1, 100)),
-            candle(130, 100.2, 102.4, 100.1, 102.2, 260)
+            candle(130, 100.05, 100.35, 99.95, 100.2, 155),
+            candle(131, 100.1, 100.38, 99.95, 100.25, 160),
+            candle(132, 100.15, 100.39, 99.95, 100.3, 165),
+            candle(133, 100.2, 102.4, 100.1, 102.2, 260)
         ];
 
         const result = RegimeEngineV2.evaluate({
@@ -39,6 +42,66 @@ describe('RegimeEngineV2', () => {
 
         expect(result.technicalRegime).toBe('BREAKOUT_UP_EARLY');
         expect(result.momentumEnvironment).toBe('ALLOW_LONG_MOMENTUM');
+        expect(result.reasons).toContain('breakout_v22_confirmed');
+        expect(result.indicators.breakoutCloseBeyondRangePct).toBeGreaterThan(0);
+    });
+
+    it('degrades breakout up when adverse wick is high', () => {
+        const candles = [
+            ...Array.from({ length: 132 }, (_, index) => candle(index, 100, 100.4, 99.7, 100 + Math.sin(index) * 0.08, 100)),
+            candle(132, 100.05, 100.35, 99.95, 100.2, 160),
+            candle(133, 100.1, 100.38, 99.95, 100.25, 165),
+            candle(134, 100.2, 102.2, 96.8, 101.6, 260)
+        ];
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.technicalRegime).not.toBe('BREAKOUT_UP_EARLY');
+        expect(result.reasons).toContain('breakout_adverse_wick_high');
+        expect(['WATCH_LONG_MOMENTUM', 'AVOID_MOMENTUM']).toContain(result.momentumEnvironment);
+    });
+
+    it('degrades breakout up when close is not far enough outside range', () => {
+        const candles = [
+            ...Array.from({ length: 132 }, (_, index) => candle(index, 100, 100.4, 99.7, 100 + Math.sin(index) * 0.08, 100)),
+            candle(132, 100.05, 100.35, 99.95, 100.2, 160),
+            candle(133, 100.1, 100.38, 99.95, 100.25, 165),
+            candle(134, 100.3, 100.8, 99.6, 100.5, 260)
+        ];
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.technicalRegime).not.toBe('BREAKOUT_UP_EARLY');
+        expect(result.reasons).toContain('breakout_close_not_far_enough');
+    });
+
+    it('degrades breakout down when adverse wick is high', () => {
+        const candles = [
+            ...Array.from({ length: 132 }, (_, index) => candle(index, 100, 100.3, 99.6, 100 + Math.sin(index) * 0.08, 100)),
+            candle(132, 99.95, 100.2, 99.6, 99.8, 160),
+            candle(133, 99.9, 100.2, 99.62, 99.75, 165),
+            candle(134, 99.8, 103.2, 97.8, 98.4, 260)
+        ];
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.technicalRegime).not.toBe('BREAKOUT_DOWN_EARLY');
+        expect(result.reasons).toContain('breakout_adverse_wick_high');
+        expect(['WATCH_SHORT_MOMENTUM', 'AVOID_MOMENTUM']).toContain(result.momentumEnvironment);
+    });
+
+    it('degrades breakout down when volume persistence is low', () => {
+        const candles = [
+            ...Array.from({ length: 132 }, (_, index) => candle(index, 100, 100.3, 99.6, 100 + Math.sin(index) * 0.08, 100)),
+            candle(132, 99.95, 100.2, 99.6, 99.8, 70),
+            candle(133, 99.9, 100.2, 99.62, 99.75, 70),
+            candle(134, 99.6, 99.7, 97.9, 98.2, 126)
+        ];
+
+        const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+
+        expect(result.technicalRegime).not.toBe('BREAKOUT_DOWN_EARLY');
+        expect(result.reasons).toContain('breakout_volume_not_persistent');
     });
 
     it('classifies MOMENTUM_UP_EARLY without overextension', () => {

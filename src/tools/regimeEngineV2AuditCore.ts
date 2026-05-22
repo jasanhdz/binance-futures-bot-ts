@@ -26,6 +26,7 @@ export const DEFAULT_REGIME_ENGINE_V2_SYMBOLS = [
 ];
 
 const HORIZONS = [15, 30, 60, 120] as const;
+type SupportedHorizon = typeof HORIZONS[number];
 
 export type RegimeEngineV2AuditOptions = {
     candlesDbPath?: string;
@@ -41,6 +42,12 @@ export type RegimeEngineV2AuditOptions = {
     momentumPatternOnly?: boolean;
     feeBps?: number;
     slippageBps?: number;
+    progressEvery?: number;
+    maxSamplesPerSymbol?: number;
+    horizons?: SupportedHorizon[];
+    engineLookbackCandles?: number;
+    writeJson?: boolean;
+    writeCsv?: boolean;
 };
 
 export type RegimeEngineV2DirectionalEnvironment =
@@ -92,6 +99,7 @@ export type RegimeEngineV2AuditSample = {
     timestampMs: number;
     symbol: string;
     side: Side;
+    close: number;
     directionalEnvironment: RegimeEngineV2DirectionalEnvironment;
     pattern?: RegimeEngineV2MomentumPattern;
     decision: RegimeEngineV2Decision;
@@ -203,29 +211,107 @@ export async function auditRegimeEngineV2(options: RegimeEngineV2AuditOptions = 
     return report;
 }
 
+export function loadRegimeEngineV2Candles(options: RegimeEngineV2AuditOptions = {}): { candlesBySymbol: Map<string, RegimeEngineV2InputCandle[]>; symbols: string[]; warnings: string[] } {
+    const symbols = (options.symbols?.length ? options.symbols : DEFAULT_REGIME_ENGINE_V2_SYMBOLS).map((symbol) => symbol.toUpperCase());
+    const timeframe = options.timeframe ?? '5m';
+    const dbPath = options.candlesDbPath ?? '/home/jasan/Develop/trading_system/data/binance_candles.db';
+    const warnings: string[] = [];
+    const fromMs = options.from ? parseTimestamp(options.from) : -Infinity;
+    const toMs = options.to ? parseTimestamp(options.to) : Infinity;
+    const candlesBySymbol = loadCandles(dbPath, symbols, timeframe, warnings, fromMs, toMs);
+    return { candlesBySymbol, symbols, warnings };
+}
+
 export function buildRegimeEngineV2AuditReport(
     candlesBySymbol: Map<string, RegimeEngineV2InputCandle[]>,
     options: RegimeEngineV2AuditOptions & { warnings?: string[] } = {}
 ): RegimeEngineV2AuditReport {
+    const { samples, sampleEvery, leverage, feeBps, slippageBps, horizons, engineLookbackCandles } = buildRegimeEngineV2AuditSamples(candlesBySymbol, options);
+    const symbols = options.symbols ?? [...candlesBySymbol.keys()];
+    const report: RegimeEngineV2AuditReport = {
+        generatedAt: new Date().toISOString(),
+        options: {
+            ...options,
+            timeframe: options.timeframe ?? '5m',
+            sampleEvery,
+            leverage,
+            feeBps,
+            slippageBps,
+            horizons,
+            engineLookbackCandles,
+            momentumPatternOnly: options.momentumPatternOnly ?? false,
+            writeReports: options.writeReports !== false,
+            writeJson: options.writeJson !== false,
+            writeCsv: options.writeCsv !== false
+        },
+        counts: {
+            candlesBySymbol: Object.fromEntries(symbols.map((symbol) => [symbol, candlesBySymbol.get(symbol)?.length ?? 0])),
+            samples: samples.length
+        },
+        distributions: {
+            technicalRegime: countBy(samples, (sample) => sample.decision.technicalRegime),
+            momentumEnvironment: countBy(samples, (sample) => sample.decision.momentumEnvironment)
+        },
+        byMomentumEnvironment: buildMetricRows(samples, (sample) => sample.decision.momentumEnvironment, horizons),
+        byTechnicalRegime: buildMetricRows(samples, (sample) => sample.decision.technicalRegime, horizons),
+        bySymbolSide: buildMetricRows(samples, (sample) => `${sample.symbol}|${sample.side}`, horizons),
+        byMarketConfirmation: buildMetricRows(samples, (sample) => sample.decision.marketConfirmation.state, horizons),
+        byTransitionRisk: buildMetricRows(samples, (sample) => sample.decision.transition.risk, horizons),
+        byEarlyMatureExhausted: buildMetricRows(samples, (sample) => maturityBucket(sample.decision.technicalRegime), horizons),
+        byDirectionalEnvironment: buildMetricRows(samples, (sample) => sample.directionalEnvironment, horizons),
+        byPatternSideEnvironment: buildMetricRows(
+            samples.filter((sample) => sample.pattern),
+            (sample) => `PATTERN_${sample.side}|${sample.directionalEnvironment}`,
+            horizons
+        ),
+        byEnvironmentTechnicalRegime: buildMetricRows(samples, (sample) => `${sample.directionalEnvironment}|${sample.decision.technicalRegime}`, horizons),
+        byEnvironmentSymbolSide: buildMetricRows(samples, (sample) => `${sample.directionalEnvironment}|${sample.symbol}|${sample.side}`, horizons),
+        environmentDiagnostics: buildEnvironmentDiagnostics(samples),
+        walkForward: buildWalkForward(samples),
+        recommendations: [],
+        warnings: options.warnings ?? []
+    };
+    report.recommendations = buildRecommendations(report);
+    return report;
+}
+
+export function buildRegimeEngineV2AuditSamples(
+    candlesBySymbol: Map<string, RegimeEngineV2InputCandle[]>,
+    options: RegimeEngineV2AuditOptions & { warnings?: string[] } = {}
+): {
+    samples: RegimeEngineV2AuditSample[];
+    sampleEvery: number;
+    leverage: number;
+    feeBps: number;
+    slippageBps: number;
+    horizons: SupportedHorizon[];
+    engineLookbackCandles: number;
+} {
     const symbols = options.symbols ?? [...candlesBySymbol.keys()];
     const sampleEvery = Math.max(1, Math.floor(options.sampleEvery ?? 6));
     const leverage = options.leverage ?? 20;
     const limit = options.limit ?? Infinity;
     const feeBps = options.feeBps ?? 0;
     const slippageBps = options.slippageBps ?? 0;
+    const horizons = selectedHorizons(options.horizons);
+    const progressEvery = Math.max(0, Math.floor(options.progressEvery ?? 0));
+    const maxSamplesPerSymbol = options.maxSamplesPerSymbol === undefined ? Infinity : Math.max(0, Math.floor(options.maxSamplesPerSymbol));
+    const engineLookbackCandles = Math.max(140, Math.floor(options.engineLookbackCandles ?? 260));
     const samples: RegimeEngineV2AuditSample[] = [];
     const sampleFromMs = options.from ? parseTimestamp(options.from) : -Infinity;
     const sampleToMs = options.to ? parseTimestamp(options.to) + dayMs() - 1 : Infinity;
     const decisionCache = new Map<string, Map<number, RegimeEngineV2Decision>>();
+    let scanned = 0;
     const decisionFor = (symbol: string, index: number): RegimeEngineV2Decision | undefined => {
         const candles = candlesBySymbol.get(symbol) ?? [];
         if (!candles[index]) return undefined;
         const symbolCache = decisionCache.get(symbol) ?? new Map<number, RegimeEngineV2Decision>();
         const cached = symbolCache.get(index);
         if (cached) return cached;
+        const start = Math.max(0, index + 1 - engineLookbackCandles);
         const decision = RegimeEngineV2.evaluate({
             symbol,
-            candles: candles.slice(0, index + 1),
+            candles: candles.slice(start, index + 1),
             market: marketContext(symbol, index, decisionFor)
         });
         symbolCache.set(index, decision);
@@ -235,7 +321,9 @@ export function buildRegimeEngineV2AuditReport(
 
     for (const symbol of symbols) {
         const candles = candlesBySymbol.get(symbol) ?? [];
-        for (let index = 120; index < candles.length && samples.length < limit; index += sampleEvery) {
+        let symbolSamples = 0;
+        for (let index = 120; index < candles.length && samples.length < limit && symbolSamples < maxSamplesPerSymbol; index += sampleEvery) {
+            scanned++;
             const timestamp = candles[index].timestamp ?? 0;
             if (timestamp < sampleFromMs || timestamp > sampleToMs) continue;
             const decision = decisionFor(symbol, index);
@@ -250,58 +338,36 @@ export function buildRegimeEngineV2AuditReport(
                     timestampMs: Date.parse(decision.timestamp),
                     symbol,
                     side,
+                    close: candles[index].close,
                     directionalEnvironment: directionalEnvironmentBucket(decision.momentumEnvironment, side),
                     pattern: pattern?.side === side ? pattern : undefined,
                     decision,
-                    outcomes: Object.fromEntries(HORIZONS.map((horizon) => [
-                        `${horizon}m`,
-                        calculateRegimeEngineV2Outcome(candles, index, side, leverage, horizon, decision, { feeBps, slippageBps })
-                    ])) as RegimeEngineV2AuditSample['outcomes']
+                    outcomes: buildOutcomes(candles, index, side, leverage, horizons, decision, { feeBps, slippageBps })
                 });
+                symbolSamples++;
+                if (progressEvery > 0 && samples.length % progressEvery === 0) {
+                    console.error(`[RegimeEngineV2Audit] samples=${samples.length} scanned=${scanned} symbol=${symbol} ts=${decision.timestamp}`);
+                }
             }
         }
     }
 
-    const report: RegimeEngineV2AuditReport = {
-        generatedAt: new Date().toISOString(),
-        options: {
-            ...options,
-            timeframe: options.timeframe ?? '5m',
-            sampleEvery,
-            leverage,
-            feeBps,
-            slippageBps,
-            momentumPatternOnly: options.momentumPatternOnly ?? false,
-            writeReports: options.writeReports !== false
-        },
-        counts: {
-            candlesBySymbol: Object.fromEntries(symbols.map((symbol) => [symbol, candlesBySymbol.get(symbol)?.length ?? 0])),
-            samples: samples.length
-        },
-        distributions: {
-            technicalRegime: countBy(samples, (sample) => sample.decision.technicalRegime),
-            momentumEnvironment: countBy(samples, (sample) => sample.decision.momentumEnvironment)
-        },
-        byMomentumEnvironment: buildMetricRows(samples, (sample) => sample.decision.momentumEnvironment),
-        byTechnicalRegime: buildMetricRows(samples, (sample) => sample.decision.technicalRegime),
-        bySymbolSide: buildMetricRows(samples, (sample) => `${sample.symbol}|${sample.side}`),
-        byMarketConfirmation: buildMetricRows(samples, (sample) => sample.decision.marketConfirmation.state),
-        byTransitionRisk: buildMetricRows(samples, (sample) => sample.decision.transition.risk),
-        byEarlyMatureExhausted: buildMetricRows(samples, (sample) => maturityBucket(sample.decision.technicalRegime)),
-        byDirectionalEnvironment: buildMetricRows(samples, (sample) => sample.directionalEnvironment),
-        byPatternSideEnvironment: buildMetricRows(
-            samples.filter((sample) => sample.pattern),
-            (sample) => `PATTERN_${sample.side}|${sample.directionalEnvironment}`
-        ),
-        byEnvironmentTechnicalRegime: buildMetricRows(samples, (sample) => `${sample.directionalEnvironment}|${sample.decision.technicalRegime}`),
-        byEnvironmentSymbolSide: buildMetricRows(samples, (sample) => `${sample.directionalEnvironment}|${sample.symbol}|${sample.side}`),
-        environmentDiagnostics: buildEnvironmentDiagnostics(samples),
-        walkForward: buildWalkForward(samples),
-        recommendations: [],
-        warnings: options.warnings ?? []
-    };
-    report.recommendations = buildRecommendations(report);
-    return report;
+    return { samples, sampleEvery, leverage, feeBps, slippageBps, horizons, engineLookbackCandles };
+}
+
+function buildOutcomes(
+    candles: RegimeEngineV2InputCandle[],
+    index: number,
+    side: Side,
+    leverage: number,
+    horizons: SupportedHorizon[],
+    decision: RegimeEngineV2Decision,
+    costs: { feeBps?: number; slippageBps?: number }
+): RegimeEngineV2AuditSample['outcomes'] {
+    return Object.fromEntries(HORIZONS.map((horizon) => [
+                        `${horizon}m`,
+                        horizons.includes(horizon) ? calculateRegimeEngineV2Outcome(candles, index, side, leverage, horizon, decision, costs) : { horizonMinutes: horizon }
+                    ])) as RegimeEngineV2AuditSample['outcomes'];
 }
 
 function loadCandles(dbPath: string, symbols: string[], timeframe: string, warnings: string[], fromMs: number, toMs: number): Map<string, RegimeEngineV2InputCandle[]> {
@@ -536,15 +602,17 @@ function timeToTarget(candles: RegimeEngineV2InputCandle[], entryPrice: number, 
     return hit ? ((hit.timestamp ?? 0) - (candles[0].timestamp ?? 0) + 5 * 60_000) / 60_000 : undefined;
 }
 
-function buildMetricRows(samples: RegimeEngineV2AuditSample[], keyFn: (sample: RegimeEngineV2AuditSample) => string): RegimeEngineV2MetricRow[] {
+function buildMetricRows(samples: RegimeEngineV2AuditSample[], keyFn: (sample: RegimeEngineV2AuditSample) => string, horizons: SupportedHorizon[] = [...HORIZONS]): RegimeEngineV2MetricRow[] {
     const groups = new Map<string, RegimeEngineV2AuditSample[]>();
     for (const sample of samples) {
         const key = keyFn(sample);
-        groups.set(key, [...(groups.get(key) ?? []), sample]);
+        const group = groups.get(key);
+        if (group) group.push(sample);
+        else groups.set(key, [sample]);
     }
     const rows: RegimeEngineV2MetricRow[] = [];
     for (const [bucket, group] of groups.entries()) {
-        for (const horizon of HORIZONS) {
+        for (const horizon of horizons) {
             rows.push(metricRow(bucket, group, `${horizon}m`));
         }
     }
@@ -648,7 +716,7 @@ function buildRecommendations(report: RegimeEngineV2AuditReport): string[] {
         `ALLOW_SHORT diagnostics: regimes=${allowShortDiag?.topTechnicalRegimes || 'n/a'}, symbols=${allowShortDiag?.topSymbols || 'n/a'}, p90MAE=${fmt(allowShortDiag?.p90MaeRoe)}, falseBreakout=${fmt(allowShortDiag?.falseBreakoutRate)}.`,
         `WATCH_SHORT diagnostics: regimes=${watchShortDiag?.topTechnicalRegimes || 'n/a'}, symbols=${watchShortDiag?.topSymbols || 'n/a'}, p90MAE=${fmt(watchShortDiag?.p90MaeRoe)}, falseBreakout=${fmt(watchShortDiag?.falseBreakoutRate)}.`,
         report.options.momentumPatternOnly
-            ? 'This V2.1 report is conditioned on offline Momentum Ride-like patterns, so AVOID buckets are side-specific context filters.'
+            ? 'This V2.2 report is conditioned on offline Momentum Ride-like patterns, so AVOID buckets are side-specific context filters.'
             : 'Use --momentum-pattern-only before interpreting ALLOW/WATCH/AVOID as Momentum Ride context quality.',
         'Do not move RegimeEngineV2 to live enforcement from this audit alone.',
         'Use symbol/side stability before wiring Momentum Ride allowed regimes to RegimeEngineV2.'
@@ -657,13 +725,14 @@ function buildRecommendations(report: RegimeEngineV2AuditReport): string[] {
 
 export function renderRegimeEngineV2Markdown(report: RegimeEngineV2AuditReport): string {
     return [
-        report.options.momentumPatternOnly ? '# Aegis RegimeEngineV2 V2.1 Pattern Audit' : '# Aegis RegimeEngineV2 Audit',
+        report.options.momentumPatternOnly ? '# Aegis RegimeEngineV2 V2.2 Pattern Audit' : '# Aegis RegimeEngineV2 Audit',
         '',
         `Generated: ${report.generatedAt}`,
         `Samples: ${report.counts.samples}`,
         `Momentum pattern only: ${report.options.momentumPatternOnly ? 'yes' : 'no'}`,
         `Fee bps: ${report.options.feeBps ?? 0}`,
         `Slippage bps: ${report.options.slippageBps ?? 0}`,
+        `Engine lookback candles: ${report.options.engineLookbackCandles ?? 'n/a'}`,
         '',
         '## Executive Summary',
         ...report.recommendations.map((line) => `- ${line}`),
@@ -737,13 +806,13 @@ function walkForwardTable(rows: RegimeEngineV2WalkForwardRow[]): string {
 async function writeReports(report: RegimeEngineV2AuditReport, reportsDir: string): Promise<RegimeEngineV2AuditReport['outputFiles']> {
     await fs.mkdir(reportsDir, { recursive: true });
     const stamp = report.generatedAt.replace(/[:.]/g, '').replace(/-/g, '').slice(0, 15) + 'Z';
-    const markdown = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_pattern_audit_${stamp}.md` : `aegis_regime_engine_v2_audit_${stamp}.md`);
-    const json = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_pattern_audit_${stamp}.json` : `aegis_regime_engine_v2_audit_${stamp}.json`);
-    const csv = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_pattern_metrics_${stamp}.csv` : `aegis_regime_engine_v2_metrics_${stamp}.csv`);
-    const recommendations = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v21_recommendations_${stamp}.md` : `aegis_regime_engine_v2_recommendations_${stamp}.md`);
+    const markdown = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_audit_${stamp}.md` : `aegis_regime_engine_v2_audit_${stamp}.md`);
+    const json = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_audit_${stamp}.json` : `aegis_regime_engine_v2_audit_${stamp}.json`);
+    const csv = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_metrics_${stamp}.csv` : `aegis_regime_engine_v2_metrics_${stamp}.csv`);
+    const recommendations = path.join(reportsDir, report.options.momentumPatternOnly ? `aegis_regime_engine_v2_v22_recommendations_${stamp}.md` : `aegis_regime_engine_v2_recommendations_${stamp}.md`);
     await fs.writeFile(markdown, renderRegimeEngineV2Markdown(report), 'utf8');
-    await fs.writeFile(json, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-    await fs.writeFile(csv, metricsCsv(report), 'utf8');
+    if (report.options.writeJson !== false) await fs.writeFile(json, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    if (report.options.writeCsv !== false) await fs.writeFile(csv, metricsCsv(report), 'utf8');
     await fs.writeFile(recommendations, `# RegimeEngineV2 Recommendations\n\n${report.recommendations.map((line) => `- ${line}`).join('\n')}\n`, 'utf8');
     return { markdown, json, csv, recommendations };
 }
@@ -837,6 +906,11 @@ function directionalEnvironmentBuckets(): RegimeEngineV2DirectionalEnvironment[]
         'AVOID_FOR_SHORT',
         'UNKNOWN_FOR_SHORT'
     ];
+}
+
+function selectedHorizons(values?: SupportedHorizon[]): SupportedHorizon[] {
+    const selected = (values?.length ? values : [...HORIZONS]).filter((value): value is SupportedHorizon => HORIZONS.includes(value));
+    return selected.length > 0 ? [...new Set(selected)] : [...HORIZONS];
 }
 
 function topCounts<T>(rows: T[], keyFn: (row: T) => string, limit: number): string {

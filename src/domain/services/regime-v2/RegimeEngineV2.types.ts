@@ -83,6 +83,15 @@ export type RegimeEngineV2Indicators = {
     rangeBreakout?: 'UP' | 'DOWN' | 'NONE';
     failedBreakoutCount?: number;
     structure?: 'HH_HL' | 'LL_LH' | 'MIXED' | 'UNKNOWN';
+    breakoutStrengthPct?: number;
+    breakoutCloseBeyondRangePct?: number;
+    breakoutBodyConfirmation?: number;
+    breakoutVolumePersistence?: number;
+    breakoutFollowThroughScore?: number;
+    adverseWickAgainstBreakout?: number;
+    preBreakoutCompression?: number;
+    breakoutTooExtendedFromEma25?: number;
+    failedBreakoutPressure?: number;
 };
 
 export type RegimeEngineV2Scores = {
