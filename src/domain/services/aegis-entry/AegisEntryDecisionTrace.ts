@@ -4,6 +4,7 @@ import {
     AegisEntryGuardResult,
     AegisEntryContext
 } from './AegisEntryDecisionTypes';
+import { RegimeAvoidShadowEvaluator } from './guards/RegimeAvoidShadowEvaluator';
 
 export function buildAegisEntryDecisionTrace(input: {
     context: AegisEntryContext;
@@ -45,6 +46,14 @@ export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace
     const regimeMetadata = regime?.metadata ?? {};
     const regimeContext = trace.guards.regime_context;
     const momentumRide = trace.guards.momentum_ride;
+    const regimeContextMetadata = asRecord(regimeContext?.metadata.regimeContext) ?? regimeContext?.metadata;
+    const regimeAvoidShadow = RegimeAvoidShadowEvaluator.evaluate({
+        symbol: trace.symbol,
+        side: trace.side,
+        technicalRegime: regimeContextMetadata?.label as string | undefined,
+        finalDecision: trace.finalDecision,
+        finalStrategy: trace.finalStrategy
+    });
     return {
         symbol: trace.symbol,
         side: trace.side,
@@ -79,7 +88,8 @@ export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace
             modelVersion: regimeMetadata.modelVersion,
             modelUnavailable: regimeMetadata.modelUnavailable
         } : undefined,
-        regimeContext: regimeContext?.metadata.regimeContext ?? regimeContext?.metadata,
+        regimeContext: regimeContextMetadata,
+        regimeAvoidShadow,
         momentumRide: momentumRide?.metadata.momentumRide ?? momentumRide?.metadata,
         guards: Object.fromEntries(
             Object.entries(trace.guards).map(([name, guard]) => [
@@ -95,4 +105,8 @@ export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace
             ])
         )
     };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }

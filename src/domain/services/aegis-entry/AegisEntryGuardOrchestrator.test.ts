@@ -450,6 +450,61 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
+    it('adds Regime Avoid shadow metadata without changing shouldOpen', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            symbol: 'AVAXUSDT',
+            signal: {
+                ...momentumContext().signal,
+                symbol: 'AVAXUSDT'
+            },
+            entryQuality: {
+                ...momentumContext().entryQuality,
+                ruleGate: {
+                    ...momentumContext().entryQuality.ruleGate,
+                    recentCandles: [
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 },
+                        { open: 1, high: 1.01, low: 0.99, close: 1, volume: 100 }
+                    ]
+                }
+            }
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            regime: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: false, mode: 'OFF' }
+        }));
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.shouldOpen).toBe(true);
+        expect(result.metadata.regimeAvoidShadow).toMatchObject({
+            wouldAvoid: true,
+            reason: 'calibrated_avoid_regime',
+            matchedRegime: 'MOMENTUM_UP',
+            source: 'calibration_20260522',
+            mode: 'SHADOW',
+            finalDecision: 'ALLOW',
+            finalStrategy: 'aegis_turbo',
+            notLiveEnforced: true
+        });
+    });
+
     it('records SHADOW wouldBlock without blocking', () => {
         const result = AegisEntryGuardOrchestrator.evaluate(
             baseContext({ turboScore: 0.5 }),

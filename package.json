@@ -25,6 +25,7 @@
     "audit:regime-guard": "ts-node scripts/aegis/audit_regime_guard.ts",
     "audit:regime-detector": "ts-node scripts/aegis/audit_regime_detector_deep.ts",
     "calibrate:regime-detector": "ts-node scripts/aegis/calibrate_regime_detector.ts",
+    "audit:regime-avoid-shadow": "ts-node scripts/aegis/audit_regime_avoid_shadow.ts",
     "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts"
   },
   "dependencies": {
