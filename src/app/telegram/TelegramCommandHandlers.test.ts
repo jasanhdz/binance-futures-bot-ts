@@ -266,7 +266,8 @@ function makeHandlers(overrides: Record<string, any> = {}) {
         }),
         getActiveSymbols: () => overrides.symbols ?? ['ETHUSDT'],
         blocksReportService: overrides.blocksReportService,
-        momentumReportService: overrides.momentumReportService
+        momentumReportService: overrides.momentumReportService,
+        probeReportService: overrides.probeReportService
     });
     return { handlers, exchange, mlService, state, configManager, logger };
 }
@@ -728,5 +729,22 @@ describe('TelegramCommandHandlers', () => {
         await handlers.handleMomentum(['detail', 'LINKUSDT']);
 
         expect(momentumReportService.buildTelegramMessages).toHaveBeenCalledWith(['detail', 'LINKUSDT']);
+    });
+
+    it('/probe llama summary', async () => {
+        const probeReportService = { buildTelegramMessages: vi.fn(async () => ['PROBE']) };
+        const { handlers } = makeHandlers({ probeReportService });
+
+        await expect(handlers.handleProbe([])).resolves.toEqual(['PROBE']);
+        expect(probeReportService.buildTelegramMessages).toHaveBeenCalledWith([]);
+    });
+
+    it('/probe detail AVAXUSDT funciona', async () => {
+        const probeReportService = { buildTelegramMessages: vi.fn(async () => ['DETAIL']) };
+        const { handlers } = makeHandlers({ probeReportService });
+
+        await handlers.handleProbe(['detail', 'AVAXUSDT']);
+
+        expect(probeReportService.buildTelegramMessages).toHaveBeenCalledWith(['detail', 'AVAXUSDT']);
     });
 });

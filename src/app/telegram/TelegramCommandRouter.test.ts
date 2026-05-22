@@ -18,7 +18,8 @@ function handlers(): TelegramCommandHandlersPort {
         handleBrackets: vi.fn(async () => 'BRACKETS'),
         handleReportToday: vi.fn(async () => 'REPORT'),
         handleBlocks: vi.fn(async () => 'BLOCKS'),
-        handleMomentum: vi.fn(async () => 'MOMENTUM')
+        handleMomentum: vi.fn(async () => 'MOMENTUM'),
+        handleProbe: vi.fn(async () => 'PROBE')
     };
 }
 
@@ -133,5 +134,22 @@ describe('TelegramCommandRouter', () => {
         await router.handleMessage({ chatId: '123', text: '/momentum detail XRPUSDT' });
 
         expect(h.handleMomentum).toHaveBeenCalledWith(['detail', 'XRPUSDT']);
+    });
+
+    it('routes /probe to handler for authorized chat', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await expect(router.handleMessage({ chatId: '123', text: '/probe' })).resolves.toBe('PROBE');
+        expect(h.handleProbe).toHaveBeenCalledWith([]);
+    });
+
+    it('passes /probe arguments to handler', async () => {
+        const h = handlers();
+        const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+        await router.handleMessage({ chatId: '123', text: '/probe detail AVAXUSDT' });
+
+        expect(h.handleProbe).toHaveBeenCalledWith(['detail', 'AVAXUSDT']);
     });
 });

@@ -273,6 +273,25 @@ describe('TradingService Aegis Exit Eye', () => {
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'AEGIS_EXIT_EYE_CLOSE_POSITION'
         }));
+        expect(historyLogger.logTradeClose).toHaveBeenCalledWith(expect.objectContaining({
+            exit_reason: 'AEGIS_EXIT_EYE_OPPOSITE_SIGNAL',
+            metadata: expect.objectContaining({
+                exit_type: 'EXIT_EYE_OPPOSITE_SIGNAL',
+                canonical_exit_type: 'EXIT_EYE_OPPOSITE_SIGNAL',
+                display_exit_label: 'EXIT_EYE_OPPOSITE_SIGNAL',
+                exit_reason_label_mismatch: false
+            })
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'TRADE_CLOSED',
+            reason: 'AEGIS_EXIT_EYE_OPPOSITE_SIGNAL',
+            metadata: expect.objectContaining({
+                exitType: 'EXIT_EYE_OPPOSITE_SIGNAL',
+                canonicalExitType: 'EXIT_EYE_OPPOSITE_SIGNAL',
+                displayExitLabel: 'EXIT_EYE_OPPOSITE_SIGNAL',
+                exitReasonLabelMismatch: false
+            })
+        }));
     });
 
     it('in CLOSE mode does not close when ROE is negative', async () => {
@@ -498,6 +517,13 @@ describe('TradingService Aegis Exit Eye', () => {
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'AEGIS_EXIT_EYE_CLOSE_POSITION',
             reason: 'neutral_momentum_decay_profit_exit'
+        }));
+        expect(historyLogger.logTradeClose).toHaveBeenCalledWith(expect.objectContaining({
+            exit_reason: 'AEGIS_EXIT_EYE_NEUTRAL_DECAY',
+            metadata: expect.objectContaining({
+                exit_type: 'EXIT_EYE_NEUTRAL_DECAY',
+                canonical_exit_type: 'EXIT_EYE_NEUTRAL_DECAY'
+            })
         }));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Cierre por pérdida de momentum'));
     });

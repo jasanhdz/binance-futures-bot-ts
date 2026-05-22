@@ -93,6 +93,16 @@ type SafeStopMoveResult =
     | { moved: true; oldStopPrice?: number; newStopPrice: number; exchangeOrderId?: string; hasSLAfter?: boolean; hasTPAfter?: boolean }
     | { moved: false; reason: SafeStopMoveSkipReason; oldStopPrice?: number; newStopPrice: number; error?: string; hasSLAfter?: boolean; hasTPAfter?: boolean };
 
+type AegisExitDescription = {
+    emoji: string;
+    title: string;
+    reason: string;
+    canonicalExitType: string;
+    displayExitLabel: string;
+    labelMismatch: boolean;
+    mismatchReason?: string;
+};
+
 export interface TradingServiceDeps {
     exchange: Exchange;
     mlService: MLService;
@@ -3587,8 +3597,12 @@ export class TradingService {
             status: 'CLOSED',
             metadata: {
                 estimated: true,
-                exit_type: exitType.title,
-                reason_detail: exitType.reason
+                exit_type: exitType.canonicalExitType,
+                canonical_exit_type: exitType.canonicalExitType,
+                display_exit_label: exitType.displayExitLabel,
+                reason_detail: exitType.reason,
+                exit_reason_label_mismatch: exitType.labelMismatch,
+                mismatch_reason: exitType.mismatchReason
             }
         });
         await this.logAegisTradeEvent(symbol, 'TRADE_CLOSED', {
@@ -3596,7 +3610,14 @@ export class TradingService {
             price: exitPrice,
             roe: finalRoe,
             reason,
-            metadata: { pnl, exitType: exitType.title }
+            metadata: {
+                pnl,
+                exitType: exitType.canonicalExitType,
+                canonicalExitType: exitType.canonicalExitType,
+                displayExitLabel: exitType.displayExitLabel,
+                exitReasonLabelMismatch: exitType.labelMismatch,
+                mismatchReason: exitType.mismatchReason
+            }
         });
         await this.logAegisAccountSnapshot({
             symbol,
@@ -3815,22 +3836,47 @@ export class TradingService {
         botState: BotState,
         side: Side,
         exitPrice: number
-    ): { emoji: string; title: string; reason: string } {
+    ): AegisExitDescription {
         const normalized = String(reason || '').toUpperCase();
+        const build = (
+            emoji: string,
+            canonicalExitType: string,
+            detail: string,
+            displayExitLabel = canonicalExitType,
+            mismatchReason?: string
+        ): AegisExitDescription => ({
+            emoji,
+            title: displayExitLabel,
+            reason: detail,
+            canonicalExitType,
+            displayExitLabel,
+            labelMismatch: Boolean(mismatchReason),
+            mismatchReason
+        });
+
+        if (normalized.includes('AEGIS_EXIT_EYE_OPPOSITE_SIGNAL')) {
+            return build('👁️', 'EXIT_EYE_OPPOSITE_SIGNAL', 'Cierre por ExitEye: señal opuesta en profit');
+        }
+        if (normalized.includes('AEGIS_EXIT_EYE_NEUTRAL_DECAY')) {
+            return build('👁️', 'EXIT_EYE_NEUTRAL_DECAY', 'Cierre por ExitEye: pérdida de momentum en profit');
+        }
+        if (normalized.includes('AEGIS_EXIT_EYE_PROTECT_PROFIT')) {
+            return build('👁️', 'EXIT_EYE_PROTECT_PROFIT', 'Cierre/protección por ExitEye: protección de ganancia');
+        }
         if (normalized.includes('TIME_LIMIT')) {
-            return { emoji: '⏰', title: 'TIME LIMIT EXIT', reason: 'Cierre por límite de tiempo con posición en ganancia' };
+            return build('⏰', 'TIME_LIMIT_EXIT', 'Cierre por límite de tiempo con posición en ganancia');
         }
         if (normalized.includes('BREAK') || normalized.includes('BE_')) {
-            return { emoji: '🟰', title: 'BREAK EVEN EXIT', reason: 'Cierre por protección de break even' };
+            return build('🟰', 'BREAK_EVEN_EXIT', 'Cierre por protección de break even');
         }
         if (normalized.includes('TRAIL') || normalized.includes('CALLBACK')) {
-            return { emoji: '🛡️', title: 'TRAILING / CALLBACK EXIT', reason: `Cierre por trailing/callback (${reason})` };
+            return build('🛡️', 'TRAILING_STOP_EXIT', `Cierre por trailing/callback (${reason})`);
         }
         if (normalized.includes('AI') || normalized.includes('IA') || normalized.includes('GUARDIAN') || normalized.includes('SMART') || normalized.includes('CLOSE')) {
-            return { emoji: '🤖', title: 'IA EXIT', reason: `Cierre decidido por IA/guardian (${reason})` };
+            return build('🤖', 'AI_GUARDIAN_EXIT', `Cierre decidido por IA/guardian (${reason})`);
         }
         if (normalized.includes('BRACKET') || normalized.includes('EMERGENCY') || normalized.includes('FAILED')) {
-            return { emoji: '⚠️', title: 'RISK CONTROL EXIT', reason: `Cierre por control de riesgo (${reason})` };
+            return build('⚠️', 'RISK_CONTROL_EXIT', `Cierre por control de riesgo (${reason})`);
         }
 
         const entryPrice = botState.lastEntryPrice || 0;
@@ -3843,18 +3889,18 @@ export class TradingService {
             typeof target === 'number' && target > 0 && Math.abs(exitPrice - target) / target < 0.004;
 
         if (near(botState.lastTrailStop)) {
-            return { emoji: '🛡️', title: 'TRAILING STOP EXIT', reason: 'Cierre por trailing stop ejecutado' };
+            return build('🛡️', 'TRAILING_STOP_EXIT', 'Cierre por trailing stop ejecutado');
         }
         if (near(tpPrice)) {
-            return { emoji: '💰', title: 'TAKE PROFIT (TP)', reason: 'Cierre por take profit' };
+            return build('💰', 'TAKE_PROFIT', 'Cierre por take profit', 'TAKE PROFIT (TP)');
         }
         if (near(stopPrice)) {
-            return { emoji: '💸', title: 'STOP LOSS (SL)', reason: 'Cierre por stop loss' };
+            return build('💸', 'STOP_LOSS', 'Cierre por stop loss', 'STOP LOSS (SL)');
         }
         if (pnl >= 0) {
-            return { emoji: '💰', title: 'TAKE PROFIT (TP)', reason: 'Cierre en ganancia; no se pudo distinguir TP/trailing con precisión' };
+            return build('💰', 'PROFIT_EXIT_UNCLASSIFIED', 'Cierre en ganancia; no se pudo distinguir TP/trailing con precisión', 'TAKE PROFIT (TP)');
         }
-        return { emoji: '💸', title: 'STOP LOSS (SL)', reason: 'Cierre en pérdida; no se pudo distinguir SL/trailing con precisión' };
+        return build('💸', 'LOSS_EXIT_UNCLASSIFIED', 'Cierre en pérdida; no se pudo distinguir SL/trailing con precisión', 'STOP LOSS (SL)');
     }
 
     private roundQuantity(quantity: number, filters: SymbolFilters): number {
