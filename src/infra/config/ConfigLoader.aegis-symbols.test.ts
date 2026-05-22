@@ -6,7 +6,7 @@ import { NinjaConfigManager } from './ConfigLoader';
 
 const tempFiles: string[] = [];
 
-function writeConfig(symbolsYaml: string, symbolOverridesYaml = '{}'): string {
+function writeConfig(symbolsYaml: string, symbolOverridesYaml = '{}', extraYaml = ''): string {
     const filePath = path.join(os.tmpdir(), `aegis-symbols-${Date.now()}-${Math.random()}.yaml`);
     fs.writeFileSync(filePath, `
 SYMBOLS:
@@ -36,6 +36,7 @@ aegis:
     enabled: true
     live_enabled: true
 ${symbolsYaml}
+${extraYaml}
 SYMBOL_OVERRIDES: ${symbolOverridesYaml}
 `);
     tempFiles.push(filePath);
@@ -200,6 +201,149 @@ ${shadowYaml}
         expect(config.getRegimeConfig('AEGIS_TURBO', 'UNKNOWNUSDT').leverage).toBe(20);
         expect(config.getRegimeConfig('AEGIS_TURBO', 'SUIUSDT').hardStopRoe).toBe(-0.40);
         expect(config.getRegimeConfig('AEGIS_TURBO', 'SUIUSDT').entryThreshold).toBe(0.60);
+    });
+
+    it('resolves symbol defaults without activating omitted symbols', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  defaults:
+    enabled: true
+    mode: LIVE
+  entries:
+    ETHUSDT: {}
+    BTCUSDT:
+      mode: SHADOW
+`));
+
+        expect(config.getSymbolMode('ETHUSDT')).toBe('LIVE');
+        expect(config.getSymbolMode('BTCUSDT')).toBe('SHADOW');
+        expect(config.getSymbolMode('SOLUSDT')).toBe('SHADOW');
+        expect(config.getLiveAegisSymbols()).toEqual(['ETHUSDT']);
+        expect(config.getShadowAegisSymbols()).toEqual(['BTCUSDT']);
+    });
+
+    it('keeps legacy symbol config working without defaults or profiles', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+  BTCUSDT:
+    enabled: false
+    mode: LIVE
+`));
+
+        expect(config.getSymbolMode('ETHUSDT')).toBe('LIVE');
+        expect(config.getSymbolMode('BTCUSDT')).toBe('OFF');
+        expect(config.getActiveAegisSymbols()).toEqual(['ETHUSDT']);
+    });
+
+    it('resolves AEGIS_TURBO regime profiles before symbol overrides', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+  BNBUSDT:
+    enabled: true
+    mode: LIVE
+`, `
+  ETHUSDT:
+    AEGIS_TURBO:
+      profile: major_default
+  BNBUSDT:
+    AEGIS_TURBO:
+      profile: lower_leverage
+      entry_threshold: 0.62
+`, `
+REGIME_PROFILES:
+  AEGIS_TURBO:
+    major_default:
+      leverage: 20
+    lower_leverage:
+      leverage: 15
+      entry_threshold: 0.61
+`));
+
+        expect(config.getRegimeConfig('AEGIS_TURBO', 'ETHUSDT')).toMatchObject({
+            leverage: 20,
+            entryThreshold: 0.60,
+            hardStopRoe: -0.40,
+            tpRoe: 0.50
+        });
+        expect(config.getRegimeConfig('AEGIS_TURBO', 'BNBUSDT')).toMatchObject({
+            leverage: 15,
+            entryThreshold: 0.62,
+            hardStopRoe: -0.40,
+            tpRoe: 0.50
+        });
+        expect(config.getRegimeConfig('AEGIS_TURBO', 'SOLUSDT')).toMatchObject({
+            leverage: 20,
+            entryThreshold: 0.60
+        });
+    });
+
+    it('keeps effective AEGIS_TURBO config equivalent between repeated and profiled live-style YAML', () => {
+        const symbolsYaml = `
+symbols:
+  defaults:
+    enabled: true
+    mode: LIVE
+  entries:
+    ETHUSDT: {}
+    BTCUSDT: {}
+    BNBUSDT: {}
+    DOGEUSDT: {}
+    SUIUSDT: {}
+`;
+        const legacyConfig = new NinjaConfigManager(writeConfig(symbolsYaml, `
+  ETHUSDT:
+    AEGIS_TURBO:
+      leverage: 20
+  BTCUSDT:
+    AEGIS_TURBO:
+      leverage: 20
+  BNBUSDT:
+    AEGIS_TURBO:
+      leverage: 15
+  DOGEUSDT:
+    AEGIS_TURBO:
+      leverage: 10
+  SUIUSDT:
+    AEGIS_TURBO:
+      leverage: 8
+`));
+        const dryConfig = new NinjaConfigManager(writeConfig(symbolsYaml, `
+  ETHUSDT:
+    AEGIS_TURBO: {}
+  BTCUSDT:
+    AEGIS_TURBO: {}
+  BNBUSDT:
+    AEGIS_TURBO:
+      profile: reduced_15x
+  DOGEUSDT:
+    AEGIS_TURBO:
+      profile: reduced_10x
+  SUIUSDT:
+    AEGIS_TURBO:
+      profile: reduced_8x
+`, `
+REGIME_PROFILES:
+  AEGIS_TURBO:
+    reduced_15x:
+      leverage: 15
+    reduced_10x:
+      leverage: 10
+    reduced_8x:
+      leverage: 8
+`));
+
+        for (const symbol of ['ETHUSDT', 'BTCUSDT', 'BNBUSDT', 'DOGEUSDT', 'SUIUSDT']) {
+            expect(dryConfig.getRegimeConfig('AEGIS_TURBO', symbol)).toEqual(
+                legacyConfig.getRegimeConfig('AEGIS_TURBO', symbol)
+            );
+            expect(dryConfig.getSymbolMode(symbol)).toBe(legacyConfig.getSymbolMode(symbol));
+        }
     });
 
     it('defaults portfolio risk and short gate to disabled', () => {

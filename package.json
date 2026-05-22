@@ -22,7 +22,8 @@
     "report:accuracy": "ts-node src/tools/trade_accuracy_report.ts",
     "logs:table": "ts-node src/tools/log_table.ts",
     "analyze:aegis-turbo": "ts-node src/tools/analyzeAegisTurboHistory.ts",
-    "audit:regime-guard": "ts-node scripts/aegis/audit_regime_guard.ts"
+    "audit:regime-guard": "ts-node scripts/aegis/audit_regime_guard.ts",
+    "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",

@@ -87,6 +87,10 @@ Las configs legacy siguen siendo la fuente de parametros finos:
 
 Si `aegis.entry_policy` no existe, `ConfigLoader` deriva una policy compatible desde esas secciones legacy.
 
+La herencia DRY de YAML esta documentada en `docs/AEGIS_CONFIG_INHERITANCE.md`.
+El orden de resolucion es `defaults < profile < symbol override`, y debe
+validarse con `npm run dump:effective-config` antes de promover cambios live.
+
 ## Apagar o cambiar un guard
 
 Apagar Clean Entry sin borrar su configuracion:

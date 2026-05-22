@@ -81,6 +81,11 @@ export interface RegimeYamlConfig {
     use_exit_agent?: boolean;
 }
 
+export type RegimeSymbolOverrideYamlConfig = Partial<RegimeYamlConfig> & {
+    profile?: string;
+    capital_usage?: number;
+};
+
 export interface AegisTurboYamlConfig {
     enabled?: boolean;
     live_enabled?: boolean;
@@ -533,6 +538,10 @@ export interface AegisSymbolYamlConfig {
     mode?: AegisSymbolMode | string;
 }
 
+export interface AegisSymbolEntryYamlConfig extends AegisSymbolYamlConfig {
+    profile?: string;
+}
+
 export interface AegisSymbolConfig {
     symbol: string;
     enabled: boolean;
@@ -543,15 +552,18 @@ export interface NinjaYamlConfig {
     SYMBOLS?: {
         [symbol: string]: number;  // Capital allocation (0-1)
     };
-    symbols?: {
-        [symbol: string]: AegisSymbolYamlConfig;
-    };
+    symbols?: Record<string, unknown>;
     TRADING?: TradingConfig;
     SYSTEM: SystemConfig;
     REGIME_DETECTOR: RegimeDetectorConfig;
     IMMUNE_SYSTEM: ImmuneSystemConfig;
     REGIMES: {
         AEGIS_TURBO: RegimeYamlConfig;
+    };
+    REGIME_PROFILES?: {
+        [regime: string]: {
+            [profile: string]: RegimeSymbolOverrideYamlConfig;
+        };
     };
     aegis?: {
         turbo?: AegisTurboYamlConfig;
@@ -572,7 +584,7 @@ export interface NinjaYamlConfig {
     };
     SYMBOL_OVERRIDES?: {
         [symbol: string]: {
-            [regime: string]: Partial<RegimeYamlConfig> & { capital_usage?: number };
+            [regime: string]: RegimeSymbolOverrideYamlConfig;
         };
     };
 }
@@ -684,13 +696,13 @@ export class NinjaConfigManager {
      */
     getSymbols(): string[] {
         const legacySymbols = Object.keys(this.config.SYMBOLS || {});
-        const aegisSymbols = Object.keys(this.config.symbols || {});
+        const aegisSymbols = Object.keys(this.getAegisSymbolYamlEntries());
         return [...new Set([...legacySymbols, ...aegisSymbols].map((symbol) => this.normalizeSymbol(symbol)).filter(Boolean))];
     }
 
     getAegisSymbolConfigs(): Record<string, AegisSymbolConfig> {
         const legacySymbols = Object.keys(this.config.SYMBOLS || {});
-        const configured = this.config.symbols || {};
+        const configured = this.getAegisSymbolYamlEntries();
         const allSymbols = [...new Set([...legacySymbols, ...Object.keys(configured)])];
         const result: Record<string, AegisSymbolConfig> = {};
 
@@ -775,8 +787,10 @@ export class NinjaConfigManager {
         const DEFAULT_ALLOCATION = this.trading.capital_usage_default;
 
         // Check regime-specific override first
-        if (regime && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regime.toUpperCase()]?.capital_usage !== undefined) {
-            return this.config.SYMBOL_OVERRIDES[symbol][regime.toUpperCase()].capital_usage!;
+        const regimeKey = regime?.toUpperCase();
+        const override = regimeKey ? this.resolveRegimeSymbolOverride(symbol, regimeKey) : undefined;
+        if (override?.capital_usage !== undefined) {
+            return override.capital_usage;
         }
 
         // Then check symbol-level allocation
@@ -811,8 +825,8 @@ export class NinjaConfigManager {
 
         // Apply Symbol Overrides
         let mergedConfig = { ...baseRegime };
-        if (symbol && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regimeKey]) {
-            const overrides = this.config.SYMBOL_OVERRIDES[symbol][regimeKey];
+        if (symbol) {
+            const overrides = this.resolveRegimeSymbolOverride(symbol, regimeKey);
             mergedConfig = { ...mergedConfig, ...overrides };
         }
 
@@ -1263,8 +1277,8 @@ export class NinjaConfigManager {
         let mergedConfig = { ...baseRegime };
 
         // 2. Apply Symbol-Specific Overrides
-        if (symbol && this.config.SYMBOL_OVERRIDES?.[symbol]?.[regimeKey]) {
-            const overrides = this.config.SYMBOL_OVERRIDES[symbol][regimeKey];
+        if (symbol) {
+            const overrides = this.resolveRegimeSymbolOverride(symbol, regimeKey);
             mergedConfig = { ...mergedConfig, ...overrides };
         }
 
@@ -1523,6 +1537,51 @@ export class NinjaConfigManager {
 
     private normalizeSymbol(symbol?: string): string {
         return (symbol || '').trim().toUpperCase();
+    }
+
+    private getAegisSymbolYamlEntries(): Record<string, AegisSymbolEntryYamlConfig> {
+        const rawSymbols = this.config.symbols || {};
+        const defaults = this.asPlainObject(rawSymbols.defaults) as AegisSymbolYamlConfig | undefined;
+        const profiles = this.asPlainObject(rawSymbols.profiles) as Record<string, AegisSymbolYamlConfig> | undefined;
+        const explicitEntries = this.asPlainObject(rawSymbols.entries);
+        const sourceEntries = explicitEntries || Object.fromEntries(
+            Object.entries(rawSymbols)
+                .filter(([key]) => key !== 'defaults' && key !== 'profiles' && key !== 'entries')
+        );
+        const result: Record<string, AegisSymbolEntryYamlConfig> = {};
+
+        for (const [symbol, rawValue] of Object.entries(sourceEntries)) {
+            const raw = this.asPlainObject(rawValue) as AegisSymbolEntryYamlConfig | undefined;
+            if (!raw) continue;
+            const profileName = typeof raw.profile === 'string' ? raw.profile.trim() : '';
+            const profile = profileName ? profiles?.[profileName] : undefined;
+            result[symbol] = {
+                ...(defaults || {}),
+                ...(profile || {}),
+                ...raw
+            };
+        }
+
+        return result;
+    }
+
+    private resolveRegimeSymbolOverride(symbol: string, regimeKey: string): RegimeSymbolOverrideYamlConfig | undefined {
+        const raw = this.config.SYMBOL_OVERRIDES?.[symbol]?.[regimeKey];
+        if (!raw) return undefined;
+
+        const profileName = typeof raw.profile === 'string' ? raw.profile.trim() : '';
+        const profile = profileName ? this.config.REGIME_PROFILES?.[regimeKey]?.[profileName] : undefined;
+        return {
+            ...(profile || {}),
+            ...raw
+        };
+    }
+
+    private asPlainObject(value: unknown): Record<string, unknown> | undefined {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return undefined;
+        }
+        return value as Record<string, unknown>;
     }
 
     private normalizeSymbolMode(mode?: AegisSymbolMode | string): AegisSymbolMode {

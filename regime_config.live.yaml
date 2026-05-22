@@ -5,39 +5,21 @@ SYMBOLS:
   ETHUSDT: 1.0
 
 symbols:
-  ETHUSDT:
+  defaults:
     enabled: true
     mode: LIVE
-  BTCUSDT:
-    enabled: true
-    mode: LIVE
-  SOLUSDT:
-    enabled: true
-    mode: LIVE
-  BNBUSDT:
-    enabled: true
-    mode: LIVE
-  XRPUSDT:
-    enabled: true
-    mode: LIVE
-  DOGEUSDT:
-    enabled: true
-    mode: LIVE
-  ADAUSDT:
-    enabled: true
-    mode: LIVE
-  AVAXUSDT:
-    enabled: true
-    mode: LIVE
-  LINKUSDT:
-    enabled: true
-    mode: LIVE
-  SUIUSDT:
-    enabled: true
-    mode: LIVE
-  LTCUSDT:
-    enabled: true
-    mode: LIVE
+  entries:
+    ETHUSDT: {}
+    BTCUSDT: {}
+    SOLUSDT: {}
+    BNBUSDT: {}
+    XRPUSDT: {}
+    DOGEUSDT: {}
+    ADAUSDT: {}
+    AVAXUSDT: {}
+    LINKUSDT: {}
+    SUIUSDT: {}
+    LTCUSDT: {}
 
 TRADING:
   capital_usage_default: 1.0        
@@ -68,6 +50,15 @@ REGIMES:
     trailing_callback_roe: 0.08
     max_trade_duration_ms: 28800000
     use_exit_agent: false
+
+REGIME_PROFILES:
+  AEGIS_TURBO:
+    reduced_15x:
+      leverage: 15
+    reduced_10x:
+      leverage: 10
+    reduced_8x:
+      leverage: 8
 
 aegis:
   entry_policy:
@@ -547,35 +538,28 @@ aegis:
 
 SYMBOL_OVERRIDES:
   ETHUSDT:
-    AEGIS_TURBO:
-      leverage: 20
+    AEGIS_TURBO: {}
   BTCUSDT:
-    AEGIS_TURBO:
-      leverage: 20
+    AEGIS_TURBO: {}
   SOLUSDT:
-    AEGIS_TURBO:
-      leverage: 20
+    AEGIS_TURBO: {}
   BNBUSDT:
     AEGIS_TURBO:
-      leverage: 15
+      profile: reduced_15x
   XRPUSDT:
-    AEGIS_TURBO:
-      leverage: 20
+    AEGIS_TURBO: {}
   DOGEUSDT:
     AEGIS_TURBO:
-      leverage: 10
+      profile: reduced_10x
   ADAUSDT:
-    AEGIS_TURBO:
-      leverage: 20
+    AEGIS_TURBO: {}
   AVAXUSDT:
-    AEGIS_TURBO:
-      leverage: 20
+    AEGIS_TURBO: {}
   LINKUSDT:
-    AEGIS_TURBO:
-      leverage: 20
+    AEGIS_TURBO: {}
   SUIUSDT:
     AEGIS_TURBO:
-      leverage: 8
+      profile: reduced_8x
   LTCUSDT:
     AEGIS_TURBO:
-      leverage: 15
+      profile: reduced_15x
