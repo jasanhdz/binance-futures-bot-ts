@@ -367,6 +367,7 @@ export interface AegisRegimeContextYamlConfig {
 
 export interface AegisMomentumRideSideYamlConfig {
     enabled?: boolean;
+    profile?: string;
     leverage?: number;
     position_fraction?: number;
     min_turbo_score?: number;
@@ -396,6 +397,11 @@ export interface AegisMomentumRideYamlConfig {
     allow_momentum_against_aegis?: boolean;
     require_btc_eth_not_contradicting?: boolean;
     require_btc_eth_confirmation?: boolean;
+    defaults?: {
+        long?: AegisMomentumRideSideYamlConfig;
+        short?: AegisMomentumRideSideYamlConfig;
+    };
+    profiles?: Record<string, AegisMomentumRideSideYamlConfig>;
     symbols?: Record<string, AegisMomentumRideSymbolYamlConfig>;
     safety_caps?: {
         max_leverage?: number;
@@ -972,7 +978,7 @@ export class NinjaConfigManager {
         const symbols = Object.fromEntries(
             Object.entries(raw.symbols || {}).map(([symbol, config]) => [
                 this.normalizeSymbol(symbol),
-                this.normalizeMomentumRideSymbolConfig(config, maxLeverage, maxPositionFraction)
+                this.normalizeMomentumRideSymbolConfig(config, raw, maxLeverage, maxPositionFraction)
             ])
         );
         return {
@@ -1619,18 +1625,46 @@ export class NinjaConfigManager {
 
     private normalizeMomentumRideSymbolConfig(
         raw: AegisMomentumRideSymbolYamlConfig,
+        root: AegisMomentumRideYamlConfig,
         maxLeverage: number,
         maxPositionFraction: number
     ): AegisMomentumRideRuntimeConfig['symbols'][string] {
         return {
             enabled: raw.enabled === true,
             mode: this.normalizeEntryPolicyMode(raw.mode, 'SHADOW'),
-            long: this.normalizeMomentumRideSideConfig(raw.long, 'LONG', maxLeverage, maxPositionFraction),
-            short: this.normalizeMomentumRideSideConfig(raw.short, 'SHORT', maxLeverage, maxPositionFraction)
+            long: this.normalizeMomentumRideSideConfig(
+                this.resolveMomentumRideSideConfig(raw.long, root.defaults?.long, root.profiles),
+                raw.long,
+                'LONG',
+                maxLeverage,
+                maxPositionFraction
+            ),
+            short: this.normalizeMomentumRideSideConfig(
+                this.resolveMomentumRideSideConfig(raw.short, root.defaults?.short, root.profiles),
+                raw.short,
+                'SHORT',
+                maxLeverage,
+                maxPositionFraction
+            )
+        };
+    }
+
+    private resolveMomentumRideSideConfig(
+        raw: AegisMomentumRideSideYamlConfig | undefined,
+        defaults: AegisMomentumRideSideYamlConfig | undefined,
+        profiles: Record<string, AegisMomentumRideSideYamlConfig> | undefined
+    ): AegisMomentumRideSideYamlConfig | undefined {
+        const profileName = typeof raw?.profile === 'string' ? raw.profile.trim() : '';
+        const profile = profileName ? profiles?.[profileName] : undefined;
+        return {
+            ...(defaults || {}),
+            ...(profile || {}),
+            ...(raw || {})
         };
     }
 
     private normalizeMomentumRideSideConfig(
+        merged: AegisMomentumRideSideYamlConfig | undefined,
         raw: AegisMomentumRideSideYamlConfig | undefined,
         side: 'LONG' | 'SHORT',
         maxLeverage: number,
@@ -1639,21 +1673,21 @@ export class NinjaConfigManager {
         const fallbackRegimes: AegisRegimeLabel[] = side === 'LONG'
             ? ['MOMENTUM_UP', 'TREND_UP', 'BREAKOUT_UP']
             : ['MOMENTUM_DOWN', 'TREND_DOWN', 'BREAKOUT_DOWN'];
-        const momentumCandles = Math.floor(this.finiteNumber(raw?.momentum_candles, 3));
+        const momentumCandles = Math.floor(this.finiteNumber(merged?.momentum_candles, 3));
         return {
             enabled: raw?.enabled === true,
-            leverage: Math.min(maxLeverage, Math.max(1, this.finiteNumber(raw?.leverage, side === 'LONG' ? 20 : 10))),
-            positionFraction: Math.min(maxPositionFraction, Math.max(0, this.finiteNumber(raw?.position_fraction, 0.01))),
-            minTurboScore: Math.max(0, this.finiteNumber(raw?.min_turbo_score, side === 'LONG' ? 0.88 : 0.92)),
-            minVotesAgreement: Math.max(0, Math.floor(this.finiteNumber(raw?.min_votes_agreement, side === 'LONG' ? 2 : 3))),
-            minVolumeRatio: Math.max(0, this.finiteNumber(raw?.min_volume_ratio, side === 'LONG' ? 1.5 : 1.7)),
+            leverage: Math.min(maxLeverage, Math.max(1, this.finiteNumber(merged?.leverage, side === 'LONG' ? 20 : 10))),
+            positionFraction: Math.min(maxPositionFraction, Math.max(0, this.finiteNumber(merged?.position_fraction, 0.01))),
+            minTurboScore: Math.max(0, this.finiteNumber(merged?.min_turbo_score, side === 'LONG' ? 0.88 : 0.92)),
+            minVotesAgreement: Math.max(0, Math.floor(this.finiteNumber(merged?.min_votes_agreement, side === 'LONG' ? 2 : 3))),
+            minVolumeRatio: Math.max(0, this.finiteNumber(merged?.min_volume_ratio, side === 'LONG' ? 1.5 : 1.7)),
             momentumCandles: momentumCandles === 2 ? 2 : 3,
-            maxTailRiskScore: Math.max(0, this.finiteNumber(raw?.max_tail_risk_score, side === 'LONG' ? 0.30 : 0.25)),
-            allowedRegimes: this.normalizeRegimeList(raw?.allowed_regimes, fallbackRegimes),
-            requireCloseNearExtreme: raw?.require_close_near_extreme !== false,
-            minCloseLocation: Math.max(0.5, Math.min(1, this.finiteNumber(raw?.min_close_location, 0.70))),
-            maxWickRatio: Math.max(0, Math.min(1, this.finiteNumber(raw?.max_wick_ratio, 0.35))),
-            maxOverextensionPct: Math.max(0, this.finiteNumber(raw?.max_overextension_pct, 0.025))
+            maxTailRiskScore: Math.max(0, this.finiteNumber(merged?.max_tail_risk_score, side === 'LONG' ? 0.30 : 0.25)),
+            allowedRegimes: this.normalizeRegimeList(merged?.allowed_regimes, fallbackRegimes),
+            requireCloseNearExtreme: merged?.require_close_near_extreme !== false,
+            minCloseLocation: Math.max(0.5, Math.min(1, this.finiteNumber(merged?.min_close_location, 0.70))),
+            maxWickRatio: Math.max(0, Math.min(1, this.finiteNumber(merged?.max_wick_ratio, 0.35))),
+            maxOverextensionPct: Math.max(0, this.finiteNumber(merged?.max_overextension_pct, 0.025))
         };
     }
 

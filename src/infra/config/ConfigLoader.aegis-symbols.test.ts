@@ -1174,6 +1174,203 @@ symbols:
         expect(config.getAegisEntryPolicyConfig().guards.momentum_ride).toEqual({ enabled: true, mode: 'SHADOW' });
     });
 
+    it('resolves momentum_ride defaults, profiles and symbol side overrides', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  momentum_ride:
+    enabled: true
+    mode: ENFORCE
+    defaults:
+      long:
+        position_fraction: 0.02
+        min_turbo_score: 0.90
+        min_votes_agreement: 3
+        min_volume_ratio: 1.55
+        momentum_candles: 3
+        max_tail_risk_score: 0.25
+        require_close_near_extreme: true
+        min_close_location: 0.70
+        max_wick_ratio: 0.35
+        max_overextension_pct: 0.10
+        allowed_regimes: [MOMENTUM_UP, TREND_UP, BREAKOUT_UP]
+      short:
+        position_fraction: 0.01
+        min_turbo_score: 0.94
+        min_votes_agreement: 3
+        min_volume_ratio: 1.75
+        momentum_candles: 3
+        max_tail_risk_score: 0.22
+        require_close_near_extreme: true
+        min_close_location: 0.70
+        max_wick_ratio: 0.35
+        max_overextension_pct: 0.08
+        allowed_regimes: [MOMENTUM_DOWN, TREND_DOWN, BREAKOUT_DOWN]
+    profiles:
+      major_high_confidence_long:
+        leverage: 50
+        min_turbo_score: 0.88
+        min_votes_agreement: 2
+        min_volume_ratio: 1.35
+        max_tail_risk_score: 0.28
+      major_short:
+        leverage: 35
+        position_fraction: 0.015
+        min_turbo_score: 0.92
+        min_volume_ratio: 1.45
+        max_tail_risk_score: 0.25
+    symbols:
+      btcusdt:
+        enabled: true
+        mode: ENFORCE
+        long:
+          enabled: true
+          profile: major_high_confidence_long
+        short:
+          enabled: true
+          profile: major_short
+      ethusdt:
+        enabled: true
+        mode: ENFORCE
+        long:
+          enabled: true
+          profile: major_high_confidence_long
+          max_tail_risk_score: 0.30
+        short:
+          enabled: true
+          profile: major_short
+          leverage: 30
+    safety_caps:
+      max_leverage: 50
+      max_position_fraction: 0.02
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        const momentum = config.getAegisMomentumRideConfig();
+
+        expect(momentum.symbols.BTCUSDT.long).toMatchObject({
+            enabled: true,
+            leverage: 50,
+            positionFraction: 0.02,
+            minTurboScore: 0.88,
+            minVotesAgreement: 2,
+            minVolumeRatio: 1.35,
+            momentumCandles: 3,
+            maxTailRiskScore: 0.28,
+            maxOverextensionPct: 0.10,
+            allowedRegimes: ['MOMENTUM_UP', 'TREND_UP', 'BREAKOUT_UP']
+        });
+        expect(momentum.symbols.BTCUSDT.short).toMatchObject({
+            enabled: true,
+            leverage: 35,
+            positionFraction: 0.015,
+            minTurboScore: 0.92,
+            minVotesAgreement: 3,
+            minVolumeRatio: 1.45,
+            momentumCandles: 3,
+            maxTailRiskScore: 0.25,
+            maxOverextensionPct: 0.08,
+            allowedRegimes: ['MOMENTUM_DOWN', 'TREND_DOWN', 'BREAKOUT_DOWN']
+        });
+        expect(momentum.symbols.ETHUSDT.long.maxTailRiskScore).toBe(0.30);
+        expect(momentum.symbols.ETHUSDT.short.leverage).toBe(30);
+    });
+
+    it('keeps missing momentum profile safe and does not enable an omitted side', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  momentum_ride:
+    enabled: true
+    mode: ENFORCE
+    defaults:
+      long:
+        leverage: 20
+        position_fraction: 0.02
+        min_turbo_score: 0.90
+      short:
+        leverage: 10
+        position_fraction: 0.01
+        min_turbo_score: 0.94
+    profiles:
+      known_long:
+        leverage: 40
+    symbols:
+      xrpusdt:
+        enabled: true
+        mode: ENFORCE
+        long:
+          profile: missing_profile
+        short:
+          enabled: true
+          profile: missing_profile
+    safety_caps:
+      max_leverage: 50
+      max_position_fraction: 0.02
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`));
+
+        const momentum = config.getAegisMomentumRideConfig();
+
+        expect(momentum.symbols.XRPUSDT.long.enabled).toBe(false);
+        expect(momentum.symbols.XRPUSDT.long.leverage).toBe(20);
+        expect(momentum.symbols.XRPUSDT.long.positionFraction).toBe(0.02);
+        expect(momentum.symbols.XRPUSDT.short.enabled).toBe(true);
+        expect(momentum.symbols.XRPUSDT.short.leverage).toBe(10);
+        expect(momentum.symbols.XRPUSDT.short.positionFraction).toBe(0.01);
+    });
+
+    it('caps momentum profile leverage and position fraction without changing normal Aegis sizing', () => {
+        const config = new NinjaConfigManager(writeConfig(`
+  momentum_ride:
+    enabled: true
+    mode: ENFORCE
+    defaults:
+      long:
+        leverage: 20
+        position_fraction: 0.02
+      short:
+        leverage: 10
+        position_fraction: 0.01
+    profiles:
+      aggressive_long:
+        leverage: 100
+        position_fraction: 0.50
+    symbols:
+      xrpusdt:
+        enabled: true
+        mode: ENFORCE
+        long:
+          enabled: true
+          profile: aggressive_long
+    safety_caps:
+      max_leverage: 50
+      max_position_fraction: 0.02
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: LIVE
+`, `
+  XRPUSDT:
+    AEGIS_TURBO:
+      leverage: 20
+      entry_threshold: 0.60
+      hard_stop_roe: -0.40
+      tp_roe: 0.50
+`));
+
+        const momentum = config.getAegisMomentumRideConfig();
+
+        expect(momentum.symbols.XRPUSDT.long.leverage).toBe(50);
+        expect(momentum.symbols.XRPUSDT.long.positionFraction).toBe(0.02);
+        expect(config.getRegimeConfig('AEGIS_TURBO', 'XRPUSDT')).toMatchObject({
+            leverage: 20,
+            entryThreshold: 0.60
+        });
+    });
+
     it('leaves omitted momentum LONG/SHORT sides disabled by default', () => {
         const config = new NinjaConfigManager(writeConfig(`
   momentum_ride:
