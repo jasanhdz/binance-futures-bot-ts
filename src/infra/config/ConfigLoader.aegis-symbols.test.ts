@@ -760,6 +760,7 @@ symbols:
                 event_risk: { enabled: false, mode: 'OFF' },
                 clean_entry: { enabled: true, mode: 'ENFORCE' },
                 probe_mode: { enabled: true, mode: 'SHADOW' },
+                long_risk_shadow: { enabled: true, mode: 'SHADOW' },
                 short_gate: { enabled: true, mode: 'ENFORCE' }
             }
         });
@@ -805,6 +806,7 @@ symbols:
                 event_risk: { enabled: true, mode: 'SHADOW' },
                 clean_entry: { enabled: true, mode: 'ENFORCE' },
                 probe_mode: { enabled: true, mode: 'ENFORCE' },
+                long_risk_shadow: { enabled: true, mode: 'SHADOW' },
                 short_gate: { enabled: true, mode: 'ENFORCE' }
             }
         });
@@ -862,6 +864,7 @@ symbols:
                 event_risk: { enabled: false, mode: 'SHADOW' },
                 clean_entry: { enabled: true, mode: 'ENFORCE' },
                 probe_mode: { enabled: false, mode: 'OFF' },
+                long_risk_shadow: { enabled: true, mode: 'SHADOW' },
                 short_gate: { enabled: false, mode: 'ENFORCE' }
             }
         });

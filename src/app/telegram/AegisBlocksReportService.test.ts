@@ -262,6 +262,33 @@ describe('AegisBlocksReportService', () => {
         expect(report.byReason.regime_context_insufficient_data).toBeUndefined();
     });
 
+    it('no cuenta long_risk_shadow como bloqueo real si EntryPolicy final permite la entrada', async () => {
+        await writeEvents([
+            event({
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'all_enforced_guards_allowed',
+                metadata: {
+                    symbol: 'ETHUSDT',
+                    side: 'LONG',
+                    finalDecision: 'ALLOW',
+                    finalReason: 'all_enforced_guards_allowed',
+                    finalStrategy: 'aegis_turbo',
+                    longRiskShadow: {
+                        decision: 'SHADOW_DENY',
+                        reason: 'long_risk_shadow_multi_factor',
+                        wouldBlock: true,
+                        riskLevel: 'CRITICAL'
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(0);
+        expect(report.byReason.long_risk_shadow_multi_factor).toBeUndefined();
+    });
+
     it('ENTRY_POLICY_DECISION DENY cuenta por finalReason real aunque incluya diagnóstico Momentum', async () => {
         await writeEvents([
             event({

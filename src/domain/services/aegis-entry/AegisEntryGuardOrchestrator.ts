@@ -24,6 +24,7 @@ import {
 } from './guards/CleanEntryGuardAdapter';
 import { MomentumRideGuardAdapter } from './guards/MomentumRideGuardAdapter';
 import { ProbeModeGuardAdapter } from './guards/ProbeModeGuardAdapter';
+import { AegisLongRiskShadowGuardAdapter } from './guards/AegisLongRiskShadowGuardAdapter';
 
 function defaultGuard(name: AegisEntryGuardName): AegisEntryGuardResult {
     return guardDisabledResult(name, `${name}_not_evaluated`);
@@ -38,7 +39,8 @@ const ENTRY_GUARD_ORDER: AegisEntryGuardName[] = [
     'event_risk',
     'decision_brain',
     'clean_entry',
-    'probe_mode'
+    'probe_mode',
+    'long_risk_shadow'
 ];
 
 function finalize(input: {
@@ -177,6 +179,18 @@ function enrichMomentumGuard(
     };
 }
 
+function evaluateLongRiskShadowGuard(input: {
+    context: AegisEntryContext;
+    policy: AegisEntryPolicyRuntimeConfig;
+    guards: AegisEntryGuardResult[];
+}): AegisEntryGuardResult {
+    return AegisLongRiskShadowGuardAdapter.evaluate({
+        context: input.context,
+        policy: input.policy.guards.long_risk_shadow ?? { enabled: true, mode: 'SHADOW' },
+        guards: Object.fromEntries(input.guards.map((guard) => [guard.name, guard]))
+    });
+}
+
 export class AegisEntryGuardOrchestrator {
     static evaluate(context: AegisEntryContext, policy: AegisEntryPolicyRuntimeConfig): AegisEntryDecisionResult {
         const guards: AegisEntryGuardResult[] = [];
@@ -253,7 +267,8 @@ export class AegisEntryGuardOrchestrator {
                     defaultGuard('event_risk'),
                     defaultGuard('decision_brain'),
                     defaultGuard('clean_entry'),
-                    defaultGuard('probe_mode')
+                    defaultGuard('probe_mode'),
+                    defaultGuard('long_risk_shadow')
                 ],
                 adjustedLeverage,
                 adjustedPositionFraction,
@@ -281,7 +296,7 @@ export class AegisEntryGuardOrchestrator {
                 finalDecision: 'DENY',
                 finalReason: shortGate.guard.reason,
                 deniedBy: 'short_gate',
-                guards: [...guards, defaultGuard('entry_quality'), defaultGuard('event_risk'), defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode')],
+                guards: [...guards, defaultGuard('entry_quality'), defaultGuard('event_risk'), defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode'), defaultGuard('long_risk_shadow')],
                 adjustedLeverage,
                 adjustedPositionFraction,
                 ...momentumSelection,
@@ -312,7 +327,7 @@ export class AegisEntryGuardOrchestrator {
                 finalDecision: 'DENY',
                 finalReason: entryQuality.guard.reason,
                 deniedBy: 'entry_quality',
-                guards: [...guards, defaultGuard('event_risk'), defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode')],
+                guards: [...guards, defaultGuard('event_risk'), defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode'), defaultGuard('long_risk_shadow')],
                 adjustedLeverage,
                 adjustedPositionFraction,
                 ...momentumSelection,
@@ -338,7 +353,7 @@ export class AegisEntryGuardOrchestrator {
                 finalDecision: 'DENY',
                 finalReason: eventRisk.guard.reason,
                 deniedBy: 'event_risk',
-                guards: [...guards, defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode')],
+                guards: [...guards, defaultGuard('decision_brain'), defaultGuard('clean_entry'), defaultGuard('probe_mode'), defaultGuard('long_risk_shadow')],
                 adjustedLeverage,
                 adjustedPositionFraction,
                 ...momentumSelection,
@@ -384,7 +399,7 @@ export class AegisEntryGuardOrchestrator {
                 finalDecision: 'DENY',
                 finalReason: decisionBrain.guard.reason,
                 deniedBy: 'decision_brain',
-                guards: [...guards, defaultGuard('clean_entry'), probe.guard],
+                guards: [...guards, defaultGuard('clean_entry'), probe.guard, defaultGuard('long_risk_shadow')],
                 adjustedLeverage,
                 adjustedPositionFraction,
                 ...momentumSelection,
@@ -412,6 +427,8 @@ export class AegisEntryGuardOrchestrator {
             guards.push(probe.guard);
             decisions.probeMode = probe.decision;
             if (probe.decision?.allowed === true && probe.guard.enforced) {
+                const longRiskShadow = evaluateLongRiskShadowGuard({ context: adjustedContext, policy, guards });
+                guards.push(longRiskShadow);
                 return finalize({
                     context: adjustedContext,
                     finalDecision: 'ALLOW',
@@ -427,6 +444,8 @@ export class AegisEntryGuardOrchestrator {
             const probeEnforced = probe.guard.enforced && probe.guard.enabled;
             const finalDecision: AegisEntryFinalDecision = probeEnforced ? 'WAIT_CONFIRMATION' : 'WAIT_CONFIRMATION';
             const finalReason = probeEnforced ? probe.guard.reason : cleanEntry.guard.reason;
+            const longRiskShadow = evaluateLongRiskShadowGuard({ context: adjustedContext, policy, guards });
+            guards.push(longRiskShadow);
             return finalize({
                 context: adjustedContext,
                 finalDecision,
@@ -441,6 +460,8 @@ export class AegisEntryGuardOrchestrator {
         }
 
         guards.push(defaultGuard('probe_mode'));
+        const longRiskShadow = evaluateLongRiskShadowGuard({ context: adjustedContext, policy, guards });
+        guards.push(longRiskShadow);
         return finalize({
             context: adjustedContext,
             finalDecision: aegisBlockedByNonHard?.finalDecision ?? 'ALLOW',

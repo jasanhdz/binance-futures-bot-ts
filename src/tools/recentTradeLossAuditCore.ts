@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { Side } from '../domain/types';
 import { RegimeEngineV2 } from '../domain/services/regime-v2/RegimeEngineV2';
 import { RegimeEngineV2Decision, RegimeEngineV2InputCandle, RegimeEngineV2MarketAction } from '../domain/services/regime-v2/RegimeEngineV2.types';
+import { AegisLongRiskShadowAssessment, evaluateAegisLongRiskShadow } from '../domain/services/aegis-entry/guards/AegisLongRiskShadowGuardAdapter';
 
 type JsonRecord = Record<string, any>;
 
@@ -93,6 +94,7 @@ export type TradeAudit = {
         shortGate: FilterAudit;
         probeMode: FilterAudit;
     };
+    longRiskShadow: AegisLongRiskShadowAssessment;
     market: {
         entryCandle?: AuditCandle;
         closeCandle?: AuditCandle;
@@ -242,6 +244,14 @@ function buildTradeAudit(pair: TradePair, input: {
     const regimeEngineV2 = evaluateRegimeEngineV2(symbol, candles, entryMs, contextSignals);
     const summary = summarizeTrade(pair, entryPolicy, side);
     const filters = extractFilters(entryPolicy, open);
+    const longRiskShadow = evaluateTradeLongRiskShadow({
+        summary,
+        filters,
+        entryPolicy,
+        contextSignals,
+        regimeEngineV2,
+        preEntry: market.preEntry
+    });
     const diagnosis = diagnoseTrade(summary, filters, market, regimeEngineV2, entryPolicy);
     const chartPath = input.charts
         ? writeTradeChartSync(symbol, candles, summary, regimeEngineV2, input.outDir)
@@ -256,6 +266,7 @@ function buildTradeAudit(pair: TradePair, input: {
         contextSignals,
         events: input.events,
         filters,
+        longRiskShadow,
         market: {
             entryCandle,
             closeCandle,
@@ -319,6 +330,59 @@ function extractFilters(entryPolicy?: JsonRecord, open?: JsonRecord): TradeAudit
         shortGate: filterFromGuard(guards.short_gate),
         probeMode: filterFromGuard(guards.probe_mode ?? open?.metadata?.probeMode)
     };
+}
+
+function evaluateTradeLongRiskShadow(input: {
+    summary: TradeAuditSummary;
+    filters: TradeAudit['filters'];
+    entryPolicy?: JsonRecord;
+    contextSignals: { btc?: JsonRecord; eth?: JsonRecord };
+    regimeEngineV2?: RegimeEngineV2Decision;
+    preEntry?: JsonRecord;
+}): AegisLongRiskShadowAssessment {
+    const pre = input.preEntry ?? {};
+    const btc = input.contextSignals.btc;
+    const eth = input.contextSignals.eth;
+    return evaluateAegisLongRiskShadow({
+        symbol: input.summary.symbol,
+        side: input.summary.side,
+        entryQualityReason: input.filters.entryQuality.reason,
+        entryQualityRecommendation: stringValue(
+            input.filters.entryQuality.metadata?.recommendation
+            ?? input.filters.entryQuality.metadata?.entryQualityRecommendation
+            ?? input.entryPolicy?.entryQuality?.recommendation
+            ?? input.entryPolicy?.entryQualityRecommendation
+        ),
+        entryQualityScore: num(
+            input.filters.entryQuality.metadata?.entryQualityScore
+            ?? input.filters.decisionBrain.metadata?.entryQualityModelScore
+            ?? input.filters.cleanEntry.metadata?.entryQualityModelScore
+        ),
+        tailRiskScore: num(
+            input.filters.entryQuality.metadata?.tailRiskScore
+            ?? input.filters.decisionBrain.metadata?.tailRiskScore
+            ?? input.filters.cleanEntry.metadata?.tailRiskScore
+        ),
+        cleanEntryDecision: input.filters.cleanEntry.decision,
+        eventRiskMode: stringValue(input.filters.cleanEntry.metadata?.eventRiskMode ?? input.filters.eventRisk.mode ?? input.filters.eventRisk.metadata?.mode),
+        eventRiskWouldBlock: input.filters.eventRisk.wouldBlock ?? input.filters.cleanEntry.metadata?.eventRiskWouldBlock,
+        btcAction: actionOf(btc),
+        btcScore: num(btc?.turbo_score),
+        ethAction: actionOf(eth),
+        ethScore: num(eth?.turbo_score),
+        regimeLogged: stringValue(input.entryPolicy?.regime?.regime ?? input.filters.regime.metadata?.regime),
+        regimeWouldBlock: boolValue(input.entryPolicy?.regime?.wouldBlock ?? input.filters.regime.wouldBlock),
+        regimeEngineV2Environment: input.regimeEngineV2?.momentumEnvironment,
+        regimeEngineV2TechnicalRegime: input.regimeEngineV2?.technicalRegime,
+        regimeEngineV2TransitionRisk: input.regimeEngineV2?.transition.risk,
+        marketWeakness: {
+            belowEma25: num(pre.distanceFromEma25Pct) !== undefined ? num(pre.distanceFromEma25Pct)! < 0 : undefined,
+            return30m: num(pre.return30m),
+            return60m: num(pre.return60m),
+            closeLocation: num(pre.closeLocation),
+            volumeRatio: num(pre.volumeRatio20)
+        }
+    });
 }
 
 function filterFromGuard(guard?: JsonRecord): FilterAudit {
@@ -698,7 +762,7 @@ async function writeAuditReports(report: RecentTradeLossAuditReport, outDir: str
 }
 
 export function renderRecentLossAuditCsv(report: RecentTradeLossAuditReport): string {
-    const header = ['trade_id', 'symbol', 'side', 'final_strategy', 'opened_at_utc', 'closed_at_utc', 'entry', 'exit', 'pnl_usdt', 'roe', 'decision_brain', 'entry_quality', 'clean_entry', 'event_risk', 'regime_v2', 'mfe_roe', 'mae_roe', 'root_causes'];
+    const header = ['trade_id', 'symbol', 'side', 'final_strategy', 'opened_at_utc', 'closed_at_utc', 'entry', 'exit', 'pnl_usdt', 'roe', 'decision_brain', 'entry_quality', 'clean_entry', 'event_risk', 'long_risk_shadow_level', 'long_risk_shadow_score', 'long_risk_shadow_action', 'regime_v2', 'mfe_roe', 'mae_roe', 'root_causes'];
     const rows = report.trades.map((trade) => [
         trade.summary.tradeId,
         trade.summary.symbol,
@@ -714,6 +778,9 @@ export function renderRecentLossAuditCsv(report: RecentTradeLossAuditReport): st
         `${trade.filters.entryQuality.decision ?? ''}:${trade.filters.entryQuality.reason ?? ''}`,
         `${trade.filters.cleanEntry.decision ?? ''}:${trade.filters.cleanEntry.reason ?? ''}`,
         `${trade.filters.eventRisk.decision ?? ''}:${trade.filters.eventRisk.reason ?? ''}`,
+        trade.longRiskShadow.riskLevel,
+        fmt(trade.longRiskShadow.riskScore),
+        trade.longRiskShadow.suggestedAction,
         `${trade.market.regimeEngineV2?.momentumEnvironment ?? ''}:${trade.market.regimeEngineV2?.technicalRegime ?? ''}`,
         fmt(trade.market.tradePath?.mfeRoe),
         fmt(trade.market.tradePath?.maeRoe),
@@ -734,6 +801,7 @@ export function renderRecentLossAuditMarkdown(report: RecentTradeLossAuditReport
     lines.push('');
     for (const trade of report.trades) {
         lines.push(`- ${trade.summary.symbol} ${trade.summary.side} ${trade.summary.pnlUsdt !== undefined && trade.summary.pnlUsdt >= 0 ? 'control/win' : 'loss'}: ${trade.summary.tradeId}, strategy=${trade.summary.finalStrategy}, pnl=${usd(trade.summary.pnlUsdt)}, roe=${pct(trade.summary.roe)}, root=${trade.diagnosis.probableRootCauses.map((cause) => `${cause.cause}(${cause.confidence})`).join(', ')}`);
+        lines.push(`  - LongRiskShadow: ${trade.longRiskShadow.decision} ${trade.longRiskShadow.riskLevel} score=${fmt(trade.longRiskShadow.riskScore)} action=${trade.longRiskShadow.suggestedAction}`);
     }
     lines.push('');
     lines.push(`## Trade Details`);
@@ -765,6 +833,14 @@ export function renderRecentLossAuditMarkdown(report: RecentTradeLossAuditReport
             fmt(trade.filters.decisionBrain.metadata?.tailRiskScore ?? trade.filters.cleanEntry.metadata?.tailRiskScore),
             `${trade.summary.exitReason ?? 'n/a'} / ${trade.summary.exitType ?? 'n/a'}`
         ].map((value) => `| ${String(value).replace(/\|/g, '/') } `).join('') + '|');
+    }
+    lines.push('');
+    lines.push(`## Long Risk Shadow`);
+    lines.push('');
+    lines.push('| Trade | Decision | Level | Score | Suggested Action | Reasons |');
+    lines.push('|---|---|---|---:|---|---|');
+    for (const trade of report.trades) {
+        lines.push(`| ${trade.summary.symbol} ${trade.summary.side} | ${trade.longRiskShadow.decision} | ${trade.longRiskShadow.riskLevel} | ${fmt(trade.longRiskShadow.riskScore)} | ${trade.longRiskShadow.suggestedAction} | ${trade.longRiskShadow.reasons.join(', ') || 'n/a'} |`);
     }
     lines.push('');
     lines.push(`## Comparison Rows`);
@@ -822,6 +898,7 @@ function appendTradeMarkdown(lines: string[], trade: TradeAudit): void {
     lines.push(`- Regime logged: ${trade.entryPolicy?.regime?.regime ?? 'n/a'} decision=${trade.entryPolicy?.regime?.decision ?? 'n/a'} wouldBlock=${String(trade.entryPolicy?.regime?.wouldBlock)}`);
     lines.push(`- RegimeEngineV2 offline: ${trade.market.regimeEngineV2?.momentumEnvironment ?? 'n/a'} / ${trade.market.regimeEngineV2?.technicalRegime ?? 'n/a'} / transition=${trade.market.regimeEngineV2?.transition.risk ?? 'n/a'} reasons=${JSON.stringify(trade.market.regimeEngineV2?.reasons ?? [])}`);
     lines.push(`- MomentumRide: ${trade.entryPolicy?.strategyCandidates?.momentum_ride?.decision ?? trade.filters.momentumRide.decision ?? 'n/a'} / ${trade.entryPolicy?.strategyCandidates?.momentum_ride?.reason ?? trade.filters.momentumRide.reason ?? 'n/a'}`);
+    lines.push(`- LongRiskShadow: ${trade.longRiskShadow.decision} ${trade.longRiskShadow.riskLevel} score=${fmt(trade.longRiskShadow.riskScore)} action=${trade.longRiskShadow.suggestedAction} reasons=${JSON.stringify(trade.longRiskShadow.reasons)}`);
     lines.push(`- ProbeMode: ${cell(trade.filters.probeMode)}`);
     lines.push('');
     lines.push(`Market path:`);
@@ -853,6 +930,9 @@ function buildComparisonRows(trades: TradeAudit[]): JsonRecord[] {
         btc: trade.contextSignals.btc?.final_action ?? trade.contextSignals.btc?.gated_action,
         eth: trade.contextSignals.eth?.final_action ?? trade.contextSignals.eth?.gated_action,
         setupGrade: trade.filters.decisionBrain.metadata?.setupGrade ?? trade.filters.cleanEntry.metadata?.setupGrade,
+        longRiskShadowRiskLevel: trade.longRiskShadow.riskLevel,
+        longRiskShadowRiskScore: trade.longRiskShadow.riskScore,
+        longRiskShadowSuggestedAction: trade.longRiskShadow.suggestedAction,
         mfeRoe: trade.market.tradePath?.mfeRoe,
         maeRoe: trade.market.tradePath?.maeRoe,
         first30mMfeRoe: trade.market.tradePath?.first30mMfeRoe,
@@ -1191,6 +1271,18 @@ function midpoint(a: number, b: number): number {
 function num(value: any): number | undefined {
     const n = Number(value);
     return Number.isFinite(n) ? n : undefined;
+}
+
+function boolValue(value: any): boolean | undefined {
+    return typeof value === 'boolean' ? value : undefined;
+}
+
+function stringValue(value: any): string | undefined {
+    return typeof value === 'string' ? value : undefined;
+}
+
+function actionOf(signal?: JsonRecord): string | undefined {
+    return signal?.final_action ?? signal?.gated_action ?? signal?.raw_action;
 }
 
 function avg(values: Array<number | undefined>): number | undefined {

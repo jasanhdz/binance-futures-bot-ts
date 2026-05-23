@@ -1078,6 +1078,10 @@ export class NinjaConfigManager {
                     enabled: probeMode.enabled,
                     mode: probeMode.mode === 'OFF' ? 'OFF' : probeMode.mode
                 }),
+                long_risk_shadow: this.normalizeEntryGuardPolicy(guards.long_risk_shadow, {
+                    enabled: true,
+                    mode: 'SHADOW'
+                }),
                 short_gate: this.normalizeEntryGuardPolicy(guards.short_gate, {
                     enabled: this.getAegisShortGateConfig().enabled,
                     mode: 'ENFORCE'

@@ -46,6 +46,7 @@ export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace
     const regimeMetadata = regime?.metadata ?? {};
     const regimeContext = trace.guards.regime_context;
     const momentumRide = trace.guards.momentum_ride;
+    const longRiskShadow = trace.guards.long_risk_shadow;
     const regimeContextMetadata = asRecord(regimeContext?.metadata.regimeContext) ?? regimeContext?.metadata;
     const regimeAvoidShadow = RegimeAvoidShadowEvaluator.evaluate({
         symbol: trace.symbol,
@@ -91,6 +92,7 @@ export function compactAegisEntryDecisionMetadata(trace: AegisEntryDecisionTrace
         regimeContext: regimeContextMetadata,
         regimeAvoidShadow,
         momentumRide: momentumRide?.metadata.momentumRide ?? momentumRide?.metadata,
+        longRiskShadow: longRiskShadow?.metadata.longRiskShadow ?? longRiskShadow?.metadata,
         guards: Object.fromEntries(
             Object.entries(trace.guards).map(([name, guard]) => [
                 name,

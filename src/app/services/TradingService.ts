@@ -467,6 +467,10 @@ export class TradingService {
                     enabled: probeMode.enabled,
                     mode: probeMode.enabled ? probeMode.mode : 'OFF'
                 },
+                long_risk_shadow: {
+                    enabled: true,
+                    mode: 'SHADOW'
+                },
                 short_gate: {
                     enabled: this.getAegisShortGateConfig().enabled === true,
                     mode: this.getAegisShortGateConfig().enabled === true ? 'ENFORCE' : 'OFF'

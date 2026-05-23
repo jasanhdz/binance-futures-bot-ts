@@ -27,7 +27,8 @@ export type AegisEntryGuardName =
     | 'decision_brain'
     | 'clean_entry'
     | 'momentum_ride'
-    | 'probe_mode';
+    | 'probe_mode'
+    | 'long_risk_shadow';
 
 export type AegisEntryGuardDecision =
     | 'ALLOW'

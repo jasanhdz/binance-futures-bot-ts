@@ -40,7 +40,8 @@ const guardNames: AegisEntryGuardName[] = [
     'event_risk',
     'decision_brain',
     'clean_entry',
-    'probe_mode'
+    'probe_mode',
+    'long_risk_shadow'
 ];
 
 function policy(overrides: Partial<AegisEntryPolicyRuntimeConfig['guards']> = {}): AegisEntryPolicyRuntimeConfig {
@@ -56,6 +57,7 @@ function policy(overrides: Partial<AegisEntryPolicyRuntimeConfig['guards']> = {}
             decision_brain: { enabled: true, mode: 'ENFORCE' },
             clean_entry: { enabled: true, mode: 'ENFORCE' },
             probe_mode: { enabled: true, mode: 'ENFORCE' },
+            long_risk_shadow: { enabled: true, mode: 'SHADOW' },
             ...overrides
         }
     };
@@ -942,6 +944,56 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.metadata.finalReason).toBe(result.finalReason);
     });
 
+    it('records critical long risk shadow without changing Aegis ALLOW', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(baseContext({
+            entryQuality: {
+                ...baseContext().entryQuality,
+                recommendation: 'ALLOW_SHADOW',
+                model: {
+                    ...baseContext().entryQuality.model!,
+                    recommendation: 'ALLOW_SHADOW'
+                },
+                ruleGate: {
+                    ...baseContext().entryQuality.ruleGate,
+                    currentPrice: 0.98,
+                    recentCandles: [
+                        ...Array.from({ length: 13 }, (_, index) => ({ open: 1 - index * 0.001, high: 1.01, low: 0.99, close: 1 - index * 0.002, volume: 100 })),
+                        { open: 0.98, high: 0.985, low: 0.97, close: 0.972, volume: 140 }
+                    ]
+                }
+            },
+            regimeContext: {
+                label: 'UNKNOWN',
+                confidence: 0.3,
+                momentumLongAllowed: false,
+                momentumShortAllowed: false,
+                trendDirection: 'DOWN',
+                chopRisk: 0.8,
+                exhaustionRisk: 0.4,
+                volatilityState: 'NORMAL',
+                volumeState: 'NORMAL',
+                reasons: ['test'],
+                indicators: { emaMid: 1.02 }
+            },
+            regime: {
+                ...baseContext().regime!,
+                btcAction: 'SHORT',
+                ethAction: 'HOLD'
+            }
+        }), policy({ regime: { enabled: true, mode: 'SHADOW' } }));
+
+        const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.shouldOpen).toBe(true);
+        expect(longRiskShadow).toMatchObject({
+            decision: 'SHADOW_DENY',
+            wouldBlock: true,
+            enforced: false
+        });
+        expect((longRiskShadow?.metadata.longRiskShadow as any).riskLevel).toBe('CRITICAL');
+        expect(result.metadata.longRiskShadow).toMatchObject({ wouldBlock: true });
+    });
+
     it('con regime/momentum SHADOW mantiene ALLOW aegis_turbo y risk normal', () => {
         const result = AegisEntryGuardOrchestrator.evaluate(momentumContext(), policy({
             regime_context: { enabled: true, mode: 'SHADOW' },
@@ -999,6 +1051,70 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.riskProfile).toMatchObject({ leverage: 50, positionFraction: 0.02 });
         expect(result.adjustedLeverage).toBe(50);
         expect(result.adjustedPositionFraction).toBe(0.02);
+    });
+
+    it('does not block Momentum Ride when long risk shadow warns', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            momentumRideConfig: enforceMomentum,
+            eventRisk: {
+                ...momentumContext().eventRisk,
+                mode: 'CAUTION',
+                wouldBlock: false,
+                btcAction: 'HOLD',
+                ethAction: 'LONG'
+            },
+            regime: {
+                ...momentumContext().regime!,
+                btcAction: 'HOLD',
+                ethAction: 'LONG'
+            },
+            entryQuality: {
+                ...momentumContext().entryQuality,
+                recommendation: 'ALLOW_SHADOW',
+                model: {
+                    ...momentumContext().entryQuality.model!,
+                    recommendation: 'ALLOW_SHADOW'
+                },
+                ruleGate: {
+                    ...momentumContext().entryQuality.ruleGate,
+                    currentPrice: 0.98
+                }
+            },
+            regimeContext: {
+                ...momentumContext().regimeContext,
+                label: 'MOMENTUM_UP',
+                confidence: 0.8,
+                momentumLongAllowed: true,
+                momentumShortAllowed: false,
+                trendDirection: 'UP',
+                chopRisk: 0.2,
+                exhaustionRisk: 0.1,
+                volatilityState: 'NORMAL',
+                volumeState: 'HIGH',
+                reasons: ['test'],
+                indicators: { emaMid: 1.02 }
+            }
+        }), policy({
+            regime_context: { enabled: true, mode: 'SHADOW' },
+            momentum_ride: { enabled: true, mode: 'ENFORCE' },
+            event_risk: { enabled: true, mode: 'SHADOW' }
+        }));
+
+        const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('momentum_ride');
+        expect(longRiskShadow?.decision).toBe('SHADOW_DENY');
+        expect(['HIGH', 'CRITICAL']).toContain((longRiskShadow?.metadata.longRiskShadow as any).riskLevel);
     });
 
     it('Momentum NOT_APPLICABLE + Aegis ALLOW conserva finalStrategy aegis_turbo', () => {
