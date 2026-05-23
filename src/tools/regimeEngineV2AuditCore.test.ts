@@ -4,6 +4,7 @@ import {
     buildRegimeEngineV2AuditReport,
     buildRegimeEngineV2AuditSamples,
     calculateRegimeEngineV2Outcome,
+    detectLegacyXrpLongPattern,
     detectMomentumRidePattern,
     directionalEnvironmentBucket
 } from './regimeEngineV2AuditCore';
@@ -118,6 +119,90 @@ describe('regimeEngineV2AuditCore', () => {
         expect(report.byDirectionalEnvironment.every((row) => !row.bucket.includes('AVOID_MOMENTUM'))).toBe(true);
     });
 
+    it('filters audit samples by requested side', () => {
+        const candlesBySymbol = new Map<string, RegimeEngineV2InputCandle[]>([
+            ['BTCUSDT', patternCandles('LONG', 180)],
+            ['ETHUSDT', patternCandles('SHORT', 180)]
+        ]);
+
+        const longOnly = buildRegimeEngineV2AuditSamples(candlesBySymbol, {
+            symbols: ['BTCUSDT', 'ETHUSDT'],
+            sampleEvery: 6,
+            momentumPatternOnly: true,
+            side: 'LONG'
+        });
+        const shortOnly = buildRegimeEngineV2AuditSamples(candlesBySymbol, {
+            symbols: ['BTCUSDT', 'ETHUSDT'],
+            sampleEvery: 6,
+            momentumPatternOnly: true,
+            side: 'SHORT'
+        });
+        const both = buildRegimeEngineV2AuditSamples(candlesBySymbol, {
+            symbols: ['BTCUSDT', 'ETHUSDT'],
+            sampleEvery: 6,
+            momentumPatternOnly: true
+        });
+
+        expect(longOnly.samples.length).toBeGreaterThan(0);
+        expect(longOnly.samples.every((sample) => sample.side === 'LONG')).toBe(true);
+        expect(shortOnly.samples.length).toBeGreaterThan(0);
+        expect(shortOnly.samples.every((sample) => sample.side === 'SHORT')).toBe(true);
+        expect(both.samples.some((sample) => sample.side === 'LONG')).toBe(true);
+        expect(both.samples.some((sample) => sample.side === 'SHORT')).toBe(true);
+    });
+
+    it('reports AVOID and UNKNOWN as side-specific buckets with a LONG filter', () => {
+        const candlesBySymbol = new Map<string, RegimeEngineV2InputCandle[]>([
+            ['BTCUSDT', choppyCandles(190)]
+        ]);
+
+        const report = buildRegimeEngineV2AuditReport(candlesBySymbol, {
+            symbols: ['BTCUSDT'],
+            sampleEvery: 12,
+            side: 'LONG',
+            writeReports: false
+        });
+
+        expect(report.counts.samples).toBeGreaterThan(0);
+        expect(report.byDirectionalEnvironment.every((row) => !row.bucket.endsWith('_FOR_SHORT'))).toBe(true);
+        expect(report.byDirectionalEnvironment.some((row) => row.bucket === 'AVOID_FOR_LONG' || row.bucket === 'UNKNOWN_FOR_LONG')).toBe(true);
+    });
+
+    it('detects legacy XRP long-streak pattern without using short samples', () => {
+        const candlesBySymbol = new Map<string, RegimeEngineV2InputCandle[]>([
+            ['XRPUSDT', legacyXrpLongCandles(180)]
+        ]);
+
+        expect(detectLegacyXrpLongPattern(legacyXrpLongCandles(100), 99)?.side).toBe('LONG');
+
+        const result = buildRegimeEngineV2AuditSamples(candlesBySymbol, {
+            symbols: ['XRPUSDT'],
+            sampleEvery: 3,
+            legacyXrpLongPattern: true
+        });
+
+        expect(result.samples.length).toBeGreaterThan(0);
+        expect(result.samples.every((sample) => sample.side === 'LONG')).toBe(true);
+        expect(result.samples.every((sample) => sample.pattern?.reasons.some((reason) => reason.startsWith('legacy_xrp_')))).toBe(true);
+    });
+
+    it('treats date-only --to as an inclusive end date', () => {
+        const candlesBySymbol = new Map<string, RegimeEngineV2InputCandle[]>([
+            ['BTCUSDT', datedCandles()]
+        ]);
+
+        const result = buildRegimeEngineV2AuditSamples(candlesBySymbol, {
+            symbols: ['BTCUSDT'],
+            sampleEvery: 1,
+            from: '2026-05-02',
+            to: '2026-05-02',
+            side: 'LONG'
+        });
+
+        expect(result.samples.length).toBeGreaterThan(0);
+        expect(result.samples.every((sample) => sample.timestamp.startsWith('2026-05-02'))).toBe(true);
+    });
+
     it('applies fee and slippage sensitivity without breaking outcomes', () => {
         const candles = patternCandles('LONG', 40);
         const noCost = calculateRegimeEngineV2Outcome(candles, 30, 'LONG', 20, 30, testDecision('BREAKOUT_UP_EARLY'));
@@ -220,6 +305,42 @@ function patternCandles(side: 'LONG' | 'SHORT', count = 80): RegimeEngineV2Input
         );
     }
     return rows;
+}
+
+function legacyXrpLongCandles(count = 100): RegimeEngineV2InputCandle[] {
+    const rows = testCandles('UP', count);
+    for (let i = Math.max(80, count - 4); i < count; i++) {
+        const previous = rows[i - 1];
+        rows[i] = candle(
+            i,
+            previous.close,
+            previous.close + 0.22,
+            previous.close - 0.02,
+            previous.close + 0.18,
+            240 + i
+        );
+    }
+    return rows;
+}
+
+function choppyCandles(count = 190): RegimeEngineV2InputCandle[] {
+    const rows: RegimeEngineV2InputCandle[] = [];
+    let price = 100;
+    for (let index = 0; index < count; index++) {
+        const close = price + (index % 2 === 0 ? 0.03 : -0.03);
+        rows.push(candle(index, price, Math.max(price, close) + 0.08, Math.min(price, close) - 0.08, close, 100 + (index % 5)));
+        price = close;
+    }
+    return rows;
+}
+
+function datedCandles(): RegimeEngineV2InputCandle[] {
+    const rows = testCandles('UP', 400);
+    const start = Date.parse('2026-05-01T00:00:00.000Z');
+    return rows.map((row, index) => ({
+        ...row,
+        timestamp: start + index * 5 * 60_000
+    }));
 }
 
 function testDecision(regime: RegimeEngineV2Decision['technicalRegime']): RegimeEngineV2Decision {

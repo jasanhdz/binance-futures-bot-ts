@@ -27,6 +27,7 @@ export const DEFAULT_REGIME_ENGINE_V2_SYMBOLS = [
 
 const HORIZONS = [15, 30, 60, 120] as const;
 type SupportedHorizon = typeof HORIZONS[number];
+export type RegimeEngineV2AuditSide = Side | 'BOTH';
 
 export type RegimeEngineV2AuditOptions = {
     candlesDbPath?: string;
@@ -48,6 +49,8 @@ export type RegimeEngineV2AuditOptions = {
     engineLookbackCandles?: number;
     writeJson?: boolean;
     writeCsv?: boolean;
+    side?: RegimeEngineV2AuditSide;
+    legacyXrpLongPattern?: boolean;
 };
 
 export type RegimeEngineV2DirectionalEnvironment =
@@ -198,7 +201,7 @@ export async function auditRegimeEngineV2(options: RegimeEngineV2AuditOptions = 
     const reportsDir = options.reportsDir ?? '/home/jasan/Develop';
     const warnings: string[] = [];
     const fromMs = options.from ? parseTimestamp(options.from) : -Infinity;
-    const toMs = options.to ? parseTimestamp(options.to) : Infinity;
+    const toMs = options.to ? parseEndTimestamp(options.to) : Infinity;
     const candlesBySymbol = loadCandles(dbPath, symbols, timeframe, warnings, fromMs, toMs);
     const report = buildRegimeEngineV2AuditReport(candlesBySymbol, {
         ...options,
@@ -220,7 +223,7 @@ export function loadRegimeEngineV2Candles(options: RegimeEngineV2AuditOptions = 
     const dbPath = options.candlesDbPath ?? '/home/jasan/Develop/trading_system/data/binance_candles.db';
     const warnings: string[] = [];
     const fromMs = options.from ? parseTimestamp(options.from) : -Infinity;
-    const toMs = options.to ? parseTimestamp(options.to) : Infinity;
+    const toMs = options.to ? parseEndTimestamp(options.to) : Infinity;
     const candlesBySymbol = loadCandles(dbPath, symbols, timeframe, warnings, fromMs, toMs);
     return { candlesBySymbol, symbols, warnings };
 }
@@ -246,7 +249,9 @@ export function buildRegimeEngineV2AuditReport(
             momentumPatternOnly: options.momentumPatternOnly ?? false,
             writeReports: options.writeReports !== false,
             writeJson: options.writeJson !== false,
-            writeCsv: options.writeCsv !== false
+            writeCsv: options.writeCsv !== false,
+            side: options.side ?? 'BOTH',
+            legacyXrpLongPattern: options.legacyXrpLongPattern ?? false
         },
         counts: {
             candlesBySymbol: Object.fromEntries(symbols.map((symbol) => [symbol, candlesBySymbol.get(symbol)?.length ?? 0])),
@@ -304,9 +309,11 @@ export function buildRegimeEngineV2AuditSamples(
     const progressEvery = Math.max(0, Math.floor(options.progressEvery ?? 0));
     const maxSamplesPerSymbol = options.maxSamplesPerSymbol === undefined ? Infinity : Math.max(0, Math.floor(options.maxSamplesPerSymbol));
     const engineLookbackCandles = Math.max(140, Math.floor(options.engineLookbackCandles ?? 260));
+    const sideFilter = options.side ?? 'BOTH';
+    const requirePattern = options.momentumPatternOnly === true || options.legacyXrpLongPattern === true;
     const samples: RegimeEngineV2AuditSample[] = [];
     const sampleFromMs = options.from ? parseTimestamp(options.from) : -Infinity;
-    const sampleToMs = options.to ? parseTimestamp(options.to) + dayMs() - 1 : Infinity;
+    const sampleToMs = options.to ? parseEndTimestamp(options.to) : Infinity;
     const decisionCache = new Map<string, Map<number, RegimeEngineV2Decision>>();
     let scanned = 0;
     const decisionFor = (symbol: string, index: number): RegimeEngineV2Decision | undefined => {
@@ -335,9 +342,12 @@ export function buildRegimeEngineV2AuditSamples(
             if (timestamp < sampleFromMs || timestamp > sampleToMs) continue;
             const decision = decisionFor(symbol, index);
             if (!decision) continue;
-            const pattern = detectMomentumRidePattern(candles, index);
-            if (options.momentumPatternOnly && !pattern) continue;
-            const sides = options.momentumPatternOnly && pattern ? [pattern.side] : sidesFor(decision.momentumEnvironment);
+            const pattern = options.legacyXrpLongPattern
+                ? detectLegacyXrpLongPattern(candles, index)
+                : detectMomentumRidePattern(candles, index);
+            if (requirePattern && !pattern) continue;
+            const sides = (requirePattern && pattern ? [pattern.side] : sidesFor(decision.momentumEnvironment))
+                .filter((side) => sideFilter === 'BOTH' || side === sideFilter);
             for (const side of sides) {
                 if (samples.length >= limit) break;
                 samples.push({
@@ -525,6 +535,64 @@ export function detectMomentumRidePattern(candles: RegimeEngineV2InputCandle[], 
                 wickRatio: round(lowerWickRatio),
                 distanceFromEma25Pct: round(distanceFromEma25Pct),
                 breakout: breakoutDown ? 'DOWN' : 'NONE'
+            }
+        };
+    }
+
+    return undefined;
+}
+
+export function detectLegacyXrpLongPattern(candles: RegimeEngineV2InputCandle[], index: number): RegimeEngineV2MomentumPattern | undefined {
+    const history = candles.slice(0, index + 1);
+    if (history.length < 80) return undefined;
+    const current = history[history.length - 1];
+    const prior20 = history.slice(-21, -1);
+    const last3 = history.slice(-3);
+    const last4 = history.slice(-4);
+    const range = current.high - current.low;
+    if (!current || current.close <= 0 || range <= 0 || prior20.length < 20) return undefined;
+
+    const closeLocation = (current.close - current.low) / range;
+    const upperWickRatio = (current.high - Math.max(current.open, current.close)) / range;
+    const bodyRatio = Math.abs(current.close - current.open) / range;
+    const volumeRatio = ratio(current.volume, avg(prior20.map((candle) => candle.volume)));
+    const recentVolumePersistence = ratio(
+        avg(last3.map((candle) => candle.volume)),
+        avg(history.slice(-23, -3).map((candle) => candle.volume))
+    );
+    const closes = history.map((candle) => candle.close);
+    const ema20 = emaLast(closes, 20);
+    const ema50 = emaLast(closes, 50);
+    const distanceFromEma25Pct = ema20 && ema20 > 0 ? (current.close - ema20) / ema20 : undefined;
+    const greenStreak = countTrailingCandles(history, (candle) => candle.close > candle.open);
+    const lastThreeRising = last3.every((candle) => candle.close > candle.open)
+        && last3[2].close > last3[1].close
+        && last3[1].close > last3[0].close;
+    const atLeastThreeOfFourGreen = last4.filter((candle) => candle.close > candle.open).length >= 3;
+    const trendOk = ema20 !== undefined && ema50 !== undefined && current.close > ema20 && ema20 >= ema50;
+    const volumeOk = (volumeRatio ?? 0) >= 1.1 || (recentVolumePersistence ?? 0) >= 1.15;
+    const notOverextended = (distanceFromEma25Pct ?? 0) <= 0.012;
+    const qualityOk = closeLocation >= 0.58 && bodyRatio >= 0.32 && upperWickRatio <= 0.5;
+
+    if ((greenStreak >= 3 || lastThreeRising || atLeastThreeOfFourGreen) && volumeOk && trendOk && qualityOk && notOverextended) {
+        return {
+            side: 'LONG',
+            kind: greenStreak >= 3 || lastThreeRising ? 'CONSECUTIVE' : 'BREAKOUT',
+            reasons: [
+                greenStreak >= 3 ? 'legacy_xrp_green_streak_3' : 'legacy_xrp_three_of_four_green',
+                'legacy_xrp_volume_expansion',
+                'legacy_xrp_strong_close',
+                'legacy_xrp_body_quality',
+                'legacy_xrp_ema20_trend',
+                'legacy_xrp_not_overextended'
+            ],
+            indicators: {
+                consecutiveCandles: Math.max(greenStreak, lastThreeRising ? 3 : 0),
+                volumeRatio: round(volumeRatio),
+                closeLocation: round(closeLocation),
+                wickRatio: round(upperWickRatio),
+                distanceFromEma25Pct: round(distanceFromEma25Pct),
+                breakout: 'NONE'
             }
         };
     }
@@ -756,6 +824,8 @@ export function renderRegimeEngineV2Markdown(report: RegimeEngineV2AuditReport):
         `Generated: ${report.generatedAt}`,
         `Samples: ${report.counts.samples}`,
         `Momentum pattern only: ${report.options.momentumPatternOnly ? 'yes' : 'no'}`,
+        `Legacy XRP long pattern: ${report.options.legacyXrpLongPattern ? 'yes' : 'no'}`,
+        `Side filter: ${report.options.side ?? 'BOTH'}`,
         `Fee bps: ${report.options.feeBps ?? 0}`,
         `Slippage bps: ${report.options.slippageBps ?? 0}`,
         `Engine lookback candles: ${report.options.engineLookbackCandles ?? 'n/a'}`,
@@ -1006,6 +1076,10 @@ function parseTimestamp(value: string): number {
     return Date.parse(normalized.endsWith('Z') ? normalized : `${normalized}Z`);
 }
 
+function parseEndTimestamp(value: string): number {
+    return parseTimestamp(value) + (/^\d{4}-\d{2}-\d{2}$/.test(value) ? dayMs() - 1 : 0);
+}
+
 function roundTripCostRoe(leverage: number, feeBps: number, slippageBps: number): number {
     return 2 * ((feeBps + slippageBps) / 10_000) * leverage;
 }
@@ -1038,6 +1112,15 @@ function avg(values: number[]): number | undefined {
 
 function ratio(a: number | undefined, b: number | undefined): number | undefined {
     return a !== undefined && b !== undefined && b !== 0 ? a / b : undefined;
+}
+
+function countTrailingCandles(candles: RegimeEngineV2InputCandle[], predicate: (candle: RegimeEngineV2InputCandle) => boolean): number {
+    let count = 0;
+    for (let index = candles.length - 1; index >= 0; index--) {
+        if (!predicate(candles[index])) break;
+        count++;
+    }
+    return count;
 }
 
 function percentile(values: number[], p: number): number | undefined {

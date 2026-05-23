@@ -45,6 +45,15 @@ function parseArgs(args: string[]): CliOptions {
         else if (arg === '--progress-every' && next) options.progressEvery = Number(args[++i]);
         else if (arg === '--engine-lookback-candles' && next) options.engineLookbackCandles = Number(args[++i]);
         else if (arg === '--symbols' && next) options.symbols = args[++i].split(',').map((symbol) => symbol.trim().toUpperCase()).filter(Boolean);
+        else if (arg === '--side' && next) {
+            const side = args[++i].trim().toUpperCase();
+            if (side === 'LONG' || side === 'SHORT' || side === 'BOTH') options.side = side;
+            else throw new Error(`Invalid --side ${side}. Use LONG, SHORT, or BOTH.`);
+        }
+        else if (arg === '--long-only') options.side = 'LONG';
+        else if (arg === '--short-only') options.side = 'SHORT';
+        else if (arg === '--legacy-xrp-long-pattern') options.legacyXrpLongPattern = true;
+        else if (arg === '--momentum-pattern-only') options.momentumPatternOnly = true;
         else if (arg === '--db' && next) options.candlesDbPath = args[++i];
         else if (arg === '--output-dir' && next) options.outputDir = args[++i];
         else if (arg === '--source' && next) options.source = args[++i];
@@ -60,6 +69,11 @@ function printHelp(): void {
         '  --from YYYY-MM-DD',
         '  --to YYYY-MM-DD',
         '  --symbols A,B,C',
+        '  --side LONG|SHORT|BOTH',
+        '  --long-only',
+        '  --short-only',
+        '  --momentum-pattern-only',
+        '  --legacy-xrp-long-pattern',
         '  --sample-every N',
         '  --fee-bps N',
         '  --slippage-bps N',

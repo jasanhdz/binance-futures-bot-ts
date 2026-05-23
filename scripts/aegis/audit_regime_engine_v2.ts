@@ -46,9 +46,17 @@ function parseArgs(args: string[]): CliOptions {
             .map((value) => Number(value.trim()))
             .filter((value): value is 15 | 30 | 60 | 120 => value === 15 || value === 30 || value === 60 || value === 120);
         else if (arg === '--symbols' && next) options.symbols = args[++i].split(',').map((symbol) => symbol.trim().toUpperCase()).filter(Boolean);
+        else if (arg === '--side' && next) {
+            const side = args[++i].trim().toUpperCase();
+            if (side === 'LONG' || side === 'SHORT' || side === 'BOTH') options.side = side;
+            else throw new Error(`Invalid --side ${side}. Use LONG, SHORT, or BOTH.`);
+        }
         else if (arg === '--db' && next) options.candlesDbPath = args[++i];
         else if (arg === '--reports-dir' && next) options.reportsDir = args[++i];
         else if (arg === '--momentum-pattern-only') options.momentumPatternOnly = true;
+        else if (arg === '--legacy-xrp-long-pattern') options.legacyXrpLongPattern = true;
+        else if (arg === '--long-only') options.side = 'LONG';
+        else if (arg === '--short-only') options.side = 'SHORT';
         else if (arg === '--fast') options.engineLookbackCandles = 220;
         else if (arg === '--no-json') options.writeJson = false;
         else if (arg === '--no-csv') options.writeCsv = false;
@@ -69,6 +77,9 @@ function printHelp(): void {
         '  --fee-bps N                Round-trip fee sensitivity input per side, default 0',
         '  --slippage-bps N           Round-trip slippage sensitivity input per side, default 0',
         '  --symbols A,B,C            Optional symbol list',
+        '  --side LONG|SHORT|BOTH     Optional directional filter, default BOTH',
+        '  --long-only                Alias for --side LONG',
+        '  --short-only               Alias for --side SHORT',
         '  --limit N                  Max samples',
         '  --max-samples-per-symbol N Max accepted samples per symbol',
         '  --progress-every N         Print progress every N accepted samples',
@@ -76,6 +87,7 @@ function printHelp(): void {
         '  --engine-lookback-candles N Bounded candle history per decision, default 260',
         '  --fast                     Use a 220-candle decision lookback',
         '  --momentum-pattern-only    Evaluate only offline Momentum Ride-like patterns',
+        '  --legacy-xrp-long-pattern  Evaluate only an offline XRP legacy long-streak pattern',
         '  --db PATH                  SQLite candles DB',
         '  --reports-dir DIR          Output reports dir, default /home/jasan/Develop',
         '  --no-json                  Skip JSON report file',

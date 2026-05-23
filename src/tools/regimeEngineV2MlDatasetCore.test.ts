@@ -54,6 +54,35 @@ describe('regimeEngineV2MlDatasetCore', () => {
         expect(rows.some((row) => row.side === 'LONG')).toBe(true);
         expect(rows.some((row) => row.side === 'SHORT')).toBe(true);
     });
+
+    it('supports side-filtered dataset rows', () => {
+        const rows = buildRegimeEngineV2MlDatasetRows(new Map<string, RegimeEngineV2InputCandle[]>([
+            ['BTCUSDT', patternCandles('LONG', 170)],
+            ['ETHUSDT', patternCandles('SHORT', 170)]
+        ]), {
+            symbols: ['BTCUSDT', 'ETHUSDT'],
+            sampleEvery: 6,
+            side: 'LONG'
+        });
+
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.every((row) => row.side === 'LONG')).toBe(true);
+    });
+
+    it('supports legacy XRP long pattern dataset rows', () => {
+        const rows = buildRegimeEngineV2MlDatasetRows(new Map<string, RegimeEngineV2InputCandle[]>([
+            ['XRPUSDT', legacyXrpLongCandles(180)]
+        ]), {
+            symbols: ['XRPUSDT'],
+            sampleEvery: 3,
+            legacyXrpLongPattern: true,
+            source: 'legacy_xrp_long_window'
+        });
+
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.every((row) => row.side === 'LONG')).toBe(true);
+        expect(rows.every((row) => row.source === 'legacy_xrp_long_window')).toBe(true);
+    });
 });
 
 function patternCandles(side: 'LONG' | 'SHORT', count: number): RegimeEngineV2InputCandle[] {
@@ -73,6 +102,24 @@ function patternCandles(side: 'LONG' | 'SHORT', count: number): RegimeEngineV2In
             volume: 100 + (index > count - 20 ? 180 : 0)
         });
         price = close;
+    }
+    return rows;
+}
+
+function legacyXrpLongCandles(count: number): RegimeEngineV2InputCandle[] {
+    const rows = patternCandles('LONG', count);
+    for (let i = Math.max(80, count - 4); i < count; i++) {
+        const previous = rows[i - 1];
+        const open = previous.close;
+        const close = open + 0.18;
+        rows[i] = {
+            timestamp: rows[i].timestamp,
+            open,
+            high: close + 0.04,
+            low: open - 0.02,
+            close,
+            volume: 260
+        };
     }
     return rows;
 }
