@@ -28,6 +28,7 @@
     "audit:regime-avoid-shadow": "ts-node scripts/aegis/audit_regime_avoid_shadow.ts",
     "audit:regime-engine-v2": "ts-node scripts/aegis/audit_regime_engine_v2.ts",
     "export:regime-engine-v2-ml-dataset": "ts-node scripts/aegis/export_regime_engine_v2_ml_dataset.ts",
+    "audit:recent-losses": "ts-node scripts/aegis/audit_recent_losing_trades.ts",
     "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts"
   },
   "dependencies": {
