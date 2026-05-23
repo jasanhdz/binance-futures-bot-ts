@@ -350,6 +350,85 @@ function momentumContext(overrides: Partial<AegisEntryContext> = {}): AegisEntry
     });
 }
 
+function probeLongRiskPolicy(mode: AegisEntryPolicyRuntimeConfig['guards']['long_risk_shadow']['mode'] = 'ENFORCE_PROBE_LONG_CRITICAL'): AegisEntryPolicyRuntimeConfig {
+    return policy({
+        long_risk_shadow: {
+            enabled: true,
+            mode,
+            probeLongCriticalAction: 'BLOCK',
+            probeLongHighAction: 'SHADOW',
+            aegisLongCriticalAction: 'SHADOW',
+            momentumLongCriticalAction: 'SHADOW',
+            minRiskLevelToBlockProbe: 'CRITICAL',
+            blockOnlyProbeMode: true,
+            blockOnlyLong: true
+        }
+    });
+}
+
+function probeLongRiskContext(risk: 'HIGH' | 'CRITICAL' = 'CRITICAL', overrides: Partial<AegisEntryContext> = {}): AegisEntryContext {
+    const base = baseContext();
+    const criticalCandles = [
+        ...Array.from({ length: 13 }, (_, index) => ({ open: 1 - index * 0.001, high: 1.01, low: 0.99, close: 1 - index * 0.001, volume: 100 })),
+        { open: 0.99, high: 1, low: 0.98, close: 0.985, volume: 80 }
+    ];
+    const highCandles = [
+        ...Array.from({ length: 13 }, (_, index) => ({ open: 1 + index * 0.001, high: 1.02, low: 0.99, close: 1 + index * 0.001, volume: 100 })),
+        { open: 1.013, high: 1.02, low: 1.00, close: 1.014, volume: 100 }
+    ];
+    return baseContext({
+        entryQuality: {
+            ...base.entryQuality,
+            recommendation: 'ALLOW_SHADOW',
+            model: {
+                ...base.entryQuality.model!,
+                recommendation: 'ALLOW_SHADOW'
+            },
+            ruleGate: {
+                ...base.entryQuality.ruleGate,
+                currentPrice: risk === 'CRITICAL' ? 0.985 : 1.014,
+                recentCandles: risk === 'CRITICAL' ? criticalCandles : highCandles
+            }
+        },
+        eventRisk: {
+            ...base.eventRisk,
+            mode: 'CAUTION',
+            enforce: false,
+            wouldBlock: true,
+            reason: 'caution_btc_eth_not_confirmed',
+            btcAction: risk === 'CRITICAL' ? 'HOLD' : 'LONG',
+            ethAction: risk === 'CRITICAL' ? 'HOLD' : 'LONG',
+            config: {
+                ...base.eventRisk.config,
+                caution: {
+                    minQualityScore: 0.65,
+                    maxTailRiskScore: 0.45,
+                    requireBtcEthConfirmation: true
+                }
+            }
+        },
+        regime: {
+            ...base.regime!,
+            btcAction: risk === 'CRITICAL' ? 'HOLD' : 'LONG',
+            ethAction: risk === 'CRITICAL' ? 'HOLD' : 'LONG'
+        },
+        regimeContext: {
+            label: risk === 'CRITICAL' ? 'CHOP' : 'MOMENTUM_UP',
+            confidence: risk === 'CRITICAL' ? 0.4 : 0.75,
+            momentumLongAllowed: risk !== 'CRITICAL',
+            momentumShortAllowed: risk === 'CRITICAL',
+            trendDirection: risk === 'CRITICAL' ? 'DOWN' : 'UP',
+            chopRisk: risk === 'CRITICAL' ? 0.8 : 0.2,
+            exhaustionRisk: risk === 'CRITICAL' ? 0.4 : 0.1,
+            volatilityState: 'NORMAL',
+            volumeState: 'NORMAL',
+            reasons: ['test'],
+            indicators: { emaMid: risk === 'CRITICAL' ? 1.02 : 0.90 }
+        },
+        ...overrides
+    });
+}
+
 describe('AegisEntryGuardOrchestrator', () => {
     it('does not block when all guards are OFF', () => {
         const allOff = policy(Object.fromEntries(guardNames.map((name) => [name, { enabled: false, mode: 'OFF' }])) as Partial<AegisEntryPolicyRuntimeConfig['guards']>);
@@ -710,6 +789,135 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.finalDecision).toBe('ALLOW');
         expect(result.allowedBy).toBe('probe_mode');
         expect(result.decisions.probeMode?.allowed).toBe(true);
+    });
+
+    it('blocks Probe LONG when LongRiskShadow is CRITICAL in enforce-probe mode', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL'), probeLongRiskPolicy());
+        const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
+
+        expect(result.finalDecision).toBe('DENY');
+        expect(result.finalReason).toBe('long_risk_probe_long_critical');
+        expect(result.deniedBy).toBe('long_risk_shadow');
+        expect(result.shouldOpen).toBe(false);
+        expect(result.finalStrategy).toBe('none');
+        expect(result.adjustedLeverage).toBe(20);
+        expect(result.adjustedPositionFraction).toBe(0.1);
+        expect(longRiskShadow).toMatchObject({
+            decision: 'DENY',
+            enforced: true,
+            reason: 'long_risk_probe_long_critical'
+        });
+        expect((longRiskShadow?.metadata.longRiskShadow as any)).toMatchObject({
+            riskLevel: 'CRITICAL',
+            enforcementApplied: true,
+            enforcementScope: 'probe_long_critical',
+            blockedProbeLong: true,
+            actionTaken: 'BLOCK'
+        });
+    });
+
+    it('does not block Probe LONG when LongRiskShadow is HIGH', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('HIGH'), probeLongRiskPolicy());
+        const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalReason).toBe('probe_mode_allowed');
+        expect(result.shouldOpen).toBe(true);
+        expect(result.allowedBy).toBe('probe_mode');
+        expect((longRiskShadow?.metadata.longRiskShadow as any)).toMatchObject({
+            riskLevel: 'HIGH',
+            enforcementApplied: false,
+            actionTaken: 'SHADOW'
+        });
+    });
+
+    it('does not block Probe SHORT even if weak context is present', () => {
+        const shortPolicy = probeLongRiskPolicy();
+        shortPolicy.guards.short_gate = { enabled: false, mode: 'OFF' };
+        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL', {
+            symbol: 'AVAXUSDT',
+            side: 'SHORT',
+            rawAction: 'SHORT',
+            finalAction: 'SHORT',
+            signal: {
+                ...baseContext().signal,
+                symbol: 'AVAXUSDT',
+                action: 'SHORT'
+            },
+            gate: {
+                ...baseContext().gate,
+                side: 'SHORT'
+            }
+        }), shortPolicy);
+        const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
+
+        expect(result.finalDecision).toBe('WAIT_CONFIRMATION');
+        expect(result.finalReason).toBe('probe_votes_too_low');
+        expect(result.deniedBy).not.toBe('long_risk_shadow');
+        expect(longRiskShadow?.decision).toBe('NOT_APPLICABLE');
+        expect((longRiskShadow?.metadata.longRiskShadow as any).enforcementApplied).toBe(false);
+    });
+
+    it('keeps Aegis Turbo normal LONG open when LongRiskShadow is CRITICAL but Probe is not used', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(baseContext({
+            entryQuality: {
+                ...baseContext().entryQuality,
+                recommendation: 'ALLOW_SHADOW',
+                model: {
+                    ...baseContext().entryQuality.model!,
+                    recommendation: 'ALLOW_SHADOW'
+                },
+                ruleGate: {
+                    ...baseContext().entryQuality.ruleGate,
+                    currentPrice: 0.98,
+                    recentCandles: [
+                        ...Array.from({ length: 13 }, (_, index) => ({ open: 1 - index * 0.001, high: 1.01, low: 0.99, close: 1 - index * 0.002, volume: 100 })),
+                        { open: 0.98, high: 0.985, low: 0.97, close: 0.972, volume: 140 }
+                    ]
+                }
+            },
+            regimeContext: {
+                label: 'UNKNOWN',
+                confidence: 0.3,
+                momentumLongAllowed: false,
+                momentumShortAllowed: false,
+                trendDirection: 'DOWN',
+                chopRisk: 0.8,
+                exhaustionRisk: 0.4,
+                volatilityState: 'NORMAL',
+                volumeState: 'NORMAL',
+                reasons: ['test'],
+                indicators: { emaMid: 1.02 }
+            },
+            regime: {
+                ...baseContext().regime!,
+                btcAction: 'SHORT',
+                ethAction: 'HOLD'
+            }
+        }), probeLongRiskPolicy());
+        const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('aegis_turbo');
+        expect(result.shouldOpen).toBe(true);
+        expect(result.allowedBy).toBe('entry_policy');
+        expect((longRiskShadow?.metadata.longRiskShadow as any)).toMatchObject({
+            riskLevel: 'CRITICAL',
+            enforcementApplied: false
+        });
+    });
+
+    it('keeps Probe LONG open in SHADOW mode even when LongRiskShadow is CRITICAL', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL'), probeLongRiskPolicy('SHADOW'));
+        const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalReason).toBe('probe_mode_allowed');
+        expect(result.shouldOpen).toBe(true);
+        expect((longRiskShadow?.metadata.longRiskShadow as any)).toMatchObject({
+            riskLevel: 'CRITICAL',
+            enforcementApplied: false
+        });
     });
 
     it('attributes Clean Entry ENFORCE wait to clean_entry when Probe Mode is OFF', () => {
@@ -1107,7 +1315,18 @@ describe('AegisEntryGuardOrchestrator', () => {
         }), policy({
             regime_context: { enabled: true, mode: 'SHADOW' },
             momentum_ride: { enabled: true, mode: 'ENFORCE' },
-            event_risk: { enabled: true, mode: 'SHADOW' }
+            event_risk: { enabled: true, mode: 'SHADOW' },
+            long_risk_shadow: {
+                enabled: true,
+                mode: 'ENFORCE_PROBE_LONG_CRITICAL',
+                probeLongCriticalAction: 'BLOCK',
+                probeLongHighAction: 'SHADOW',
+                aegisLongCriticalAction: 'SHADOW',
+                momentumLongCriticalAction: 'SHADOW',
+                minRiskLevelToBlockProbe: 'CRITICAL',
+                blockOnlyProbeMode: true,
+                blockOnlyLong: true
+            }
         }));
 
         const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');

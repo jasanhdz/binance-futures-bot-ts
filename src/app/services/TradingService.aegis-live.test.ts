@@ -1125,10 +1125,14 @@ describe('TradingService Aegis live execution', () => {
     });
 
     it('Probe Mode allows CAUTION setup when CleanEntry only blocks on EventRisk', async () => {
+        const signal = probeSignal({ symbol: 'ADAUSDT' });
+        const aegis = signal.metadata!.aegis as any;
+        aegis.event_risk_auto.btc_context = { action: 'LONG', score: 0.72 };
+        aegis.event_risk_auto.eth_context = { action: 'LONG', score: 0.71 };
         const { exchange, historyLogger, notifier, service, state } = makeHarness({
             symbols: ['ADAUSDT'],
             symbolModes: { ADAUSDT: 'LIVE' },
-            signal: probeSignal({ symbol: 'ADAUSDT' }),
+            signal,
             eventRisk: {
                 enabled: true,
                 mode: 'CAUTION',
@@ -1176,6 +1180,79 @@ describe('TradingService Aegis live execution', () => {
             lastProbeTradeId: expect.any(String)
         }));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧪 Probe Mode permitió entrada'));
+    });
+
+    it('does not execute orders when Probe LONG is blocked by LongRiskShadow CRITICAL', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['ADAUSDT'],
+            symbolModes: { ADAUSDT: 'LIVE' },
+            signal: probeSignal({ symbol: 'ADAUSDT' }),
+            cachedCandles: cachedCandles([1.05, 1.04, 1.03, 1.02, 1.01, 1.0, 0.995, 0.99, 0.985, 0.98, 0.975, 0.97, 0.965, 0.96]),
+            eventRisk: {
+                enabled: true,
+                mode: 'CAUTION',
+                enforce: false,
+                manual_override_enabled: true,
+                caution: { min_quality_score: 0.65, max_tail_risk_score: 0.45, require_btc_eth_confirmation: true },
+                risk_off: { min_quality_score: 0.75, max_tail_risk_score: 0.35, allow_only_a_plus: true },
+                manual_only: { block_new_entries: false }
+            },
+            decisionEnforcement: decisionEnforcementConfig(),
+            cleanEntryGuard: cleanEntryGuardConfig({ enabled: true, mode: 'ENFORCE' }),
+            probeMode: probeModeConfig(),
+            entryPolicy: {
+                enabled: true,
+                guards: {
+                    regime_context: { enabled: false, mode: 'OFF' },
+                    momentum_ride: { enabled: false, mode: 'OFF' },
+                    regime: { enabled: true, mode: 'SHADOW' },
+                    short_gate: { enabled: false, mode: 'OFF' },
+                    entry_quality: { enabled: true, mode: 'ENFORCE' },
+                    event_risk: { enabled: true, mode: 'ENFORCE' },
+                    decision_brain: { enabled: true, mode: 'ENFORCE' },
+                    clean_entry: { enabled: true, mode: 'ENFORCE' },
+                    probe_mode: { enabled: true, mode: 'ENFORCE' },
+                    long_risk_shadow: {
+                        enabled: true,
+                        mode: 'ENFORCE_PROBE_LONG_CRITICAL',
+                        probeLongCriticalAction: 'BLOCK',
+                        probeLongHighAction: 'SHADOW',
+                        aegisLongCriticalAction: 'SHADOW',
+                        momentumLongCriticalAction: 'SHADOW',
+                        minRiskLevelToBlockProbe: 'CRITICAL',
+                        blockOnlyProbeMode: true,
+                        blockOnlyLong: true
+                    }
+                }
+            }
+        });
+
+        await service.tick('ADAUSDT');
+
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ENTRY_POLICY_DECISION',
+            reason: 'long_risk_probe_long_critical',
+            metadata: expect.objectContaining({
+                finalDecision: 'DENY',
+                finalReason: 'long_risk_probe_long_critical',
+                finalStrategy: 'none',
+                longRiskShadow: expect.objectContaining({
+                    riskLevel: 'CRITICAL',
+                    enforcementApplied: true,
+                    blockedProbeLong: true,
+                    actionTaken: 'BLOCK'
+                })
+            })
+        }));
+        expect(historyLogger.logSignal).toHaveBeenCalledWith(expect.objectContaining({
+            executed: false,
+            gate_reason: 'long_risk_probe_long_critical'
+        }));
     });
 
     it('Probe Mode denial leaves ProfitProtection ExitEye and brackets untouched', async () => {

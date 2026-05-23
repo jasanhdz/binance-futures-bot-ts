@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateAegisLongRiskShadow } from './AegisLongRiskShadowGuardAdapter';
+import { AegisLongRiskShadowGuardAdapter, evaluateAegisLongRiskShadow } from './AegisLongRiskShadowGuardAdapter';
 
 describe('AegisLongRiskShadowGuardAdapter', () => {
     it('marks ETH-like weak LONGs as high risk', () => {
@@ -115,5 +115,72 @@ describe('AegisLongRiskShadowGuardAdapter', () => {
         expect(result.decision).toBe('NOT_APPLICABLE');
         expect(result.riskScore).toBe(0);
         expect(result.wouldBlock).toBe(false);
+    });
+
+    it('keeps enforce-probe mode as metadata without enforcing inside the adapter', () => {
+        const guard = AegisLongRiskShadowGuardAdapter.evaluate({
+            context: {
+                symbol: 'ADAUSDT',
+                side: 'LONG',
+                entryQuality: {
+                    recommendation: 'ALLOW_SHADOW',
+                    ruleGate: { enabled: true, mode: 'ENFORCE', config: {} as any }
+                },
+                eventRisk: {
+                    enabled: true,
+                    mode: 'CAUTION',
+                    enforce: false,
+                    wouldBlock: true,
+                    isAltSymbol: true
+                },
+                shortGate: { config: {} as any },
+                decisionEnforcement: { config: {} as any },
+                operational: {
+                    consecutiveLosses: 0,
+                    tradesToday: 0,
+                    openPositionsCount: 0,
+                    openProbePositions: 0,
+                    sameSymbolPositionExists: false,
+                    timestamp: Date.now()
+                },
+                signal: {} as any,
+                gate: {} as any,
+                turboScore: 1,
+                leverage: 20,
+                requestedPositionFraction: 0.1,
+                basePositionFraction: 0.1
+            },
+            policy: { enabled: true, mode: 'ENFORCE_PROBE_LONG_CRITICAL' },
+            guards: {
+                clean_entry: {
+                    name: 'clean_entry',
+                    enabled: true,
+                    mode: 'ENFORCE',
+                    decision: 'WAIT',
+                    reason: 'clean_entry_event_risk_would_block',
+                    wouldBlock: true,
+                    enforced: true,
+                    metadata: {}
+                },
+                event_risk: {
+                    name: 'event_risk',
+                    enabled: true,
+                    mode: 'SHADOW',
+                    decision: 'SHADOW_DENY',
+                    reason: 'caution_btc_eth_not_confirmed',
+                    wouldBlock: true,
+                    enforced: false,
+                    metadata: {}
+                }
+            }
+        });
+
+        expect(guard.mode).toBe('ENFORCE_PROBE_LONG_CRITICAL');
+        expect(guard.enforced).toBe(false);
+        expect(guard.metadata.longRiskShadow).toMatchObject({
+            mode: 'ENFORCE_PROBE_LONG_CRITICAL',
+            enforcementApplied: false,
+            actionTaken: 'SHADOW'
+        });
     });
 });

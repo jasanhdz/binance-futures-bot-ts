@@ -469,7 +469,14 @@ export class TradingService {
                 },
                 long_risk_shadow: {
                     enabled: true,
-                    mode: 'SHADOW'
+                    mode: 'ENFORCE_PROBE_LONG_CRITICAL',
+                    probeLongCriticalAction: 'BLOCK',
+                    probeLongHighAction: 'SHADOW',
+                    aegisLongCriticalAction: 'SHADOW',
+                    momentumLongCriticalAction: 'SHADOW',
+                    minRiskLevelToBlockProbe: 'CRITICAL',
+                    blockOnlyProbeMode: true,
+                    blockOnlyLong: true
                 },
                 short_gate: {
                     enabled: this.getAegisShortGateConfig().enabled === true,
@@ -2050,6 +2057,24 @@ export class TradingService {
                     gate: deniedGate,
                     executed: false,
                     metadata: { entryPolicy: entryDecision.metadata }
+                });
+                return;
+            }
+
+            if (!entryDecision.shouldOpen && entryDecision.deniedBy === 'long_risk_shadow') {
+                const deniedGate = { ...gateAfterPositionOverride, allowed: false, reason: entryDecision.finalReason };
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: deniedGate,
+                    executed: false,
+                    metadata: { entryPolicy: entryDecision.metadata }
+                });
+                logger.warn('aegis_long_risk_shadow_blocked_probe_long', {
+                    symbol,
+                    side,
+                    reason: entryDecision.finalReason,
+                    metadata: entryDecision.metadata.longRiskShadow
                 });
                 return;
             }

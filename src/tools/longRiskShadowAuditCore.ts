@@ -26,6 +26,8 @@ export interface LongRiskShadowTradeAudit {
     pnlUsdt?: number;
     roe?: number;
     assessment: AegisLongRiskShadowAssessment;
+    probeAllowed: boolean;
+    wouldBlockProbeLongCritical: boolean;
 }
 
 export interface LongRiskShadowAuditReport {
@@ -43,6 +45,12 @@ export interface LongRiskShadowAuditReport {
         pnlMissedEstimatedIfReduced50Pct: number;
         netSavedPnlEstimatedIfReduced50Pct: number;
         roeAvoidedEstimatedIfReduced50Pct: number;
+        blockedProbeLongCriticalCount: number;
+        blockedProbeLongCriticalWinners: number;
+        blockedProbeLongCriticalLosers: number;
+        estimatedSavedIfBlocked: number;
+        estimatedMissedIfBlocked: number;
+        netEstimatedIfBlocked: number;
         bySymbol: Record<string, JsonRecord>;
         byFinalStrategy: Record<string, JsonRecord>;
         byRiskLevel: Record<string, number>;
@@ -121,6 +129,14 @@ function buildTradeAudit(pair: TradePair): LongRiskShadowTradeAudit {
         regimeEngineV2TechnicalRegime: entryPolicy.momentumRide?.regimeEngineV2?.technicalRegime,
         regimeEngineV2TransitionRisk: entryPolicy.momentumRide?.regimeEngineV2?.transitionRisk
     });
+    const probeAllowed = entryPolicy.finalReason === 'probe_mode_allowed'
+        || entryPolicy.allowedBy === 'probe_mode'
+        || entryPolicy.probeMode?.allowed === true
+        || guards.probe_mode?.decision === 'ALLOW'
+        || guards.probe_mode?.metadata?.probeMode?.allowed === true;
+    const wouldBlockProbeLongCritical = probeAllowed
+        && assessment.riskLevel === 'CRITICAL'
+        && assessment.suggestedAction === 'WOULD_BLOCK_SHADOW';
     return {
         tradeId: pair.tradeId,
         symbol: pair.symbol,
@@ -132,7 +148,9 @@ function buildTradeAudit(pair: TradePair): LongRiskShadowTradeAudit {
         exitPrice: num(close.exit_price),
         pnlUsdt: num(close.pnl_usdt),
         roe: num(close.roe),
-        assessment
+        assessment,
+        probeAllowed,
+        wouldBlockProbeLongCritical
     };
 }
 
@@ -142,6 +160,11 @@ function summarize(trades: LongRiskShadowTradeAudit[]): LongRiskShadowAuditRepor
     const losersWarned = warned.filter((trade) => (trade.pnlUsdt ?? 0) < 0);
     const saved = losersWarned.reduce((sum, trade) => sum + Math.abs(trade.pnlUsdt ?? 0) * 0.5, 0);
     const missed = winnersWarned.reduce((sum, trade) => sum + Math.max(0, trade.pnlUsdt ?? 0) * 0.5, 0);
+    const blockedProbeLongCritical = trades.filter((trade) => trade.wouldBlockProbeLongCritical);
+    const blockedWinners = blockedProbeLongCritical.filter((trade) => (trade.pnlUsdt ?? 0) > 0);
+    const blockedLosers = blockedProbeLongCritical.filter((trade) => (trade.pnlUsdt ?? 0) < 0);
+    const savedIfBlocked = blockedLosers.reduce((sum, trade) => sum + Math.abs(trade.pnlUsdt ?? 0), 0);
+    const missedIfBlocked = blockedWinners.reduce((sum, trade) => sum + Math.max(0, trade.pnlUsdt ?? 0), 0);
     return {
         longTrades: trades.length,
         highCriticalWarnings: warned.length,
@@ -153,6 +176,12 @@ function summarize(trades: LongRiskShadowTradeAudit[]): LongRiskShadowAuditRepor
         pnlMissedEstimatedIfReduced50Pct: round(missed),
         netSavedPnlEstimatedIfReduced50Pct: round(saved - missed),
         roeAvoidedEstimatedIfReduced50Pct: round(losersWarned.reduce((sum, trade) => sum + Math.abs(trade.roe ?? 0) * 0.5, 0)),
+        blockedProbeLongCriticalCount: blockedProbeLongCritical.length,
+        blockedProbeLongCriticalWinners: blockedWinners.length,
+        blockedProbeLongCriticalLosers: blockedLosers.length,
+        estimatedSavedIfBlocked: round(savedIfBlocked),
+        estimatedMissedIfBlocked: round(missedIfBlocked),
+        netEstimatedIfBlocked: round(savedIfBlocked - missedIfBlocked),
         bySymbol: groupedSummary(trades, (trade) => trade.symbol),
         byFinalStrategy: groupedSummary(trades, (trade) => trade.finalStrategy),
         byRiskLevel: countBy(trades, (trade) => trade.assessment.riskLevel),
@@ -171,6 +200,9 @@ function groupedSummary(trades: LongRiskShadowTradeAudit[], keyFn: (trade: LongR
             row.warned += 1;
             if ((trade.pnlUsdt ?? 0) > 0) row.winnersWarned += 1;
             if ((trade.pnlUsdt ?? 0) < 0) row.losersWarned += 1;
+        }
+        if (trade.wouldBlockProbeLongCritical) {
+            row.blockedProbeLongCritical = (row.blockedProbeLongCritical ?? 0) + 1;
         }
         out[key] = row;
     }
@@ -204,13 +236,17 @@ export function renderMarkdown(report: LongRiskShadowAuditReport): string {
     lines.push(`- Estimated saved if warned trades reduced 50%: $${report.summary.pnlSavedEstimatedIfReduced50Pct.toFixed(2)}`);
     lines.push(`- Estimated missed if winners reduced 50%: $${report.summary.pnlMissedEstimatedIfReduced50Pct.toFixed(2)}`);
     lines.push(`- Net estimated saved: $${report.summary.netSavedPnlEstimatedIfReduced50Pct.toFixed(2)}`);
+    lines.push(`- Probe LONG CRITICAL would-block count: ${report.summary.blockedProbeLongCriticalCount}`);
+    lines.push(`- Probe LONG CRITICAL winners blocked: ${report.summary.blockedProbeLongCriticalWinners}`);
+    lines.push(`- Probe LONG CRITICAL losers blocked: ${report.summary.blockedProbeLongCriticalLosers}`);
+    lines.push(`- Net estimated if Probe LONG CRITICAL blocked: $${report.summary.netEstimatedIfBlocked.toFixed(2)}`);
     lines.push('');
     lines.push('## Trades');
     lines.push('');
-    lines.push('| Trade | Result | Strategy | Level | Score | Action | Reasons |');
-    lines.push('|---|---:|---|---|---:|---|---|');
+    lines.push('| Trade | Result | Strategy | Level | Score | Action | Probe block | Reasons |');
+    lines.push('|---|---:|---|---|---:|---|---|---|');
     for (const trade of report.trades) {
-        lines.push(`| ${trade.symbol} ${trade.tradeId} | $${(trade.pnlUsdt ?? 0).toFixed(2)} / ${pct(trade.roe)} | ${trade.finalStrategy} | ${trade.assessment.riskLevel} | ${trade.assessment.riskScore.toFixed(2)} | ${trade.assessment.suggestedAction} | ${trade.assessment.reasons.join(', ') || 'n/a'} |`);
+        lines.push(`| ${trade.symbol} ${trade.tradeId} | $${(trade.pnlUsdt ?? 0).toFixed(2)} / ${pct(trade.roe)} | ${trade.finalStrategy} | ${trade.assessment.riskLevel} | ${trade.assessment.riskScore.toFixed(2)} | ${trade.assessment.suggestedAction} | ${trade.wouldBlockProbeLongCritical ? 'YES' : 'NO'} | ${trade.assessment.reasons.join(', ') || 'n/a'} |`);
     }
     if (report.warnings.length > 0) {
         lines.push('');
@@ -221,7 +257,7 @@ export function renderMarkdown(report: LongRiskShadowAuditReport): string {
 }
 
 export function renderCsv(report: LongRiskShadowAuditReport): string {
-    const header = ['trade_id', 'symbol', 'strategy', 'opened_at', 'closed_at', 'pnl_usdt', 'roe', 'risk_level', 'risk_score', 'suggested_action', 'reasons'];
+    const header = ['trade_id', 'symbol', 'strategy', 'opened_at', 'closed_at', 'pnl_usdt', 'roe', 'risk_level', 'risk_score', 'suggested_action', 'probe_allowed', 'would_block_probe_long_critical', 'reasons'];
     const rows = report.trades.map((trade) => [
         trade.tradeId,
         trade.symbol,
@@ -233,6 +269,8 @@ export function renderCsv(report: LongRiskShadowAuditReport): string {
         trade.assessment.riskLevel,
         String(trade.assessment.riskScore),
         trade.assessment.suggestedAction,
+        String(trade.probeAllowed),
+        String(trade.wouldBlockProbeLongCritical),
         trade.assessment.reasons.join('|')
     ]);
     return [header, ...rows].map((row) => row.map(csvEscape).join(',')).join('\n');

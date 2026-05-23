@@ -71,7 +71,7 @@ export class RegimeGuardAdapter {
             nowMs: context.operational.timestamp,
             config: {
                 ...context.regime.config,
-                mode: policy.mode
+                mode: policy.mode === 'ENFORCE' ? 'ENFORCE' : 'SHADOW'
             }
         });
         const enforced = isGuardEnforced(policy);

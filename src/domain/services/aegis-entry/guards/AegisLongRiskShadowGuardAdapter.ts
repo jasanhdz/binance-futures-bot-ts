@@ -1,6 +1,7 @@
 import { Side } from '../../../types';
 import {
     AegisEntryContext,
+    AegisEntryPolicyMode,
     AegisEntryGuardPolicy,
     AegisEntryGuardResult,
     isGuardShadow
@@ -45,11 +46,15 @@ export interface AegisLongRiskShadowInput {
 
 export interface AegisLongRiskShadowAssessment extends AegisLongRiskShadowInput {
     enabled: boolean;
-    mode: 'SHADOW';
+    mode: AegisEntryPolicyMode;
     decision: 'ALLOW' | 'SHADOW_DENY' | 'NOT_APPLICABLE';
     reason: string;
     wouldBlock: boolean;
-    enforced: false;
+    enforced: boolean;
+    enforcementApplied: boolean;
+    enforcementScope: 'none' | 'probe_long_critical';
+    blockedProbeLong: boolean;
+    actionTaken: 'SHADOW' | 'BLOCK';
     riskScore: number;
     riskLevel: AegisLongRiskShadowRiskLevel;
     reasons: string[];
@@ -81,18 +86,37 @@ export class AegisLongRiskShadowGuardAdapter {
             };
         }
 
-        const assessment = evaluateAegisLongRiskShadow(buildInput(input));
+        const assessment = {
+            ...evaluateAegisLongRiskShadow(buildInput(input)),
+            mode: input.policy.mode,
+            enforced: false,
+            enforcementApplied: false,
+            enforcementScope: 'none' as const,
+            blockedProbeLong: false,
+            actionTaken: 'SHADOW' as const
+        };
         return {
             name: 'long_risk_shadow',
             enabled: true,
-            mode: 'SHADOW',
+            mode: input.policy.mode,
             decision: assessment.decision,
             reason: assessment.reason,
             wouldBlock: assessment.wouldBlock,
             enforced: false,
             metadata: {
                 longRiskShadow: assessment,
-                shadow: isGuardShadow(input.policy) || input.policy.mode === 'ENFORCE'
+                shadowAssessment: {
+                    riskScore: assessment.riskScore,
+                    riskLevel: assessment.riskLevel,
+                    reasons: assessment.reasons,
+                    suggestedAction: assessment.suggestedAction,
+                    wouldBlock: assessment.wouldBlock
+                },
+                enforcementApplied: false,
+                enforcementScope: 'none',
+                blockedProbeLong: false,
+                actionTaken: 'SHADOW',
+                shadow: isGuardShadow(input.policy) || input.policy.mode === 'ENFORCE' || input.policy.mode === 'ENFORCE_PROBE_LONG_CRITICAL'
             }
         };
     }
@@ -202,6 +226,10 @@ function buildAssessment(
         reason,
         wouldBlock,
         enforced: false,
+        enforcementApplied: false,
+        enforcementScope: 'none',
+        blockedProbeLong: false,
+        actionTaken: 'SHADOW',
         riskScore,
         riskLevel,
         reasons,

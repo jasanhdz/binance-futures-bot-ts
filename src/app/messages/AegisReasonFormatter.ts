@@ -24,7 +24,8 @@ const REASON_LABELS: Record<string, string> = {
     momentum_btc_eth_not_confirmed: 'Momentum Ride sin confirmación BTC/ETH',
     momentum_tail_risk_high: 'Momentum Ride con tail risk alto',
     momentum_safety_cap_exceeded: 'Momentum Ride bloqueado por safety cap',
-    momentum_override_reserved_not_active: 'Override Momentum Ride reservado, no activo'
+    momentum_override_reserved_not_active: 'Override Momentum Ride reservado, no activo',
+    long_risk_probe_long_critical: 'Probe LONG bloqueado por LongRisk CRITICAL: EntryQuality insuficiente + EventRisk/CleanEntry débil + régimen/contexto no confirma'
 };
 
 function compactReasonKey(reason: string): string {

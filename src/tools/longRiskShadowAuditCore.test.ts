@@ -12,11 +12,14 @@ describe('longRiskShadowAuditCore', () => {
         await import('fs/promises').then((fs) => fs.mkdir(logsDir, { recursive: true }));
         const rows = [
             openTrade('ETH-LOSS', 'ETHUSDT', 'LONG', -20, {
+                finalReason: 'probe_mode_allowed',
+                probeMode: { allowed: true },
                 regime: { regime: 'UNKNOWN', wouldBlock: true, btcAction: 'HOLD', ethAction: 'LONG' },
                 guards: {
                     entry_quality: { reason: 'insufficient_data', metadata: { recommendation: 'ALLOW' } },
-                    clean_entry: { decision: 'ALLOW' },
-                    event_risk: { decision: 'ALLOW', metadata: { mode: 'NORMAL' } }
+                    clean_entry: { decision: 'WAIT' },
+                    event_risk: { decision: 'SHADOW_DENY', wouldBlock: true, metadata: { mode: 'CAUTION' } },
+                    probe_mode: { decision: 'ALLOW', metadata: { probeMode: { allowed: true } } }
                 }
             }),
             closeTrade('ETH-LOSS', 'ETHUSDT', 'LONG', -20),
@@ -53,7 +56,11 @@ describe('longRiskShadowAuditCore', () => {
         expect(report.summary.losersWarned).toBe(1);
         expect(report.summary.winnersWarned).toBe(0);
         expect(report.summary.netSavedPnlEstimatedIfReduced50Pct).toBe(10);
-        expect(report.trades.find((trade) => trade.tradeId === 'ETH-LOSS')?.assessment.riskLevel).toBe('HIGH');
+        expect(report.summary.blockedProbeLongCriticalCount).toBe(1);
+        expect(report.summary.blockedProbeLongCriticalLosers).toBe(1);
+        expect(report.summary.netEstimatedIfBlocked).toBe(20);
+        expect(report.trades.find((trade) => trade.tradeId === 'ETH-LOSS')?.assessment.riskLevel).toBe('CRITICAL');
+        expect(report.trades.find((trade) => trade.tradeId === 'ETH-LOSS')?.wouldBlockProbeLongCritical).toBe(true);
         expect(report.trades.find((trade) => trade.tradeId === 'SOL-WIN')?.assessment.riskLevel).toBe('LOW');
 
         await rm(dir, { recursive: true, force: true });

@@ -289,6 +289,36 @@ describe('AegisBlocksReportService', () => {
         expect(report.byReason.long_risk_shadow_multi_factor).toBeUndefined();
     });
 
+    it('cuenta long_risk_probe_long_critical cuando EntryPolicy final bloquea', async () => {
+        await writeEvents([
+            event({
+                event: 'ENTRY_POLICY_DECISION',
+                reason: 'long_risk_probe_long_critical',
+                metadata: {
+                    symbol: 'SUIUSDT',
+                    side: 'LONG',
+                    finalDecision: 'DENY',
+                    finalReason: 'long_risk_probe_long_critical',
+                    finalStrategy: 'none',
+                    deniedBy: 'long_risk_shadow',
+                    longRiskShadow: {
+                        decision: 'DENY',
+                        reason: 'long_risk_probe_long_critical',
+                        riskLevel: 'CRITICAL',
+                        enforcementApplied: true,
+                        blockedProbeLong: true,
+                        actionTaken: 'BLOCK'
+                    }
+                }
+            })
+        ]);
+
+        const report = await service().buildReport({ mode: 'summary', windowMinutes: 60 });
+
+        expect(report.totalBlocks).toBe(1);
+        expect(report.byReason).toMatchObject({ long_risk_probe_long_critical: 1 });
+    });
+
     it('ENTRY_POLICY_DECISION DENY cuenta por finalReason real aunque incluya diagnóstico Momentum', async () => {
         await writeEvents([
             event({

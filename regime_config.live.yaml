@@ -91,6 +91,16 @@ aegis:
       probe_mode:
         enabled: true
         mode: ENFORCE
+      long_risk_shadow:
+        enabled: true
+        mode: ENFORCE_PROBE_LONG_CRITICAL
+        probe_long_critical_action: BLOCK
+        probe_long_high_action: SHADOW
+        aegis_long_critical_action: SHADOW
+        momentum_long_critical_action: SHADOW
+        min_risk_level_to_block_probe: CRITICAL
+        block_only_probe_mode: true
+        block_only_long: true
       short_gate:
         enabled: true
         mode: ENFORCE

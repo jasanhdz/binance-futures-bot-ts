@@ -191,6 +191,59 @@ function evaluateLongRiskShadowGuard(input: {
     });
 }
 
+function shouldBlockProbeLongCritical(input: {
+    context: AegisEntryContext;
+    policy: AegisEntryPolicyRuntimeConfig;
+    probeGuard: AegisEntryGuardResult;
+    longRiskShadow: AegisEntryGuardResult;
+    momentumGuard?: AegisEntryGuardResult;
+    momentumRiskProfile?: AegisMomentumRiskProfile;
+}): boolean {
+    const policy = input.policy.guards.long_risk_shadow;
+    const assessment = (input.longRiskShadow.metadata.longRiskShadow ?? {}) as Record<string, unknown>;
+    return policy?.enabled === true
+        && policy.mode === 'ENFORCE_PROBE_LONG_CRITICAL'
+        && policy.probeLongCriticalAction !== 'SHADOW'
+        && policy.blockOnlyProbeMode !== false
+        && policy.blockOnlyLong !== false
+        && input.context.side === 'LONG'
+        && input.probeGuard.enforced === true
+        && input.probeGuard.decision === 'ALLOW'
+        && assessment.riskLevel === 'CRITICAL'
+        && assessment.suggestedAction === 'WOULD_BLOCK_SHADOW'
+        && !canMomentumOverrideNonHard({
+            momentumGuard: input.momentumGuard,
+            momentumRiskProfile: input.momentumRiskProfile
+        });
+}
+
+function enforceProbeLongCriticalBlock(guard: AegisEntryGuardResult): AegisEntryGuardResult {
+    const assessment = (guard.metadata.longRiskShadow ?? {}) as Record<string, unknown>;
+    const enforcedAssessment = {
+        ...assessment,
+        enforced: true,
+        enforcementApplied: true,
+        enforcementScope: 'probe_long_critical',
+        blockedProbeLong: true,
+        actionTaken: 'BLOCK'
+    };
+    return {
+        ...guard,
+        decision: 'DENY',
+        reason: 'long_risk_probe_long_critical',
+        wouldBlock: true,
+        enforced: true,
+        metadata: {
+            ...guard.metadata,
+            longRiskShadow: enforcedAssessment,
+            enforcementApplied: true,
+            enforcementScope: 'probe_long_critical',
+            blockedProbeLong: true,
+            actionTaken: 'BLOCK'
+        }
+    };
+}
+
 export class AegisEntryGuardOrchestrator {
     static evaluate(context: AegisEntryContext, policy: AegisEntryPolicyRuntimeConfig): AegisEntryDecisionResult {
         const guards: AegisEntryGuardResult[] = [];
@@ -428,7 +481,27 @@ export class AegisEntryGuardOrchestrator {
             decisions.probeMode = probe.decision;
             if (probe.decision?.allowed === true && probe.guard.enforced) {
                 const longRiskShadow = evaluateLongRiskShadowGuard({ context: adjustedContext, policy, guards });
-                guards.push(longRiskShadow);
+                const enforcedLongRiskShadow = shouldBlockProbeLongCritical({
+                    context: adjustedContext,
+                    policy,
+                    probeGuard: probe.guard,
+                    longRiskShadow,
+                    ...momentumSelection
+                }) ? enforceProbeLongCriticalBlock(longRiskShadow) : longRiskShadow;
+                guards.push(enforcedLongRiskShadow);
+                if (enforcedLongRiskShadow.enforced && enforcedLongRiskShadow.reason === 'long_risk_probe_long_critical') {
+                    return finalize({
+                        context: adjustedContext,
+                        finalDecision: 'DENY',
+                        finalReason: 'long_risk_probe_long_critical',
+                        deniedBy: 'long_risk_shadow',
+                        guards,
+                        adjustedLeverage,
+                        adjustedPositionFraction,
+                        ...momentumSelection,
+                        decisions
+                    });
+                }
                 return finalize({
                     context: adjustedContext,
                     finalDecision: 'ALLOW',

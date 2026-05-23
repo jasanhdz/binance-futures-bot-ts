@@ -337,6 +337,13 @@ export interface AegisProbeModeYamlConfig {
 export interface AegisEntryGuardPolicyYamlConfig {
     enabled?: boolean;
     mode?: AegisEntryPolicyMode | string;
+    probe_long_critical_action?: string;
+    probe_long_high_action?: string;
+    aegis_long_critical_action?: string;
+    momentum_long_critical_action?: string;
+    min_risk_level_to_block_probe?: string;
+    block_only_probe_mode?: boolean;
+    block_only_long?: boolean;
 }
 
 export interface AegisEntryPolicyYamlConfig {
@@ -1080,7 +1087,14 @@ export class NinjaConfigManager {
                 }),
                 long_risk_shadow: this.normalizeEntryGuardPolicy(guards.long_risk_shadow, {
                     enabled: true,
-                    mode: 'SHADOW'
+                    mode: 'ENFORCE_PROBE_LONG_CRITICAL',
+                    probeLongCriticalAction: 'BLOCK',
+                    probeLongHighAction: 'SHADOW',
+                    aegisLongCriticalAction: 'SHADOW',
+                    momentumLongCriticalAction: 'SHADOW',
+                    minRiskLevelToBlockProbe: 'CRITICAL',
+                    blockOnlyProbeMode: true,
+                    blockOnlyLong: true
                 }),
                 short_gate: this.normalizeEntryGuardPolicy(guards.short_gate, {
                     enabled: this.getAegisShortGateConfig().enabled,
@@ -1777,7 +1791,7 @@ export class NinjaConfigManager {
 
     private normalizeEntryPolicyMode(mode?: AegisEntryPolicyMode | string, fallback: AegisEntryPolicyMode = 'OFF'): AegisEntryPolicyMode {
         const normalized = String(mode || fallback).trim().toUpperCase();
-        if (normalized === 'ENFORCE' || normalized === 'SHADOW' || normalized === 'OFF') {
+        if (normalized === 'ENFORCE' || normalized === 'SHADOW' || normalized === 'OFF' || normalized === 'ENFORCE_PROBE_LONG_CRITICAL') {
             return normalized;
         }
         return fallback;
@@ -1789,10 +1803,39 @@ export class NinjaConfigManager {
     ): AegisEntryGuardPolicy {
         const enabled = raw?.enabled ?? fallback.enabled;
         const mode = this.normalizeEntryPolicyMode(raw?.mode, fallback.mode);
-        return {
+        const policy: AegisEntryGuardPolicy = {
             enabled: enabled === true && mode !== 'OFF',
             mode
         };
+        const probeLongCriticalAction = this.normalizeLongRiskAction(raw?.probe_long_critical_action, fallback.probeLongCriticalAction);
+        const probeLongHighAction = this.normalizeLongRiskAction(raw?.probe_long_high_action, fallback.probeLongHighAction);
+        const aegisLongCriticalAction = this.normalizeLongRiskAction(raw?.aegis_long_critical_action, fallback.aegisLongCriticalAction);
+        const momentumLongCriticalAction = this.normalizeLongRiskAction(raw?.momentum_long_critical_action, fallback.momentumLongCriticalAction);
+        const minRiskLevelToBlockProbe = this.normalizeLongRiskBlockLevel(raw?.min_risk_level_to_block_probe, fallback.minRiskLevelToBlockProbe);
+        if (probeLongCriticalAction) policy.probeLongCriticalAction = probeLongCriticalAction;
+        if (probeLongHighAction) policy.probeLongHighAction = probeLongHighAction;
+        if (aegisLongCriticalAction) policy.aegisLongCriticalAction = aegisLongCriticalAction;
+        if (momentumLongCriticalAction) policy.momentumLongCriticalAction = momentumLongCriticalAction;
+        if (minRiskLevelToBlockProbe) policy.minRiskLevelToBlockProbe = minRiskLevelToBlockProbe;
+        if (raw?.block_only_probe_mode !== undefined || fallback.blockOnlyProbeMode !== undefined) {
+            policy.blockOnlyProbeMode = raw?.block_only_probe_mode ?? fallback.blockOnlyProbeMode;
+        }
+        if (raw?.block_only_long !== undefined || fallback.blockOnlyLong !== undefined) {
+            policy.blockOnlyLong = raw?.block_only_long ?? fallback.blockOnlyLong;
+        }
+        return policy;
+    }
+
+    private normalizeLongRiskAction(value: unknown, fallback?: 'BLOCK' | 'SHADOW'): 'BLOCK' | 'SHADOW' | undefined {
+        const normalized = String(value || fallback || '').trim().toUpperCase();
+        if (normalized === 'BLOCK' || normalized === 'SHADOW') return normalized;
+        return fallback;
+    }
+
+    private normalizeLongRiskBlockLevel(value: unknown, fallback?: 'HIGH' | 'CRITICAL'): 'HIGH' | 'CRITICAL' | undefined {
+        const normalized = String(value || fallback || '').trim().toUpperCase();
+        if (normalized === 'HIGH' || normalized === 'CRITICAL') return normalized;
+        return fallback;
     }
 
     private normalizeEventRiskMode(mode?: EventRiskMode | string): EventRiskMode {

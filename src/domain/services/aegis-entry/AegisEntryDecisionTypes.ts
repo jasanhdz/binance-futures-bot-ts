@@ -15,8 +15,10 @@ import { AegisShortGateConfig, AegisShortGateDecision } from '../AegisShortGate'
 import { AegisRegimeDecision, AegisRegimeGuardConfig, AegisRegimeLabel } from '../AegisRegimeGuard';
 import { RegimeEngineV2Decision } from '../regime-v2/RegimeEngineV2.types';
 
-export type AegisEntryPolicyMode = 'OFF' | 'SHADOW' | 'ENFORCE';
+export type AegisEntryPolicyMode = 'OFF' | 'SHADOW' | 'ENFORCE' | 'ENFORCE_PROBE_LONG_CRITICAL';
 export type AegisEntryFinalDecision = 'ALLOW' | 'DENY' | 'WAIT_CONFIRMATION';
+export type AegisLongRiskAction = 'BLOCK' | 'SHADOW';
+export type AegisLongRiskBlockLevel = 'HIGH' | 'CRITICAL';
 
 export type AegisEntryGuardName =
     | 'regime'
@@ -41,6 +43,13 @@ export type AegisEntryGuardDecision =
 export interface AegisEntryGuardPolicy {
     enabled: boolean;
     mode: AegisEntryPolicyMode;
+    probeLongCriticalAction?: AegisLongRiskAction;
+    probeLongHighAction?: AegisLongRiskAction;
+    aegisLongCriticalAction?: AegisLongRiskAction;
+    momentumLongCriticalAction?: AegisLongRiskAction;
+    minRiskLevelToBlockProbe?: AegisLongRiskBlockLevel;
+    blockOnlyProbeMode?: boolean;
+    blockOnlyLong?: boolean;
 }
 
 export interface AegisEntryPolicyRuntimeConfig {
@@ -384,7 +393,7 @@ export interface AegisEntryDecisionResult {
 
 export function normalizeEntryPolicyMode(mode?: string): AegisEntryPolicyMode {
     const normalized = String(mode || 'OFF').trim().toUpperCase();
-    if (normalized === 'SHADOW' || normalized === 'ENFORCE') return normalized;
+    if (normalized === 'SHADOW' || normalized === 'ENFORCE' || normalized === 'ENFORCE_PROBE_LONG_CRITICAL') return normalized;
     return 'OFF';
 }
 
