@@ -7,6 +7,12 @@ type Votes = {
     neutral?: number;
 };
 
+type MomentumStartupExample = {
+    symbol: string;
+    side: Side;
+    positionFraction?: number;
+};
+
 export interface AegisAccountMessageInput {
     walletBalance?: number;
     equityTotal?: number;
@@ -16,8 +22,10 @@ export interface AegisAccountMessageInput {
 export interface AegisPositionMessageInput {
     symbol: string;
     side: Side;
+    strategy?: string;
     size?: number;
     margin?: number;
+    leverage?: number;
     roi?: number;
     pnl?: number;
     durationHours?: number;
@@ -50,6 +58,42 @@ export interface AegisStartupMessageInput {
         dailyLossStopPct?: number;
         maxConsecutiveLosses?: number;
         requireBrackets?: boolean;
+    };
+    aegisTurbo?: {
+        enabled?: boolean;
+        mode?: string;
+        fallbackEnabled?: boolean;
+        leverage?: number;
+        entryThreshold?: number;
+        trailingActivationRoe?: number;
+        trailingCallbackRoe?: number;
+        stopRoe?: number;
+        takeProfitRoe?: number;
+        requireBrackets?: boolean;
+    };
+    momentumRide?: {
+        enabled?: boolean;
+        mode?: string;
+        researchMode?: boolean;
+        maxPositionFraction?: number;
+        maxOpenMomentumPositions?: number;
+        maxMomentumTradesPerDay?: number;
+        maxConsecutiveMomentumLosses?: number;
+        cooldownAfterLossMinutes?: number;
+        requireAegisDirectionConfirmation?: boolean;
+        requireBtcEthNotContradicting?: boolean;
+        examples?: MomentumStartupExample[];
+    };
+    regimeEngineV2?: {
+        metadataEnabled?: boolean;
+        useAsGate?: boolean;
+        ignoreForEntry?: boolean;
+    };
+    probeMode?: {
+        enabled?: boolean;
+        mode?: string;
+        maxOpenProbePositions?: number;
+        maxProbeEntriesPerHour?: number;
     };
     initialRadar?: {
         symbol: string;
@@ -131,56 +175,90 @@ function snapshotLabel(isFresh?: boolean): string {
     return 'N/D';
 }
 
-function formatFeatureTimestamp(value?: string | number): string | undefined {
-    if (typeof value === 'string' && value.length > 0) {
-        const date = new Date(value);
-        if (!Number.isNaN(date.getTime())) {
-            return formatUtcTime(date);
-        }
-        return value;
-    }
-    if (typeof value === 'number' && Number.isFinite(value)) return formatUtcTime(new Date(value));
-    return undefined;
-}
-
-function formatUtcTime(date: Date): string {
-    const hh = String(date.getUTCHours()).padStart(2, '0');
-    const min = String(date.getUTCMinutes()).padStart(2, '0');
-    return `${hh}:${min} UTC`;
-}
-
 function formatStartupAccount(input: AegisAccountMessageInput): string {
     return `💰 Wallet ${formatUsd(input.walletBalance, false)} | Equity ${formatUsd(input.equityTotal, false)} | Disp. ${formatUsd(input.availableBalance, false)}`;
 }
 
-function formatStartupConfig(input: AegisStartupMessageInput['config']): string {
-    const trailing = input.trailingEnabled
-        ? formatPct(input.trailingActivationRoe, true)
-        : 'OFF';
-    const brackets = input.requireBrackets ? '✅' : 'No';
+function formatCompactSymbols(symbols: string[]): string {
+    const compact = symbols.map(baseAssetFromSymbol).join(' ');
+    return `🎯 Símbolos activos (${symbols.length})\n${compact || 'N/D'}`;
+}
 
-    return `⚙️ Lev ${finiteNumber(input.leverage) ? input.leverage : 'N/D'}x | Th ${formatPct(input.entryThreshold)} | Max ${finiteNumber(input.maxHoldHours) ? input.maxHoldHours.toFixed(1) : 'N/D'}h\n` +
-        `🛡️ SL ${formatPct(input.stopRoe, true)} | TP ${formatPct(input.takeProfitRoe, true)} ROE\n` +
-        `🔁 Trail ${trailing} | Callback ${formatPct(input.trailingCallbackRoe)}\n` +
-        `🚨 Daily stop ${formatPct(input.dailyLossStopPct)} | Max losses ${finiteNumber(input.maxConsecutiveLosses) ? input.maxConsecutiveLosses : 'N/D'}\n` +
+function formatAegisTurboBlock(input: AegisStartupMessageInput): string {
+    const config = input.config;
+    const turbo = input.aegisTurbo;
+    const mode = turbo?.enabled === false ? 'OFF' : turbo?.mode ?? (input.mode.liveEnabled ? 'LIVE' : 'SHADOW');
+    const fallback = turbo?.fallbackEnabled === false ? 'OFF' : 'ON';
+    const leverage = turbo?.leverage ?? config.leverage;
+    const threshold = turbo?.entryThreshold ?? config.entryThreshold;
+    const trailingActivation = turbo?.trailingActivationRoe ?? config.trailingActivationRoe;
+    const trailingCallback = turbo?.trailingCallbackRoe ?? config.trailingCallbackRoe;
+    const stopRoe = turbo?.stopRoe ?? config.stopRoe;
+    const takeProfitRoe = turbo?.takeProfitRoe ?? config.takeProfitRoe;
+    const requireBrackets = turbo?.requireBrackets ?? config.requireBrackets;
+    const trailing = config.trailingEnabled
+        ? formatPct(trailingActivation, true)
+        : 'OFF';
+    const brackets = requireBrackets ? '✅' : 'No';
+
+    return `🛡️ Aegis Turbo\n` +
+        `Mode: ${mode} | Fallback: ${fallback}\n` +
+        `Lev base: ${finiteNumber(leverage) ? leverage : 'N/D'}x | Threshold: ${formatPct(threshold)}\n` +
+        `SL ${formatPct(stopRoe, true)} | TP ${formatPct(takeProfitRoe, true)} ROE\n` +
+        `Trail ${trailing} | Callback ${formatPct(trailingCallback)}\n` +
         `🧷 Brackets obligatorios ${brackets}`;
 }
 
-function formatStartupRadar(input?: AegisStartupMessageInput['initialRadar']): string {
-    if (!input) return `🛰️ Radar\nN/D`;
+function formatMomentumExamples(examples?: MomentumStartupExample[]): string | undefined {
+    if (!examples || examples.length === 0) return undefined;
 
-    const rawAction = input.rawAction ?? 'HOLD';
-    const gatedAction = input.gatedAction ?? rawAction;
-    const actionLabel = rawAction !== gatedAction ? `${gatedAction} (raw ${rawAction})` : gatedAction;
-    const feature = formatFeatureTimestamp(input.featureTimestamp);
-    const votes = input.votes ?? {};
-    const snapshot = `Snapshot ${snapshotLabel(input.freshnessIsFresh)}`;
+    const groups = new Map<string, string[]>();
+    for (const example of examples.slice(0, 6)) {
+        const key = `${example.side} ${formatPct(example.positionFraction)}`;
+        const symbols = groups.get(key) ?? [];
+        symbols.push(baseAssetFromSymbol(example.symbol));
+        groups.set(key, symbols);
+    }
+
+    const formatted = Array.from(groups.entries()).map(([key, symbols]) => `${symbols.join('/')} ${key}`);
+    return formatted.length > 0 ? `Risk examples: ${formatted.join(' | ')}` : undefined;
+}
+
+function formatMomentumRideBlock(input?: AegisStartupMessageInput['momentumRide']): string {
+    if (!input || input.enabled === false) {
+        return `⚡ Momentum Ride\nMode: OFF`;
+    }
+
+    const examples = formatMomentumExamples(input.examples);
     return [
-        `🛰️ Radar ${input.symbol}`,
-        `${actionLabel} | Score ${formatPct(input.rawScore)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0}`,
-        formatAegisReason(input.reason),
-        feature ? `${snapshot} | Feature ${feature}` : snapshot
+        `⚡ Momentum Ride`,
+        `Mode: ${input.mode ?? 'N/D'} | Prioridad: alta`,
+        `Max position: ${formatPct(input.maxPositionFraction)} wallet`,
+        `Max open momentum: ${finiteNumber(input.maxOpenMomentumPositions) ? input.maxOpenMomentumPositions : 'N/D'} | Max trades/day: ${finiteNumber(input.maxMomentumTradesPerDay) ? input.maxMomentumTradesPerDay : 'N/D'}`,
+        `Max consecutive losses: ${finiteNumber(input.maxConsecutiveMomentumLosses) ? input.maxConsecutiveMomentumLosses : 'N/D'} | Cooldown loss: ${finiteNumber(input.cooldownAfterLossMinutes) ? `${input.cooldownAfterLossMinutes}m` : 'N/D'}`,
+        `Requires Aegis direction ${input.requireAegisDirectionConfirmation ? '✅' : 'OFF'} | BTC/ETH contradiction block ${input.requireBtcEthNotContradicting ? '✅' : 'OFF'}`,
+        input.researchMode ? `Research/experimental mode ON` : undefined,
+        examples
     ].filter((line): line is string => Boolean(line)).join('\n');
+}
+
+function formatRegimeEngineBlock(input?: AegisStartupMessageInput['regimeEngineV2']): string {
+    const metadata = input?.metadataEnabled === false ? 'OFF' : 'ON';
+    const gate = input?.useAsGate ? 'ON' : 'OFF';
+    const useAsGate = input?.useAsGate === true;
+    const ignoreForEntry = input?.ignoreForEntry !== false;
+
+    return `🧭 RegimeEngineV2\n` +
+        `Metadata ${metadata} | Gate ${gate}\n` +
+        `useAsGate=${String(useAsGate)} | ignoreForEntry=${String(ignoreForEntry)}\n` +
+        `Observa régimen, no decide entradas`;
+}
+
+function formatProbeModeBlock(input?: AegisStartupMessageInput['probeMode']): string | undefined {
+    if (!input?.enabled) return undefined;
+
+    return `🧪 Probe Mode\n` +
+        `Mode: ${input.mode ?? 'N/D'} | Max open: ${finiteNumber(input.maxOpenProbePositions) ? input.maxOpenProbePositions : 'N/D'} | Max/hour: ${finiteNumber(input.maxProbeEntriesPerHour) ? input.maxProbeEntriesPerHour : 'N/D'}`;
 }
 
 function formatStartupPositions(input: { activePositions: AegisPositionMessageInput[] }): string {
@@ -193,6 +271,7 @@ function formatStartupPositions(input: { activePositions: AegisPositionMessageIn
         const sideIcon = position.side === 'LONG' ? '📈' : '📉';
         return [
             `💼 ${position.symbol} ${position.side} ${sideIcon}`,
+            `Strategy ${position.strategy ?? 'N/D'} | Lev ${finiteNumber(position.leverage) ? `${position.leverage}x` : 'N/D'}`,
             `ROI ${formatPct(position.roi, true)} | PnL ${formatPnl(position.pnl)} | ${finiteNumber(position.durationHours) ? `${position.durationHours.toFixed(1)}h` : 'N/D'}`,
             `Size ${formatNumber(position.size)} ${baseAsset} | Margin ${formatUsd(position.margin, false)}`,
             `TP ${formatPrice(position.tpPrice)} | SL ${formatPrice(position.slPrice)}`
@@ -270,14 +349,19 @@ export function formatAllSignalsMessage(input: { signals: AegisSymbolSignalMessa
 }
 
 export function formatAegisStartupMessage(input: AegisStartupMessageInput): string {
-    const symbols = input.mode.activeSymbols.join(', ') || 'N/D';
     const status = `🧠 ${formatStartupMode(input.mode.tradingMode)} | Live ${formatOnOff(input.mode.liveEnabled)} | Shorts ${formatOnOff(input.mode.shortsEnabled)}\n` +
-        `🎯 ${input.mode.strategy} | ${symbols}`;
+        `Trading mode: ${input.mode.strategy}`;
+    const probeMode = formatProbeModeBlock(input.probeMode);
 
-    return `🔥 AEGIS TURBO MICRO-LIVE ✅\n\n` +
-        `${status}\n\n` +
-        `${formatStartupAccount(input.account)}\n\n` +
-        `${formatStartupConfig(input.config)}\n\n` +
-        `${formatStartupRadar(input.initialRadar)}\n\n` +
-        `${formatStartupPositions({ activePositions: input.activePositions })}`;
+    return [
+        `🔥 AEGIS + MOMENTUM LIVE ✅`,
+        status,
+        formatCompactSymbols(input.mode.activeSymbols),
+        formatStartupAccount(input.account),
+        formatAegisTurboBlock(input),
+        formatMomentumRideBlock(input.momentumRide),
+        formatRegimeEngineBlock(input.regimeEngineV2),
+        probeMode,
+        formatStartupPositions({ activePositions: input.activePositions })
+    ].filter((line): line is string => Boolean(line)).join('\n\n');
 }

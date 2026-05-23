@@ -6,9 +6,9 @@ function startup(overrides: Partial<AegisStartupMessageInput> = {}): string {
         mode: {
             tradingMode: 'AEGIS_TURBO_MICRO_LIVE',
             liveEnabled: true,
-            strategy: 'AEGIS_TURBO',
+            strategy: 'AEGIS_TURBO+MOMENTUM_RIDE',
             shortsEnabled: false,
-            activeSymbols: ['ETHUSDT']
+            activeSymbols: ['ETHUSDT', 'BTCUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'SUIUSDT', 'LTCUSDT']
         },
         account: {
             walletBalance: 499.64,
@@ -29,6 +29,48 @@ function startup(overrides: Partial<AegisStartupMessageInput> = {}): string {
             maxConsecutiveLosses: 1,
             requireBrackets: true
         },
+        aegisTurbo: {
+            enabled: true,
+            mode: 'LIVE',
+            fallbackEnabled: true,
+            leverage: 20,
+            entryThreshold: 0.60,
+            trailingActivationRoe: 0.15,
+            trailingCallbackRoe: 0.08,
+            stopRoe: -0.40,
+            takeProfitRoe: 0.50,
+            requireBrackets: true
+        },
+        momentumRide: {
+            enabled: true,
+            mode: 'ENFORCE',
+            researchMode: true,
+            maxPositionFraction: 0.02,
+            maxOpenMomentumPositions: 1,
+            maxMomentumTradesPerDay: 3,
+            maxConsecutiveMomentumLosses: 2,
+            cooldownAfterLossMinutes: 60,
+            requireAegisDirectionConfirmation: true,
+            requireBtcEthNotContradicting: true,
+            examples: [
+                { symbol: 'BTCUSDT', side: 'LONG', positionFraction: 0.02 },
+                { symbol: 'ETHUSDT', side: 'LONG', positionFraction: 0.02 },
+                { symbol: 'XRPUSDT', side: 'LONG', positionFraction: 0.02 },
+                { symbol: 'ADAUSDT', side: 'LONG', positionFraction: 0.015 },
+                { symbol: 'AVAXUSDT', side: 'SHORT', positionFraction: 0.008 }
+            ]
+        },
+        regimeEngineV2: {
+            metadataEnabled: true,
+            useAsGate: false,
+            ignoreForEntry: true
+        },
+        probeMode: {
+            enabled: true,
+            mode: 'ENFORCE',
+            maxOpenProbePositions: 1,
+            maxProbeEntriesPerHour: 1
+        },
         initialRadar: {
             symbol: 'ETHUSDT',
             rawAction: 'HOLD',
@@ -42,8 +84,10 @@ function startup(overrides: Partial<AegisStartupMessageInput> = {}): string {
         activePositions: [{
             symbol: 'ETHUSDT',
             side: 'SHORT',
+            strategy: 'MOMENTUM_RIDE',
             size: 0.561,
             margin: 65.09,
+            leverage: 30,
             roi: -0.0657,
             pnl: -4.32,
             durationHours: 2.4,
@@ -60,6 +104,10 @@ function startup(overrides: Partial<AegisStartupMessageInput> = {}): string {
         mode: { ...base.mode, ...overrides.mode },
         account: { ...base.account, ...overrides.account },
         config: { ...base.config, ...overrides.config },
+        aegisTurbo: { ...base.aegisTurbo, ...overrides.aegisTurbo },
+        momentumRide: { ...base.momentumRide, ...overrides.momentumRide },
+        regimeEngineV2: { ...base.regimeEngineV2, ...overrides.regimeEngineV2 },
+        probeMode: { ...base.probeMode, ...overrides.probeMode },
         initialRadar: overrides.initialRadar === undefined
             ? base.initialRadar
             : { ...base.initialRadar, ...overrides.initialRadar },
@@ -87,12 +135,18 @@ describe('formatAegisStartupMessage', () => {
         expect(text).not.toContain('**');
     });
 
-    it('shows mode as MICRO-LIVE', () => {
+    it('shows live system title and mode', () => {
+        expect(startup()).toContain('🔥 AEGIS + MOMENTUM LIVE ✅');
         expect(startup()).toContain('🧠 MICRO-LIVE | Live ON | Shorts OFF');
+        expect(startup()).toContain('Trading mode: AEGIS_TURBO+MOMENTUM_RIDE');
     });
 
-    it('shows entry threshold as 60.0%', () => {
-        expect(startup({ config: { entryThreshold: 0.60 } as any })).toContain('⚙️ Lev 20x | Th 60.0% | Max 8.0h');
+    it('shows compact active symbols without depending on ETHUSDT as the only symbol', () => {
+        const text = startup();
+
+        expect(text).toContain('🎯 Símbolos activos (11)');
+        expect(text).toContain('ETH BTC SOL BNB XRP DOGE ADA AVAX LINK SUI LTC');
+        expect(text).not.toContain('🎯 AEGIS_TURBO | ETHUSDT');
     });
 
     it('shows account balances in one compact line', () => {
@@ -101,30 +155,57 @@ describe('formatAegisStartupMessage', () => {
         expect(text).toContain('💰 Wallet $499.64 | Equity $560.42 | Disp. N/D');
     });
 
-    it('shows compact config lines', () => {
+    it('shows Aegis Turbo fallback and risk bracket config from effective input', () => {
         const text = startup({ config: { entryThreshold: 0.60 } as any });
 
-        expect(text).toContain('⚙️ Lev 20x | Th 60.0% | Max 8.0h');
-        expect(text).toContain('🛡️ SL -40.0% | TP +50.0% ROE');
-        expect(text).toContain('🔁 Trail +15.0% | Callback 8.0%');
-        expect(text).toContain('🚨 Daily stop 10.0% | Max losses 1');
+        expect(text).toContain('🛡️ Aegis Turbo');
+        expect(text).toContain('Mode: LIVE | Fallback: ON');
+        expect(text).toContain('Lev base: 20x | Threshold: 60.0%');
+        expect(text).toContain('SL -40.0% | TP +50.0% ROE');
+        expect(text).toContain('Trail +15.0% | Callback 8.0%');
         expect(text).toContain('🧷 Brackets obligatorios ✅');
         expect(text).not.toContain('Configuración AEGIS_TURBO');
     });
 
-    it('shows compact initial radar with score and votes', () => {
+    it('shows Momentum Ride live caps and confirmation requirements', () => {
         const text = startup();
 
-        expect(text).toContain('🛰️ Radar ETHUSDT');
-        expect(text).toContain('HOLD | Score 28.4% | L=1 S=0 N=2');
-        expect(text).toContain('Sin acuerdo suficiente entre modelos recientes');
-        expect(text).toContain('Snapshot fresco ✅ | Feature 07:45 UTC');
+        expect(text).toContain('⚡ Momentum Ride');
+        expect(text).toContain('Mode: ENFORCE | Prioridad: alta');
+        expect(text).toContain('Max position: 2.0% wallet');
+        expect(text).toContain('Max open momentum: 1 | Max trades/day: 3');
+        expect(text).toContain('Max consecutive losses: 2 | Cooldown loss: 60m');
+        expect(text).toContain('Requires Aegis direction ✅ | BTC/ETH contradiction block ✅');
+        expect(text).toContain('Research/experimental mode ON');
+        expect(text).toContain('BTC/ETH/XRP LONG 2.0%');
+        expect(text).toContain('ADA LONG 1.5%');
+        expect(text).toContain('AVAX SHORT 0.8%');
+    });
+
+    it('shows RegimeEngineV2 as metadata-only and Probe Mode when enabled', () => {
+        const text = startup();
+
+        expect(text).toContain('🧭 RegimeEngineV2');
+        expect(text).toContain('Metadata ON | Gate OFF');
+        expect(text).toContain('useAsGate=false | ignoreForEntry=true');
+        expect(text).toContain('Observa régimen, no decide entradas');
+        expect(text).toContain('🧪 Probe Mode');
+        expect(text).toContain('Mode: ENFORCE | Max open: 1 | Max/hour: 1');
+    });
+
+    it('does not render the single-symbol startup radar by default', () => {
+        const text = startup();
+
+        expect(text).not.toContain('🛰️ Radar ETHUSDT');
+        expect(text).not.toContain('Radar ETHUSDT');
+        expect(text).not.toContain('HOLD | Score 28.4% | L=1 S=0 N=2');
     });
 
     it('shows compact active position', () => {
         const text = startup();
 
         expect(text).toContain('💼 ETHUSDT SHORT 📉');
+        expect(text).toContain('Strategy MOMENTUM_RIDE | Lev 30x');
         expect(text).toContain('ROI -6.6% | PnL -$4.32 | 2.4h');
         expect(text).toContain('Size 0.561 ETH | Margin $65.09');
         expect(text).toContain('TP $2,285.46 | SL $2,390.94');
@@ -149,8 +230,10 @@ describe('formatAegisStartupMessage', () => {
                 {
                     symbol: 'ETHUSDT',
                     side: 'LONG',
+                    strategy: 'AEGIS_TURBO',
                     size: 0.577,
                     margin: 66.49,
+                    leverage: 20,
                     roi: 0.189,
                     pnl: 12.67,
                     durationHours: 6.5,
@@ -162,8 +245,10 @@ describe('formatAegisStartupMessage', () => {
                 {
                     symbol: 'BTCUSDT',
                     side: 'SHORT',
+                    strategy: 'MOMENTUM_RIDE',
                     size: 0.001,
                     margin: 70,
+                    leverage: 30,
                     roi: -0.02,
                     pnl: -1.40,
                     durationHours: 1.2,
@@ -175,8 +260,11 @@ describe('formatAegisStartupMessage', () => {
             ]
         });
 
-        expect(text).toContain('🎯 AEGIS_TURBO | ETHUSDT, BTCUSDT');
+        expect(text).toContain('🎯 Símbolos activos (2)');
+        expect(text).toContain('ETH BTC');
         expect(text).toContain('💼 ETHUSDT LONG 📈');
+        expect(text).toContain('Strategy AEGIS_TURBO | Lev 20x');
         expect(text).toContain('💼 BTCUSDT SHORT 📉');
+        expect(text).toContain('Strategy MOMENTUM_RIDE | Lev 30x');
     });
 });

@@ -823,14 +823,29 @@ describe('TradingService Aegis live execution', () => {
     });
 
     it('includes current wallet balance in the startup Telegram message', async () => {
-        const { exchange, notifier, service } = makeHarness({ balance: 565.39 });
+        const { exchange, notifier, service } = makeHarness({
+            balance: 565.39,
+            symbols: ['ETHUSDT', 'BTCUSDT'],
+            symbolModes: { ETHUSDT: 'LIVE', BTCUSDT: 'LIVE' },
+            momentumRide: momentumRideRuntimeConfig(0.02),
+            probeMode: probeModeConfig({ enabled: true, mode: 'ENFORCE' })
+        });
 
         await service.start(false);
 
         expect(exchange.getUSDTBalance).toHaveBeenCalled();
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 AEGIS TURBO MICRO-LIVE ✅'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 AEGIS + MOMENTUM LIVE ✅'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧠 MICRO-LIVE | Live ON | Shorts OFF'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🎯 Símbolos activos (2)\nETH BTC'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💰 Wallet $565.39 | Equity $565.39 | Disp. $565.39'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🛡️ Aegis Turbo'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('⚡ Momentum Ride'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Mode: ENFORCE | Prioridad: alta'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Max position: 2.0% wallet'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧭 RegimeEngineV2'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Metadata ON | Gate OFF'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧪 Probe Mode'));
+        expect(notifier.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('Radar ETHUSDT'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 Posiciones\nNinguna'));
     });
 

@@ -688,18 +688,21 @@ export class TradingService {
             yamlLiveEnabled: this.getAegisTurboYamlConfig()?.live_enabled === true
         });
 
-        const firstSymbol = this.config.symbols[0];
+        const liveSymbols = this.getLiveAegisSymbols();
+        const startupSymbols = liveSymbols.length > 0 ? liveSymbols : this.config.symbols;
+        const firstSymbol = startupSymbols[0] ?? this.config.symbols[0];
         const gateConfig = this.getAegisTurboGateConfig(firstSymbol);
         const regimeConfig = this.getAegisTurboRegimeConfig(firstSymbol);
+        const momentumRideConfig = this.getAegisMomentumRideConfig();
+        const probeModeConfig = this.getAegisProbeModeConfig();
         const entryThreshold = gateConfig.minScore;
         const maxHoldMs = (gateConfig as any).maxHoldMs ?? regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
         const trailingActivation = (gateConfig as any).trailingActivationRoe ?? regimeConfig?.trailingActivationRoe ?? 0.15;
         const trailingCallback = (gateConfig as any).trailingCallbackRoe ?? regimeConfig?.trailingCallbackRoe ?? 0.08;
 
-        let signal: AegisTradingSignal | null = null;
         for (let i = 0; i < 5; i++) {
             try {
-                signal = await mlService.getSignal(firstSymbol);
+                await mlService.getSignal(firstSymbol);
                 break;
             } catch (e) {
                 logger.info(`Waiting for Aegis API (${i + 1}/5)`);
@@ -707,15 +710,11 @@ export class TradingService {
             }
         }
 
-        const turbo = signal?.aegis?.turbo ?? signal?.metadata?.aegis?.turbo;
-        const turboRaw = turbo?.raw as any;
-        const turboGated = turbo?.gated;
-        const freshness = turboRaw?.freshness ?? (turbo as any)?.freshness;
         await this.migrateLegacyGlobalStateToFirstLiveSymbol();
         await this.attachOpenExchangePositionsToSymbolState();
 
         const startupPositions: AegisPositionMessageInput[] = [];
-        for (const symbol of this.getLiveAegisSymbols()) {
+        for (const symbol of liveSymbols) {
             const symbolState = this.stateForSymbol(symbol).get();
             if (symbolState.mode === 'IDLE') continue;
 
@@ -747,8 +746,10 @@ export class TradingService {
             startupPositions.push({
                 symbol,
                 side,
+                strategy: (symbolState as any).lastStrategy,
                 size: qtyAbs,
                 margin: marginUsed,
+                leverage,
                 roi,
                 pnl,
                 durationHours: durationMs / 3600000,
@@ -787,13 +788,26 @@ export class TradingService {
             });
         }
 
+        const momentumExamples = Object.entries(momentumRideConfig.symbols ?? {})
+            .flatMap(([symbol, symbolConfig]) => {
+                const config = symbolConfig as any;
+                const examples: Array<{ symbol: string; side: Side; positionFraction?: number }> = [];
+                if (config.long?.enabled) {
+                    examples.push({ symbol, side: 'LONG', positionFraction: config.long.positionFraction });
+                }
+                if (config.short?.enabled) {
+                    examples.push({ symbol, side: 'SHORT', positionFraction: config.short.positionFraction });
+                }
+                return examples;
+            });
+
         const startupMsg = formatAegisStartupMessage({
             mode: {
                 tradingMode,
                 liveEnabled: CONFIG.AEGIS_LIVE_ENABLED === true && this.getAegisTurboYamlConfig()?.live_enabled === true,
-                strategy: 'AEGIS_TURBO',
+                strategy: 'AEGIS_TURBO+MOMENTUM_RIDE',
                 shortsEnabled: gateConfig.allowShort === true,
-                activeSymbols: this.config.symbols
+                activeSymbols: startupSymbols
             },
             account: {
                 walletBalance: startupAccount.walletBalance ?? startupWalletBalance ?? undefined,
@@ -814,19 +828,41 @@ export class TradingService {
                 maxConsecutiveLosses: gateConfig.maxConsecutiveLosses,
                 requireBrackets: gateConfig.requireBrackets
             },
-            initialRadar: {
-                symbol: firstSymbol,
-                rawAction: turboRaw?.action ?? 'HOLD',
-                rawScore: turboRaw?.turbo_score,
-                gatedAction: turboGated?.action ?? 'HOLD',
-                votes: turboRaw?.votes,
-                reason: turboGated?.reason ?? turboRaw?.reason,
-                freshnessIsFresh: typeof freshness?.is_fresh === 'boolean'
-                    ? freshness.is_fresh
-                    : typeof freshness?.fresh === 'boolean'
-                        ? freshness.fresh
-                        : undefined,
-                featureTimestamp: freshness?.feature_timestamp ?? freshness?.timestamp
+            aegisTurbo: {
+                enabled: this.getAegisTurboYamlConfig()?.enabled === true,
+                mode: CONFIG.AEGIS_LIVE_ENABLED === true && this.getAegisTurboYamlConfig()?.live_enabled === true ? 'LIVE' : 'SHADOW',
+                fallbackEnabled: true,
+                leverage: gateConfig.leverageCap,
+                entryThreshold: Number(entryThreshold),
+                trailingActivationRoe: trailingActivation,
+                trailingCallbackRoe: trailingCallback,
+                stopRoe: gateConfig.stopRoe,
+                takeProfitRoe: gateConfig.takeProfitRoe,
+                requireBrackets: gateConfig.requireBrackets
+            },
+            momentumRide: {
+                enabled: momentumRideConfig.enabled,
+                mode: momentumRideConfig.enabled ? momentumRideConfig.mode : 'OFF',
+                researchMode: momentumRideConfig.researchMode,
+                maxPositionFraction: momentumRideConfig.safetyCaps.maxPositionFraction,
+                maxOpenMomentumPositions: momentumRideConfig.safetyCaps.maxOpenMomentumPositions,
+                maxMomentumTradesPerDay: momentumRideConfig.safetyCaps.maxMomentumTradesPerDay,
+                maxConsecutiveMomentumLosses: momentumRideConfig.safetyCaps.maxConsecutiveMomentumLosses,
+                cooldownAfterLossMinutes: momentumRideConfig.safetyCaps.cooldownAfterLossMinutes,
+                requireAegisDirectionConfirmation: momentumRideConfig.requireAegisDirectionConfirmation,
+                requireBtcEthNotContradicting: momentumRideConfig.requireBtcEthNotContradicting,
+                examples: momentumExamples
+            },
+            regimeEngineV2: {
+                metadataEnabled: momentumRideConfig.regimeFilter.recordMetadata,
+                useAsGate: momentumRideConfig.regimeFilter.useAsGate,
+                ignoreForEntry: momentumRideConfig.regimeFilter.ignoreForEntry
+            },
+            probeMode: {
+                enabled: probeModeConfig.enabled,
+                mode: probeModeConfig.enabled ? probeModeConfig.mode : 'OFF',
+                maxOpenProbePositions: probeModeConfig.max_open_probe_positions,
+                maxProbeEntriesPerHour: probeModeConfig.max_probe_entries_per_hour
             },
             activePositions: startupPositions
         });
