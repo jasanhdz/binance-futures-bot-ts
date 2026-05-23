@@ -55,10 +55,13 @@ function finalize(input: {
     momentumRiskProfile?: AegisMomentumRiskProfile;
     decisions: AegisEntryDecisionResult['decisions'];
 }): AegisEntryDecisionResult {
+    const hardSafety = momentumHardSafety(input);
+    const enrichedMomentumGuard = enrichMomentumGuard(input.momentumGuard, input, hardSafety);
+    const guards = input.guards.map((guard) => guard.name === 'momentum_ride' && enrichedMomentumGuard ? enrichedMomentumGuard : guard);
     const strategyCandidates: AegisEntryDecisionResult['strategyCandidates'] = {
         momentum_ride: {
-            decision: input.momentumGuard?.decision ?? 'NOT_APPLICABLE',
-            reason: input.momentumGuard?.reason ?? 'momentum_ride_not_evaluated',
+            decision: enrichedMomentumGuard?.decision ?? 'NOT_APPLICABLE',
+            reason: enrichedMomentumGuard?.reason ?? 'momentum_ride_not_evaluated',
             riskProfile: input.momentumRiskProfile
         },
         aegis_turbo: {
@@ -66,11 +69,11 @@ function finalize(input: {
             reason: input.finalReason
         }
     };
-    const momentumCanOpen = input.momentumGuard?.decision === 'ALLOW'
+    const momentumCanOpen = enrichedMomentumGuard?.decision === 'ALLOW'
         && input.momentumRiskProfile !== undefined
-        && input.finalDecision === 'ALLOW';
+        && !hardSafety.blocked;
     const finalDecision = momentumCanOpen ? 'ALLOW' : input.finalDecision;
-    const finalReason = momentumCanOpen ? input.momentumGuard!.reason : input.finalReason;
+    const finalReason = momentumCanOpen ? enrichedMomentumGuard!.reason : input.finalReason;
     const finalStrategy = momentumCanOpen
         ? 'momentum_ride'
         : finalDecision === 'ALLOW' ? 'aegis_turbo' : 'none';
@@ -79,7 +82,7 @@ function finalize(input: {
     const adjustedPositionFraction = momentumCanOpen ? input.momentumRiskProfile!.positionFraction : input.adjustedPositionFraction;
     const trace = buildAegisEntryDecisionTrace({
         context: input.context,
-        guards: input.guards,
+        guards,
         finalDecision,
         finalReason,
         finalStrategy,
@@ -98,13 +101,79 @@ function finalize(input: {
         strategy: finalStrategy,
         strategyCandidates,
         riskProfile,
-        guards: input.guards,
+        guards,
         trace,
         metadata: compactAegisEntryDecisionMetadata(trace),
         warnings: input.warnings ?? [],
         adjustedLeverage,
         adjustedPositionFraction,
         decisions: input.decisions
+    };
+}
+
+function canMomentumOverrideNonHard(input: {
+    momentumGuard?: AegisEntryGuardResult;
+    momentumRiskProfile?: AegisMomentumRiskProfile;
+}): boolean {
+    return input.momentumGuard?.decision === 'ALLOW' && input.momentumRiskProfile !== undefined;
+}
+
+function momentumHardSafety(input: {
+    finalDecision: AegisEntryFinalDecision;
+    finalReason: string;
+    deniedBy?: AegisEntryGuardName;
+    decisions: AegisEntryDecisionResult['decisions'];
+}): { blocked: boolean; reason?: string } {
+    if (input.finalDecision === 'ALLOW') return { blocked: false };
+    const eventRisk = input.decisions.eventRisk;
+    if (input.deniedBy === 'event_risk' && eventRisk && (eventRisk.mode === 'RISK_OFF' || eventRisk.mode === 'MANUAL_ONLY')) {
+        return { blocked: true, reason: eventRisk.reason };
+    }
+    if (input.deniedBy === 'decision_brain' && (
+        input.finalReason === 'decision_brain_do_not_enter'
+        || input.finalReason === 'decision_brain_manual_only'
+        || input.finalReason === 'event_risk_risk_off_denied_non_a_plus'
+        || input.finalReason === 'event_risk_manual_only'
+        || input.finalReason === 'entry_quality_shadow_block_hard_denied'
+    )) {
+        return { blocked: true, reason: input.finalReason };
+    }
+    if (input.finalReason.includes('tail_risk_high')) {
+        return { blocked: true, reason: input.finalReason };
+    }
+    return { blocked: false };
+}
+
+function enrichMomentumGuard(
+    guard: AegisEntryGuardResult | undefined,
+    input: {
+        finalDecision: AegisEntryFinalDecision;
+        finalReason: string;
+        decisions: AegisEntryDecisionResult['decisions'];
+    },
+    hardSafety: { blocked: boolean; reason?: string }
+): AegisEntryGuardResult | undefined {
+    if (!guard) return undefined;
+    const hardSafetyPassed = !hardSafety.blocked;
+    return {
+        ...guard,
+        decision: guard.decision === 'ALLOW' && hardSafety.blocked ? 'DENY' : guard.decision,
+        reason: guard.decision === 'ALLOW' && hardSafety.blocked ? hardSafety.reason ?? 'momentum_hard_safety_block' : guard.reason,
+        metadata: {
+            ...guard.metadata,
+            aegisEntryPolicyFinalDecision: input.finalDecision,
+            aegisEntryPolicyFinalReason: input.finalReason,
+            cleanEntryDecision: input.decisions.cleanEntry?.decision,
+            entryQualityDecision: input.decisions.entryQuality?.action,
+            eventRiskMode: input.decisions.eventRisk?.mode,
+            eventRiskWouldBlock: input.decisions.eventRisk?.wouldBlock,
+            regimeObserved: (guard.metadata?.momentumRide as any)?.regimeEngineV2,
+            regimeIgnoredForEntry: (guard.metadata?.momentumRide as any)?.regimeIgnoredForEntry,
+            momentumUsedAegisDirectionOnly: true,
+            momentumDidNotRequireCleanEntry: true,
+            hardSafetyPassed,
+            hardSafetyReason: hardSafety.reason
+        }
     };
 }
 
@@ -152,6 +221,11 @@ export class AegisEntryGuardOrchestrator {
             momentumGuard: momentumRide.guard,
             momentumRiskProfile
         };
+        let aegisBlockedByNonHard: {
+            finalDecision: AegisEntryFinalDecision;
+            finalReason: string;
+            deniedBy?: AegisEntryGuardName;
+        } | undefined;
 
         const regime = RegimeGuardAdapter.evaluate(
             contextWithRegimeContext,
@@ -160,6 +234,13 @@ export class AegisEntryGuardOrchestrator {
         guards.push(regime.guard);
         decisions.regime = regime.decision;
         if (regime.guard.enforced && regime.guard.wouldBlock) {
+            if (canMomentumOverrideNonHard(momentumSelection)) {
+                aegisBlockedByNonHard = {
+                    finalDecision: 'DENY',
+                    finalReason: regime.decision?.reason ?? regime.guard.reason,
+                    deniedBy: 'regime'
+                };
+            } else {
             return finalize({
                 context,
                 finalDecision: 'DENY',
@@ -179,6 +260,7 @@ export class AegisEntryGuardOrchestrator {
                 ...momentumSelection,
                 decisions
             });
+            }
         }
 
         const shortGate = ShortGateGuardAdapter.evaluate(contextWithRegimeContext, policy.guards.short_gate);
@@ -187,6 +269,13 @@ export class AegisEntryGuardOrchestrator {
         adjustedLeverage = shortGate.adjustedLeverage;
         adjustedPositionFraction = shortGate.adjustedPositionFraction;
         if (shortGate.guard.enforced && shortGate.guard.wouldBlock) {
+            if (canMomentumOverrideNonHard(momentumSelection)) {
+                aegisBlockedByNonHard = {
+                    finalDecision: 'DENY',
+                    finalReason: shortGate.guard.reason,
+                    deniedBy: 'short_gate'
+                };
+            } else {
             return finalize({
                 context,
                 finalDecision: 'DENY',
@@ -198,6 +287,7 @@ export class AegisEntryGuardOrchestrator {
                 ...momentumSelection,
                 decisions
             });
+            }
         }
 
         const adjustedContext: AegisEntryContext = {
@@ -210,6 +300,13 @@ export class AegisEntryGuardOrchestrator {
         guards.push(entryQuality.guard);
         decisions.entryQuality = entryQuality.decision;
         if (entryQuality.guard.enforced && entryQuality.guard.wouldBlock) {
+            if (canMomentumOverrideNonHard(momentumSelection)) {
+                aegisBlockedByNonHard = {
+                    finalDecision: 'DENY',
+                    finalReason: entryQuality.guard.reason,
+                    deniedBy: 'entry_quality'
+                };
+            } else {
             return finalize({
                 context: adjustedContext,
                 finalDecision: 'DENY',
@@ -221,12 +318,21 @@ export class AegisEntryGuardOrchestrator {
                 ...momentumSelection,
                 decisions
             });
+            }
         }
 
         const eventRisk = EventRiskGuardAdapter.evaluate(adjustedContext, policy.guards.event_risk);
         guards.push(eventRisk.guard);
         decisions.eventRisk = eventRisk.decision;
         if (eventRisk.guard.enforced && eventRisk.decision?.allowed !== true) {
+            const hardEventRisk = eventRisk.decision?.mode === 'RISK_OFF' || eventRisk.decision?.mode === 'MANUAL_ONLY';
+            if (canMomentumOverrideNonHard(momentumSelection) && !hardEventRisk) {
+                aegisBlockedByNonHard = {
+                    finalDecision: 'DENY',
+                    finalReason: eventRisk.guard.reason,
+                    deniedBy: 'event_risk'
+                };
+            } else {
             return finalize({
                 context: adjustedContext,
                 finalDecision: 'DENY',
@@ -238,6 +344,7 @@ export class AegisEntryGuardOrchestrator {
                 ...momentumSelection,
                 decisions
             });
+            }
         }
 
         const decisionBrain = DecisionBrainGuardAdapter.evaluate(
@@ -249,6 +356,18 @@ export class AegisEntryGuardOrchestrator {
         guards.push(decisionBrain.guard);
         decisions.decisionEnforcement = decisionBrain.decision;
         if (decisionBrain.guard.enforced && decisionBrain.guard.wouldBlock) {
+            const hardDecisionBrain = decisionBrain.guard.reason === 'decision_brain_do_not_enter'
+                || decisionBrain.guard.reason === 'decision_brain_manual_only'
+                || decisionBrain.guard.reason === 'event_risk_risk_off_denied_non_a_plus'
+                || decisionBrain.guard.reason === 'event_risk_manual_only'
+                || decisionBrain.guard.reason === 'entry_quality_shadow_block_hard_denied';
+            if (canMomentumOverrideNonHard(momentumSelection) && !hardDecisionBrain) {
+                aegisBlockedByNonHard = {
+                    finalDecision: 'DENY',
+                    finalReason: decisionBrain.guard.reason,
+                    deniedBy: 'decision_brain'
+                };
+            } else {
             const cleanEntry = decisionBrain.decision
                 ? cleanEntryOutputFromDecisionEnforcementDenied(adjustedContext, decisionBrain.decision)
                 : undefined;
@@ -271,6 +390,7 @@ export class AegisEntryGuardOrchestrator {
                 ...momentumSelection,
                 decisions
             });
+            }
         }
 
         const cleanEntry = CleanEntryGuardAdapter.evaluate(
@@ -305,10 +425,12 @@ export class AegisEntryGuardOrchestrator {
                 });
             }
             const probeEnforced = probe.guard.enforced && probe.guard.enabled;
+            const finalDecision: AegisEntryFinalDecision = probeEnforced ? 'WAIT_CONFIRMATION' : 'WAIT_CONFIRMATION';
+            const finalReason = probeEnforced ? probe.guard.reason : cleanEntry.guard.reason;
             return finalize({
                 context: adjustedContext,
-                finalDecision: 'WAIT_CONFIRMATION',
-                finalReason: probeEnforced ? probe.guard.reason : cleanEntry.guard.reason,
+                finalDecision,
+                finalReason,
                 deniedBy: probeEnforced ? 'probe_mode' : 'clean_entry',
                 guards,
                 adjustedLeverage,
@@ -321,9 +443,10 @@ export class AegisEntryGuardOrchestrator {
         guards.push(defaultGuard('probe_mode'));
         return finalize({
             context: adjustedContext,
-            finalDecision: 'ALLOW',
-            finalReason: 'all_enforced_guards_allowed',
-            allowedBy: 'entry_policy',
+            finalDecision: aegisBlockedByNonHard?.finalDecision ?? 'ALLOW',
+            finalReason: aegisBlockedByNonHard?.finalReason ?? 'all_enforced_guards_allowed',
+            deniedBy: aegisBlockedByNonHard?.deniedBy,
+            allowedBy: aegisBlockedByNonHard ? undefined : 'entry_policy',
             guards,
             adjustedLeverage,
             adjustedPositionFraction,

@@ -71,7 +71,7 @@ export type BotState = {
   lastPeakPrice?: number; // Highest/Lowest price reached during trade (for trailing stop)
 
   // Aegis Turbo position metadata
-  lastStrategy?: 'AEGIS_TURBO';
+  lastStrategy?: 'AEGIS_TURBO' | 'MOMENTUM_RIDE';
   lastStopRoe?: number;
   lastBreakEvenRoe?: number;
   breakEvenArmed?: boolean;

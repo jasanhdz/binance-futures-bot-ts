@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     AegisEntryContext,
     AegisMomentumRideRuntimeConfig,
     AegisRegimeContext
 } from '../AegisEntryDecisionTypes';
+import { RegimeEngineV2 } from '../../regime-v2/RegimeEngineV2';
+import { RegimeEngineV2Decision } from '../../regime-v2/RegimeEngineV2.types';
 import { MomentumRideGuardAdapter } from './MomentumRideGuardAdapter';
 
 const regimeContext: AegisRegimeContext = {
@@ -23,6 +25,13 @@ const regimeContext: AegisRegimeContext = {
 const momentumConfig: AegisMomentumRideRuntimeConfig = {
     enabled: true,
     mode: 'ENFORCE',
+    researchMode: true,
+    regimeFilter: {
+        enabled: true,
+        useAsGate: false,
+        recordMetadata: true,
+        ignoreForEntry: true
+    },
     allowWhenAegisDenied: false,
     requireAegisDirectionConfirmation: true,
     allowMomentumAgainstAegis: false,
@@ -159,7 +168,37 @@ function context(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext 
     };
 }
 
+function regimeEngineDecision(overrides: Partial<RegimeEngineV2Decision> = {}): RegimeEngineV2Decision {
+    return {
+        symbol: 'XRPUSDT',
+        timestamp: '2026-05-23T00:00:00.000Z',
+        timeframe: '5m',
+        technicalRegime: 'CHOP',
+        technicalDirection: 'NONE',
+        momentumEnvironment: 'AVOID_MOMENTUM',
+        confidence: 0.72,
+        scores: {
+            trendStrength: 0.1,
+            momentumQuality: 0.2,
+            chopRisk: 0.8,
+            exhaustionRisk: 0.3,
+            transitionRisk: 0.7,
+            volatilityRisk: 0.2,
+            marketConfirmationScore: 0.5
+        },
+        marketConfirmation: { state: 'NEUTRAL' },
+        transition: { risk: 'HIGH', reasons: ['mock_transition'] },
+        indicators: { failedBreakoutPressure: 0.6 },
+        reasons: ['mock_regime_observation'],
+        ...overrides
+    };
+}
+
 describe('MomentumRideGuardAdapter', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
     it('OFF no evalua', () => {
         const result = MomentumRideGuardAdapter.evaluate(context(), { enabled: false, mode: 'OFF' });
         expect(result.guard.enabled).toBe(false);
@@ -178,10 +217,60 @@ describe('MomentumRideGuardAdapter', () => {
         expect(result.momentumRide?.reasons).toContain('momentum_turbo_confirmed');
     });
 
-    it('ENFORCE con CHOP no permite momentum', () => {
+    it('ENFORCE con CHOP permite momentum en research mode porque regimen solo observa', () => {
         const result = MomentumRideGuardAdapter.evaluate(context({
             regimeContext: { ...regimeContext, label: 'CHOP', momentumLongAllowed: false }
         }), { enabled: true, mode: 'ENFORCE' });
+        expect(result.guard.decision).toBe('ALLOW');
+        expect(result.momentumRide?.reasons).not.toContain('momentum_regime_not_confirmed');
+        expect(result.momentumRide).toMatchObject({
+            researchMode: true,
+            regimeUsedAsGate: false,
+            regimeIgnoredForEntry: true,
+            regimeIgnoreReason: 'research_mode'
+        });
+    });
+
+    it('RegimeEngineV2 AVOID/UNKNOWN queda como metadata y no bloquea en research mode', () => {
+        for (const [environment, expectedReason] of [
+            ['AVOID_MOMENTUM', 'regime_observed_avoid_ignored_by_research_mode'],
+            ['UNKNOWN', 'regime_observed_unknown_ignored_by_research_mode']
+        ] as const) {
+            vi.spyOn(RegimeEngineV2, 'evaluate').mockReturnValueOnce(regimeEngineDecision({
+                momentumEnvironment: environment,
+                technicalRegime: environment === 'UNKNOWN' ? 'UNKNOWN' : 'CHOP',
+                transition: { risk: environment === 'UNKNOWN' ? 'MODERATE' : 'HIGH', reasons: ['mock_transition'] }
+            }));
+
+            const result = MomentumRideGuardAdapter.evaluate(context(), { enabled: true, mode: 'ENFORCE' });
+
+            expect(result.guard.decision).toBe('ALLOW');
+            expect(result.momentumRide?.regimeUsedAsGate).toBe(false);
+            expect(result.momentumRide?.regimeIgnoredForEntry).toBe(true);
+            expect(result.momentumRide?.regimeIgnoreReason).toBe('research_mode');
+            expect(result.momentumRide?.regimeEngineV2).toMatchObject({
+                momentumEnvironment: environment,
+                transitionRisk: environment === 'UNKNOWN' ? 'MODERATE' : 'HIGH'
+            });
+            expect(result.momentumRide?.reasons).toContain(expectedReason);
+            vi.mocked(RegimeEngineV2.evaluate).mockRestore();
+        }
+    });
+
+    it('regime_filter useAsGate=true mantiene bloqueo legacy por regimen', () => {
+        const result = MomentumRideGuardAdapter.evaluate(context({
+            regimeContext: { ...regimeContext, label: 'CHOP', momentumLongAllowed: false },
+            momentumRideConfig: {
+                ...momentumConfig,
+                regimeFilter: {
+                    enabled: true,
+                    useAsGate: true,
+                    recordMetadata: true,
+                    ignoreForEntry: false
+                }
+            }
+        }), { enabled: true, mode: 'ENFORCE' });
+
         expect(result.guard.decision).toBe('DENY');
         expect(result.momentumRide?.reasons).toContain('momentum_regime_not_confirmed');
     });
@@ -320,10 +409,60 @@ describe('MomentumRideGuardAdapter', () => {
         expect(result.riskProfile).toMatchObject({ leverage: 30, positionFraction: 0.01 });
     });
 
+    it('riskProfile declara effective_config/yaml como fuente de position fraction', () => {
+        const result = MomentumRideGuardAdapter.evaluate(context(), { enabled: true, mode: 'ENFORCE' });
+
+        expect(result.riskProfile).toMatchObject({
+            source: 'effective_config',
+            positionFractionSource: 'yaml',
+            positionFraction: 0.02
+        });
+    });
+
     it('safety cap de posiciones abiertas deniega momentum', () => {
         const result = MomentumRideGuardAdapter.evaluate(context({
             operational: { ...context().operational, openPositionsCount: 2 }
         }), { enabled: true, mode: 'ENFORCE' });
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_cap_exceeded');
+    });
+
+    it('maxOpenMomentumPositions=1 deniega si ya hay una posicion Momentum abierta', () => {
+        const result = MomentumRideGuardAdapter.evaluate(context({
+            operational: { ...context().operational, openMomentumPositions: 1 }
+        }), { enabled: true, mode: 'ENFORCE' });
+
+        expect(result.guard.decision).toBe('DENY');
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_open_momentum_positions');
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_cap_exceeded');
+    });
+
+    it('maxMomentumTradesPerDay=3 deniega al alcanzar el limite diario', () => {
+        const result = MomentumRideGuardAdapter.evaluate(context({
+            operational: { ...context().operational, tradesToday: 3 }
+        }), { enabled: true, mode: 'ENFORCE' });
+
+        expect(result.guard.decision).toBe('DENY');
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_daily_trades');
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_cap_exceeded');
+    });
+
+    it('maxConsecutiveMomentumLosses=2 deniega al alcanzar perdidas consecutivas', () => {
+        const result = MomentumRideGuardAdapter.evaluate(context({
+            operational: { ...context().operational, consecutiveLosses: 2 }
+        }), { enabled: true, mode: 'ENFORCE' });
+
+        expect(result.guard.decision).toBe('DENY');
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_consecutive_losses');
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_cap_exceeded');
+    });
+
+    it('cooldownAfterLossMinutes=60 deniega durante cooldown post perdida', () => {
+        const result = MomentumRideGuardAdapter.evaluate(context({
+            operational: { ...context().operational, recentStopLossMinutes: 30 }
+        }), { enabled: true, mode: 'ENFORCE' });
+
+        expect(result.guard.decision).toBe('DENY');
+        expect(result.momentumRide?.reasons).toContain('momentum_safety_loss_cooldown');
         expect(result.momentumRide?.reasons).toContain('momentum_safety_cap_exceeded');
     });
 

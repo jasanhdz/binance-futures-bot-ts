@@ -397,6 +397,13 @@ export interface AegisMomentumRideSymbolYamlConfig {
 export interface AegisMomentumRideYamlConfig {
     enabled?: boolean;
     mode?: AegisEntryPolicyMode | string;
+    research_mode?: boolean;
+    regime_filter?: {
+        enabled?: boolean;
+        use_as_gate?: boolean;
+        record_metadata?: boolean;
+        ignore_for_entry?: boolean;
+    };
     allow_momentum_when_aegis_denied?: boolean;
     require_aegis_direction_confirmation?: boolean;
     allow_momentum_against_aegis?: boolean;
@@ -998,9 +1005,16 @@ export class NinjaConfigManager {
         return {
             enabled: raw.enabled === true,
             mode: this.normalizeEntryPolicyMode(raw.mode, 'SHADOW'),
+            researchMode: raw.research_mode === true,
+            regimeFilter: {
+                enabled: raw.regime_filter?.enabled === true,
+                useAsGate: raw.regime_filter?.use_as_gate === true,
+                recordMetadata: raw.regime_filter?.record_metadata !== false,
+                ignoreForEntry: raw.regime_filter?.ignore_for_entry === true
+            },
             allowWhenAegisDenied: raw.allow_momentum_when_aegis_denied === true,
-            requireAegisDirectionConfirmation: true,
-            allowMomentumAgainstAegis: false,
+            requireAegisDirectionConfirmation: raw.require_aegis_direction_confirmation !== false,
+            allowMomentumAgainstAegis: raw.allow_momentum_against_aegis === true ? false : false,
             requireBtcEthNotContradicting: raw.require_btc_eth_not_contradicting !== false,
             requireBtcEthConfirmation: raw.require_btc_eth_confirmation === true,
             symbols,
@@ -1513,6 +1527,13 @@ export class NinjaConfigManager {
                 momentum_ride: {
                     enabled: false,
                     mode: 'SHADOW',
+                    research_mode: false,
+                    regime_filter: {
+                        enabled: false,
+                        use_as_gate: false,
+                        record_metadata: true,
+                        ignore_for_entry: true
+                    },
                     require_aegis_direction_confirmation: true,
                     allow_momentum_against_aegis: false,
                     symbols: {},

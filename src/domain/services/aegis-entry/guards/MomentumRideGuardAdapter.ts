@@ -1,4 +1,6 @@
 import { Side } from '../../../types';
+import { RegimeEngineV2 } from '../../regime-v2/RegimeEngineV2';
+import { RegimeEngineV2Decision, RegimeEngineV2InputCandle, RegimeEngineV2MarketAction } from '../../regime-v2/RegimeEngineV2.types';
 import {
     AegisEntryContext,
     AegisEntryGuardPolicy,
@@ -17,6 +19,8 @@ export interface MomentumRideGuardAdapterResult {
     momentumRide?: AegisMomentumRideContext;
     riskProfile?: AegisMomentumRiskProfile;
 }
+
+type MomentumRegimeObservation = NonNullable<AegisMomentumRideContext['regimeEngineV2']>;
 
 export class MomentumRideGuardAdapter {
     static evaluate(context: AegisEntryContext, policy: AegisEntryGuardPolicy): MomentumRideGuardAdapterResult {
@@ -37,11 +41,12 @@ export class MomentumRideGuardAdapter {
             return notApplicable(policy, 'momentum_side_disabled', baseContext(false, context.side, ['momentum_side_disabled']));
         }
         const effectiveMode = effectiveMomentumMode(policy, config.mode, symbolConfig.mode);
+        const regimeObservation = observeRegimeEngineV2(context, config);
 
         const oppositePattern = detectMomentumPattern(context, oppositeSideConfig, oppositeSide);
         if (oppositePattern.patternDetected) {
             const sideContradictContext: AegisMomentumRideContext = {
-                ...oppositePattern,
+                ...withRegimeObservation(oppositePattern, config, regimeObservation),
                 turboAgreement: false,
                 btcEthAgreement: false,
                 btcEthContradict: false,
@@ -51,7 +56,7 @@ export class MomentumRideGuardAdapter {
             return enforceDeny(policy, effectiveMode, 'momentum_side_contradict', sideContradictContext, config);
         }
 
-        const pattern = detectMomentumPattern(context, sideConfig, context.side);
+        const pattern = withRegimeObservation(detectMomentumPattern(context, sideConfig, context.side), config, regimeObservation);
         if (!pattern.patternDetected) {
             return notApplicable(policy, pattern.reasons[0] ?? 'momentum_no_pattern', pattern);
         }
@@ -209,9 +214,13 @@ function evaluateMomentum(
         && context.turboScore >= sideConfig.minTurboScore
         && sideVotes(context) >= sideConfig.minVotesAgreement;
     const regimeContext = context.regimeContext;
-    const regimeConfirmed = regimeContext !== undefined
+    const legacyRegimeConfirmed = regimeContext !== undefined
         && sideConfig.allowedRegimes.includes(regimeContext.label)
         && (context.side === 'LONG' ? regimeContext.momentumLongAllowed : regimeContext.momentumShortAllowed);
+    const regimeGateEnabled = config.regimeFilter.enabled === true
+        && config.regimeFilter.useAsGate === true
+        && config.regimeFilter.ignoreForEntry !== true;
+    const regimeConfirmed = regimeGateEnabled ? legacyRegimeConfirmed : true;
     const btcEthState = btcEthStateFor(context);
     const btcEthAgreement = btcEthState.agreement;
     const btcEthContradict = btcEthState.contradict;
@@ -239,6 +248,7 @@ function evaluateMomentum(
         reasons: [
             ...pattern.reasons,
             ...(turboAgreement ? ['momentum_turbo_confirmed'] : []),
+            ...regimeObservationReasons(pattern.regimeEngineV2, config),
             ...failedReasons
         ]
     };
@@ -335,8 +345,103 @@ function buildRiskProfile(
         positionFraction: Math.min(sideConfig.positionFraction, config.safetyCaps.maxPositionFraction),
         maxOpenPositions: config.safetyCaps.maxOpenMomentumPositions,
         cooldown: config.safetyCaps.cooldownAfterLossMinutes,
-        sourceRule: `${context.symbol}.${context.side.toLowerCase()}`
+        sourceRule: `${context.symbol}.${context.side.toLowerCase()}`,
+        source: 'effective_config',
+        positionFractionSource: 'yaml'
     };
+}
+
+function observeRegimeEngineV2(context: AegisEntryContext, config: AegisMomentumRideRuntimeConfig): MomentumRegimeObservation | undefined {
+    if (config.regimeFilter.recordMetadata !== true) return undefined;
+    const candles = (context.entryQuality.ruleGate.recentCandles ?? [])
+        .filter((candle) => isFiniteNumber(candle.open) && isFiniteNumber(candle.high) && isFiniteNumber(candle.low) && isFiniteNumber(candle.close))
+        .map((candle): RegimeEngineV2InputCandle => ({
+            timestamp: candle.timestamp,
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+            volume: isFiniteNumber(candle.volume) ? candle.volume : 0
+        }));
+    const decision = RegimeEngineV2.evaluate({
+        symbol: context.symbol,
+        candles,
+        market: {
+            btc: {
+                action: normalizeMarketAction(context.regime?.btcAction ?? context.eventRisk.btcAction),
+                score: context.regime?.btcScore ?? context.eventRisk.btcScore
+            },
+            eth: {
+                action: normalizeMarketAction(context.regime?.ethAction ?? context.eventRisk.ethAction),
+                score: context.regime?.ethScore ?? context.eventRisk.ethScore
+            }
+        }
+    });
+    return {
+        technicalRegime: decision.technicalRegime,
+        momentumEnvironment: decision.momentumEnvironment,
+        transitionRisk: decision.transition.risk,
+        confidence: decision.confidence,
+        falseBreakoutRisk: falseBreakoutRisk(decision),
+        reasons: decision.reasons,
+        observedReason: observedRegimeReason(decision, config)
+    };
+}
+
+function withRegimeObservation(
+    context: AegisMomentumRideContext,
+    config: AegisMomentumRideRuntimeConfig,
+    observation: MomentumRegimeObservation | undefined
+): AegisMomentumRideContext {
+    return {
+        ...context,
+        researchMode: config.researchMode,
+        regimeUsedAsGate: config.regimeFilter.enabled === true && config.regimeFilter.useAsGate === true && config.regimeFilter.ignoreForEntry !== true,
+        regimeIgnoredForEntry: config.regimeFilter.ignoreForEntry === true || config.regimeFilter.useAsGate !== true,
+        regimeIgnoreReason: config.researchMode && (config.regimeFilter.ignoreForEntry === true || config.regimeFilter.useAsGate !== true)
+            ? 'research_mode'
+            : undefined,
+        regimeEngineV2: observation
+    };
+}
+
+function regimeObservationReasons(
+    observation: MomentumRegimeObservation | undefined,
+    config: AegisMomentumRideRuntimeConfig
+): string[] {
+    if (!observation) return [];
+    const ignored = config.researchMode && (config.regimeFilter.ignoreForEntry === true || config.regimeFilter.useAsGate !== true);
+    if (ignored && observation.momentumEnvironment === 'AVOID_MOMENTUM') return ['regime_observed_avoid_ignored_by_research_mode'];
+    if (ignored && observation.momentumEnvironment === 'UNKNOWN') return ['regime_observed_unknown_ignored_by_research_mode'];
+    return [observation.observedReason];
+}
+
+function observedRegimeReason(decision: RegimeEngineV2Decision, config: AegisMomentumRideRuntimeConfig): string {
+    const ignored = config.researchMode && (config.regimeFilter.ignoreForEntry === true || config.regimeFilter.useAsGate !== true);
+    if (decision.momentumEnvironment.startsWith('ALLOW')) return 'regime_observed_allow';
+    if (decision.momentumEnvironment.startsWith('WATCH')) return 'regime_observed_watch';
+    if (decision.momentumEnvironment === 'UNKNOWN') return ignored
+        ? 'regime_observed_unknown_ignored_by_research_mode'
+        : 'regime_observed_unknown';
+    return ignored
+        ? 'regime_observed_avoid_ignored_by_research_mode'
+        : 'regime_observed_avoid';
+}
+
+function falseBreakoutRisk(decision: RegimeEngineV2Decision): number | undefined {
+    const values = [
+        decision.indicators.failedBreakoutPressure,
+        decision.indicators.adverseWickAgainstBreakout,
+        decision.indicators.shortSweepRisk,
+        decision.indicators.shortAbsorptionRisk
+    ].filter(isFiniteNumber);
+    return values.length > 0 ? round(Math.max(...values)) : undefined;
+}
+
+function normalizeMarketAction(value: unknown): RegimeEngineV2MarketAction | undefined {
+    const normalized = String(value || '').trim().toUpperCase();
+    if (normalized === 'LONG' || normalized === 'SHORT' || normalized === 'HOLD') return normalized;
+    return undefined;
 }
 
 function safetyCapsAllow(
@@ -347,6 +452,10 @@ function safetyCapsAllow(
     let allowed = true;
     if (context.operational.sameSymbolPositionExists) {
         failedReasons.push('momentum_safety_same_symbol_position');
+        allowed = false;
+    }
+    if ((context.operational.openMomentumPositions ?? 0) >= config.safetyCaps.maxOpenMomentumPositions) {
+        failedReasons.push('momentum_safety_open_momentum_positions');
         allowed = false;
     }
     if (context.operational.openPositionsCount >= config.safetyCaps.maxTotalOpenPositionsWhenMomentum) {

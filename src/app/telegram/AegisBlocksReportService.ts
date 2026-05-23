@@ -175,7 +175,13 @@ const MOMENTUM_DIAGNOSTIC_REASONS = new Set([
     'momentum_btc_eth_not_confirmed',
     'momentum_tail_risk_high',
     'momentum_safety_cap_exceeded',
-    'momentum_override_reserved_not_active'
+    'momentum_override_reserved_not_active',
+    'regime_observed_allow',
+    'regime_observed_watch',
+    'regime_observed_avoid',
+    'regime_observed_unknown',
+    'regime_observed_avoid_ignored_by_research_mode',
+    'regime_observed_unknown_ignored_by_research_mode'
 ]);
 
 const ALLOWED_EVENTS = new Set([

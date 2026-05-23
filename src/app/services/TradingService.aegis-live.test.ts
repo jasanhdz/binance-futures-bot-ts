@@ -413,6 +413,96 @@ function cachedCandles(closes: number[]) {
     }));
 }
 
+function momentumCandles() {
+    const base = Array.from({ length: 20 }, (_, index) => {
+        const close = 3000 + index;
+        return {
+            openTime: index,
+            timestamp: index,
+            open: close - 0.4,
+            high: close + 1,
+            low: close - 1,
+            close,
+            volume: 100,
+            buyVolume: 60,
+            closeTime: index + 1
+        };
+    });
+    return [
+        ...base,
+        { openTime: 21, timestamp: 21, open: 3020, high: 3032, low: 3018, close: 3030, volume: 180, buyVolume: 130, closeTime: 22 },
+        { openTime: 22, timestamp: 22, open: 3030, high: 3044, low: 3028, close: 3040, volume: 200, buyVolume: 150, closeTime: 23 },
+        { openTime: 23, timestamp: 23, open: 3040, high: 3056, low: 3038, close: 3052, volume: 240, buyVolume: 190, closeTime: 24 }
+    ];
+}
+
+function momentumRideRuntimeConfig(positionFraction = 0.015) {
+    return {
+        enabled: true,
+        mode: 'ENFORCE',
+        researchMode: true,
+        regimeFilter: {
+            enabled: true,
+            useAsGate: false,
+            recordMetadata: true,
+            ignoreForEntry: true
+        },
+        allowWhenAegisDenied: false,
+        requireAegisDirectionConfirmation: true,
+        allowMomentumAgainstAegis: false,
+        requireBtcEthNotContradicting: true,
+        requireBtcEthConfirmation: false,
+        symbols: {
+            ETHUSDT: {
+                enabled: true,
+                mode: 'ENFORCE',
+                long: {
+                    enabled: true,
+                    leverage: 30,
+                    positionFraction,
+                    minTurboScore: 0.90,
+                    minVotesAgreement: 2,
+                    minVolumeRatio: 1.3,
+                    momentumCandles: 3,
+                    maxTailRiskScore: 0.30,
+                    allowedRegimes: ['MOMENTUM_UP', 'TREND_UP', 'BREAKOUT_UP'],
+                    requireCloseNearExtreme: true,
+                    minCloseLocation: 0.70,
+                    maxWickRatio: 0.35,
+                    maxOverextensionPct: 0.20
+                },
+                short: {
+                    enabled: false,
+                    leverage: 10,
+                    positionFraction: 0.01,
+                    minTurboScore: 0.94,
+                    minVotesAgreement: 3,
+                    minVolumeRatio: 1.7,
+                    momentumCandles: 3,
+                    maxTailRiskScore: 0.25,
+                    allowedRegimes: ['MOMENTUM_DOWN', 'TREND_DOWN', 'BREAKOUT_DOWN'],
+                    requireCloseNearExtreme: true,
+                    minCloseLocation: 0.70,
+                    maxWickRatio: 0.35,
+                    maxOverextensionPct: 0.08
+                }
+            }
+        },
+        safetyCaps: {
+            maxLeverage: 50,
+            maxPositionFraction: 0.02,
+            maxOpenMomentumPositions: 1,
+            maxTotalOpenPositionsWhenMomentum: 2,
+            maxMomentumTradesPerDay: 3,
+            maxConsecutiveMomentumLosses: 2,
+            cooldownAfterLossMinutes: 60,
+            disableSymbolAfterStopLossMinutes: 120,
+            requireBrackets: true,
+            requireProfitProtection: true
+        }
+    };
+}
+
 function makeHarness(options: {
     liveEnabled?: boolean;
     yaml?: any;
@@ -445,6 +535,8 @@ function makeHarness(options: {
         entryQuality?: any;
         entryPolicy?: any;
         cachedCandles?: any[];
+        momentumRide?: any;
+        regimeContext?: any;
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
@@ -586,6 +678,43 @@ function makeHarness(options: {
             telemetry: {
                 logAllEvaluations: false,
                 includeInEntryMetadata: true
+            }
+        }),
+        getAegisRegimeContextConfig: vi.fn(() => options.regimeContext ?? {
+            enabled: false,
+            mode: 'SHADOW',
+            timeframe: '5m',
+            allowedFor: { momentumRide: true },
+            indicators: { emaFast: 7, emaMid: 25, emaSlow: 99, atrWindow: 14, volumeWindow: 20, bollingerWindow: 20, adxWindow: 14, choppinessWindow: 14 },
+            thresholds: { maxChoppinessForMomentum: 55, minAdxForMomentum: 18, minVolumeRatioForMomentum: 1.3, maxAtrPercentileForAggressive: 0.8, maxExhaustionScore: 0.6 }
+        }),
+        getAegisMomentumRideConfig: vi.fn(() => options.momentumRide ?? {
+            enabled: false,
+            mode: 'SHADOW',
+            researchMode: false,
+            regimeFilter: {
+                enabled: false,
+                useAsGate: false,
+                recordMetadata: true,
+                ignoreForEntry: true
+            },
+            allowWhenAegisDenied: false,
+            requireAegisDirectionConfirmation: true,
+            allowMomentumAgainstAegis: false,
+            requireBtcEthNotContradicting: true,
+            requireBtcEthConfirmation: false,
+            symbols: {},
+            safetyCaps: {
+                maxLeverage: 50,
+                maxPositionFraction: 0.03,
+                maxOpenMomentumPositions: 1,
+                maxTotalOpenPositionsWhenMomentum: 2,
+                maxMomentumTradesPerDay: 3,
+                maxConsecutiveMomentumLosses: 2,
+                cooldownAfterLossMinutes: 60,
+                disableSymbolAfterStopLossMinutes: 120,
+                requireBrackets: true,
+                requireProfitProtection: true
             }
         }),
         getAegisDecisionEnforcementConfig: vi.fn(() => options.decisionEnforcement ?? {
@@ -775,6 +904,34 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Equity total: $20.00'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('✅ Brackets confirmados'));
 	    });
+
+    it('uses Momentum Ride YAML risk profile when finalStrategy is momentum_ride', async () => {
+        const { exchange, historyLogger, logger, service, state } = makeHarness({
+            signal: signalWithRegimeContext({ turboScore: 0.94, votes: { long: 3, short: 0, neutral: 0 } }),
+            cachedCandles: momentumCandles(),
+            momentumRide: momentumRideRuntimeConfig(0.015)
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 30);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.002);
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            lastStrategy: 'MOMENTUM_RIDE',
+            lastActualLeverage: 30,
+            lastPositionFraction: 0.015
+        }));
+        expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(expect.objectContaining({
+            strategy: 'MOMENTUM_RIDE',
+            leverage: 30,
+            position_fraction: 0.015
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({
+            finalStrategy: 'momentum_ride',
+            leverage: 30,
+            positionFraction: 0.015
+        }));
+    });
 
 	    it('blocks before marketOpen when daily loss stop is reached', async () => {
 	        const { exchange, logger, service, state } = makeHarness({ balance: 17.9 });

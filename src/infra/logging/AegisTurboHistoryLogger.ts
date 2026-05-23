@@ -8,12 +8,14 @@ export type AegisTurboVotes = {
     neutral?: number;
 };
 
+export type AegisResearchStrategy = 'AEGIS_TURBO' | 'MOMENTUM_RIDE';
+
 export type AegisTurboSignalHistoryInput = {
     timestamp?: string;
     signal_id?: string;
     portfolio_session_id?: string;
     symbol: string;
-    strategy: 'AEGIS_TURBO';
+    strategy: AegisResearchStrategy;
     mode: string;
     price?: number;
     raw_action?: string;
@@ -44,7 +46,7 @@ export type AegisTurboTradeOpenInput = {
     trade_id: string;
     portfolio_session_id?: string;
     symbol: string;
-    strategy: 'AEGIS_TURBO';
+    strategy: AegisResearchStrategy;
     mode: string;
     side: 'LONG' | 'SHORT';
     opened_at: string;

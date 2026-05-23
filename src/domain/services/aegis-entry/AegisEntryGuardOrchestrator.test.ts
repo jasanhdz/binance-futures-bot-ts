@@ -260,6 +260,13 @@ const regimeContextConfig: AegisRegimeContextRuntimeConfig = {
 const momentumRideConfig: AegisMomentumRideRuntimeConfig = {
     enabled: true,
     mode: 'SHADOW',
+    researchMode: true,
+    regimeFilter: {
+        enabled: true,
+        useAsGate: false,
+        recordMetadata: true,
+        ignoreForEntry: true
+    },
     allowWhenAegisDenied: false,
     requireAegisDirectionConfirmation: true,
     allowMomentumAgainstAegis: false,
@@ -736,6 +743,115 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
+    it('Momentum ENFORCE ALLOW no requiere CleanEntry ALLOW si dirección Aegis confirma y hard safety pasa', () => {
+        const enforceMomentum = {
+            ...momentumRideConfig,
+            mode: 'ENFORCE' as const,
+            symbols: {
+                ADAUSDT: {
+                    ...momentumRideConfig.symbols.ADAUSDT,
+                    mode: 'ENFORCE' as const
+                }
+            }
+        };
+        const result = AegisEntryGuardOrchestrator.evaluate(
+            momentumContext({
+                momentumRideConfig: enforceMomentum,
+                eventRisk: {
+                    ...momentumContext().eventRisk!,
+                    mode: 'CAUTION',
+                    enforce: false,
+                    wouldBlock: true,
+                    reason: 'caution_btc_eth_not_confirmed',
+                    config: {
+                        ...momentumContext().eventRisk!.config,
+                        caution: {
+                            minQualityScore: 0.65,
+                            maxTailRiskScore: 0.45,
+                            requireBtcEthConfirmation: true
+                        }
+                    }
+                }
+            }),
+            policy({
+                regime_context: { enabled: true, mode: 'SHADOW' },
+                momentum_ride: { enabled: true, mode: 'ENFORCE' },
+                probe_mode: { enabled: false, mode: 'OFF' }
+            })
+        );
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalStrategy).toBe('momentum_ride');
+        expect(result.allowedBy).toBe('momentum_ride');
+        expect(result.strategyCandidates.aegis_turbo).toMatchObject({
+            decision: 'WAIT_CONFIRMATION',
+            reason: 'clean_entry_event_risk_would_block'
+        });
+        expect(result.strategyCandidates.momentum_ride.decision).toBe('ALLOW');
+        expect(result.guards.find((guard) => guard.name === 'momentum_ride')?.metadata).toMatchObject({
+            aegisEntryPolicyFinalDecision: 'WAIT_CONFIRMATION',
+            aegisEntryPolicyFinalReason: 'clean_entry_event_risk_would_block',
+            cleanEntryDecision: 'WAIT_CONFIRMATION',
+            eventRiskMode: 'CAUTION',
+            eventRiskWouldBlock: true,
+            momentumUsedAegisDirectionOnly: true,
+            momentumDidNotRequireCleanEntry: true,
+            hardSafetyPassed: true
+        });
+    });
+
+    it('Momentum ALLOW no overridea EventRisk RISK_OFF ni MANUAL_ONLY hard DENY', () => {
+        for (const mode of ['RISK_OFF', 'MANUAL_ONLY'] as const) {
+            const enforceMomentum = {
+                ...momentumRideConfig,
+                mode: 'ENFORCE' as const,
+                symbols: {
+                    ADAUSDT: {
+                        ...momentumRideConfig.symbols.ADAUSDT,
+                        mode: 'ENFORCE' as const
+                    }
+                }
+            };
+            const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+                momentumRideConfig: enforceMomentum,
+                setupGrade: 'WEAK',
+                eventRisk: {
+                    ...momentumContext().eventRisk!,
+                    mode,
+                    enforce: true,
+                    wouldBlock: true,
+                    reason: mode === 'RISK_OFF' ? 'event_risk_risk_off_denied_non_a_plus' : 'event_risk_manual_only',
+                    config: {
+                        ...momentumContext().eventRisk!.config,
+                        riskOff: {
+                            minQualityScore: 0.95,
+                            maxTailRiskScore: 0.35,
+                            allowOnlyAPlus: true
+                        },
+                        manualOnly: { blockNewEntries: true }
+                    }
+                }
+            }), policy({
+                regime_context: { enabled: true, mode: 'SHADOW' },
+                momentum_ride: { enabled: true, mode: 'ENFORCE' },
+                event_risk: { enabled: true, mode: 'ENFORCE' },
+                decision_brain: { enabled: false, mode: 'OFF' },
+                clean_entry: { enabled: false, mode: 'OFF' },
+                probe_mode: { enabled: false, mode: 'OFF' }
+            }));
+
+            expect(result.finalDecision).toBe('DENY');
+            expect(result.deniedBy).toBe('event_risk');
+            expect(result.finalStrategy).toBe('none');
+            expect(result.riskProfile).toBeUndefined();
+            expect(result.strategyCandidates.momentum_ride.decision).toBe('DENY');
+            expect(result.guards.find((guard) => guard.name === 'momentum_ride')?.metadata).toMatchObject({
+                eventRiskMode: mode,
+                hardSafetyPassed: false
+            });
+        }
+    });
+
     it('does not let Probe Mode override DecisionBrain MANUAL_ONLY', () => {
         const result = AegisEntryGuardOrchestrator.evaluate(
             baseContext({
@@ -998,7 +1114,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.riskProfile).toBeUndefined();
     });
 
-    it('allowWhenAegisDenied true queda reservado y no overridea Aegis DENY', () => {
+    it('allowWhenAegisDenied true no permite Momentum si Aegis tiene hard DENY real', () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1022,13 +1138,16 @@ describe('AegisEntryGuardOrchestrator', () => {
             momentum_ride: { enabled: true, mode: 'ENFORCE' }
         }));
 
-        expect(denied.strategyCandidates.momentum_ride.decision).toBe('ALLOW');
+        expect(denied.strategyCandidates.momentum_ride.decision).toBe('DENY');
+        expect(denied.strategyCandidates.momentum_ride.reason).toBe('decision_brain_do_not_enter');
         expect(denied.finalDecision).toBe('DENY');
         expect(denied.finalStrategy).toBe('none');
         expect(denied.riskProfile).toBeUndefined();
         expect(denied.guards.find((guard) => guard.name === 'momentum_ride')?.metadata).toMatchObject({
             overrideStatus: 'reserved_not_active',
-            overrideReason: 'momentum_override_reserved_not_active'
+            overrideReason: 'momentum_override_reserved_not_active',
+            hardSafetyPassed: false,
+            hardSafetyReason: 'decision_brain_do_not_enter'
         });
     });
 

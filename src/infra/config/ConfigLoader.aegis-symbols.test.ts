@@ -1280,6 +1280,12 @@ symbols:
   momentum_ride:
     enabled: true
     mode: SHADOW
+    research_mode: true
+    regime_filter:
+      enabled: true
+      use_as_gate: false
+      record_metadata: true
+      ignore_for_entry: true
     require_aegis_direction_confirmation: true
     allow_momentum_against_aegis: true
     require_btc_eth_not_contradicting: true
@@ -1306,6 +1312,13 @@ symbols:
 
         const momentum = config.getAegisMomentumRideConfig();
         expect(momentum.enabled).toBe(true);
+        expect(momentum.researchMode).toBe(true);
+        expect(momentum.regimeFilter).toEqual({
+            enabled: true,
+            useAsGate: false,
+            recordMetadata: true,
+            ignoreForEntry: true
+        });
         expect(momentum.requireAegisDirectionConfirmation).toBe(true);
         expect(momentum.allowMomentumAgainstAegis).toBe(false);
         expect(momentum.requireBtcEthNotContradicting).toBe(true);
@@ -1553,6 +1566,13 @@ symbols:
         expect(config.getAegisMomentumRideConfig()).toMatchObject({
             enabled: false,
             mode: 'SHADOW',
+            researchMode: false,
+            regimeFilter: {
+                enabled: false,
+                useAsGate: false,
+                recordMetadata: true,
+                ignoreForEntry: false
+            },
             requireAegisDirectionConfirmation: true,
             allowMomentumAgainstAegis: false,
             symbols: {}

@@ -129,6 +129,12 @@ aegis:
   momentum_ride:
     enabled: false
     mode: SHADOW
+    research_mode: true
+    regime_filter:
+      enabled: true
+      use_as_gate: false
+      record_metadata: true
+      ignore_for_entry: true
     allow_momentum_when_aegis_denied: false
     require_aegis_direction_confirmation: true
     allow_momentum_against_aegis: false

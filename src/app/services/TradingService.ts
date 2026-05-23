@@ -392,6 +392,13 @@ export class TradingService {
         return {
             enabled: false,
             mode: 'SHADOW',
+            researchMode: false,
+            regimeFilter: {
+                enabled: false,
+                useAsGate: false,
+                recordMetadata: true,
+                ignoreForEntry: true
+            },
             allowWhenAegisDenied: false,
             requireAegisDirectionConfirmation: true,
             allowMomentumAgainstAegis: false,
@@ -1636,8 +1643,9 @@ export class TradingService {
         });
     }
 
-    private countStateOpenPositions(): { totalOpenPositions: number; openProbePositions: number } {
+    private countStateOpenPositions(): { totalOpenPositions: number; openMomentumPositions: number; openProbePositions: number } {
         let totalOpenPositions = 0;
+        let openMomentumPositions = 0;
         let openProbePositions = 0;
         const symbols = this.getLiveAegisSymbols();
         const scanSymbols = symbols.length > 0 ? symbols : this.config.symbols;
@@ -1650,10 +1658,11 @@ export class TradingService {
             const state = this.stateForSymbol(symbol).get();
             if (state.mode === 'IDLE') continue;
             totalOpenPositions++;
+            if (state.lastStrategy === 'MOMENTUM_RIDE') openMomentumPositions++;
             if (state.probeModeActive === true) openProbePositions++;
         }
 
-        return { totalOpenPositions, openProbePositions };
+        return { totalOpenPositions, openMomentumPositions, openProbePositions };
     }
 
     private mostRecentStopLossAt(): number | undefined {
@@ -1874,6 +1883,7 @@ export class TradingService {
                 consecutiveLosses: this.consecutiveLosses,
                 tradesToday: this.tradesToday,
                 openPositionsCount: stateExposure.totalOpenPositions,
+                openMomentumPositions: stateExposure.openMomentumPositions,
                 openProbePositions: stateExposure.openProbePositions,
                 sameSymbolPositionExists,
                 recentStopLossMinutes: this.finiteNumber(lastStopLossAt) ? (now - lastStopLossAt) / 60000 : undefined,
@@ -2392,6 +2402,7 @@ export class TradingService {
             const openedAtMs = await exchange.getServerTime();
             const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
             const guardianConfig = this.getAegisGuardianConfig(symbol, regimeConfig);
+            const finalStrategyLabel = entryDecision.finalStrategy === 'momentum_ride' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
             symbolState.set({
                 mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                 lastSide: side,
@@ -2401,7 +2412,7 @@ export class TradingService {
                 peakRoe: 0,
                 lowestRoe: 0,
                 currentRegime: 'AEGIS_TURBO',
-                lastStrategy: 'AEGIS_TURBO',
+                lastStrategy: finalStrategyLabel,
                 lastTradeId: tradeId,
                 lastPeakPrice: entryPrice,
                 lastEntryWallet: wallet,
@@ -2439,7 +2450,7 @@ export class TradingService {
                 trade_id: tradeId,
                 portfolio_session_id: getPortfolioSessionId(),
                 symbol,
-                strategy: 'AEGIS_TURBO',
+                strategy: finalStrategyLabel,
                 mode: this.getTradingMode(),
                 side,
                 opened_at: new Date(openedAtMs).toISOString(),
@@ -2504,6 +2515,7 @@ export class TradingService {
                 margin: marginUsed,
                 leverage,
                 positionFraction,
+                finalStrategy: entryDecision.finalStrategy,
                 turboScore: effectiveGate.turboScore,
                 votes: effectiveGate.votes,
                 rawReason: effectiveGate.rawReason

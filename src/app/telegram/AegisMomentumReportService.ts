@@ -30,6 +30,18 @@ export type AegisMomentumSample = {
     btcEthContradict: boolean | null;
     tailRiskScore: number | null;
     hasRiskProfile: boolean;
+    researchMode: boolean | null;
+    regimeUsedAsGate: boolean | null;
+    regimeIgnoredForEntry: boolean | null;
+    regimeIgnoreReason: string | null;
+    regimeObserved: string | null;
+    regimeMomentumEnvironment: string | null;
+    regimeTransitionRisk: string | null;
+    eventRiskMode: string | null;
+    eventRiskWouldBlock: boolean | null;
+    positionFraction: number | null;
+    leverage: number | null;
+    riskProfileSource: string | null;
     interpretation: string;
 };
 
@@ -92,7 +104,13 @@ const MOMENTUM_DIAGNOSTIC_REASONS = new Set([
     'momentum_safety_total_open_positions',
     'momentum_safety_daily_trades',
     'momentum_safety_consecutive_losses',
-    'momentum_safety_loss_cooldown'
+    'momentum_safety_loss_cooldown',
+    'regime_observed_allow',
+    'regime_observed_watch',
+    'regime_observed_avoid',
+    'regime_observed_unknown',
+    'regime_observed_avoid_ignored_by_research_mode',
+    'regime_observed_unknown_ignored_by_research_mode'
 ]);
 
 export class AegisMomentumReportService {
@@ -273,6 +291,16 @@ function extractMomentumSample(row: JsonRecord): AegisMomentumSample | undefined
         ?? traceMomentumMetadata.regimeContext
         ?? metadata.regime
         ?? {};
+    const regimeEngineV2 = momentumRide.regimeEngineV2
+        ?? traceMomentumMetadata.regimeObserved
+        ?? traceMomentumMetadata.regimeEngineV2
+        ?? metadata.regimeEngineV2
+        ?? {};
+    const riskProfile = metadata.riskProfile
+        ?? trace.riskProfile
+        ?? momentumCandidate.riskProfile
+        ?? traceMomentumMetadata.riskProfile
+        ?? {};
     const reasons = Array.isArray(momentumRide.reasons)
         ? momentumRide.reasons.map((reason: unknown) => stableText(reason)).filter((reason: string) => reason !== 'N/D')
         : rawReason !== 'N/D' ? [rawReason] : [];
@@ -298,7 +326,19 @@ function extractMomentumSample(row: JsonRecord): AegisMomentumSample | undefined
         btcEthAgreement: nullableBoolean(momentumRide.btcEthAgreement),
         btcEthContradict: nullableBoolean(momentumRide.btcEthContradict),
         tailRiskScore: finiteNumber(metadata.tailRiskScore ?? metadata.tail_risk_score ?? metadata.entryPolicy?.tailRiskScore),
-        hasRiskProfile: Boolean(metadata.riskProfile ?? trace.riskProfile ?? momentumCandidate.riskProfile),
+        hasRiskProfile: Object.keys(riskProfile).length > 0,
+        researchMode: nullableBoolean(momentumRide.researchMode),
+        regimeUsedAsGate: nullableBoolean(momentumRide.regimeUsedAsGate ?? traceMomentumMetadata.regimeUsedAsGate),
+        regimeIgnoredForEntry: nullableBoolean(momentumRide.regimeIgnoredForEntry ?? traceMomentumMetadata.regimeIgnoredForEntry),
+        regimeIgnoreReason: nullableText(momentumRide.regimeIgnoreReason ?? traceMomentumMetadata.regimeIgnoreReason),
+        regimeObserved: nullableText(regimeEngineV2.technicalRegime),
+        regimeMomentumEnvironment: nullableText(regimeEngineV2.momentumEnvironment),
+        regimeTransitionRisk: nullableText(regimeEngineV2.transitionRisk),
+        eventRiskMode: nullableText(traceMomentumMetadata.eventRiskMode ?? metadata.eventRiskMode ?? metadata.entryPolicy?.eventRiskMode),
+        eventRiskWouldBlock: nullableBoolean(traceMomentumMetadata.eventRiskWouldBlock ?? metadata.eventRiskWouldBlock ?? metadata.entryPolicy?.eventRiskWouldBlock),
+        positionFraction: finiteNumber(riskProfile.positionFraction),
+        leverage: finiteNumber(riskProfile.leverage),
+        riskProfileSource: nullableText(riskProfile.source ?? riskProfile.positionFractionSource),
         interpretation: 'Diagnóstico Momentum'
     };
     return {
@@ -354,6 +394,8 @@ function appendMomentumSamples(lines: string[], samples: AegisMomentumSample[]):
     samples.slice(0, 5).forEach((sample, index) => {
         lines.push(`${index + 1}) ${sample.symbol} ${sample.side}`);
         lines.push(`Pattern: ${sample.candlesCount ?? 'N/D'} candles | Vol: ${formatRatio(sample.volumeRatio)} | Regime: ${sample.regimeLabel ?? 'UNKNOWN'} | Turbo: ${sample.turboAgreement === true ? 'confirmed' : 'not_confirmed'} | Tail: ${formatNumber(sample.tailRiskScore)} | Decision: ${sample.momentumDecision}`);
+        lines.push(`   Research: ${sample.researchMode === true ? 'ON' : sample.researchMode === false ? 'OFF' : 'N/D'} | Regime gate: ${sample.regimeIgnoredForEntry === true ? 'ignored' : sample.regimeUsedAsGate === true ? 'active' : 'N/D'} | Regime observed: ${sample.regimeMomentumEnvironment ?? sample.regimeObserved ?? 'UNKNOWN'} | EventRisk: ${sample.eventRiskMode ?? 'N/D'}${sample.eventRiskWouldBlock === true ? ' would_block' : ''}`);
+        lines.push(`   Risk: position_fraction ${formatPercent(sample.positionFraction)} | leverage ${formatNumber(sample.leverage)} | source ${sample.riskProfileSource ?? 'N/D'}`);
         lines.push(`   ${sample.interpretation}`);
         if (sample.momentumReason !== 'N/D') lines.push(`   Reason: ${sample.momentumReason}`);
         if (index < Math.min(samples.length, 5) - 1) lines.push('');
@@ -541,6 +583,10 @@ function formatRatio(value: number | null): string {
 
 function formatNumber(value: number | null): string {
     return value === null ? 'N/D' : value.toFixed(2);
+}
+
+function formatPercent(value: number | null): string {
+    return value === null ? 'N/D' : `${(value * 100).toFixed(2)}%`;
 }
 
 function formatWindow(windowMinutes: number): string {

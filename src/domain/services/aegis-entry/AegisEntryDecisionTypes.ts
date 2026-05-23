@@ -13,6 +13,7 @@ import { AegisCleanEntryGuardConfig, AegisCleanEntryGuardOutput } from '../Aegis
 import { AegisProbeModeDecision, AegisProbeModeRuntimeConfig } from '../AegisProbeMode';
 import { AegisShortGateConfig, AegisShortGateDecision } from '../AegisShortGate';
 import { AegisRegimeDecision, AegisRegimeGuardConfig, AegisRegimeLabel } from '../AegisRegimeGuard';
+import { RegimeEngineV2Decision } from '../regime-v2/RegimeEngineV2.types';
 
 export type AegisEntryPolicyMode = 'OFF' | 'SHADOW' | 'ENFORCE';
 export type AegisEntryFinalDecision = 'ALLOW' | 'DENY' | 'WAIT_CONFIRMATION';
@@ -92,6 +93,19 @@ export interface AegisMomentumRideContext {
     btcEthAgreement?: boolean;
     btcEthContradict?: boolean;
     regimeConfirmed?: boolean;
+    researchMode?: boolean;
+    regimeUsedAsGate?: boolean;
+    regimeIgnoredForEntry?: boolean;
+    regimeIgnoreReason?: string;
+    regimeEngineV2?: {
+        technicalRegime: RegimeEngineV2Decision['technicalRegime'];
+        momentumEnvironment: RegimeEngineV2Decision['momentumEnvironment'];
+        transitionRisk: RegimeEngineV2Decision['transition']['risk'];
+        confidence: number;
+        falseBreakoutRisk?: number;
+        reasons: string[];
+        observedReason: string;
+    };
     reasons: string[];
 }
 
@@ -104,6 +118,8 @@ export interface AegisMomentumRiskProfile {
     maxOpenPositions: number;
     cooldown: number;
     sourceRule: string;
+    source: 'effective_config';
+    positionFractionSource: 'yaml';
 }
 
 export interface AegisRegimeContextRuntimeConfig {
@@ -158,6 +174,13 @@ export interface AegisMomentumRideSymbolRuntimeConfig {
 export interface AegisMomentumRideRuntimeConfig {
     enabled: boolean;
     mode: AegisEntryPolicyMode;
+    researchMode: boolean;
+    regimeFilter: {
+        enabled: boolean;
+        useAsGate: boolean;
+        recordMetadata: boolean;
+        ignoreForEntry: boolean;
+    };
     allowWhenAegisDenied: boolean;
     requireAegisDirectionConfirmation: boolean;
     allowMomentumAgainstAegis: boolean;
@@ -205,6 +228,7 @@ export interface AegisEntryOperationalContext {
     consecutiveLosses: number;
     tradesToday: number;
     openPositionsCount: number;
+    openMomentumPositions?: number;
     openProbePositions: number;
     sameSymbolPositionExists: boolean;
     recentStopLossMinutes?: number;
