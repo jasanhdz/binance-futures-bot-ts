@@ -49,8 +49,8 @@ export class ShortGateGuardAdapter {
         return {
             guard,
             decision,
-            adjustedLeverage: decision.allowed || !enforced ? decision.adjustedLeverage : context.leverage,
-            adjustedPositionFraction: decision.allowed || !enforced
+            adjustedLeverage: enforced && decision.allowed ? decision.adjustedLeverage : context.leverage,
+            adjustedPositionFraction: enforced && decision.allowed
                 ? decision.adjustedPositionFraction
                 : context.requestedPositionFraction
         };

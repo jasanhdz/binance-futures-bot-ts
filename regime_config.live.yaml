@@ -61,6 +61,55 @@ REGIME_PROFILES:
       leverage: 8
 
 aegis:
+  phase_o_short_live:
+    enabled: true
+    mode: EXPERIMENTAL_LIVE
+    side: SHORT_ONLY
+    capital_profile: TEST_CAPITAL
+    allow_orders: true
+    require_brackets: true
+    max_position_fraction_default: 0.01
+    max_open_phase_o_positions: 1
+    max_phase_o_trades_per_day: 3
+    align_short_leverage_with_long: true
+    remove_legacy_short_leverage_downshift: true
+    leverage:
+      conservative: 15
+      normal: 20
+      premium: 25
+      max_allowed_leverage: 30
+    guard_modes:
+      phase_o_ml: ENFORCE
+      momentum_ride: ENFORCE
+      clean_entry: SHADOW
+      event_risk: SHADOW
+      entry_quality: SHADOW
+      decision_brain: SHADOW
+      regime_engine: SHADOW
+      short_gate_legacy: SHADOW
+      risk_shadow_guards: SHADOW
+    hard_safety:
+      brackets: ENFORCE
+      max_open_positions: ENFORCE
+      max_trades_per_day: ENFORCE
+      daily_loss_stop: ENFORCE
+      exchange_min_notional: ENFORCE
+      exchange_order_errors: ENFORCE
+      link_no_entry: ENFORCE
+    allow_link_entry: false
+    link_avoid_only: true
+    symbols:
+      LTCUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
+      AVAXUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
+      ETHUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: cautious}
+      SUIUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: normal}
+      ADAUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
+      DOGEUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: cautious}
+      BTCUSDT: {enabled: true, max_position_fraction: 0.005, caution_level: very_cautious}
+      BNBUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
+      XRPUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: cautious}
+      SOLUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: final_repair_candidate}
+      LINKUSDT: {enabled: true, entry_enabled: false, avoid_only: true}
   entry_policy:
     enabled: true
     guards:
@@ -167,7 +216,7 @@ aegis:
     require_btc_eth_confirmation: false
     defaults:
       long:
-        position_fraction: 0.02
+        position_fraction: 0.01
         min_turbo_score: 0.90
         min_votes_agreement: 3
         min_volume_ratio: 1.55
@@ -192,19 +241,19 @@ aegis:
         allowed_regimes: [MOMENTUM_DOWN, TREND_DOWN, BREAKOUT_DOWN]
     profiles:
       major_high_confidence_long:
-        leverage: 50
+        leverage: 25
         min_turbo_score: 0.88
         min_votes_agreement: 2
         min_volume_ratio: 1.35
         max_tail_risk_score: 0.28
       major_short:
-        leverage: 35
-        position_fraction: 0.015
+        leverage: 25
+        position_fraction: 0.01
         min_turbo_score: 0.92
         min_volume_ratio: 1.45
         max_tail_risk_score: 0.25
       xrp_long:
-        leverage: 50
+        leverage: 25
         min_turbo_score: 0.85
         min_votes_agreement: 2
         min_volume_ratio: 1.50
@@ -215,13 +264,13 @@ aegis:
         min_volume_ratio: 1.70
         max_tail_risk_score: 0.25
       stable_alt_long:
-        leverage: 30
+        leverage: 25
         min_turbo_score: 0.88
         min_votes_agreement: 2
         min_volume_ratio: 1.40
         max_tail_risk_score: 0.28
       stable_alt_short:
-        leverage: 18
+        leverage: 20
         min_turbo_score: 0.93
         min_volume_ratio: 1.60
         max_tail_risk_score: 0.24
@@ -233,12 +282,12 @@ aegis:
         min_volume_ratio: 1.70
       volatile_alt_long:
         leverage: 20
-        position_fraction: 0.015
+        position_fraction: 0.01
         min_volume_ratio: 1.60
         max_tail_risk_score: 0.23
       volatile_alt_short:
-        leverage: 12
-        position_fraction: 0.008
+        leverage: 15
+        position_fraction: 0.01
         min_turbo_score: 0.95
         min_volume_ratio: 1.80
         max_tail_risk_score: 0.20
@@ -249,20 +298,20 @@ aegis:
         min_volume_ratio: 1.80
         max_tail_risk_score: 0.22
       meme_alt_short:
-        leverage: 10
-        position_fraction: 0.008
+        leverage: 15
+        position_fraction: 0.01
         min_turbo_score: 0.95
         min_volume_ratio: 1.90
         max_tail_risk_score: 0.20
       high_noise_alt_long:
-        leverage: 12
+        leverage: 15
         position_fraction: 0.01
         min_turbo_score: 0.92
         min_volume_ratio: 1.80
         max_tail_risk_score: 0.22
       high_noise_alt_short:
-        leverage: 8
-        position_fraction: 0.008
+        leverage: 15
+        position_fraction: 0.01
         min_turbo_score: 0.95
         min_volume_ratio: 1.90
         max_tail_risk_score: 0.20
@@ -286,7 +335,7 @@ aegis:
         short:
           enabled: true
           profile: major_short
-          leverage: 30
+          leverage: 25
           max_tail_risk_score: 0.26
       XRPUSDT:
         enabled: true
@@ -303,7 +352,7 @@ aegis:
         long:
           enabled: true
           profile: stable_alt_long
-          leverage: 35
+          leverage: 25
         short:
           enabled: true
           profile: stable_alt_short
@@ -332,7 +381,7 @@ aegis:
         long:
           enabled: true
           profile: medium_alt_long
-          position_fraction: 0.015
+          position_fraction: 0.01
           max_tail_risk_score: 0.24
         short:
           enabled: true
@@ -374,8 +423,8 @@ aegis:
           enabled: true
           profile: high_noise_alt_short
     safety_caps:
-      max_leverage: 50
-      max_position_fraction: 0.02
+      max_leverage: 30
+      max_position_fraction: 0.01
       max_open_momentum_positions: 1
       max_total_open_positions_when_momentum: 2
       max_momentum_trades_per_day: 3
@@ -489,7 +538,7 @@ aegis:
     min_score: 0.80
     require_votes: 3
     position_fraction_multiplier: 1.0
-    max_leverage: 10
+    max_leverage: 30
     block_symbols: []
     allow_if_regime_bearish: false
   entry_quality_gate:
@@ -537,15 +586,15 @@ aegis:
     enabled: true
     live_enabled: true
     allow_short: true
-    position_fraction_cap: 1.0
+    position_fraction_cap: 0.01
     # Optional bot-side sizing overrides. When a rule matches symbol + side,
     # the bot uses this fraction instead of Aegis ML raw.position_fraction.
     position_fraction_overrides:
       - name: majors_link_btc_eth_ada_long
         symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT, XRPUSDT, BNBUSDT, DOGEUSDT]
-        long: 0.50
-    max_trades_per_day: 99
-    max_consecutive_losses: 10
+        long: 0.01
+    max_trades_per_day: 3
+    max_consecutive_losses: 2
     daily_loss_stop_pct: 0.10
     min_cooldown_ms: 900000
     max_liquidity_stress: 0.70
@@ -560,13 +609,11 @@ SYMBOL_OVERRIDES:
   SOLUSDT:
     AEGIS_TURBO: {}
   BNBUSDT:
-    AEGIS_TURBO:
-      profile: reduced_15x
+    AEGIS_TURBO: {}
   XRPUSDT:
     AEGIS_TURBO: {}
   DOGEUSDT:
-    AEGIS_TURBO:
-      profile: reduced_10x
+    AEGIS_TURBO: {}
   ADAUSDT:
     AEGIS_TURBO: {}
   AVAXUSDT:
@@ -574,8 +621,6 @@ SYMBOL_OVERRIDES:
   LINKUSDT:
     AEGIS_TURBO: {}
   SUIUSDT:
-    AEGIS_TURBO:
-      profile: reduced_8x
+    AEGIS_TURBO: {}
   LTCUSDT:
-    AEGIS_TURBO:
-      profile: reduced_15x
+    AEGIS_TURBO: {}

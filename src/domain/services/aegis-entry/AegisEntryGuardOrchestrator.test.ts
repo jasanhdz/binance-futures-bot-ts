@@ -1143,6 +1143,46 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.deniedBy).toBe('short_gate');
     });
 
+    it('keeps Phase O SHORT leverage and sizing unchanged when ShortGate is SHADOW', () => {
+        const result = AegisEntryGuardOrchestrator.evaluate(
+            baseContext({
+                side: 'SHORT',
+                rawAction: 'SHORT',
+                finalAction: 'SHORT',
+                votes: { long: 0, short: 3, neutral: 0 },
+                turboScore: 0.94,
+                leverage: 20,
+                requestedPositionFraction: 0.1,
+                basePositionFraction: 0.1,
+                gate: {
+                    ...baseContext().gate,
+                    side: 'SHORT',
+                    leverage: 20,
+                    positionFraction: 0.1,
+                    votes: { long: 0, short: 3, neutral: 0 }
+                }
+            }),
+            policy({
+                short_gate: { enabled: true, mode: 'SHADOW' },
+                entry_quality: { enabled: true, mode: 'SHADOW' },
+                event_risk: { enabled: true, mode: 'SHADOW' },
+                decision_brain: { enabled: true, mode: 'SHADOW' },
+                clean_entry: { enabled: true, mode: 'SHADOW' },
+                probe_mode: { enabled: true, mode: 'SHADOW' }
+            })
+        );
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.deniedBy).toBeUndefined();
+        expect(result.adjustedLeverage).toBe(20);
+        expect(result.adjustedPositionFraction).toBe(0.1);
+        expect(result.guards.find((guard) => guard.name === 'short_gate')).toMatchObject({
+            mode: 'SHADOW',
+            enforced: false,
+            reason: 'short_allowed_premium'
+        });
+    });
+
     it('keeps guard order deterministic and includes every guard in the trace', () => {
         const result = AegisEntryGuardOrchestrator.evaluate(baseContext(), policy());
 

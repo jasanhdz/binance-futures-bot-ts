@@ -486,6 +486,32 @@ export class TradingService {
         };
     }
 
+    private isPhaseOShortLiveSignal(signal: AegisTradingSignal, side: Side): boolean {
+        const turbo = (signal as any)?.aegis?.turbo ?? {};
+        const phaseO = turbo.phase_o ?? turbo.raw?.phase_o ?? {};
+        return side === 'SHORT'
+            && phaseO.phase_o_live_enabled === true
+            && phaseO.phase_o_link_avoid_only !== true
+            && phaseO.phase_o_link_entry_enabled !== false;
+    }
+
+    private withPhaseOShortGuardModes(policy: AegisEntryPolicyRuntimeConfig): AegisEntryPolicyRuntimeConfig {
+        return {
+            ...policy,
+            guards: {
+                ...policy.guards,
+                momentum_ride: { ...policy.guards.momentum_ride, enabled: true, mode: 'ENFORCE' },
+                clean_entry: { ...policy.guards.clean_entry, enabled: true, mode: 'SHADOW' },
+                event_risk: { ...policy.guards.event_risk, enabled: true, mode: 'SHADOW' },
+                entry_quality: { ...policy.guards.entry_quality, enabled: true, mode: 'SHADOW' },
+                decision_brain: { ...policy.guards.decision_brain, enabled: true, mode: 'SHADOW' },
+                regime: { ...policy.guards.regime, enabled: true, mode: 'SHADOW' },
+                short_gate: { ...policy.guards.short_gate, enabled: true, mode: 'SHADOW' },
+                long_risk_shadow: { ...policy.guards.long_risk_shadow, enabled: true, mode: 'SHADOW' }
+            }
+        };
+    }
+
     private getEntryQualityGateConfig(symbol?: string): AegisEntryQualityGateRuntimeConfig {
         const manager = this.deps.configManager as any;
         if (typeof manager.getEntryQualityGateConfig === 'function') {
@@ -2003,9 +2029,24 @@ export class TradingService {
                 gate: gateAfterPositionOverride,
                 baseGate: gate
             });
+            const baseEntryPolicy = this.getAegisEntryPolicyConfig();
+            const phaseOShortLive = this.isPhaseOShortLiveSignal(signal, side);
+            const entryPolicy = phaseOShortLive
+                ? this.withPhaseOShortGuardModes(baseEntryPolicy)
+                : baseEntryPolicy;
+            if (phaseOShortLive) {
+                logger.info('phase_o_short_guard_modes_applied', {
+                    symbol,
+                    side,
+                    guardMode: 'SHADOW',
+                    shadowGuards: ['clean_entry', 'event_risk', 'entry_quality', 'decision_brain', 'regime', 'short_gate', 'long_risk_shadow'],
+                    enforcedGuards: ['phase_o_ml', 'momentum_ride', 'brackets', 'max_trades_per_day', 'daily_loss_stop', 'exchange_min_notional'],
+                    ignoredForPhaseO: true
+                });
+            }
             const entryDecision = AegisEntryGuardOrchestrator.evaluate(
                 entryContext,
-                this.getAegisEntryPolicyConfig()
+                entryPolicy
             );
             const shortGateDecision = entryDecision.decisions.shortGate;
             const entryQualityDecision = entryDecision.decisions.entryQuality;
