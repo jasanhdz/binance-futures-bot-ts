@@ -68,9 +68,8 @@ aegis:
     capital_profile: TEST_CAPITAL
     allow_orders: true
     require_brackets: true
-    max_position_fraction_default: 0.01
-    max_open_phase_o_positions: 1
-    max_phase_o_trades_per_day: 3
+    max_open_phase_o_positions: 9
+    max_phase_o_trades_per_day: 20
     align_short_leverage_with_long: true
     remove_legacy_short_leverage_downshift: true
     leverage:
@@ -99,16 +98,16 @@ aegis:
     allow_link_entry: false
     link_avoid_only: true
     symbols:
-      LTCUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
-      AVAXUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
-      ETHUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: cautious}
-      SUIUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: normal}
-      ADAUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
-      DOGEUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: cautious}
-      BTCUSDT: {enabled: true, max_position_fraction: 0.005, caution_level: very_cautious}
-      BNBUSDT: {enabled: true, max_position_fraction: 0.01, caution_level: normal}
-      XRPUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: cautious}
-      SOLUSDT: {enabled: true, max_position_fraction: 0.0075, caution_level: final_repair_candidate}
+      LTCUSDT: {enabled: true, caution_level: normal}
+      AVAXUSDT: {enabled: true, caution_level: normal}
+      ETHUSDT: {enabled: true, caution_level: cautious}
+      SUIUSDT: {enabled: true, caution_level: normal}
+      ADAUSDT: {enabled: true, caution_level: normal}
+      DOGEUSDT: {enabled: true, caution_level: cautious}
+      BTCUSDT: {enabled: true, caution_level: very_cautious}
+      BNBUSDT: {enabled: true, caution_level: normal}
+      XRPUSDT: {enabled: true, caution_level: cautious}
+      SOLUSDT: {enabled: true, caution_level: final_repair_candidate}
       LINKUSDT: {enabled: true, entry_enabled: false, avoid_only: true}
   entry_policy:
     enabled: true
@@ -586,16 +585,16 @@ aegis:
     enabled: true
     live_enabled: true
     allow_short: true
-    position_fraction_cap: 0.01
+    position_fraction_cap: 0.50
     # Optional bot-side sizing overrides. When a rule matches symbol + side,
     # the bot uses this fraction instead of Aegis ML raw.position_fraction.
     position_fraction_overrides:
       - name: majors_link_btc_eth_ada_long
         symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT, XRPUSDT, BNBUSDT, DOGEUSDT]
         long: 0.01
-    max_trades_per_day: 3
-    max_consecutive_losses: 2
-    daily_loss_stop_pct: 0.10
+    max_trades_per_day: 20
+    max_consecutive_losses: 3
+    daily_loss_stop_pct: 0.30
     min_cooldown_ms: 900000
     max_liquidity_stress: 0.70
     require_brackets: true
