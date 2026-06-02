@@ -19,6 +19,7 @@ import {
     AegisDecisionEnforcementRuntimeConfig,
     AegisCleanEntryGuardRuntimeConfig,
     AegisPositionFractionOverride,
+    AegisPhaseOShortLiveYamlConfig,
     AegisPortfolioRiskYamlConfig,
     AegisProfitProtectionRuntimeConfig,
     AegisShortGateYamlConfig,
@@ -134,6 +135,7 @@ export interface AegisRuntimeSnapshot {
 export class TradingService {
     private isRunning = false;
     private tradesToday = 0;
+    private phaseOShortTradesToday = 0;
     private lastTradeDayReset = 0;
     private dailyStartBalance: number | null = null;
     private lastDailyPnlPct: number | undefined;
@@ -165,6 +167,13 @@ export class TradingService {
         const manager = this.deps.configManager as any;
         return typeof manager.getAegisTurboConfig === 'function'
             ? manager.getAegisTurboConfig()
+            : undefined;
+    }
+
+    private getAegisPhaseOShortLiveConfig(): AegisPhaseOShortLiveYamlConfig | undefined {
+        const manager = this.deps.configManager as any;
+        return typeof manager.getAegisPhaseOShortLiveConfig === 'function'
+            ? manager.getAegisPhaseOShortLiveConfig()
             : undefined;
     }
 
@@ -487,7 +496,7 @@ export class TradingService {
     }
 
     private isPhaseOShortLiveSignal(signal: AegisTradingSignal, side: Side): boolean {
-        const turbo = (signal as any)?.aegis?.turbo ?? {};
+        const turbo = (signal as any)?.metadata?.aegis?.turbo ?? (signal as any)?.aegis?.turbo ?? {};
         const phaseO = turbo.phase_o ?? turbo.raw?.phase_o ?? {};
         return side === 'SHORT'
             && phaseO.phase_o_live_enabled === true
@@ -2035,6 +2044,37 @@ export class TradingService {
                 ? this.withPhaseOShortGuardModes(baseEntryPolicy)
                 : baseEntryPolicy;
             if (phaseOShortLive) {
+                const phaseOConfig = this.getAegisPhaseOShortLiveConfig();
+                const phaseOLimit = phaseOConfig?.max_phase_o_trades_per_day;
+                if (typeof phaseOLimit === 'number' && this.phaseOShortTradesToday >= phaseOLimit) {
+                    await this.logAegisTurboSignal(symbol, signal, {
+                        signalId,
+                        tradeId,
+                        gate: { ...gateAfterPositionOverride, allowed: false, reason: 'risk_guard_max_phase_o_trades_per_day' },
+                        executed: false
+                    });
+                    await this.logAegisTradeEvent(symbol, 'GATE_DENIED', {
+                        tradeId,
+                        reason: 'risk_guard_max_phase_o_trades_per_day',
+                        metadata: {
+                            countSource: 'trade_opened',
+                            currentCount: this.phaseOShortTradesToday,
+                            limit: phaseOLimit,
+                            phaseOOnly: true,
+                            side,
+                            symbol
+                        }
+                    });
+                    logger.warn('risk_guard_max_phase_o_trades_per_day', {
+                        symbol,
+                        side,
+                        countSource: 'trade_opened',
+                        currentCount: this.phaseOShortTradesToday,
+                        limit: phaseOLimit,
+                        phaseOOnly: true
+                    });
+                    return;
+                }
                 logger.info('phase_o_short_guard_modes_applied', {
                     symbol,
                     side,
@@ -2610,6 +2650,7 @@ export class TradingService {
             });
 
             this.tradesToday++;
+            if (phaseOShortLive) this.phaseOShortTradesToday++;
             this.lastEntryBalance = wallet;
             if (wallet > this.peakBalance) this.peakBalance = wallet;
 
@@ -4040,6 +4081,7 @@ export class TradingService {
         const today = Math.floor(Date.now() / 86400000);
         if (today > this.lastTradeDayReset) {
             this.tradesToday = 0;
+            this.phaseOShortTradesToday = 0;
             this.dailyStartBalance = null;
             this.lastDailyPnlPct = undefined;
             this.lastTradeDayReset = today;

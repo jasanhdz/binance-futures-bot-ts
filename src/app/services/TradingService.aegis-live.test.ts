@@ -239,6 +239,18 @@ function shortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTra
     };
 }
 
+function phaseOShortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTradingSignal {
+    const signal = shortSignal(symbol, score, shortVotes);
+    const turbo = signal.metadata!.aegis!.turbo as any;
+    turbo.raw.phase_o = {
+        phase_o_live_enabled: true,
+        phase_o_live_mode: 'experimental_short_only',
+        phase_o_link_avoid_only: false,
+        phase_o_link_entry_enabled: true
+    };
+    return signal;
+}
+
 function entryQualityConfig(overrides: Record<string, any> = {}) {
     const { config: configOverrides = {}, ...rest } = overrides;
     return {
@@ -532,6 +544,7 @@ function makeHarness(options: {
         probeMode?: any;
         telegramNotifications?: any;
         positionFractionOverride?: any;
+        phaseOShortLive?: any;
         entryQuality?: any;
         entryPolicy?: any;
         cachedCandles?: any[];
@@ -642,6 +655,14 @@ function makeHarness(options: {
     const symbolModes = options.symbolModes ?? { ETHUSDT: 'LIVE' as const };
     const configManager: any = {
         getAegisTurboConfig: vi.fn(() => options.yaml ?? yamlTurbo()),
+        getAegisPhaseOShortLiveConfig: vi.fn(() => options.phaseOShortLive ?? {
+            enabled: true,
+            max_open_phase_o_positions: 9,
+            max_phase_o_trades_per_day: 20,
+            require_brackets: true,
+            allow_link_entry: false,
+            link_avoid_only: true
+        }),
         getAegisPortfolioRiskConfig: vi.fn(() => options.portfolioRisk ?? { enabled: false }),
         getAegisShortGateConfig: vi.fn(() => options.shortGate ?? { enabled: false }),
         getAegisEventRiskConfig: vi.fn(() => options.eventRisk ?? {
@@ -3084,4 +3105,52 @@ describe('TradingService Aegis live execution', () => {
         expect(symbolStores.get('ADAUSDT')?.get()).toEqual(expect.objectContaining({ breakEvenExecuted: true, lastBreakEvenStop: 100.3 }));
         expect(symbolStores.get('ETHUSDT')?.get()).not.toEqual(expect.objectContaining({ breakEvenExecuted: true }));
     });
+    it('counts only confirmed Phase O SHORT opens for the Phase O daily limit', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: phaseOShortSignal('BTCUSDT'),
+            yaml: yamlTurbo({ allow_short: true }),
+            phaseOShortLive: { enabled: true, max_phase_o_trades_per_day: 1 }
+        });
+
+        await service.tick('BTCUSDT');
+        expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+        expect((service as any).phaseOShortTradesToday).toBe(1);
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'POSITION_CONFIRMED' }));
+    });
+
+    it('blocks Phase O SHORT only after the configured real opened-trade limit', async () => {
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: phaseOShortSignal('BTCUSDT'),
+            yaml: yamlTurbo({ allow_short: true }),
+            phaseOShortLive: { enabled: true, max_phase_o_trades_per_day: 1 }
+        });
+        (service as any).phaseOShortTradesToday = 1;
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'GATE_DENIED',
+            reason: 'risk_guard_max_phase_o_trades_per_day',
+            metadata: expect.objectContaining({ countSource: 'trade_opened', currentCount: 1, limit: 1, phaseOOnly: true })
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('risk_guard_max_phase_o_trades_per_day', expect.objectContaining({ countSource: 'trade_opened' }));
+    });
+
+    it('does not apply the Phase O SHORT daily counter to legacy LONG', async () => {
+        const { exchange, service } = makeHarness({
+            signal: validSignal(),
+            phaseOShortLive: { enabled: true, max_phase_o_trades_per_day: 1 }
+        });
+        (service as any).phaseOShortTradesToday = 1;
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', expect.any(Number));
+    });
+
 });

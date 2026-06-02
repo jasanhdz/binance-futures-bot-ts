@@ -86,6 +86,15 @@ export type RegimeSymbolOverrideYamlConfig = Partial<RegimeYamlConfig> & {
     capital_usage?: number;
 };
 
+export interface AegisPhaseOShortLiveYamlConfig {
+    enabled?: boolean;
+    max_open_phase_o_positions?: number;
+    max_phase_o_trades_per_day?: number;
+    require_brackets?: boolean;
+    allow_link_entry?: boolean;
+    link_avoid_only?: boolean;
+}
+
 export interface AegisTurboYamlConfig {
     enabled?: boolean;
     live_enabled?: boolean;
@@ -581,6 +590,7 @@ export interface NinjaYamlConfig {
     };
     aegis?: {
         turbo?: AegisTurboYamlConfig;
+        phase_o_short_live?: AegisPhaseOShortLiveYamlConfig;
         exit_eye?: Partial<AegisExitEyeYamlConfig>;
         portfolio_risk?: AegisPortfolioRiskYamlConfig;
         short_gate?: AegisShortGateYamlConfig;
@@ -857,6 +867,10 @@ export class NinjaConfigManager {
 
     getAegisTurboConfig(): AegisTurboYamlConfig | undefined {
         return this.config.aegis?.turbo;
+    }
+
+    getAegisPhaseOShortLiveConfig(): AegisPhaseOShortLiveYamlConfig | undefined {
+        return this.config.aegis?.phase_o_short_live;
     }
 
     getAegisPositionFractionOverride(symbol: string, side: 'LONG' | 'SHORT'): AegisPositionFractionOverride | undefined {
