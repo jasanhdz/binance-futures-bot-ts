@@ -80,6 +80,18 @@ const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 const EXIT_EYE_SIGNAL_TTL_MS = 15000;
 const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
+
+type PhaseOTurboMetadata = {
+    isPhaseO: boolean;
+    side: Side | null;
+    entryEnabled: boolean;
+    avoidOnly: boolean;
+    modelFamily?: string;
+    symbol?: string;
+    sourcePath: string;
+    raw?: Record<string, unknown>;
+};
+
 type SafeStopMoveReason = 'MOVE_SL_BE' | 'PROTECT_PROFIT' | 'MOVE_SL_TRAILING';
 type SafeStopMoveSkipReason =
     | 'immediate_trigger_risk'
@@ -495,13 +507,118 @@ export class TradingService {
         };
     }
 
+    private asRecord(value: unknown): Record<string, any> | undefined {
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? value as Record<string, any>
+            : undefined;
+    }
+
+    private normalizeSideValue(value: unknown): Side | null {
+        const normalized = String(value ?? '').trim().toUpperCase();
+        if (normalized === 'SHORT' || normalized === 'SELL') return 'SHORT';
+        if (normalized === 'LONG' || normalized === 'BUY') return 'LONG';
+        return null;
+    }
+
+    private isTruthyPhaseOFlag(value: unknown): boolean {
+        return value === true || value === 'true' || value === 'PHASE_O' || value === 'phase_o';
+    }
+
+    private hasPhaseOModelPath(value: unknown): boolean {
+        if (!value) return false;
+        if (typeof value === 'string') return value.toLowerCase().includes('phase_o');
+        if (Array.isArray(value)) return value.some((item) => this.hasPhaseOModelPath(item));
+        const record = this.asRecord(value);
+        if (!record) return false;
+        return Object.values(record).some((item) => this.hasPhaseOModelPath(item));
+    }
+
+    private extractPhaseOTurboMetadata(signalOrPrediction: unknown, fallbackSide?: Side): PhaseOTurboMetadata | null {
+        const root = this.asRecord(signalOrPrediction);
+        if (!root) return null;
+        const candidates: Array<{ path: string; container?: Record<string, any>; phase?: Record<string, any> }> = [
+            { path: 'signal.metadata.aegis.turbo.phase_o', container: this.asRecord(root.metadata)?.aegis?.turbo, phase: this.asRecord(this.asRecord(root.metadata)?.aegis?.turbo?.phase_o) },
+            { path: 'signal.metadata.aegis.turbo.raw.phase_o', container: this.asRecord(root.metadata)?.aegis?.turbo, phase: this.asRecord(this.asRecord(root.metadata)?.aegis?.turbo?.raw?.phase_o) },
+            { path: 'signal.metadata.turbo.phase_o', container: this.asRecord(root.metadata)?.turbo, phase: this.asRecord(this.asRecord(root.metadata)?.turbo?.phase_o) },
+            { path: 'signal.metadata.turbo.raw.phase_o', container: this.asRecord(root.metadata)?.turbo, phase: this.asRecord(this.asRecord(root.metadata)?.turbo?.raw?.phase_o) },
+            { path: 'signal.aegis.turbo.phase_o', container: this.asRecord(root.aegis)?.turbo, phase: this.asRecord(this.asRecord(root.aegis)?.turbo?.phase_o) },
+            { path: 'signal.aegis.turbo.raw.phase_o', container: this.asRecord(root.aegis)?.turbo, phase: this.asRecord(this.asRecord(root.aegis)?.turbo?.raw?.phase_o) },
+            { path: 'signal.turbo.phase_o', container: this.asRecord(root.turbo), phase: this.asRecord(this.asRecord(root.turbo)?.phase_o) },
+            { path: 'signal.turbo.raw.phase_o', container: this.asRecord(root.turbo), phase: this.asRecord(this.asRecord(root.turbo)?.raw?.phase_o) },
+            { path: 'signal.metadata.rawPrediction.aegis.turbo.phase_o', container: this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo, phase: this.asRecord(this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo?.phase_o) },
+            { path: 'signal.metadata.rawPrediction.aegis.turbo.raw.phase_o', container: this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo, phase: this.asRecord(this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo?.raw?.phase_o) },
+            { path: 'signal.metadata.phase_o', container: this.asRecord(root.metadata), phase: this.asRecord(this.asRecord(root.metadata)?.phase_o) },
+            { path: 'signal.phase_o', container: root, phase: this.asRecord(root.phase_o) },
+            { path: 'signal.phaseO', container: root, phase: this.asRecord(root.phaseO) },
+            { path: 'signal.metadata.phase_o_short_live', container: this.asRecord(root.metadata), phase: this.asRecord(this.asRecord(root.metadata)?.phase_o_short_live) }
+        ];
+
+        for (const candidate of candidates) {
+            const phase = candidate.phase;
+            const container = candidate.container;
+            if (!phase && !container) continue;
+            const phaseRecord = phase ?? {};
+            const isPhaseO = this.isTruthyPhaseOFlag(phaseRecord.phase_o)
+                || this.isTruthyPhaseOFlag(phaseRecord.phaseO)
+                || this.isTruthyPhaseOFlag(phaseRecord.is_phase_o)
+                || this.isTruthyPhaseOFlag(phaseRecord.phase_o_live_enabled)
+                || this.isTruthyPhaseOFlag(phaseRecord.enabled)
+                || String(phaseRecord.phase_o_live_mode ?? '').toLowerCase().includes('experimental_short')
+                || this.hasPhaseOModelPath(phaseRecord.phase_o_source_model_paths)
+                || this.hasPhaseOModelPath(phaseRecord.model_paths)
+                || this.hasPhaseOModelPath(container?.raw?.model_path)
+                || this.hasPhaseOModelPath(container?.raw?.model_paths)
+                || this.hasPhaseOModelPath(container?.model_paths);
+            if (!isPhaseO) continue;
+            const side = this.normalizeSideValue(phaseRecord.side)
+                ?? this.normalizeSideValue(container?.gated?.action)
+                ?? this.normalizeSideValue(container?.action)
+                ?? this.normalizeSideValue(container?.raw?.action)
+                ?? fallbackSide
+                ?? null;
+            const symbol = String(phaseRecord.symbol ?? container?.symbol ?? root.symbol ?? '').toUpperCase() || undefined;
+            const avoidOnly = phaseRecord.phase_o_link_avoid_only === true
+                || phaseRecord.link_avoid_only === true
+                || phaseRecord.avoid_only === true
+                || phaseRecord.phase_o_avoid_only === true;
+            const entryEnabled = phaseRecord.entry_enabled !== false
+                && phaseRecord.entryEnabled !== false
+                && phaseRecord.phase_o_entry_enabled !== false
+                && phaseRecord.allow_orders !== false;
+            return {
+                isPhaseO,
+                side,
+                entryEnabled,
+                avoidOnly,
+                modelFamily: String(phaseRecord.model_family ?? phaseRecord.modelFamily ?? phaseRecord.phase_o_live_mode ?? '').trim() || undefined,
+                symbol,
+                sourcePath: candidate.path,
+                raw: phaseRecord
+            };
+        }
+        return null;
+    }
+
     private isPhaseOShortLiveSignal(signal: AegisTradingSignal, side: Side): boolean {
-        const turbo = (signal as any)?.metadata?.aegis?.turbo ?? (signal as any)?.aegis?.turbo ?? {};
-        const phaseO = turbo.phase_o ?? turbo.raw?.phase_o ?? {};
-        return side === 'SHORT'
-            && phaseO.phase_o_live_enabled === true
-            && phaseO.phase_o_link_avoid_only !== true
-            && phaseO.phase_o_link_entry_enabled !== false;
+        const phaseOConfig = this.getAegisPhaseOShortLiveConfig() as any;
+        const metadata = this.extractPhaseOTurboMetadata(signal, side);
+        const symbol = this.normalizeSymbol(signal.symbol);
+        if (symbol === 'LINKUSDT' || metadata?.avoidOnly === true) {
+            this.deps.logger.info('phase_o_link_avoid_only_no_entry', {
+                symbol,
+                side,
+                phase_o_short_detected: metadata?.isPhaseO === true,
+                phase_o_metadata_source_path: metadata?.sourcePath,
+                link_avoid_only: true
+            });
+            return false;
+        }
+        return phaseOConfig?.enabled === true
+            && phaseOConfig?.allow_orders !== false
+            && side === 'SHORT'
+            && metadata?.isPhaseO === true
+            && metadata.side === 'SHORT'
+            && metadata.entryEnabled !== false;
     }
 
     private withPhaseOShortGuardModes(policy: AegisEntryPolicyRuntimeConfig): AegisEntryPolicyRuntimeConfig {
@@ -2039,6 +2156,7 @@ export class TradingService {
                 baseGate: gate
             });
             const baseEntryPolicy = this.getAegisEntryPolicyConfig();
+            const phaseOMetadata = this.extractPhaseOTurboMetadata(signal, side);
             const phaseOShortLive = this.isPhaseOShortLiveSignal(signal, side);
             const entryPolicy = phaseOShortLive
                 ? this.withPhaseOShortGuardModes(baseEntryPolicy)
@@ -2062,7 +2180,11 @@ export class TradingService {
                             limit: phaseOLimit,
                             phaseOOnly: true,
                             side,
-                            symbol
+                            symbol,
+                            phase_o_short_detected: true,
+                            phase_o_metadata_source_path: phaseOMetadata?.sourcePath,
+                            blocked_by_hard_safety: true,
+                            blocked_by_secondary_guard: false
                         }
                     });
                     logger.warn('risk_guard_max_phase_o_trades_per_day', {
@@ -2075,13 +2197,39 @@ export class TradingService {
                     });
                     return;
                 }
-                logger.info('phase_o_short_guard_modes_applied', {
+                const phaseOGuardMetadata = {
                     symbol,
                     side,
+                    phase_o_short_detected: true,
+                    phase_o_short_recognized: true,
+                    phase_o_metadata_source_path: phaseOMetadata?.sourcePath,
+                    phase_o_short_guard_modes_applied: true,
                     guardMode: 'SHADOW',
+                    guard_modes: {
+                        short_gate_legacy: 'SHADOW',
+                        clean_entry: 'SHADOW',
+                        event_risk: 'SHADOW',
+                        entry_quality: 'SHADOW',
+                        decision_brain: 'SHADOW',
+                        regime_engine: 'SHADOW'
+                    },
+                    hard_safety_enforced: {
+                        brackets: true,
+                        max_open: true,
+                        max_trades: true,
+                        daily_loss: true,
+                        min_notional: true,
+                        link_no_entry: true
+                    },
                     shadowGuards: ['clean_entry', 'event_risk', 'entry_quality', 'decision_brain', 'regime', 'short_gate', 'long_risk_shadow'],
-                    enforcedGuards: ['phase_o_ml', 'momentum_ride', 'brackets', 'max_trades_per_day', 'daily_loss_stop', 'exchange_min_notional'],
+                    enforcedGuards: ['phase_o_ml', 'momentum_ride', 'brackets', 'max_trades_per_day', 'daily_loss_stop', 'exchange_min_notional', 'link_no_entry'],
                     ignoredForPhaseO: true
+                };
+                logger.info('phase_o_short_guard_modes_applied', phaseOGuardMetadata);
+                await this.logAegisTradeEvent(symbol, 'PHASE_O_SHORT_GUARD_MODES_APPLIED', {
+                    tradeId,
+                    reason: 'phase_o_short_guard_modes_applied',
+                    metadata: phaseOGuardMetadata
                 });
             }
             const entryDecision = AegisEntryGuardOrchestrator.evaluate(

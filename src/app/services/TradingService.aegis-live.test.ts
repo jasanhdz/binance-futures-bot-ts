@@ -246,8 +246,38 @@ function phaseOShortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): Ae
         phase_o_live_enabled: true,
         phase_o_live_mode: 'experimental_short_only',
         phase_o_link_avoid_only: false,
-        phase_o_link_entry_enabled: true
+        phase_o_link_entry_enabled: false
     };
+    return signal;
+}
+
+
+function phaseOShortSignalAtPath(path: 'metadata.aegis.turbo' | 'metadata.turbo' | 'aegis.turbo', symbol = 'BTCUSDT'): AegisTradingSignal {
+    const signal = shortSignal(symbol, 0.79, 3) as any;
+    const turbo = signal.metadata.aegis.turbo;
+    const phaseO = {
+        phase_o_live_enabled: true,
+        phase_o_live_mode: 'experimental_short_only',
+        phase_o_link_avoid_only: false,
+        phase_o_link_entry_enabled: false,
+        phase_o_source_model_paths: { short_30d: '/models/turbo/BTCUSDT/phase_o_x/model.joblib' }
+    };
+    delete turbo.raw.phase_o;
+    if (path === 'metadata.aegis.turbo') {
+        turbo.phase_o = phaseO;
+    } else if (path === 'metadata.turbo') {
+        signal.metadata = { turbo: { ...turbo, phase_o: phaseO } };
+    } else {
+        signal.aegis = { turbo: { ...turbo, phase_o: phaseO } };
+        signal.metadata = { rawPrediction: { aegis: signal.aegis } };
+    }
+    return signal;
+}
+
+function phaseOLinkAvoidOnlySignal(): AegisTradingSignal {
+    const signal = phaseOShortSignalAtPath('metadata.aegis.turbo', 'LINKUSDT') as any;
+    signal.metadata.aegis.turbo.phase_o.phase_o_link_avoid_only = true;
+    signal.metadata.aegis.turbo.phase_o.phase_o_link_entry_enabled = false;
     return signal;
 }
 
@@ -3151,6 +3181,107 @@ describe('TradingService Aegis live execution', () => {
         await service.tick('ETHUSDT');
 
         expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', expect.any(Number));
+    });
+
+    it('detects Phase O SHORT metadata under metadata.aegis.turbo', () => {
+        const { service } = makeHarness({ signal: phaseOShortSignalAtPath('metadata.aegis.turbo') });
+        const metadata = (service as any).extractPhaseOTurboMetadata(phaseOShortSignalAtPath('metadata.aegis.turbo'), 'SHORT');
+        expect(metadata).toMatchObject({ isPhaseO: true, side: 'SHORT', entryEnabled: true, avoidOnly: false, sourcePath: 'signal.metadata.aegis.turbo.phase_o' });
+        expect((service as any).isPhaseOShortLiveSignal(phaseOShortSignalAtPath('metadata.aegis.turbo'), 'SHORT')).toBe(true);
+    });
+
+    it('detects Phase O SHORT metadata under aegis.turbo fallback', () => {
+        const { service } = makeHarness({ signal: phaseOShortSignalAtPath('aegis.turbo') });
+        expect((service as any).extractPhaseOTurboMetadata(phaseOShortSignalAtPath('aegis.turbo'), 'SHORT')).toMatchObject({
+            isPhaseO: true,
+            side: 'SHORT',
+            sourcePath: 'signal.aegis.turbo.phase_o'
+        });
+        expect((service as any).isPhaseOShortLiveSignal(phaseOShortSignalAtPath('aegis.turbo'), 'SHORT')).toBe(true);
+    });
+
+    it('detects Phase O SHORT metadata under metadata.turbo fallback', () => {
+        const { service } = makeHarness({ signal: phaseOShortSignalAtPath('metadata.turbo') });
+        expect((service as any).extractPhaseOTurboMetadata(phaseOShortSignalAtPath('metadata.turbo'), 'SHORT')).toMatchObject({
+            isPhaseO: true,
+            side: 'SHORT',
+            sourcePath: 'signal.metadata.turbo.phase_o'
+        });
+        expect((service as any).isPhaseOShortLiveSignal(phaseOShortSignalAtPath('metadata.turbo'), 'SHORT')).toBe(true);
+    });
+
+    it('does not classify LONG as Phase O SHORT even with Phase O metadata', () => {
+        const { service } = makeHarness();
+        const signal = validSignal() as any;
+        signal.metadata.aegis.turbo.phase_o = { phase_o_live_enabled: true, phase_o_live_mode: 'experimental_short_only', phase_o_link_avoid_only: false, phase_o_link_entry_enabled: false };
+        expect((service as any).isPhaseOShortLiveSignal(signal, 'LONG')).toBe(false);
+    });
+
+    it('never classifies LINK avoid-only as Phase O SHORT entry', () => {
+        const { logger, service } = makeHarness({ signal: phaseOLinkAvoidOnlySignal() });
+        expect((service as any).isPhaseOShortLiveSignal(phaseOLinkAvoidOnlySignal(), 'SHORT')).toBe(false);
+        expect(logger.info).toHaveBeenCalledWith('phase_o_link_avoid_only_no_entry', expect.objectContaining({ symbol: 'LINKUSDT', link_avoid_only: true }));
+    });
+
+    it('applies Phase O SHORT guard modes before legacy ShortGate enforcement', async () => {
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: phaseOShortSignalAtPath('metadata.aegis.turbo', 'BTCUSDT'),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            },
+            phaseOShortLive: { enabled: true, allow_orders: true, max_phase_o_trades_per_day: 20 }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', expect.any(Number));
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'SHORT_GATE_DENIED' }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PHASE_O_SHORT_GUARD_MODES_APPLIED',
+            reason: 'phase_o_short_guard_modes_applied',
+            metadata: expect.objectContaining({
+                phase_o_short_detected: true,
+                phase_o_short_guard_modes_applied: true,
+                phase_o_metadata_source_path: 'signal.metadata.aegis.turbo.phase_o',
+                guard_modes: expect.objectContaining({ short_gate_legacy: 'SHADOW', clean_entry: 'SHADOW' })
+            })
+        }));
+        expect(logger.info).toHaveBeenCalledWith('phase_o_short_guard_modes_applied', expect.objectContaining({
+            phase_o_short_detected: true,
+            phase_o_short_guard_modes_applied: true,
+            phase_o_metadata_source_path: 'signal.metadata.aegis.turbo.phase_o',
+            guard_modes: expect.objectContaining({ short_gate_legacy: 'SHADOW', clean_entry: 'SHADOW' })
+        }));
+    });
+
+    it('keeps legacy SHORT non-Phase-O blocked by ShortGate', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: shortSignal('BTCUSDT', 0.79, 3),
+            yaml: yamlTurbo({ allow_short: true }),
+            shortGate: {
+                enabled: true,
+                min_score: 0.80,
+                require_votes: 3,
+                position_fraction_multiplier: 1.0,
+                max_leverage: 10,
+                block_symbols: []
+            }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'SHORT_GATE_DENIED' }));
     });
 
 });
