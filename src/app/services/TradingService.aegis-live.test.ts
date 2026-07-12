@@ -3223,6 +3223,53 @@ describe('TradingService Aegis live execution', () => {
         expect(logger.info).toHaveBeenCalledWith('phase_o_link_avoid_only_no_entry', expect.objectContaining({ symbol: 'LINKUSDT', link_avoid_only: true }));
     });
 
+    it('blocks paused Phase O SHORT new entries before sizing or order submission', async () => {
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: phaseOShortSignalAtPath('metadata.aegis.turbo', 'BTCUSDT'),
+            yaml: yamlTurbo({ allow_short: true }),
+            phaseOShortLive: { enabled: true, allow_orders: false, max_phase_o_trades_per_day: 20 }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.getSymbolFilters).not.toHaveBeenCalled();
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'GATE_DENIED',
+            reason: 'PHASE_O_NEW_ENTRIES_PAUSED',
+            metadata: expect.objectContaining({
+                entry_path: 'DISABLED',
+                position_management: 'ENABLED_WHEN_NEEDED',
+                phase_o_short_detected: true
+            })
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('phase_o_new_entries_paused', expect.objectContaining({
+            symbol: 'BTCUSDT',
+            side: 'SHORT',
+            phase_o_short_detected: true
+        }));
+    });
+
+    it('blocks paused premium Phase O SHORT signals without consuming daily counter', async () => {
+        const { exchange, service } = makeHarness({
+            symbols: ['BTCUSDT'],
+            symbolModes: { BTCUSDT: 'LIVE' },
+            signal: phaseOShortSignal('BTCUSDT', 0.96, 3),
+            yaml: yamlTurbo({ allow_short: true }),
+            phaseOShortLive: { enabled: true, allow_orders: false, max_phase_o_trades_per_day: 20 }
+        });
+
+        await service.tick('BTCUSDT');
+
+        expect(exchange.getSymbolFilters).not.toHaveBeenCalled();
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect((service as any).phaseOShortTradesToday).toBe(0);
+    });
+
     it('applies Phase O SHORT guard modes before legacy ShortGate enforcement', async () => {
         const { exchange, historyLogger, logger, service } = makeHarness({
             symbols: ['BTCUSDT'],

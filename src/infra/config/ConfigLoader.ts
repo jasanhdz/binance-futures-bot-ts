@@ -88,6 +88,7 @@ export type RegimeSymbolOverrideYamlConfig = Partial<RegimeYamlConfig> & {
 
 export interface AegisPhaseOShortLiveYamlConfig {
     enabled?: boolean;
+    allow_orders?: boolean;
     max_open_phase_o_positions?: number;
     max_phase_o_trades_per_day?: number;
     require_brackets?: boolean;

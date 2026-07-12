@@ -621,6 +621,18 @@ export class TradingService {
             && metadata.entryEnabled !== false;
     }
 
+    private isPhaseOShortNewEntryPaused(signal: AegisTradingSignal, side: Side): boolean {
+        const phaseOConfig = this.getAegisPhaseOShortLiveConfig() as any;
+        const metadata = this.extractPhaseOTurboMetadata(signal, side);
+        return phaseOConfig?.enabled === true
+            && phaseOConfig?.allow_orders === false
+            && side === 'SHORT'
+            && metadata?.isPhaseO === true
+            && metadata.side === 'SHORT'
+            && metadata.entryEnabled !== false
+            && metadata.avoidOnly !== true;
+    }
+
     private withPhaseOShortGuardModes(policy: AegisEntryPolicyRuntimeConfig): AegisEntryPolicyRuntimeConfig {
         return {
             ...policy,
@@ -2157,6 +2169,43 @@ export class TradingService {
             });
             const baseEntryPolicy = this.getAegisEntryPolicyConfig();
             const phaseOMetadata = this.extractPhaseOTurboMetadata(signal, side);
+            if (this.isPhaseOShortNewEntryPaused(signal, side)) {
+                const pausedGate = { ...gateAfterPositionOverride, allowed: false, reason: 'PHASE_O_NEW_ENTRIES_PAUSED' };
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: pausedGate,
+                    executed: false,
+                    metadata: {
+                        phase_o_short_detected: true,
+                        phase_o_metadata_source_path: phaseOMetadata?.sourcePath,
+                        entry_path: 'DISABLED',
+                        position_management: 'ENABLED_WHEN_NEEDED',
+                        reason: 'PHASE_O_NEW_ENTRIES_PAUSED'
+                    }
+                });
+                await this.logAegisTradeEvent(symbol, 'GATE_DENIED', {
+                    tradeId,
+                    reason: 'PHASE_O_NEW_ENTRIES_PAUSED',
+                    metadata: {
+                        symbol,
+                        side,
+                        phase_o_short_detected: true,
+                        phase_o_metadata_source_path: phaseOMetadata?.sourcePath,
+                        entry_path: 'DISABLED',
+                        position_management: 'ENABLED_WHEN_NEEDED',
+                        blocked_by_hard_safety: true,
+                        blocked_by_secondary_guard: false
+                    }
+                });
+                logger.warn('phase_o_new_entries_paused', {
+                    symbol,
+                    side,
+                    phase_o_short_detected: true,
+                    phase_o_metadata_source_path: phaseOMetadata?.sourcePath
+                });
+                return;
+            }
             const phaseOShortLive = this.isPhaseOShortLiveSignal(signal, side);
             const entryPolicy = phaseOShortLive
                 ? this.withPhaseOShortGuardModes(baseEntryPolicy)
