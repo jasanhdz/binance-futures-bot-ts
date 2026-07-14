@@ -64,6 +64,18 @@ export class BinanceGen2ExchangeAdapter implements Gen2ExchangePort {
     }
   }
 
+  async marketClose(symbol: string, side: 'LONG' | 'SHORT', quantity: number): Promise<{ orderId?: string | number; avgPrice?: number }> {
+    const res = await (this.cli as any).futuresOrder({
+      symbol,
+      type: 'MARKET',
+      quantity: String(quantity),
+      side: side === 'SHORT' ? 'BUY' : 'SELL', // closing a SHORT buys back
+      reduceOnly: 'true',
+      newOrderRespType: 'RESULT',
+    });
+    return { orderId: String(res.orderId), avgPrice: +(res.avgPrice || 0) };
+  }
+
   async getUSDTBalance(): Promise<number> {
     const balances: any[] = await (this.cli as any).futuresAccountBalance();
     const usdt = balances.find((b) => b.asset === 'USDT');

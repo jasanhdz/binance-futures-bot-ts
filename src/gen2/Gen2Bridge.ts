@@ -21,6 +21,7 @@ export interface Gen2ExchangePort {
     clientOrderId?: string,
   ): Promise<{ orderId?: string | number; avgPrice?: number; executedQty?: number }>;
   placeStopClose(symbol: string, side: 'LONG' | 'SHORT', stopPrice: number, qty?: number): Promise<boolean>;
+  marketClose(symbol: string, side: 'LONG' | 'SHORT', quantity: number): Promise<{ orderId?: string | number; avgPrice?: number }>;
   getUSDTBalance(): Promise<number>;
   hasOpenPosition(symbol: string, side: 'LONG' | 'SHORT' | 'ANY'): Promise<boolean>;
 }
@@ -61,9 +62,17 @@ export interface ExecutionAck {
   received_at: string;
 }
 
+interface PendingTimeExit {
+  symbol: string;
+  side: 'SHORT';
+  quantity: number;
+  time_exit_at: string;
+}
+
 interface BridgeState {
   processed: Record<string, ExecutionAck>;
   sequence: number;
+  pending_time_exits?: Record<string, PendingTimeExit>;
 }
 
 export class Gen2Bridge {
@@ -215,12 +224,70 @@ export class Gen2Bridge {
         this.emitEvent('BRACKET_FAILED', order.client_order_id, { stop_price: order.brackets.stop_price });
         return { ...base, status: 'ACCEPTED', reason: 'FILLED_BUT_BRACKET_FAILED_KILL_ENGAGED', exchange_order_id: String(fill.orderId ?? ''), fill_price: fill.avgPrice };
       }
+      this.state.pending_time_exits = this.state.pending_time_exits || {};
+      this.state.pending_time_exits[order.client_order_id] = {
+        symbol: order.symbol,
+        side: 'SHORT',
+        quantity: fill.executedQty ?? order.quantity,
+        time_exit_at: order.brackets.time_exit_at,
+      };
       this.emitEvent('BRACKET_CONFIRMED', order.client_order_id, { stop_price: order.brackets.stop_price, time_exit_at: order.brackets.time_exit_at });
       return { ...base, status: 'ACCEPTED', reason: 'FILLED_AND_BRACKETED', exchange_order_id: String(fill.orderId ?? ''), fill_price: fill.avgPrice };
     } catch (err: any) {
       this.emitEvent('ORDER_REJECTED', order.client_order_id, { error: String(err?.message || err) });
       return { ...base, status: 'REJECTED', reason: `EXCHANGE_ERROR:${String(err?.message || err).slice(0, 120)}` };
     }
+  }
+
+  /**
+   * Execute due H12 time exits. Risk-REDUCING, so it runs even with the kill
+   * switch engaged. If the position is already gone (stop hit / manual close)
+   * the pending exit is retired with TIME_EXIT_SKIPPED_NO_POSITION. Exchange
+   * errors keep the exit pending and are retried on the next tick.
+   */
+  async processTimeExits(): Promise<number> {
+    const pending = this.state.pending_time_exits || {};
+    const ex = this.cfg.exchange;
+    let executed = 0;
+    for (const [clientOrderId, exit] of Object.entries(pending)) {
+      if (new Date(exit.time_exit_at).getTime() > this.nowMs()) continue;
+      if (!ex) {
+        delete pending[clientOrderId];
+        this.emitEvent('TIME_EXIT_SKIPPED_NO_POSITION', clientOrderId, { reason: 'NO_EXCHANGE_DRYRUN' });
+        continue;
+      }
+      try {
+        if (!(await ex.hasOpenPosition(exit.symbol, 'ANY'))) {
+          delete pending[clientOrderId];
+          this.emitEvent('TIME_EXIT_SKIPPED_NO_POSITION', clientOrderId, { symbol: exit.symbol });
+          // PnL unknown here (stop or manual close happened on the exchange):
+          // never fabricate it — the operator reconciles it (runbook §3.5).
+          this.emitEvent('POSITION_CLOSED', clientOrderId, { symbol: exit.symbol, realized_pnl: null, reason: 'CLOSED_BY_STOP_OR_MANUAL_PNL_UNKNOWN' });
+          continue;
+        }
+        const close = await ex.marketClose(exit.symbol, exit.side, exit.quantity);
+        delete pending[clientOrderId];
+        executed += 1;
+        this.emitEvent('TIME_EXIT_EXECUTED', clientOrderId, {
+          symbol: exit.symbol,
+          close_price: close.avgPrice,
+          exchange_order_id: String(close.orderId ?? ''),
+          scheduled_at: exit.time_exit_at,
+        });
+        const entryPrice = this.state.processed[clientOrderId]?.fill_price;
+        const pnl =
+          entryPrice && close.avgPrice ? (entryPrice - close.avgPrice) * exit.quantity : null; // SHORT: entry - exit
+        this.emitEvent('POSITION_CLOSED', clientOrderId, {
+          symbol: exit.symbol,
+          realized_pnl: pnl,
+          estimate: true,
+          reason: pnl === null ? 'TIME_EXIT_PNL_UNKNOWN' : 'TIME_EXIT',
+        });
+      } catch (err: any) {
+        this.emitEvent('INCIDENT', clientOrderId, { type: 'TIME_EXIT_FAILED_WILL_RETRY', error: String(err?.message || err).slice(0, 120) });
+      }
+    }
+    return executed;
   }
 
   drainEvents(afterSequence: number): unknown[] {

@@ -65,6 +65,12 @@ function main(): void {
     exchange,
   });
   const server = createGen2BridgeServer({ bridge, allowedSymbols, exchange });
+  // H12 time exits are risk-reducing: the scheduler runs regardless of the kill switch.
+  setInterval(() => {
+    bridge.processTimeExits().catch((err) => {
+      console.error(JSON.stringify({ time_exit_scheduler_error: String(err?.message || err) }));
+    });
+  }, 30_000).unref();
   server.listen(port, '127.0.0.1', () => {
     console.log(
       JSON.stringify({

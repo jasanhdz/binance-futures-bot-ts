@@ -33,6 +33,7 @@ class MockExchange implements Gen2ExchangePort {
   calls: string[] = [];
   failStop = false;
   failMarket = false;
+  failClose = false;
   openPosition = false;
   lastClientOrderId?: string;
   async ensureMarginType(): Promise<void> {
@@ -50,6 +51,11 @@ class MockExchange implements Gen2ExchangePort {
   async placeStopClose(): Promise<boolean> {
     this.calls.push('stop');
     return !this.failStop;
+  }
+  async marketClose(_s: string, _side: 'LONG' | 'SHORT', _qty: number) {
+    this.calls.push('close');
+    if (this.failClose) throw new Error('close rejected');
+    return { orderId: 77, avgPrice: 0.69 };
   }
   async getUSDTBalance(): Promise<number> {
     return 116.24;
@@ -176,6 +182,47 @@ describe('execution and idempotency', () => {
     const bridge = makeBridge({ exchange: undefined, executionEnabled: false });
     const ack = await bridge.execute(makeOrder({ client_order_id: 'GEN2-dry' }));
     expect(ack.status).toBe('ACCEPTED_DRYRUN');
+  });
+});
+
+describe('H12 time exits', () => {
+  it('executes the due exit while position is open, even with kill switch engaged', async () => {
+    let clock = Date.now();
+    const bridge = makeBridge({ now: () => clock });
+    await bridge.execute(makeOrder({ brackets: { stop_price: 0.7105, time_exit_at: new Date(clock + 1000).toISOString(), reduce_only: true } }));
+    exchange.openPosition = true;
+    expect(await bridge.processTimeExits()).toBe(0); // not due yet
+    clock += 2000;
+    bridge.engageKill('drill'); // risk-reducing exits must still run
+    expect(await bridge.processTimeExits()).toBe(1);
+    expect(exchange.calls).toContain('close');
+    const events = bridge.drainEvents(0) as any[];
+    expect(events.some((e) => e.type === 'TIME_EXIT_EXECUTED')).toBe(true);
+    expect(await bridge.processTimeExits()).toBe(0); // retired, no double close
+  });
+
+  it('retires the exit without closing when the position is already gone', async () => {
+    let clock = Date.now();
+    const bridge = makeBridge({ now: () => clock });
+    await bridge.execute(makeOrder({ brackets: { stop_price: 0.7105, time_exit_at: new Date(clock + 1000).toISOString(), reduce_only: true } }));
+    exchange.openPosition = false; // stop already hit
+    clock += 2000;
+    expect(await bridge.processTimeExits()).toBe(0);
+    const events = bridge.drainEvents(0) as any[];
+    expect(events.some((e) => e.type === 'TIME_EXIT_SKIPPED_NO_POSITION')).toBe(true);
+  });
+
+  it('keeps the exit pending on exchange error and survives restart', async () => {
+    let clock = Date.now();
+    const bridge = makeBridge({ now: () => clock });
+    await bridge.execute(makeOrder({ brackets: { stop_price: 0.7105, time_exit_at: new Date(clock + 1000).toISOString(), reduce_only: true } }));
+    exchange.openPosition = true;
+    exchange.failClose = true;
+    clock += 2000;
+    expect(await bridge.processTimeExits()).toBe(0); // failed, still pending
+    const rebooted = makeBridge({ now: () => clock });
+    exchange.failClose = false;
+    expect(await rebooted.processTimeExits()).toBe(1); // pending exit persisted
   });
 });
 
