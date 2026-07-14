@@ -19,10 +19,15 @@
  */
 import fs from 'fs';
 import path from 'path';
+import dotenv from 'dotenv';
 import yaml from 'js-yaml';
 import { Gen2Bridge, Gen2ExchangePort } from './Gen2Bridge';
 import { createGen2BridgeServer } from './Gen2BridgeServer';
 import { BinanceGen2ExchangeAdapter } from './BinanceGen2ExchangeAdapter';
+
+// PM2/always-on: secrets live in .env.gen2 (gitignored), loaded at boot.
+// Explicit env vars still win over the file.
+dotenv.config({ path: process.env.GEN2_ENV_FILE || path.resolve(__dirname, '..', '..', '.env.gen2') });
 
 function readPhaseOAllowOrders(repoRoot: string): boolean {
   try {

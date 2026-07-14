@@ -236,4 +236,12 @@ describe('events', () => {
     expect(afterFirst.length).toBe(1);
     expect(afterFirst[0].ts_sequence).toBeGreaterThan(all[0].ts_sequence);
   });
+
+  it('a torn trailing event line (power cut) does not block the drain', async () => {
+    const bridge = makeBridge();
+    await bridge.execute(makeOrder());
+    fs.appendFileSync(path.join(dir, 'events_outbox.jsonl'), '{"type":"FILL","ts_seq');
+    const all = bridge.drainEvents(0) as any[];
+    expect(all.length).toBe(2); // intact events still drain
+  });
 });

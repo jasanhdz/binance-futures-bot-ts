@@ -292,11 +292,17 @@ export class Gen2Bridge {
 
   drainEvents(afterSequence: number): unknown[] {
     if (!fs.existsSync(this.eventsPath)) return [];
-    return fs
-      .readFileSync(this.eventsPath, 'utf-8')
-      .split('\n')
-      .filter((l) => l.trim())
-      .map((l) => JSON.parse(l))
-      .filter((e: any) => e.ts_sequence > afterSequence);
+    const events: unknown[] = [];
+    for (const line of fs.readFileSync(this.eventsPath, 'utf-8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const e = JSON.parse(line);
+        if (e.ts_sequence > afterSequence) events.push(e);
+      } catch {
+        // torn trailing line after a power cut: skipping keeps the drain alive;
+        // the event's payload is also reflected in bridge_state/processed.
+      }
+    }
+    return events;
   }
 }
