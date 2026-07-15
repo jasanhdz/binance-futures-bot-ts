@@ -185,6 +185,21 @@ describe('execution and idempotency', () => {
   });
 });
 
+describe('onEvent observability hook', () => {
+  it('fires for every emitted event and a throwing sink never breaks execution', async () => {
+    const seen: string[] = [];
+    const bridge = makeBridge({
+      onEvent: (e: any) => {
+        seen.push(e.type);
+        if (e.type === 'FILL') throw new Error('sink boom'); // must be swallowed
+      },
+    });
+    const ack = await bridge.execute(makeOrder());
+    expect(ack.status).toBe('ACCEPTED'); // execution unaffected by sink throw
+    expect(seen).toEqual(['FILL', 'BRACKET_CONFIRMED']);
+  });
+});
+
 describe('H12 time exits', () => {
   it('executes the due exit while position is open, even with kill switch engaged', async () => {
     let clock = Date.now();

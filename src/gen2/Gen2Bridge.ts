@@ -36,6 +36,9 @@ export interface Gen2BridgeConfig {
   maxClockSkewMs?: number;
   exchange?: Gen2ExchangePort;
   now?: () => number;
+  /** Optional sink for every emitted execution event (e.g. Telegram). Never
+   *  awaited on the hot path and its failures are swallowed by the caller. */
+  onEvent?: (event: Record<string, unknown>) => void;
 }
 
 export interface DecisionOrder {
@@ -148,6 +151,13 @@ export class Gen2Bridge {
     };
     fs.appendFileSync(this.eventsPath, JSON.stringify(event) + '\n');
     this.persist();
+    if (this.cfg.onEvent) {
+      try {
+        this.cfg.onEvent(event);
+      } catch {
+        // an observability sink must never break the execution/persist path
+      }
+    }
   }
 
   status(openPositions: unknown[] = [], availableBalance: number | null = null): Record<string, unknown> {

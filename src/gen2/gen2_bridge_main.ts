@@ -24,6 +24,8 @@ import yaml from 'js-yaml';
 import { Gen2Bridge, Gen2ExchangePort } from './Gen2Bridge';
 import { createGen2BridgeServer } from './Gen2BridgeServer';
 import { BinanceGen2ExchangeAdapter } from './BinanceGen2ExchangeAdapter';
+import { Gen2TelegramNotifier } from './Gen2TelegramNotifier';
+import { TelegramService } from '../infra/adapters/TelegramAdapter';
 
 // PM2/always-on: secrets live in .env.gen2 (gitignored), loaded at boot.
 // Explicit env vars still win over the file.
@@ -60,6 +62,15 @@ function main(): void {
     exchange = new BinanceGen2ExchangeAdapter(apiKey, apiSecret);
   }
   const phaseOAllowOrders = readPhaseOAllowOrders(repoRoot);
+
+  // Reuse the single existing Telegram client; redact HMAC secret and keys.
+  const telegramEnabled = process.env.GEN2_TELEGRAM !== 'false';
+  const notifier = new Gen2TelegramNotifier(
+    (message: string) => TelegramService.sendAlert(message),
+    () => Date.now(),
+    [secret, apiKey, apiSecret].filter(Boolean),
+  );
+
   const bridge = new Gen2Bridge({
     secret,
     candidateId,
@@ -68,6 +79,11 @@ function main(): void {
     executionEnabled: Boolean(exchange),
     phaseOAllowOrders,
     exchange,
+    onEvent: telegramEnabled
+      ? (event) => {
+          void notifier.notifyEvent(event as { type: string; client_order_id?: string; payload?: Record<string, unknown> });
+        }
+      : undefined,
   });
   const server = createGen2BridgeServer({ bridge, allowedSymbols, exchange });
   // H12 time exits are risk-reducing: the scheduler runs regardless of the kill switch.
@@ -77,18 +93,31 @@ function main(): void {
     });
   }, 30_000).unref();
   server.listen(port, '127.0.0.1', () => {
-    console.log(
-      JSON.stringify({
-        gen2_bridge: 'LISTENING',
-        port,
-        candidate_id: candidateId,
-        allowed_symbols: allowedSymbols,
-        execution_enabled: Boolean(exchange),
-        execution_requested: executionRequested,
-        phase_o_allow_orders: phaseOAllowOrders,
-        state_dir: stateDir,
-      }),
-    );
+    const startup = {
+      gen2_bridge: 'LISTENING',
+      port,
+      candidate_id: candidateId,
+      allowed_symbols: allowedSymbols,
+      execution_enabled: Boolean(exchange),
+      execution_requested: executionRequested,
+      phase_o_allow_orders: phaseOAllowOrders,
+      state_dir: stateDir,
+    };
+    console.log(JSON.stringify(startup));
+    if (telegramEnabled) {
+      void notifier.notify(
+        'INFO',
+        'GEN2 BRIDGE ONLINE',
+        [
+          `candidate: ${candidateId}`,
+          `execution: ${exchange ? 'ENABLED' : 'DISABLED (dry-run)'}`,
+          `phase_o_allow_orders: ${phaseOAllowOrders}`,
+          `allowed: ${allowedSymbols.join(' ')}`,
+          `port: ${port} (127.0.0.1)`,
+        ].join('\n'),
+        `bridge-online-${Date.now()}`,
+      );
+    }
   });
 }
 
