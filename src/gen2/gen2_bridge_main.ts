@@ -27,9 +27,14 @@ import { BinanceGen2ExchangeAdapter } from './BinanceGen2ExchangeAdapter';
 import { Gen2TelegramNotifier } from './Gen2TelegramNotifier';
 import { TelegramService } from '../infra/adapters/TelegramAdapter';
 
-// PM2/always-on: secrets live in .env.gen2 (gitignored), loaded at boot.
-// Explicit env vars still win over the file.
+// PM2/always-on: GEN2-specific secrets live in .env.gen2 (gitignored). Shared
+// Binance/Telegram credentials are REUSED from the TS bot's existing .env — no
+// duplication. dotenv is first-wins, so loading .env.gen2 first keeps GEN2 vars
+// (bridge secret, execution flag, symbols) authoritative, and .env only fills in
+// BINANCE_API_KEY/SECRET and TELEGRAM_* that .env.gen2 leaves unset. Explicit
+// process env still wins over both.
 dotenv.config({ path: process.env.GEN2_ENV_FILE || path.resolve(__dirname, '..', '..', '.env.gen2') });
+dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 function readPhaseOAllowOrders(repoRoot: string): boolean {
   try {
