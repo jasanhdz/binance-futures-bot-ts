@@ -10,6 +10,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { PositionOwnershipRegistry, StrategyContext } from '../execution/PositionOwnership';
 
 export interface Gen2ExchangePort {
   ensureMarginType(symbol: string, marginType: 'ISOLATED' | 'CROSSED'): Promise<void>;
@@ -39,6 +40,8 @@ export interface Gen2BridgeConfig {
   /** Optional sink for every emitted execution event (e.g. Telegram). Never
    *  awaited on the hot path and its failures are swallowed by the caller. */
   onEvent?: (event: Record<string, unknown>) => void;
+  /** Shared ownership registry file (defaults to logs/execution/position_ownership.json). */
+  ownershipRegistryPath?: string;
 }
 
 export interface DecisionOrder {
@@ -52,6 +55,13 @@ export interface DecisionOrder {
   leverage: number;
   margin_type: string;
   brackets: { stop_price: number; time_exit_at: string; reduce_only: boolean };
+  strategy_context?: {
+    owner?: string;
+    strategy?: string;
+    exit_policy?: string;
+    risk_policy?: string;
+    notification_policy?: string;
+  };
   expires_at: string;
 }
 
@@ -83,6 +93,7 @@ export class Gen2Bridge {
   private statePath: string;
   private killPath: string;
   private eventsPath: string;
+  private ownership: PositionOwnershipRegistry;
   /** Anti-replay: accepted signatures within the clock-skew window are single-use. */
   private seenSignatures = new Map<string, number>();
 
@@ -91,9 +102,36 @@ export class Gen2Bridge {
     this.statePath = path.join(cfg.stateDir, 'bridge_state.json');
     this.killPath = path.join(cfg.stateDir, 'BRIDGE_KILL');
     this.eventsPath = path.join(cfg.stateDir, 'events_outbox.jsonl');
+    // Shared ownership registry (same file the TS executor reads) so a Gen2
+    // position can never be adopted/managed by Phase O.
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    this.ownership = new PositionOwnershipRegistry(
+      cfg.ownershipRegistryPath || path.join(repoRoot, 'logs', 'execution', 'position_ownership.json'),
+    );
     this.state = fs.existsSync(this.statePath)
       ? JSON.parse(fs.readFileSync(this.statePath, 'utf-8'))
       : { processed: {}, sequence: 0 };
+  }
+
+  private registerOwnership(order: DecisionOrder): void {
+    const ctx = order.strategy_context || {};
+    const record: StrategyContext & { clientOrderId: string; symbol: string; side: 'LONG' | 'SHORT'; entryTimeMs: number } = {
+      clientOrderId: order.client_order_id,
+      owner: (ctx.owner as any) || 'GEN2',
+      strategy: ctx.strategy || 'GEN2_EQM_TRRM',
+      exitPolicy: ctx.exit_policy || 'GEN2_H12',
+      riskPolicy: ctx.risk_policy || 'GEN2_EXPERIMENTAL',
+      notificationPolicy: ctx.notification_policy || 'GEN2',
+      symbol: order.symbol,
+      side: order.side === 'LONG' ? 'LONG' : 'SHORT',
+      entryTimeMs: this.nowMs(),
+    };
+    try {
+      this.ownership.register(record);
+    } catch {
+      // registry write failure must not block execution; the GEN2- prefix still
+      // identifies ownership even if the explicit record is missing.
+    }
   }
 
   private nowMs(): number {
@@ -219,6 +257,9 @@ export class Gen2Bridge {
       }
       await ex.ensureMarginType(order.symbol, 'ISOLATED');
       await ex.setLeverage(order.symbol, order.leverage);
+      // Register ownership BEFORE the position exists so the TS executor can
+      // never see a Gen2 position without its GEN2 owner record.
+      this.registerOwnership(order);
       const t0 = this.nowMs();
       const fill = await ex.marketOpen(order.symbol, 'SHORT', order.quantity, order.client_order_id);
       const latency = this.nowMs() - t0;

@@ -185,6 +185,20 @@ describe('execution and idempotency', () => {
   });
 });
 
+describe('ownership registration', () => {
+  it('registers GEN2 ownership on a real fill so Phase O can never adopt it', async () => {
+    const regPath = path.join(dir, 'ownership.json');
+    const bridge = makeBridge({ ownershipRegistryPath: regPath });
+    exchange.openPosition = false;
+    await bridge.execute({ ...makeOrder(), strategy_context: { owner: 'GEN2', strategy: 'GEN2_EQM_TRRM', exit_policy: 'GEN2_H12', risk_policy: 'GEN2_EXPERIMENTAL', notification_policy: 'GEN2' } });
+    const reg = JSON.parse(fs.readFileSync(regPath, 'utf-8'));
+    const rec = reg['GEN2-abc123'];
+    expect(rec.owner).toBe('GEN2');
+    expect(rec.exitPolicy).toBe('GEN2_H12');
+    expect(rec.symbol).toBe('ADAUSDT');
+  });
+});
+
 describe('onEvent observability hook', () => {
   it('fires for every emitted event and a throwing sink never breaks execution', async () => {
     const seen: string[] = [];
