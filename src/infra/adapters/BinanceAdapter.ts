@@ -1272,6 +1272,29 @@ export class BinanceExchange implements Exchange {
     return side === 'LONG' ? 'SELL' : 'BUY';
   }
 
+  /**
+   * clientOrderIds of the recent FILLED ENTRY orders on the opening side of a
+   * position (BUY opens LONG, SELL opens SHORT). Used to resolve position
+   * ownership — a `GEN2-` id means the position belongs to the Gen2 bridge.
+   * Most-recent first. Returns [] on error (caller decides the fail-safe).
+   */
+  async getOpeningClientOrderIds(symbol: string, side: Side, limit = 20): Promise<string[]> {
+    const entrySide = side === 'LONG' ? 'BUY' : 'SELL';
+    try {
+      const orders = (await this.enqueue(() =>
+        (this.cli as any).futuresAllOrders({ symbol, limit }),
+      )) as any[];
+      return orders
+        .filter((o) => o.side === entrySide && String(o.status) === 'FILLED' && !isTrueish(o.reduceOnly) && !isTrueish(o.closePosition))
+        .sort((a, b) => Number(b.updateTime || b.time || 0) - Number(a.updateTime || a.time || 0))
+        .map((o) => String(o.clientOrderId || ''))
+        .filter(Boolean);
+    } catch (e) {
+      this.log.warn('opening_client_order_ids_failed', { symbol, side, error: String(e) });
+      return [];
+    }
+  }
+
   async listCloseOrdersForSide(
     symbol: string,
     side: Side,

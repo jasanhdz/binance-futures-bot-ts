@@ -36,6 +36,9 @@ import {
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
+import path from 'path';
+import { PositionOwnershipRegistry, Owner } from '../../execution/PositionOwnership';
+import { tradingServiceManages, exitPolicyForOwner } from '../../execution/ExitPolicy';
 import {
     AegisTurboHistoryLogger,
     generateSignalId,
@@ -769,6 +772,33 @@ export class TradingService {
         });
     }
 
+    private ownershipRegistry?: PositionOwnershipRegistry;
+
+    private getOwnershipRegistry(): PositionOwnershipRegistry {
+        if (!this.ownershipRegistry) {
+            const repoRoot = path.resolve(__dirname, '..', '..', '..');
+            this.ownershipRegistry = new PositionOwnershipRegistry(
+                path.join(repoRoot, 'logs', 'execution', 'position_ownership.json'),
+            );
+        }
+        return this.ownershipRegistry;
+    }
+
+    /** Resolve who owns an open position from the ids that opened it. */
+    private async resolvePositionOwner(symbol: string, side: Side): Promise<Owner> {
+        let openingIds: string[] = [];
+        if (typeof this.deps.exchange.getOpeningClientOrderIds === 'function') {
+            openingIds = await this.deps.exchange.getOpeningClientOrderIds(symbol, side).catch(() => []);
+        }
+        const { owner } = this.getOwnershipRegistry().resolveOwner(openingIds);
+        // Any position not positively claimed by another strategy belongs to the
+        // incumbent executor (PHASE_O), so Phase O never loses management of its
+        // OWN positions (it opens with Binance-auto ids that aren't registered).
+        // GEN2 is always identifiable via its GEN2- prefix, so it can never be
+        // swallowed by this default — that is the whole point of the fix.
+        return owner === 'UNKNOWN' ? 'PHASE_O' : owner;
+    }
+
     private async attachOpenExchangePositionsToSymbolState(): Promise<void> {
         if (typeof this.deps.state.forSymbol !== 'function') return;
         for (const symbol of this.getLiveAegisSymbols()) {
@@ -778,6 +808,22 @@ export class TradingService {
             for (const side of ['LONG', 'SHORT'] as Side[]) {
                 const position = await this.deps.exchange.readActivePosition(symbol, side).catch(() => null);
                 if (!position) continue;
+
+                // OWNER-AWARE: never adopt a position TradingService does not own.
+                const owner = await this.resolvePositionOwner(symbol, side);
+                if (!tradingServiceManages(owner)) {
+                    const policy = exitPolicyForOwner(owner);
+                    this.deps.logger.warn('aegis_skip_foreign_position', { symbol, side, owner, managedBy: policy.managedBy });
+                    if (owner === 'UNKNOWN') {
+                        await this.deps.notifier.sendAlert(
+                            'UNKNOWN_POSITION_OWNER',
+                            `${owner} | ${symbol} ${side}\nPosición abierta sin propietario reconocible. NO se administra automáticamente. Requiere reconciliación/decisión manual.`,
+                        );
+                    } else {
+                        this.deps.logger.info('aegis_position_owned_by_other_strategy', { symbol, side, owner, exitPolicy: policy.name });
+                    }
+                    continue; // hands off: managed by its own owner (e.g. the Gen2 bridge), never by Phase O
+                }
 
                 const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
                 const leverage = position.leverage || this.getAegisTurboGateConfig(symbol).leverageCap;

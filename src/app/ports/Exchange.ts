@@ -76,6 +76,9 @@ export interface Exchange {
   hasOpenPosition(symbol: string, side: 'LONG' | 'SHORT' | 'ANY'): Promise<boolean>;
   readActivePosition(symbol: string, sideHint: Side): Promise<PositionInfo | null>;
 
+  /** clientOrderIds of recent FILLED entry orders on the opening side (ownership resolution). */
+  getOpeningClientOrderIds?(symbol: string, side: Side, limit?: number): Promise<string[]>;
+
   marketOpen(
     symbol: string,
     side: Side,
