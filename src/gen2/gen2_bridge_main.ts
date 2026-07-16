@@ -83,7 +83,10 @@ function main(): void {
   const apiSecret = process.env.BINANCE_FUTURES_API_SECRET || process.env.BINANCE_API_SECRET || '';
 
   // SINGLE SOURCE OF TRUTH: config enables, env can only deny.
-  const configPath = process.env.GEN2_CONFIG_PATH || path.resolve(repoRoot, '..', 'aegis_gen2', 'gen2_config.yaml');
+  // repoRoot = .../trading_system/binance-futures-bot-ts, and gen2_config.yaml
+  // lives at .../aegis_gen2/gen2_config.yaml (a SIBLING of trading_system, per
+  // GEN2_ROOT in aegis_alpha/tools/gen2_d3_common.py) -> two levels up, not one.
+  const configPath = process.env.GEN2_CONFIG_PATH || path.resolve(repoRoot, '..', '..', 'aegis_gen2', 'gen2_config.yaml');
   const cfgExec = readConfigExecutionEnabled(configPath);
   const denyOverride = emergencyDenyActive();
   const credsPresent = Boolean(apiKey && apiSecret);
