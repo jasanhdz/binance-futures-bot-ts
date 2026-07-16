@@ -47,6 +47,27 @@ function readPhaseOAllowOrders(repoRoot: string): boolean {
   }
 }
 
+/**
+ * Execution enablement — SINGLE SOURCE OF TRUTH is gen2_config.yaml
+ * execution_enabled. GEN2_EXECUTION_ENABLED is DENY-ONLY (can only force off).
+ * config missing/invalid -> disabled. Default -> disabled.
+ */
+function readConfigExecutionEnabled(configPath: string): { enabled: boolean; valid: boolean; reason: string } {
+  try {
+    if (!fs.existsSync(configPath)) return { enabled: false, valid: false, reason: 'CONFIG_MISSING' };
+    const cfg = yaml.load(fs.readFileSync(configPath, 'utf-8')) as any;
+    if (!cfg || typeof cfg !== 'object') return { enabled: false, valid: false, reason: 'CONFIG_INVALID' };
+    return { enabled: cfg.execution_enabled === true, valid: true, reason: 'OK' };
+  } catch (e: any) {
+    return { enabled: false, valid: false, reason: `CONFIG_READ_ERROR:${String(e?.message || e).slice(0, 60)}` };
+  }
+}
+
+function emergencyDenyActive(): boolean {
+  const v = process.env.GEN2_EXECUTION_ENABLED;
+  return v !== undefined && ['false', '0', 'off', 'no', 'disable', 'disabled'].includes(v.trim().toLowerCase());
+}
+
 function main(): void {
   const secret = process.env.GEN2_BRIDGE_SECRET || '';
   if (!secret) {
@@ -58,12 +79,18 @@ function main(): void {
   const candidateId = process.env.GEN2_CANDIDATE_ID || 'gen2-20260711T202935Z';
   const allowedSymbols = (process.env.GEN2_ALLOWED_SYMBOLS || 'ADAUSDT,DOGEUSDT').split(',').map((s) => s.trim().toUpperCase());
   const stateDir = process.env.GEN2_STATE_DIR || path.join(repoRoot, 'logs', 'gen2_bridge');
-  const executionRequested = process.env.GEN2_EXECUTION_ENABLED === 'true';
   const apiKey = process.env.BINANCE_FUTURES_API_KEY || process.env.BINANCE_API_KEY || '';
   const apiSecret = process.env.BINANCE_FUTURES_API_SECRET || process.env.BINANCE_API_SECRET || '';
 
+  // SINGLE SOURCE OF TRUTH: config enables, env can only deny.
+  const configPath = process.env.GEN2_CONFIG_PATH || path.resolve(repoRoot, '..', 'aegis_gen2', 'gen2_config.yaml');
+  const cfgExec = readConfigExecutionEnabled(configPath);
+  const denyOverride = emergencyDenyActive();
+  const credsPresent = Boolean(apiKey && apiSecret);
+  const effectiveExecution = cfgExec.enabled && cfgExec.valid && !denyOverride && credsPresent;
+
   let exchange: Gen2ExchangePort | undefined;
-  if (executionRequested && apiKey && apiSecret) {
+  if (effectiveExecution) {
     exchange = new BinanceGen2ExchangeAdapter(apiKey, apiSecret);
   }
   const phaseOAllowOrders = readPhaseOAllowOrders(repoRoot);
@@ -103,19 +130,31 @@ function main(): void {
       port,
       candidate_id: candidateId,
       allowed_symbols: allowedSymbols,
-      execution_enabled: Boolean(exchange),
-      execution_requested: executionRequested,
+      config_execution_enabled: cfgExec.enabled,
+      config_valid: cfgExec.valid,
+      emergency_deny_override: denyOverride,
+      effective_execution: effectiveExecution,
       phase_o_allow_orders: phaseOAllowOrders,
       state_dir: stateDir,
     };
     console.log(JSON.stringify(startup));
+    if (telegramEnabled && !cfgExec.valid) {
+      void notifier.notify(
+        'CRITICAL',
+        'GEN2 BRIDGE: config inválida',
+        `execution config no legible (${cfgExec.reason}); ejecución DESHABILITADA (fail-closed).`,
+        `bridge-config-invalid-${Date.now()}`,
+      );
+    }
     if (telegramEnabled) {
       void notifier.notify(
         'INFO',
         'GEN2 BRIDGE ONLINE',
         [
           `candidate: ${candidateId}`,
-          `execution: ${exchange ? 'ENABLED' : 'DISABLED (dry-run)'}`,
+          `Execution config: ${cfgExec.enabled ? 'ENABLED' : 'DISABLED'}`,
+          `Emergency deny override: ${denyOverride ? 'ON' : 'OFF'}`,
+          `Effective execution: ${effectiveExecution ? 'ENABLED' : 'DISABLED (dry-run)'}`,
           `phase_o_allow_orders: ${phaseOAllowOrders}`,
           `allowed: ${allowedSymbols.join(' ')}`,
           `port: ${port} (127.0.0.1)`,
