@@ -151,15 +151,29 @@ describe('execution and idempotency', () => {
     expect(dup.status).toBe('DUPLICATE');
   });
 
-  it('bracket failure engages kill switch and reports it', async () => {
+  it('bracket failure emergency-closes the position (never left unprotected) then kills', async () => {
     exchange.failStop = true;
     const bridge = makeBridge();
     const ack = await bridge.execute(makeOrder());
     expect(ack.status).toBe('ACCEPTED');
-    expect(ack.reason).toBe('FILLED_BUT_BRACKET_FAILED_KILL_ENGAGED');
+    expect(ack.reason).toBe('FILLED_STOP_FAILED_EMERGENCY_CLOSED');
+    expect(exchange.calls).toContain('close'); // position was closed immediately
     expect(bridge.killEngaged()).toBe(true);
     const events = bridge.drainEvents(0) as any[];
+    expect(events.some((e) => e.type === 'EMERGENCY_CLOSE')).toBe(true);
+    expect(events.some((e) => e.type === 'POSITION_CLOSED')).toBe(true);
     expect(events.some((e) => e.type === 'BRACKET_FAILED')).toBe(true);
+  });
+
+  it('if the emergency close ALSO fails, kill engages and an incident is raised', async () => {
+    exchange.failStop = true;
+    exchange.failClose = true;
+    const bridge = makeBridge();
+    const ack = await bridge.execute(makeOrder());
+    expect(ack.reason).toBe('FILLED_STOP_FAILED_EMERGENCY_CLOSE_FAILED_KILL_ENGAGED');
+    expect(bridge.killEngaged()).toBe(true);
+    const events = bridge.drainEvents(0) as any[];
+    expect(events.some((e) => e.type === 'INCIDENT' && (e.payload as any).type === 'EMERGENCY_CLOSE_FAILED')).toBe(true);
   });
 
   it('exchange error yields REJECTED with event, no kill', async () => {

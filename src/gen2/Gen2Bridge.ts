@@ -271,9 +271,34 @@ export class Gen2Bridge {
       });
       const stopOk = await ex.placeStopClose(order.symbol, 'SHORT', order.brackets.stop_price, order.quantity);
       if (!stopOk) {
+        // Stop could not be confirmed. NEVER leave an unprotected position:
+        // close it immediately (fail-closed), then engage the kill switch. This
+        // is the direct fix for the DOGE incident where a filled short was left
+        // without a stop.
+        const qty = fill.executedQty ?? order.quantity;
+        let emergencyClosed = false;
+        try {
+          const close = await ex.marketClose(order.symbol, 'SHORT', qty);
+          emergencyClosed = true;
+          this.emitEvent('EMERGENCY_CLOSE', order.client_order_id, {
+            reason: 'STOP_UNCONFIRMED',
+            close_price: close.avgPrice,
+            exchange_order_id: String(close.orderId ?? ''),
+          });
+          const pnl = fill.avgPrice && close.avgPrice ? (fill.avgPrice - close.avgPrice) * qty : null; // SHORT: entry - exit
+          this.emitEvent('POSITION_CLOSED', order.client_order_id, { symbol: order.symbol, realized_pnl: pnl, estimate: true, reason: 'EMERGENCY_CLOSE_STOP_UNCONFIRMED' });
+        } catch (closeErr: any) {
+          this.emitEvent('INCIDENT', order.client_order_id, { type: 'EMERGENCY_CLOSE_FAILED', error: String(closeErr?.message || closeErr).slice(0, 120) });
+        }
         this.engageKill('CRITICAL_EXECUTION_FAILURE_BRACKET');
-        this.emitEvent('BRACKET_FAILED', order.client_order_id, { stop_price: order.brackets.stop_price });
-        return { ...base, status: 'ACCEPTED', reason: 'FILLED_BUT_BRACKET_FAILED_KILL_ENGAGED', exchange_order_id: String(fill.orderId ?? ''), fill_price: fill.avgPrice };
+        this.emitEvent('BRACKET_FAILED', order.client_order_id, { stop_price: order.brackets.stop_price, emergency_closed: emergencyClosed });
+        return {
+          ...base,
+          status: 'ACCEPTED',
+          reason: emergencyClosed ? 'FILLED_STOP_FAILED_EMERGENCY_CLOSED' : 'FILLED_STOP_FAILED_EMERGENCY_CLOSE_FAILED_KILL_ENGAGED',
+          exchange_order_id: String(fill.orderId ?? ''),
+          fill_price: fill.avgPrice,
+        };
       }
       this.state.pending_time_exits = this.state.pending_time_exits || {};
       this.state.pending_time_exits[order.client_order_id] = {
