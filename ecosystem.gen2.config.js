@@ -104,5 +104,21 @@ module.exports = {
       merge_logs: true,
       time: true,
     },
+    {
+      // Daily SAFE maintenance: segments evidence by month and rotates op logs.
+      // NEVER deletes scientific evidence, never touches orders. cron 04:20 UTC.
+      name: 'gen2-maintenance',
+      cwd: PY_REPO,
+      script: path.join(PY_REPO, 'aegis_alpha', 'tools', 'gen2_maintenance.py'),
+      args: '--mode compact',
+      interpreter: FREEZE_PYTHON,
+      env: sharedEnv,
+      autorestart: false,
+      cron_restart: '20 4 * * *',
+      out_file: path.join(LOG_DIR, 'maintenance.out.log'),
+      error_file: path.join(LOG_DIR, 'maintenance.err.log'),
+      merge_logs: true,
+      time: true,
+    },
   ],
 };
