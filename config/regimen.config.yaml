@@ -1,0 +1,53 @@
+regimen:
+  id: aegis-clean-rebuild
+  version: scaffold-v1
+
+universe:
+  sourceOfTruth: ../regime_config.live.yaml#symbols.entries
+  symbols:
+    - ETHUSDT
+    - BTCUSDT
+    - SOLUSDT
+    - BNBUSDT
+    - XRPUSDT
+    - DOGEUSDT
+    - ADAUSDT
+    - AVAXUSDT
+    - LINKUSDT
+    - SUIUSDT
+    - LTCUSDT
+  symbolSetHash: TODO_COMPUTE_AND_HANDSHAKE
+  timeframe: 5m
+
+brain:
+  endpoint: TODO_CONFIGURE_PYTHON_BRAIN_ENDPOINT
+  contractVersion: aegis-clean-rebuild-v1
+  expectedUniverseId: aegis-operational-eleven-v1
+  expectedModelBundleId: TODO_APPROVED_MODEL_BUNDLE
+  maxDecisionAgeMs: 0
+  requestTimeoutMs: 0
+  failClosed: true
+
+execution:
+  enabledByConfig: false
+  requireExplicitAuthorization: true
+  operationalGateOwner: TradingService/AegisEntryGuardOrchestrator
+  operationalLimitsSource: ../regime_config.live.yaml
+  migrationStatus: TODO_PRESERVE_EXISTING_LIMITS_WITHOUT_DUPLICATION
+
+risk:
+  source: ../regime_config.live.yaml
+  migrationStatus: TODO_MAP_EXISTING_OPERATIONAL_RISK_WITHOUT_SCIENTIFIC_SETTINGS
+
+recovery:
+  owner: TypeScript
+  migrationStatus: TODO_REUSE_EXISTING_STATE_AND_POSITION_MANAGEMENT
+
+observability:
+  owner: TypeScript
+  migrationStatus: TODO_REUSE_EXISTING_LOGGER_AND_NOTIFIER
+
+legacyCompatibility:
+  activeConfig: ../regime_config.live.yaml
+  loaderIntegration: TODO_NOT_CONNECTED_DURING_SCAFFOLD
+  preserveExistingTradingFlow: true
