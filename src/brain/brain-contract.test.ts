@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AxiosInstance } from 'axios';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { BRAIN_CONTRACT_VERSION, BrainManifest, DecisionResponse, parseBrainManifest, parseDecisionResponse } from './contract';
 import { HttpBrainClient } from './client';
 import { validateBrainManifest } from './manifest';
@@ -34,6 +36,12 @@ describe('brain contract and manifest', () => {
     expect(parseBrainManifest(manifestFixture())).toEqual(manifestFixture());
     expect(parseDecisionResponse(decisionFixture())).toEqual(decisionFixture());
     expect(() => parseDecisionResponse({ status: 'SELECTED' })).toThrow();
+  });
+
+  it('parses the exact manifest fixture shared with Python', () => {
+    const shared = JSON.parse(readFileSync(resolve(process.cwd(), '../tests/fixtures/brain_manifest.json'), 'utf8'));
+    expect(parseBrainManifest(shared).symbol_set_hash).toBe(symbolHash);
+    expect(parseBrainManifest(shared).feature_hash).toHaveLength(64);
   });
 
   it('reports every manifest mismatch and fails closed', () => {

@@ -34,21 +34,21 @@ execution:
   requireExplicitAuthorization: true
   operationalGateOwner: TradingService/AegisEntryGuardOrchestrator
   operationalLimitsSource: ../regime_config.live.yaml
-  migrationStatus: TODO_PRESERVE_EXISTING_LIMITS_WITHOUT_DUPLICATION
+  migrationStatus: preserved_in_existing_operational_flow
 
 risk:
   source: ../regime_config.live.yaml
-  migrationStatus: TODO_MAP_EXISTING_OPERATIONAL_RISK_WITHOUT_SCIENTIFIC_SETTINGS
+  migrationStatus: preserved_in_existing_operational_flow
 
 recovery:
   owner: TypeScript
-  migrationStatus: TODO_REUSE_EXISTING_STATE_AND_POSITION_MANAGEMENT
+  migrationStatus: existing_recovery_remains_authoritative
 
 observability:
   owner: TypeScript
-  migrationStatus: TODO_REUSE_EXISTING_LOGGER_AND_NOTIFIER
+  migrationStatus: existing_observability_remains_authoritative
 
 legacyCompatibility:
   activeConfig: ../regime_config.live.yaml
-  loaderIntegration: TODO_NOT_CONNECTED_DURING_SCAFFOLD
+  loaderIntegration: intentionally_not_wired_until_operational_validation
   preserveExistingTradingFlow: true
