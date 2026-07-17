@@ -36,6 +36,9 @@ describe('brain contract and manifest', () => {
     expect(parseBrainManifest(manifestFixture())).toEqual(manifestFixture());
     expect(parseDecisionResponse(decisionFixture())).toEqual(decisionFixture());
     expect(() => parseDecisionResponse({ status: 'SELECTED' })).toThrow();
+    expect(() => parseDecisionResponse({ ...decisionFixture(), status: 'PROMOTE' })).toThrow('BRAIN_CONTRACT_INVALID_STATUS');
+    expect(() => parseDecisionResponse({ ...decisionFixture(), selected: [{ ...decisionFixture().selected[0], side: 'UP' }] }))
+      .toThrow('BRAIN_CONTRACT_INVALID_SIDE');
   });
 
   it('parses the exact manifest fixture shared with Python', () => {
@@ -62,5 +65,18 @@ describe('brain contract and manifest', () => {
     const broken = new HttpBrainClient({ endpoint: 'http://127.0.0.1:8010', requestTimeoutMs: 100, failClosed: true },
       { get: vi.fn().mockRejectedValue(new Error('secret transport details')) } as unknown as AxiosInstance);
     await expect(broken.getManifest()).rejects.toMatchObject({ code: 'BRAIN_MANIFEST_UNAVAILABLE' });
+  });
+
+  it('fails closed on invalid JSON-shaped responses and unavailable outcomes', async () => {
+    const malformed = new HttpBrainClient(
+      { endpoint: 'http://127.0.0.1:8010', requestTimeoutMs: 100, failClosed: true },
+      { post: vi.fn().mockResolvedValue({ data: { status: 'SELECTED' } }) } as unknown as AxiosInstance,
+    );
+    await expect(malformed.evaluate({} as never)).rejects.toMatchObject({ code: 'BRAIN_EVALUATION_FAILED_CLOSED' });
+    const unavailable = new HttpBrainClient(
+      { endpoint: 'http://127.0.0.1:8010', requestTimeoutMs: 100, failClosed: true },
+      { post: vi.fn().mockRejectedValue(new Error('offline')) } as unknown as AxiosInstance,
+    );
+    await expect(unavailable.submitOutcome({} as never)).rejects.toMatchObject({ code: 'BRAIN_OUTCOME_SUBMISSION_FAILED' });
   });
 });
