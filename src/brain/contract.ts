@@ -4,6 +4,7 @@ export const BRAIN_CONTRACT_VERSION = 'aegis-clean-rebuild-v1' as const;
 export type BrainContractVersion = typeof BRAIN_CONTRACT_VERSION;
 export type ScientificSide = 'LONG' | 'SHORT' | 'NO_TRADE';
 export type DecisionStatus = 'SELECTED' | 'NO_TRADE' | 'ERROR';
+export type EvidenceMode = 'OPERATIONAL' | 'PAPER' | 'SHADOW' | 'REPLAY';
 
 export interface Candle {
   open_time: string; close_time: string; open: number; high: number; low: number;
@@ -60,6 +61,8 @@ export interface DecisionOutcome {
   decision_id: string; decision_cycle_id: string; candidate_hash?: string; accepted: boolean; executed: boolean;
   rejection_reason?: string; fill: FillOutcome; closed_at?: string; realized_pnl?: number;
   close_reason?: string; incidents: readonly string[]; reconciled: boolean; occurred_at: string;
+  execution_mode?: EvidenceMode;
+  hypothetical_details?: Readonly<Record<string, number | string | boolean>>;
 }
 
 const record = (value: unknown): Record<string, unknown> => {
@@ -77,6 +80,11 @@ const finite = (value: unknown, name: string): number => {
 const texts = (value: unknown, name: string): readonly string[] => {
   if (!Array.isArray(value)) throw new Error(`BRAIN_CONTRACT_INVALID_${name}`);
   return value.map((item) => text(item, name));
+};
+const oneOf = <T extends string>(value: unknown, name: string, allowed: readonly T[]): T => {
+  const parsed = text(value, name);
+  if (!allowed.includes(parsed as T)) throw new Error(`BRAIN_CONTRACT_INVALID_${name}`);
+  return parsed as T;
 };
 
 export function parseBrainManifest(value: unknown): BrainManifest {
@@ -98,7 +106,7 @@ function parseCandidate(value: unknown): Candidate {
   const optionalNumber = (value: unknown): number | undefined => value === null || value === undefined ? undefined : finite(value, 'RISK_INTENT');
   return {
     candidate_id: text(item.candidate_id, 'CANDIDATE_ID'), symbol: text(item.symbol, 'SYMBOL'),
-    side: text(item.side, 'SIDE') as ScientificSide, raw_score: finite(item.raw_score, 'RAW_SCORE'),
+    side: oneOf(item.side, 'SIDE', ['LONG', 'SHORT', 'NO_TRADE']), raw_score: finite(item.raw_score, 'RAW_SCORE'),
     calibrated_score: finite(item.calibrated_score, 'CALIBRATED_SCORE'), confidence: finite(item.confidence, 'CONFIDENCE'),
     uncertainty: finite(item.uncertainty, 'UNCERTAINTY'), regime: text(item.regime, 'REGIME'),
     compatibility: finite(item.compatibility, 'COMPATIBILITY'), expected_return: finite(item.expected_return, 'EXPECTED_RETURN'),
@@ -123,7 +131,7 @@ export function parseDecisionResponse(value: unknown): DecisionResponse {
     contract_version: text(item.contract_version, 'CONTRACT_VERSION') as BrainContractVersion,
     decision_id: text(item.decision_id, 'DECISION_ID'), decision_cycle_id: text(item.decision_cycle_id, 'DECISION_CYCLE_ID'),
     generated_at: text(item.generated_at, 'GENERATED_AT'), expires_at: text(item.expires_at, 'EXPIRES_AT'),
-    status: text(item.status, 'STATUS') as DecisionStatus, universe_id: text(item.universe_id, 'UNIVERSE_ID'),
+    status: oneOf(item.status, 'STATUS', ['SELECTED', 'NO_TRADE', 'ERROR']), universe_id: text(item.universe_id, 'UNIVERSE_ID'),
     symbol_set_hash: text(item.symbol_set_hash, 'SYMBOL_SET_HASH'), config_version: text(item.config_version, 'CONFIG_VERSION'),
     model_bundle_id: text(item.model_bundle_id, 'MODEL_BUNDLE_ID'), feature_schema_version: text(item.feature_schema_version, 'FEATURE_SCHEMA_VERSION'),
     evidence_hash: text(item.evidence_hash, 'EVIDENCE_HASH'), selected: item.selected.map(parseCandidate),

@@ -3,6 +3,7 @@
 import { DecisionResponse } from './contract';
 
 export interface OperationalContext {
+  mode: 'LIVE' | 'SHADOW';
   now: string; allowedSymbols: readonly string[]; allowedSides: readonly ('LONG' | 'SHORT')[];
   killSwitchActive: boolean; explicitAuthorization: boolean; executionEnabledByConfig: boolean;
   availableSlots: number; occupiedSymbols: readonly string[]; expectedModelBundleId: string;
@@ -26,6 +27,7 @@ export class StrictDecisionGate implements DecisionGate {
     if (response.status === 'NO_TRADE') reasons.push('SCIENTIFIC_NO_TRADE');
     if (response.status !== 'SELECTED' || response.selected.length !== 1) reasons.push('INVALID_SELECTION_CARDINALITY');
     if (context.killSwitchActive) reasons.push('KILL_SWITCH_ACTIVE');
+    if (context.mode === 'SHADOW') reasons.push('SHADOW_MODE_NON_EXECUTING');
     if (!context.executionEnabledByConfig) reasons.push('EXECUTION_DISABLED_BY_CONFIG');
     if (!context.explicitAuthorization) reasons.push('EXPLICIT_AUTHORIZATION_REQUIRED');
     if (context.availableSlots < 1) reasons.push('NO_AVAILABLE_SLOT');

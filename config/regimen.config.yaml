@@ -20,6 +20,7 @@ universe:
   timeframe: 5m
 
 brain:
+  mode: shadow
   endpoint: http://127.0.0.1:8010
   contractVersion: aegis-clean-rebuild-v1
   expectedUniverseId: aegis-operational-eleven-v1
@@ -28,6 +29,7 @@ brain:
   maxDecisionAgeMs: 30000
   requestTimeoutMs: 2000
   failClosed: true
+  shadowDecisionLog: logs/aegis/brain_shadow_decisions.jsonl
 
 execution:
   enabledByConfig: false
