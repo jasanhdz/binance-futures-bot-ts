@@ -1,6 +1,6 @@
 regimen:
   id: aegis-clean-rebuild
-  version: scaffold-v1
+  version: scientific-contract-v1
 
 universe:
   sourceOfTruth: ../regime_config.live.yaml#symbols.entries
@@ -16,16 +16,17 @@ universe:
     - LINKUSDT
     - SUIUSDT
     - LTCUSDT
-  symbolSetHash: TODO_COMPUTE_AND_HANDSHAKE
+  symbolSetHash: f6448e67daf1d017e16cc6b331f6494e97e178824474994fff08864303ccd348
   timeframe: 5m
 
 brain:
-  endpoint: TODO_CONFIGURE_PYTHON_BRAIN_ENDPOINT
+  endpoint: http://127.0.0.1:8010
   contractVersion: aegis-clean-rebuild-v1
   expectedUniverseId: aegis-operational-eleven-v1
-  expectedModelBundleId: TODO_APPROVED_MODEL_BUNDLE
-  maxDecisionAgeMs: 0
-  requestTimeoutMs: 0
+  expectedModelBundleId: aegis-offline-reference-v1
+  expectedFeatureSchemaVersion: aegis-features-v1
+  maxDecisionAgeMs: 30000
+  requestTimeoutMs: 2000
   failClosed: true
 
 execution:
