@@ -38,7 +38,7 @@ const snapshot = (): MarketSnapshot => {
 };
 
 const operationalContext = (now: string): OperationalContext => ({
-  mode: 'SHADOW', now, allowedSymbols: [...symbols], allowedSides: ['LONG', 'SHORT'], killSwitchActive: false,
+  mode: 'SHADOW', now, allowedSymbols: [...symbols], allowedSides: ['SHORT'], killSwitchActive: false,
   explicitAuthorization: false, executionEnabledByConfig: false, availableSlots: 1, occupiedSymbols: [],
   expectedModelBundleId: expected.modelBundleId, expectedSymbolSetHash: expected.symbolSetHash,
   expectedFeatureSchemaVersion: expected.featureSchemaVersion!, maximumDecisionAgeMs: 30_000,

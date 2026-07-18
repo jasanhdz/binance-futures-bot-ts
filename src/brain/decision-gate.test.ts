@@ -32,4 +32,12 @@ describe('strict decision gate', () => {
     const result = new StrictDecisionGate().validate({ ...decisionFixture(), status: 'NO_TRADE', selected: [] }, context());
     expect(result.decision).toBe('DENY'); expect(result.reasonCodes).toContain('SCIENTIFIC_NO_TRADE');
   });
+
+  it('rejects LONG while scientific parity is SHORT-only', () => {
+    const fixture = decisionFixture();
+    const selected = [{ ...fixture.selected[0], side: 'LONG' as const }];
+    const result = new StrictDecisionGate().validate({ ...fixture, selected }, context());
+    expect(result.decision).toBe('DENY');
+    expect(result.reasonCodes).toContain('SIDE_NOT_ALLOWED');
+  });
 });

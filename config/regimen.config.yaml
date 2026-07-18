@@ -21,6 +21,8 @@ universe:
 
 brain:
   mode: shadow
+  allowedSides:
+    - SHORT
   endpoint: http://127.0.0.1:8010
   contractVersion: aegis-clean-rebuild-v1
   expectedUniverseId: aegis-operational-eleven-v1
