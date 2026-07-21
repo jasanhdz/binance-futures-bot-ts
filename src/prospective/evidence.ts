@@ -1,4 +1,12 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { canonicalJson, canonicalUtc, requireSha256, sha256 } from './canonical';

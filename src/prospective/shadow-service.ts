@@ -36,8 +36,7 @@ export const MODEL_ARTIFACT_SHA256 =
   '386742c20d74a3b67d47cd95629c646195472e05e9e8d136587d40989a82e3d1';
 export const CONFIGURATION_SHA256 =
   'f944b0210b31928a519dc63459be3f1d53de811517dc1bbe9753596314579ec1';
-export const SYMBOL_SET_SHA256 =
-  'f6448e67daf1d017e16cc6b331f6494e97e178824474994fff08864303ccd348';
+export const SYMBOL_SET_SHA256 = 'f6448e67daf1d017e16cc6b331f6494e97e178824474994fff08864303ccd348';
 export const SYMBOLS = [
   'ETHUSDT',
   'BTCUSDT',
@@ -55,7 +54,8 @@ export const PUBLIC_KLINES_ENDPOINT = 'https://fapi.binance.com/fapi/v1/klines';
 const INTERVAL_MS = 300_000;
 const HORIZON_BARS = 12;
 const MIN_FREE_BYTES = 1_073_741_824;
-const CREDENTIAL_PATTERN = /(^|_)(API[_-]?KEY|API[_-]?SECRET|SECRET[_-]?KEY|BINANCE[_-]?(KEY|SECRET))($|_)/i;
+const CREDENTIAL_PATTERN =
+  /(^|_)(API[_-]?KEY|API[_-]?SECRET|SECRET[_-]?KEY|BINANCE[_-]?(KEY|SECRET))($|_)/i;
 
 export interface ActivationRecord {
   schema_id: 'aegis-prospective-shadow-activation-v1';
@@ -144,7 +144,8 @@ export function assertCredentialFreeEnvironment(environment: NodeJS.ProcessEnv):
 export function loadActivationRecord(path: string): ActivationRecord {
   const record = JSON.parse(readFileSync(path, 'utf8')) as ActivationRecord;
   const { content_sha256: claimed, ...unsigned } = record;
-  if (claimed !== sha256(canonicalJson(unsigned))) throw new Error('PROSPECTIVE_ACTIVATION_RECORD_CORRUPT');
+  if (claimed !== sha256(canonicalJson(unsigned)))
+    throw new Error('PROSPECTIVE_ACTIVATION_RECORD_CORRUPT');
   if (
     record.schema_id !== 'aegis-prospective-shadow-activation-v1' ||
     record.cohort_id !== COHORT_ID ||
@@ -237,7 +238,10 @@ function parseKlines(rows: unknown, nowMs: number): Candle[] {
     const openMs = Number(row[0]);
     const closeMs = openMs + INTERVAL_MS;
     const values = [row[1], row[2], row[3], row[4], row[5]].map(Number);
-    if (!Number.isSafeInteger(openMs) || values.some((value) => !Number.isFinite(value) || value < 0))
+    if (
+      !Number.isSafeInteger(openMs) ||
+      values.some((value) => !Number.isFinite(value) || value < 0)
+    )
       throw new Error('SHADOW_PUBLIC_RESPONSE_INVALID');
     return {
       open_time: new Date(openMs).toISOString(),
@@ -265,7 +269,8 @@ export class PublicKlineClient {
   }
 
   async candles(symbol: string, limit: number, startTime?: number): Promise<Candle[]> {
-    if (!SYMBOLS.includes(symbol as (typeof SYMBOLS)[number])) throw new Error('SHADOW_SYMBOL_UNAUTHORIZED');
+    if (!SYMBOLS.includes(symbol as (typeof SYMBOLS)[number]))
+      throw new Error('SHADOW_SYMBOL_UNAUTHORIZED');
     const url = new URL(PUBLIC_KLINES_ENDPOINT);
     url.searchParams.set('symbol', symbol);
     url.searchParams.set('interval', '5m');
@@ -282,7 +287,8 @@ export class PublicKlineClient {
         return parseKlines(await response.json(), Date.now());
       } catch (error) {
         last = error;
-        if (attempt < this.maxAttempts) await new Promise((done) => setTimeout(done, 250 * attempt));
+        if (attempt < this.maxAttempts)
+          await new Promise((done) => setTimeout(done, 250 * attempt));
       } finally {
         clearTimeout(timeout);
       }
@@ -350,7 +356,14 @@ export class PersistentShadowService {
   private reconnects = 0;
   private startedAt = new Date();
   private stopping = false;
-  private counters = { evaluations: 0, evidence: 0, outcomes: 0, duplicates: 0, conflicts: 0, stale: 0 };
+  private counters = {
+    evaluations: 0,
+    evidence: 0,
+    outcomes: 0,
+    duplicates: 0,
+    conflicts: 0,
+    stale: 0,
+  };
 
   constructor(private readonly options: ShadowServiceOptions) {
     assertCredentialFreeEnvironment(process.env);
@@ -366,7 +379,9 @@ export class PersistentShadowService {
     this.market = new PublicKlineClient(options.fetchImpl);
     this.recorder = new JsonlProspectiveEvidenceRecorder(options.paths.evidence);
     if (existsSync(options.paths.checkpoint)) {
-      const checkpoint = JSON.parse(readFileSync(options.paths.checkpoint, 'utf8')) as RuntimeCheckpoint;
+      const checkpoint = JSON.parse(
+        readFileSync(options.paths.checkpoint, 'utf8'),
+      ) as RuntimeCheckpoint;
       validateCheckpoint(checkpoint, this.activation.activation_id);
       checkpoint.processed_cycle_ids.forEach((value) => this.processed.add(value));
       this.reconnects = checkpoint.reconnect_count;
@@ -374,7 +389,8 @@ export class PersistentShadowService {
     if (existsSync(options.paths.outcomes)) {
       for (const line of readFileSync(options.paths.outcomes, 'utf8').split('\n').filter(Boolean)) {
         const outcome = JSON.parse(line) as { prospective_signal_id: string };
-        if (this.matured.has(outcome.prospective_signal_id)) throw new Error('PROSPECTIVE_OUTCOME_DUPLICATE');
+        if (this.matured.has(outcome.prospective_signal_id))
+          throw new Error('PROSPECTIVE_OUTCOME_DUPLICATE');
         this.matured.add(outcome.prospective_signal_id);
       }
     }
@@ -402,7 +418,8 @@ export class PersistentShadowService {
         maxBuffer: 16 * 1024 * 1024,
       },
     );
-    if (result.status !== 0) throw new Error(result.stderr.trim() || 'SHADOW_BRAIN_EVALUATION_FAILED_CLOSED');
+    if (result.status !== 0)
+      throw new Error(result.stderr.trim() || 'SHADOW_BRAIN_EVALUATION_FAILED_CLOSED');
     return JSON.parse(result.stdout) as BridgeResult;
   }
 
@@ -423,7 +440,11 @@ export class PersistentShadowService {
         symbol,
         candles,
         last_confirmed_close: closedAt,
-        feed_quality: { missing_bars: 0, duplicate_bars: 0, source_lag_ms: this.now().getTime() - Date.parse(closedAt) },
+        feed_quality: {
+          missing_bars: 0,
+          duplicate_bars: 0,
+          source_lag_ms: this.now().getTime() - Date.parse(closedAt),
+        },
       };
     });
     return {
@@ -511,10 +532,17 @@ export class PersistentShadowService {
       if (envelope.side !== 'SHORT' || this.matured.has(envelope.prospective_signal_id)) continue;
       const signalMs = Date.parse(envelope.signal_timestamp_utc);
       if (this.now().getTime() < signalMs + HORIZON_BARS * INTERVAL_MS) continue;
-      const candles = await this.market.candles(envelope.symbol, HORIZON_BARS + 2, signalMs - INTERVAL_MS);
+      const candles = await this.market.candles(
+        envelope.symbol,
+        HORIZON_BARS + 2,
+        signalMs - INTERVAL_MS,
+      );
       const signal = candles.find((item) => Date.parse(item.close_time) === signalMs);
-      const future = candles.filter((item) => Date.parse(item.open_time) >= signalMs).slice(0, HORIZON_BARS);
-      if (!signal || future.length !== HORIZON_BARS) throw new Error('PROSPECTIVE_MARKET_DATA_INCOMPLETE');
+      const future = candles
+        .filter((item) => Date.parse(item.open_time) >= signalMs)
+        .slice(0, HORIZON_BARS);
+      if (!signal || future.length !== HORIZON_BARS)
+        throw new Error('PROSPECTIVE_MARKET_DATA_INCOMPLETE');
       const result = spawnSync(
         this.options.pythonExecutable,
         [
@@ -543,7 +571,8 @@ export class PersistentShadowService {
           maxBuffer: 4 * 1024 * 1024,
         },
       );
-      if (result.status !== 0) throw new Error(result.stderr.trim() || 'PROSPECTIVE_OUTCOME_PERSISTENCE_FAILED');
+      if (result.status !== 0)
+        throw new Error(result.stderr.trim() || 'PROSPECTIVE_OUTCOME_PERSISTENCE_FAILED');
       this.matured.add(envelope.prospective_signal_id);
       this.counters.outcomes += 1;
       count += 1;
@@ -555,7 +584,8 @@ export class PersistentShadowService {
     const series = snapshot.series.find((item) => item.symbol === envelope.symbol);
     const candle = series?.candles[series.candles.length - 1];
     if (!candle) throw new Error('SHADOW_SIMULATED_INTENT_INPUT_MISSING');
-    const virtualNotional = 10_000 * Number(envelope.final_decision.risk_intent.adjusted_position_fraction);
+    const virtualNotional =
+      10_000 * Number(envelope.final_decision.risk_intent.adjusted_position_fraction);
     durableAppend(this.options.paths.intents, {
       schema_id: 'aegis-shadow-simulated-intent-v1',
       execution_mode: 'SIMULATED_SHADOW',
@@ -607,7 +637,10 @@ export class PersistentShadowService {
       money_movement_count: 0,
     };
     durableWrite(this.options.paths.health, health);
-    durableWrite(this.options.paths.state, { ...health, schema_id: 'aegis-shadow-runtime-state-v1' });
+    durableWrite(this.options.paths.state, {
+      ...health,
+      schema_id: 'aegis-shadow-runtime-state-v1',
+    });
   }
 
   async start(): Promise<void> {
@@ -618,7 +651,9 @@ export class PersistentShadowService {
         await this.runCycle();
         await this.matureOutcomes();
       } catch (error) {
-        if (!(error instanceof Error && /PROSPECTIVE_EVENT_BEFORE_ACTIVATION/.test(error.message))) {
+        if (
+          !(error instanceof Error && /PROSPECTIVE_EVENT_BEFORE_ACTIVATION/.test(error.message))
+        ) {
           this.reconnects += 1;
           this.persistCheckpoint();
           if (this.reconnects > 5) {
@@ -641,13 +676,17 @@ export class PersistentShadowService {
 function defaultOptions(): ShadowServiceOptions {
   const typescriptRoot = resolve(__dirname, '../..');
   const repoRoot = resolve(typescriptRoot, '..');
-  const root = process.env.AEGIS_SHADOW_DATA_ROOT ?? resolve(repoRoot, 'data/prospective_shadow/cohort_1');
+  const root =
+    process.env.AEGIS_SHADOW_DATA_ROOT ?? resolve(repoRoot, 'data/prospective_shadow/cohort_1');
   return {
     repoRoot,
     typescriptRoot,
     activationPath:
       process.env.AEGIS_SHADOW_ACTIVATION_PATH ??
-      resolve(repoRoot, 'reports/governance/aegis_prospective_validation/activation/shadow_cohort_1_activation.json'),
+      resolve(
+        repoRoot,
+        'reports/governance/aegis_prospective_validation/activation/shadow_cohort_1_activation.json',
+      ),
     candidatePath:
       process.env.AEGIS_SHADOW_MODEL_BUNDLE ??
       resolve(repoRoot, 'config/bundles/aegis-prospective-shadow-candidate-v1.json'),
@@ -667,7 +706,11 @@ function defaultOptions(): ShadowServiceOptions {
 }
 
 async function main(): Promise<void> {
-  if (process.argv.some((argument) => /--(live|real-orders|production-trading|use-private-api)/.test(argument)))
+  if (
+    process.argv.some((argument) =>
+      /--(live|real-orders|production-trading|use-private-api)/.test(argument),
+    )
+  )
     throw new Error('SHADOW_LIVE_MODE_PROHIBITED');
   if (process.argv.includes('--connectivity-preflight')) {
     process.stdout.write(`${canonicalJson(await runPublicConnectivityPreflight())}\n`);
