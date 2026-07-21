@@ -18,6 +18,7 @@ export interface ShadowStartupConfig {
   protocolActive: boolean;
   activationBoundary: 'NOT_OPENED' | string;
   eventClassification: 'PREACTIVATION_NON_COHORT' | string;
+  cohortId?: string;
   modelMode: 'PROSPECTIVE_SHADOW_CANDIDATE' | string;
   modelIdentity: string;
   expectedModelIdentity: string;
@@ -45,6 +46,7 @@ export interface ShadowMarketEvent {
 
 export interface HypotheticalOrderIntent {
   simulated: true;
+  execution_mode: 'SIMULATED_SHADOW';
   prospectiveSignalId: string;
   symbol: string;
   side: 'SHORT';
@@ -66,10 +68,14 @@ export interface ShadowCheckpoint {
 export function validateShadowStartup(config: ShadowStartupConfig): void {
   if (config.mode !== 'SHADOW') throw new Error('SHADOW_LIVE_MODE_PROHIBITED');
   if (!config.protocolActive) throw new Error('SHADOW_PROTOCOL_NOT_ACTIVE');
-  if (config.activationBoundary !== 'NOT_OPENED')
-    throw new Error('PROSPECTIVE_ACTIVATION_NOT_AUTHORIZED');
-  if (config.eventClassification !== 'PREACTIVATION_NON_COHORT')
-    throw new Error('PROSPECTIVE_QUALIFICATION_EVENT_CLASS_INVALID');
+  const preactivation =
+    config.activationBoundary === 'NOT_OPENED' &&
+    config.eventClassification === 'PREACTIVATION_NON_COHORT';
+  const active =
+    config.activationBoundary === 'OPENED' &&
+    config.eventClassification === config.cohortId &&
+    config.cohortId === 'aegis-prospective-shadow-cohort-1';
+  if (!preactivation && !active) throw new Error('PROSPECTIVE_ACTIVATION_NOT_AUTHORIZED');
   if (config.modelMode !== 'PROSPECTIVE_SHADOW_CANDIDATE')
     throw new Error('PROSPECTIVE_MODEL_MODE_INVALID');
   if (
@@ -166,7 +172,7 @@ export class ShadowOnlyHarness {
     )
       throw new Error('PROSPECTIVE_MODEL_EVIDENCE_MISMATCH');
     if (evidence.cohortId !== this.config.eventClassification)
-      throw new Error('PROSPECTIVE_QUALIFICATION_EVENT_CLASS_INVALID');
+      throw new Error('PROSPECTIVE_COHORT_MISMATCH');
     const decision = evaluateWithProspectiveEvidence(evaluate, evidence, this.recorder);
     this.processed.add(event.eventId);
     if (decision.finalDecision !== 'ALLOW') return { decision };
@@ -174,6 +180,7 @@ export class ShadowOnlyHarness {
       decision,
       intent: {
         simulated: true,
+        execution_mode: 'SIMULATED_SHADOW',
         prospectiveSignalId: requireSha256(
           deriveProspectiveSignalId(evidence),
           'PROSPECTIVE_SIGNAL_ID_INVALID',

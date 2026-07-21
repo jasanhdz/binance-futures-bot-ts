@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { canonicalJson, canonicalUtc, requireSha256, sha256 } from './canonical';
@@ -121,7 +121,11 @@ export class JsonlProspectiveEvidenceRecorder implements ProspectiveEvidenceReco
     if (existsSync(path)) {
       for (const line of readFileSync(path, 'utf8').split('\n').filter(Boolean)) {
         const envelope = JSON.parse(line) as ProspectiveEvidenceEnvelope;
-        this.payloads.set(envelope.prospective_signal_id, canonicalJson(envelope));
+        const payload = canonicalJson(envelope);
+        const previous = this.payloads.get(envelope.prospective_signal_id);
+        if (previous === payload) throw new Error('PROSPECTIVE_DUPLICATE_SIGNAL');
+        if (previous !== undefined) throw new Error('PROSPECTIVE_SIGNAL_CONFLICT');
+        this.payloads.set(envelope.prospective_signal_id, payload);
       }
     }
   }
@@ -132,7 +136,13 @@ export class JsonlProspectiveEvidenceRecorder implements ProspectiveEvidenceReco
     if (previous === payload) throw new Error('PROSPECTIVE_DUPLICATE_SIGNAL');
     if (previous !== undefined) throw new Error('PROSPECTIVE_SIGNAL_CONFLICT');
     mkdirSync(dirname(this.path), { recursive: true });
-    appendFileSync(this.path, `${payload}\n`, { encoding: 'utf8', mode: 0o600 });
+    const descriptor = openSync(this.path, 'a', 0o600);
+    try {
+      writeSync(descriptor, `${payload}\n`, undefined, 'utf8');
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
     this.payloads.set(envelope.prospective_signal_id, payload);
   }
 }
