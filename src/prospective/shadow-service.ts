@@ -663,6 +663,11 @@ async function main(): Promise<void> {
     throw new Error('SHADOW_LIVE_MODE_PROHIBITED');
   const options = defaultOptions();
   const service = new PersistentShadowService(options);
+  if (process.argv.includes('--health')) {
+    if (!existsSync(options.paths.health)) throw new Error('SHADOW_HEALTH_NOT_AVAILABLE');
+    process.stdout.write(readFileSync(options.paths.health, 'utf8'));
+    return;
+  }
   if (process.argv.includes('--connectivity-preflight')) {
     process.stdout.write(`${canonicalJson(await service.connectivityPreflight())}\n`);
     return;
