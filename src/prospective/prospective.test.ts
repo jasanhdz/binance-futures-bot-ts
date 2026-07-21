@@ -20,6 +20,11 @@ import {
   ShadowStartupConfig,
   validateShadowStartup,
 } from './shadow-harness';
+import {
+  PROSPECTIVE_SHADOW_CANDIDATE_ID,
+  ProspectiveShadowCandidateDescriptor,
+  validateProspectiveShadowCandidate,
+} from './candidate-model';
 
 const hash = (value: unknown): string => sha256(canonicalJson(value));
 
@@ -83,11 +88,11 @@ const identity = (overrides: Partial<ProspectiveIdentityInput> = {}): Prospectiv
 });
 
 const context = (overrides: Partial<EvidenceBuildContext> = {}): EvidenceBuildContext => ({
-  ...identity(),
+  ...identity({ cohortId: 'PREACTIVATION_NON_COHORT' }),
   evaluationId: 'evaluation-1',
   sourceTypescriptCommit: 'c'.repeat(40),
   sourcePythonCommit: 'd'.repeat(40),
-  modelIdentity: 'aegis-offline-reference-v1',
+  modelIdentity: PROSPECTIVE_SHADOW_CANDIDATE_ID,
   upstreamModel: { direction: 'SHORT', confidence: 0.8 },
   componentEvidence: components(),
   riskPolicyIdentity: 'risk-v1',
@@ -100,7 +105,15 @@ const context = (overrides: Partial<EvidenceBuildContext> = {}): EvidenceBuildCo
 const startup = (overrides: Partial<ShadowStartupConfig> = {}): ShadowStartupConfig => ({
   mode: 'SHADOW',
   protocolActive: true,
+  activationBoundary: 'NOT_OPENED',
+  eventClassification: 'PREACTIVATION_NON_COHORT',
+  modelMode: 'PROSPECTIVE_SHADOW_CANDIDATE',
+  modelIdentity: PROSPECTIVE_SHADOW_CANDIDATE_ID,
+  expectedModelIdentity: PROSPECTIVE_SHADOW_CANDIDATE_ID,
   modelApproved: true,
+  modelTrained: true,
+  approvalScope: 'PROSPECTIVE_SHADOW_ONLY',
+  approvedForLive: false,
   modelArtifactHash: 'a'.repeat(64),
   expectedModelArtifactHash: 'a'.repeat(64),
   configurationHash: 'b'.repeat(64),
@@ -272,6 +285,46 @@ describe('prospective evidence recorder', () => {
 });
 
 describe('shadow-only safety', () => {
+  it('accepts only the trained Shadow-only candidate and matching brain contract', () => {
+    const descriptor: ProspectiveShadowCandidateDescriptor = {
+      modelIdentity: PROSPECTIVE_SHADOW_CANDIDATE_ID,
+      sourceModelBundleId: 'aegis-short-candidate-e3-experimental',
+      modelArtifactHash: 'a'.repeat(64),
+      featureSchemaVersion: 'aegis-features-v2',
+      featureHash: 'f'.repeat(64),
+      trained: true,
+      approved: true,
+      approvalScope: 'PROSPECTIVE_SHADOW_ONLY',
+      approvedForLive: false,
+    };
+    const manifest = {
+      schema_version: 'aegis-brain-manifest-v1',
+      contract_version: 'aegis-brain-contract-v1',
+      universe_id: 'universe-v1',
+      symbols: ['ADAUSDT'],
+      symbol_set_hash: 's'.repeat(64),
+      timeframe: '5m',
+      config_version: 'config-v1',
+      model_bundle_id: descriptor.sourceModelBundleId,
+      feature_schema_version: descriptor.featureSchemaVersion,
+      feature_hash: descriptor.featureHash,
+      ready: true,
+    } as never;
+    expect(() => validateProspectiveShadowCandidate(descriptor, manifest)).not.toThrow();
+    expect(() =>
+      validateProspectiveShadowCandidate(
+        { ...descriptor, sourceModelBundleId: 'aegis-offline-reference-v1' },
+        manifest,
+      ),
+    ).toThrow('PROSPECTIVE_MODEL_IDENTITY_MISMATCH');
+    expect(() =>
+      validateProspectiveShadowCandidate(
+        { ...descriptor, approvedForLive: true } as never,
+        manifest,
+      ),
+    ).toThrow('PROSPECTIVE_MODEL_APPROVAL_INVALID');
+  });
+
   it('accepts only allowlisted public market endpoints', () => {
     expect(() =>
       assertPublicEndpoint('GET', 'https://fapi.binance.com/fapi/v1/klines?symbol=ADAUSDT'),
@@ -312,6 +365,18 @@ describe('shadow-only safety', () => {
     );
     expect(() => validateShadowStartup(startup({ protocolActive: false }))).toThrow(
       'SHADOW_PROTOCOL_NOT_ACTIVE',
+    );
+    expect(() => validateShadowStartup(startup({ modelTrained: false }))).toThrow(
+      'SHADOW_MODEL_NOT_TRAINED',
+    );
+    expect(() => validateShadowStartup(startup({ modelMode: 'OFFLINE_REFERENCE' }))).toThrow(
+      'PROSPECTIVE_MODEL_MODE_INVALID',
+    );
+    expect(() => validateShadowStartup(startup({ approvedForLive: true }))).toThrow(
+      'SHADOW_LIVE_APPROVAL_PROHIBITED',
+    );
+    expect(() => validateShadowStartup(startup({ activationBoundary: 'OPENED' }))).toThrow(
+      'PROSPECTIVE_ACTIVATION_NOT_AUTHORIZED',
     );
   });
 

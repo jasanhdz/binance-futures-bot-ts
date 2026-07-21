@@ -6,13 +6,25 @@ import {
 } from './evidence';
 import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { deriveProspectiveSignalId } from './identity';
+import {
+  PROSPECTIVE_SHADOW_APPROVAL_SCOPE,
+  PROSPECTIVE_SHADOW_CANDIDATE_ID,
+} from './candidate-model';
 
 export type ShadowMethod = 'GET' | 'WEBSOCKET';
 
 export interface ShadowStartupConfig {
   mode: 'SHADOW' | string;
   protocolActive: boolean;
+  activationBoundary: 'NOT_OPENED' | string;
+  eventClassification: 'PREACTIVATION_NON_COHORT' | string;
+  modelMode: 'PROSPECTIVE_SHADOW_CANDIDATE' | string;
+  modelIdentity: string;
+  expectedModelIdentity: string;
   modelApproved: boolean;
+  modelTrained: boolean;
+  approvalScope: 'PROSPECTIVE_SHADOW_ONLY' | string;
+  approvedForLive: boolean;
   modelArtifactHash: string;
   expectedModelArtifactHash: string;
   configurationHash: string;
@@ -54,7 +66,22 @@ export interface ShadowCheckpoint {
 export function validateShadowStartup(config: ShadowStartupConfig): void {
   if (config.mode !== 'SHADOW') throw new Error('SHADOW_LIVE_MODE_PROHIBITED');
   if (!config.protocolActive) throw new Error('SHADOW_PROTOCOL_NOT_ACTIVE');
+  if (config.activationBoundary !== 'NOT_OPENED')
+    throw new Error('PROSPECTIVE_ACTIVATION_NOT_AUTHORIZED');
+  if (config.eventClassification !== 'PREACTIVATION_NON_COHORT')
+    throw new Error('PROSPECTIVE_QUALIFICATION_EVENT_CLASS_INVALID');
+  if (config.modelMode !== 'PROSPECTIVE_SHADOW_CANDIDATE')
+    throw new Error('PROSPECTIVE_MODEL_MODE_INVALID');
+  if (
+    config.modelIdentity !== PROSPECTIVE_SHADOW_CANDIDATE_ID ||
+    config.modelIdentity !== config.expectedModelIdentity
+  )
+    throw new Error('PROSPECTIVE_MODEL_IDENTITY_MISMATCH');
+  if (!config.modelTrained) throw new Error('SHADOW_MODEL_NOT_TRAINED');
   if (!config.modelApproved) throw new Error('SHADOW_MODEL_NOT_APPROVED');
+  if (config.approvalScope !== PROSPECTIVE_SHADOW_APPROVAL_SCOPE)
+    throw new Error('PROSPECTIVE_MODEL_APPROVAL_SCOPE_INVALID');
+  if (config.approvedForLive) throw new Error('SHADOW_LIVE_APPROVAL_PROHIBITED');
   if (config.adapter !== 'PUBLIC_ONLY') throw new Error('SHADOW_PRIVATE_ENDPOINT_PROHIBITED');
   if (config.balanceSource !== 'SYNTHETIC') throw new Error('SHADOW_PRIVATE_BALANCE_PROHIBITED');
   if (config.orderRoutingEnabled) throw new Error('SHADOW_ORDER_OPERATION_PROHIBITED');
@@ -133,6 +160,13 @@ export class ShadowOnlyHarness {
       throw new Error('SHADOW_STALE_MARKET_DATA');
     if (!(event.referencePrice > 0) || !(syntheticBalanceUsd > 0))
       throw new Error('SHADOW_MARKET_EVENT_INVALID');
+    if (
+      evidence.modelIdentity !== this.config.modelIdentity ||
+      evidence.modelArtifactHash !== this.config.modelArtifactHash
+    )
+      throw new Error('PROSPECTIVE_MODEL_EVIDENCE_MISMATCH');
+    if (evidence.cohortId !== this.config.eventClassification)
+      throw new Error('PROSPECTIVE_QUALIFICATION_EVENT_CLASS_INVALID');
     const decision = evaluateWithProspectiveEvidence(evaluate, evidence, this.recorder);
     this.processed.add(event.eventId);
     if (decision.finalDecision !== 'ALLOW') return { decision };
