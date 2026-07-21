@@ -291,6 +291,35 @@ export class PublicKlineClient {
   }
 }
 
+export async function runPublicConnectivityPreflight(
+  fetchImpl: typeof fetch = fetch,
+  now: () => Date = () => new Date(),
+): Promise<Record<string, unknown>> {
+  assertCredentialFreeEnvironment(process.env);
+  const started = performance.now();
+  const candles = await new PublicKlineClient(fetchImpl).candles('BTCUSDT', 3);
+  if (!candles.length) throw new Error('SHADOW_PUBLIC_CONNECTIVITY_FAILED');
+  const latest = candles[candles.length - 1];
+  const marketLagMs = now().getTime() - Date.parse(latest.close_time);
+  if (marketLagMs < 0 || marketLagMs > 2 * INTERVAL_MS) throw new Error('SHADOW_STALE_MARKET_DATA');
+  return {
+    schema_id: 'aegis-shadow-public-connectivity-report-v1',
+    status: 'PASS',
+    endpoint: PUBLIC_KLINES_ENDPOINT,
+    endpoint_class: 'PUBLIC_REST',
+    dns_tls_http: 'PASS',
+    symbol: 'BTCUSDT',
+    interval: '5m',
+    market_timestamp_available: true,
+    market_lag_ms: marketLagMs,
+    websocket: 'NOT_APPLICABLE_REST_RUNTIME',
+    private_calls: 0,
+    credential_reads: 0,
+    order_calls: 0,
+    elapsed_ms: performance.now() - started,
+  };
+}
+
 function pseudoDecision(selected: boolean): AegisEntryDecisionResult {
   const finalDecision = selected ? 'ALLOW' : 'DENY';
   return {
@@ -378,28 +407,7 @@ export class PersistentShadowService {
   }
 
   async connectivityPreflight(): Promise<Record<string, unknown>> {
-    const started = performance.now();
-    const candles = await this.market.candles('BTCUSDT', 3);
-    if (!candles.length) throw new Error('SHADOW_PUBLIC_CONNECTIVITY_FAILED');
-    const latest = candles[candles.length - 1];
-    const marketLagMs = this.now().getTime() - Date.parse(latest.close_time);
-    if (marketLagMs < 0 || marketLagMs > 2 * INTERVAL_MS) throw new Error('SHADOW_STALE_MARKET_DATA');
-    return {
-      schema_id: 'aegis-shadow-public-connectivity-report-v1',
-      status: 'PASS',
-      endpoint: PUBLIC_KLINES_ENDPOINT,
-      endpoint_class: 'PUBLIC_REST',
-      dns_tls_http: 'PASS',
-      symbol: 'BTCUSDT',
-      interval: '5m',
-      market_timestamp_available: true,
-      market_lag_ms: marketLagMs,
-      websocket: 'NOT_APPLICABLE_REST_RUNTIME',
-      private_calls: 0,
-      credential_reads: 0,
-      order_calls: 0,
-      elapsed_ms: performance.now() - started,
-    };
+    return runPublicConnectivityPreflight(this.options.fetchImpl, this.now);
   }
 
   private async snapshot(): Promise<MarketSnapshot> {
@@ -661,15 +669,15 @@ function defaultOptions(): ShadowServiceOptions {
 async function main(): Promise<void> {
   if (process.argv.some((argument) => /--(live|real-orders|production-trading|use-private-api)/.test(argument)))
     throw new Error('SHADOW_LIVE_MODE_PROHIBITED');
+  if (process.argv.includes('--connectivity-preflight')) {
+    process.stdout.write(`${canonicalJson(await runPublicConnectivityPreflight())}\n`);
+    return;
+  }
   const options = defaultOptions();
   const service = new PersistentShadowService(options);
   if (process.argv.includes('--health')) {
     if (!existsSync(options.paths.health)) throw new Error('SHADOW_HEALTH_NOT_AVAILABLE');
     process.stdout.write(readFileSync(options.paths.health, 'utf8'));
-    return;
-  }
-  if (process.argv.includes('--connectivity-preflight')) {
-    process.stdout.write(`${canonicalJson(await service.connectivityPreflight())}\n`);
     return;
   }
   if (process.argv.includes('--once')) {
