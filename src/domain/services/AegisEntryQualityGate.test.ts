@@ -15,9 +15,7 @@ const baseConfig: AegisEntryQualityGateConfig = {
     overextensionEnabled: true,
     emaDistanceLimit: 0.006,
     volatilityEnabled: true,
-    maxAtrPercentile: 0.75,
-    require3of3WhenSymbolFlagged: true,
-    flaggedSymbols: ['ETHUSDT', 'DOGEUSDT']
+    maxAtrPercentile: 0.75
 };
 
 function candles(closes: number[]) {
@@ -138,16 +136,16 @@ describe('evaluateAegisEntryQualityGate', () => {
         expect(decision.reason).toBe('volatility_too_high');
     });
 
-    it('Flagged LONG requiere votes.long=3', () => {
+    it('does not reinterpret canonical LONG through legacy 3-of-3 votes', () => {
         const decision = evaluateAegisEntryQualityGate(input({
             symbol: 'ETHUSDT',
             votes: { long: 2, short: 0, neutral: 1 }
         }));
 
-        expect(decision.reason).toBe('flagged_symbol_requires_3of3');
+        expect(decision.reason).toBe('entry_quality_passed');
     });
 
-    it('Flagged SHORT requiere votes.short=3', () => {
+    it('does not reinterpret canonical SHORT through legacy 3-of-3 votes', () => {
         const decision = evaluateAegisEntryQualityGate(input({
             symbol: 'DOGEUSDT',
             side: 'SHORT',
@@ -157,7 +155,7 @@ describe('evaluateAegisEntryQualityGate', () => {
             emaFast: 100
         }));
 
-        expect(decision.reason).toBe('flagged_symbol_requires_3of3');
+        expect(decision.reason).toBe('entry_quality_passed');
     });
 
     it('Passing setup devuelve SHADOW_ALLOW', () => {

@@ -32,8 +32,6 @@ export class ShortGateGuardAdapter {
         const decision = AegisShortGate.evaluate({
             symbol: context.symbol,
             side: context.side,
-            turboScore: context.turboScore,
-            votes: context.votes,
             canonicalDecisionAuthorized:
                 canonicalDecision.valid &&
                 canonicalDecision.selected &&

@@ -1,4 +1,4 @@
-import { AegisBlock, AegisVotes } from './AegisStrategy';
+import { AegisBlock } from './AegisStrategy';
 import { inspectCurrentBrainCanonicalDecision } from './CurrentBrainCanonicalDecision';
 
 export interface AegisMicroLiveGateConfig {
@@ -116,10 +116,6 @@ function buildDecision(
   };
 }
 
-function votesForSide(votes: AegisVotes | undefined, side: 'LONG' | 'SHORT'): number {
-  return side === 'LONG' ? votes?.long ?? 0 : votes?.short ?? 0;
-}
-
 export function shouldEnterAegisTurboMicroLive(
   ctx: AegisMicroLiveGateContext,
   config: AegisMicroLiveGateConfig
@@ -141,13 +137,12 @@ export function shouldEnterAegisTurboMicroLive(
   }
 
   const canonicalDecision = inspectCurrentBrainCanonicalDecision(ctx.signal.aegis, ctx.symbol);
-  const raw = ctx.signal.aegis?.turbo?.raw;
-  if (canonicalDecision.recognized && !canonicalDecision.valid) {
-    return buildDecision(ctx, config, 'current_brain_canonical_contract_invalid');
+  if (!canonicalDecision.recognized) {
+    return buildDecision(ctx, config, 'current_brain_canonical_contract_required');
   }
 
-  if (!canonicalDecision.recognized && !raw) {
-    return buildDecision(ctx, config, 'missing_aegis_turbo_raw');
+  if (!canonicalDecision.valid) {
+    return buildDecision(ctx, config, 'current_brain_canonical_contract_invalid');
   }
 
   if (ctx.hasOpenPosition) {
@@ -174,44 +169,22 @@ export function shouldEnterAegisTurboMicroLive(
     return buildDecision(ctx, config, 'daily_loss_stop_reached');
   }
 
-  if (canonicalDecision.recognized && canonicalDecision.selected !== true) {
+  if (canonicalDecision.selected !== true) {
     return buildDecision(ctx, config, 'current_brain_canonical_do_not_enter');
   }
 
-  if (!canonicalDecision.recognized && raw!.would_execute !== true) {
-    return buildDecision(ctx, config, 'raw_would_execute_false');
-  }
-
-  if (!canonicalDecision.recognized && raw!.action !== 'LONG' && raw!.action !== 'SHORT') {
-    return buildDecision(ctx, config, 'raw_action_not_trade');
-  }
-
-  const side = canonicalDecision.recognized ? canonicalDecision.side! : raw!.action as 'LONG' | 'SHORT';
+  const side = canonicalDecision.side!;
   if (side === 'SHORT' && config.allowShort !== true) {
     return buildDecision(ctx, config, 'short_disabled');
   }
 
-  if (!canonicalDecision.recognized && (!finiteNumber(raw!.turbo_score) || raw!.turbo_score! < config.minScore)) {
-    return buildDecision(ctx, config, 'turbo_score_below_threshold');
-  }
-
-  if (!canonicalDecision.recognized && votesForSide(raw!.votes, side) < 2) {
-    return buildDecision(ctx, config, side === 'LONG' ? 'insufficient_long_votes' : 'insufficient_short_votes');
-  }
-
-  const leverage = Math.min(
-    canonicalDecision.recognized ? DEFAULT_LEVERAGE : raw!.leverage_suggestion || DEFAULT_LEVERAGE,
-    config.leverageCap,
-  );
-  const positionFraction = Math.min(
-    canonicalDecision.recognized ? DEFAULT_POSITION_FRACTION : raw!.position_fraction || DEFAULT_POSITION_FRACTION,
-    config.positionFractionCap,
-  );
+  const leverage = Math.min(DEFAULT_LEVERAGE, config.leverageCap);
+  const positionFraction = Math.min(DEFAULT_POSITION_FRACTION, config.positionFractionCap);
 
   return buildDecision(
     ctx,
     config,
-    canonicalDecision.recognized ? 'allowed_current_brain_canonical_live' : 'allowed_aegis_turbo_micro_live',
+    'allowed_current_brain_canonical_live',
     true,
     side,
     leverage,

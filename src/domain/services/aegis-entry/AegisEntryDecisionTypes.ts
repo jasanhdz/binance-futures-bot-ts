@@ -163,7 +163,6 @@ export interface AegisMomentumRideSideRuntimeConfig {
     leverage: number;
     positionFraction: number;
     minTurboScore: number;
-    minVotesAgreement: number;
     minVolumeRatio: number;
     momentumCandles: 2 | 3;
     maxTailRiskScore: number;

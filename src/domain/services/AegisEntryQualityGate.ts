@@ -10,7 +10,6 @@ export type AegisEntryQualityGateReason =
     | 'overextended_long'
     | 'overextended_short'
     | 'volatility_too_high'
-    | 'flagged_symbol_requires_3of3'
     | 'entry_quality_passed';
 
 export type AegisEntryQualityGateAction =
@@ -39,8 +38,6 @@ export interface AegisEntryQualityGateConfig {
     emaDistanceLimit: number;
     volatilityEnabled: boolean;
     maxAtrPercentile: number;
-    require3of3WhenSymbolFlagged: boolean;
-    flaggedSymbols: string[];
 }
 
 export interface AegisEntryQualityGateInput {
@@ -202,20 +199,6 @@ export function evaluateAegisEntryQualityGate(
             ...metadata,
             failedChecks
         });
-    }
-
-    if (config.require3of3WhenSymbolFlagged) {
-        const flaggedSymbols = new Set((config.flaggedSymbols || []).map(normalizeSymbol));
-        if (flaggedSymbols.has(symbol)) {
-            const sideVotes = input.side === 'LONG' ? input.votes?.long : input.votes?.short;
-            if ((sideVotes ?? 0) < 3) {
-                failedChecks.push('flagged_symbol_requires_3of3');
-                return blockDecision(input, 'flagged_symbol_requires_3of3', {
-                    ...metadata,
-                    failedChecks
-                });
-            }
-        }
     }
 
     const requiresRecentReturn = config.requireMomentumConfirm || config.antiFallingKnifeEnabled;

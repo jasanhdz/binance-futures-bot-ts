@@ -15,7 +15,6 @@ export type AegisProbeModeReason =
     | 'probe_feature_parity_too_low'
     | 'probe_tail_risk_too_high'
     | 'probe_turbo_score_too_low'
-    | 'probe_votes_too_low'
     | 'probe_setup_grade_not_clean'
     | 'probe_clean_entry_block_reasons_not_allowed'
     | 'probe_same_symbol_position_open'
@@ -32,7 +31,6 @@ export interface AegisProbeModeRuntimeConfig {
     mode: AegisProbeModeMode;
     apply_when_event_risk: EventRiskMode[];
     min_turbo_score: number;
-    min_votes_agreement: number;
     max_tail_risk_score: number;
     require_decision_brain: string;
     require_entry_quality_allow: boolean;
@@ -113,10 +111,6 @@ function normalizedReason(value?: string): string {
 
 function finiteNumber(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value);
-}
-
-function sideVotes(input: AegisProbeModeInput): number {
-    return input.side === 'LONG' ? input.votes?.long ?? 0 : input.votes?.short ?? 0;
 }
 
 function entriesLastHour(input: AegisProbeModeInput): number {
@@ -220,9 +214,6 @@ export class AegisProbeMode {
         }
         if (!finiteNumber(input.turboScore) || input.turboScore < config.min_turbo_score) {
             return deny(input, 'probe_turbo_score_too_low');
-        }
-        if (sideVotes(input) < config.min_votes_agreement) {
-            return deny(input, 'probe_votes_too_low');
         }
         if (setupGrade !== 'A' && setupGrade !== 'A_PLUS') {
             return deny(input, 'probe_setup_grade_not_clean');

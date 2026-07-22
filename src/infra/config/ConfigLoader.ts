@@ -155,7 +155,6 @@ export interface AegisCleanEntryGuardYamlConfig {
     exception?: {
         allow_extreme_momentum_in_shadow_only?: boolean;
         min_turbo_score?: number;
-        require_votes_3_of_3?: boolean;
         max_tail_risk_score?: number;
     };
     telemetry?: {
@@ -191,7 +190,6 @@ export interface AegisCleanEntryGuardRuntimeConfig {
     exception: {
         allowExtremeMomentumInShadowOnly: boolean;
         minTurboScore: number;
-        requireVotes3Of3: boolean;
         maxTailRiskScore: number;
     };
     telemetry: {
@@ -229,8 +227,6 @@ export interface AegisEntryQualityGateYamlConfig {
         enabled?: boolean;
         max_atr_percentile?: number;
     };
-    require_3of3_when_symbol_flagged?: boolean;
-    flagged_symbols?: string[];
 }
 
 export interface AegisEntryQualityGateRuntimeConfig {
@@ -247,8 +243,6 @@ export interface AegisEntryQualityGateRuntimeConfig {
         emaDistanceLimit: number;
         volatilityEnabled: boolean;
         maxAtrPercentile: number;
-        require3of3WhenSymbolFlagged: boolean;
-        flaggedSymbols: string[];
     };
 }
 
@@ -257,8 +251,6 @@ export type AegisShortGateMode = 'PREMIUM_ONLY';
 export interface AegisShortGateYamlConfig {
     enabled?: boolean;
     mode?: AegisShortGateMode | string;
-    min_score?: number;
-    require_votes?: number;
     position_fraction_multiplier?: number;
     max_leverage?: number;
     block_symbols?: string[];
@@ -328,7 +320,6 @@ export interface AegisProbeModeYamlConfig {
     mode?: AegisProbeModeMode | string;
     apply_when_event_risk?: Array<EventRiskMode | string>;
     min_turbo_score?: number;
-    min_votes_agreement?: number;
     max_tail_risk_score?: number;
     require_decision_brain?: string;
     require_entry_quality_allow?: boolean;
@@ -392,7 +383,6 @@ export interface AegisMomentumRideSideYamlConfig {
     leverage?: number;
     position_fraction?: number;
     min_turbo_score?: number;
-    min_votes_agreement?: number;
     min_volume_ratio?: number;
     momentum_candles?: number;
     max_tail_risk_score?: number;
@@ -928,8 +918,6 @@ export class NinjaConfigManager {
         return {
             enabled: raw.enabled === true,
             mode: this.normalizeShortGateMode(raw.mode),
-            min_score: Math.max(0, this.finiteNumber(raw.min_score, 0)),
-            require_votes: Math.max(0, Math.floor(this.finiteNumber(raw.require_votes, 0))),
             position_fraction_multiplier: Math.max(0, this.finiteNumber(raw.position_fraction_multiplier, 1)),
             max_leverage: Math.max(0, this.finiteNumber(raw.max_leverage, 0)),
             block_symbols: Array.isArray(raw.block_symbols)
@@ -1127,7 +1115,6 @@ export class NinjaConfigManager {
                 ? raw.apply_when_event_risk.map((mode) => this.normalizeEventRiskMode(mode))
                 : ['CAUTION'],
             min_turbo_score: Math.max(0, this.finiteNumber(raw.min_turbo_score, 0.90)),
-            min_votes_agreement: Math.max(0, Math.floor(this.finiteNumber(raw.min_votes_agreement, 2))),
             max_tail_risk_score: Math.max(0, this.finiteNumber(raw.max_tail_risk_score, 0.30)),
             require_decision_brain: String(raw.require_decision_brain || 'ENTER_NOW').trim().toUpperCase(),
             require_entry_quality_allow: raw.require_entry_quality_allow !== false,
@@ -1199,7 +1186,6 @@ export class NinjaConfigManager {
             exception: {
                 allowExtremeMomentumInShadowOnly: raw.exception?.allow_extreme_momentum_in_shadow_only !== false,
                 minTurboScore: Math.max(0, this.finiteNumber(raw.exception?.min_turbo_score, 0.97)),
-                requireVotes3Of3: raw.exception?.require_votes_3_of_3 !== false,
                 maxTailRiskScore: Math.max(0, this.finiteNumber(raw.exception?.max_tail_risk_score, 0.35))
             },
             telemetry: {
@@ -1238,10 +1224,6 @@ export class NinjaConfigManager {
 
     getEntryQualityGateConfig(_symbol?: string): AegisEntryQualityGateRuntimeConfig {
         const raw = this.config.aegis?.entry_quality_gate || {};
-        const flaggedSymbols = Array.isArray(raw.flagged_symbols)
-            ? raw.flagged_symbols.map((item) => this.normalizeSymbol(item)).filter(Boolean)
-            : [];
-
         return {
             enabled: raw.enabled === true,
             mode: this.normalizeEntryQualityGateMode(raw.mode),
@@ -1261,9 +1243,7 @@ export class NinjaConfigManager {
                 overextensionEnabled: raw.overextension?.enabled === true,
                 emaDistanceLimit: Math.max(0, this.finiteNumber(raw.overextension?.ema_distance_limit, 0.006)),
                 volatilityEnabled: raw.volatility?.enabled === true,
-                maxAtrPercentile: Math.max(0, this.finiteNumber(raw.volatility?.max_atr_percentile, 0.75)),
-                require3of3WhenSymbolFlagged: raw.require_3of3_when_symbol_flagged === true,
-                flaggedSymbols
+                maxAtrPercentile: Math.max(0, this.finiteNumber(raw.volatility?.max_atr_percentile, 0.75))
             }
         };
     }
@@ -1522,7 +1502,6 @@ export class NinjaConfigManager {
                     exception: {
                         allow_extreme_momentum_in_shadow_only: true,
                         min_turbo_score: 0.97,
-                        require_votes_3_of_3: true,
                         max_tail_risk_score: 0.35
                     },
                     telemetry: {
@@ -1791,7 +1770,6 @@ export class NinjaConfigManager {
             leverage: Math.min(maxLeverage, Math.max(1, this.finiteNumber(merged?.leverage, side === 'LONG' ? 20 : 10))),
             positionFraction: Math.min(maxPositionFraction, Math.max(0, this.finiteNumber(merged?.position_fraction, 0.01))),
             minTurboScore: Math.max(0, this.finiteNumber(merged?.min_turbo_score, side === 'LONG' ? 0.88 : 0.92)),
-            minVotesAgreement: Math.max(0, Math.floor(this.finiteNumber(merged?.min_votes_agreement, side === 'LONG' ? 2 : 3))),
             minVolumeRatio: Math.max(0, this.finiteNumber(merged?.min_volume_ratio, side === 'LONG' ? 1.5 : 1.7)),
             momentumCandles: momentumCandles === 2 ? 2 : 3,
             maxTailRiskScore: Math.max(0, this.finiteNumber(merged?.max_tail_risk_score, side === 'LONG' ? 0.30 : 0.25)),

@@ -2,6 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../../infra/config/environment';
 import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
 import { DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG } from '../../domain/services/AegisCleanEntryGuard';
+import {
+    CURRENT_BRAIN_AUTHORITY,
+    CURRENT_BRAIN_BUNDLE_SHA256,
+    CURRENT_BRAIN_CONFIGURATION_SHA256,
+    CURRENT_BRAIN_CONTRACT_VERSION,
+    CURRENT_BRAIN_FEATURE_COUNT,
+    CURRENT_BRAIN_FEATURE_SCHEMA,
+    CURRENT_BRAIN_MODEL_ID,
+    CURRENT_BRAIN_MODEL_SHA256
+} from '../../domain/services/CurrentBrainCanonicalDecision';
 import { TradingService } from './TradingService';
 
 const originalConfig = { ...CONFIG };
@@ -53,8 +63,54 @@ function regimeConfig(overrides: Record<string, unknown> = {}) {
     };
 }
 
-function validSignal(): AegisTradingSignal {
+function withCanonicalDecision(
+    signal: AegisTradingSignal,
+    selected: boolean,
+    side: 'LONG' | 'SHORT'
+): AegisTradingSignal {
+    const decision = selected ? 'ENTER_NOW' : 'DO_NOT_ENTER';
+    const aegis = signal.metadata?.aegis!;
     return {
+        ...signal,
+        metadata: {
+            ...signal.metadata,
+            aegis: {
+                ...aegis,
+                candidate: CURRENT_BRAIN_MODEL_ID,
+                candidate_status: CURRENT_BRAIN_AUTHORITY,
+                live_enabled: true,
+                prod: {
+                    allowed: selected,
+                    execute: selected,
+                    action: selected ? side : 'HOLD'
+                },
+                decision_brain: {
+                    contract_version: CURRENT_BRAIN_CONTRACT_VERSION,
+                    authority: CURRENT_BRAIN_AUTHORITY,
+                    mode: 'CURRENT_BRAIN_LIVE',
+                    execute: selected,
+                    selected,
+                    production_allowed: true,
+                    status: 'LOADED',
+                    model_version: CURRENT_BRAIN_MODEL_ID,
+                    model_sha256: CURRENT_BRAIN_MODEL_SHA256,
+                    bundle_sha256: CURRENT_BRAIN_BUNDLE_SHA256,
+                    configuration_sha256: CURRENT_BRAIN_CONFIGURATION_SHA256,
+                    feature_schema: CURRENT_BRAIN_FEATURE_SCHEMA,
+                    feature_count: CURRENT_BRAIN_FEATURE_COUNT,
+                    fallback: false,
+                    symbol: signal.symbol,
+                    side,
+                    decision,
+                    recommendation: decision
+                }
+            }
+        }
+    };
+}
+
+function validSignal(): AegisTradingSignal {
+    const signal: AegisTradingSignal = {
         symbol: 'ETHUSDT',
         action: 'PASS',
         confidence: 0,
@@ -88,6 +144,7 @@ function validSignal(): AegisTradingSignal {
             }
         }
     };
+    return withCanonicalDecision(signal, true, 'LONG');
 }
 
 function validSignalWithShadowEntryQuality(): AegisTradingSignal {
@@ -119,23 +176,13 @@ function validSignalWithShadowEntryQuality(): AegisTradingSignal {
 }
 
 function validSignalWithDecisionBrain(decision: string, entryQualityRecommendation = 'ALLOW_SHADOW'): AegisTradingSignal {
-    const signal = validSignal();
+    const signal = withCanonicalDecision(validSignal(), decision === 'ENTER_NOW', 'LONG');
     return {
         ...signal,
         metadata: {
             ...signal.metadata,
             aegis: {
                 ...signal.metadata?.aegis,
-                decision_brain: {
-                    mode: 'SHADOW',
-                    execute: false,
-                    production_allowed: false,
-                    decision,
-                    enter_now_prob: decision === 'ENTER_NOW' ? 0.8 : 0.1,
-                    wait_confirmation_prob: decision === 'WAIT_CONFIRMATION' ? 0.8 : 0.1,
-                    manual_only_prob: decision === 'MANUAL_ONLY' ? 0.8 : 0.1,
-                    do_not_enter_prob: decision === 'DO_NOT_ENTER' ? 0.8 : 0.1
-                },
                 entry_quality_model: {
                     mode: 'SHADOW',
                     execute: false,
@@ -173,7 +220,7 @@ function signalWithRegimeContext(input: {
     ethAction?: string;
 } = {}): AegisTradingSignal {
     const signal = validSignalWithDecisionBrain('ENTER_NOW');
-    return {
+    const result: AegisTradingSignal = {
         ...signal,
         symbol: input.symbol ?? signal.symbol,
         metadata: {
@@ -200,10 +247,11 @@ function signalWithRegimeContext(input: {
             }
         }
     };
+    return withCanonicalDecision(result, true, 'LONG');
 }
 
 function shortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTradingSignal {
-    return {
+    const signal: AegisTradingSignal = {
         symbol,
         action: 'PASS',
         confidence: 0,
@@ -237,6 +285,7 @@ function shortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTra
             }
         }
     };
+    return withCanonicalDecision(signal, true, 'SHORT');
 }
 
 function phaseOShortSignal(symbol = 'BTCUSDT', score = 0.84, shortVotes = 3): AegisTradingSignal {
@@ -297,8 +346,6 @@ function entryQualityConfig(overrides: Record<string, any> = {}) {
             emaDistanceLimit: 0.006,
             volatilityEnabled: true,
             maxAtrPercentile: 0.75,
-            require3of3WhenSymbolFlagged: false,
-            flaggedSymbols: [],
             ...configOverrides
         },
         ...rest
@@ -397,7 +444,6 @@ function probeModeConfig(overrides: Record<string, any> = {}) {
         mode: 'ENFORCE',
         apply_when_event_risk: ['CAUTION'],
         min_turbo_score: 0.90,
-        min_votes_agreement: 2,
         max_tail_risk_score: 0.30,
         require_decision_brain: 'ENTER_NOW',
         require_entry_quality_allow: true,
@@ -417,7 +463,12 @@ function probeModeConfig(overrides: Record<string, any> = {}) {
 function probeSignal(overrides: Record<string, any> = {}): AegisTradingSignal {
     const signal = validSignalWithDecisionBrain(overrides.decision ?? 'ENTER_NOW', overrides.entryQualityRecommendation ?? 'ALLOW_SHADOW');
     signal.symbol = overrides.symbol ?? 'ADAUSDT';
-    const aegis = signal.metadata!.aegis as any;
+    const canonical = withCanonicalDecision(
+        signal,
+        (overrides.decision ?? 'ENTER_NOW') === 'ENTER_NOW',
+        'LONG'
+    );
+    const aegis = canonical.metadata!.aegis as any;
     aegis.turbo.raw.turbo_score = overrides.turboScore ?? 0.94;
     aegis.turbo.raw.votes = overrides.votes ?? { long: 2, short: 1, neutral: 0 };
     aegis.turbo.gated.action = 'LONG';
@@ -438,7 +489,7 @@ function probeSignal(overrides: Record<string, any> = {}): AegisTradingSignal {
         execute: false,
         production_allowed: false
     };
-    return signal;
+    return canonical;
 }
 
 function cachedCandles(closes: number[]) {
@@ -503,7 +554,6 @@ function momentumRideRuntimeConfig(positionFraction = 0.015) {
                     leverage: 30,
                     positionFraction,
                     minTurboScore: 0.90,
-                    minVotesAgreement: 2,
                     minVolumeRatio: 1.3,
                     momentumCandles: 3,
                     maxTailRiskScore: 0.30,
@@ -518,7 +568,6 @@ function momentumRideRuntimeConfig(positionFraction = 0.015) {
                     leverage: 10,
                     positionFraction: 0.01,
                     minTurboScore: 0.94,
-                    minVotesAgreement: 3,
                     minVolumeRatio: 1.7,
                     momentumCandles: 3,
                     maxTailRiskScore: 0.25,
@@ -838,7 +887,10 @@ function makeHarness(options: {
         logTradeClose: vi.fn().mockResolvedValue(undefined)
     };
     const mlService = {
-        getSignal: vi.fn().mockResolvedValue(options.signal ?? validSignal()),
+        getSignal: vi.fn(async (symbol: string) => {
+            if (options.signal) return options.signal;
+            return withCanonicalDecision({ ...validSignal(), symbol }, true, 'LONG');
+        }),
         getExitSignal: vi.fn(),
         checkHealth: vi.fn()
     };
@@ -936,11 +988,11 @@ describe('TradingService Aegis live execution', () => {
 
 	        await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
         expect(exchange.ensureMarginType).toHaveBeenCalledWith('ETHUSDT', 'ISOLATED');
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
-        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
 	        expect(exchange.setLeverage.mock.invocationCallOrder[0]).toBeLessThan(exchange.marketOpen.mock.invocationCallOrder[0]);
 	        expect(exchange.ensureMarginType.mock.invocationCallOrder[0]).toBeLessThan(exchange.marketOpen.mock.invocationCallOrder[0]);
 	        expect(exchange.placeStopClose.mock.invocationCallOrder[0]).toBeLessThan(state.set.mock.invocationCallOrder[0]);
@@ -949,8 +1001,8 @@ describe('TradingService Aegis live execution', () => {
 	            currentRegime: 'AEGIS_TURBO',
 	            lastStrategy: 'AEGIS_TURBO',
 	            lastBracketStatus: 'OK',
-            lastActualLeverage: 20,
-            lastPositionFraction: 0.18,
+            lastActualLeverage: 15,
+            lastPositionFraction: 0.08,
             lastStopRoe: -0.15,
             lastTakeProfitRoe: 0.25,
             lastTrailingActivationRoe: 0.15,
@@ -959,13 +1011,13 @@ describe('TradingService Aegis live execution', () => {
         expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({
             symbol: 'ETHUSDT',
             side: 'LONG',
-            leverage: 20,
-            positionFraction: 0.18
+            leverage: 15,
+            positionFraction: 0.08
 	        }));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🔥 AEGIS TURBO ENTRY'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ETHUSDT | 📈 LONG'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('SL: $2977.50 (-15.0% ROE)'));
-        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('TP: $3037.50 (+25.0% ROE)'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('SL: $2970.00 (-15.0% ROE)'));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('TP: $3050.00 (+25.0% ROE)'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Score: 72.0% / 60.0%'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Equity total: $20.00'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('✅ Brackets confirmados'));
@@ -1027,7 +1079,7 @@ describe('TradingService Aegis live execution', () => {
 	        expect(logger.info).not.toHaveBeenCalledWith('aegis_micro_live_gate_denied', expect.objectContaining({
 	            reason: 'daily_loss_stop_reached'
 	        }));
-	        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.021);
+	        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
 	    });
 
     it('overrides ML position fraction for a configured LONG symbol before sizing the order', async () => {
@@ -1043,7 +1095,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.012);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.009);
         expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
             lastPositionFraction: 0.10
         }));
@@ -1053,7 +1105,7 @@ describe('TradingService Aegis live execution', () => {
             metadata: expect.objectContaining({
                 symbol: 'ETHUSDT',
                 side: 'LONG',
-                mlPositionFraction: 0.18,
+                mlPositionFraction: 0.08,
                 overriddenPositionFraction: 0.10,
                 ruleName: 'majors-example'
             })
@@ -1061,7 +1113,7 @@ describe('TradingService Aegis live execution', () => {
         expect(logger.warn).toHaveBeenCalledWith('aegis_position_fraction_override_applied', expect.objectContaining({
             symbol: 'ETHUSDT',
             side: 'LONG',
-            mlPositionFraction: 0.18,
+            mlPositionFraction: 0.08,
             overriddenPositionFraction: 0.10
         }));
     });
@@ -1078,7 +1130,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'CLEAN_ENTRY_GUARD_SHADOW_ALLOW',
             reason: 'clean_entry_allow',
@@ -1107,7 +1159,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(state.set).toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'CLEAN_ENTRY_GUARD_ALLOW',
@@ -1143,13 +1195,13 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
-        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
         expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
-            lastActualLeverage: 20,
-            lastPositionFraction: 0.18,
+            lastActualLeverage: 15,
+            lastPositionFraction: 0.08,
             lastBracketStatus: 'OK'
         }));
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -1160,13 +1212,13 @@ describe('TradingService Aegis live execution', () => {
                     clean: true,
                     dirty: false
                 }),
-                positionFraction: 0.18,
-                leverage: 20
+                positionFraction: 0.08,
+                leverage: 15
             })
         }));
         expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(expect.objectContaining({
-            leverage: 20,
-            position_fraction: 0.18,
+            leverage: 15,
+            position_fraction: 0.08,
             metadata: expect.objectContaining({
                 cleanEntryGuard: expect.objectContaining({
                     decision: 'ALLOW_CLEAN'
@@ -1200,7 +1252,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ADAUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.007);
         expect(exchange.placeStopClose).toHaveBeenCalled();
         expect(exchange.placeTpClose).toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -1339,7 +1391,7 @@ describe('TradingService Aegis live execution', () => {
         }));
     });
 
-    it('Probe Mode records denied when DecisionBrain MANUAL_ONLY blocks before CleanEntry', async () => {
+    it('canonical current brain blocks a non-entry decision before Probe Mode', async () => {
         const { exchange, historyLogger, service } = makeHarness({
             symbols: ['ADAUSDT'],
             symbolModes: { ADAUSDT: 'LIVE' },
@@ -1362,22 +1414,15 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.marketOpen).not.toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'DECISION_ENFORCEMENT_DENIED',
-            reason: 'decision_brain_manual_only'
+            event: 'GATE_DENIED',
+            reason: 'current_brain_canonical_do_not_enter'
         }));
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'PROBE_MODE_DENIED',
-            reason: 'probe_decision_brain_not_enter_now',
-            metadata: expect.objectContaining({
-                probeMode: expect.objectContaining({
-                    allowed: false,
-                    decisionBrain: 'MANUAL_ONLY'
-                })
-            })
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_DENIED'
         }));
     });
 
-    it('Probe Mode records denied when DecisionBrain DO_NOT_ENTER blocks before CleanEntry', async () => {
+    it('canonical current brain DO_NOT_ENTER blocks before Probe Mode', async () => {
         const { exchange, historyLogger, service } = makeHarness({
             symbols: ['ADAUSDT'],
             symbolModes: { ADAUSDT: 'LIVE' },
@@ -1400,18 +1445,11 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.marketOpen).not.toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'DECISION_ENFORCEMENT_DENIED',
-            reason: 'decision_brain_do_not_enter'
+            event: 'GATE_DENIED',
+            reason: 'current_brain_canonical_do_not_enter'
         }));
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'PROBE_MODE_DENIED',
-            reason: 'probe_decision_brain_not_enter_now',
-            metadata: expect.objectContaining({
-                probeMode: expect.objectContaining({
-                    allowed: false,
-                    decisionBrain: 'DO_NOT_ENTER'
-                })
-            })
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'PROBE_MODE_DENIED'
         }));
     });
 
@@ -1507,7 +1545,7 @@ describe('TradingService Aegis live execution', () => {
         expect(logger.info).not.toHaveBeenCalledWith('aegis_micro_live_gate_denied', expect.objectContaining({
             reason: 'daily_loss_stop_reached'
         }));
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.017);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.005);
     });
 
 	    it('retries readActivePosition after marketOpen until the position is confirmed', async () => {
@@ -1526,8 +1564,8 @@ describe('TradingService Aegis live execution', () => {
 
 	        expect(exchange.readActivePosition).toHaveBeenCalledTimes(3);
 	        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
-	        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
-	        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
+	        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
+	        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
 	    });
 
 	    it('emergency closes when position cannot be verified after marketOpen', async () => {
@@ -1542,7 +1580,7 @@ describe('TradingService Aegis live execution', () => {
 	        expect(exchange.closeSideMarketSafe).toHaveBeenCalledWith(
 	            'ETHUSDT',
 	            'LONG',
-	            0.022,
+	            0.007,
 	            'BOTH',
 	            'AEGIS_POSITION_VERIFY_FAILED'
 	        );
@@ -1662,7 +1700,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('BTCUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'LONG', 0.007);
         expect(logger.warn).not.toHaveBeenCalledWith(
             'aegis_skip_manage_position_global_state_symbol_mismatch',
             expect.anything()
@@ -1689,16 +1727,14 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.marketOpen).not.toHaveBeenCalled();
     });
 
-    it('blocks SHORT before exchange mutation when score is below premium threshold', async () => {
-        const { exchange, historyLogger, logger, service } = makeHarness({
+    it('does not reinterpret a canonical SHORT through a legacy score threshold', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
             symbols: ['BTCUSDT'],
             symbolModes: { BTCUSDT: 'LIVE' },
             signal: shortSignal('BTCUSDT', 0.79, 3),
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -1707,29 +1743,21 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('BTCUSDT');
 
-        expect(exchange.setLeverage).not.toHaveBeenCalled();
-        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
-        expect(exchange.marketOpen).not.toHaveBeenCalled();
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'SHORT_GATE_DENIED',
-            reason: 'short_score_below_premium_threshold'
-        }));
-        expect(logger.warn).toHaveBeenCalledWith('aegis_short_gate_denied', expect.objectContaining({
-            symbol: 'BTCUSDT',
-            reason: 'short_score_below_premium_threshold'
+        expect(exchange.setLeverage).toHaveBeenCalledWith('BTCUSDT', 10);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.005);
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'SHORT_GATE_DENIED'
         }));
     });
 
-    it('blocks SHORT before exchange mutation when votes are below required', async () => {
+    it('accepts the single real directional estimator without fabricating votes', async () => {
         const { exchange, historyLogger, service } = makeHarness({
             symbols: ['BTCUSDT'],
             symbolModes: { BTCUSDT: 'LIVE' },
-            signal: shortSignal('BTCUSDT', 0.84, 2),
+            signal: shortSignal('BTCUSDT', 0.84, 1),
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -1738,12 +1766,11 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('BTCUSDT');
 
-        expect(exchange.setLeverage).not.toHaveBeenCalled();
-        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
-        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.setLeverage).toHaveBeenCalledWith('BTCUSDT', 10);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.005);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'SHORT_GATE_DENIED',
-            reason: 'short_votes_below_required'
+            event: 'SHORT_GATE_ADJUSTED',
+            reason: 'short_allowed_current_brain_canonical'
         }));
     });
 
@@ -1755,8 +1782,6 @@ describe('TradingService Aegis live execution', () => {
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -1766,25 +1791,25 @@ describe('TradingService Aegis live execution', () => {
         await service.tick('BTCUSDT');
 
         expect(exchange.setLeverage).toHaveBeenCalledWith('BTCUSDT', 10);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.012);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.005);
         expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
             lastRequestedLeverage: 10,
             lastActualLeverage: 10,
-            lastPositionFraction: 0.20
+            lastPositionFraction: 0.08
         }));
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'SHORT_GATE_ADJUSTED',
             metadata: expect.objectContaining({
-                originalLeverage: 20,
+                originalLeverage: 15,
                 adjustedLeverage: 10,
-                originalPositionFraction: 0.20,
-                adjustedPositionFraction: 0.20
+                originalPositionFraction: 0.08,
+                adjustedPositionFraction: 0.08
             })
         }));
         expect(logger.warn).toHaveBeenCalledWith('aegis_short_gate_adjusted', expect.objectContaining({
             symbol: 'BTCUSDT',
             adjustedLeverage: 10,
-            adjustedPositionFraction: 0.20
+            adjustedPositionFraction: 0.08
         }));
     });
 
@@ -1796,8 +1821,6 @@ describe('TradingService Aegis live execution', () => {
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -1835,8 +1858,6 @@ describe('TradingService Aegis live execution', () => {
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -1845,7 +1866,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('AVAXUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('AVAXUSDT', 'SHORT', 0.012);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('AVAXUSDT', 'SHORT', 0.005);
     });
 
     it('blocks by portfolio cap before marketOpen', async () => {
@@ -1894,9 +1915,9 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
         expect(exchange.ensureMarginType).toHaveBeenCalledWith('ETHUSDT', 'ISOLATED');
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
     });
 
     it('portfolio_risk.enabled=false allows entry despite restrictive limits', async () => {
@@ -1912,7 +1933,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
             event: 'PORTFOLIO_RISK_DENIED'
         }));
@@ -1922,8 +1943,6 @@ describe('TradingService Aegis live execution', () => {
         const { exchange, service } = makeHarness({
             shortGate: {
                 enabled: true,
-                min_score: 0.99,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: ['ETHUSDT']
@@ -1932,8 +1951,8 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
     });
 
     it('in SHADOW, ENTRY_QUALITY_GATE_SHADOW_BLOCK does not prevent marketOpen', async () => {
@@ -1947,7 +1966,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'ENTRY_QUALITY_GATE_SHADOW_BLOCK',
             reason: 'score_below_entry_quality_threshold',
@@ -1984,8 +2003,8 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'ENTRY_POLICY_DECISION',
             reason: 'all_enforced_guards_allowed',
@@ -2044,7 +2063,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ADAUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'ENTRY_POLICY_DECISION',
             reason: 'all_enforced_guards_allowed',
@@ -2068,8 +2087,8 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'ENTRY_POLICY_DECISION',
             metadata: expect.objectContaining({
@@ -2157,7 +2176,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'EVENT_RISK_SHADOW_BLOCK',
             reason: 'manual_only_requires_approval',
@@ -2228,7 +2247,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'EVENT_RISK_SHADOW_ALLOW',
             reason: 'event_risk_normal',
@@ -2256,7 +2275,7 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'ENTRY_QUALITY_GATE_SHADOW_ALLOW'
         }));
@@ -2270,8 +2289,6 @@ describe('TradingService Aegis live execution', () => {
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -2291,7 +2308,7 @@ describe('TradingService Aegis live execution', () => {
         await service.tick('BTCUSDT');
 
         expect(exchange.setLeverage).toHaveBeenCalledWith('BTCUSDT', 10);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.012);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'SHORT', 0.005);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'SHORT_GATE_ADJUSTED'
         }));
@@ -2326,12 +2343,12 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
     });
 
-    it('decision enforcement blocks DO_NOT_ENTER before setLeverage and marketOpen', async () => {
-        const { exchange, historyLogger, logger, notifier, service } = makeHarness({
+    it('canonical current brain blocks DO_NOT_ENTER before legacy decision enforcement', async () => {
+        const { exchange, historyLogger, service } = makeHarness({
             signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
             decisionEnforcement: decisionEnforcementConfig()
         });
@@ -2341,93 +2358,15 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.setLeverage).not.toHaveBeenCalled();
         expect(exchange.marketOpen).not.toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'DECISION_ENFORCEMENT_DENIED',
-            reason: 'decision_brain_do_not_enter',
-            metadata: expect.objectContaining({
-                decisionBrainDecision: 'DO_NOT_ENTER',
-                entryQualityRecommendation: 'ALLOW_SHADOW',
-                eventRiskMode: 'NORMAL'
-            })
+            event: 'GATE_DENIED',
+            reason: 'current_brain_canonical_do_not_enter'
         }));
-        expect(notifier.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('Entrada bloqueada por protección Aegis'));
-        expect(logger.debug).toHaveBeenCalledWith('telegram_block_notification_auto_disabled', expect.objectContaining({
-            symbol: 'ETHUSDT',
-            reason: 'decision_brain_do_not_enter'
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED'
         }));
     });
 
-    it('dedupes repeated DECISION_ENFORCEMENT_DENIED Telegram while keeping history and logs', async () => {
-        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
-        const { exchange, historyLogger, logger, notifier, service } = makeHarness({
-            signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
-            decisionEnforcement: decisionEnforcementConfig(),
-            telegramNotifications: {
-                automatic_block_alerts_enabled: true,
-                block_dedupe: {
-                    enabled: true,
-                    cooldown_minutes: 15,
-                    summary_threshold: 25,
-                    max_cache_entries: 1000,
-                    include_suppressed_count: true
-                }
-            }
-        });
-
-        await service.tick('ETHUSDT');
-        await service.tick('ETHUSDT');
-        nowSpy.mockRestore();
-
-        expect(exchange.marketOpen).not.toHaveBeenCalled();
-        expect(notifier.sendMessage).toHaveBeenCalledTimes(1);
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'DECISION_ENFORCEMENT_DENIED',
-            reason: 'decision_brain_do_not_enter'
-        }));
-        const deniedEvents = historyLogger.logTradeEvent.mock.calls.filter(([event]) => (
-            event.event === 'DECISION_ENFORCEMENT_DENIED'
-        ));
-        expect(deniedEvents).toHaveLength(2);
-        expect(logger.warn).toHaveBeenCalledWith('aegis_decision_enforcement_denied', expect.any(Object));
-        expect(logger.info).toHaveBeenCalledWith('telegram_block_notification_suppressed', expect.objectContaining({
-            symbol: 'ETHUSDT',
-            reason: 'decision_brain_do_not_enter',
-            suppressedCount: 1
-        }));
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'telegram_block_notification_suppressed',
-            reason: 'decision_brain_do_not_enter'
-        }));
-    });
-
-    it('sends a new block Telegram when the denial reason changes', async () => {
-        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
-        const { mlService, notifier, service } = makeHarness({
-            signal: validSignalWithDecisionBrain('DO_NOT_ENTER'),
-            decisionEnforcement: decisionEnforcementConfig(),
-            telegramNotifications: {
-                automatic_block_alerts_enabled: true,
-                block_dedupe: {
-                    enabled: true,
-                    cooldown_minutes: 15,
-                    summary_threshold: 25,
-                    max_cache_entries: 1000,
-                    include_suppressed_count: true
-                }
-            }
-        });
-        mlService.getSignal
-            .mockResolvedValueOnce(validSignalWithDecisionBrain('DO_NOT_ENTER'))
-            .mockResolvedValueOnce(validSignalWithDecisionBrain('WAIT_CONFIRMATION'));
-
-        await service.tick('ETHUSDT');
-        await service.tick('ETHUSDT');
-        nowSpy.mockRestore();
-
-        expect(notifier.sendMessage).toHaveBeenCalledTimes(2);
-        expect(notifier.sendMessage).toHaveBeenLastCalledWith(expect.stringContaining('Cambio: reason decision_brain_do_not_enter -> decision_brain_wait_confirmation'));
-    });
-
-    it('decision enforcement blocks WAIT_CONFIRMATION before marketOpen', async () => {
+    it('canonical current brain maps WAIT_CONFIRMATION to a fail-closed non-entry', async () => {
         const { exchange, historyLogger, service } = makeHarness({
             signal: validSignalWithDecisionBrain('WAIT_CONFIRMATION'),
             decisionEnforcement: decisionEnforcementConfig()
@@ -2437,8 +2376,11 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.marketOpen).not.toHaveBeenCalled();
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'DECISION_ENFORCEMENT_DENIED',
-            reason: 'decision_brain_wait_confirmation'
+            event: 'GATE_DENIED',
+            reason: 'current_brain_canonical_do_not_enter'
+        }));
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'DECISION_ENFORCEMENT_DENIED'
         }));
     });
 
@@ -2576,8 +2518,8 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'GATE_ALLOWED',
             metadata: expect.objectContaining({
@@ -2666,8 +2608,8 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.022);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007);
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'GATE_ALLOWED',
             metadata: expect.objectContaining({
@@ -3231,8 +3173,6 @@ describe('TradingService Aegis live execution', () => {
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -3251,27 +3191,31 @@ describe('TradingService Aegis live execution', () => {
                 phase_o_short_detected: true,
                 phase_o_short_guard_modes_applied: true,
                 phase_o_metadata_source_path: 'signal.metadata.aegis.turbo.phase_o',
-                guard_modes: expect.objectContaining({ short_gate_legacy: 'SHADOW', clean_entry: 'SHADOW' })
+                guard_modes: expect.objectContaining({ clean_entry: 'SHADOW' })
             })
         }));
         expect(logger.info).toHaveBeenCalledWith('phase_o_short_guard_modes_applied', expect.objectContaining({
             phase_o_short_detected: true,
             phase_o_short_guard_modes_applied: true,
             phase_o_metadata_source_path: 'signal.metadata.aegis.turbo.phase_o',
-            guard_modes: expect.objectContaining({ short_gate_legacy: 'SHADOW', clean_entry: 'SHADOW' })
+            guard_modes: expect.objectContaining({ clean_entry: 'SHADOW' })
         }));
     });
 
-    it('keeps legacy SHORT non-Phase-O blocked by ShortGate', async () => {
+    it('fails closed for a legacy SHORT without the canonical current-brain contract', async () => {
+        const signal = shortSignal('BTCUSDT', 0.79, 3) as any;
+        delete signal.metadata.aegis.candidate;
+        delete signal.metadata.aegis.candidate_status;
+        delete signal.metadata.aegis.live_enabled;
+        delete signal.metadata.aegis.prod;
+        delete signal.metadata.aegis.decision_brain;
         const { exchange, historyLogger, service } = makeHarness({
             symbols: ['BTCUSDT'],
             symbolModes: { BTCUSDT: 'LIVE' },
-            signal: shortSignal('BTCUSDT', 0.79, 3),
+            signal,
             yaml: yamlTurbo({ allow_short: true }),
             shortGate: {
                 enabled: true,
-                min_score: 0.80,
-                require_votes: 3,
                 position_fraction_multiplier: 1.0,
                 max_leverage: 10,
                 block_symbols: []
@@ -3281,7 +3225,10 @@ describe('TradingService Aegis live execution', () => {
         await service.tick('BTCUSDT');
 
         expect(exchange.marketOpen).not.toHaveBeenCalled();
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'SHORT_GATE_DENIED' }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'GATE_DENIED',
+            reason: 'current_brain_canonical_contract_required'
+        }));
     });
 
 });

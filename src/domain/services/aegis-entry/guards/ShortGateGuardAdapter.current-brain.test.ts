@@ -64,8 +64,6 @@ function context() {
     shortGate: {
       config: {
         enabled: true,
-        min_score: 0.8,
-        require_votes: 3,
         max_leverage: 10,
         position_fraction_multiplier: 1,
         block_symbols: [],
@@ -75,7 +73,7 @@ function context() {
 }
 
 describe('ShortGateGuardAdapter current-brain contract', () => {
-  it('bypasses only legacy score and vote checks after exact contract validation', () => {
+  it('accepts the single real directional estimator after exact contract validation', () => {
     const result = ShortGateGuardAdapter.evaluate(context(), policy);
 
     expect(result.decision).toMatchObject({
@@ -86,7 +84,7 @@ describe('ShortGateGuardAdapter current-brain contract', () => {
     });
   });
 
-  it('does not bypass legacy checks when the canonical hash is invalid', () => {
+  it('fails closed when the canonical hash is invalid', () => {
     const input = context();
     input.signal.metadata!.aegis!.decision_brain!.model_sha256 = '0'.repeat(64);
 
@@ -94,7 +92,7 @@ describe('ShortGateGuardAdapter current-brain contract', () => {
 
     expect(result.decision).toMatchObject({
       allowed: false,
-      reason: 'short_score_below_premium_threshold',
+      reason: 'short_canonical_decision_required',
     });
   });
 });

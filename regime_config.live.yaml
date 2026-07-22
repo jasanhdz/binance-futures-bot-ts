@@ -85,7 +85,6 @@ aegis:
       entry_quality: SHADOW
       decision_brain: SHADOW
       regime_engine: SHADOW
-      short_gate_legacy: SHADOW
       risk_shadow_guards: SHADOW
     hard_safety:
       brackets: ENFORCE
@@ -217,7 +216,6 @@ aegis:
       long:
         position_fraction: 0.01
         min_turbo_score: 0.90
-        min_votes_agreement: 3
         min_volume_ratio: 1.55
         momentum_candles: 3
         max_tail_risk_score: 0.25
@@ -229,7 +227,6 @@ aegis:
       short:
         position_fraction: 0.01
         min_turbo_score: 0.94
-        min_votes_agreement: 3
         min_volume_ratio: 1.75
         momentum_candles: 3
         max_tail_risk_score: 0.22
@@ -242,7 +239,6 @@ aegis:
       major_high_confidence_long:
         leverage: 25
         min_turbo_score: 0.88
-        min_votes_agreement: 2
         min_volume_ratio: 1.35
         max_tail_risk_score: 0.28
       major_short:
@@ -254,7 +250,6 @@ aegis:
       xrp_long:
         leverage: 25
         min_turbo_score: 0.85
-        min_votes_agreement: 2
         min_volume_ratio: 1.50
         max_tail_risk_score: 0.30
       xrp_short:
@@ -265,7 +260,6 @@ aegis:
       stable_alt_long:
         leverage: 25
         min_turbo_score: 0.88
-        min_votes_agreement: 2
         min_volume_ratio: 1.40
         max_tail_risk_score: 0.28
       stable_alt_short:
@@ -453,7 +447,6 @@ aegis:
     apply_when_event_risk:
       - CAUTION
     min_turbo_score: 0.90
-    min_votes_agreement: 2
     max_tail_risk_score: 0.30
     require_decision_brain: ENTER_NOW
     require_entry_quality_allow: true
@@ -508,7 +501,6 @@ aegis:
     exception:
       allow_extreme_momentum_in_shadow_only: true
       min_turbo_score: 0.97
-      require_votes_3_of_3: true
       max_tail_risk_score: 0.35
     telemetry:
       log_all_evaluations: true
@@ -534,8 +526,6 @@ aegis:
   short_gate:
     enabled: true
     mode: PREMIUM_ONLY
-    min_score: 0.80
-    require_votes: 3
     position_fraction_multiplier: 1.0
     max_leverage: 30
     block_symbols: []
@@ -556,12 +546,6 @@ aegis:
     volatility:
       enabled: true
       max_atr_percentile: 0.75
-    require_3of3_when_symbol_flagged: true
-    flagged_symbols:
-      - DOGEUSDT
-      - ETHUSDT
-      - LTCUSDT
-      - SOLUSDT
   exit_eye:
     enabled: true
     mode: CLOSE

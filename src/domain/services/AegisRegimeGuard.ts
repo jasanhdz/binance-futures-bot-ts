@@ -236,15 +236,13 @@ function btcEthNotAligned(input: AegisRegimeGuardInput): boolean {
 function isStrongMomentum(input: AegisRegimeGuardInput): boolean {
     const score = finiteNumber(input.turboScore) ? input.turboScore : 0;
     const grade = String(input.setupGrade || '').trim().toUpperCase();
-    const votes = input.side === 'LONG' ? (input.votes?.long ?? 0) : (input.votes?.short ?? 0);
-    return score >= 0.90 && votes >= 3 && ALLOW_GRADES.has(grade) && !btcEthContradictsSide(input);
+    return score >= 0.90 && ALLOW_GRADES.has(grade) && !btcEthContradictsSide(input);
 }
 
 function isChoppyWeakSetup(input: AegisRegimeGuardInput): boolean {
     const score = finiteNumber(input.turboScore) ? input.turboScore : 0;
     const grade = String(input.setupGrade || '').trim().toUpperCase();
-    const votes = input.side === 'LONG' ? (input.votes?.long ?? 0) : (input.votes?.short ?? 0);
-    return grade === 'WEAK' || (score >= 0.60 && score < 0.90 && votes <= 2 && btcEthNotAligned(input));
+    return grade === 'WEAK' || (score >= 0.60 && score < 0.90 && btcEthNotAligned(input));
 }
 
 export class AegisRegimeGuard {

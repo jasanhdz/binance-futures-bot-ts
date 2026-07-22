@@ -189,8 +189,6 @@ function makeHandlers(overrides: Record<string, any> = {}) {
         getAegisShortGateConfig: vi.fn(() => overrides.shortGate ?? {
             enabled: true,
             mode: 'PREMIUM_ONLY',
-            min_score: 0.80,
-            require_votes: 3,
             position_fraction_multiplier: 1.0,
             max_leverage: 10,
             block_symbols: [],
@@ -551,8 +549,7 @@ describe('TelegramCommandHandlers', () => {
         const text = await handlers.handleRisk();
 
         expect(text).toContain('Short gate: **PREMIUM_ONLY**');
-        expect(text).toContain('min score **80.0%**');
-        expect(text).toContain('votes **3/3**');
+        expect(text).toContain('canonical current-brain');
         expect(text).toContain('max lev **10x**');
         expect(text).toContain('size **1.00x**');
         expect(text).toContain('Short blocked: **Ninguno**');
@@ -564,7 +561,7 @@ describe('TelegramCommandHandlers', () => {
         const text = await handlers.handleConfig();
 
         expect(text).toContain('Short gate: **Sí** | PREMIUM_ONLY');
-        expect(text).toContain('min score 80.0%');
+        expect(text).toContain('canonical current-brain');
         expect(text).toContain('size x1.00');
         expect(text).toContain('Short blocked: **Ninguno**');
         expect(text).toContain('Event Risk: **Sí** | mode **NORMAL**');

@@ -211,8 +211,7 @@ function evaluateMomentum(
     const failedReasons: string[] = [];
     const turboState = turboStateFor(context, sideConfig);
     const turboAgreement = turboState.confirmed
-        && context.turboScore >= sideConfig.minTurboScore
-        && sideVotes(context) >= sideConfig.minVotesAgreement;
+        && context.turboScore >= sideConfig.minTurboScore;
     const regimeContext = context.regimeContext;
     const legacyRegimeConfirmed = regimeContext !== undefined
         && sideConfig.allowedRegimes.includes(regimeContext.label)
@@ -490,8 +489,7 @@ function turboStateFor(
     const opposite = context.side === 'LONG' ? 'SHORT' : 'LONG';
     return {
         confirmed: actions.some((action) => action === context.side)
-            && context.turboScore >= sideConfig.minTurboScore
-            && sideVotes(context) >= sideConfig.minVotesAgreement,
+            && context.turboScore >= sideConfig.minTurboScore,
         contradict: actions.some((action) => action === opposite)
     };
 }
@@ -500,10 +498,6 @@ function normalizeAction(action: string | undefined): Side | 'HOLD' | 'NEUTRAL' 
     const normalized = String(action || '').trim().toUpperCase();
     if (normalized === 'LONG' || normalized === 'SHORT' || normalized === 'HOLD' || normalized === 'NEUTRAL') return normalized;
     return undefined;
-}
-
-function sideVotes(context: AegisEntryContext): number {
-    return context.side === 'LONG' ? context.votes?.long ?? 0 : context.votes?.short ?? 0;
 }
 
 function btcEthStateFor(context: AegisEntryContext): { agreement: boolean; contradict: boolean } {

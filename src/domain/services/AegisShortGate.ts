@@ -4,16 +4,12 @@ export type AegisShortGateReason =
     | 'short_gate_disabled'
     | 'not_short'
     | 'short_symbol_blocked'
-    | 'short_score_below_premium_threshold'
-    | 'short_votes_below_required'
-    | 'short_allowed_current_brain_canonical'
-    | 'short_allowed_premium';
+    | 'short_canonical_decision_required'
+    | 'short_allowed_current_brain_canonical';
 
 export interface AegisShortGateConfig {
     enabled?: boolean;
     mode?: 'PREMIUM_ONLY' | string;
-    min_score?: number;
-    require_votes?: number;
     position_fraction_multiplier?: number;
     max_leverage?: number;
     block_symbols?: string[];
@@ -23,12 +19,6 @@ export interface AegisShortGateConfig {
 export interface AegisShortGateInput {
     symbol: string;
     side: Side;
-    turboScore?: number;
-    votes?: {
-        long?: number;
-        short?: number;
-        neutral?: number;
-    };
     canonicalDecisionAuthorized?: boolean;
     leverage: number;
     positionFraction: number;
@@ -56,8 +46,6 @@ export class AegisShortGate {
         const config = input.config || {};
         const symbol = normalizeSymbol(input.symbol);
         const blockedSymbols = new Set((config.block_symbols || []).map(normalizeSymbol));
-        const minScore = finiteNumber(config.min_score) ? config.min_score : 0;
-        const requireVotes = finiteNumber(config.require_votes) ? Math.max(0, Math.floor(config.require_votes)) : 0;
         const multiplier = finiteNumber(config.position_fraction_multiplier)
             ? Math.max(0, config.position_fraction_multiplier)
             : 1;
@@ -68,10 +56,7 @@ export class AegisShortGate {
         const metadata = {
             symbol,
             side: input.side,
-            score: input.turboScore,
-            votes: input.votes,
-            minScore,
-            requireVotes,
+            canonicalDecisionAuthorized: input.canonicalDecisionAuthorized === true,
             originalLeverage: input.leverage,
             originalPositionFraction: input.positionFraction,
             positionFractionMultiplier: multiplier,
@@ -110,22 +95,12 @@ export class AegisShortGate {
             };
         }
 
-        if (input.canonicalDecisionAuthorized !== true && (!finiteNumber(input.turboScore) || input.turboScore < minScore)) {
+        if (input.canonicalDecisionAuthorized !== true) {
             return {
                 allowed: false,
                 adjustedLeverage: input.leverage,
                 adjustedPositionFraction: input.positionFraction,
-                reason: 'short_score_below_premium_threshold',
-                metadata
-            };
-        }
-
-        if (input.canonicalDecisionAuthorized !== true && (input.votes?.short ?? 0) < requireVotes) {
-            return {
-                allowed: false,
-                adjustedLeverage: input.leverage,
-                adjustedPositionFraction: input.positionFraction,
-                reason: 'short_votes_below_required',
+                reason: 'short_canonical_decision_required',
                 metadata
             };
         }
@@ -137,9 +112,7 @@ export class AegisShortGate {
             allowed: true,
             adjustedLeverage,
             adjustedPositionFraction,
-            reason: input.canonicalDecisionAuthorized === true
-                ? 'short_allowed_current_brain_canonical'
-                : 'short_allowed_premium',
+            reason: 'short_allowed_current_brain_canonical',
             metadata: {
                 ...metadata,
                 adjustedLeverage,

@@ -41,7 +41,6 @@ export interface AegisCleanEntryGuardConfig {
     exception: {
         allowExtremeMomentumInShadowOnly: boolean;
         minTurboScore: number;
-        requireVotes3Of3: boolean;
         maxTailRiskScore: number;
     };
     telemetry: {
@@ -162,7 +161,6 @@ export const DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG: AegisCleanEntryGuardConfig 
     exception: {
         allowExtremeMomentumInShadowOnly: true,
         minTurboScore: 0.97,
-        requireVotes3Of3: true,
         maxTailRiskScore: 0.35
     },
     telemetry: {
@@ -189,10 +187,6 @@ function isInsufficientData(reason?: string): boolean {
     return normalized(reason) === 'INSUFFICIENT_DATA';
 }
 
-function sideVotes(input: AegisCleanEntryGuardInput): number {
-    return input.side === 'LONG' ? input.votes?.long ?? 0 : input.votes?.short ?? 0;
-}
-
 function appliesToSide(input: AegisCleanEntryGuardInput): boolean {
     return input.side === 'LONG' ? input.applyTo.long !== false : input.applyTo.short !== false;
 }
@@ -208,7 +202,6 @@ function isExtremeMomentumCandidate(input: AegisCleanEntryGuardInput): boolean {
     if (input.mode !== 'SHADOW') return false;
     if (input.exception.allowExtremeMomentumInShadowOnly !== true) return false;
     if (!finiteNumber(input.turboScore) || input.turboScore < input.exception.minTurboScore) return false;
-    if (input.exception.requireVotes3Of3 && sideVotes(input) < 3) return false;
     if (!finiteNumber(input.tailRiskScore) || input.tailRiskScore > input.exception.maxTailRiskScore) return false;
     return true;
 }

@@ -254,8 +254,6 @@ export class TradingService {
         return {
             enabled: false,
             mode: 'PREMIUM_ONLY',
-            min_score: 0,
-            require_votes: 0,
             position_fraction_multiplier: 1,
             max_leverage: 0,
             block_symbols: [],
@@ -351,7 +349,6 @@ export class TradingService {
             mode: 'OFF',
             apply_when_event_risk: ['CAUTION'],
             min_turbo_score: 0.90,
-            min_votes_agreement: 2,
             max_tail_risk_score: 0.30,
             require_decision_brain: 'ENTER_NOW',
             require_entry_quality_allow: true,
@@ -656,9 +653,7 @@ export class TradingService {
                 overextensionEnabled: false,
                 emaDistanceLimit: 0.006,
                 volatilityEnabled: false,
-                maxAtrPercentile: 0.75,
-                require3of3WhenSymbolFlagged: false,
-                flaggedSymbols: []
+                maxAtrPercentile: 0.75
             }
         };
     }
@@ -2206,7 +2201,6 @@ export class TradingService {
                     phase_o_short_guard_modes_applied: true,
                     guardMode: 'SHADOW',
                     guard_modes: {
-                        short_gate_legacy: 'SHADOW',
                         clean_entry: 'SHADOW',
                         event_risk: 'SHADOW',
                         entry_quality: 'SHADOW',
@@ -2262,8 +2256,7 @@ export class TradingService {
                         score: gate.turboScore,
                         votes: gate.votes,
                         reason: shortGateDecision.reason,
-                        minScore: shortGateDecision.metadata.minScore,
-                        requireVotes: shortGateDecision.metadata.requireVotes,
+                        canonicalDecisionAuthorized: shortGateDecision.metadata.canonicalDecisionAuthorized,
                         entryPolicy: entryDecision.metadata
                     }
                 });
@@ -2378,7 +2371,7 @@ export class TradingService {
                 return;
             }
 
-            if (shortGateDecision && side === 'SHORT' && shortGateDecision.reason === 'short_allowed_premium') {
+            if (shortGateDecision && side === 'SHORT' && shortGateDecision.reason === 'short_allowed_current_brain_canonical') {
                 await this.logAegisTradeEvent(symbol, 'SHORT_GATE_ADJUSTED', {
                     tradeId,
                     reason: shortGateDecision.reason,

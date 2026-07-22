@@ -395,8 +395,6 @@ symbols:
   short_gate:
     enabled: true
     mode: PREMIUM_ONLY
-    min_score: 0.80
-    require_votes: 3
     position_fraction_multiplier: 0.50
     max_leverage: 10
     block_symbols:
@@ -419,8 +417,6 @@ symbols:
         expect(config.getAegisShortGateConfig()).toEqual({
             enabled: true,
             mode: 'PREMIUM_ONLY',
-            min_score: 0.80,
-            require_votes: 3,
             position_fraction_multiplier: 0.50,
             max_leverage: 10,
             block_symbols: ['SOLUSDT', 'AVAXUSDT'],
@@ -686,7 +682,6 @@ symbols:
     apply_when_event_risk:
       - CAUTION
     min_turbo_score: 0.91
-    min_votes_agreement: 2
     max_tail_risk_score: 0.29
     require_decision_brain: ENTER_NOW
     require_entry_quality_allow: true
@@ -712,7 +707,6 @@ symbols:
             mode: 'ENFORCE',
             apply_when_event_risk: ['CAUTION'],
             min_turbo_score: 0.91,
-            min_votes_agreement: 2,
             max_tail_risk_score: 0.29,
             require_decision_brain: 'ENTER_NOW',
             require_entry_quality_allow: true,
@@ -953,7 +947,6 @@ symbols:
     exception:
       allow_extreme_momentum_in_shadow_only: true
       min_turbo_score: 0.98
-      require_votes_3_of_3: true
       max_tail_risk_score: 0.34
     telemetry:
       log_all_evaluations: true
@@ -988,7 +981,6 @@ symbols:
             exception: {
                 allowExtremeMomentumInShadowOnly: true,
                 minTurboScore: 0.98,
-                requireVotes3Of3: true,
                 maxTailRiskScore: 0.34
             },
             telemetry: {
@@ -1124,8 +1116,6 @@ symbols:
   short_gate:
     enabled: true
     mode: PREMIUM_ONLY
-    min_score: 0.80
-    require_votes: 3
     position_fraction_multiplier: 1.0
     max_leverage: 10
     block_symbols: []
@@ -1140,8 +1130,6 @@ symbols:
         expect(config.getAegisShortGateConfig()).toMatchObject({
             enabled: true,
             mode: 'PREMIUM_ONLY',
-            min_score: 0.80,
-            require_votes: 3,
             position_fraction_multiplier: 1.0,
             max_leverage: 10,
             block_symbols: [],
@@ -1167,10 +1155,6 @@ symbols:
     volatility:
       enabled: true
       max_atr_percentile: 0.75
-    require_3of3_when_symbol_flagged: true
-    flagged_symbols:
-      - dogeusdt
-      - ETHUSDT
 symbols:
   ETHUSDT:
     enabled: true
@@ -1190,9 +1174,7 @@ symbols:
                 overextensionEnabled: true,
                 emaDistanceLimit: 0.006,
                 volatilityEnabled: true,
-                maxAtrPercentile: 0.75,
-                require3of3WhenSymbolFlagged: true,
-                flaggedSymbols: ['DOGEUSDT', 'ETHUSDT']
+                maxAtrPercentile: 0.75
             }
         });
     });
@@ -1218,9 +1200,7 @@ symbols:
                 overextensionEnabled: false,
                 emaDistanceLimit: 0.006,
                 volatilityEnabled: false,
-                maxAtrPercentile: 0.75,
-                require3of3WhenSymbolFlagged: false,
-                flaggedSymbols: []
+                maxAtrPercentile: 0.75
             }
         });
     });
@@ -1237,23 +1217,6 @@ symbols:
 `));
 
         expect(config.getEntryQualityGateConfig().mode).toBe('SHADOW');
-    });
-
-    it('parses entry quality flagged_symbols correctly', () => {
-        const config = new NinjaConfigManager(writeConfig(`
-  entry_quality_gate:
-    enabled: true
-    mode: SHADOW
-    flagged_symbols:
-      - solusdt
-      - LTCUSDT
-symbols:
-  ETHUSDT:
-    enabled: true
-    mode: LIVE
-`));
-
-        expect(config.getEntryQualityGateConfig().config.flaggedSymbols).toEqual(['SOLUSDT', 'LTCUSDT']);
     });
 
     it('parses regime_context and entry_policy guard config', () => {
@@ -1354,7 +1317,6 @@ symbols:
       long:
         position_fraction: 0.02
         min_turbo_score: 0.90
-        min_votes_agreement: 3
         min_volume_ratio: 1.55
         momentum_candles: 3
         max_tail_risk_score: 0.25
@@ -1366,7 +1328,6 @@ symbols:
       short:
         position_fraction: 0.01
         min_turbo_score: 0.94
-        min_votes_agreement: 3
         min_volume_ratio: 1.75
         momentum_candles: 3
         max_tail_risk_score: 0.22
@@ -1379,7 +1340,6 @@ symbols:
       major_high_confidence_long:
         leverage: 50
         min_turbo_score: 0.88
-        min_votes_agreement: 2
         min_volume_ratio: 1.35
         max_tail_risk_score: 0.28
       major_short:
@@ -1425,7 +1385,6 @@ symbols:
             leverage: 50,
             positionFraction: 0.02,
             minTurboScore: 0.88,
-            minVotesAgreement: 2,
             minVolumeRatio: 1.35,
             momentumCandles: 3,
             maxTailRiskScore: 0.28,
@@ -1437,7 +1396,6 @@ symbols:
             leverage: 35,
             positionFraction: 0.015,
             minTurboScore: 0.92,
-            minVotesAgreement: 3,
             minVolumeRatio: 1.45,
             momentumCandles: 3,
             maxTailRiskScore: 0.25,

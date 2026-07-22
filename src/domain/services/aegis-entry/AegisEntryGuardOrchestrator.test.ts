@@ -135,9 +135,7 @@ function baseContext(overrides: Partial<AegisEntryContext> = {}): AegisEntryCont
                     overextensionEnabled: false,
                     emaDistanceLimit: 0.006,
                     volatilityEnabled: false,
-                    maxAtrPercentile: 0.75,
-                    require3of3WhenSymbolFlagged: false,
-                    flaggedSymbols: []
+                    maxAtrPercentile: 0.75
                 },
                 currentPrice: 1,
                 emaFast: 1,
@@ -203,7 +201,6 @@ function baseContext(overrides: Partial<AegisEntryContext> = {}): AegisEntryCont
                 mode: 'ENFORCE',
                 apply_when_event_risk: ['CAUTION'],
                 min_turbo_score: 0.90,
-                min_votes_agreement: 2,
                 max_tail_risk_score: 0.30,
                 require_decision_brain: 'ENTER_NOW',
                 require_entry_quality_allow: true,
@@ -222,8 +219,6 @@ function baseContext(overrides: Partial<AegisEntryContext> = {}): AegisEntryCont
             config: {
                 enabled: true,
                 mode: 'PREMIUM_ONLY',
-                min_score: 0.8,
-                require_votes: 2,
                 position_fraction_multiplier: 0.5,
                 max_leverage: 10,
                 block_symbols: [],
@@ -283,7 +278,6 @@ const momentumRideConfig: AegisMomentumRideRuntimeConfig = {
                 leverage: 50,
                 positionFraction: 0.02,
                 minTurboScore: 0.85,
-                minVotesAgreement: 2,
                 minVolumeRatio: 1.3,
                 momentumCandles: 3,
                 maxTailRiskScore: 0.3,
@@ -298,7 +292,6 @@ const momentumRideConfig: AegisMomentumRideRuntimeConfig = {
                 leverage: 10,
                 positionFraction: 0.01,
                 minTurboScore: 0.92,
-                minVotesAgreement: 3,
                 minVolumeRatio: 1.7,
                 momentumCandles: 3,
                 maxTailRiskScore: 0.25,
@@ -851,8 +844,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         }), shortPolicy);
         const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
 
-        expect(result.finalDecision).toBe('WAIT_CONFIRMATION');
-        expect(result.finalReason).toBe('probe_votes_too_low');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.finalReason).not.toBe('probe_votes_too_low');
         expect(result.deniedBy).not.toBe('long_risk_shadow');
         expect(longRiskShadow?.decision).toBe('NOT_APPLICABLE');
         expect((longRiskShadow?.metadata.longRiskShadow as any).enforcementApplied).toBe(false);
@@ -1179,7 +1172,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.guards.find((guard) => guard.name === 'short_gate')).toMatchObject({
             mode: 'SHADOW',
             enforced: false,
-            reason: 'short_allowed_premium'
+            reason: 'short_canonical_decision_required'
         });
     });
 

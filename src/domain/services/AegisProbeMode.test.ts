@@ -7,7 +7,6 @@ function config(overrides: Partial<AegisProbeModeRuntimeConfig> = {}): AegisProb
         mode: 'ENFORCE',
         apply_when_event_risk: ['CAUTION'],
         min_turbo_score: 0.90,
-        min_votes_agreement: 2,
         max_tail_risk_score: 0.30,
         require_decision_brain: 'ENTER_NOW',
         require_entry_quality_allow: true,

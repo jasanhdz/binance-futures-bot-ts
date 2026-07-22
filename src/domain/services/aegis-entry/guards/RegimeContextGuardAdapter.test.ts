@@ -60,9 +60,7 @@ function context(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext 
                     overextensionEnabled: false,
                     emaDistanceLimit: 0.006,
                     volatilityEnabled: false,
-                    maxAtrPercentile: 0.75,
-                    require3of3WhenSymbolFlagged: false,
-                    flaggedSymbols: []
+                    maxAtrPercentile: 0.75
                 },
                 recentCandles: candles,
                 emaFast: 1.2,
@@ -81,7 +79,7 @@ function context(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext 
             ethAction: 'LONG',
             snapshotAgeSeconds: 60
         },
-        shortGate: { config: { enabled: false, mode: 'PREMIUM_ONLY', min_score: 0, require_votes: 0, position_fraction_multiplier: 1, max_leverage: 0, block_symbols: [], allow_if_regime_bearish: false } },
+        shortGate: { config: { enabled: false, mode: 'PREMIUM_ONLY', position_fraction_multiplier: 1, max_leverage: 0, block_symbols: [], allow_if_regime_bearish: false } },
         decisionEnforcement: { config: { enabled: false, mode: 'OFF', block_do_not_enter: false, block_wait_confirmation: false, block_manual_only: false, block_entry_quality_shadow_block_when_event_risk: { enabled: false, event_modes: [] }, event_risk_enforcement: { caution_blocks_weak_entries: false, risk_off_blocks_non_a_plus: false, manual_only_blocks_all_new_entries: false }, block_caution_would_block_unless_a_plus: false, block_all_entry_quality_shadow_block: false, block_all_tail_risk_high: false } },
         operational: { consecutiveLosses: 0, tradesToday: 0, openPositionsCount: 0, openProbePositions: 0, sameSymbolPositionExists: false, timestamp: Date.now() },
         ...overrides

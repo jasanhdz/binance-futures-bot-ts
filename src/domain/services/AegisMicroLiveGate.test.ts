@@ -105,9 +105,11 @@ function baseConfig(): AegisMicroLiveGateConfig {
 }
 
 function baseCtx(): AegisMicroLiveGateContext {
+    const signal = canonicalSignal();
+    (signal.aegis as any).turbo = baseSignal().aegis.turbo;
     return {
         symbol: 'ETHUSDT',
-        signal: baseSignal(),
+        signal,
         hasOpenPosition: false,
         tradesToday: 0,
         consecutiveLosses: 0,
@@ -138,14 +140,14 @@ describe('AegisMicroLiveGate', () => {
         expect(decision.reason).toBe('aegis_live_disabled');
     });
 
-    it('denies if raw is missing', () => {
+    it('does not require the legacy raw contract', () => {
         const ctx = baseCtx();
         delete ctx.signal.aegis!.turbo!.raw;
 
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
-        expect(decision.allowed).toBe(false);
-        expect(decision.reason).toBe('missing_aegis_turbo_raw');
+        expect(decision.allowed).toBe(true);
+        expect(decision.reason).toBe('allowed_current_brain_canonical_live');
     });
 
     it('denies if hasOpenPosition=true', () => {
@@ -202,38 +204,38 @@ describe('AegisMicroLiveGate', () => {
         expect(decision.reason).toBe('daily_loss_stop_reached');
     });
 
-    it('denies if raw.would_execute=false', () => {
+    it('does not reinterpret canonical selection through legacy raw.would_execute', () => {
         const ctx = baseCtx();
         ctx.signal.aegis!.turbo!.raw!.would_execute = false;
 
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
-        expect(decision.reason).toBe('raw_would_execute_false');
+        expect(decision.reason).toBe('allowed_current_brain_canonical_live');
     });
 
-    it('denies if raw.action=HOLD', () => {
+    it('does not reinterpret canonical selection through legacy raw.action', () => {
         const ctx = baseCtx();
         ctx.signal.aegis!.turbo!.raw!.action = 'HOLD';
 
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
-        expect(decision.reason).toBe('raw_action_not_trade');
+        expect(decision.reason).toBe('allowed_current_brain_canonical_live');
     });
 
     it('denies SHORT if allowShort=false', () => {
         const ctx = baseCtx();
-        ctx.signal.aegis!.turbo!.raw!.action = 'SHORT';
-        ctx.signal.aegis!.turbo!.raw!.votes = { long: 0, short: 2, neutral: 1 };
+        ctx.signal = canonicalSignal(true, 'SHORT');
 
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
         expect(decision.reason).toBe('short_disabled');
     });
 
-    it('allows SHORT if allowShort=true and votes.short >= 2', () => {
+    it('allows SHORT with the single real directional estimator', () => {
         const ctx = baseCtx();
-        ctx.signal.aegis!.turbo!.raw!.action = 'SHORT';
-        ctx.signal.aegis!.turbo!.raw!.votes = { long: 0, short: 2, neutral: 1 };
+        ctx.signal = canonicalSignal(true, 'SHORT');
+        ctx.signal.aegis!.turbo = baseSignal().aegis.turbo;
+        ctx.signal.aegis!.turbo!.raw!.votes = { long: 0, short: 1, neutral: 0 };
         const config = baseConfig();
         config.allowShort = true;
 
@@ -241,25 +243,25 @@ describe('AegisMicroLiveGate', () => {
 
         expect(decision.allowed).toBe(true);
         expect(decision.side).toBe('SHORT');
-        expect(decision.reason).toBe('allowed_aegis_turbo_micro_live');
+        expect(decision.reason).toBe('allowed_current_brain_canonical_live');
     });
 
-    it('denies if score < threshold', () => {
+    it('does not reinterpret canonical selection through a legacy score threshold', () => {
         const ctx = baseCtx();
         ctx.signal.aegis!.turbo!.raw!.turbo_score = 0.49;
 
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
-        expect(decision.reason).toBe('turbo_score_below_threshold');
+        expect(decision.reason).toBe('allowed_current_brain_canonical_live');
     });
 
-    it('denies LONG if votes.long < 2', () => {
+    it('does not fabricate a second LONG vote', () => {
         const ctx = baseCtx();
         ctx.signal.aegis!.turbo!.raw!.votes = { long: 1, short: 0, neutral: 2 };
 
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
-        expect(decision.reason).toBe('insufficient_long_votes');
+        expect(decision.reason).toBe('allowed_current_brain_canonical_live');
     });
 
     it('consumes an exact canonical current-brain decision without legacy raw votes or score', () => {
@@ -301,28 +303,28 @@ describe('AegisMicroLiveGate', () => {
 
         expect(decision.allowed).toBe(true);
         expect(decision.side).toBe('LONG');
-        expect(decision.reason).toBe('allowed_aegis_turbo_micro_live');
+        expect(decision.reason).toBe('allowed_current_brain_canonical_live');
     });
 
     it('caps leverage at the configured YAML limit', () => {
         const decision = shouldEnterAegisTurboMicroLive(baseCtx(), baseConfig());
 
-        expect(decision.leverage).toBe(20);
+        expect(decision.leverage).toBe(15);
     });
 
     it('uses the configured YAML position fraction cap', () => {
         const decision = shouldEnterAegisTurboMicroLive(baseCtx(), baseConfig());
 
-        expect(decision.positionFraction).toBe(0.18);
+        expect(decision.positionFraction).toBe(0.08);
     });
 
     it('still respects a lower configured position fraction cap', () => {
         const config = baseConfig();
-        config.positionFractionCap = 0.10;
+        config.positionFractionCap = 0.05;
 
         const decision = shouldEnterAegisTurboMicroLive(baseCtx(), config);
 
-        expect(decision.positionFraction).toBe(0.10);
+        expect(decision.positionFraction).toBe(0.05);
     });
 
     it('uses regime risk values instead of Aegis signal risk values', () => {

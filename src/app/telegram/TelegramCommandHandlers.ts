@@ -354,7 +354,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `💼 Position fraction cap: **${formatPct(turbo?.position_fraction_cap)}**\n` +
             portfolioRiskLine +
             this.formatEventRiskConfigLine(eventRisk) +
-            `🎯 Short gate: **${boolText(shortGate?.enabled)}** | ${shortGate?.mode ?? 'N/D'} | min score ${formatPct(shortGate?.min_score)} | votes ${shortGate?.require_votes ?? 'N/D'}/3 | size x${formatNumber(shortGate?.position_fraction_multiplier, 2)} | max lev ${shortGate?.max_leverage ?? 'N/D'}x\n` +
+            `🎯 Short gate: **${boolText(shortGate?.enabled)}** | ${shortGate?.mode ?? 'N/D'} | canonical current-brain | size x${formatNumber(shortGate?.position_fraction_multiplier, 2)} | max lev ${shortGate?.max_leverage ?? 'N/D'}x\n` +
             `⛔ Short blocked: **${shortGate?.block_symbols?.join(', ') || 'Ninguno'}**\n` +
             `⏲️ Cooldown: **${finiteNumber(turbo?.min_cooldown_ms) ? `${(turbo.min_cooldown_ms / 60000).toFixed(1)} min` : 'N/D'}**\n` +
             `🧯 Close if bracket fails: **${boolText(turbo?.close_if_bracket_fails)}**`;
@@ -466,7 +466,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
             `🌊 Liquidity stress: **${finiteNumber(liquidity) ? formatPct(liquidity) : 'N/D'}**\n` +
             portfolioRiskLines +
             this.formatEventRiskRiskBlock(eventRisk) +
-            `🎯 Short gate: **${shortGate?.mode ?? 'N/D'}** | min score **${formatPct(shortGate?.min_score)}** | votes **${shortGate?.require_votes ?? 'N/D'}/3** | max lev **${shortGate?.max_leverage ?? 'N/D'}x** | size **${formatNumber(shortGate?.position_fraction_multiplier, 2)}x**\n` +
+            `🎯 Short gate: **${shortGate?.mode ?? 'N/D'}** | canonical current-brain | max lev **${shortGate?.max_leverage ?? 'N/D'}x** | size **${formatNumber(shortGate?.position_fraction_multiplier, 2)}x**\n` +
             `⛔ Short blocked: **${shortGate?.block_symbols?.join(', ') || 'Ninguno'}**\n` +
             `🧷 Require brackets: **${boolText(turbo?.require_brackets)}**\n` +
             `🧯 Close if bracket fails: **${boolText(turbo?.close_if_bracket_fails)}**\n` +
