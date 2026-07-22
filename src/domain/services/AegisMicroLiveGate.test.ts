@@ -5,6 +5,16 @@ import {
     buildAegisMicroLiveGateConfigFromEnv,
     shouldEnterAegisTurboMicroLive
 } from './AegisMicroLiveGate';
+import {
+    CURRENT_BRAIN_AUTHORITY,
+    CURRENT_BRAIN_BUNDLE_SHA256,
+    CURRENT_BRAIN_CONFIGURATION_SHA256,
+    CURRENT_BRAIN_CONTRACT_VERSION,
+    CURRENT_BRAIN_FEATURE_COUNT,
+    CURRENT_BRAIN_FEATURE_SCHEMA,
+    CURRENT_BRAIN_MODEL_ID,
+    CURRENT_BRAIN_MODEL_SHA256
+} from './CurrentBrainCanonicalDecision';
 
 function clone<T>(value: T): T {
     return JSON.parse(JSON.stringify(value));
@@ -33,6 +43,42 @@ function baseSignal() {
                 take_profit_roe: 0.25,
                 trailing_activation_roe: 0.15,
                 trailing_callback_roe: 0.08
+            }
+        }
+    };
+}
+
+function canonicalSignal(selected = true, side: 'LONG' | 'SHORT' = 'LONG') {
+    const decision = selected ? 'ENTER_NOW' : 'DO_NOT_ENTER';
+    return {
+        aegis: {
+            candidate: CURRENT_BRAIN_MODEL_ID,
+            candidate_status: CURRENT_BRAIN_AUTHORITY,
+            live_enabled: true,
+            prod: {
+                allowed: selected,
+                execute: selected,
+                action: selected ? side : 'HOLD' as const
+            },
+            decision_brain: {
+                contract_version: CURRENT_BRAIN_CONTRACT_VERSION,
+                authority: CURRENT_BRAIN_AUTHORITY,
+                mode: 'CURRENT_BRAIN_LIVE',
+                execute: selected,
+                selected,
+                production_allowed: true,
+                status: 'LOADED',
+                model_version: CURRENT_BRAIN_MODEL_ID,
+                model_sha256: CURRENT_BRAIN_MODEL_SHA256,
+                bundle_sha256: CURRENT_BRAIN_BUNDLE_SHA256,
+                configuration_sha256: CURRENT_BRAIN_CONFIGURATION_SHA256,
+                feature_schema: CURRENT_BRAIN_FEATURE_SCHEMA,
+                feature_count: CURRENT_BRAIN_FEATURE_COUNT,
+                fallback: false,
+                symbol: 'ETHUSDT',
+                side,
+                decision,
+                recommendation: decision
             }
         }
     };
@@ -214,6 +260,40 @@ describe('AegisMicroLiveGate', () => {
         const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
         expect(decision.reason).toBe('insufficient_long_votes');
+    });
+
+    it('consumes an exact canonical current-brain decision without legacy raw votes or score', () => {
+        const ctx = baseCtx();
+        ctx.signal = canonicalSignal();
+
+        const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
+
+        expect(decision).toMatchObject({
+            allowed: true,
+            side: 'LONG',
+            reason: 'allowed_current_brain_canonical_live',
+            leverage: 15,
+            positionFraction: 0.08
+        });
+    });
+
+    it('fails closed when a recognized canonical contract has a wrong artifact hash', () => {
+        const ctx = baseCtx();
+        ctx.signal = canonicalSignal();
+        ctx.signal.aegis!.decision_brain!.model_sha256 = '0'.repeat(64);
+
+        const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
+
+        expect(decision.reason).toBe('current_brain_canonical_contract_invalid');
+    });
+
+    it('does not authorize entry for a canonical DO_NOT_ENTER decision', () => {
+        const ctx = baseCtx();
+        ctx.signal = canonicalSignal(false);
+
+        const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
+
+        expect(decision.reason).toBe('current_brain_canonical_do_not_enter');
     });
 
     it('allows LONG if all checks pass', () => {

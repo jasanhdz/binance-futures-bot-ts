@@ -76,6 +76,39 @@ describe('AegisShortGate', () => {
         expect(decision.reason).toBe('short_votes_below_required');
     });
 
+    it('uses an authorized canonical decision instead of legacy score and vote semantics', () => {
+        const decision = AegisShortGate.evaluate({
+            symbol: 'BTCUSDT',
+            side: 'SHORT',
+            turboScore: 0.00001,
+            votes: { short: 1 },
+            canonicalDecisionAuthorized: true,
+            leverage: 20,
+            positionFraction: 0.12,
+            config
+        });
+
+        expect(decision).toMatchObject({
+            allowed: true,
+            reason: 'short_allowed_current_brain_canonical',
+            adjustedLeverage: 10,
+            adjustedPositionFraction: 0.12
+        });
+    });
+
+    it('keeps symbol blocking active for an authorized canonical decision', () => {
+        const decision = AegisShortGate.evaluate({
+            symbol: 'AVAXUSDT',
+            side: 'SHORT',
+            canonicalDecisionAuthorized: true,
+            leverage: 20,
+            positionFraction: 0.12,
+            config: { ...config, block_symbols: ['AVAXUSDT'] }
+        });
+
+        expect(decision.reason).toBe('short_symbol_blocked');
+    });
+
     it('allows premium SHORT with high score and 3/3 votes', () => {
         const decision = AegisShortGate.evaluate({
             symbol: 'BTCUSDT',

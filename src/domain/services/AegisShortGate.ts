@@ -6,6 +6,7 @@ export type AegisShortGateReason =
     | 'short_symbol_blocked'
     | 'short_score_below_premium_threshold'
     | 'short_votes_below_required'
+    | 'short_allowed_current_brain_canonical'
     | 'short_allowed_premium';
 
 export interface AegisShortGateConfig {
@@ -28,6 +29,7 @@ export interface AegisShortGateInput {
         short?: number;
         neutral?: number;
     };
+    canonicalDecisionAuthorized?: boolean;
     leverage: number;
     positionFraction: number;
     config?: AegisShortGateConfig;
@@ -108,7 +110,7 @@ export class AegisShortGate {
             };
         }
 
-        if (!finiteNumber(input.turboScore) || input.turboScore < minScore) {
+        if (input.canonicalDecisionAuthorized !== true && (!finiteNumber(input.turboScore) || input.turboScore < minScore)) {
             return {
                 allowed: false,
                 adjustedLeverage: input.leverage,
@@ -118,7 +120,7 @@ export class AegisShortGate {
             };
         }
 
-        if ((input.votes?.short ?? 0) < requireVotes) {
+        if (input.canonicalDecisionAuthorized !== true && (input.votes?.short ?? 0) < requireVotes) {
             return {
                 allowed: false,
                 adjustedLeverage: input.leverage,
@@ -135,7 +137,9 @@ export class AegisShortGate {
             allowed: true,
             adjustedLeverage,
             adjustedPositionFraction,
-            reason: 'short_allowed_premium',
+            reason: input.canonicalDecisionAuthorized === true
+                ? 'short_allowed_current_brain_canonical'
+                : 'short_allowed_premium',
             metadata: {
                 ...metadata,
                 adjustedLeverage,

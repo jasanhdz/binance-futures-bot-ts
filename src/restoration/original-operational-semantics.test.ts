@@ -30,8 +30,6 @@ const baselineOperationalDigests: Record<string, string> = {
     '23119a604363e4d9bcacb431952121bb2a57ed0de5eb5fb512c0f552b99624e4',
   'src/infra/config/environment.ts':
     '3bac013429ee9828f15aa5c9266cd92c285394ec5410c0ecf6efed4e5c7e16d8',
-  'src/domain/services/AegisMicroLiveGate.ts':
-    '9e92b7cf5c09df85fe87696d17fe0ccb4f93514b38f58d84057cb1d405120289',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
     '1b26ce70aba7bb9bf03d43e38e9497aebc936055ed884d6cc21e012ad3c6b3bf',
   'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
@@ -40,6 +38,20 @@ const baselineOperationalDigests: Record<string, string> = {
     'b362c2939238ead4d5708e3a49ceb12e6b2fa9666e07b1a88eec8dd7faea4932',
   'src/infra/logging/FsStateStore.ts':
     '282d6e7bd9e68e95f69543c80816f2b548768cdfef0031aeb16f8d860e22cab2',
+};
+
+const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
+  'src/domain/index.ts': '0678dbf15543c538cd1654333ac0a3546486e3bdfb499ae1dbd28e94204109a5',
+  'src/domain/services/AegisStrategy.ts':
+    'cdb46c3c95febceab7d61223f30d31feff5f86bd00748d28393b35654c6877ce',
+  'src/domain/services/AegisMicroLiveGate.ts':
+    'e986786212d8916e84d980f6e9249003236f905abfcaaa16d80b8986a32c90e1',
+  'src/domain/services/AegisShortGate.ts':
+    'bcb58f7025325de93fca9c7c0654bc72a6ff4712c2779f7490b118354cc0b8c5',
+  'src/domain/services/CurrentBrainCanonicalDecision.ts':
+    '554ccf13b4bb1b0077a547439b0141a0c9b7ad9add1443a8a181e182012c6337',
+  'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':
+    'e7334e32612ea2a020f4852588a7d0d8a560baad268cc69e1312c4a23724d58a',
 };
 
 type GuardFixture = [
@@ -119,9 +131,19 @@ describe('original TypeScript operational semantics', () => {
     }
   });
 
+  it('binds the exact owner-authorized current-brain contract exception', () => {
+    for (const [path, digest] of Object.entries(ownerAuthorizedCurrentBrainContractDigests)) {
+      expect(sha256(path), path).toBe(digest);
+    }
+  });
+
   it('keeps Shadow, prospective, brain, and audit modules out of the operational path', () => {
     const forbidden = /(?:from|require\()\s*['"][^'"]*(?:\/brain\/|\/prospective\/|\/audit\/)/;
-    const leaking = Object.keys(baselineOperationalDigests).filter((path) =>
+    const operationalPaths = [
+      ...Object.keys(baselineOperationalDigests),
+      ...Object.keys(ownerAuthorizedCurrentBrainContractDigests),
+    ];
+    const leaking = operationalPaths.filter((path) =>
       forbidden.test(readFileSync(resolve(repoRoot, path), 'utf8')),
     );
     expect(leaking).toEqual([]);

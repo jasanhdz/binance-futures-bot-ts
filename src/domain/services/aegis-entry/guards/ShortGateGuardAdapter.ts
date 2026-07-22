@@ -6,6 +6,7 @@ import {
     isGuardEnforced
 } from '../AegisEntryDecisionTypes';
 import { AegisShortGate, AegisShortGateDecision } from '../../AegisShortGate';
+import { inspectCurrentBrainCanonicalDecision } from '../../CurrentBrainCanonicalDecision';
 
 export interface ShortGateGuardAdapterResult {
     guard: AegisEntryGuardResult;
@@ -24,11 +25,19 @@ export class ShortGateGuardAdapter {
             };
         }
 
+        const canonicalDecision = inspectCurrentBrainCanonicalDecision(
+            context.signal.metadata?.aegis ?? context.signal.aegis,
+            context.symbol
+        );
         const decision = AegisShortGate.evaluate({
             symbol: context.symbol,
             side: context.side,
             turboScore: context.turboScore,
             votes: context.votes,
+            canonicalDecisionAuthorized:
+                canonicalDecision.valid &&
+                canonicalDecision.selected &&
+                canonicalDecision.side === context.side,
             leverage: context.leverage,
             positionFraction: context.requestedPositionFraction,
             config: context.shortGate.config

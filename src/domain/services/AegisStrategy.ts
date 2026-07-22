@@ -126,11 +126,20 @@ export interface AegisEventRiskAutoBlock {
 }
 
 export interface AegisDecisionBrainBlock {
+  contract_version?: string;
+  authority?: string;
   mode?: 'SHADOW' | string;
   execute?: boolean;
+  selected?: boolean;
   production_allowed?: boolean;
   status?: string;
   model_version?: string;
+  model_sha256?: string;
+  bundle_sha256?: string;
+  configuration_sha256?: string;
+  feature_schema?: string;
+  feature_count?: number;
+  fallback?: boolean;
   symbol?: string;
   side?: 'LONG' | 'SHORT' | 'HOLD' | 'UNKNOWN' | string | null;
   decision?: 'ENTER_NOW' | 'WAIT_CONFIRMATION' | 'MANUAL_ONLY' | 'DO_NOT_ENTER' | 'UNKNOWN' | string;
