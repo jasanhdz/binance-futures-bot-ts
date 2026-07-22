@@ -532,7 +532,18 @@ export class AegisEntryGuardOrchestrator {
             });
         }
 
-        guards.push(defaultGuard('probe_mode'));
+        if (cleanEntry.guard.wouldBlock && !cleanEntry.guard.enforced) {
+            const probe = ProbeModeGuardAdapter.evaluate(
+                adjustedContext,
+                policy.guards.probe_mode,
+                decisionBrain.decision,
+                cleanEntry.decision
+            );
+            guards.push(probe.guard);
+            decisions.probeMode = probe.decision;
+        } else {
+            guards.push(defaultGuard('probe_mode'));
+        }
         const longRiskShadow = evaluateLongRiskShadowGuard({ context: adjustedContext, policy, guards });
         guards.push(longRiskShadow);
         return finalize({

@@ -78,6 +78,26 @@ describe('NinjaConfigManager Aegis symbol modes', () => {
         }
     });
 
+    it('keeps every analytical Live entry overlay in non-enforcing SHADOW mode', () => {
+        const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
+        const guards = config.getAegisEntryPolicyConfig().guards;
+
+        expect(Object.fromEntries(Object.entries(guards).map(([name, guard]) => [name, guard.mode])))
+            .toEqual({
+                regime: 'SHADOW',
+                regime_context: 'SHADOW',
+                momentum_ride: 'SHADOW',
+                decision_brain: 'SHADOW',
+                entry_quality: 'SHADOW',
+                event_risk: 'SHADOW',
+                clean_entry: 'SHADOW',
+                probe_mode: 'SHADOW',
+                long_risk_shadow: 'SHADOW',
+                short_gate: 'SHADOW'
+            });
+        expect(Object.values(guards).every((guard) => guard.enabled && guard.mode === 'SHADOW')).toBe(true);
+    });
+
     it('parses OFF, SHADOW and LIVE modes', () => {
         const config = new NinjaConfigManager(writeConfig(`
 symbols:

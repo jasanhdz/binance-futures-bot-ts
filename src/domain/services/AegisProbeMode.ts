@@ -78,6 +78,9 @@ export interface AegisProbeModeDecision {
     metadata: {
         enabled: boolean;
         allowed: boolean;
+        mode?: AegisProbeModeMode;
+        wouldAllow?: boolean;
+        counterfactualReason?: AegisProbeModeReason;
         reason: AegisProbeModeReason;
         symbol: string;
         side: 'LONG' | 'SHORT';

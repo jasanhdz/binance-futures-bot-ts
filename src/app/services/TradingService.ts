@@ -623,12 +623,13 @@ export class TradingService {
             ...policy,
             guards: {
                 ...policy.guards,
-                momentum_ride: { ...policy.guards.momentum_ride, enabled: true, mode: 'ENFORCE' },
+                momentum_ride: { ...policy.guards.momentum_ride, enabled: true, mode: 'SHADOW' },
                 clean_entry: { ...policy.guards.clean_entry, enabled: true, mode: 'SHADOW' },
                 event_risk: { ...policy.guards.event_risk, enabled: true, mode: 'SHADOW' },
                 entry_quality: { ...policy.guards.entry_quality, enabled: true, mode: 'SHADOW' },
                 decision_brain: { ...policy.guards.decision_brain, enabled: true, mode: 'SHADOW' },
                 regime: { ...policy.guards.regime, enabled: true, mode: 'SHADOW' },
+                probe_mode: { ...policy.guards.probe_mode, enabled: true, mode: 'SHADOW' },
                 short_gate: { ...policy.guards.short_gate, enabled: true, mode: 'SHADOW' },
                 long_risk_shadow: { ...policy.guards.long_risk_shadow, enabled: true, mode: 'SHADOW' }
             }
@@ -2201,11 +2202,15 @@ export class TradingService {
                     phase_o_short_guard_modes_applied: true,
                     guardMode: 'SHADOW',
                     guard_modes: {
+                        momentum_ride: 'SHADOW',
                         clean_entry: 'SHADOW',
                         event_risk: 'SHADOW',
                         entry_quality: 'SHADOW',
                         decision_brain: 'SHADOW',
-                        regime_engine: 'SHADOW'
+                        regime_engine: 'SHADOW',
+                        probe_mode: 'SHADOW',
+                        short_gate: 'SHADOW',
+                        long_risk_shadow: 'SHADOW'
                     },
                     hard_safety_enforced: {
                         brackets: true,
@@ -2215,8 +2220,8 @@ export class TradingService {
                         min_notional: true,
                         link_no_entry: true
                     },
-                    shadowGuards: ['clean_entry', 'event_risk', 'entry_quality', 'decision_brain', 'regime', 'short_gate', 'long_risk_shadow'],
-                    enforcedGuards: ['phase_o_ml', 'momentum_ride', 'brackets', 'max_trades_per_day', 'daily_loss_stop', 'exchange_min_notional', 'link_no_entry'],
+                    shadowGuards: ['momentum_ride', 'clean_entry', 'event_risk', 'entry_quality', 'decision_brain', 'regime', 'probe_mode', 'short_gate', 'long_risk_shadow'],
+                    enforcedGuards: ['phase_o_ml', 'brackets', 'max_trades_per_day', 'daily_loss_stop', 'exchange_min_notional', 'link_no_entry'],
                     ignoredForPhaseO: true
                 };
                 logger.info('phase_o_short_guard_modes_applied', phaseOGuardMetadata);

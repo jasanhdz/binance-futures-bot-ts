@@ -38,8 +38,6 @@ const baselineOperationalDigests: Record<string, string> = {
     '3bac013429ee9828f15aa5c9266cd92c285394ec5410c0ecf6efed4e5c7e16d8',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
     '1b26ce70aba7bb9bf03d43e38e9497aebc936055ed884d6cc21e012ad3c6b3bf',
-  'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
-    'ea2a861d0576b87bc57ef7cdb94c424d1ac23a3a0b22449cfb1362b4c3e18c41',
   'src/domain/services/ProfitGuardian.ts':
     'b362c2939238ead4d5708e3a49ceb12e6b2fa9666e07b1a88eec8dd7faea4932',
   'src/infra/logging/FsStateStore.ts':
@@ -48,9 +46,9 @@ const baselineOperationalDigests: Record<string, string> = {
 
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
-  'regime_config.live.yaml': '42fdf81f64f95ecbb672937a7e48c288dc68e130d0a14ccffff1f584baf81d19',
+  'regime_config.live.yaml': 'd482ae543558831a524ce9f45b7e68c56d83bb22a2851c6739f5dd811b81a3d8',
   'src/app/services/TradingService.ts':
-    '820e60692ba806f6b6f9e33be8db664ba17019019f59d1da4f8bdbb5f92d5fce',
+    'f8bda5644556416bd8663c926b879ed67eb2038459683f856d1c18c6ef06ecb0',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -65,7 +63,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/AegisMicroLiveGate.ts':
     '35a30b4e03c048d74fccfe0d255a791b400ea93d17ba1be6b59a065c133efa80',
   'src/domain/services/AegisProbeMode.ts':
-    'a6368796e592e89079e80128b6f907fbe6a65a368efaa2e6d16c0b243e5e5b6d',
+    'fa2e593f982326fcfb64831538179c05972f2d9325aad617398df26174a5b351',
   'src/domain/services/AegisRegimeGuard.ts':
     '86211d956b290931bd92475886645ae9cd666ca7898b9147b56f3a3150efd755',
   'src/domain/services/AegisShortGate.ts':
@@ -74,6 +72,10 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '554ccf13b4bb1b0077a547439b0141a0c9b7ad9add1443a8a181e182012c6337',
   'src/domain/services/aegis-entry/AegisEntryDecisionTypes.ts':
     '22ba65675509b3a2613ef7ba97b61807cb43be1925a9bdc88e11e4222bb7e92e',
+  'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
+    '61a62e32ff1017b3a72d3c4c426efbe3e2e5f2be3b12ee408c23750b9ce57e49',
+  'src/domain/services/aegis-entry/guards/ProbeModeGuardAdapter.ts':
+    '95e0d011bd5e8db6a97c46238697ee3376415080c5c1503e0aeb793ff00d3858',
   'src/domain/services/aegis-entry/guards/MomentumRideGuardAdapter.ts':
     'd4ef1cbc3f4ab42642f999bdc9f306cc1076465748074928d0ecba1c7cedac4a',
   'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':

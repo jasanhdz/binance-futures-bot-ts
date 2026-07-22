@@ -1176,6 +1176,107 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
+    it('records a Probe counterfactual without blocking a Python-authorized entry', () => {
+        const context = baseContext({
+            eventRisk: {
+                ...baseContext().eventRisk,
+                mode: 'CAUTION',
+                reason: 'caution_btc_eth_not_confirmed',
+                wouldBlock: true,
+                enforce: false,
+                config: {
+                    ...baseContext().eventRisk.config,
+                    caution: {
+                        minQualityScore: 0.65,
+                        maxTailRiskScore: 0.45,
+                        requireBtcEthConfirmation: true
+                    }
+                }
+            }
+        });
+        const result = AegisEntryGuardOrchestrator.evaluate(context, policy({
+            momentum_ride: { enabled: true, mode: 'SHADOW' },
+            short_gate: { enabled: true, mode: 'SHADOW' },
+            entry_quality: { enabled: true, mode: 'SHADOW' },
+            event_risk: { enabled: true, mode: 'SHADOW' },
+            decision_brain: { enabled: true, mode: 'SHADOW' },
+            clean_entry: { enabled: true, mode: 'SHADOW' },
+            probe_mode: { enabled: true, mode: 'SHADOW' },
+            long_risk_shadow: { enabled: true, mode: 'SHADOW' }
+        }));
+
+        const probe = result.guards.find((guard) => guard.name === 'probe_mode');
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.allowedBy).toBe('entry_policy');
+        expect(result.adjustedLeverage).toBe(context.leverage);
+        expect(result.adjustedPositionFraction).toBe(context.requestedPositionFraction);
+        expect(probe).toMatchObject({
+            mode: 'SHADOW',
+            decision: 'SHADOW_ALLOW',
+            reason: 'probe_allowed',
+            wouldBlock: false,
+            enforced: false
+        });
+        expect(probe?.metadata).toMatchObject({
+            allowed: false,
+            mode: 'SHADOW',
+            wouldAllow: true,
+            counterfactualReason: 'probe_allowed'
+        });
+        expect(result.decisions.probeMode).toMatchObject({
+            allowed: false,
+            reason: 'probe_allowed'
+        });
+    });
+
+    it('records Probe tail-risk denial in SHADOW without blocking or resizing', () => {
+        const base = baseContext();
+        const context = baseContext({
+            entryQuality: {
+                ...base.entryQuality,
+                tailRiskScore: 0.61,
+                model: {
+                    ...base.entryQuality.model!,
+                    tail_risk_score: 0.61
+                }
+            },
+            eventRisk: {
+                ...base.eventRisk,
+                mode: 'CAUTION',
+                reason: 'caution_btc_eth_not_confirmed',
+                wouldBlock: true,
+                enforce: false
+            }
+        });
+        const result = AegisEntryGuardOrchestrator.evaluate(context, policy({
+            momentum_ride: { enabled: true, mode: 'SHADOW' },
+            short_gate: { enabled: true, mode: 'SHADOW' },
+            entry_quality: { enabled: true, mode: 'SHADOW' },
+            event_risk: { enabled: true, mode: 'SHADOW' },
+            decision_brain: { enabled: true, mode: 'SHADOW' },
+            clean_entry: { enabled: true, mode: 'SHADOW' },
+            probe_mode: { enabled: true, mode: 'SHADOW' },
+            long_risk_shadow: { enabled: true, mode: 'SHADOW' }
+        }));
+
+        expect(result.finalDecision).toBe('ALLOW');
+        expect(result.deniedBy).toBeUndefined();
+        expect(result.adjustedLeverage).toBe(context.leverage);
+        expect(result.adjustedPositionFraction).toBe(context.requestedPositionFraction);
+        expect(result.guards.find((guard) => guard.name === 'probe_mode')).toMatchObject({
+            mode: 'SHADOW',
+            decision: 'SHADOW_DENY',
+            reason: 'probe_tail_risk_too_high',
+            wouldBlock: true,
+            enforced: false,
+            metadata: {
+                allowed: false,
+                wouldAllow: false,
+                counterfactualReason: 'probe_tail_risk_too_high'
+            }
+        });
+    });
+
     it('keeps guard order deterministic and includes every guard in the trace', () => {
         const result = AegisEntryGuardOrchestrator.evaluate(baseContext(), policy());
 

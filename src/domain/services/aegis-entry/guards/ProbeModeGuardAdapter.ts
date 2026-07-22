@@ -28,10 +28,14 @@ export class ProbeModeGuardAdapter {
             return { guard: guardDisabledResult('probe_mode', 'probe_mode_not_applicable') };
         }
 
-        const decision = AegisProbeMode.evaluate({
+        const shadow = policy.mode === 'SHADOW';
+        const candidateDecision = AegisProbeMode.evaluate({
             config: {
                 ...context.probe!.config,
-                mode: policy.mode === 'SHADOW' ? 'SHADOW' : context.probe!.config.mode
+                // Probe's domain evaluator historically treats SHADOW as
+                // disabled. Evaluate its unchanged criteria as a counterfactual
+                // while the adapter keeps the result non-enforcing.
+                mode: shadow ? 'ENFORCE' : context.probe!.config.mode
             },
             nowMs: context.operational.timestamp,
             symbol: context.symbol,
@@ -59,13 +63,28 @@ export class ProbeModeGuardAdapter {
             lastStopLossAt: context.operational.lastStopLossAt
         });
         const enforced = isGuardEnforced(policy);
-        const wouldBlock = decision.allowed !== true;
+        const wouldBlock = candidateDecision.allowed !== true;
+        const decision: AegisProbeModeDecision = shadow
+            ? {
+                ...candidateDecision,
+                allowed: false,
+                metadata: {
+                    ...candidateDecision.metadata,
+                    allowed: false,
+                    mode: 'SHADOW',
+                    wouldAllow: candidateDecision.allowed,
+                    counterfactualReason: candidateDecision.reason
+                }
+            }
+            : candidateDecision;
         const guard: AegisEntryGuardResult = {
             name: 'probe_mode',
             enabled: true,
             mode: policy.mode,
-            decision: decision.allowed ? 'ALLOW' : (enforced ? 'DENY' : 'SHADOW_DENY'),
-            reason: decision.reason,
+            decision: candidateDecision.allowed
+                ? (enforced ? 'ALLOW' : 'SHADOW_ALLOW')
+                : (enforced ? 'DENY' : 'SHADOW_DENY'),
+            reason: candidateDecision.reason,
             wouldBlock,
             enforced,
             metadata: decision.metadata as unknown as Record<string, unknown>

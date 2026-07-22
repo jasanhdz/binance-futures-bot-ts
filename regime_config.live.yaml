@@ -110,6 +110,9 @@ aegis:
       LINKUSDT: {enabled: true, entry_enabled: false, avoid_only: true}
   entry_policy:
     enabled: true
+    # The current Python committee is the entry authority. TypeScript evaluates
+    # these analytical overlays for counterfactual telemetry only; execution
+    # safety, exchange filters, brackets, cooldowns and loss limits stay enforced.
     guards:
       regime:
         enabled: true
@@ -119,29 +122,29 @@ aegis:
         mode: SHADOW
       momentum_ride:
         enabled: true
-        mode: ENFORCE
+        mode: SHADOW
       decision_brain:
         enabled: true
-        mode: ENFORCE
+        mode: SHADOW
       entry_quality:
         enabled: true
-        mode: ENFORCE
+        mode: SHADOW
       event_risk:
         enabled: true
-        mode: ENFORCE
+        mode: SHADOW
       clean_entry:
         enabled: true
-        mode: ENFORCE
+        mode: SHADOW
         use_entry_quality_model_as_source_of_truth: true
         ignore_rule_gate_insufficient_data_when_model_ok: true
         min_feature_parity_pct: 95
       probe_mode:
         enabled: true
-        mode: ENFORCE
+        mode: SHADOW
       long_risk_shadow:
         enabled: true
-        mode: ENFORCE_PROBE_LONG_CRITICAL
-        probe_long_critical_action: BLOCK
+        mode: SHADOW
+        probe_long_critical_action: SHADOW
         probe_long_high_action: SHADOW
         aegis_long_critical_action: SHADOW
         momentum_long_critical_action: SHADOW
@@ -150,7 +153,7 @@ aegis:
         block_only_long: true
       short_gate:
         enabled: true
-        mode: ENFORCE
+        mode: SHADOW
   regime_guard:
     enabled: true
     mode: SHADOW
