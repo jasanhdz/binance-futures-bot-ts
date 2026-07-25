@@ -579,6 +579,17 @@ aegis:
       - name: majors_link_btc_eth_ada_long
         symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT, XRPUSDT, BNBUSDT, DOGEUSDT]
         long: 0.01
+      # Current-brain SHORT sizing tiers, frozen from Live MAE plus prospective
+      # selected-outcome evidence. Unlisted SHORT symbols retain the 0.08 default.
+      - name: xrp_short_high_confidence
+        symbols: [XRPUSDT]
+        short: 0.20
+      - name: sui_ltc_short_supported
+        symbols: [SUIUSDT, LTCUSDT]
+        short: 0.16
+      - name: ada_short_moderate_confidence
+        symbols: [ADAUSDT]
+        short: 0.12
     max_trades_per_day: 20
     max_consecutive_losses: 3
     daily_loss_stop_pct: 0.30
