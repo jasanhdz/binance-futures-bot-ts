@@ -46,7 +46,7 @@ const baselineOperationalDigests: Record<string, string> = {
 
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
-  'regime_config.live.yaml': 'd482ae543558831a524ce9f45b7e68c56d83bb22a2851c6739f5dd811b81a3d8',
+  'regime_config.live.yaml': '4c2859cb9297bc75ef4a5ebe7ab01cd0e8ee2263e0cf1875976cd26c6ef37fda',
   'src/app/services/TradingService.ts':
     'f8bda5644556416bd8663c926b879ed67eb2038459683f856d1c18c6ef06ecb0',
   'src/app/telegram/AegisBlocksReportService.ts':
@@ -55,7 +55,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '9297ad5eabe87971e7533aae42ce2cca549eae680e056f28300536fd25d38507',
   'src/domain/index.ts': '0678dbf15543c538cd1654333ac0a3546486e3bdfb499ae1dbd28e94204109a5',
   'src/domain/services/AegisStrategy.ts':
-    'cdb46c3c95febceab7d61223f30d31feff5f86bd00748d28393b35654c6877ce',
+    '5dcd7722f032bb23d12ed833320f9b4dba43fd1bb18447d811cffdac9418a759',
   'src/domain/services/AegisCleanEntryGuard.ts':
     'dacc093a1d1636ebb6c5d1d8bad28b6cbed07e905a8d5593076b29e44b3ca183',
   'src/domain/services/AegisEntryQualityGate.ts':

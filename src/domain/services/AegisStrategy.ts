@@ -109,6 +109,20 @@ export interface AegisEntryQualityModelBlock {
   latency_ms?: number;
 }
 
+export interface AegisEntryQualityV2Block {
+  schema_id?: 'aegis-entry-quality-v2-http-shadow-v1' | string;
+  mode?: 'SHADOW' | 'LIVE' | 'UNAVAILABLE' | string;
+  config_sha256?: string;
+  status?: string;
+  selected?: boolean;
+  paper_action?: 'SHORT' | 'NO_TRADE' | string;
+  score?: number;
+  eligible?: boolean;
+  opportunity_source?: string;
+  regime?: Record<string, unknown>;
+  exchange_authority?: boolean;
+}
+
 export interface AegisEventRiskAutoBlock {
   mode?: 'SHADOW' | string;
   suggested_mode?: 'NORMAL' | 'CAUTION' | 'RISK_OFF' | 'MANUAL_ONLY' | string;
@@ -142,7 +156,13 @@ export interface AegisDecisionBrainBlock {
   fallback?: boolean;
   symbol?: string;
   side?: 'LONG' | 'SHORT' | 'HOLD' | 'UNKNOWN' | string | null;
-  decision?: 'ENTER_NOW' | 'WAIT_CONFIRMATION' | 'MANUAL_ONLY' | 'DO_NOT_ENTER' | 'UNKNOWN' | string;
+  decision?:
+    | 'ENTER_NOW'
+    | 'WAIT_CONFIRMATION'
+    | 'MANUAL_ONLY'
+    | 'DO_NOT_ENTER'
+    | 'UNKNOWN'
+    | string;
   enter_now_prob?: number | null;
   wait_confirmation_prob?: number | null;
   manual_only_prob?: number | null;
@@ -173,6 +193,7 @@ export interface AegisBlock {
   shadow?: AegisShadowBlock;
   turbo?: AegisTurboBlock;
   entry_quality_model?: AegisEntryQualityModelBlock;
+  entry_quality_v2?: AegisEntryQualityV2Block;
   event_risk_auto?: AegisEventRiskAutoBlock;
   decision_brain?: AegisDecisionBrainBlock;
   clean_entry_guard?: Record<string, unknown>;
@@ -211,7 +232,11 @@ export interface AegisTradingSignal {
   };
 }
 
-export function isForbiddenTime(timestamp: number, forbiddenHours?: number[], forbiddenDays?: number[]): boolean {
+export function isForbiddenTime(
+  timestamp: number,
+  forbiddenHours?: number[],
+  forbiddenDays?: number[],
+): boolean {
   const date = new Date(timestamp);
   const hour = date.getUTCHours();
   const day = date.getUTCDay();
