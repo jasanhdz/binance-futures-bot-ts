@@ -590,6 +590,9 @@ aegis:
       - name: ada_short_moderate_confidence
         symbols: [ADAUSDT]
         short: 0.12
+      - name: avax_short_loss_penalty
+        symbols: [AVAXUSDT]
+        short: 0.05
     max_trades_per_day: 20
     max_consecutive_losses: 3
     daily_loss_stop_pct: 0.30

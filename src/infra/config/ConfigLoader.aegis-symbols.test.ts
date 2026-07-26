@@ -1113,6 +1113,18 @@ symbols:
         expect(config.getAegisPositionFractionOverride('ADAUSDT', 'LONG')).toBeUndefined();
     });
 
+    it('keeps the current Live AVAX SHORT allocation at five percent', () => {
+        const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
+
+        expect(config.getAegisPositionFractionOverride('AVAXUSDT', 'SHORT')).toMatchObject({
+            symbol: 'AVAXUSDT',
+            side: 'SHORT',
+            positionFraction: 0.05,
+            ruleName: 'avax_short_loss_penalty'
+        });
+        expect(config.getAegisPositionFractionOverride('AVAXUSDT', 'LONG')).toBeUndefined();
+    });
+
     it('clamps configured position fraction overrides to wallet fraction bounds', () => {
         const config = new NinjaConfigManager(writeConfig(`
     position_fraction_overrides:
