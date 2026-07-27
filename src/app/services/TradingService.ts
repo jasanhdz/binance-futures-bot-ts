@@ -74,6 +74,11 @@ import {
     AegisRegimeContextRuntimeConfig
 } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { AegisEntryGuardOrchestrator } from '../../domain/services/aegis-entry/AegisEntryGuardOrchestrator';
+import {
+    AegisClosedTradeOutcome,
+    AegisConsecutiveLossTracker
+} from '../../domain/services/AegisConsecutiveLossTracker';
+import { readAegisClosedTradeOutcomes } from '../../infra/logging/AegisClosedTradeHistoryReader';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -124,6 +129,7 @@ export interface TradingServiceDeps {
     notifier: Notifier;
     configManager: NinjaConfigManager;
     historyLogger?: AegisTurboHistoryLogger;
+    closedTradeOutcomeReader?: () => Promise<AegisClosedTradeOutcome[]>;
 }
 
 export interface TradingServiceConfig {
@@ -151,7 +157,7 @@ export class TradingService {
     private lastTradeDayReset = 0;
     private dailyStartBalance: number | null = null;
     private lastDailyPnlPct: number | undefined;
-    private consecutiveLosses = 0;
+    private readonly consecutiveLossTracker = new AegisConsecutiveLossTracker();
     private lastEntryBalance = INITIAL_BALANCE;
     private peakBalance = INITIAL_BALANCE;
     private lastErrorTime: Record<string, number> = {};
@@ -815,7 +821,7 @@ export class TradingService {
             tradingMode: this.getTradingMode(),
             isRunning: this.isRunning,
             tradesToday: this.tradesToday,
-            consecutiveLosses: this.consecutiveLosses,
+            consecutiveLosses: this.consecutiveLossTracker.value,
             dailyStartBalance: this.dailyStartBalance,
             dailyPnlPct: this.lastDailyPnlPct,
             lastTradeDayReset: this.lastTradeDayReset,
@@ -838,6 +844,7 @@ export class TradingService {
             logger.warn('startup_wallet_balance_unavailable', { error });
         }
         const startupAccount = await this.readEntryAccountSnapshot(startupWalletBalance ?? undefined);
+        await this.restoreConsecutiveLossState();
 
         logger.info(isTurbo ? '⚡ AEGIS TURBO MICRO-LIVE MODE' : '🛡️ AEGIS SHADOW MODE', {
             initial: INITIAL_BALANCE,
@@ -1259,7 +1266,7 @@ export class TradingService {
             unrealized_pnl: input.unrealizedPnl,
             daily_pnl_pct: input.dailyPnlPct,
             trades_today: this.tradesToday,
-            consecutive_losses: this.consecutiveLosses,
+            consecutive_losses: this.consecutiveLossTracker.value,
             open_positions_count: input.positionOpen ? 1 : 0,
             total_margin_used: input.marginUsed,
             total_notional: notional,
@@ -1300,7 +1307,7 @@ export class TradingService {
                 signal: { aegis: signal.metadata?.aegis ?? signal.aegis },
                 hasOpenPosition: botState.mode !== 'IDLE',
                 tradesToday: this.tradesToday,
-                consecutiveLosses: this.consecutiveLosses,
+                consecutiveLosses: this.consecutiveLossTracker.value,
                 timeSinceLastExitMs,
                 liquidityStress,
                 dailyPnlPct
@@ -2075,7 +2082,7 @@ export class TradingService {
                 riskOffTailMax: eventRiskConfig.risk_off.max_tail_risk_score
             },
             operational: {
-                consecutiveLosses: this.consecutiveLosses,
+                consecutiveLosses: this.consecutiveLossTracker.value,
                 tradesToday: this.tradesToday,
                 openPositionsCount: stateExposure.totalOpenPositions,
                 openMomentumPositions: stateExposure.openMomentumPositions,
@@ -3588,12 +3595,11 @@ export class TradingService {
                 const markPrice = await exchange.getMarkPrice(symbol);
                 const finalRoe = this.calculateRoe(side, botState.lastEntryPrice || markPrice, markPrice, leverage);
                 const pnl = this.pnlFromRoe(this.entryMargin(botState), finalRoe);
-                this.consecutiveLosses = pnl < 0 ? this.consecutiveLosses + 1 : 0;
                 logger.info('aegis_position_closed', {
                     symbol,
                     pnl: pnl.toFixed(2),
                     balance: balance.toFixed(2),
-                    consecutiveLosses: this.consecutiveLosses
+                    consecutiveLosses: this.consecutiveLossTracker.value
                 });
                 await this.notifyExit(symbol, side, 'SL/TP', botState, { exitPrice: markPrice, finalRoe, pnl });
                 symbolState.set({
@@ -3656,7 +3662,8 @@ export class TradingService {
             if (tradeDuration > maxHoldMs && currentRoe > 0.02) {
                 await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AEGIS_TIME_LIMIT');
                 symbolState.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_TIME_LIMIT', probeModeActive: false });
-                await this.notifyExit(symbol, side, 'TIME_LIMIT', botState);
+                const pnl = this.pnlFromRoe(this.entryMargin(botState), currentRoe);
+                await this.notifyExit(symbol, side, 'TIME_LIMIT', botState, { exitPrice: markPrice, finalRoe: currentRoe, pnl });
                 return;
             }
 
@@ -3863,7 +3870,6 @@ export class TradingService {
         exit?: { exitPrice?: number; finalRoe?: number; pnl?: number }
     ): Promise<void> {
         const { exchange, notifier, logger } = this.deps;
-        const currentBalance = await exchange.getUSDTBalance();
         const entryPrice = botState.lastEntryPrice || 0;
         const leverage = botState.lastLeverage || botState.lastActualLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
         const exitPrice = exit?.exitPrice ?? await exchange.getMarkPrice(symbol);
@@ -3910,6 +3916,18 @@ export class TradingService {
                 mismatch_reason: exitType.mismatchReason
             }
         });
+        const streakUpdate = this.consecutiveLossTracker.record(tradeId, pnl);
+        if (streakUpdate.applied) {
+            logger.info('aegis_consecutive_loss_streak_updated', {
+                symbol,
+                tradeId,
+                reason,
+                outcome: pnl < 0 ? 'LOSS' : 'NON_LOSS',
+                previous: streakUpdate.previous,
+                current: streakUpdate.current
+            });
+        }
+        const currentBalance = await exchange.getUSDTBalance();
         await this.logAegisTradeEvent(symbol, 'TRADE_CLOSED', {
             tradeId,
             price: exitPrice,
@@ -3956,6 +3974,23 @@ export class TradingService {
         logger.info('📱 [TELEGRAM_REPORT] AEGIS EXIT SENT', {
             message: `${exitType.emoji} **${exitType.title}** PnL: ${pnlStr} ROE: ${this.formatRoe(finalRoe)}`
         });
+    }
+
+    private async restoreConsecutiveLossState(): Promise<void> {
+        try {
+            const outcomes = await (
+                this.deps.closedTradeOutcomeReader?.()
+                ?? readAegisClosedTradeOutcomes(undefined, this.getTradingMode())
+            );
+            this.consecutiveLossTracker.restore(outcomes);
+            this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
+                consecutiveLosses: this.consecutiveLossTracker.value,
+                processedClosedTrades: this.consecutiveLossTracker.processedCount
+            });
+        } catch (error) {
+            this.deps.logger.error('aegis_consecutive_loss_streak_recovery_failed', { error: String(error) });
+            throw new Error('AEGIS_CONSECUTIVE_LOSS_RECOVERY_FAILED');
+        }
     }
 
     private async ensureAegisBrackets(

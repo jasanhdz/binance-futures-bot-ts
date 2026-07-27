@@ -629,6 +629,7 @@ function makeHarness(options: {
         cachedCandles?: any[];
         momentumRide?: any;
         regimeContext?: any;
+        closedTradeOutcomes?: Array<{ tradeId: string; closedAt: string; pnlUsdt: number }>;
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
@@ -902,7 +903,8 @@ function makeHarness(options: {
             state,
             notifier,
             configManager: configManager as any,
-            historyLogger: historyLogger as any
+            historyLogger: historyLogger as any,
+            closedTradeOutcomeReader: vi.fn().mockResolvedValue(options.closedTradeOutcomes ?? [])
         },
         {
             symbols: options.symbols ?? ['ETHUSDT'],
@@ -950,6 +952,76 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧪 Probe Mode'));
         expect(notifier.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('Radar ETHUSDT'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 Posiciones\nNinguna'));
+    });
+
+    it('restores consecutive losses from the closed-trade journal at startup', async () => {
+        const { service } = makeHarness({
+            closedTradeOutcomes: [
+                { tradeId: 'loss-1', closedAt: '2026-07-27T00:00:00.000Z', pnlUsdt: -2 },
+                { tradeId: 'loss-2', closedAt: '2026-07-27T00:05:00.000Z', pnlUsdt: -1 },
+                { tradeId: 'time-limit-profit', closedAt: '2026-07-27T00:10:00.000Z', pnlUsdt: 0.5 }
+            ]
+        });
+
+        await service.start(false);
+
+        expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(0);
+        service.stop();
+    });
+
+    it('updates the streak once through the common confirmed-close path', async () => {
+        const { service } = makeHarness();
+        const botState = {
+            mode: 'LONG_RIDE',
+            lastTradeId: 'confirmed-loss',
+            lastEntryAt: Date.now() - 60_000,
+            lastEntryPrice: 3000,
+            lastEntryQty: 0.01,
+            lastEntryMargin: 2,
+            lastLeverage: 20,
+            peakRoe: 0.01,
+            lowestRoe: -0.1
+        };
+
+        await (service as any).notifyExit('ETHUSDT', 'LONG', 'TRAILING_SAFETY_NET', botState, {
+            exitPrice: 2985,
+            finalRoe: -0.1,
+            pnl: -1
+        });
+        await (service as any).notifyExit('ETHUSDT', 'LONG', 'TRAILING_SAFETY_NET', botState, {
+            exitPrice: 2985,
+            finalRoe: -0.1,
+            pnl: -1
+        });
+
+        expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(1);
+    });
+
+    it('resets the streak when a TIME_LIMIT close is profitable', async () => {
+        const { service } = makeHarness();
+        (service as any).consecutiveLossTracker.restore([
+            { tradeId: 'loss-1', closedAt: '2026-07-27T00:00:00.000Z', pnlUsdt: -2 },
+            { tradeId: 'loss-2', closedAt: '2026-07-27T00:05:00.000Z', pnlUsdt: -1 }
+        ]);
+        const botState = {
+            mode: 'SHORT_RIDE',
+            lastTradeId: 'time-limit-profit',
+            lastEntryAt: Date.now() - 9 * 60 * 60 * 1000,
+            lastEntryPrice: 3000,
+            lastEntryQty: 0.01,
+            lastEntryMargin: 2,
+            lastLeverage: 20,
+            peakRoe: 0.04,
+            lowestRoe: -0.08
+        };
+
+        await (service as any).notifyExit('ETHUSDT', 'SHORT', 'TIME_LIMIT', botState, {
+            exitPrice: 2995,
+            finalRoe: 0.03,
+            pnl: 0.5
+        });
+
+        expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(0);
     });
 
     it('includes approximate wallet balance with open unrealized PnL in the startup Telegram message', async () => {
