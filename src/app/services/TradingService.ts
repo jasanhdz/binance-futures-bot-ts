@@ -35,6 +35,7 @@ import {
 } from '../../domain/services/AegisExitEye';
 import { evaluateAegisExitEyeV2Shadow } from '../../domain/services/AegisExitEyeV2Shadow';
 import { inspectCurrentBrainCanonicalDecision } from '../../domain/services/CurrentBrainCanonicalDecision';
+import { buildAegisOperationalDispositionShadow } from '../../domain/services/AegisOperationalDispositionShadow';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
@@ -1241,6 +1242,41 @@ export class TradingService {
         });
     }
 
+    private async logEntryIntelligenceDispositionShadow(
+        symbol: string,
+        signal: AegisTradingSignal,
+        stage: 'MICRO_GATE' | 'ENTRY_POLICY',
+        operationalAllowed: boolean,
+        operationalReason: string,
+        deniedBy?: string,
+        signalId?: string,
+        tradeId?: string
+    ): Promise<void> {
+        const aegis = this.getAegisSignalBlock(signal);
+        const record = buildAegisOperationalDispositionShadow({
+            symbol,
+            stage,
+            intelligence: aegis?.entry_intelligence_shadow,
+            operationalAllowed,
+            operationalReason,
+            deniedBy
+        });
+        if (!record) return;
+        try {
+            await this.logAegisTradeEvent(symbol, 'ENTRY_INTELLIGENCE_OPERATIONAL_DISPOSITION_SHADOW', {
+                tradeId,
+                reason: operationalReason,
+                metadata: { ...record, signalId }
+            });
+        } catch (error) {
+            this.deps.logger.warn('entry_intelligence_shadow_log_failed', {
+                symbol,
+                stage,
+                error: String(error)
+            });
+        }
+    }
+
     private async logAegisAccountSnapshot(input: {
         symbol?: string;
         walletBalance?: number;
@@ -1366,6 +1402,15 @@ export class TradingService {
             this.lastDailyPnlPct = dailyPnlPct;
             const gateConfig = this.getAegisTurboGateConfig(symbol);
             const gateDecision = this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
+            await this.logEntryIntelligenceDispositionShadow(
+                symbol,
+                signal,
+                'MICRO_GATE',
+                gateDecision.allowed,
+                gateDecision.reason,
+                gateDecision.allowed ? undefined : 'micro_gate',
+                signalId
+            );
             if (!gateDecision.allowed) {
                 await this.logAegisTurboSignal(symbol, signal, { signalId, gate: gateDecision, executed: false });
                 await this.logAegisTradeEvent(symbol, 'GATE_DENIED', {
@@ -2258,6 +2303,16 @@ export class TradingService {
                     trace: entryDecision.trace
                 }
             });
+            await this.logEntryIntelligenceDispositionShadow(
+                symbol,
+                signal,
+                'ENTRY_POLICY',
+                entryDecision.shouldOpen,
+                entryDecision.finalReason,
+                entryDecision.deniedBy,
+                signalId,
+                tradeId
+            );
 
             if (shortGateDecision && !shortGateDecision.allowed && entryDecision.deniedBy === 'short_gate') {
                 const deniedGate = { ...gateAfterPositionOverride, allowed: false, reason: shortGateDecision.reason };

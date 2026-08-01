@@ -199,6 +199,50 @@ export interface AegisDirectionalEvidenceBlock {
   selection_authority?: 'CANONICAL_PYTHON_SELECTED' | string;
 }
 
+export interface AegisEntryIntelligenceShadowBlock {
+  schema_id?: 'aegis-entry-intelligence-http-shadow-v1' | string;
+  decision_cycle_id?: string;
+  market_timestamp?: string;
+  mode?: 'SHADOW' | string;
+  status?: string;
+  uncertainty?: Record<string, unknown>;
+  regime_v3_shadow?: Record<string, unknown>;
+  entry_timing_shadow?: {
+    state?: string;
+    paper_action?: string;
+    reason?: string;
+    setup_id?: string | null;
+    age_bars?: number;
+    selection_effect?: 'NONE' | string;
+    exchange_authority?: boolean;
+  };
+  counterfactuals?: Record<string, string>;
+  candidate_ranking_shadow?: Array<{
+    rank?: number;
+    canonical_rank?: number;
+    symbol?: string;
+    canonical_score?: number;
+    canonical_eligible?: boolean;
+    canonical_selected?: boolean;
+    timing_state?: string;
+    timing_rank_selected?: boolean;
+  }>;
+  current_symbol_timing_rank?: number;
+  current_symbol_canonical_rank?: number;
+  timing_rank_selected?: boolean;
+  selection_effect?: 'NONE' | string;
+  exchange_authority?: boolean;
+  exchange_mutations?: number;
+}
+
+export interface AegisCandidateUncertaintyBlock {
+  schema_id?: 'aegis-candidate-uncertainty-v1' | string;
+  value?: number | null;
+  confidence?: number | null;
+  semantics?: 'NOT_APPLICABLE_SINGLE_ESTIMATOR' | string;
+  selection_effect?: 'NONE' | string;
+}
+
 export interface AegisBlock {
   candidate?: string;
   candidate_status?: string;
@@ -211,6 +255,8 @@ export interface AegisBlock {
   event_risk_auto?: AegisEventRiskAutoBlock;
   decision_brain?: AegisDecisionBrainBlock;
   directional_evidence?: AegisDirectionalEvidenceBlock;
+  candidate_uncertainty?: AegisCandidateUncertaintyBlock;
+  entry_intelligence_shadow?: AegisEntryIntelligenceShadowBlock;
   clean_entry_guard?: Record<string, unknown>;
 }
 
