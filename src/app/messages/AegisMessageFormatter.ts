@@ -165,8 +165,8 @@ function formatPnl(value?: number): string {
     return value >= 0 ? `+$${value.toFixed(2)}` : `-$${Math.abs(value).toFixed(2)}`;
 }
 
-function formatVotes(votes?: Votes): string {
-    return `L=${votes?.long ?? 0} | S=${votes?.short ?? 0} | N=${votes?.neutral ?? 0}`;
+function formatDirectionalOutput(votes?: Votes): string {
+    return `L=${votes?.long ?? 0} | S=${votes?.short ?? 0} | N=${votes?.neutral ?? 0} (estimador único; no consenso)`;
 }
 
 function snapshotLabel(isFresh?: boolean): string {
@@ -336,7 +336,7 @@ export function formatSymbolSignalMessage(input: AegisSymbolSignalMessageInput):
         `🪙 Símbolo: **${input.symbol}**`,
         `⚙️ Turbo raw: **${input.rawAction ?? 'HOLD'}** / **${formatPct(input.rawScore)}**`,
         `🚦 Turbo gated: **${input.gatedAction ?? 'HOLD'}**`,
-        `🗳️ Votes: **${formatVotes(input.votes)}**`,
+        `🧭 Salida direccional: **${formatDirectionalOutput(input.votes)}**`,
         `🧠 Motivo: **${formatAegisReason(input.reason)}**`,
         `📸 Snapshot: **${snapshotLabel(input.freshnessIsFresh)}**`
     ];

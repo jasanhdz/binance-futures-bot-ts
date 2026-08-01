@@ -256,6 +256,19 @@ describe('TradingService Aegis Exit Eye', () => {
         expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
             event: 'AEGIS_EXIT_EYE_SHADOW_CLOSE'
         }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'EXIT_EYE_V2_SHADOW_OBSERVATION',
+            metadata: expect.objectContaining({
+                mode: 'SHADOW',
+                selectionEffect: 'NONE',
+                exchangeAuthority: false,
+                exchangeMutations: 0,
+                legacyVoteCountUsed: false,
+                trailingChanged: false,
+                callbackChanged: false,
+                bracketChanged: false
+            })
+        }));
     });
 
     it('in CLOSE mode closes on opposite signal with positive ROE', async () => {

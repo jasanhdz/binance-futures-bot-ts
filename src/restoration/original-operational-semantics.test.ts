@@ -48,14 +48,16 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
   'regime_config.live.yaml': '1306688131baf9f3ed01dcde00dd0ee6d7ef942352764cc7f005b8546964474f',
   'src/app/services/TradingService.ts':
-    '6c4848f5ee1c37b0ec1b14f09a30c3fe23bd5edace29ade904e6d2284c6f90d3',
+    '19ab75a76a7d7945440d6d74126c3f47a4786ac8b3448305efb50d0af5ebe401',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
-    '9297ad5eabe87971e7533aae42ce2cca549eae680e056f28300536fd25d38507',
+    'd3c80274735bf8810681e00dc503158b7f43e5947c5e4066bccdb34c80f72211',
   'src/domain/index.ts': '0678dbf15543c538cd1654333ac0a3546486e3bdfb499ae1dbd28e94204109a5',
   'src/domain/services/AegisStrategy.ts':
-    '5dcd7722f032bb23d12ed833320f9b4dba43fd1bb18447d811cffdac9418a759',
+    '531a7668bcf47bbbf04f09ee5f51d9912fac550b9015f22c27fba47a7115c635',
+  'src/domain/services/AegisExitEyeV2Shadow.ts':
+    'c42df7df36033370442b24d0c49ccbfaf40745cbbe25380c508536f34f084172',
   'src/domain/services/AegisCleanEntryGuard.ts':
     'dacc093a1d1636ebb6c5d1d8bad28b6cbed07e905a8d5593076b29e44b3ca183',
   'src/domain/services/AegisEntryQualityGate.ts':

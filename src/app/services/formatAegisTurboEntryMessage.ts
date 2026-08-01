@@ -92,7 +92,7 @@ export function formatAegisTurboEntryMessage(input: AegisTurboEntryMessageInput)
         `Disponible: ${formatUsd(input.account?.availableBalance)}\n\n` +
         `🧠 TURBO SIGNAL\n` +
         `Score: ${formatPct(input.turboScore)} / ${formatPct(input.threshold)}\n` +
-        `Votes: L=${input.votes?.long ?? 0} | S=${input.votes?.short ?? 0} | N=${input.votes?.neutral ?? 0}\n` +
+        `Salida direccional: L=${input.votes?.long ?? 0} | S=${input.votes?.short ?? 0} | N=${input.votes?.neutral ?? 0} (estimador único; no consenso)\n` +
         `Motivo: ${reason}\n\n` +
         `🛡️ RIESGO / BRACKETS\n` +
         `SL: ${formatPrice(input.stopPrice, pricePrecision)} (${formatRoePct(input.stopRoe)} ROE)\n` +

@@ -410,7 +410,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
                 const brainText = brain
                     ? ` | DB ${brain.decision ?? 'N/D'} ${formatPct(decisionBrainTopProb(brain))}`
                     : '';
-                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} | ${fresh}${eqText}${eventRiskText}${brainText}`);
+                rows.push(`${symbol} | ${gated?.action ?? raw?.action ?? 'HOLD'} | score ${formatPct(raw?.turbo_score ?? turbo?.turbo_score)} | salida única L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0} (sin consenso) | ${fresh}${eqText}${eventRiskText}${brainText}`);
             } catch {
                 rows.push(`${symbol} | ERROR`);
             }

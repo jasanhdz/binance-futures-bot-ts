@@ -25,6 +25,10 @@ export interface AegisTurboRaw {
   leverage_suggestion?: number;
   position_fraction?: number;
   votes?: AegisVotes;
+  vote_semantics?: 'SINGLE_DIRECTIONAL_ESTIMATOR_OUTPUT' | string;
+  directional_member_count?: number;
+  independent_directional_votes?: 'NOT_APPLICABLE' | string;
+  directional_consensus?: 'NOT_APPLICABLE_SINGLE_ESTIMATOR' | string;
   recent_scores?: AegisRecentScores;
 }
 
@@ -185,6 +189,16 @@ export interface AegisDecisionBrainBlock {
   latency_ms?: number | null;
 }
 
+export interface AegisDirectionalEvidenceBlock {
+  schema_id?: 'aegis-directional-evidence-v1' | string;
+  semantics?: 'SINGLE_DIRECTIONAL_ESTIMATOR_OUTPUT' | string;
+  eligible_directional_members?: number;
+  independent_directional_votes?: 'NOT_APPLICABLE' | string;
+  directional_consensus?: 'NOT_APPLICABLE_SINGLE_ESTIMATOR' | string;
+  fabricated_votes?: number;
+  selection_authority?: 'CANONICAL_PYTHON_SELECTED' | string;
+}
+
 export interface AegisBlock {
   candidate?: string;
   candidate_status?: string;
@@ -196,6 +210,7 @@ export interface AegisBlock {
   entry_quality_v2?: AegisEntryQualityV2Block;
   event_risk_auto?: AegisEventRiskAutoBlock;
   decision_brain?: AegisDecisionBrainBlock;
+  directional_evidence?: AegisDirectionalEvidenceBlock;
   clean_entry_guard?: Record<string, unknown>;
 }
 

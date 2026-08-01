@@ -45,6 +45,8 @@ describe('formatAegisTurboEntryMessage', () => {
         expect(text).toContain('Wallet: $575.62');
         expect(text).toContain('Equity total: $579.12');
         expect(text).toContain('Disponible: $421.42');
+        expect(text).toContain('Salida direccional: L=2 | S=0 | N=1 (estimador único; no consenso)');
+        expect(text).not.toContain('Votes:');
         expect(text).toContain('✅ Brackets confirmados');
         expect(text).not.toMatch(/undefined|null|NaN/);
     });

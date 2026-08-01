@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { AegisStartupMessageInput, formatAegisStartupMessage } from './AegisMessageFormatter';
+import {
+    AegisStartupMessageInput,
+    formatAegisStartupMessage,
+    formatAllSignalsMessage
+} from './AegisMessageFormatter';
 
 function startup(overrides: Partial<AegisStartupMessageInput> = {}): string {
     const base: AegisStartupMessageInput = {
@@ -116,6 +120,24 @@ function startup(overrides: Partial<AegisStartupMessageInput> = {}): string {
 }
 
 describe('formatAegisStartupMessage', () => {
+    it('labels directional output as single-estimator telemetry, not consensus', () => {
+        const text = formatAllSignalsMessage({
+            signals: [{
+                symbol: 'ETHUSDT',
+                rawAction: 'SHORT',
+                rawScore: 0.7,
+                gatedAction: 'SHORT',
+                votes: { long: 0, short: 1, neutral: 0 },
+                reason: 'CURRENT_BRAIN_SELECTED',
+                freshnessIsFresh: true
+            }]
+        });
+
+        expect(text).toContain('Salida direccional');
+        expect(text).toContain('estimador único; no consenso');
+        expect(text).not.toContain('🗳️ Votes');
+    });
+
     it('does not include legacy AI probabilities', () => {
         const text = startup();
 

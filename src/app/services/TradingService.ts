@@ -33,6 +33,8 @@ import {
     AegisExitEyeVotes,
     evaluateAegisExitEye
 } from '../../domain/services/AegisExitEye';
+import { evaluateAegisExitEyeV2Shadow } from '../../domain/services/AegisExitEyeV2Shadow';
+import { inspectCurrentBrainCanonicalDecision } from '../../domain/services/CurrentBrainCanonicalDecision';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
@@ -3038,10 +3040,46 @@ export class TradingService {
         tradeDurationMs: number;
     }): Promise<boolean> {
         const config = this.getAegisExitEyeConfig();
-        if (!config.enabled || config.mode === 'OFF') return false;
-
         const signal = await this.getExitEyeSignal(input.symbol);
         const exitSignal = this.extractExitEyeSignal(signal);
+        const signalAegis = signal?.metadata?.aegis ?? signal?.aegis;
+        const canonicalDecision = inspectCurrentBrainCanonicalDecision(
+            signalAegis,
+            input.symbol
+        );
+        const exitEyeV2Shadow = evaluateAegisExitEyeV2Shadow({
+            symbol: input.symbol,
+            positionSide: input.side,
+            currentRoe: input.currentRoe,
+            peakRoe: input.peakRoe,
+            canonical: canonicalDecision,
+            minimumPeakRoeToStudyProtection: config.min_peak_roe_to_protect,
+            minimumGivebackRoeToStudyProtection: config.min_giveback_from_peak_roe
+        });
+        try {
+            await this.logAegisTradeEvent(
+                input.symbol,
+                'EXIT_EYE_V2_SHADOW_OBSERVATION',
+                {
+                    tradeId: input.botState.lastTradeId,
+                    price: input.markPrice,
+                    roe: input.currentRoe,
+                    reason: exitEyeV2Shadow.reason,
+                    metadata: {
+                        ...exitEyeV2Shadow,
+                        trailingChanged: false,
+                        callbackChanged: false,
+                        bracketChanged: false
+                    }
+                }
+            );
+        } catch (error) {
+            this.deps.logger.warn('aegis_exit_eye_v2_shadow_log_failed', {
+                symbol: input.symbol,
+                error: String(error)
+            });
+        }
+        if (!config.enabled || config.mode === 'OFF') return false;
         const counters = this.updateExitEyeCounters(input.side, input.botState, input.symbolState, exitSignal, config);
         const decision = evaluateAegisExitEye({
             enabled: config.enabled,
