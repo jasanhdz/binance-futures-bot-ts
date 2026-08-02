@@ -12,14 +12,14 @@ export const CURRENT_BRAIN_CONFIGURATION_SHA256 =
 export const CURRENT_BRAIN_FEATURE_SCHEMA = 'aegis-features-v2';
 export const CURRENT_BRAIN_FEATURE_COUNT = 83;
 
-export const HYBRID_DIRECTIONAL_CONTRACT_VERSION = 'aegis-hybrid-directional-live-decision-v1';
+export const HYBRID_DIRECTIONAL_CONTRACT_VERSION = 'aegis-hybrid-directional-live-decision-v2';
 export const HYBRID_DIRECTIONAL_AUTHORITY =
-  'OWNER_AUTHORIZED_HYBRID_DIRECTIONAL_LONG_SHORT_REAL_MONEY_EXPERIMENT_V1';
+  'OWNER_AUTHORIZED_HYBRID_DIRECTIONAL_MULTI_SYMBOL_5M_QUALITY_SELECTION_V2';
 export const HYBRID_DIRECTIONAL_MODEL_ID = 'aegis-hybrid-directional-committee-v1';
 export const HYBRID_DIRECTIONAL_MODEL_SHA256 =
   'f52dcaa12fe94b6cc9023c25cf95ea2d6fc16296c9b65c2c93d00e13e66ba0e8';
 export const HYBRID_DIRECTIONAL_CONFIGURATION_SHA256 =
-  'd862bc0c1322db1c1661ca867fec6881ee57369632dcac5f195db9eff38e97f0';
+  'e09743bceda015b12e0fe6400181f297fca7b62d4d3c4169931edbf150e6659c';
 
 interface DecisionAuthorityProfile {
   authority: string;

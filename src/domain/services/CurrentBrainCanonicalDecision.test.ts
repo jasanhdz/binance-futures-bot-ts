@@ -49,6 +49,16 @@ export function canonicalAegisBlock(selected = true, side: 'LONG' | 'SHORT' = 'S
 }
 
 describe('CurrentBrainCanonicalDecision', () => {
+  it('pins the multi-symbol closed-bar hybrid v2 authority', () => {
+    expect(HYBRID_DIRECTIONAL_CONTRACT_VERSION).toBe('aegis-hybrid-directional-live-decision-v2');
+    expect(HYBRID_DIRECTIONAL_AUTHORITY).toBe(
+      'OWNER_AUTHORIZED_HYBRID_DIRECTIONAL_MULTI_SYMBOL_5M_QUALITY_SELECTION_V2',
+    );
+    expect(HYBRID_DIRECTIONAL_CONFIGURATION_SHA256).toBe(
+      'e09743bceda015b12e0fe6400181f297fca7b62d4d3c4169931edbf150e6659c',
+    );
+  });
+
   it('accepts the owner-authorized hybrid LONG/SHORT experiment contract', () => {
     const block = canonicalAegisBlock();
     block.candidate = HYBRID_DIRECTIONAL_MODEL_ID;
