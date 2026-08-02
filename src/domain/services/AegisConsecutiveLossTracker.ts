@@ -22,6 +22,14 @@ export class AegisConsecutiveLossTracker {
     return this.processedTradeIds.size;
   }
 
+  restorePersistedValue(value: number): void {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error('AEGIS_CONSECUTIVE_LOSS_VALUE_INVALID');
+    }
+    this.consecutiveLosses = value;
+    this.processedTradeIds.clear();
+  }
+
   restore(outcomes: AegisClosedTradeOutcome[]): void {
     this.consecutiveLosses = 0;
     this.processedTradeIds.clear();

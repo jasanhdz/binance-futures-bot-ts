@@ -16,6 +16,7 @@ import { FsStateStore } from './infra/logging/FsStateStore';
 import { AegisMLService } from './app/services/AegisMLService';
 import { NinjaConfigManager } from './infra/config/ConfigLoader';
 import { TradingService, TradingServiceConfig } from './app/services/TradingService';
+import { AegisConsecutiveLossStateStore } from './infra/state/AegisConsecutiveLossStateStore';
 import { MLService } from './app/ports/MLService';
 import { Notifier } from './app/ports/Notifier';
 import { CONFIG } from './infra/config/environment';
@@ -97,7 +98,8 @@ async function main() {
             logger,
             state: stateStore,
             notifier,
-            configManager
+            configManager,
+            consecutiveLossStateStore: new AegisConsecutiveLossStateStore()
         },
         tradingConfig
     );
