@@ -12,6 +12,48 @@ export const CURRENT_BRAIN_CONFIGURATION_SHA256 =
 export const CURRENT_BRAIN_FEATURE_SCHEMA = 'aegis-features-v2';
 export const CURRENT_BRAIN_FEATURE_COUNT = 83;
 
+export const HYBRID_DIRECTIONAL_CONTRACT_VERSION = 'aegis-hybrid-directional-live-decision-v1';
+export const HYBRID_DIRECTIONAL_AUTHORITY =
+  'OWNER_AUTHORIZED_HYBRID_DIRECTIONAL_LONG_SHORT_REAL_MONEY_EXPERIMENT_V1';
+export const HYBRID_DIRECTIONAL_MODEL_ID = 'aegis-hybrid-directional-committee-v1';
+export const HYBRID_DIRECTIONAL_MODEL_SHA256 =
+  'f52dcaa12fe94b6cc9023c25cf95ea2d6fc16296c9b65c2c93d00e13e66ba0e8';
+export const HYBRID_DIRECTIONAL_CONFIGURATION_SHA256 =
+  'd862bc0c1322db1c1661ca867fec6881ee57369632dcac5f195db9eff38e97f0';
+
+interface DecisionAuthorityProfile {
+  authority: string;
+  mode: string;
+  modelId: string;
+  modelSha256: string;
+  bundleSha256: string;
+  configurationSha256: string;
+}
+
+function authorityProfile(contractVersion?: string): DecisionAuthorityProfile | undefined {
+  if (contractVersion === CURRENT_BRAIN_CONTRACT_VERSION) {
+    return {
+      authority: CURRENT_BRAIN_AUTHORITY,
+      mode: 'CURRENT_BRAIN_LIVE',
+      modelId: CURRENT_BRAIN_MODEL_ID,
+      modelSha256: CURRENT_BRAIN_MODEL_SHA256,
+      bundleSha256: CURRENT_BRAIN_BUNDLE_SHA256,
+      configurationSha256: CURRENT_BRAIN_CONFIGURATION_SHA256,
+    };
+  }
+  if (contractVersion === HYBRID_DIRECTIONAL_CONTRACT_VERSION) {
+    return {
+      authority: HYBRID_DIRECTIONAL_AUTHORITY,
+      mode: 'HYBRID_DIRECTIONAL_LIVE',
+      modelId: HYBRID_DIRECTIONAL_MODEL_ID,
+      modelSha256: HYBRID_DIRECTIONAL_MODEL_SHA256,
+      bundleSha256: HYBRID_DIRECTIONAL_MODEL_SHA256,
+      configurationSha256: HYBRID_DIRECTIONAL_CONFIGURATION_SHA256,
+    };
+  }
+  return undefined;
+}
+
 export interface CurrentBrainCanonicalDecision {
   recognized: boolean;
   valid: boolean;
@@ -25,7 +67,8 @@ export function inspectCurrentBrainCanonicalDecision(
   expectedSymbol?: string,
 ): CurrentBrainCanonicalDecision {
   const brain = aegis?.decision_brain;
-  if (brain?.contract_version !== CURRENT_BRAIN_CONTRACT_VERSION) {
+  const profile = brain ? authorityProfile(brain.contract_version) : undefined;
+  if (!brain || !profile) {
     return {
       recognized: false,
       valid: false,
@@ -38,20 +81,20 @@ export function inspectCurrentBrainCanonicalDecision(
   const side = brain.side === 'LONG' || brain.side === 'SHORT' ? brain.side : undefined;
   const expectedDecision = selected ? 'ENTER_NOW' : 'DO_NOT_ENTER';
   const identityValid =
-    brain.authority === CURRENT_BRAIN_AUTHORITY &&
-    brain.mode === 'CURRENT_BRAIN_LIVE' &&
+    brain.authority === profile.authority &&
+    brain.mode === profile.mode &&
     brain.status === 'LOADED' &&
     brain.production_allowed === true &&
-    brain.model_version === CURRENT_BRAIN_MODEL_ID &&
-    brain.model_sha256 === CURRENT_BRAIN_MODEL_SHA256 &&
-    brain.bundle_sha256 === CURRENT_BRAIN_BUNDLE_SHA256 &&
-    brain.configuration_sha256 === CURRENT_BRAIN_CONFIGURATION_SHA256 &&
+    brain.model_version === profile.modelId &&
+    brain.model_sha256 === profile.modelSha256 &&
+    brain.bundle_sha256 === profile.bundleSha256 &&
+    brain.configuration_sha256 === profile.configurationSha256 &&
     brain.feature_schema === CURRENT_BRAIN_FEATURE_SCHEMA &&
     brain.feature_count === CURRENT_BRAIN_FEATURE_COUNT &&
     brain.fallback === false &&
     (!expectedSymbol || brain.symbol === expectedSymbol.trim().toUpperCase()) &&
-    aegis?.candidate === CURRENT_BRAIN_MODEL_ID &&
-    aegis?.candidate_status === CURRENT_BRAIN_AUTHORITY &&
+    aegis?.candidate === profile.modelId &&
+    aegis?.candidate_status === profile.authority &&
     aegis?.live_enabled === true;
   const decisionValid =
     brain.decision === expectedDecision &&

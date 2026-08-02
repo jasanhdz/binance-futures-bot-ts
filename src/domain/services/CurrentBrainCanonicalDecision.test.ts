@@ -9,6 +9,11 @@ import {
   CURRENT_BRAIN_FEATURE_SCHEMA,
   CURRENT_BRAIN_MODEL_ID,
   CURRENT_BRAIN_MODEL_SHA256,
+  HYBRID_DIRECTIONAL_AUTHORITY,
+  HYBRID_DIRECTIONAL_CONFIGURATION_SHA256,
+  HYBRID_DIRECTIONAL_CONTRACT_VERSION,
+  HYBRID_DIRECTIONAL_MODEL_ID,
+  HYBRID_DIRECTIONAL_MODEL_SHA256,
   inspectCurrentBrainCanonicalDecision,
 } from './CurrentBrainCanonicalDecision';
 
@@ -44,6 +49,52 @@ export function canonicalAegisBlock(selected = true, side: 'LONG' | 'SHORT' = 'S
 }
 
 describe('CurrentBrainCanonicalDecision', () => {
+  it('accepts the owner-authorized hybrid LONG/SHORT experiment contract', () => {
+    const block = canonicalAegisBlock();
+    block.candidate = HYBRID_DIRECTIONAL_MODEL_ID;
+    block.candidate_status = HYBRID_DIRECTIONAL_AUTHORITY;
+    block.prod!.action = 'LONG';
+    Object.assign(block.decision_brain!, {
+      contract_version: HYBRID_DIRECTIONAL_CONTRACT_VERSION,
+      authority: HYBRID_DIRECTIONAL_AUTHORITY,
+      mode: 'HYBRID_DIRECTIONAL_LIVE',
+      model_version: HYBRID_DIRECTIONAL_MODEL_ID,
+      model_sha256: HYBRID_DIRECTIONAL_MODEL_SHA256,
+      bundle_sha256: HYBRID_DIRECTIONAL_MODEL_SHA256,
+      configuration_sha256: HYBRID_DIRECTIONAL_CONFIGURATION_SHA256,
+      side: 'LONG',
+    });
+
+    expect(inspectCurrentBrainCanonicalDecision(block, 'ETHUSDT')).toEqual({
+      recognized: true,
+      valid: true,
+      selected: true,
+      side: 'LONG',
+      reason: 'current_brain_canonical_enter_now',
+    });
+  });
+
+  it('rejects a hybrid experiment contract with the wrong artifact hash', () => {
+    const block = canonicalAegisBlock();
+    block.candidate = HYBRID_DIRECTIONAL_MODEL_ID;
+    block.candidate_status = HYBRID_DIRECTIONAL_AUTHORITY;
+    Object.assign(block.decision_brain!, {
+      contract_version: HYBRID_DIRECTIONAL_CONTRACT_VERSION,
+      authority: HYBRID_DIRECTIONAL_AUTHORITY,
+      mode: 'HYBRID_DIRECTIONAL_LIVE',
+      model_version: HYBRID_DIRECTIONAL_MODEL_ID,
+      model_sha256: 'wrong',
+      bundle_sha256: HYBRID_DIRECTIONAL_MODEL_SHA256,
+      configuration_sha256: HYBRID_DIRECTIONAL_CONFIGURATION_SHA256,
+    });
+
+    expect(inspectCurrentBrainCanonicalDecision(block, 'ETHUSDT')).toMatchObject({
+      recognized: true,
+      valid: false,
+      selected: false,
+    });
+  });
+
   it('accepts a coherent selected decision', () => {
     expect(inspectCurrentBrainCanonicalDecision(canonicalAegisBlock(), 'ETHUSDT')).toEqual({
       recognized: true,

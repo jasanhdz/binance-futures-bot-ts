@@ -73,7 +73,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/AegisShortGate.ts':
     'e7069d819cb5de8e4f2fab707e8eaecea03bf9795b039944774259773560ee12',
   'src/domain/services/CurrentBrainCanonicalDecision.ts':
-    '554ccf13b4bb1b0077a547439b0141a0c9b7ad9add1443a8a181e182012c6337',
+    '4db0a42132463e9b5005f7c23e55ad21740765205e1e0f5510b1d2bca17f2aee',
   'src/domain/services/aegis-entry/AegisEntryDecisionTypes.ts':
     '22ba65675509b3a2613ef7ba97b61807cb43be1925a9bdc88e11e4222bb7e92e',
   'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
