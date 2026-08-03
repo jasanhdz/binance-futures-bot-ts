@@ -82,6 +82,10 @@ import {
     AegisConsecutiveLossTracker
 } from '../../domain/services/AegisConsecutiveLossTracker';
 import { readAegisClosedTradeOutcomes } from '../../infra/logging/AegisClosedTradeHistoryReader';
+import {
+    AegisConsecutiveLossState,
+    AegisConsecutiveLossStateStorePort
+} from '../../infra/state/AegisConsecutiveLossStateStore';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -133,6 +137,7 @@ export interface TradingServiceDeps {
     configManager: NinjaConfigManager;
     historyLogger?: AegisTurboHistoryLogger;
     closedTradeOutcomeReader?: () => Promise<AegisClosedTradeOutcome[]>;
+    consecutiveLossStateStore?: AegisConsecutiveLossStateStorePort;
 }
 
 export interface TradingServiceConfig {
@@ -4011,6 +4016,7 @@ export class TradingService {
         });
         const streakUpdate = this.consecutiveLossTracker.record(tradeId, pnl);
         if (streakUpdate.applied) {
+            await this.persistConsecutiveLossState(tradeId);
             logger.info('aegis_consecutive_loss_streak_updated', {
                 symbol,
                 tradeId,
@@ -4071,6 +4077,18 @@ export class TradingService {
 
     private async restoreConsecutiveLossState(): Promise<void> {
         try {
+            const persistedState = await this.deps.consecutiveLossStateStore?.read(this.getTradingMode());
+            if (persistedState) {
+                this.consecutiveLossTracker.restorePersistedValue(persistedState.consecutive_losses);
+                this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
+                    consecutiveLosses: this.consecutiveLossTracker.value,
+                    processedClosedTrades: 0,
+                    source: 'PERSISTED_STATE',
+                    resetAt: persistedState.reset_at,
+                    resetAuthority: persistedState.reset_authority
+                });
+                return;
+            }
             const outcomes = await (
                 this.deps.closedTradeOutcomeReader?.()
                 ?? readAegisClosedTradeOutcomes(undefined, this.getTradingMode())
@@ -4078,12 +4096,30 @@ export class TradingService {
             this.consecutiveLossTracker.restore(outcomes);
             this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
                 consecutiveLosses: this.consecutiveLossTracker.value,
-                processedClosedTrades: this.consecutiveLossTracker.processedCount
+                processedClosedTrades: this.consecutiveLossTracker.processedCount,
+                source: 'CLOSED_TRADE_HISTORY'
             });
         } catch (error) {
             this.deps.logger.error('aegis_consecutive_loss_streak_recovery_failed', { error: String(error) });
             throw new Error('AEGIS_CONSECUTIVE_LOSS_RECOVERY_FAILED');
         }
+    }
+
+    private async persistConsecutiveLossState(lastTradeId: string): Promise<void> {
+        const store = this.deps.consecutiveLossStateStore;
+        if (!store) return;
+        const previous = await store.read(this.getTradingMode());
+        const now = new Date().toISOString();
+        const state: AegisConsecutiveLossState = {
+            schema_id: 'aegis-consecutive-loss-state-v1',
+            mode: this.getTradingMode(),
+            consecutive_losses: this.consecutiveLossTracker.value,
+            updated_at: now,
+            last_trade_id: lastTradeId,
+            reset_authority: previous?.reset_authority ?? 'SYSTEM_INITIALIZED_FROM_CLOSED_TRADE_HISTORY',
+            reset_at: previous?.reset_at ?? now
+        };
+        await store.write(state);
     }
 
     private async ensureAegisBrackets(
