@@ -55,7 +55,7 @@ describe('CurrentBrainCanonicalDecision', () => {
       'OWNER_AUTHORIZED_HYBRID_DIRECTIONAL_MULTI_SYMBOL_5M_QUALITY_SELECTION_V2',
     );
     expect(HYBRID_DIRECTIONAL_CONFIGURATION_SHA256).toBe(
-      'e09743bceda015b12e0fe6400181f297fca7b62d4d3c4169931edbf150e6659c',
+      '26507443adf07dfc5a90d48a1c5f472f989a26cfe929740bd9e2009c39aaa3a9',
     );
   });
 

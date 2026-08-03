@@ -19,7 +19,7 @@ export const HYBRID_DIRECTIONAL_MODEL_ID = 'aegis-hybrid-directional-committee-v
 export const HYBRID_DIRECTIONAL_MODEL_SHA256 =
   'f52dcaa12fe94b6cc9023c25cf95ea2d6fc16296c9b65c2c93d00e13e66ba0e8';
 export const HYBRID_DIRECTIONAL_CONFIGURATION_SHA256 =
-  'e09743bceda015b12e0fe6400181f297fca7b62d4d3c4169931edbf150e6659c';
+  '26507443adf07dfc5a90d48a1c5f472f989a26cfe929740bd9e2009c39aaa3a9';
 
 interface DecisionAuthorityProfile {
   authority: string;
