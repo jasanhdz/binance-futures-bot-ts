@@ -1,6 +1,6 @@
 /**
  * Exchange Port - Application Layer Interface
- *
+ * 
  * Defines the contract for exchange operations.
  * Implemented by BinanceAdapter in infrastructure layer.
  */
@@ -61,12 +61,7 @@ export interface Exchange {
   getLastCandle(symbol: string): Promise<Candle | null>;
   getCachedCandles?(symbol: string, interval: string, limit: number): Candle[];
   subscribeToCandles(symbol: string): void;
-  subscribeToPartialDepth?(
-    symbol: string,
-    levels: number,
-    speed: '100ms' | '250ms' | '500ms',
-    callback: (depth: any) => void,
-  ): void;
+  subscribeToPartialDepth?(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void): void;
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;
   getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;
@@ -109,8 +104,6 @@ export interface Exchange {
       orderId: string;
       type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
       stopPrice: number;
-      quantity: number;
-      closePosition: boolean;
     }[]
   >;
 
