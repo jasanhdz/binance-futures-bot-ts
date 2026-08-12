@@ -33,6 +33,14 @@ export interface DurableEntryIntent {
   createdAt: string;
   clientOrderId: string;
   closeClientOrderId: string;
+  protectionPolicy: DurableProtectionPolicy;
+}
+
+export interface DurableProtectionPolicy {
+  stopRoe: number;
+  takeProfitRoe: number;
+  leverage: number;
+  pricePrecision: number;
 }
 
 export interface ProtectionPlan {
@@ -128,6 +136,7 @@ function canonicalIntentMaterial(
     input.expectedPrice,
     input.policyId,
     input.featureHash,
+    input.protectionPolicy,
   ]);
 }
 
@@ -140,6 +149,15 @@ export function createDurableEntryIntent(
 ): DurableEntryIntent {
   finitePositive(input.quantity, 'INTENT_QUANTITY');
   finitePositive(input.expectedPrice, 'INTENT_EXPECTED_PRICE');
+  finitePositive(input.protectionPolicy.leverage, 'PROTECTION_LEVERAGE');
+  if (
+    !Number.isFinite(input.protectionPolicy.stopRoe) ||
+    !Number.isFinite(input.protectionPolicy.takeProfitRoe) ||
+    !Number.isInteger(input.protectionPolicy.pricePrecision) ||
+    input.protectionPolicy.pricePrecision < 0
+  ) {
+    throw new DurableExecutionError('PROTECTION_POLICY_INVALID');
+  }
   if (
     !/^[A-Z0-9]{5,20}$/.test(input.symbol) ||
     !input.signalId ||
@@ -154,6 +172,28 @@ export function createDurableEntryIntent(
     intentId: `entry:${digest}`,
     clientOrderId: `aegis-e-${digest}`,
     closeClientOrderId: `aegis-x-${digest}`,
+  };
+}
+
+export function buildProtectionPlan(
+  intent: DurableEntryIntent,
+  position: PositionTruth,
+): ProtectionPlan {
+  const { stopRoe, takeProfitRoe, leverage, pricePrecision } = intent.protectionPolicy;
+  const price = (roe: number, kind: 'STOP' | 'TP'): number => {
+    const move = Math.abs(roe) / leverage;
+    if (kind === 'STOP') {
+      return intent.side === 'LONG'
+        ? position.entryPrice * (1 - move)
+        : position.entryPrice * (1 + move);
+    }
+    return intent.side === 'LONG'
+      ? position.entryPrice * (1 + move)
+      : position.entryPrice * (1 - move);
+  };
+  return {
+    stopPrice: Number(price(stopRoe, 'STOP').toFixed(pricePrecision)),
+    takeProfitPrice: Number(price(takeProfitRoe, 'TP').toFixed(pricePrecision)),
   };
 }
 
@@ -187,14 +227,14 @@ export class DurableExecutionCoordinator {
     return record;
   }
 
-  async submit(intent: DurableEntryIntent, plan: ProtectionPlan): Promise<DurableExecutionRecord> {
+  async submit(intent: DurableEntryIntent): Promise<DurableExecutionRecord> {
     let record = this.prepare(intent);
     if (TERMINAL.has(record.state) || record.state === 'PROTECTED') return record;
     if (!['INTENT_CREATED', 'RECONCILIATION_REQUIRED'].includes(record.state)) {
-      return this.reconcile(intent, plan);
+      return this.reconcile(intent);
     }
     if (record.state === 'RECONCILIATION_REQUIRED' && !record.retryAuthorized) {
-      return this.reconcile(intent, plan);
+      return this.reconcile(intent);
     }
     record = this.transition(record, {
       state: 'ORDER_SUBMITTING',
@@ -218,19 +258,16 @@ export class DurableExecutionCoordinator {
             ? 'ENTRY_ACKNOWLEDGEMENT_AMBIGUOUS'
             : 'ENTRY_TRANSPORT_RESULT_UNKNOWN',
       });
-      return this.reconcile(intent, plan);
+      return this.reconcile(intent);
     }
     record = this.transition(record, {
       state: 'ORDER_SUBMITTED',
       lastReason: 'ENTRY_TRANSPORT_ACKNOWLEDGED',
     });
-    return this.reconcile(intent, plan);
+    return this.reconcile(intent);
   }
 
-  async reconcile(
-    intent: DurableEntryIntent,
-    plan: ProtectionPlan,
-  ): Promise<DurableExecutionRecord> {
+  async reconcile(intent: DurableEntryIntent): Promise<DurableExecutionRecord> {
     let record = this.prepare(intent);
     const truth = await this.exchange.readTruth(intent);
     if (!truth.conclusive) {
@@ -288,6 +325,7 @@ export class DurableExecutionCoordinator {
         lastReason: 'FILLS_WITHOUT_POSITION_REQUIRES_RECONCILIATION',
       });
     }
+    const plan = buildProtectionPlan(intent, truth.position);
     const entryStatus =
       exposureQuantity + Number.EPSILON < intent.quantity ? 'PARTIALLY_FILLED' : 'FILLED';
     record = this.transition(record, {
@@ -336,15 +374,12 @@ export class DurableExecutionCoordinator {
           lastReason: 'PROTECTION_FAILED_EMERGENCY_EXIT_AMBIGUOUS',
         });
       }
-      return this.reconcile(intent, plan);
+      return this.reconcile(intent);
     }
   }
 
-  async requestExit(
-    intent: DurableEntryIntent,
-    plan: ProtectionPlan,
-  ): Promise<DurableExecutionRecord> {
-    let record = await this.reconcile(intent, plan);
+  async requestExit(intent: DurableEntryIntent): Promise<DurableExecutionRecord> {
+    let record = await this.reconcile(intent);
     if (record.state === 'CLOSED' || record.state === 'FAILED_CLOSED') return record;
     const truth = await this.exchange.readTruth(intent);
     if (!truth.conclusive || !truth.position) return record;
@@ -363,25 +398,17 @@ export class DurableExecutionCoordinator {
         });
       }
     }
-    return this.reconcile(intent, plan);
+    return this.reconcile(intent);
   }
 
   async recover(
-    planFor: (position: PositionTruth) => ProtectionPlan,
+    policyForUnmanagedPosition: (
+      position: PositionTruth,
+    ) => DurableProtectionPolicy | Promise<DurableProtectionPolicy>,
   ): Promise<DurableExecutionRecord[]> {
     const recovered: DurableExecutionRecord[] = [];
     for (const record of this.store.listNonTerminal()) {
-      recovered.push(
-        await this.reconcile(
-          record.intent,
-          planFor({
-            symbol: record.intent.symbol,
-            side: record.intent.side,
-            quantity: Math.max(record.filledQuantity, record.intent.quantity),
-            entryPrice: record.averagePrice ?? record.intent.expectedPrice,
-          }),
-        ),
-      );
+      recovered.push(await this.reconcile(record.intent));
     }
     const known = new Set(
       recovered.map((record) => `${record.intent.symbol}:${record.intent.side}`),
@@ -398,6 +425,7 @@ export class DurableExecutionCoordinator {
         policyId: 'EXCHANGE_EXPOSURE_RECOVERY',
         featureHash: 'NOT_AVAILABLE_RECOVERED_FROM_EXCHANGE',
         createdAt,
+        protectionPolicy: await policyForUnmanagedPosition(position),
       });
       let record = this.prepare(intent);
       record = this.transition(record, {
@@ -406,7 +434,7 @@ export class DurableExecutionCoordinator {
         averagePrice: position.entryPrice,
         lastReason: 'LOCAL_STATE_LOST_EXCHANGE_POSITION_ADOPTED',
       });
-      recovered.push(await this.reconcile(record.intent, planFor(position)));
+      recovered.push(await this.reconcile(record.intent));
     }
     return recovered;
   }

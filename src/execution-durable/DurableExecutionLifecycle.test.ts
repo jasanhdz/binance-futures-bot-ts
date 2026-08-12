@@ -17,8 +17,10 @@ import {
   ProtectionTruth,
 } from './DurableExecutionLifecycle';
 import { FsDurableExecutionStore } from './FsDurableExecutionStore';
+import { DurableAegisEntryExecutor } from './DurableAegisEntryExecutor';
 
 const PLAN: ProtectionPlan = { stopPrice: 95, takeProfitPrice: 110 };
+const POLICY = { stopRoe: -0.5, takeProfitRoe: 1, leverage: 10, pricePrecision: 2 };
 
 class MemoryStore implements DurableExecutionStore {
   records = new Map<string, DurableExecutionRecord>();
@@ -145,10 +147,61 @@ function intent(signalId = 'signal-1'): DurableEntryIntent {
     policyId: 'v18-test',
     featureHash: 'feature-hash',
     createdAt: '2026-08-12T00:00:00Z',
+    protectionPolicy: POLICY,
   });
 }
 
 describe('durable execution lifecycle', () => {
+  it('returns a managed entry only after exact protection is confirmed', async () => {
+    const exchange = new FakeExchange();
+    const coordinator = new DurableExecutionCoordinator(new MemoryStore(), exchange);
+    const executor = new DurableAegisEntryExecutor(coordinator);
+    const entry = intent();
+    const result = await executor.execute({
+      signalId: entry.signalId,
+      symbol: entry.symbol,
+      side: entry.side,
+      quantity: entry.quantity,
+      expectedPrice: entry.expectedPrice,
+      policyId: entry.policyId,
+      featureHash: entry.featureHash,
+      createdAt: entry.createdAt,
+      protectionPolicy: entry.protectionPolicy,
+    });
+    expect(result.record.state).toBe('PROTECTED');
+    expect(result.position.quantity).toBe(entry.quantity);
+    expect(result.record.protection?.protectedQuantity).toBe(entry.quantity);
+  });
+
+  it('fails closed instead of returning an entry with partial bracket coverage', async () => {
+    const exchange = new FakeExchange();
+    exchange.ensureProtection = vi.fn(async (_intent, position, plan) => ({
+      stopPresent: true,
+      takeProfitPresent: true,
+      protectedQuantity: position.quantity / 2,
+      stopPrice: plan.stopPrice,
+      takeProfitPrice: plan.takeProfitPrice,
+    }));
+    const executor = new DurableAegisEntryExecutor(
+      new DurableExecutionCoordinator(new MemoryStore(), exchange),
+    );
+    const entry = intent('partial-protection');
+    await expect(
+      executor.execute({
+        signalId: entry.signalId,
+        symbol: entry.symbol,
+        side: entry.side,
+        quantity: entry.quantity,
+        expectedPrice: entry.expectedPrice,
+        policyId: entry.policyId,
+        featureHash: entry.featureHash,
+        createdAt: entry.createdAt,
+        protectionPolicy: entry.protectionPolicy,
+      }),
+    ).rejects.toThrow('ENTRY_NOT_SAFELY_MANAGED:CLOSED');
+    expect(exchange.closes).toEqual([entry.closeClientOrderId]);
+  });
+
   it('creates deterministic Binance-safe identities and rejects identity conflicts', () => {
     const first = intent();
     const second = intent();
@@ -169,7 +222,6 @@ describe('durable execution lifecycle', () => {
     exchange.fill(entry, 0.75);
     const result = await new DurableExecutionCoordinator(new MemoryStore(), exchange).reconcile(
       entry,
-      PLAN,
     );
     expect(result.state).toBe('PROTECTED');
     expect(result.entryStatus).toBe('PARTIALLY_FILLED');
@@ -182,10 +234,10 @@ describe('durable execution lifecycle', () => {
     exchange.submitBehavior = 'AMBIGUOUS_RECEIVED';
     const entry = intent();
     const coordinator = new DurableExecutionCoordinator(new MemoryStore(), exchange);
-    const result = await coordinator.submit(entry, PLAN);
+    const result = await coordinator.submit(entry);
     expect(result.state).toBe('PROTECTED');
     expect(exchange.submissions).toEqual([entry.clientOrderId]);
-    await coordinator.submit(entry, PLAN);
+    await coordinator.submit(entry);
     expect(exchange.submissions).toEqual([entry.clientOrderId]);
   });
 
@@ -194,11 +246,11 @@ describe('durable execution lifecycle', () => {
     exchange.submitBehavior = 'AMBIGUOUS_NOT_RECEIVED';
     const entry = intent();
     const coordinator = new DurableExecutionCoordinator(new MemoryStore(), exchange);
-    const first = await coordinator.submit(entry, PLAN);
+    const first = await coordinator.submit(entry);
     expect(first.state).toBe('RECONCILIATION_REQUIRED');
     expect(first.retryAuthorized).toBe(true);
     exchange.submitBehavior = 'ACK';
-    const second = await coordinator.submit(entry, PLAN);
+    const second = await coordinator.submit(entry);
     expect(second.state).toBe('PROTECTED');
     expect(exchange.submissions).toEqual([entry.clientOrderId, entry.clientOrderId]);
   });
@@ -212,7 +264,9 @@ describe('durable execution lifecycle', () => {
     first.prepare(entry);
     exchange.fill(entry, entry.quantity);
     const reloaded = new FsDurableExecutionStore(root);
-    const recovered = await new DurableExecutionCoordinator(reloaded, exchange).recover(() => PLAN);
+    const recovered = await new DurableExecutionCoordinator(reloaded, exchange).recover(
+      () => POLICY,
+    );
     expect(recovered).toHaveLength(1);
     expect(recovered[0].state).toBe('PROTECTED');
     expect(reloaded.get(entry.intentId)?.protection?.stopPresent).toBe(true);
@@ -227,7 +281,7 @@ describe('durable execution lifecycle', () => {
       fillsQuantity: 1,
     };
     const store = new MemoryStore();
-    const recovered = await new DurableExecutionCoordinator(store, exchange).recover(() => PLAN);
+    const recovered = await new DurableExecutionCoordinator(store, exchange).recover(() => POLICY);
     expect(recovered).toHaveLength(1);
     expect(recovered[0].lastReason).toBe('PROTECTION_CREATED_AND_VERIFIED');
     expect(recovered[0].intent.policyId).toBe('EXCHANGE_EXPOSURE_RECOVERY');
@@ -240,7 +294,6 @@ describe('durable execution lifecycle', () => {
     exchange.fill(entry, entry.quantity);
     const result = await new DurableExecutionCoordinator(new MemoryStore(), exchange).reconcile(
       entry,
-      PLAN,
     );
     expect(result.state).toBe('CLOSED');
     expect(exchange.closes).toEqual([entry.closeClientOrderId]);
@@ -251,10 +304,10 @@ describe('durable execution lifecycle', () => {
     const entry = intent();
     exchange.fill(entry, entry.quantity);
     const coordinator = new DurableExecutionCoordinator(new MemoryStore(), exchange);
-    await coordinator.reconcile(entry, PLAN);
-    const closed = await coordinator.requestExit(entry, PLAN);
+    await coordinator.reconcile(entry);
+    const closed = await coordinator.requestExit(entry);
     expect(closed.state).toBe('CLOSED');
-    await coordinator.requestExit(entry, PLAN);
+    await coordinator.requestExit(entry);
     expect(exchange.closes).toEqual([entry.closeClientOrderId]);
   });
 

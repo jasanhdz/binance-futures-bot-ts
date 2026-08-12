@@ -32,6 +32,12 @@ function intent() {
     policyId: 'v18-test',
     featureHash: 'feature-hash',
     createdAt: '2026-08-12T00:00:00Z',
+    protectionPolicy: {
+      stopRoe: -0.5,
+      takeProfitRoe: 1,
+      leverage: 10,
+      pricePrecision: 2,
+    },
   });
 }
 
