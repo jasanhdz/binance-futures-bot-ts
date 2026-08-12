@@ -30,7 +30,7 @@ function sha256(path: string): string {
 }
 
 const baselineOperationalDigests: Record<string, string> = {
-  'src/main.ts': '1ba31db96d39d85ba56ff4a69aa1e9cdf94fd589ac788f0c4a88f93bf2ae1a3b',
+  'src/main.ts': '3b531c0e98916975b0e0e22cd735ce88cb786027cdb5a739362849cb0c76bf7d',
   'src/app/ports/Exchange.ts': '7f10635811493fd3b6bc7eda6fb72e272b819314a93bd6d1a079053d9e57685c',
   'src/infra/adapters/BinanceAdapter.ts':
     '54493cd95c454dfdc7baebb5e6f5cbb71404945c02efab82213b1b022b54167a',
@@ -48,7 +48,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
   'regime_config.live.yaml': '1306688131baf9f3ed01dcde00dd0ee6d7ef942352764cc7f005b8546964474f',
   'src/app/services/TradingService.ts':
-    'ae697fdaa72e11b027d3c471e1c5ca102c3a75cf15207a6e19ceb0e25e819c7a',
+    'e449d14bcb2c07a908ed84a4a8ad03bf7ec56c0171b36694ec64d3d8438b6034',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -73,7 +73,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/AegisShortGate.ts':
     'e7069d819cb5de8e4f2fab707e8eaecea03bf9795b039944774259773560ee12',
   'src/domain/services/CurrentBrainCanonicalDecision.ts':
-    '4db0a42132463e9b5005f7c23e55ad21740765205e1e0f5510b1d2bca17f2aee',
+    'a32681b0c93eb9990ec942013196c213cb0487922e4045baa9ab13d2979b2bca',
   'src/domain/services/aegis-entry/AegisEntryDecisionTypes.ts':
     '22ba65675509b3a2613ef7ba97b61807cb43be1925a9bdc88e11e4222bb7e92e',
   'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
