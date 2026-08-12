@@ -379,6 +379,8 @@ export class DurableExecutionCoordinator {
   }
 
   async requestExit(intent: DurableEntryIntent): Promise<DurableExecutionRecord> {
+    const existing = this.store.get(intent.intentId);
+    if (existing && TERMINAL.has(existing.state)) return existing;
     let record = await this.reconcile(intent);
     if (record.state === 'CLOSED' || record.state === 'FAILED_CLOSED') return record;
     const truth = await this.exchange.readTruth(intent);
