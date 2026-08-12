@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   entrySlippageBps,
+  evaluateV17ResearchArtifact,
   V17CanonicalDecision,
+  V17FrozenFeatureVector,
+  V17ResearchSideArtifact,
   validateV17Decision,
 } from './V17ExecutionCompatibility';
 
@@ -67,5 +72,34 @@ describe('V17 execution compatibility boundary', () => {
   it('records adverse slippage consistently for LONG and SHORT', () => {
     expect(entrySlippageBps('LONG', 100, 100.1)).toBeCloseTo(10);
     expect(entrySlippageBps('SHORT', 100, 99.9)).toBeCloseTo(10);
+  });
+
+  it('matches frozen Python outputs for every directional golden event', () => {
+    const artifact = JSON.parse(
+      fs.readFileSync(
+        path.resolve(__dirname, '../../../config/bundles/aegis-v17-research-artifact-v1.json'),
+        'utf8',
+      ),
+    ) as { sides: Record<'LONG' | 'SHORT', V17ResearchSideArtifact> };
+    const golden = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, 'fixtures/v17-golden-dataset.json'), 'utf8'),
+    ) as {
+      event_count: number;
+      events: Array<{
+        side: 'LONG' | 'SHORT';
+        feature_vector: V17FrozenFeatureVector;
+        python: ReturnType<typeof evaluateV17ResearchArtifact>;
+      }>;
+    };
+    expect(golden.event_count).toBe(22);
+    for (const event of golden.events) {
+      const actual = evaluateV17ResearchArtifact(artifact.sides[event.side], event.feature_vector);
+      expect(actual.clean_probability).toBeCloseTo(event.python.clean_probability, 12);
+      expect(actual.danger_probability).toBeCloseTo(event.python.danger_probability, 12);
+      expect(actual.mae_q90).toBeCloseTo(event.python.mae_q90, 12);
+      expect(actual.rank_score).toBeCloseTo(event.python.rank_score, 6);
+      expect(actual.selected).toBe(event.python.selected);
+      expect(actual.policy_status).toBe(event.python.policy_status);
+    }
   });
 });

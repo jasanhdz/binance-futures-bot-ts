@@ -41,9 +41,154 @@ export interface V17ExecutionIntentEvidence {
   };
 }
 
+export interface V17FrozenFeatureVector {
+  side: V17Side;
+  schemaVersion: string;
+  schemaHash: string;
+  names: string[];
+  values: number[];
+  dtype: 'float64';
+}
+
+interface V17FrozenLinearModel {
+  feature_names: string[];
+  means: number[];
+  scales: number[];
+  coefficients: number[];
+  intercept: number;
+  output: 'PROBABILITY' | 'RAW_SCORE';
+}
+
+interface V17TreeNode {
+  feature_index: number;
+  threshold: number;
+  left: number;
+  right: number;
+  value: number;
+  is_leaf: boolean;
+  missing_go_to_left: boolean;
+}
+
+interface V17TreeEnsemble {
+  feature_names: string[];
+  aggregation: 'ADDITIVE';
+  base_value: number;
+  trees: V17TreeNode[][];
+}
+
+export interface V17ResearchSideArtifact {
+  status: string;
+  feature_schema_hash: string;
+  models: {
+    clean: V17FrozenLinearModel;
+    danger: V17FrozenLinearModel;
+    mae_q90: V17TreeEnsemble;
+    ranker: V17FrozenLinearModel;
+  };
+  gate: {
+    thresholds: {
+      minimum_clean_probability: number;
+      maximum_danger_probability: number;
+      maximum_mae_q90: number;
+    };
+  };
+  policy: { minimum_score: number } | null;
+}
+
 function finite(value: number, name: string): number {
   if (!Number.isFinite(value)) throw new Error(`V17_NON_FINITE_${name}`);
   return value;
+}
+
+function sameNames(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
+function evaluateLinear(model: V17FrozenLinearModel, vector: V17FrozenFeatureVector): number {
+  if (
+    !sameNames(model.feature_names, vector.names) ||
+    model.means.length !== vector.values.length ||
+    model.scales.length !== vector.values.length ||
+    model.coefficients.length !== vector.values.length
+  ) {
+    throw new Error('V17_LINEAR_FEATURE_CONTRACT_MISMATCH');
+  }
+  let raw = finite(model.intercept, 'LINEAR_INTERCEPT');
+  for (let index = 0; index < vector.values.length; index += 1) {
+    const scale = finite(model.scales[index], 'LINEAR_SCALE');
+    if (scale <= 0) throw new Error('V17_LINEAR_SCALE_INVALID');
+    raw +=
+      finite(model.coefficients[index], 'LINEAR_COEFFICIENT') *
+      ((finite(vector.values[index], 'FEATURE_VALUE') -
+        finite(model.means[index], 'LINEAR_MEAN')) /
+        scale);
+  }
+  return model.output === 'PROBABILITY' ? 1 / (1 + Math.exp(-raw)) : raw;
+}
+
+function evaluateTree(tree: V17TreeNode[], values: number[]): number {
+  let index = 0;
+  for (let step = 0; step <= tree.length; step += 1) {
+    const node = tree[index];
+    if (!node) throw new Error('V17_TREE_CHILD_INVALID');
+    if (node.is_leaf) return finite(node.value, 'TREE_LEAF');
+    const value = finite(values[node.feature_index], 'TREE_FEATURE');
+    index = value <= finite(node.threshold, 'TREE_THRESHOLD') ? node.left : node.right;
+  }
+  throw new Error('V17_TREE_CYCLE');
+}
+
+function evaluateTreeEnsemble(
+  model: V17TreeEnsemble,
+  vector: V17FrozenFeatureVector,
+): number {
+  if (!sameNames(model.feature_names, vector.names) || model.aggregation !== 'ADDITIVE') {
+    throw new Error('V17_TREE_FEATURE_CONTRACT_MISMATCH');
+  }
+  return (
+    finite(model.base_value, 'TREE_BASE') +
+    model.trees.reduce((sum, tree) => sum + evaluateTree(tree, vector.values), 0)
+  );
+}
+
+export function evaluateV17ResearchArtifact(
+  artifact: V17ResearchSideArtifact,
+  vector: V17FrozenFeatureVector,
+): {
+  clean_probability: number;
+  danger_probability: number;
+  mae_q90: number;
+  rank_score: number;
+  selected: boolean;
+  policy_status: string;
+} {
+  if (
+    vector.dtype !== 'float64' ||
+    vector.schemaVersion !== 'aegis-v17-v9-directional-features-v1' ||
+    vector.schemaHash !== artifact.feature_schema_hash ||
+    !vector.values.every(Number.isFinite)
+  ) {
+    throw new Error('V17_FEATURE_CONTRACT_MISMATCH');
+  }
+  const clean = evaluateLinear(artifact.models.clean, vector);
+  const danger = evaluateLinear(artifact.models.danger, vector);
+  const mae = Math.max(0, evaluateTreeEnsemble(artifact.models.mae_q90, vector));
+  const rank = evaluateLinear(artifact.models.ranker, vector);
+  const threshold = artifact.gate.thresholds;
+  const selected =
+    artifact.policy !== null &&
+    clean >= threshold.minimum_clean_probability &&
+    danger <= threshold.maximum_danger_probability &&
+    mae <= threshold.maximum_mae_q90 &&
+    rank >= artifact.policy.minimum_score;
+  return {
+    clean_probability: clean,
+    danger_probability: danger,
+    mae_q90: mae,
+    rank_score: rank,
+    selected,
+    policy_status: artifact.status,
+  };
 }
 
 export function validateV17Decision(decision: V17CanonicalDecision): V17ExecutionIntentEvidence {
