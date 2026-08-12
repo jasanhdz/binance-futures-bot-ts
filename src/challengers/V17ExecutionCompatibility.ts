@@ -119,8 +119,7 @@ function evaluateLinear(model: V17FrozenLinearModel, vector: V17FrozenFeatureVec
     if (scale <= 0) throw new Error('V17_LINEAR_SCALE_INVALID');
     raw +=
       finite(model.coefficients[index], 'LINEAR_COEFFICIENT') *
-      ((finite(vector.values[index], 'FEATURE_VALUE') -
-        finite(model.means[index], 'LINEAR_MEAN')) /
+      ((finite(vector.values[index], 'FEATURE_VALUE') - finite(model.means[index], 'LINEAR_MEAN')) /
         scale);
   }
   return model.output === 'PROBABILITY' ? 1 / (1 + Math.exp(-raw)) : raw;
@@ -138,10 +137,7 @@ function evaluateTree(tree: V17TreeNode[], values: number[]): number {
   throw new Error('V17_TREE_CYCLE');
 }
 
-function evaluateTreeEnsemble(
-  model: V17TreeEnsemble,
-  vector: V17FrozenFeatureVector,
-): number {
+function evaluateTreeEnsemble(model: V17TreeEnsemble, vector: V17FrozenFeatureVector): number {
   if (!sameNames(model.feature_names, vector.names) || model.aggregation !== 'ADDITIVE') {
     throw new Error('V17_TREE_FEATURE_CONTRACT_MISMATCH');
   }
