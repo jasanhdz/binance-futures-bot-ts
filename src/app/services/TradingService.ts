@@ -77,6 +77,7 @@ import {
     AegisRegimeContextRuntimeConfig
 } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { AegisEntryGuardOrchestrator } from '../../domain/services/aegis-entry/AegisEntryGuardOrchestrator';
+import { evaluateAegisEntrySafetyConsensus } from '../../domain/services/AegisEntrySafetyConsensus';
 import {
     AegisClosedTradeOutcome,
     AegisConsecutiveLossTracker
@@ -1606,8 +1607,20 @@ export class TradingService {
     }
 
     private getCachedEntryQualityCandles(symbol: string): Candle[] {
-        const cachedCandles = this.deps.exchange.getCachedCandles?.(symbol, '5m', 40);
-        return Array.isArray(cachedCandles) ? cachedCandles : [];
+        // RegimeEngineV2 needs 120 observations for EMA99 and regime stability.
+        // Keep this cache-only so technical telemetry cannot add REST latency to entry.
+        const cachedCandles = this.deps.exchange.getCachedCandles?.(symbol, '5m', 160);
+        if (!Array.isArray(cachedCandles)) return [];
+        const now = Date.now();
+        const intervalMs = 5 * 60 * 1000;
+        return cachedCandles.filter((candle) => {
+            const openTime = this.finiteNumber(candle.openTime)
+                ? Number(candle.openTime)
+                : this.finiteNumber(candle.timestamp) ? Number(candle.timestamp) : undefined;
+            // Historical/test candles without a usable timestamp remain eligible. A
+            // known in-progress websocket candle must never drive a regime decision.
+            return openTime === undefined || openTime + intervalMs <= now;
+        });
     }
 
     private buildEntryQualityMarketContext(symbol: string): {
@@ -2281,8 +2294,21 @@ export class TradingService {
                     },
                     shadowGuards: ['momentum_ride', 'clean_entry', 'event_risk', 'entry_quality', 'decision_brain', 'regime', 'probe_mode', 'short_gate', 'long_risk_shadow'],
                     enforcedGuards: ['phase_o_ml', 'brackets', 'max_trades_per_day', 'daily_loss_stop', 'exchange_min_notional', 'link_no_entry'],
+                    technicalEntryProtectionEnforced: false,
+                    technicalEntryProtectionStatus: 'OBSERVATION_ONLY_NOT_VALIDATED',
                     ignoredForPhaseO: true
                 };
+                if (this.shouldLogError(symbol, 'PHASE_O_TECHNICAL_ENTRY_PROTECTION_NOT_ENFORCED', 300000)) {
+                    logger.error('aegis_phase_o_technical_entry_protection_not_enforced', {
+                        symbol,
+                        side,
+                        phase_o_metadata_source_path: phaseOMetadata?.sourcePath,
+                        regime_guard_mode: 'SHADOW',
+                        regime_context_mode: entryPolicy.guards.regime_context.mode,
+                        evidence: 'multitimeframe_filter_not_validated',
+                        action: 'OBSERVATION_ONLY'
+                    });
+                }
                 logger.info('phase_o_short_guard_modes_applied', phaseOGuardMetadata);
                 await this.logAegisTradeEvent(symbol, 'PHASE_O_SHORT_GUARD_MODES_APPLIED', {
                     tradeId,
@@ -2294,6 +2320,18 @@ export class TradingService {
                 entryContext,
                 entryPolicy
             );
+            const consensusConfig = this.getAegisTurboYamlConfig()?.entry_safety_consensus;
+            const entrySafetyConsensus = evaluateAegisEntrySafetyConsensus({
+                side,
+                entryDecision,
+                config: consensusConfig ? {
+                    enabled: consensusConfig.enabled,
+                    mode: consensusConfig.mode,
+                    minimumRootRiskFamilies: consensusConfig.minimum_root_risk_families,
+                    criticalLongVetoMode: consensusConfig.critical_long_veto_mode,
+                    requireValidRegimeForCriticalLong: consensusConfig.require_valid_regime_for_critical_long
+                } : undefined
+            });
             const shortGateDecision = entryDecision.decisions.shortGate;
             const entryQualityDecision = entryDecision.decisions.entryQuality;
             const eventRiskDecision = entryDecision.decisions.eventRisk;
@@ -2318,6 +2356,33 @@ export class TradingService {
                 signalId,
                 tradeId
             );
+
+            await this.logAegisTradeEvent(symbol, 'ENTRY_SAFETY_CONSENSUS_DECISION', {
+                tradeId,
+                reason: entrySafetyConsensus.reason,
+                metadata: {
+                    ...entrySafetyConsensus,
+                    side,
+                    finalEntryPolicyDecision: entryDecision.finalDecision,
+                    finalEntryPolicyReason: entryDecision.finalReason
+                }
+            });
+            if (!entrySafetyConsensus.allowed) {
+                const deniedGate = { ...gateAfterPositionOverride, allowed: false, reason: entrySafetyConsensus.reason };
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    tradeId,
+                    gate: deniedGate,
+                    executed: false,
+                    metadata: { entrySafetyConsensus, entryPolicy: entryDecision.metadata }
+                });
+                logger.warn('aegis_entry_safety_consensus_blocked', {
+                    symbol,
+                    side,
+                    ...entrySafetyConsensus
+                });
+                return;
+            }
 
             if (shortGateDecision && !shortGateDecision.allowed && entryDecision.deniedBy === 'short_gate') {
                 const deniedGate = { ...gateAfterPositionOverride, allowed: false, reason: shortGateDecision.reason };
@@ -3683,8 +3748,9 @@ export class TradingService {
     private async managePosition(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
         const { exchange, logger, notifier } = this.deps;
         const side = botState.lastSide as Side;
-        const entryPrice = botState.lastEntryPrice || 0;
-        const leverage = botState.lastLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
+        let entryPrice = botState.lastEntryPrice || 0;
+        let leverage = botState.lastLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
+        const requireBrackets = this.getAegisTurboYamlConfig()?.require_brackets !== false;
 
         try {
             const position = await exchange.readActivePosition(symbol, side);
@@ -3710,7 +3776,41 @@ export class TradingService {
                 return;
             }
 
-            if (this.getAegisTurboYamlConfig()?.require_brackets !== false) {
+            let manualSizeIncreaseReconciled = false;
+            if (requireBrackets) {
+                try {
+                    manualSizeIncreaseReconciled = await this.reconcileManualPositionSizeIncrease({
+                        symbol,
+                        side,
+                        leverage,
+                        position,
+                        botState,
+                        symbolState
+                    });
+                } catch (resizeError) {
+                    logger.error('aegis_manual_position_size_increase_reconcile_failed', {
+                        symbol,
+                        side,
+                        previousQty: botState.lastEntryQty,
+                        currentQty: position.qtyAbs,
+                        error: String(resizeError)
+                    });
+                    if (this.shouldLogError(symbol, 'MANUAL_POSITION_SIZE_INCREASE_RECONCILE_FAILED', 300000)) {
+                        await notifier.sendAlert(
+                            'AEGIS MANUAL SIZE BRACKET UPDATE FAILED',
+                            `${symbol} | ${side}\nOld brackets preserved; retry scheduled.\n${String(resizeError).slice(0, 180)}`
+                        );
+                    }
+                    return;
+                }
+            }
+            if (manualSizeIncreaseReconciled) {
+                botState = symbolState.get();
+                entryPrice = botState.lastEntryPrice || position.entryPrice || entryPrice;
+                leverage = botState.lastLeverage || position.leverage || leverage;
+            }
+
+            if (requireBrackets) {
                 try {
                     await this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, botState);
                 } catch (bracketError) {
@@ -4181,6 +4281,190 @@ export class TradingService {
                 reason: 'TP_RECREATED'
             });
         }
+    }
+
+    private async reconcileManualPositionSizeIncrease(input: {
+        symbol: string;
+        side: Side;
+        leverage: number;
+        position: PositionInfo;
+        botState: BotState;
+        symbolState: StateStore;
+    }): Promise<boolean> {
+        const { exchange, logger } = this.deps;
+        const previousQty = input.botState.lastEntryQty;
+        const currentQty = input.position.qtyAbs;
+        if (!Number.isFinite(currentQty) || currentQty <= 0) return false;
+
+        if (!Number.isFinite(previousQty) || (previousQty ?? 0) <= 0) {
+            input.symbolState.set({ lastEntryQty: currentQty });
+            return false;
+        }
+
+        const quantityTolerance = Math.max(1e-12, previousQty! * 1e-6);
+        const quantityIncreased = currentQty > previousQty! + quantityTolerance;
+        const sameQuantity = Math.abs(currentQty - previousQty!) <= quantityTolerance;
+        const migrateQuantityBrackets = sameQuantity
+            && Boolean(input.botState.lastManualSizeIncreaseAt)
+            && input.botState.lastManualSizeIncreaseBracketMode !== 'CLOSE_POSITION';
+        if (!quantityIncreased && !migrateQuantityBrackets) {
+            if (!sameQuantity) {
+                // A reduction must never reset manually edited trigger prices, but the
+                // new baseline is needed to detect a later size increase correctly.
+                input.symbolState.set({ lastEntryQty: currentQty });
+            }
+            return false;
+        }
+
+        const newEntryPrice = input.position.entryPrice;
+        if (!Number.isFinite(newEntryPrice) || newEntryPrice <= 0) {
+            throw new Error('AEGIS_MANUAL_SIZE_INCREASE_ENTRY_PRICE_INVALID');
+        }
+
+        const effectiveLeverage = input.position.leverage || input.leverage;
+        const filters = await exchange.getSymbolFilters(input.symbol, effectiveLeverage);
+        const regimeConfig = this.getAegisTurboRegimeConfig(input.symbol);
+        const stopRoe = input.botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15;
+        const takeProfitRoe = input.botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25;
+        const newStopPrice = this.roundPrice(
+            this.bracketPrice(input.side, newEntryPrice, stopRoe, effectiveLeverage, 'STOP'),
+            filters
+        );
+        const newTpPrice = this.roundPrice(
+            this.bracketPrice(input.side, newEntryPrice, takeProfitRoe, effectiveLeverage, 'TP'),
+            filters
+        );
+        const markPrice = await exchange.getMarkPrice(input.symbol);
+        const triggersValid = input.side === 'LONG'
+            ? newStopPrice < markPrice && newTpPrice > markPrice
+            : newStopPrice > markPrice && newTpPrice < markPrice;
+        if (!triggersValid) {
+            await this.logAegisTradeEvent(input.symbol, 'MANUAL_SIZE_INCREASE_BRACKET_RESET_DEFERRED', {
+                tradeId: input.botState.lastTradeId,
+                reason: 'NEW_BRACKET_WOULD_TRIGGER_IMMEDIATELY',
+                metadata: { previousQty, currentQty, newEntryPrice, markPrice, newStopPrice, newTpPrice }
+            });
+            throw new Error('AEGIS_MANUAL_SIZE_INCREASE_BRACKET_TRIGGER_INVALID');
+        }
+
+        const beforeOrders = await exchange.listCloseOrdersForSide(input.symbol, input.side);
+        const priceMatches = (actual: number, expected: number) => Math.abs(actual - expected) <= Math.max(filters.tickSize / 2, 1e-12);
+        const stopMatches = (order: typeof beforeOrders[number]) => order.type.includes('STOP')
+            && !order.type.includes('TAKE_PROFIT')
+            && priceMatches(order.stopPrice, newStopPrice);
+        const tpMatches = (order: typeof beforeOrders[number]) => order.type.includes('TAKE_PROFIT')
+            && priceMatches(order.stopPrice, newTpPrice);
+        const isStop = (order: typeof beforeOrders[number]) => order.type.includes('STOP')
+            && !order.type.includes('TAKE_PROFIT');
+        const isTp = (order: typeof beforeOrders[number]) => order.type.includes('TAKE_PROFIT');
+        const placeClosePositionStop = () => exchange.placeStopClose(input.symbol, input.side, newStopPrice);
+        const placeClosePositionTp = () => exchange.placeTpClose(input.symbol, input.side, newTpPrice);
+
+        const replaceOneBracket = async (
+            kind: 'STOP' | 'TP',
+            orders: typeof beforeOrders,
+            matchesTarget: (order: typeof beforeOrders[number]) => boolean,
+            matchesKind: (order: typeof beforeOrders[number]) => boolean,
+            placeTarget: () => Promise<boolean>
+        ): Promise<typeof beforeOrders> => {
+            if (orders.some((order) => matchesTarget(order) && order.closePosition === true)) return orders;
+            const priorOrders = orders.filter(matchesKind);
+            for (const order of priorOrders) {
+                await exchange.cancelOrderById(input.symbol, order.orderId);
+            }
+            try {
+                const placed = await placeTarget();
+                if (!placed) throw new Error(`AEGIS_MANUAL_SIZE_INCREASE_${kind}_REJECTED`);
+                const verified = await exchange.listCloseOrdersForSide(input.symbol, input.side);
+                if (!verified.some((order) => matchesTarget(order) && order.closePosition === true)) {
+                    throw new Error(`AEGIS_MANUAL_SIZE_INCREASE_${kind}_NOT_VERIFIED`);
+                }
+                return verified;
+            } catch (error) {
+                // Restore the previous trigger immediately. Only the bracket type being
+                // replaced is affected; the opposite protective trigger remains active.
+                const restore = priorOrders[0];
+                if (restore) {
+                    const restoreQty = restore.closePosition === false ? currentQty : undefined;
+                    if (kind === 'STOP') {
+                        await exchange.placeStopClose(input.symbol, input.side, restore.stopPrice, restoreQty);
+                    } else {
+                        await exchange.placeTpClose(input.symbol, input.side, restore.stopPrice, restoreQty);
+                    }
+                }
+                throw error;
+            }
+        };
+
+        let verifiedOrders = await replaceOneBracket('STOP', beforeOrders, stopMatches, isStop, placeClosePositionStop);
+        verifiedOrders = await replaceOneBracket('TP', verifiedOrders, tpMatches, isTp, placeClosePositionTp);
+        if (!verifiedOrders.some((order) => stopMatches(order) && order.closePosition === true)
+            || !verifiedOrders.some((order) => tpMatches(order) && order.closePosition === true)) {
+            throw new Error('AEGIS_MANUAL_SIZE_INCREASE_CLOSE_POSITION_BRACKETS_NOT_VERIFIED');
+        }
+
+        const obsoleteBracketCount = beforeOrders.filter((order) => !stopMatches(order) && !tpMatches(order)).length;
+
+        const margin = input.position.isolatedMargin
+            ?? (newEntryPrice * currentQty) / effectiveLeverage;
+        const addedQty = quantityIncreased
+            ? currentQty - previousQty!
+            : input.botState.lastManualSizeIncreaseQty ?? 0;
+        const reconciledAt = Date.now();
+        input.symbolState.set({
+            lastEntryQty: currentQty,
+            lastEntryPrice: newEntryPrice,
+            lastEntryMargin: margin,
+            lastLeverage: effectiveLeverage,
+            lastActualLeverage: effectiveLeverage,
+            lastStopPrice: newStopPrice,
+            lastBracketStatus: 'OK',
+            lastPeakPrice: newEntryPrice,
+            peakRoe: 0,
+            lowestRoe: 0,
+            lastTrailStop: undefined,
+            highestRatchetStop: undefined,
+            breakEvenArmed: false,
+            breakEvenExecuted: false,
+            lastBreakEvenStop: undefined,
+            lastBreakEvenAt: undefined,
+            lastManualSizeIncreaseAt: reconciledAt,
+            lastManualSizeIncreaseQty: addedQty,
+            lastManualSizeIncreasePreviousQty: quantityIncreased
+                ? previousQty
+                : input.botState.lastManualSizeIncreasePreviousQty,
+            lastManualSizeIncreaseBracketMode: 'CLOSE_POSITION'
+        });
+        await this.logAegisTradeEvent(input.symbol, 'MANUAL_POSITION_SIZE_INCREASE_RECONCILED', {
+            tradeId: input.botState.lastTradeId,
+            reason: quantityIncreased ? 'POSITION_QUANTITY_INCREASED' : 'BRACKET_MODE_MIGRATED',
+            price: newEntryPrice,
+            metadata: {
+                previousQty,
+                currentQty,
+                addedQty,
+                previousEntryPrice: input.botState.lastEntryPrice,
+                newEntryPrice,
+                oldBracketCount: beforeOrders.length,
+                obsoleteBracketCount,
+                newStopPrice,
+                newTpPrice,
+                stopRoe,
+                takeProfitRoe,
+                bracketMode: 'CLOSE_POSITION'
+            }
+        });
+        logger.warn('aegis_manual_position_size_increase_reconciled', {
+            symbol: input.symbol,
+            side: input.side,
+            previousQty,
+            currentQty,
+            addedQty,
+            newEntryPrice,
+            newStopPrice,
+            newTpPrice
+        });
+        return true;
     }
 
     private bracketPrice(side: Side, entryPrice: number, roe: number, leverage: number, kind: 'STOP' | 'TP'): number {

@@ -90,6 +90,10 @@ export type BotState = {
   lastRequestedLeverage?: number;
   lastActualLeverage?: number;
   lastBracketStatus?: 'PENDING' | 'OK' | 'FAILED_CLOSED';
+  lastManualSizeIncreaseAt?: number;
+  lastManualSizeIncreaseQty?: number;
+  lastManualSizeIncreasePreviousQty?: number;
+  lastManualSizeIncreaseBracketMode?: 'CLOSE_POSITION' | 'REDUCE_ONLY_QTY';
 
   // Aegis Probe Mode v1 runtime metadata
   probeModeActive?: boolean;

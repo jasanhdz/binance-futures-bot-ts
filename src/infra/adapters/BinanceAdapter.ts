@@ -1318,6 +1318,9 @@ export class BinanceExchange implements Exchange {
           orderId: String(o.orderId),
           type: o.type as any,
           stopPrice: Number(o.stopPrice),
+          closePosition: Boolean(o.closePosition),
+          reduceOnly: Boolean(o.reduceOnly),
+          quantity: Number(o.origQty || o.quantity || 0),
         }));
 
       results.push(...standardOrders);
@@ -1374,6 +1377,9 @@ export class BinanceExchange implements Exchange {
             orderId: 'ALGO_' + String(o.algoId),
             type: o.orderType as any,
             stopPrice: Number(o.triggerPrice || 0),
+            closePosition: Boolean(o.closePosition),
+            reduceOnly: Boolean(o.reduceOnly),
+            quantity: Number(o.quantity || o.origQty || 0),
           }));
 
         results.push(...validAlgoOrders);

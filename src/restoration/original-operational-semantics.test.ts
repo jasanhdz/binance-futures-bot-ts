@@ -31,9 +31,9 @@ function sha256(path: string): string {
 
 const baselineOperationalDigests: Record<string, string> = {
   'src/main.ts': '3b531c0e98916975b0e0e22cd735ce88cb786027cdb5a739362849cb0c76bf7d',
-  'src/app/ports/Exchange.ts': '7f10635811493fd3b6bc7eda6fb72e272b819314a93bd6d1a079053d9e57685c',
+  'src/app/ports/Exchange.ts': '94bf506268595083231ae8604f5acdff318e08d1ade8a8ba74b382e3357697d9',
   'src/infra/adapters/BinanceAdapter.ts':
-    '54493cd95c454dfdc7baebb5e6f5cbb71404945c02efab82213b1b022b54167a',
+    'fd871d8b3f1774e50718d1dad8acbbdfcb118466695320da10ea498b83f207e5',
   'src/infra/config/environment.ts':
     '3bac013429ee9828f15aa5c9266cd92c285394ec5410c0ecf6efed4e5c7e16d8',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
@@ -46,9 +46,9 @@ const baselineOperationalDigests: Record<string, string> = {
 
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
-  'regime_config.live.yaml': '1306688131baf9f3ed01dcde00dd0ee6d7ef942352764cc7f005b8546964474f',
+  'regime_config.live.yaml': '40793dbcf9cdc05edf08e42325fc8d3c3089d58cb73e300d4805e5438513f434',
   'src/app/services/TradingService.ts':
-    'e449d14bcb2c07a908ed84a4a8ad03bf7ec56c0171b36694ec64d3d8438b6034',
+    '18dcaa067a28d0de19c789549cfeae0c250c6d467cf45aa98ff07daa4bac9034',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -85,7 +85,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':
     '041aadf526f858e70ce33d15516ba012dc3aca43f68d4ca2e88df265e054f07c',
   'src/infra/config/ConfigLoader.ts':
-    'd992fefd826b83b95fc4078ed284a861f69030d5bc590b7c20169082536cee13',
+    'a3e8f0e619b9b11cd9a8f7e4dc3b21698f613e32be4b215074547b3681c9780b',
 };
 
 type GuardFixture = [

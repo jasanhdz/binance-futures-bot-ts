@@ -108,6 +108,13 @@ export interface AegisTurboYamlConfig {
     max_liquidity_stress?: number;
     require_brackets?: boolean;
     close_if_bracket_fails?: boolean;
+    entry_safety_consensus?: {
+        enabled?: boolean;
+        mode?: 'OFF' | 'SHADOW' | 'ENFORCE';
+        minimum_root_risk_families?: number;
+        critical_long_veto_mode?: 'OFF' | 'SHADOW' | 'ENFORCE';
+        require_valid_regime_for_critical_long?: boolean;
+    };
 }
 
 export interface AegisPositionFractionOverrideRuleYamlConfig {

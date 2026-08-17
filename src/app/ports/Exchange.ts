@@ -104,6 +104,9 @@ export interface Exchange {
       orderId: string;
       type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
       stopPrice: number;
+      closePosition?: boolean;
+      reduceOnly?: boolean;
+      quantity?: number;
     }[]
   >;
 

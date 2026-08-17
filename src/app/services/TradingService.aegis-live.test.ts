@@ -600,6 +600,7 @@ function makeHarness(options: {
 	    symbols?: string[];
 	    symbolModes?: Record<string, 'OFF' | 'SHADOW' | 'LIVE'>;
 	    closeOrders?: any[];
+	    closeOrdersSequence?: any[][];
 	    balance?: number;
 	    readActivePosition?: any;
 	    readActivePositionSequence?: any[];
@@ -652,6 +653,15 @@ function makeHarness(options: {
 	    } else {
 	        readActivePosition.mockResolvedValue(position);
 	    }
+	    const listCloseOrdersForSide = vi.fn();
+	    if (options.closeOrdersSequence) {
+	        for (const orders of options.closeOrdersSequence) {
+	            listCloseOrdersForSide.mockResolvedValueOnce(orders);
+	        }
+	        listCloseOrdersForSide.mockResolvedValue(options.closeOrdersSequence[options.closeOrdersSequence.length - 1] ?? []);
+	    } else {
+	        listCloseOrdersForSide.mockResolvedValue(closeOrders);
+	    }
 	    const exchange = {
 	        getUSDTBalance: vi.fn().mockResolvedValue(options.balance ?? 20),
         getUSDTAccountSnapshot: vi.fn().mockResolvedValue(options.accountSnapshot ?? {
@@ -671,7 +681,7 @@ function makeHarness(options: {
         placeTpClose: options.placeTpCloseReject
             ? vi.fn().mockRejectedValue(new Error('tp failed'))
             : vi.fn().mockResolvedValue(true),
-        listCloseOrdersForSide: vi.fn().mockResolvedValue(closeOrders),
+        listCloseOrdersForSide,
         cancelOrderById: vi.fn().mockResolvedValue(undefined),
         closeSideMarketSafe: options.closeSideMarketSafeReject
             ? vi.fn().mockRejectedValue(new Error('close failed'))
@@ -2402,9 +2412,39 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.getCachedCandles).toHaveBeenCalledWith('ETHUSDT', '5m', 40);
+        expect(exchange.getCachedCandles).toHaveBeenCalledWith('ETHUSDT', '5m', 160);
         expect(exchange.getCandles).not.toHaveBeenCalled();
         expect(exchange.marketOpen).toHaveBeenCalled();
+    });
+
+    it('excludes an identifiable open 5m candle from technical entry context', () => {
+        const now = 1_800_000_000_000;
+        const closed = {
+            openTime: now - 10 * 60 * 1000,
+            timestamp: now - 10 * 60 * 1000,
+            open: 100,
+            high: 101,
+            low: 99,
+            close: 100.5,
+            volume: 100
+        };
+        const open = {
+            ...closed,
+            openTime: now - 60 * 1000,
+            timestamp: now - 60 * 1000,
+            close: 200
+        };
+        const { exchange, service } = makeHarness({ cachedCandles: [closed, open] });
+        const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+
+        try {
+            const context = (service as any).buildEntryQualityMarketContext('ETHUSDT');
+            expect(exchange.getCachedCandles).toHaveBeenCalledWith('ETHUSDT', '5m', 160);
+            expect(context.recentCandles).toEqual([closed]);
+            expect(context.currentPrice).toBe(100.5);
+        } finally {
+            nowSpy.mockRestore();
+        }
     });
 
     it('does not use model shadow entry_quality_model metadata to block marketOpen', async () => {
@@ -2816,6 +2856,245 @@ describe('TradingService Aegis live execution', () => {
 
         expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
         expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
+    });
+
+    it('recalculates and atomically replaces SL/TP after a manual position size increase', async () => {
+        const oldOrders = [
+            { orderId: 'old-sl', type: 'STOP_MARKET', stopPrice: 98, closePosition: true },
+            { orderId: 'old-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 102, closePosition: true }
+        ];
+        const stopVerifiedOrders = [
+            { orderId: 'new-sl', type: 'STOP_MARKET', stopPrice: 94.29, closePosition: true },
+            oldOrders[1]
+        ];
+        const fullyVerifiedOrders = [
+            stopVerifiedOrders[0],
+            { orderId: 'new-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 96.19, closePosition: true }
+        ];
+        const { exchange, historyLogger, logger, service, state } = makeHarness({
+            markPrice: 95,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 2, entryPrice: 95, leverage: 20, isolatedMargin: 9.5 },
+            closeOrdersSequence: [oldOrders, stopVerifiedOrders, fullyVerifiedOrders],
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'manual-add-long',
+                lastPeakPrice: 105,
+                peakRoe: 0.5,
+                lowestRoe: -0.2,
+                lastStopRoe: -0.15,
+                lastTakeProfitRoe: 0.25,
+                lastTrailStop: 101,
+                breakEvenExecuted: true,
+                lastBreakEvenStop: 100.3
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 94.29);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 96.19);
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-sl');
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-tp');
+        expect(exchange.cancelOrderById).not.toHaveBeenCalledWith('ETHUSDT', 'new-sl');
+        expect(exchange.cancelOrderById).not.toHaveBeenCalledWith('ETHUSDT', 'new-tp');
+        expect(state.get()).toEqual(expect.objectContaining({
+            lastEntryQty: 2,
+            lastEntryPrice: 95,
+            lastEntryMargin: 9.5,
+            lastStopPrice: 94.29,
+            peakRoe: 0,
+            lowestRoe: 0,
+            breakEvenExecuted: false,
+            lastManualSizeIncreaseQty: 1,
+            lastManualSizeIncreasePreviousQty: 1,
+            lastManualSizeIncreaseBracketMode: 'CLOSE_POSITION'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'MANUAL_POSITION_SIZE_INCREASE_RECONCILED',
+            reason: 'POSITION_QUANTITY_INCREASED'
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_manual_position_size_increase_reconciled', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            previousQty: 1,
+            currentQty: 2
+        }));
+    });
+
+    it('preserves manually edited SL/TP when position quantity did not increase', async () => {
+        const manualOrders = [
+            { orderId: 'manual-sl', type: 'STOP_MARKET', stopPrice: 99.1 },
+            { orderId: 'manual-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 108 }
+        ];
+        const { exchange, service } = makeHarness({
+            markPrice: 100,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            closeOrders: manualOrders,
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'manual-stop-only',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+    });
+
+    it('migrates a previously reconciled quantity bracket to closePosition without another size increase', async () => {
+        const quantityOrders = [
+            { orderId: 'qty-sl', type: 'STOP_MARKET', stopPrice: 94.29, closePosition: false, reduceOnly: true, quantity: 2 },
+            { orderId: 'qty-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 96.19, closePosition: false, reduceOnly: true, quantity: 2 }
+        ];
+        const stopVerified = [
+            { orderId: 'close-sl', type: 'STOP_MARKET', stopPrice: 94.29, closePosition: true },
+            quantityOrders[1]
+        ];
+        const fullyVerified = [
+            stopVerified[0],
+            { orderId: 'close-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 96.19, closePosition: true }
+        ];
+        const { exchange, historyLogger, service, state } = makeHarness({
+            markPrice: 95,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 2, entryPrice: 95, leverage: 20, isolatedMargin: 9.5 },
+            closeOrdersSequence: [quantityOrders, stopVerified, fullyVerified],
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 95,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 2,
+                lastEntryMargin: 9.5,
+                lastTradeId: 'manual-add-migrate',
+                lastPeakPrice: 95,
+                lastStopRoe: -0.15,
+                lastTakeProfitRoe: 0.25,
+                lastManualSizeIncreaseAt: Date.now() - 60_000,
+                lastManualSizeIncreaseQty: 1,
+                lastManualSizeIncreasePreviousQty: 1,
+                lastManualSizeIncreaseBracketMode: 'REDUCE_ONLY_QTY'
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'qty-sl');
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'qty-tp');
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 94.29);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 96.19);
+        expect(state.get()).toEqual(expect.objectContaining({
+            lastEntryQty: 2,
+            lastManualSizeIncreaseQty: 1,
+            lastManualSizeIncreasePreviousQty: 1,
+            lastManualSizeIncreaseBracketMode: 'CLOSE_POSITION'
+        }));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'MANUAL_POSITION_SIZE_INCREASE_RECONCILED',
+            reason: 'BRACKET_MODE_MIGRATED'
+        }));
+    });
+
+    it('records a manual position reduction without resetting manually edited brackets', async () => {
+        const manualOrders = [
+            { orderId: 'manual-sl', type: 'STOP_MARKET', stopPrice: 99.1 },
+            { orderId: 'manual-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 108 }
+        ];
+        const { exchange, service, state } = makeHarness({
+            markPrice: 100,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 0.5, entryPrice: 100, leverage: 20, isolatedMargin: 2.5 },
+            closeOrders: manualOrders,
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'manual-reduction',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(state.get()).toEqual(expect.objectContaining({ lastEntryQty: 0.5 }));
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+    });
+
+    it('keeps old brackets when replacement brackets cannot be verified', async () => {
+        const oldOrders = [
+            { orderId: 'old-sl', type: 'STOP_MARKET', stopPrice: 98, closePosition: true },
+            { orderId: 'old-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 102, closePosition: true }
+        ];
+        const { exchange, logger, notifier, service, state } = makeHarness({
+            markPrice: 95,
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 2, entryPrice: 95, leverage: 20, isolatedMargin: 9.5 },
+            closeOrdersSequence: [oldOrders, oldOrders],
+            initialState: {
+                mode: 'LONG_RIDE',
+                currentRegime: 'AEGIS_TURBO',
+                lastStrategy: 'AEGIS_TURBO',
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryAt: Date.now() - 10 * 60 * 1000,
+                lastEntryQty: 1,
+                lastEntryMargin: 5,
+                lastTradeId: 'manual-add-unverified',
+                lastPeakPrice: 100,
+                peakRoe: 0,
+                lowestRoe: 0,
+                lastStopRoe: -0.15,
+                lastTakeProfitRoe: 0.25
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenNthCalledWith(1, 'ETHUSDT', 'LONG', 94.29);
+        expect(exchange.placeStopClose).toHaveBeenNthCalledWith(2, 'ETHUSDT', 'LONG', 98, undefined);
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-sl');
+        expect(state.get()).toEqual(expect.objectContaining({ lastEntryQty: 1, lastEntryPrice: 100 }));
+        expect(logger.error).toHaveBeenCalledWith('aegis_manual_position_size_increase_reconcile_failed', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            previousQty: 1,
+            currentQty: 2
+        }));
+        expect(notifier.sendAlert).toHaveBeenCalledWith(
+            'AEGIS MANUAL SIZE BRACKET UPDATE FAILED',
+            expect.stringContaining('Old brackets preserved')
+        );
     });
 
     it('executes MOVE_SL_BE for a LONG position', async () => {
@@ -3271,6 +3550,12 @@ describe('TradingService Aegis live execution', () => {
             phase_o_short_guard_modes_applied: true,
             phase_o_metadata_source_path: 'signal.metadata.aegis.turbo.phase_o',
             guard_modes: expect.objectContaining({ clean_entry: 'SHADOW' })
+        }));
+        expect(logger.error).toHaveBeenCalledWith('aegis_phase_o_technical_entry_protection_not_enforced', expect.objectContaining({
+            symbol: 'BTCUSDT',
+            side: 'SHORT',
+            regime_guard_mode: 'SHADOW',
+            action: 'OBSERVATION_ONLY'
         }));
     });
 
