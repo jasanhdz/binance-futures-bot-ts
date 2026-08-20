@@ -507,6 +507,37 @@ export class AegisEntryGuardOrchestrator {
                         decisions
                     });
                 }
+
+                // Defect #13: ProbeMode ALLOW must pass through E4
+                const e4TailRisk = await E4TailRiskGuardAdapter.evaluate(
+                    adjustedContext,
+                    policy.guards.e4_tail_risk ?? { enabled: false, mode: 'OFF' }
+                );
+                guards.push(e4TailRisk.guard);
+                decisions.e4TailRisk = {
+                    available: e4TailRisk.e4Response.available,
+                    score: e4TailRisk.e4Response.score,
+                    threshold: e4TailRisk.e4Response.threshold,
+                    decision: e4TailRisk.e4Response.decision,
+                    reason: e4TailRisk.e4Response.reason,
+                    modelVersion: e4TailRisk.e4Response.model_version,
+                    featureHash: e4TailRisk.e4Response.feature_snapshot_hash
+                };
+
+                if (e4TailRisk.guard.enforced && e4TailRisk.guard.wouldBlock) {
+                    return finalize({
+                        context: adjustedContext,
+                        finalDecision: 'DENY',
+                        finalReason: e4TailRisk.guard.reason,
+                        deniedBy: 'e4_tail_risk',
+                        guards,
+                        adjustedLeverage,
+                        adjustedPositionFraction,
+                        ...momentumSelection,
+                        decisions
+                    });
+                }
+
                 return finalize({
                     context: adjustedContext,
                     finalDecision: 'ALLOW',

@@ -34,6 +34,14 @@ export interface E4TailRiskGuardAdapterResult {
 const E4_TIMEOUT_MS = 2000;
 const FROZEN_THRESHOLD = 0.4522452210875323;
 
+function computeFiveMinuteAlignedDecisionAt(): string {
+    const now = new Date();
+    const ms = now.getTime();
+    const fiveMinMs = 5 * 60 * 1000;
+    const alignedMs = Math.floor(ms / fiveMinMs) * fiveMinMs;
+    return new Date(alignedMs).toISOString();
+}
+
 function buildUnavailableResult(
     symbol: string,
     side: string,
@@ -114,6 +122,77 @@ function buildFromResponse(
         };
     }
 
+    // Defect #12: Validate threshold is exact frozen value
+    if (e4.threshold !== FROZEN_THRESHOLD) {
+        return {
+            guard: {
+                name: 'e4_tail_risk',
+                enabled: true,
+                mode: policy.mode ?? 'ENFORCE',
+                decision: 'DENY',
+                reason: 'e4_threshold_mismatch',
+                wouldBlock: true,
+                enforced: isGuardEnforced(policy),
+                metadata: {
+                    available: true,
+                    score: e4.score,
+                    threshold: e4.threshold,
+                    riskDecision: 'BLOCK',
+                    reason: `threshold_mismatch: expected ${FROZEN_THRESHOLD}, got ${e4.threshold}`,
+                    modelVersion: e4.model_version
+                }
+            },
+            e4Response: e4
+        };
+    }
+
+    // Defect #12: Validate non-empty model_version and feature_snapshot_hash
+    if (!e4.model_version || e4.model_version.length === 0) {
+        return {
+            guard: {
+                name: 'e4_tail_risk',
+                enabled: true,
+                mode: policy.mode ?? 'ENFORCE',
+                decision: 'DENY',
+                reason: 'e4_missing_model_version',
+                wouldBlock: true,
+                enforced: isGuardEnforced(policy),
+                metadata: {
+                    available: true,
+                    score: e4.score,
+                    threshold: e4.threshold,
+                    riskDecision: 'BLOCK',
+                    reason: 'missing_model_version',
+                    modelVersion: e4.model_version
+                }
+            },
+            e4Response: e4
+        };
+    }
+
+    if (!e4.feature_snapshot_hash || e4.feature_snapshot_hash.length === 0) {
+        return {
+            guard: {
+                name: 'e4_tail_risk',
+                enabled: true,
+                mode: policy.mode ?? 'ENFORCE',
+                decision: 'DENY',
+                reason: 'e4_missing_feature_hash',
+                wouldBlock: true,
+                enforced: isGuardEnforced(policy),
+                metadata: {
+                    available: true,
+                    score: e4.score,
+                    threshold: e4.threshold,
+                    riskDecision: 'BLOCK',
+                    reason: 'missing_feature_hash',
+                    modelVersion: e4.model_version
+                }
+            },
+            e4Response: e4
+        };
+    }
+
     if (e4.score === null || !Number.isFinite(e4.score)) {
         return {
             guard: {
@@ -153,6 +232,31 @@ function buildFromResponse(
                     threshold: e4.threshold,
                     riskDecision: 'BLOCK',
                     reason: 'score_out_of_range',
+                    modelVersion: e4.model_version
+                }
+            },
+            e4Response: e4
+        };
+    }
+
+    // Defect #12: Validate decision consistency with score/threshold
+    const expectedDecision = e4.score >= FROZEN_THRESHOLD ? 'BLOCK' : 'ALLOW';
+    if (e4.decision !== expectedDecision) {
+        return {
+            guard: {
+                name: 'e4_tail_risk',
+                enabled: true,
+                mode: policy.mode ?? 'ENFORCE',
+                decision: 'DENY',
+                reason: 'e4_decision_inconsistent',
+                wouldBlock: true,
+                enforced: isGuardEnforced(policy),
+                metadata: {
+                    available: true,
+                    score: e4.score,
+                    threshold: e4.threshold,
+                    riskDecision: 'BLOCK',
+                    reason: `decision_inconsistent: expected ${expectedDecision}, got ${e4.decision}`,
                     modelVersion: e4.model_version
                 }
             },
@@ -220,6 +324,7 @@ export class E4TailRiskGuardAdapter {
         }
 
         const startTime = Date.now();
+        const decisionAt = computeFiveMinuteAlignedDecisionAt();
 
         try {
             const response = await fetch(
@@ -230,7 +335,7 @@ export class E4TailRiskGuardAdapter {
                     body: JSON.stringify({
                         symbol: context.symbol,
                         side: context.side,
-                        decision_at: ''
+                        decision_at: decisionAt
                     }),
                     signal: AbortSignal.timeout(E4_TIMEOUT_MS)
                 }

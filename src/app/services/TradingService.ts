@@ -72,6 +72,7 @@ import {
 import {
     AegisEntryContext,
     AegisEntryDecisionResult,
+    AegisEntryGuardPolicy,
     AegisEntryPolicyRuntimeConfig,
     AegisMomentumRideRuntimeConfig,
     AegisRegimeContextRuntimeConfig
@@ -453,6 +454,21 @@ export class TradingService {
         };
     }
 
+    private getE4TailRiskConfig(): AegisEntryGuardPolicy {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getAegisEntryPolicyConfig === 'function') {
+            const policy = manager.getAegisEntryPolicyConfig();
+            if (policy?.guards?.e4_tail_risk) {
+                return policy.guards.e4_tail_risk;
+            }
+        }
+        // Defect #14: Read from YAML config, fallback to defaults
+        return {
+            enabled: true,
+            mode: 'ENFORCE'
+        };
+    }
+
     private getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
         const manager = this.deps.configManager as any;
         if (typeof manager.getAegisEntryPolicyConfig === 'function') {
@@ -515,10 +531,7 @@ export class TradingService {
                     enabled: this.getAegisShortGateConfig().enabled === true,
                     mode: this.getAegisShortGateConfig().enabled === true ? 'ENFORCE' : 'OFF'
                 },
-                e4_tail_risk: {
-                    enabled: true,
-                    mode: 'ENFORCE'
-                }
+                e4_tail_risk: this.getE4TailRiskConfig()
             }
         };
     }
@@ -2684,7 +2697,9 @@ export class TradingService {
             });
 
             // ═══════════════════════════════════════════════════════════════
-            // APPROVAL GATE: Manual execution approval required for all entries
+            // E4 TAIL RISK CHECK: Final veto gate before execution
+            // NOTE: No manual approval gate is implemented. E4 is the last
+            // automated check. If E4 allows, trade proceeds immediately.
             // ═══════════════════════════════════════════════════════════════
             const e4GuardResult = entryDecision.guards.find(g => g.name === 'e4_tail_risk');
             const e4Available = e4GuardResult?.metadata?.available === true;
@@ -2736,7 +2751,7 @@ export class TradingService {
                 return;
             }
 
-            await this.logAegisTradeEvent(symbol, 'APPROVAL_GATE_CHECK', {
+            await this.logAegisTradeEvent(symbol, 'E4_TAIL_RISK_PASSED', {
                 tradeId,
                 reason: 'e4_allow_all_guards_passed',
                 metadata: {
