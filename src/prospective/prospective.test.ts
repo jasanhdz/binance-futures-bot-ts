@@ -206,18 +206,18 @@ describe('prospective evidence recorder', () => {
     ]);
   });
 
-  it('is observationally equivalent and introduces no additional decision or order intent', () => {
+  it('is observationally equivalent and introduces no additional decision or order intent', async () => {
     const original = decision('ALLOW');
-    const evaluator = vi.fn(() => original);
+    const evaluator = vi.fn(async () => original);
     const recorder = new InMemoryProspectiveEvidenceRecorder();
-    const observed = evaluateWithProspectiveEvidence(evaluator, context(), recorder);
+    const observed = await evaluateWithProspectiveEvidence(evaluator, context(), recorder);
     expect(observed).toBe(original);
     expect(observed).toEqual(original);
     expect(evaluator).toHaveBeenCalledTimes(1);
     expect(recorder.events).toHaveLength(1);
   });
 
-  it('preserves the canonical Aegis entry orchestrator result exactly', () => {
+  it('preserves the canonical Aegis entry orchestrator result exactly', async () => {
     const entryContext = {
       symbol: 'ADAUSDT',
       side: 'SHORT',
@@ -241,10 +241,10 @@ describe('prospective evidence recorder', () => {
       },
     } as never;
     const policy = { enabled: false, guards: {} } as never;
-    const baseline = AegisEntryGuardOrchestrator.evaluate(entryContext, policy);
+    const baseline = await AegisEntryGuardOrchestrator.evaluate(entryContext, policy);
     const recorder = new InMemoryProspectiveEvidenceRecorder();
-    const observed = evaluateWithProspectiveEvidence(
-      () => AegisEntryGuardOrchestrator.evaluate(entryContext, policy),
+    const observed = await evaluateWithProspectiveEvidence(
+      async () => AegisEntryGuardOrchestrator.evaluate(entryContext, policy),
       context(),
       recorder,
     );
@@ -380,7 +380,7 @@ describe('shadow-only safety', () => {
     );
   });
 
-  it('creates only simulated intents and handles stale, duplicate, checkpoint, and restart cases', () => {
+  it('creates only simulated intents and handles stale, duplicate, checkpoint, and restart cases', async () => {
     const recorder = new InMemoryProspectiveEvidenceRecorder();
     const harness = new ShadowOnlyHarness(startup(), recorder);
     const event = {
@@ -390,14 +390,14 @@ describe('shadow-only safety', () => {
       receivedTimestampUtc: '2026-07-21T12:00:01Z',
       referencePrice: 1,
     };
-    const result = harness.evaluate(event, () => decision('ALLOW'), context(), 1000);
+    const result = await harness.evaluate(event, async () => decision('ALLOW'), context(), 1000);
     expect(result.intent).toMatchObject({
       simulated: true,
       source: 'SYNTHETIC_BALANCE',
       side: 'SHORT',
     });
     expect(result.intent).not.toHaveProperty('exchangeOrderId');
-    expect(() => harness.evaluate(event, () => decision(), context(), 1000)).toThrow(
+    await expect(async () => await harness.evaluate(event, async () => decision(), context(), 1000)).rejects.toThrow(
       'SHADOW_DUPLICATE_EVENT',
     );
     const checkpoint = harness.checkpoint();
@@ -416,13 +416,13 @@ describe('shadow-only safety', () => {
         ),
     ).toThrow('SHADOW_CHECKPOINT_CONFLICT');
     const fresh = new ShadowOnlyHarness(startup(), new InMemoryProspectiveEvidenceRecorder());
-    expect(() =>
-      fresh.evaluate(
+    await expect(async () =>
+      await fresh.evaluate(
         { ...event, eventId: 'stale', receivedTimestampUtc: '2026-07-21T12:01:00Z' },
-        () => decision(),
+        async () => decision(),
         context(),
         1000,
       ),
-    ).toThrow('SHADOW_STALE_MARKET_DATA');
+    ).rejects.toThrow('SHADOW_STALE_MARKET_DATA');
   });
 });

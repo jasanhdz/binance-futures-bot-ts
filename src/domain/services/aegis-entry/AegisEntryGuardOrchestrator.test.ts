@@ -58,6 +58,7 @@ function policy(overrides: Partial<AegisEntryPolicyRuntimeConfig['guards']> = {}
             clean_entry: { enabled: true, mode: 'ENFORCE' },
             probe_mode: { enabled: true, mode: 'ENFORCE' },
             long_risk_shadow: { enabled: true, mode: 'SHADOW' },
+            e4_tail_risk: { enabled: false, mode: 'OFF' },
             ...overrides
         }
     };
@@ -423,9 +424,9 @@ function probeLongRiskContext(risk: 'HIGH' | 'CRITICAL' = 'CRITICAL', overrides:
 }
 
 describe('AegisEntryGuardOrchestrator', () => {
-    it('does not block when all guards are OFF', () => {
+    it('does not block when all guards are OFF', async () => {
         const allOff = policy(Object.fromEntries(guardNames.map((name) => [name, { enabled: false, mode: 'OFF' }])) as Partial<AegisEntryPolicyRuntimeConfig['guards']>);
-        const result = AegisEntryGuardOrchestrator.evaluate(baseContext({
+        const result = await AegisEntryGuardOrchestrator.evaluate(baseContext({
             decisionBrain: {
                 ...baseContext().decisionBrain!,
                 block: { decision: 'DO_NOT_ENTER', do_not_enter_prob: 0.95 }
@@ -437,8 +438,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.guards.every((guard) => guard.enabled === false)).toBe(true);
     });
 
-    it('blocks first when Regime ENFORCE denies', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('blocks first when Regime ENFORCE denies', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 regime: {
                     ...baseContext().regime!,
@@ -456,8 +457,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.guards.find((guard) => guard.name === 'short_gate')?.reason).toBe('short_gate_not_evaluated');
     });
 
-    it('records Regime SHADOW deny without blocking', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('records Regime SHADOW deny without blocking', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 regime: {
                     ...baseContext().regime!,
@@ -476,8 +477,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('does not block ML_MODEL unavailable while Regime is SHADOW', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('does not block ML_MODEL unavailable while Regime is SHADOW', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 regime: {
                     ...baseContext().regime!,
@@ -502,8 +503,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('does not block when Regime is OFF', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('does not block when Regime is OFF', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 regime: {
                     ...baseContext().regime!,
@@ -518,8 +519,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.guards.find((guard) => guard.name === 'regime')?.enabled).toBe(false);
     });
 
-    it('continues normally when Regime allows', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(baseContext(), policy({
+    it('continues normally when Regime allows', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(baseContext(), policy({
             regime: { enabled: true, mode: 'ENFORCE' }
         }));
 
@@ -531,8 +532,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('adds Regime Avoid shadow metadata without changing shouldOpen', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+    it('adds Regime Avoid shadow metadata without changing shouldOpen', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             symbol: 'AVAXUSDT',
             signal: {
                 ...momentumContext().signal,
@@ -586,8 +587,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('records SHADOW wouldBlock without blocking', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('records SHADOW wouldBlock without blocking', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({ turboScore: 0.5 }),
             policy({ entry_quality: { enabled: true, mode: 'SHADOW' } })
         );
@@ -597,14 +598,14 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.guards.find((guard) => guard.name === 'entry_quality')?.enforced).toBe(false);
     });
 
-    it('blocks an ENFORCE EntryQuality deny', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(baseContext({ turboScore: 0.5 }), policy());
+    it('blocks an ENFORCE EntryQuality deny', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(baseContext({ turboScore: 0.5 }), policy());
 
         expect(result.finalDecision).toBe('DENY');
         expect(result.deniedBy).toBe('entry_quality');
     });
 
-    it('does not convert legacy EntryQuality SHADOW wouldBlock into an entry-policy hard block', () => {
+    it('does not convert legacy EntryQuality SHADOW wouldBlock into an entry-policy hard block', async () => {
         const context = baseContext({
             turboScore: 0.5,
             entryQuality: {
@@ -615,7 +616,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         });
-        const result = AegisEntryGuardOrchestrator.evaluate(context, policy({
+        const result = await AegisEntryGuardOrchestrator.evaluate(context, policy({
             entry_quality: { enabled: true, mode: 'ENFORCE' },
             clean_entry: { enabled: false, mode: 'OFF' },
             decision_brain: { enabled: true, mode: 'ENFORCE' }
@@ -631,8 +632,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('returns WAIT_CONFIRMATION for Clean Entry ENFORCE wait when Probe cannot allow', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('returns WAIT_CONFIRMATION for Clean Entry ENFORCE wait when Probe cannot allow', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 eventRisk: {
                     ...baseContext().eventRisk!,
@@ -662,8 +663,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.decisions.probeMode?.reason).toBe('probe_min_minutes_between_entries');
     });
 
-    it('allows EventRisk SHADOW wouldBlock when Clean Entry is SHADOW and no enforced guard denies', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('allows EventRisk SHADOW wouldBlock when Clean Entry is SHADOW and no enforced guard denies', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 eventRisk: {
                     ...baseContext().eventRisk!,
@@ -698,8 +699,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.decisions.eventRisk?.wouldBlock).toBe(true);
     });
 
-    it('blocks an ENFORCE EventRisk deny', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('blocks an ENFORCE EventRisk deny', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 eventRisk: {
                     ...baseContext().eventRisk!,
@@ -722,8 +723,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.deniedBy).toBe('event_risk');
     });
 
-    it('does not let entry-policy ENFORCE block EventRisk when legacy event_risk.enforce is false', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('does not let entry-policy ENFORCE block EventRisk when legacy event_risk.enforce is false', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 eventRisk: {
                     ...baseContext().eventRisk!,
@@ -757,8 +758,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('allows Probe Mode to override a clean EventRisk CAUTION near miss', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('allows Probe Mode to override a clean EventRisk CAUTION near miss', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 eventRisk: {
                     ...baseContext().eventRisk!,
@@ -784,8 +785,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.decisions.probeMode?.allowed).toBe(true);
     });
 
-    it('blocks Probe LONG when LongRiskShadow is CRITICAL in enforce-probe mode', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL'), probeLongRiskPolicy());
+    it('blocks Probe LONG when LongRiskShadow is CRITICAL in enforce-probe mode', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL'), probeLongRiskPolicy());
         const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
 
         expect(result.finalDecision).toBe('DENY');
@@ -809,8 +810,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('does not block Probe LONG when LongRiskShadow is HIGH', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('HIGH'), probeLongRiskPolicy());
+    it('does not block Probe LONG when LongRiskShadow is HIGH', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('HIGH'), probeLongRiskPolicy());
         const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
 
         expect(result.finalDecision).toBe('ALLOW');
@@ -824,10 +825,10 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('does not block Probe SHORT even if weak context is present', () => {
+    it('does not block Probe SHORT even if weak context is present', async () => {
         const shortPolicy = probeLongRiskPolicy();
         shortPolicy.guards.short_gate = { enabled: false, mode: 'OFF' };
-        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL', {
+        const result = await AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL', {
             symbol: 'AVAXUSDT',
             side: 'SHORT',
             rawAction: 'SHORT',
@@ -851,8 +852,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect((longRiskShadow?.metadata.longRiskShadow as any).enforcementApplied).toBe(false);
     });
 
-    it('keeps Aegis Turbo normal LONG open when LongRiskShadow is CRITICAL but Probe is not used', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(baseContext({
+    it('keeps Aegis Turbo normal LONG open when LongRiskShadow is CRITICAL but Probe is not used', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(baseContext({
             entryQuality: {
                 ...baseContext().entryQuality,
                 recommendation: 'ALLOW_SHADOW',
@@ -900,8 +901,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('keeps Probe LONG open in SHADOW mode even when LongRiskShadow is CRITICAL', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL'), probeLongRiskPolicy('SHADOW'));
+    it('keeps Probe LONG open in SHADOW mode even when LongRiskShadow is CRITICAL', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(probeLongRiskContext('CRITICAL'), probeLongRiskPolicy('SHADOW'));
         const longRiskShadow = result.guards.find((guard) => guard.name === 'long_risk_shadow');
 
         expect(result.finalDecision).toBe('ALLOW');
@@ -913,8 +914,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('attributes Clean Entry ENFORCE wait to clean_entry when Probe Mode is OFF', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('attributes Clean Entry ENFORCE wait to clean_entry when Probe Mode is OFF', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 eventRisk: {
                     ...baseContext().eventRisk!,
@@ -946,7 +947,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('Momentum ENFORCE ALLOW no requiere CleanEntry ALLOW si dirección Aegis confirma y hard safety pasa', () => {
+    it('Momentum ENFORCE ALLOW no requiere CleanEntry ALLOW si dirección Aegis confirma y hard safety pasa', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -957,7 +958,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             momentumContext({
                 momentumRideConfig: enforceMomentum,
                 eventRisk: {
@@ -1003,7 +1004,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('Momentum ALLOW no overridea EventRisk RISK_OFF ni MANUAL_ONLY hard DENY', () => {
+    it('Momentum ALLOW no overridea EventRisk RISK_OFF ni MANUAL_ONLY hard DENY', async () => {
         for (const mode of ['RISK_OFF', 'MANUAL_ONLY'] as const) {
             const enforceMomentum = {
                 ...momentumRideConfig,
@@ -1015,7 +1016,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                     }
                 }
             };
-            const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+            const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
                 momentumRideConfig: enforceMomentum,
                 setupGrade: 'WEAK',
                 eventRisk: {
@@ -1055,8 +1056,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         }
     });
 
-    it('does not let Probe Mode override DecisionBrain MANUAL_ONLY', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('does not let Probe Mode override DecisionBrain MANUAL_ONLY', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 decisionBrain: {
                     ...baseContext().decisionBrain!,
@@ -1080,8 +1081,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.decisions.probeMode?.allowed).toBe(false);
     });
 
-    it('blocks DecisionBrain DO_NOT_ENTER', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('blocks DecisionBrain DO_NOT_ENTER', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 decisionBrain: {
                     ...baseContext().decisionBrain!,
@@ -1096,8 +1097,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.deniedBy).toBe('decision_brain');
     });
 
-    it('blocks EntryQuality BLOCK_SHADOW through DecisionBrain enforcement', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('blocks EntryQuality BLOCK_SHADOW through DecisionBrain enforcement', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 entryQuality: {
                     ...baseContext().entryQuality!,
@@ -1120,8 +1121,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.finalReason).toBe('entry_quality_shadow_block_hard_denied');
     });
 
-    it('denies non-premium shorts through ShortGate', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('denies non-premium shorts through ShortGate', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 side: 'SHORT',
                 rawAction: 'SHORT',
@@ -1136,8 +1137,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.deniedBy).toBe('short_gate');
     });
 
-    it('keeps Phase O SHORT leverage and sizing unchanged when ShortGate is SHADOW', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(
+    it('keeps Phase O SHORT leverage and sizing unchanged when ShortGate is SHADOW', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(
             baseContext({
                 side: 'SHORT',
                 rawAction: 'SHORT',
@@ -1176,7 +1177,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('records a Probe counterfactual without blocking a Python-authorized entry', () => {
+    it('records a Probe counterfactual without blocking a Python-authorized entry', async () => {
         const context = baseContext({
             eventRisk: {
                 ...baseContext().eventRisk,
@@ -1194,7 +1195,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         });
-        const result = AegisEntryGuardOrchestrator.evaluate(context, policy({
+        const result = await AegisEntryGuardOrchestrator.evaluate(context, policy({
             momentum_ride: { enabled: true, mode: 'SHADOW' },
             short_gate: { enabled: true, mode: 'SHADOW' },
             entry_quality: { enabled: true, mode: 'SHADOW' },
@@ -1229,7 +1230,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('records Probe tail-risk denial in SHADOW without blocking or resizing', () => {
+    it('records Probe tail-risk denial in SHADOW without blocking or resizing', async () => {
         const base = baseContext();
         const context = baseContext({
             entryQuality: {
@@ -1248,7 +1249,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 enforce: false
             }
         });
-        const result = AegisEntryGuardOrchestrator.evaluate(context, policy({
+        const result = await AegisEntryGuardOrchestrator.evaluate(context, policy({
             momentum_ride: { enabled: true, mode: 'SHADOW' },
             short_gate: { enabled: true, mode: 'SHADOW' },
             entry_quality: { enabled: true, mode: 'SHADOW' },
@@ -1277,8 +1278,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('keeps guard order deterministic and includes every guard in the trace', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(baseContext(), policy());
+    it('keeps guard order deterministic and includes every guard in the trace', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(baseContext(), policy());
 
         expect(result.guards.map((guard) => guard.name)).toEqual(guardNames);
         expect(Object.keys(result.trace.guards)).toEqual(guardNames);
@@ -1286,8 +1287,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.metadata.finalReason).toBe(result.finalReason);
     });
 
-    it('records critical long risk shadow without changing Aegis ALLOW', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(baseContext({
+    it('records critical long risk shadow without changing Aegis ALLOW', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(baseContext({
             entryQuality: {
                 ...baseContext().entryQuality,
                 recommendation: 'ALLOW_SHADOW',
@@ -1336,8 +1337,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.metadata.longRiskShadow).toMatchObject({ wouldBlock: true });
     });
 
-    it('con regime/momentum SHADOW mantiene ALLOW aegis_turbo y risk normal', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext(), policy({
+    it('con regime/momentum SHADOW mantiene ALLOW aegis_turbo y risk normal', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext(), policy({
             regime_context: { enabled: true, mode: 'SHADOW' },
             momentum_ride: { enabled: true, mode: 'SHADOW' }
         }));
@@ -1351,8 +1352,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.guards.find((guard) => guard.name === 'momentum_ride')?.decision).toBe('SHADOW_ALLOW');
     });
 
-    it('Aegis normal DENY + momentum SHADOW allow conserva DENY y no abre', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+    it('Aegis normal DENY + momentum SHADOW allow conserva DENY y no abre', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             decisionBrain: {
                 decision: 'DO_NOT_ENTER',
                 block: { decision: 'DO_NOT_ENTER', do_not_enter_prob: 0.9 }
@@ -1370,7 +1371,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.guards.find((guard) => guard.name === 'momentum_ride')?.decision).toBe('SHADOW_ALLOW');
     });
 
-    it('Momentum ENFORCE ALLOW + Aegis ALLOW prioriza finalStrategy momentum_ride', () => {
+    it('Momentum ENFORCE ALLOW + Aegis ALLOW prioriza finalStrategy momentum_ride', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1381,7 +1382,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({ momentumRideConfig: enforceMomentum }), policy({
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({ momentumRideConfig: enforceMomentum }), policy({
             regime_context: { enabled: true, mode: 'SHADOW' },
             momentum_ride: { enabled: true, mode: 'ENFORCE' }
         }));
@@ -1395,7 +1396,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.adjustedPositionFraction).toBe(0.02);
     });
 
-    it('does not block Momentum Ride when long risk shadow warns', () => {
+    it('does not block Momentum Ride when long risk shadow warns', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1406,7 +1407,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             momentumRideConfig: enforceMomentum,
             eventRisk: {
                 ...momentumContext().eventRisk,
@@ -1470,8 +1471,8 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(['HIGH', 'CRITICAL']).toContain((longRiskShadow?.metadata.longRiskShadow as any).riskLevel);
     });
 
-    it('Momentum NOT_APPLICABLE + Aegis ALLOW conserva finalStrategy aegis_turbo', () => {
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+    it('Momentum NOT_APPLICABLE + Aegis ALLOW conserva finalStrategy aegis_turbo', async () => {
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             entryQuality: {
                 ...momentumContext().entryQuality,
                 ruleGate: {
@@ -1494,7 +1495,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.riskProfile).toBeUndefined();
     });
 
-    it('Momentum DENY por regimen no bloquea Aegis ALLOW', () => {
+    it('Momentum DENY por regimen no bloquea Aegis ALLOW', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1505,7 +1506,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             momentumRideConfig: enforceMomentum,
             regime: {
                 ...momentumContext().regime!,
@@ -1525,7 +1526,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.adjustedLeverage).toBe(20);
     });
 
-    it('Momentum DENY por turbo contradict + Aegis ALLOW conserva finalStrategy aegis_turbo', () => {
+    it('Momentum DENY por turbo contradict + Aegis ALLOW conserva finalStrategy aegis_turbo', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1536,7 +1537,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             momentumRideConfig: enforceMomentum,
             rawAction: 'LONG',
             finalAction: 'SHORT'
@@ -1555,7 +1556,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.adjustedPositionFraction).toBe(0.1);
     });
 
-    it('Momentum DENY por turbo not confirmed + Aegis ALLOW conserva finalStrategy aegis_turbo', () => {
+    it('Momentum DENY por turbo not confirmed + Aegis ALLOW conserva finalStrategy aegis_turbo', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1566,7 +1567,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             momentumRideConfig: enforceMomentum,
             rawAction: 'HOLD',
             finalAction: 'HOLD'
@@ -1583,7 +1584,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.riskProfile).toBeUndefined();
     });
 
-    it('allowWhenAegisDenied true no permite Momentum si Aegis tiene hard DENY real', () => {
+    it('allowWhenAegisDenied true no permite Momentum si Aegis tiene hard DENY real', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1602,7 +1603,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 block: { decision: 'DO_NOT_ENTER', do_not_enter_prob: 0.9 }
             }
         });
-        const denied = AegisEntryGuardOrchestrator.evaluate(deniedContext, policy({
+        const denied = await AegisEntryGuardOrchestrator.evaluate(deniedContext, policy({
             regime_context: { enabled: true, mode: 'SHADOW' },
             momentum_ride: { enabled: true, mode: 'ENFORCE' }
         }));
@@ -1620,7 +1621,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         });
     });
 
-    it('Momentum ENFORCE ALLOW + hard safety fail no abre momentum ni overridea Aegis DENY', () => {
+    it('Momentum ENFORCE ALLOW + hard safety fail no abre momentum ni overridea Aegis DENY', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1632,7 +1633,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             momentumRideConfig: enforceMomentum,
             decisionBrain: {
                 decision: 'DO_NOT_ENTER',
@@ -1654,7 +1655,7 @@ describe('AegisEntryGuardOrchestrator', () => {
         expect(result.riskProfile).toBeUndefined();
     });
 
-    it('BTC/ETH contradict niega Momentum pero no Aegis normal', () => {
+    it('BTC/ETH contradict niega Momentum pero no Aegis normal', async () => {
         const enforceMomentum = {
             ...momentumRideConfig,
             mode: 'ENFORCE' as const,
@@ -1665,7 +1666,7 @@ describe('AegisEntryGuardOrchestrator', () => {
                 }
             }
         };
-        const result = AegisEntryGuardOrchestrator.evaluate(momentumContext({
+        const result = await AegisEntryGuardOrchestrator.evaluate(momentumContext({
             momentumRideConfig: enforceMomentum,
             eventRisk: {
                 ...momentumContext().eventRisk!,

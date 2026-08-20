@@ -1108,6 +1108,10 @@ export class NinjaConfigManager {
                 short_gate: this.normalizeEntryGuardPolicy(guards.short_gate, {
                     enabled: this.getAegisShortGateConfig().enabled,
                     mode: 'ENFORCE'
+                }),
+                e4_tail_risk: this.normalizeEntryGuardPolicy(guards.e4_tail_risk, {
+                    enabled: false,
+                    mode: 'OFF'
                 })
             }
         };

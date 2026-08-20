@@ -177,6 +177,19 @@ function buildDefensivePrediction(symbol: string, error: unknown): AegisPredicti
         critical_missing_groups: [],
         latency_ms: 0,
       },
+      e4_tail_risk: {
+        available: false,
+        score: null,
+        threshold: 0.4522452210875323,
+        decision: 'BLOCK',
+        reason: 'ml_client_fallback',
+        model_version: 'E4_V1_FROZEN',
+        feature_snapshot_hash: '',
+        feature_available_at: null,
+        source_feed_lag_ms: null,
+        computed_at: null,
+        cache_age_ms: null
+      },
     },
     metadata: {
       fallback: true,

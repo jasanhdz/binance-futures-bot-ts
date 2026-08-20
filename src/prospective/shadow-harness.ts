@@ -153,12 +153,12 @@ export class ShadowOnlyHarness {
     }
   }
 
-  evaluate(
+  async evaluate(
     event: ShadowMarketEvent,
-    evaluate: () => AegisEntryDecisionResult,
+    evaluate: () => Promise<AegisEntryDecisionResult>,
     evidence: EvidenceBuildContext,
     syntheticBalanceUsd: number,
-  ): { decision: AegisEntryDecisionResult; intent?: HypotheticalOrderIntent } {
+  ): Promise<{ decision: AegisEntryDecisionResult; intent?: HypotheticalOrderIntent }> {
     if (this.processed.has(event.eventId)) throw new Error('SHADOW_DUPLICATE_EVENT');
     const eventTime = Date.parse(canonicalUtc(event.eventTimestampUtc));
     const received = Date.parse(canonicalUtc(event.receivedTimestampUtc));
@@ -173,7 +173,7 @@ export class ShadowOnlyHarness {
       throw new Error('PROSPECTIVE_MODEL_EVIDENCE_MISMATCH');
     if (evidence.cohortId !== this.config.eventClassification)
       throw new Error('PROSPECTIVE_COHORT_MISMATCH');
-    const decision = evaluateWithProspectiveEvidence(evaluate, evidence, this.recorder);
+    const decision = await evaluateWithProspectiveEvidence(evaluate, evidence, this.recorder);
     this.processed.add(event.eventId);
     if (decision.finalDecision !== 'ALLOW') return { decision };
     return {

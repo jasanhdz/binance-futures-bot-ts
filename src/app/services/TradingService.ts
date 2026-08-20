@@ -514,6 +514,10 @@ export class TradingService {
                 short_gate: {
                     enabled: this.getAegisShortGateConfig().enabled === true,
                     mode: this.getAegisShortGateConfig().enabled === true ? 'ENFORCE' : 'OFF'
+                },
+                e4_tail_risk: {
+                    enabled: true,
+                    mode: 'ENFORCE'
                 }
             }
         };
@@ -2316,7 +2320,7 @@ export class TradingService {
                     metadata: phaseOGuardMetadata
                 });
             }
-            const entryDecision = AegisEntryGuardOrchestrator.evaluate(
+            const entryDecision = await AegisEntryGuardOrchestrator.evaluate(
                 entryContext,
                 entryPolicy
             );
@@ -2678,6 +2682,74 @@ export class TradingService {
                     entryPolicy: entryDecision.metadata
                 }
             });
+
+            // ═══════════════════════════════════════════════════════════════
+            // APPROVAL GATE: Manual execution approval required for all entries
+            // ═══════════════════════════════════════════════════════════════
+            const e4GuardResult = entryDecision.guards.find(g => g.name === 'e4_tail_risk');
+            const e4Available = e4GuardResult?.metadata?.available === true;
+            const e4Decision = e4GuardResult?.metadata?.riskDecision;
+
+            if (e4GuardResult?.wouldBlock) {
+                await this.logAegisTradeEvent(symbol, 'E4_TAIL_RISK_BLOCKED', {
+                    tradeId,
+                    reason: e4GuardResult.reason,
+                    metadata: {
+                        symbol,
+                        side,
+                        e4Score: e4GuardResult.metadata?.score,
+                        e4Threshold: e4GuardResult.metadata?.threshold,
+                        e4Decision,
+                        e4Available,
+                        enforced: e4GuardResult.enforced,
+                        entryDecision: entryDecision.finalDecision,
+                        finalReason: entryDecision.finalReason
+                    }
+                });
+                logger.warn('e4_tail_risk_blocked_entry', {
+                    symbol,
+                    side,
+                    e4Score: e4GuardResult.metadata?.score,
+                    e4Decision,
+                    reason: e4GuardResult.reason
+                });
+                return;
+            }
+
+            if (!e4Available) {
+                await this.logAegisTradeEvent(symbol, 'E4_TAIL_RISK_UNAVAILABLE', {
+                    tradeId,
+                    reason: 'e4_service_unavailable',
+                    metadata: {
+                        symbol,
+                        side,
+                        e4GuardResult: e4GuardResult?.metadata,
+                        entryDecision: entryDecision.finalDecision,
+                        finalReason: entryDecision.finalReason
+                    }
+                });
+                logger.warn('e4_tail_risk_unavailable', {
+                    symbol,
+                    side,
+                    reason: e4GuardResult?.reason
+                });
+                return;
+            }
+
+            await this.logAegisTradeEvent(symbol, 'APPROVAL_GATE_CHECK', {
+                tradeId,
+                reason: 'e4_allow_all_guards_passed',
+                metadata: {
+                    symbol,
+                    side,
+                    e4Score: e4GuardResult?.metadata?.score,
+                    e4Decision,
+                    e4Available,
+                    entryDecision: entryDecision.finalDecision,
+                    finalReason: entryDecision.finalReason
+                }
+            });
+            // ═══════════════════════════════════════════════════════════════
 
             await exchange.setLeverage(symbol, leverage);
             await exchange.ensureMarginType(symbol, 'ISOLATED');

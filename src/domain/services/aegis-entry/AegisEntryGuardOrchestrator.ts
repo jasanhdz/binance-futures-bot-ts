@@ -25,6 +25,7 @@ import {
 import { MomentumRideGuardAdapter } from './guards/MomentumRideGuardAdapter';
 import { ProbeModeGuardAdapter } from './guards/ProbeModeGuardAdapter';
 import { AegisLongRiskShadowGuardAdapter } from './guards/AegisLongRiskShadowGuardAdapter';
+import { E4TailRiskGuardAdapter } from './guards/E4TailRiskGuardAdapter';
 
 function defaultGuard(name: AegisEntryGuardName): AegisEntryGuardResult {
     return guardDisabledResult(name, `${name}_not_evaluated`);
@@ -40,7 +41,8 @@ const ENTRY_GUARD_ORDER: AegisEntryGuardName[] = [
     'decision_brain',
     'clean_entry',
     'probe_mode',
-    'long_risk_shadow'
+    'long_risk_shadow',
+    'e4_tail_risk'
 ];
 
 function finalize(input: {
@@ -138,6 +140,9 @@ function momentumHardSafety(input: {
         || input.finalReason === 'event_risk_manual_only'
         || input.finalReason === 'entry_quality_shadow_block_hard_denied'
     )) {
+        return { blocked: true, reason: input.finalReason };
+    }
+    if (input.deniedBy === 'e4_tail_risk') {
         return { blocked: true, reason: input.finalReason };
     }
     if (input.finalReason.includes('tail_risk_high')) {
@@ -245,7 +250,7 @@ function enforceProbeLongCriticalBlock(guard: AegisEntryGuardResult): AegisEntry
 }
 
 export class AegisEntryGuardOrchestrator {
-    static evaluate(context: AegisEntryContext, policy: AegisEntryPolicyRuntimeConfig): AegisEntryDecisionResult {
+    static async evaluate(context: AegisEntryContext, policy: AegisEntryPolicyRuntimeConfig): Promise<AegisEntryDecisionResult> {
         const guards: AegisEntryGuardResult[] = [];
         const decisions: AegisEntryDecisionResult['decisions'] = {};
         let adjustedLeverage = context.leverage;
@@ -546,6 +551,36 @@ export class AegisEntryGuardOrchestrator {
         }
         const longRiskShadow = evaluateLongRiskShadowGuard({ context: adjustedContext, policy, guards });
         guards.push(longRiskShadow);
+
+        const e4TailRisk = await E4TailRiskGuardAdapter.evaluate(
+            adjustedContext,
+            policy.guards.e4_tail_risk ?? { enabled: false, mode: 'OFF' }
+        );
+        guards.push(e4TailRisk.guard);
+        decisions.e4TailRisk = {
+            available: e4TailRisk.e4Response.available,
+            score: e4TailRisk.e4Response.score,
+            threshold: e4TailRisk.e4Response.threshold,
+            decision: e4TailRisk.e4Response.decision,
+            reason: e4TailRisk.e4Response.reason,
+            modelVersion: e4TailRisk.e4Response.model_version,
+            featureHash: e4TailRisk.e4Response.feature_snapshot_hash
+        };
+
+        if (e4TailRisk.guard.enforced && e4TailRisk.guard.wouldBlock) {
+            return finalize({
+                context: adjustedContext,
+                finalDecision: 'DENY',
+                finalReason: e4TailRisk.guard.reason,
+                deniedBy: 'e4_tail_risk',
+                guards,
+                adjustedLeverage,
+                adjustedPositionFraction,
+                ...momentumSelection,
+                decisions
+            });
+        }
+
         return finalize({
             context: adjustedContext,
             finalDecision: aegisBlockedByNonHard?.finalDecision ?? 'ALLOW',

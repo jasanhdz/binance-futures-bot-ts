@@ -154,6 +154,9 @@ aegis:
       short_gate:
         enabled: true
         mode: SHADOW
+      e4_tail_risk:
+        enabled: true
+        mode: ENFORCE
   regime_guard:
     enabled: true
     mode: SHADOW

@@ -258,6 +258,19 @@ export interface AegisBlock {
   candidate_uncertainty?: AegisCandidateUncertaintyBlock;
   entry_intelligence_shadow?: AegisEntryIntelligenceShadowBlock;
   clean_entry_guard?: Record<string, unknown>;
+  e4_tail_risk?: {
+    available?: boolean;
+    score?: number | null;
+    threshold?: number;
+    decision?: 'ALLOW' | 'BLOCK';
+    reason?: string;
+    model_version?: string;
+    feature_snapshot_hash?: string;
+    feature_available_at?: string | null;
+    source_feed_lag_ms?: Record<string, number> | null;
+    computed_at?: string | null;
+    cache_age_ms?: number | null;
+  };
 }
 
 export interface AegisPredictionResponse {

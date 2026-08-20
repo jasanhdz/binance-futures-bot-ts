@@ -223,12 +223,12 @@ export function buildProspectiveEnvelope(
   };
 }
 
-export function evaluateWithProspectiveEvidence(
-  evaluate: () => AegisEntryDecisionResult,
+export async function evaluateWithProspectiveEvidence(
+  evaluate: () => Promise<AegisEntryDecisionResult>,
   context: EvidenceBuildContext,
   recorder?: ProspectiveEvidenceRecorder,
-): AegisEntryDecisionResult {
-  const decision = evaluate();
+): Promise<AegisEntryDecisionResult> {
+  const decision = await evaluate();
   if (recorder) recorder.record(buildProspectiveEnvelope(context, decision));
   return decision;
 }

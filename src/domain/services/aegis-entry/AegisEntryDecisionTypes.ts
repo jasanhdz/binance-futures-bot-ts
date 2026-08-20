@@ -30,7 +30,8 @@ export type AegisEntryGuardName =
     | 'clean_entry'
     | 'momentum_ride'
     | 'probe_mode'
-    | 'long_risk_shadow';
+    | 'long_risk_shadow'
+    | 'e4_tail_risk';
 
 export type AegisEntryGuardDecision =
     | 'ALLOW'
@@ -318,6 +319,18 @@ export interface AegisEntryContext {
         config: AegisDecisionEnforcementRuntimeConfig;
         riskOffTailMax?: number;
     };
+    e4TailRisk?: {
+        enabled: boolean;
+        mode: AegisEntryPolicyMode;
+        score?: number | null;
+        threshold?: number;
+        riskDecision?: 'ALLOW' | 'BLOCK';
+        featureHash?: string;
+        featureAvailableAt?: string;
+        sourceFeedLagMs?: Record<string, number>;
+        evaluationLatencyMs?: number;
+        modelVersion?: string;
+    };
     operational: AegisEntryOperationalContext;
 }
 
@@ -387,6 +400,15 @@ export interface AegisEntryDecisionResult {
         decisionEnforcement?: AegisDecisionEnforcementDecision;
         cleanEntry?: AegisCleanEntryGuardOutput;
         probeMode?: AegisProbeModeDecision;
+        e4TailRisk?: {
+            available: boolean;
+            score: number | null;
+            threshold: number;
+            decision: 'ALLOW' | 'BLOCK';
+            reason: string;
+            modelVersion: string;
+            featureHash: string;
+        };
     };
 }
 
