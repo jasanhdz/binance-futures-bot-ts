@@ -260,6 +260,9 @@ export interface AegisBlock {
   clean_entry_guard?: Record<string, unknown>;
   e4_tail_risk?: {
     available?: boolean;
+    symbol?: string;
+    side?: string;
+    decision_at?: string;
     score?: number | null;
     threshold?: number;
     decision?: 'ALLOW' | 'BLOCK';
@@ -270,6 +273,7 @@ export interface AegisBlock {
     source_feed_lag_ms?: Record<string, number> | null;
     computed_at?: string | null;
     cache_age_ms?: number | null;
+    snapshot_id?: string;
   };
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AegisDecisionEnforcementRuntimeConfig } from '../AegisDecisionEnforcement';
 import { DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG } from '../AegisCleanEntryGuard';
 import { DEFAULT_AEGIS_REGIME_GUARD_CONFIG } from '../AegisRegimeGuard';
@@ -41,8 +41,11 @@ const guardNames: AegisEntryGuardName[] = [
     'decision_brain',
     'clean_entry',
     'probe_mode',
-    'long_risk_shadow'
+    'long_risk_shadow',
+    'e4_tail_risk'
 ];
+
+afterEach(() => vi.unstubAllGlobals());
 
 function policy(overrides: Partial<AegisEntryPolicyRuntimeConfig['guards']> = {}): AegisEntryPolicyRuntimeConfig {
     return {
@@ -782,6 +785,57 @@ describe('AegisEntryGuardOrchestrator', () => {
 
         expect(result.finalDecision).toBe('ALLOW');
         expect(result.allowedBy).toBe('probe_mode');
+        expect(result.decisions.probeMode?.allowed).toBe(true);
+    });
+
+    it('passes ProbeMode ALLOW through E4 and denies when E4 blocks', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                available: true,
+                symbol: 'ADAUSDT',
+                side: 'LONG',
+                decision_at: '2026-05-21T12:00:00+00:00',
+                score: 0.8,
+                threshold: 0.4522452210875323,
+                decision: 'BLOCK',
+                reason: 'score_above_threshold',
+                model_version: 'E4_TAIL_RISK_GUARD_V1',
+                feature_snapshot_hash: 'feature-hash',
+                feature_available_at: '2026-05-21T12:00:00+00:00',
+                source_feed_lag_ms: { tf5m: 0 },
+                computed_at: '2026-05-21T12:00:01+00:00',
+                cache_age_ms: 1,
+                snapshot_id: 'snapshot-1'
+            })
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const result = await AegisEntryGuardOrchestrator.evaluate(
+            baseContext({
+                eventRisk: {
+                    ...baseContext().eventRisk!,
+                    mode: 'CAUTION',
+                    enforce: false,
+                    wouldBlock: true,
+                    reason: 'caution_btc_eth_not_confirmed',
+                    config: {
+                        ...baseContext().eventRisk!.config,
+                        caution: {
+                            minQualityScore: 0.65,
+                            maxTailRiskScore: 0.45,
+                            requireBtcEthConfirmation: true
+                        }
+                    }
+                }
+            }),
+            policy({ e4_tail_risk: { enabled: true, mode: 'ENFORCE' } })
+        );
+
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(result.finalDecision).toBe('DENY');
+        expect(result.deniedBy).toBe('e4_tail_risk');
         expect(result.decisions.probeMode?.allowed).toBe(true);
     });
 

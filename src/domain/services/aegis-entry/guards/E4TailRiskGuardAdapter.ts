@@ -31,27 +31,31 @@ export interface E4TailRiskGuardAdapterResult {
     e4Response: E4TailRiskResponse;
 }
 
-const E4_TIMEOUT_MS = 2000;
-const FROZEN_THRESHOLD = 0.4522452210875323;
+export const E4_TIMEOUT_MS = 2000;
+export const FROZEN_THRESHOLD = 0.4522452210875323;
 
-function computeFiveMinuteAlignedDecisionAt(): string {
-    const now = new Date();
-    const ms = now.getTime();
+export function computeFiveMinuteAlignedDecisionAt(timestampMs: number): string {
+    if (!Number.isFinite(timestampMs)) {
+        throw new Error('invalid_signal_timestamp');
+    }
     const fiveMinMs = 5 * 60 * 1000;
-    const alignedMs = Math.floor(ms / fiveMinMs) * fiveMinMs;
-    return new Date(alignedMs).toISOString();
+    const alignedMs = Math.floor(timestampMs / fiveMinMs) * fiveMinMs;
+    return new Date(alignedMs).toISOString().replace('.000Z', '+00:00');
 }
 
 function buildUnavailableResult(
     symbol: string,
     side: string,
-    reason: string
+    reason: string,
+    policy: AegisEntryGuardPolicy,
+    decisionAt: string
 ): E4TailRiskGuardAdapterResult {
+    const enforced = isGuardEnforced(policy);
     const response: E4TailRiskResponse = {
         available: false,
         symbol,
         side,
-        decision_at: '',
+        decision_at: decisionAt,
         score: null,
         threshold: FROZEN_THRESHOLD,
         decision: 'BLOCK',
@@ -68,11 +72,11 @@ function buildUnavailableResult(
         guard: {
             name: 'e4_tail_risk',
             enabled: true,
-            mode: 'ENFORCE',
-            decision: 'DENY',
+            mode: policy.mode ?? 'ENFORCE',
+            decision: enforced ? 'DENY' : 'SHADOW_DENY',
             reason: `e4_unavailable_${reason}`,
             wouldBlock: true,
-            enforced: true,
+            enforced,
             metadata: {
                 available: false,
                 reason,
@@ -89,15 +93,18 @@ function buildUnavailableResult(
 function buildErrorResult(
     symbol: string,
     side: string,
-    error: string
+    error: string,
+    policy: AegisEntryGuardPolicy,
+    decisionAt: string
 ): E4TailRiskGuardAdapterResult {
-    return buildUnavailableResult(symbol, side, `error_${error}`);
+    return buildUnavailableResult(symbol, side, `error_${error}`, policy, decisionAt);
 }
 
 function buildFromResponse(
     e4: E4TailRiskResponse,
     policy: AegisEntryGuardPolicy,
-    context: AegisEntryContext
+    context: AegisEntryContext,
+    requestedDecisionAt: string
 ): E4TailRiskGuardAdapterResult {
     if (!e4.available) {
         return {
@@ -120,6 +127,22 @@ function buildFromResponse(
             },
             e4Response: e4
         };
+    }
+
+    if (e4.symbol !== context.symbol) {
+        return buildUnavailableResult(
+            context.symbol, context.side, 'response_symbol_mismatch', policy, requestedDecisionAt
+        );
+    }
+    if (e4.side !== context.side) {
+        return buildUnavailableResult(
+            context.symbol, context.side, 'response_side_mismatch', policy, requestedDecisionAt
+        );
+    }
+    if (e4.decision_at !== requestedDecisionAt) {
+        return buildUnavailableResult(
+            context.symbol, context.side, 'response_decision_at_mismatch', policy, requestedDecisionAt
+        );
     }
 
     // Defect #12: Validate threshold is exact frozen value
@@ -324,7 +347,7 @@ export class E4TailRiskGuardAdapter {
         }
 
         const startTime = Date.now();
-        const decisionAt = computeFiveMinuteAlignedDecisionAt();
+        const decisionAt = computeFiveMinuteAlignedDecisionAt(context.operational.timestamp);
 
         try {
             const response = await fetch(
@@ -345,12 +368,14 @@ export class E4TailRiskGuardAdapter {
                 return buildErrorResult(
                     context.symbol,
                     context.side,
-                    `http_${response.status}`
+                    `http_${response.status}`,
+                    policy,
+                    decisionAt
                 );
             }
 
             const e4: E4TailRiskResponse = await response.json();
-            const result = buildFromResponse(e4, policy, context);
+            const result = buildFromResponse(e4, policy, context, decisionAt);
 
             result.guard.metadata = {
                 ...result.guard.metadata,
@@ -361,7 +386,7 @@ export class E4TailRiskGuardAdapter {
 
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
-            return buildErrorResult(context.symbol, context.side, msg);
+            return buildErrorResult(context.symbol, context.side, msg, policy, decisionAt);
         }
     }
 }

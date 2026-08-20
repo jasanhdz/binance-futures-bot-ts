@@ -78,7 +78,7 @@ describe('NinjaConfigManager Aegis symbol modes', () => {
         }
     });
 
-    it('keeps every analytical Live entry overlay in non-enforcing SHADOW mode', () => {
+    it('keeps analytical overlays SHADOW while E4 remains the explicit final veto', () => {
         const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
         const guards = config.getAegisEntryPolicyConfig().guards;
 
@@ -93,9 +93,12 @@ describe('NinjaConfigManager Aegis symbol modes', () => {
                 clean_entry: 'SHADOW',
                 probe_mode: 'SHADOW',
                 long_risk_shadow: 'SHADOW',
-                short_gate: 'SHADOW'
+                short_gate: 'SHADOW',
+                e4_tail_risk: 'ENFORCE'
             });
-        expect(Object.values(guards).every((guard) => guard.enabled && guard.mode === 'SHADOW')).toBe(true);
+        expect(Object.entries(guards).every(([name, guard]) =>
+            guard.enabled && (name === 'e4_tail_risk' ? guard.mode === 'ENFORCE' : guard.mode === 'SHADOW')
+        )).toBe(true);
     });
 
     it('parses OFF, SHADOW and LIVE modes', () => {
@@ -786,7 +789,8 @@ symbols:
                 clean_entry: { enabled: true, mode: 'ENFORCE' },
                 probe_mode: { enabled: true, mode: 'SHADOW' },
                 long_risk_shadow: longRiskProbeBlockPolicy,
-                short_gate: { enabled: true, mode: 'ENFORCE' }
+                short_gate: { enabled: true, mode: 'ENFORCE' },
+                e4_tail_risk: { enabled: false, mode: 'OFF' }
             }
         });
     });
@@ -832,7 +836,8 @@ symbols:
                 clean_entry: { enabled: true, mode: 'ENFORCE' },
                 probe_mode: { enabled: true, mode: 'ENFORCE' },
                 long_risk_shadow: longRiskProbeBlockPolicy,
-                short_gate: { enabled: true, mode: 'ENFORCE' }
+                short_gate: { enabled: true, mode: 'ENFORCE' },
+                e4_tail_risk: { enabled: false, mode: 'OFF' }
             }
         });
     });
@@ -890,7 +895,8 @@ symbols:
                 clean_entry: { enabled: true, mode: 'ENFORCE' },
                 probe_mode: { enabled: false, mode: 'OFF' },
                 long_risk_shadow: longRiskProbeBlockPolicy,
-                short_gate: { enabled: false, mode: 'ENFORCE' }
+                short_gate: { enabled: false, mode: 'ENFORCE' },
+                e4_tail_risk: { enabled: false, mode: 'OFF' }
             }
         });
     });

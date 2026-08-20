@@ -462,10 +462,10 @@ export class TradingService {
                 return policy.guards.e4_tail_risk;
             }
         }
-        // Defect #14: Read from YAML config, fallback to defaults
+        // Missing normalized policy is explicit guard-off, never a duplicated live policy.
         return {
-            enabled: true,
-            mode: 'ENFORCE'
+            enabled: false,
+            mode: 'OFF'
         };
     }
 
@@ -2702,10 +2702,11 @@ export class TradingService {
             // automated check. If E4 allows, trade proceeds immediately.
             // ═══════════════════════════════════════════════════════════════
             const e4GuardResult = entryDecision.guards.find(g => g.name === 'e4_tail_risk');
+            const e4Enabled = e4GuardResult?.enabled === true;
             const e4Available = e4GuardResult?.metadata?.available === true;
             const e4Decision = e4GuardResult?.metadata?.riskDecision;
 
-            if (e4GuardResult?.wouldBlock) {
+            if (e4Enabled && e4GuardResult?.enforced && e4GuardResult.wouldBlock) {
                 await this.logAegisTradeEvent(symbol, 'E4_TAIL_RISK_BLOCKED', {
                     tradeId,
                     reason: e4GuardResult.reason,
@@ -2731,7 +2732,7 @@ export class TradingService {
                 return;
             }
 
-            if (!e4Available) {
+            if (e4Enabled && e4GuardResult?.enforced && !e4Available) {
                 await this.logAegisTradeEvent(symbol, 'E4_TAIL_RISK_UNAVAILABLE', {
                     tradeId,
                     reason: 'e4_service_unavailable',
@@ -2751,19 +2752,21 @@ export class TradingService {
                 return;
             }
 
-            await this.logAegisTradeEvent(symbol, 'E4_TAIL_RISK_PASSED', {
-                tradeId,
-                reason: 'e4_allow_all_guards_passed',
-                metadata: {
-                    symbol,
-                    side,
-                    e4Score: e4GuardResult?.metadata?.score,
-                    e4Decision,
-                    e4Available,
-                    entryDecision: entryDecision.finalDecision,
-                    finalReason: entryDecision.finalReason
-                }
-            });
+            if (e4Enabled && e4Available) {
+                await this.logAegisTradeEvent(symbol, 'E4_TAIL_RISK_PASSED', {
+                    tradeId,
+                    reason: 'e4_allow_all_guards_passed',
+                    metadata: {
+                        symbol,
+                        side,
+                        e4Score: e4GuardResult?.metadata?.score,
+                        e4Decision,
+                        e4Available,
+                        entryDecision: entryDecision.finalDecision,
+                        finalReason: entryDecision.finalReason
+                    }
+                });
+            }
             // ═══════════════════════════════════════════════════════════════
 
             await exchange.setLeverage(symbol, leverage);
