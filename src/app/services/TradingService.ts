@@ -2589,12 +2589,21 @@ export class TradingService {
             const wallet = await exchange.getUSDTBalance();
             const entryAccount = await this.readEntryAccountSnapshot(wallet);
             const feeBufferPct = configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05;
-            const effectiveWallet = wallet * (1 - feeBufferPct);
+            const availableWallet = this.finiteNumber(entryAccount.availableBalance)
+                ? Math.max(0, Math.min(wallet, Number(entryAccount.availableBalance)))
+                : wallet;
+            const effectiveWallet = availableWallet * (1 - feeBufferPct);
             const markPrice = await exchange.getMarkPrice(symbol);
             const filters = await exchange.getSymbolFilters(symbol, leverage);
-            const margin = effectiveWallet * positionFraction;
-            const notional = margin * leverage;
-            const quantity = this.roundQuantity(notional / markPrice, filters);
+            const requestedNotional = effectiveWallet * positionFraction * leverage;
+            let notional = this.finiteNumber(filters.notionalCap) && Number(filters.notionalCap) > 0
+                ? Math.min(requestedNotional, Number(filters.notionalCap))
+                : requestedNotional;
+            let margin = notional / leverage;
+            let quantity = this.roundQuantity(notional / markPrice, filters);
+            let executedPositionFraction = effectiveWallet > 0
+                ? Math.min(positionFraction, margin / effectiveWallet)
+                : 0;
 
             const portfolioRiskConfig = this.getAegisPortfolioRiskConfig();
             if (portfolioRiskConfig.enabled === true) {
@@ -2648,6 +2657,11 @@ export class TradingService {
                     notional: quantity * markPrice,
                     minNotional: filters.minNotional
                 });
+                await this.notifyError(
+                    symbol,
+                    'AEGIS ENTRY SIZE UNAVAILABLE',
+                    `Available wallet cannot satisfy minNotional=${filters.minNotional}`
+                );
                 return;
             }
 
@@ -2787,7 +2801,96 @@ export class TradingService {
                     notionalEstimated: notional
                 }
             });
-            const result = await exchange.marketOpen(symbol, side, quantity);
+            let result: { avgPrice: number; orderId: string };
+            let marketOpenAttempt = 1;
+            const maxMarketOpenAttempts = 6;
+            while (true) {
+                try {
+                    result = await exchange.marketOpen(symbol, side, quantity);
+                    break;
+                } catch (error) {
+                    if (!this.isRecoverableEntrySizeError(error)) {
+                        throw error;
+                    }
+
+                    const refreshedAccount = await this.readEntryAccountSnapshot();
+                    const refreshedAvailable = this.finiteNumber(refreshedAccount.availableBalance)
+                        ? Math.max(0, Number(refreshedAccount.availableBalance))
+                        : undefined;
+                    const balanceLimitedQuantity = refreshedAvailable === undefined
+                        ? quantity
+                        : this.roundQuantity(
+                            Math.min(
+                                refreshedAvailable * (1 - feeBufferPct) * positionFraction * leverage,
+                                this.finiteNumber(filters.notionalCap) && Number(filters.notionalCap) > 0
+                                    ? Number(filters.notionalCap)
+                                    : Number.POSITIVE_INFINITY
+                            ) / markPrice,
+                            filters
+                        );
+                    const reducedQuantity = this.roundQuantity(quantity * 0.90, filters);
+                    const nextQuantity = this.roundQuantity(
+                        Math.min(reducedQuantity, balanceLimitedQuantity),
+                        filters
+                    );
+                    const canRetry = marketOpenAttempt < maxMarketOpenAttempts
+                        && nextQuantity > 0
+                        && nextQuantity < quantity
+                        && nextQuantity * markPrice >= filters.minNotional;
+
+                    logger.warn('aegis_entry_quantity_rejected', {
+                        symbol,
+                        side,
+                        attempt: marketOpenAttempt,
+                        quantity,
+                        nextQuantity: canRetry ? nextQuantity : undefined,
+                        availableBalance: refreshedAvailable,
+                        error: String(error)
+                    });
+
+                    if (!canRetry) {
+                        await this.logAegisTradeEvent(symbol, 'ORDER_SIZE_REJECTED', {
+                            tradeId,
+                            reason: 'AEGIS_ENTRY_QUANTITY_ADJUSTMENT_EXHAUSTED',
+                            metadata: {
+                                side,
+                                attempts: marketOpenAttempt,
+                                lastQuantity: quantity,
+                                candidateQuantity: nextQuantity,
+                                availableBalance: refreshedAvailable,
+                                minNotional: filters.minNotional,
+                                error: String(error)
+                            }
+                        });
+                        await this.notifyError(
+                            symbol,
+                            'AEGIS ENTRY SIZE REJECTED',
+                            `Attempts=${marketOpenAttempt}; quantity=${quantity}; error=${String(error)}`
+                        );
+                        return;
+                    }
+
+                    await this.logAegisTradeEvent(symbol, 'ORDER_QUANTITY_ADJUSTED', {
+                        tradeId,
+                        reason: 'AEGIS_ENTRY_QUANTITY_RETRY',
+                        metadata: {
+                            side,
+                            attempt: marketOpenAttempt,
+                            previousQuantity: quantity,
+                            nextQuantity,
+                            availableBalance: refreshedAvailable,
+                            error: String(error)
+                        }
+                    });
+                    quantity = nextQuantity;
+                    notional = quantity * markPrice;
+                    margin = notional / leverage;
+                    executedPositionFraction = effectiveWallet > 0
+                        ? Math.min(positionFraction, margin / effectiveWallet)
+                        : 0;
+                    marketOpenAttempt++;
+                }
+            }
             opened = true;
             openedSide = side;
 
@@ -2949,7 +3052,7 @@ export class TradingService {
                 lastTakeProfitRoe: effectiveGate.takeProfitRoe,
                 lastTrailingActivationRoe: effectiveGate.trailingActivationRoe,
                 lastTrailingCallbackRoe: effectiveGate.trailingCallbackRoe,
-                lastPositionFraction: positionFraction,
+                lastPositionFraction: executedPositionFraction,
                 lastRequestedLeverage: effectiveGate.leverage,
                 lastActualLeverage: leverage,
                 lastBracketStatus: 'OK',
@@ -2973,7 +3076,7 @@ export class TradingService {
                 entry_price: entryPrice,
                 quantity: positionData.qtyAbs || quantity,
                 leverage,
-                position_fraction: positionFraction,
+                position_fraction: executedPositionFraction,
                 margin_estimated: marginUsed,
                 notional_estimated: (positionData.qtyAbs || quantity) * entryPrice,
                 turbo_score: effectiveGate.turboScore,
@@ -3031,7 +3134,7 @@ export class TradingService {
                 quantity: positionData.qtyAbs || quantity,
                 margin: marginUsed,
                 leverage,
-                positionFraction,
+                positionFraction: executedPositionFraction,
                 finalStrategy: entryDecision.finalStrategy,
                 turboScore: effectiveGate.turboScore,
                 votes: effectiveGate.votes,
@@ -3085,6 +3188,8 @@ export class TradingService {
                         metadata: { error: String(closeError) }
                     });
                 }
+            } else {
+                await this.notifyError(symbol, 'AEGIS ENTRY FAILED', error);
             }
         }
     }
@@ -4749,6 +4854,31 @@ export class TradingService {
     private roundQuantity(quantity: number, filters: SymbolFilters): number {
         const scale = 10 ** filters.qtyPrecision;
         return Number((Math.floor(quantity * scale) / scale).toFixed(filters.qtyPrecision));
+    }
+
+    private isRecoverableEntrySizeError(error: unknown): boolean {
+        const candidate = error as {
+            code?: unknown;
+            message?: unknown;
+            response?: { data?: { code?: unknown; msg?: unknown } };
+            body?: { code?: unknown; msg?: unknown };
+        };
+        const codes = [candidate?.code, candidate?.response?.data?.code, candidate?.body?.code]
+            .map(value => Number(value))
+            .filter(Number.isFinite);
+        if (codes.some(code => [-2019, -2027, -4005].includes(code))) return true;
+
+        const message = [
+            candidate?.message,
+            candidate?.response?.data?.msg,
+            candidate?.body?.msg,
+            String(error)
+        ].filter(Boolean).join(' ').toLowerCase();
+        return message.includes('margin is insufficient')
+            || message.includes('insufficient margin')
+            || message.includes('insufficient balance')
+            || message.includes('quantity greater than max quantity')
+            || message.includes('maximum allowable position');
     }
 
     private roundPrice(price: number, filters: SymbolFilters): number {

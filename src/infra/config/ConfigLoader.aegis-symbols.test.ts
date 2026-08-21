@@ -101,6 +101,15 @@ describe('NinjaConfigManager Aegis symbol modes', () => {
         )).toBe(true);
     });
 
+    it('uses 90 percent of available wallet for every live symbol and side', () => {
+        const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
+        for (const symbol of ['ETHUSDT', ...massShadowSymbols]) {
+            expect(config.getAegisPositionFractionOverride(symbol, 'LONG')?.positionFraction).toBe(0.90);
+            expect(config.getAegisPositionFractionOverride(symbol, 'SHORT')?.positionFraction).toBe(0.90);
+        }
+        expect(config.getAegisTurboConfig()?.position_fraction_cap).toBe(0.90);
+    });
+
     it('parses OFF, SHADOW and LIVE modes', () => {
         const config = new NinjaConfigManager(writeConfig(`
 symbols:
@@ -1119,16 +1128,21 @@ symbols:
         expect(config.getAegisPositionFractionOverride('ADAUSDT', 'LONG')).toBeUndefined();
     });
 
-    it('keeps the current Live AVAX SHORT allocation at five percent', () => {
+    it('uses the global 90 percent allocation for AVAX on both sides', () => {
         const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
 
         expect(config.getAegisPositionFractionOverride('AVAXUSDT', 'SHORT')).toMatchObject({
             symbol: 'AVAXUSDT',
             side: 'SHORT',
-            positionFraction: 0.05,
-            ruleName: 'avax_short_loss_penalty'
+            positionFraction: 0.90,
+            ruleName: 'all_symbols_available_wallet_90pct'
         });
-        expect(config.getAegisPositionFractionOverride('AVAXUSDT', 'LONG')).toBeUndefined();
+        expect(config.getAegisPositionFractionOverride('AVAXUSDT', 'LONG')).toMatchObject({
+            symbol: 'AVAXUSDT',
+            side: 'LONG',
+            positionFraction: 0.90,
+            ruleName: 'all_symbols_available_wallet_90pct'
+        });
     });
 
     it('clamps configured position fraction overrides to wallet fraction bounds', () => {

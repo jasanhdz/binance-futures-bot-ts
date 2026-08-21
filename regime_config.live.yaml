@@ -585,27 +585,14 @@ aegis:
       minimum_root_risk_families: 2
       critical_long_veto_mode: ENFORCE
       require_valid_regime_for_critical_long: true
-    position_fraction_cap: 0.50
+    position_fraction_cap: 0.90
     # Optional bot-side sizing overrides. When a rule matches symbol + side,
     # the bot uses this fraction instead of Aegis ML raw.position_fraction.
     position_fraction_overrides:
-      - name: majors_link_btc_eth_ada_long
-        symbols: [LINKUSDT, BTCUSDT, ETHUSDT, ADAUSDT, XRPUSDT, BNBUSDT, DOGEUSDT]
-        long: 0.01
-      # Current-brain SHORT sizing tiers, frozen from Live MAE plus prospective
-      # selected-outcome evidence. Unlisted SHORT symbols retain the 0.08 default.
-      - name: xrp_short_high_confidence
-        symbols: [XRPUSDT]
-        short: 0.20
-      - name: sui_ltc_short_supported
-        symbols: [SUIUSDT, LTCUSDT]
-        short: 0.16
-      - name: ada_short_moderate_confidence
-        symbols: [ADAUSDT]
-        short: 0.12
-      - name: avax_short_loss_penalty
-        symbols: [AVAXUSDT]
-        short: 0.05
+      - name: all_symbols_available_wallet_90pct
+        symbols: [ETHUSDT, BTCUSDT, SOLUSDT, BNBUSDT, XRPUSDT, DOGEUSDT, ADAUSDT, AVAXUSDT, LINKUSDT, SUIUSDT, LTCUSDT]
+        long: 0.90
+        short: 0.90
     max_trades_per_day: 20
     max_consecutive_losses: 3
     daily_loss_stop_pct: 0.30

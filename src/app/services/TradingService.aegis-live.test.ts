@@ -611,7 +611,8 @@ function makeHarness(options: {
         lastCandle?: any;
 	    initialState?: any;
 	    symbolStates?: Record<string, any>;
-	    accountSnapshot?: any;
+        accountSnapshot?: any;
+        symbolFilters?: any;
         regime?: any;
         guardian?: any;
         signal?: AegisTradingSignal;
@@ -670,7 +671,7 @@ function makeHarness(options: {
             equityTotal: options.balance ?? 20
         }),
         getMarkPrice: vi.fn().mockResolvedValue(options.markPrice ?? 3000),
-        getSymbolFilters: vi.fn().mockResolvedValue({ qtyPrecision: 3, pricePrecision: 2, minNotional: 5, tickSize: 0.01, stepSize: 0.001 }),
+        getSymbolFilters: vi.fn().mockResolvedValue(options.symbolFilters ?? { qtyPrecision: 3, pricePrecision: 2, minNotional: 5, tickSize: 0.01, stepSize: 0.001 }),
         setLeverage: vi.fn().mockResolvedValue(undefined),
         ensureMarginType: vi.fn().mockResolvedValue(undefined),
         marketOpen: vi.fn().mockResolvedValue({ avgPrice: 3000, orderId: 'entry-1' }),
@@ -3474,6 +3475,116 @@ describe('TradingService Aegis live execution', () => {
         await service.tick('ETHUSDT');
 
         expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', expect.any(Number));
+    });
+
+    it('sizes the initial order from 90 percent of available balance', async () => {
+        const { exchange, service } = makeHarness({
+            balance: 10,
+            accountSnapshot: {
+                walletBalance: 10,
+                availableBalance: 0.80,
+                equityTotal: 10
+            },
+            markPrice: 100,
+            positionFractionOverride: {
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                positionFraction: 0.90,
+                ruleIndex: 0,
+                ruleName: 'all_symbols_available_wallet_90pct'
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.102);
+    });
+
+    it('caps the initial order at the maximum notional for the leverage tier', async () => {
+        const { exchange, service } = makeHarness({
+            balance: 20,
+            markPrice: 100,
+            symbolFilters: {
+                qtyPrecision: 3,
+                pricePrecision: 2,
+                minNotional: 5,
+                notionalCap: 10,
+                tickSize: 0.01,
+                stepSize: 0.001
+            },
+            positionFractionOverride: {
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                positionFraction: 0.90,
+                ruleIndex: 0,
+                ruleName: 'all_symbols_available_wallet_90pct'
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.1);
+    });
+
+    it('reduces rejected entry quantity repeatedly until Binance accepts it', async () => {
+        const sizeError = () => Object.assign(new Error('Margin is insufficient.'), { code: -2019 });
+        const { exchange, historyLogger, logger, service } = makeHarness({
+            positionFractionOverride: {
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                positionFraction: 0.90,
+                ruleIndex: 0,
+                ruleName: 'all_symbols_available_wallet_90pct'
+            }
+        });
+        exchange.marketOpen
+            .mockRejectedValueOnce(sizeError())
+            .mockRejectedValueOnce(sizeError())
+            .mockResolvedValueOnce({ avgPrice: 3000, orderId: 'adjusted-entry' });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenNthCalledWith(1, 'ETHUSDT', 'LONG', 0.085);
+        expect(exchange.marketOpen).toHaveBeenNthCalledWith(2, 'ETHUSDT', 'LONG', 0.076);
+        expect(exchange.marketOpen).toHaveBeenNthCalledWith(3, 'ETHUSDT', 'LONG', 0.068);
+        expect(logger.warn).toHaveBeenCalledWith('aegis_entry_quantity_rejected', expect.any(Object));
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ORDER_QUANTITY_ADJUSTED'
+        }));
+    });
+
+    it('stops after bounded size retries and reports the final error', async () => {
+        const sizeError = Object.assign(new Error('Margin is insufficient.'), { code: -2019 });
+        const { exchange, historyLogger, notifier, service } = makeHarness({
+            positionFractionOverride: {
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                positionFraction: 0.90,
+                ruleIndex: 0,
+                ruleName: 'all_symbols_available_wallet_90pct'
+            }
+        });
+        exchange.marketOpen.mockRejectedValue(sizeError);
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledTimes(6);
+        expect(exchange.readActivePosition).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'ORDER_SIZE_REJECTED',
+            reason: 'AEGIS_ENTRY_QUANTITY_ADJUSTMENT_EXHAUSTED'
+        }));
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('AEGIS ENTRY SIZE REJECTED'));
+    });
+
+    it('does not retry ambiguous market-open failures and reports them', async () => {
+        const { exchange, notifier, service } = makeHarness();
+        exchange.marketOpen.mockRejectedValue(new Error('request timed out'));
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('AEGIS ENTRY FAILED'));
     });
 
     it('detects Phase O SHORT metadata under metadata.aegis.turbo', () => {
