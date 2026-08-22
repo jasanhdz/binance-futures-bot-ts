@@ -1,12 +1,4 @@
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  writeSync,
-} from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { canonicalJson, canonicalUtc, requireSha256, sha256 } from './canonical';
@@ -15,6 +7,7 @@ import {
   PROSPECTIVE_PROTOCOL_VERSION,
   ProspectiveIdentityInput,
 } from './identity';
+import { forEachJsonlLine } from './jsonl';
 
 export const PROSPECTIVE_EVIDENCE_SCHEMA = 'aegis-prospective-signal-evidence-v1' as const;
 export type ProspectiveAction =
@@ -122,26 +115,28 @@ export class InMemoryProspectiveEvidenceRecorder implements ProspectiveEvidenceR
 }
 
 export class JsonlProspectiveEvidenceRecorder implements ProspectiveEvidenceRecorder {
-  private readonly payloads = new Map<string, string>();
+  private readonly payloadHashes = new Map<string, string>();
 
   constructor(private readonly path: string) {
     if (!path) throw new Error('PROSPECTIVE_EVIDENCE_PATH_REQUIRED');
     if (existsSync(path)) {
-      for (const line of readFileSync(path, 'utf8').split('\n').filter(Boolean)) {
+      forEachJsonlLine(path, (line) => {
         const envelope = JSON.parse(line) as ProspectiveEvidenceEnvelope;
         const payload = canonicalJson(envelope);
-        const previous = this.payloads.get(envelope.prospective_signal_id);
-        if (previous === payload) throw new Error('PROSPECTIVE_DUPLICATE_SIGNAL');
+        const payloadHash = sha256(payload);
+        const previous = this.payloadHashes.get(envelope.prospective_signal_id);
+        if (previous === payloadHash) throw new Error('PROSPECTIVE_DUPLICATE_SIGNAL');
         if (previous !== undefined) throw new Error('PROSPECTIVE_SIGNAL_CONFLICT');
-        this.payloads.set(envelope.prospective_signal_id, payload);
-      }
+        this.payloadHashes.set(envelope.prospective_signal_id, payloadHash);
+      });
     }
   }
 
   record(envelope: ProspectiveEvidenceEnvelope): void {
     const payload = canonicalJson(envelope);
-    const previous = this.payloads.get(envelope.prospective_signal_id);
-    if (previous === payload) throw new Error('PROSPECTIVE_DUPLICATE_SIGNAL');
+    const payloadHash = sha256(payload);
+    const previous = this.payloadHashes.get(envelope.prospective_signal_id);
+    if (previous === payloadHash) throw new Error('PROSPECTIVE_DUPLICATE_SIGNAL');
     if (previous !== undefined) throw new Error('PROSPECTIVE_SIGNAL_CONFLICT');
     mkdirSync(dirname(this.path), { recursive: true });
     const descriptor = openSync(this.path, 'a', 0o600);
@@ -151,7 +146,7 @@ export class JsonlProspectiveEvidenceRecorder implements ProspectiveEvidenceReco
     } finally {
       closeSync(descriptor);
     }
-    this.payloads.set(envelope.prospective_signal_id, payload);
+    this.payloadHashes.set(envelope.prospective_signal_id, payloadHash);
   }
 }
 

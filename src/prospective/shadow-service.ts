@@ -24,6 +24,7 @@ import {
   ProspectiveEvidenceEnvelope,
 } from './evidence';
 import { PROSPECTIVE_PROTOCOL_VERSION } from './identity';
+import { forEachJsonlLine } from './jsonl';
 import { assertPublicEndpoint } from './shadow-harness';
 import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { Candle, DecisionRequest, MarketSnapshot } from '../brain/contract';
@@ -54,6 +55,9 @@ export const PUBLIC_KLINES_ENDPOINT = 'https://fapi.binance.com/fapi/v1/klines';
 const INTERVAL_MS = 300_000;
 const HORIZON_BARS = 12;
 const MIN_FREE_BYTES = 1_073_741_824;
+const MAX_CONSECUTIVE_FAILURES = 5;
+const MIN_RETRY_DELAY_MS = 1_000;
+const MAX_RETRY_DELAY_MS = 300_000;
 const CREDENTIAL_PATTERN =
   /(^|_)(API[_-]?KEY|API[_-]?SECRET|SECRET[_-]?KEY|BINANCE[_-]?(KEY|SECRET))($|_)/i;
 
@@ -130,6 +134,7 @@ export interface ShadowServiceOptions {
   pollMs: number;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+  sleep?: (delayMs: number) => Promise<void>;
 }
 
 function digestFile(path: string): string {
@@ -348,12 +353,14 @@ function pseudoDecision(selected: boolean): AegisEntryDecisionResult {
 
 export class PersistentShadowService {
   private readonly now: () => Date;
+  private readonly sleep: (delayMs: number) => Promise<void>;
   private readonly market: PublicKlineClient;
   private readonly activation: ActivationRecord;
   private readonly recorder: JsonlProspectiveEvidenceRecorder;
   private readonly processed = new Set<string>();
   private readonly matured = new Set<string>();
   private reconnects = 0;
+  private consecutiveFailures = 0;
   private startedAt = new Date();
   private stopping = false;
   private counters = {
@@ -376,6 +383,7 @@ export class PersistentShadowService {
     if (free < MIN_FREE_BYTES) throw new Error('SHADOW_INSUFFICIENT_DISK_SPACE');
     for (const path of Object.values(options.paths)) mkdirSync(dirname(path), { recursive: true });
     this.now = options.now ?? (() => new Date());
+    this.sleep = options.sleep ?? ((delayMs) => new Promise((done) => setTimeout(done, delayMs)));
     this.market = new PublicKlineClient(options.fetchImpl);
     this.recorder = new JsonlProspectiveEvidenceRecorder(options.paths.evidence);
     if (existsSync(options.paths.checkpoint)) {
@@ -387,12 +395,12 @@ export class PersistentShadowService {
       this.reconnects = checkpoint.reconnect_count;
     }
     if (existsSync(options.paths.outcomes)) {
-      for (const line of readFileSync(options.paths.outcomes, 'utf8').split('\n').filter(Boolean)) {
+      forEachJsonlLine(options.paths.outcomes, (line) => {
         const outcome = JSON.parse(line) as { prospective_signal_id: string };
         if (this.matured.has(outcome.prospective_signal_id))
           throw new Error('PROSPECTIVE_OUTCOME_DUPLICATE');
         this.matured.add(outcome.prospective_signal_id);
-      }
+      });
     }
   }
 
@@ -517,6 +525,7 @@ export class PersistentShadowService {
     this.counters.evidence += persisted;
     this.persistCheckpoint();
     await this.matureOutcomes();
+    this.consecutiveFailures = 0;
     this.persistHealth('RUNNING', snapshot.closed_at);
     return persisted;
   }
@@ -620,6 +629,8 @@ export class PersistentShadowService {
       last_public_market_event_timestamp: lastMarketEvent,
       public_connection_state: state === 'RUNNING' ? 'CONNECTED_PUBLIC_REST' : state,
       reconnect_count: this.reconnects,
+      consecutive_failure_count: this.consecutiveFailures,
+      consecutive_failure_limit: MAX_CONSECUTIVE_FAILURES,
       duplicate_event_count: this.counters.duplicates,
       conflicting_event_count: this.counters.conflicts,
       stale_event_count: this.counters.stale,
@@ -647,22 +658,30 @@ export class PersistentShadowService {
     this.startedAt = this.now();
     this.persistHealth('STARTING', null);
     while (!this.stopping) {
+      const baseDelayMs = Math.max(MIN_RETRY_DELAY_MS, this.options.pollMs);
+      let retryDelayMs = baseDelayMs;
       try {
         await this.runCycle();
-        await this.matureOutcomes();
+        this.consecutiveFailures = 0;
       } catch (error) {
         if (
           !(error instanceof Error && /PROSPECTIVE_EVENT_BEFORE_ACTIVATION/.test(error.message))
         ) {
           this.reconnects += 1;
+          this.consecutiveFailures += 1;
           this.persistCheckpoint();
-          if (this.reconnects > 5) {
+          if (this.consecutiveFailures > MAX_CONSECUTIVE_FAILURES) {
             this.persistHealth('QUARANTINED', null);
-            throw new Error('SHADOW_RESTART_LIMIT_EXCEEDED');
+            return;
           }
+          this.persistHealth('RETRYING', null);
+          retryDelayMs = Math.min(
+            MAX_RETRY_DELAY_MS,
+            baseDelayMs * 2 ** (this.consecutiveFailures - 1),
+          );
         }
       }
-      await new Promise((done) => setTimeout(done, this.options.pollMs));
+      await this.sleep(retryDelayMs);
     }
     this.persistCheckpoint();
     this.persistHealth('STOPPED', null);
