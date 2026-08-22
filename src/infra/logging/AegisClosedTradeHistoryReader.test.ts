@@ -18,12 +18,36 @@ describe('readAegisClosedTradeOutcomes', () => {
   it('loads only valid closed Live Aegis outcomes', async () => {
     const records = [
       {
-        trade_id: 'loss',
+        trade_id: 'legacy-loss',
         closed_at: '2026-07-27T01:00:00.000Z',
         pnl_usdt: -1,
         status: 'CLOSED',
         strategy: 'AEGIS_TURBO',
         mode: 'AEGIS_TURBO_MICRO_LIVE',
+      },
+      {
+        trade_id: 'loss',
+        closed_at: '2026-07-27T01:30:00.000Z',
+        pnl_usdt: -1,
+        status: 'CLOSED',
+        strategy: 'AEGIS_TURBO',
+        mode: 'AEGIS_TURBO_MICRO_LIVE',
+        owner: 'AEGIS',
+        origin: 'BOT',
+        ownership_status: 'VERIFIED',
+        eligible_for_bot_metrics: true,
+      },
+      {
+        trade_id: 'manual',
+        closed_at: '2026-07-27T01:45:00.000Z',
+        pnl_usdt: 99,
+        status: 'CLOSED',
+        strategy: 'AEGIS_TURBO',
+        mode: 'AEGIS_TURBO_MICRO_LIVE',
+        owner: 'EXTERNAL',
+        origin: 'MANUAL_EXTERNAL',
+        ownership_status: 'UNKNOWN',
+        eligible_for_bot_metrics: false,
       },
       {
         trade_id: 'open',
@@ -48,7 +72,7 @@ describe('readAegisClosedTradeOutcomes', () => {
     );
 
     await expect(readAegisClosedTradeOutcomes(tempDir)).resolves.toEqual([
-      { tradeId: 'loss', closedAt: '2026-07-27T01:00:00.000Z', pnlUsdt: -1 },
+      { tradeId: 'loss', closedAt: '2026-07-27T01:30:00.000Z', pnlUsdt: -1 },
     ]);
   });
 

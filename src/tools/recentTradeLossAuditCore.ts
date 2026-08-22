@@ -6,6 +6,7 @@ import { Side } from '../domain/types';
 import { RegimeEngineV2 } from '../domain/services/regime-v2/RegimeEngineV2';
 import { RegimeEngineV2Decision, RegimeEngineV2InputCandle, RegimeEngineV2MarketAction } from '../domain/services/regime-v2/RegimeEngineV2.types';
 import { AegisLongRiskShadowAssessment, evaluateAegisLongRiskShadow } from '../domain/services/aegis-entry/guards/AegisLongRiskShadowGuardAdapter';
+import { isVerifiedAegisMetricRecord } from '../infra/logging/AegisTradeOwnership';
 
 type JsonRecord = Record<string, any>;
 
@@ -583,7 +584,7 @@ function pairTrades(rows: JsonRecord[]): Map<string, TradePair> {
         const pair: TradePair = pairs.get(tradeId) ?? { tradeId, symbol: row.symbol };
         pair.symbol = row.symbol ?? pair.symbol;
         if (row.status === 'OPEN' || row.opened_at && !row.closed_at) pair.open = row;
-        if (row.status === 'CLOSED' || row.closed_at) pair.close = row;
+        if ((row.status === 'CLOSED' || row.closed_at) && isVerifiedAegisMetricRecord(row)) pair.close = row;
         pairs.set(tradeId, pair);
     }
     return pairs;

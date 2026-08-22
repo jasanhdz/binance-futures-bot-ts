@@ -629,9 +629,10 @@ function makeHarness(options: {
         entryQuality?: any;
         entryPolicy?: any;
         cachedCandles?: any[];
-        momentumRide?: any;
-        regimeContext?: any;
-        closedTradeOutcomes?: Array<{ tradeId: string; closedAt: string; pnlUsdt: number }>;
+	    momentumRide?: any;
+	    regimeContext?: any;
+	    closedTradeOutcomes?: Array<{ tradeId: string; closedAt: string; pnlUsdt: number }>;
+	    preserveUnverifiedState?: boolean;
 	} = {}) {
     setConfig(options.liveEnabled ?? true);
     const closeOrders = options.closeOrders ?? [
@@ -701,7 +702,16 @@ function makeHarness(options: {
         error: vi.fn(),
         debug: vi.fn()
     };
-    let currentState: any = options.initialState ?? { mode: 'IDLE', currentRegime: 'AEGIS_TURBO', lastExitAt: Date.now() - 20 * 60 * 1000 };
+    const verifiedState = (value: any) => value && value.mode !== 'IDLE' && !options.preserveUnverifiedState
+        ? {
+            positionOwner: 'AEGIS',
+            tradeOrigin: 'BOT',
+            ownershipStatus: 'VERIFIED',
+            eligibleForBotMetrics: true,
+            ...value
+        }
+        : value;
+	    let currentState: any = verifiedState(options.initialState) ?? { mode: 'IDLE', currentRegime: 'AEGIS_TURBO', lastExitAt: Date.now() - 20 * 60 * 1000 };
     const state = {
         get: vi.fn(() => currentState),
         set: vi.fn((patch: any) => {
@@ -713,7 +723,7 @@ function makeHarness(options: {
     const symbolStores = new Map<string, any>();
     if (options.symbolStates) {
         for (const [symbol, initial] of Object.entries(options.symbolStates)) {
-            let scopedState: any = initial;
+	            let scopedState: any = verifiedState(initial);
             symbolStores.set(symbol, {
                 get: vi.fn(() => scopedState),
                 set: vi.fn((patch: any) => {
@@ -984,6 +994,10 @@ describe('TradingService Aegis live execution', () => {
         const { service } = makeHarness();
         const botState = {
             mode: 'LONG_RIDE',
+            positionOwner: 'AEGIS',
+            tradeOrigin: 'BOT',
+            ownershipStatus: 'VERIFIED',
+            eligibleForBotMetrics: true,
             lastTradeId: 'confirmed-loss',
             lastEntryAt: Date.now() - 60_000,
             lastEntryPrice: 3000,
@@ -1016,6 +1030,10 @@ describe('TradingService Aegis live execution', () => {
         ]);
         const botState = {
             mode: 'SHORT_RIDE',
+            positionOwner: 'AEGIS',
+            tradeOrigin: 'BOT',
+            ownershipStatus: 'VERIFIED',
+            eligibleForBotMetrics: true,
             lastTradeId: 'time-limit-profit',
             lastEntryAt: Date.now() - 9 * 60 * 60 * 1000,
             lastEntryPrice: 3000,
@@ -1032,6 +1050,34 @@ describe('TradingService Aegis live execution', () => {
             pnl: 0.5
         });
 
+        expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(0);
+    });
+
+    it('does not journal or update the loss streak for a tainted close', async () => {
+        const { historyLogger, service } = makeHarness();
+        const taintedState = {
+            mode: 'LONG_RIDE',
+            positionOwner: 'AEGIS',
+            tradeOrigin: 'BOT',
+            ownershipStatus: 'TAINTED',
+            eligibleForBotMetrics: false,
+            metricsExclusionReason: 'EXTERNAL_QUANTITY_REDUCTION',
+            lastTradeId: 'tainted-close',
+            lastEntryAt: Date.now() - 60_000,
+            lastEntryPrice: 3000,
+            lastEntryQty: 0.01,
+            lastEntryMargin: 2,
+            lastLeverage: 20
+        };
+
+        await (service as any).notifyExit('ETHUSDT', 'LONG', 'SL/TP', taintedState, {
+            exitPrice: 2990,
+            finalRoe: -0.1,
+            pnl: -1
+        });
+
+        expect(historyLogger.logTradeClose).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'TRADE_CLOSED' }));
         expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(0);
     });
 
@@ -1066,8 +1112,34 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ROI -6.7% | PnL -$10.00 | 0.5h'));
     });
 
+    it('detects a startup manual position without adopting, bracketing, or journaling it', async () => {
+        const { exchange, historyLogger, logger, service, symbolStores } = makeHarness({
+            symbolStates: { ETHUSDT: { mode: 'IDLE' } },
+            readActivePosition: {
+                sideMode: 'LONG',
+                qtyAbs: 0.02,
+                entryPrice: 3000,
+                leverage: 20,
+                isolatedMargin: 3
+            }
+        });
+
+        await service.start(false);
+
+        expect(symbolStores.get('ETHUSDT')?.get().mode).toBe('IDLE');
+        expect(logger.warn).toHaveBeenCalledWith('aegis_manual_external_position_detected', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            ownership: 'MANUAL/EXTERNAL',
+            action: 'NOT_ADOPTED_NOT_BRACKETED_NOT_JOURNALED'
+        }));
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeClose).not.toHaveBeenCalled();
+    });
+
 	    it('opens Aegis Turbo position with isolated margin and immediate brackets when env and YAML allow live', async () => {
-	        const { exchange, logger, notifier, service, state } = makeHarness();
+	        const { exchange, historyLogger, logger, notifier, service, state } = makeHarness();
 
 	        await service.tick('ETHUSDT');
 
@@ -1083,6 +1155,10 @@ describe('TradingService Aegis live execution', () => {
 	        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
 	            currentRegime: 'AEGIS_TURBO',
 	            lastStrategy: 'AEGIS_TURBO',
+	            positionOwner: 'AEGIS',
+	            tradeOrigin: 'BOT',
+	            ownershipStatus: 'VERIFIED',
+	            eligibleForBotMetrics: true,
 	            lastBracketStatus: 'OK',
             lastActualLeverage: 15,
             lastPositionFraction: 0.08,
@@ -1090,6 +1166,12 @@ describe('TradingService Aegis live execution', () => {
             lastTakeProfitRoe: 0.25,
             lastTrailingActivationRoe: 0.15,
             lastTrailingCallbackRoe: 0.08
+        }));
+        expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(expect.objectContaining({
+            owner: 'AEGIS',
+            origin: 'BOT',
+            ownership_status: 'VERIFIED',
+            eligible_for_bot_metrics: true
         }));
         expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({
             symbol: 'ETHUSDT',
@@ -1134,8 +1216,11 @@ describe('TradingService Aegis live execution', () => {
         }));
     });
 
-	    it('blocks before marketOpen when daily loss stop is reached', async () => {
-	        const { exchange, logger, service, state } = makeHarness({ balance: 17.9 });
+	    it('blocks before marketOpen when verified bot-only daily loss stop is reached', async () => {
+	        const { exchange, logger, service, state } = makeHarness({
+                balance: 17.9,
+                closedTradeOutcomes: [{ tradeId: 'today-loss', closedAt: new Date().toISOString(), pnlUsdt: -2.1 }]
+            });
 	        (service as any).dailyStartBalance = 20;
 
 	        await service.tick('ETHUSDT');
@@ -1145,6 +1230,8 @@ describe('TradingService Aegis live execution', () => {
 	            balance: 17.9,
 	            dailyStartBalance: 20,
 	            dailyPnlPct: expect.any(Number),
+	            dailyPnlScope: 'VERIFIED_BOT_CLOSED_OUTCOMES',
+	            accountWideDailyPnlPct: expect.any(Number),
 	            dailyLossStopPct: 0.10
 	        }));
 	        expect(exchange.marketOpen).not.toHaveBeenCalled();
@@ -2835,6 +2922,10 @@ describe('TradingService Aegis live execution', () => {
         const { exchange, service } = makeHarness({ closeOrders: [] });
         let currentState: any = {
             mode: 'LONG_RIDE',
+            positionOwner: 'AEGIS',
+            tradeOrigin: 'BOT',
+            ownershipStatus: 'VERIFIED',
+            eligibleForBotMetrics: true,
             currentRegime: 'AEGIS_TURBO',
             lastStrategy: 'AEGIS_TURBO',
             lastSide: 'LONG',
@@ -2845,6 +2936,7 @@ describe('TradingService Aegis live execution', () => {
             lastTrailingActivationRoe: 0.15,
             lastTrailingCallbackRoe: 0.08,
             lastEntryAt: Date.now(),
+            lastEntryQty: 0.01,
             lastPeakPrice: 3000
         };
         (service as any).deps.state.get.mockImplementation(() => currentState);
@@ -2859,7 +2951,7 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
     });
 
-    it('recalculates and atomically replaces SL/TP after a manual position size increase', async () => {
+    it('taints and excludes a bot trade after an external size increase without touching orders', async () => {
         const oldOrders = [
             { orderId: 'old-sl', type: 'STOP_MARKET', stopPrice: 98, closePosition: true },
             { orderId: 'old-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 102, closePosition: true }
@@ -2900,32 +2992,24 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 94.29);
-        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 96.19);
-        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-sl');
-        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-tp');
-        expect(exchange.cancelOrderById).not.toHaveBeenCalledWith('ETHUSDT', 'new-sl');
-        expect(exchange.cancelOrderById).not.toHaveBeenCalledWith('ETHUSDT', 'new-tp');
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
         expect(state.get()).toEqual(expect.objectContaining({
-            lastEntryQty: 2,
-            lastEntryPrice: 95,
-            lastEntryMargin: 9.5,
-            lastStopPrice: 94.29,
-            peakRoe: 0,
-            lowestRoe: 0,
-            breakEvenExecuted: false,
-            lastManualSizeIncreaseQty: 1,
-            lastManualSizeIncreasePreviousQty: 1,
-            lastManualSizeIncreaseBracketMode: 'CLOSE_POSITION'
+            lastEntryQty: 1,
+            lastEntryPrice: 100,
+            ownershipStatus: 'TAINTED',
+            eligibleForBotMetrics: false,
+            metricsExclusionReason: 'EXTERNAL_QUANTITY_INCREASE'
         }));
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'MANUAL_POSITION_SIZE_INCREASE_RECONCILED',
-            reason: 'POSITION_QUANTITY_INCREASED'
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'MANUAL_POSITION_SIZE_INCREASE_RECONCILED'
         }));
-        expect(logger.warn).toHaveBeenCalledWith('aegis_manual_position_size_increase_reconciled', expect.objectContaining({
+        expect(logger.warn).toHaveBeenCalledWith('aegis_managed_position_tainted', expect.objectContaining({
             symbol: 'ETHUSDT',
             previousQty: 1,
-            currentQty: 2
+            currentQty: 2,
+            action: 'NO_ORDER_OR_BRACKET_MUTATION'
         }));
     });
 
@@ -2962,7 +3046,7 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.cancelOrderById).not.toHaveBeenCalled();
     });
 
-    it('migrates a previously reconciled quantity bracket to closePosition without another size increase', async () => {
+    it('does not migrate or replace external quantity brackets when size is unchanged', async () => {
         const quantityOrders = [
             { orderId: 'qty-sl', type: 'STOP_MARKET', stopPrice: 94.29, closePosition: false, reduceOnly: true, quantity: 2 },
             { orderId: 'qty-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 96.19, closePosition: false, reduceOnly: true, quantity: 2 }
@@ -3002,23 +3086,21 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'qty-sl');
-        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'qty-tp');
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 94.29);
-        expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 96.19);
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
         expect(state.get()).toEqual(expect.objectContaining({
             lastEntryQty: 2,
-            lastManualSizeIncreaseQty: 1,
-            lastManualSizeIncreasePreviousQty: 1,
-            lastManualSizeIncreaseBracketMode: 'CLOSE_POSITION'
+            lastManualSizeIncreaseBracketMode: 'REDUCE_ONLY_QTY',
+            ownershipStatus: 'VERIFIED',
+            eligibleForBotMetrics: true
         }));
-        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(expect.objectContaining({
+        expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(expect.objectContaining({
             event: 'MANUAL_POSITION_SIZE_INCREASE_RECONCILED',
-            reason: 'BRACKET_MODE_MIGRATED'
         }));
     });
 
-    it('records a manual position reduction without resetting manually edited brackets', async () => {
+    it('taints a manual position reduction without resetting basis or touching orders', async () => {
         const manualOrders = [
             { orderId: 'manual-sl', type: 'STOP_MARKET', stopPrice: 99.1 },
             { orderId: 'manual-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 108 }
@@ -3046,13 +3128,19 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(state.get()).toEqual(expect.objectContaining({ lastEntryQty: 0.5 }));
+        expect(state.get()).toEqual(expect.objectContaining({
+            lastEntryQty: 1,
+            lastEntryPrice: 100,
+            ownershipStatus: 'TAINTED',
+            eligibleForBotMetrics: false,
+            metricsExclusionReason: 'EXTERNAL_QUANTITY_REDUCTION'
+        }));
         expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.placeTpClose).not.toHaveBeenCalled();
         expect(exchange.cancelOrderById).not.toHaveBeenCalled();
     });
 
-    it('keeps old brackets when replacement brackets cannot be verified', async () => {
+    it('does not attempt bracket replacement after an external quantity change', async () => {
         const oldOrders = [
             { orderId: 'old-sl', type: 'STOP_MARKET', stopPrice: 98, closePosition: true },
             { orderId: 'old-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 102, closePosition: true }
@@ -3082,20 +3170,21 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.placeStopClose).toHaveBeenNthCalledWith(1, 'ETHUSDT', 'LONG', 94.29);
-        expect(exchange.placeStopClose).toHaveBeenNthCalledWith(2, 'ETHUSDT', 'LONG', 98, undefined);
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.placeTpClose).not.toHaveBeenCalled();
-        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-sl');
-        expect(state.get()).toEqual(expect.objectContaining({ lastEntryQty: 1, lastEntryPrice: 100 }));
-        expect(logger.error).toHaveBeenCalledWith('aegis_manual_position_size_increase_reconcile_failed', expect.objectContaining({
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(state.get()).toEqual(expect.objectContaining({
+            lastEntryQty: 1,
+            lastEntryPrice: 100,
+            ownershipStatus: 'TAINTED',
+            eligibleForBotMetrics: false
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_managed_position_tainted', expect.objectContaining({
             symbol: 'ETHUSDT',
             previousQty: 1,
             currentQty: 2
         }));
-        expect(notifier.sendAlert).toHaveBeenCalledWith(
-            'AEGIS MANUAL SIZE BRACKET UPDATE FAILED',
-            expect.stringContaining('Old brackets preserved')
-        );
+        expect(notifier.sendAlert).not.toHaveBeenCalled();
     });
 
     it('executes MOVE_SL_BE for a LONG position', async () => {

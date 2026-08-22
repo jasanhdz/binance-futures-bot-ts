@@ -5,6 +5,7 @@ import {
     AegisTurboTradeEventInput,
     AegisTurboTradeOpenInput
 } from '../infra/logging/AegisTurboHistoryLogger';
+import { isVerifiedAegisMetricRecord } from '../infra/logging/AegisTradeOwnership';
 import { RegimeAvoidShadowEvaluator, RegimeAvoidShadowEvaluation } from '../domain/services/aegis-entry/guards/RegimeAvoidShadowEvaluator';
 import { Side } from '../domain/types';
 
@@ -381,7 +382,7 @@ function isOpenTrade(trade: TradeRecord): trade is AegisTurboTradeOpenInput {
 }
 
 function isCloseTrade(trade: TradeRecord): trade is AegisTurboTradeCloseInput {
-    return trade.status === 'CLOSED';
+    return trade.status === 'CLOSED' && isVerifiedAegisMetricRecord(trade as unknown as Record<string, unknown>);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

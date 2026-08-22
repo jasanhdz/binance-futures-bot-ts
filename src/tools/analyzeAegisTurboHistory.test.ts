@@ -136,6 +136,21 @@ describe('analyzeAegisTurboHistory', () => {
         expect(Object.keys(report.by_symbol)).toEqual(['ETHUSDT', 'BTCUSDT']);
     });
 
+    it('excludes manual, unknown, and legacy closes from bot analytics', async () => {
+        await writeTrades([
+            openTrade('verified', 'ETHUSDT', 0.62),
+            closeTrade('verified', 'ETHUSDT', 2, 0.02),
+            { ...closeTrade('manual', 'ETHUSDT', 50, 0.5), owner: 'EXTERNAL', origin: 'MANUAL_EXTERNAL', ownership_status: 'UNKNOWN', eligible_for_bot_metrics: false },
+            { ...closeTrade('unknown', 'ETHUSDT', 40, 0.4), ownership_status: 'UNKNOWN', eligible_for_bot_metrics: false },
+            { trade_id: 'legacy', symbol: 'ETHUSDT', strategy: 'AEGIS_TURBO', mode: 'AEGIS_TURBO_MICRO_LIVE', status: 'CLOSED', closed_at: '2026-05-06T10:30:00.000Z', pnl_usdt: 30 }
+        ]);
+
+        const report = await run();
+
+        expect(report.summary.closed_trades).toBe(1);
+        expect(report.summary.net_pnl).toBe(2);
+    });
+
     it('counts Aegis Exit Eye events', async () => {
         await writeEvents([
             exitEyeEvent('AEGIS_EXIT_EYE_SHADOW_PROTECT', 0.14, 0.05),
@@ -234,6 +249,10 @@ describe('analyzeAegisTurboHistory', () => {
             mfe_roe: Math.max(roe, 0.2),
             mae_roe: Math.min(roe, -0.03),
             duration_minutes: 30,
+            owner: 'AEGIS',
+            origin: 'BOT',
+            ownership_status: 'VERIFIED',
+            eligible_for_bot_metrics: true,
             status: 'CLOSED'
         };
     }

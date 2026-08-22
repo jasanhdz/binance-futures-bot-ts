@@ -1,5 +1,6 @@
 import path from 'path';
 import { promises as fs } from 'fs';
+import { isVerifiedAegisMetricRecord } from '../../infra/logging/AegisTradeOwnership';
 
 export type AegisProbeReportMode = 'summary' | 'detail' | 'near-miss';
 
@@ -178,6 +179,7 @@ export class AegisProbeReportService {
         );
 
         const trades = tradeRows
+            .filter((row) => stableText(row.status).toUpperCase() !== 'CLOSED' || isVerifiedAegisMetricRecord(row))
             .filter((row) => isProbeTrade(row, allowedTradeIds))
             .map((row) => extractProbeTrade(row, tradeEventsById.get(stableText(row.trade_id)) ?? []))
             .filter((trade): trade is AegisProbeTradeSample => Boolean(trade))
@@ -311,6 +313,7 @@ export function detectExitReasonLabelMismatches(
         : groupEventsByTradeId(tradeRows.filter((row) => row.event !== undefined));
     for (const row of tradeRows) {
         if (stableText(row.status).toUpperCase() !== 'CLOSED') continue;
+        if (!isVerifiedAegisMetricRecord(row)) continue;
         const tradeId = stableText(row.trade_id);
         const reason = stableText(row.exit_reason);
         const metadata = row.metadata ?? {};

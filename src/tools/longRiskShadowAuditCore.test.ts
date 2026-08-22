@@ -98,6 +98,10 @@ function closeTrade(tradeId: string, symbol: string, side: 'LONG' | 'SHORT', pnl
         exit_price: pnl < 0 ? 0.95 : 1.05,
         pnl_usdt: pnl,
         roe: pnl / 100,
+        owner: 'AEGIS',
+        origin: 'BOT',
+        ownership_status: 'VERIFIED',
+        eligible_for_bot_metrics: true,
         strategy: 'aegis_turbo'
     };
 }

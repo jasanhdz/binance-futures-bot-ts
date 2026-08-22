@@ -13,6 +13,7 @@ export type Candle = {
 };
 
 export type BotMode = 'IDLE' | 'LONG_RIDE' | 'SHORT_RIDE';
+export type TradeOwnershipStatus = 'VERIFIED' | 'TAINTED' | 'UNKNOWN';
 
 export type BotState = {
   mode: BotMode;
@@ -50,6 +51,11 @@ export type BotState = {
   lastEntryFilters?: Record<string, unknown>;
   lastCommissionEstimate?: number;
   lastOrderId?: string;
+  positionOwner?: 'AEGIS' | 'EXTERNAL' | 'UNKNOWN';
+  tradeOrigin?: 'BOT' | 'MANUAL_EXTERNAL' | 'UNKNOWN';
+  ownershipStatus?: TradeOwnershipStatus;
+  eligibleForBotMetrics?: boolean;
+  metricsExclusionReason?: string | null;
   postExitSide?: Side;
   postExitPrice?: number;
   postExitAt?: number;

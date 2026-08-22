@@ -410,7 +410,7 @@ def merge_trade_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
         status = str(row.get("status") or "").upper()
         if status == "OPEN" and trade_id not in open_rows:
             open_rows[trade_id] = row
-        if status == "CLOSED":
+        if status == "CLOSED" and is_verified_bot_metric_row(row):
             prev = close_rows.get(trade_id)
             row_closed = parse_dt(row.get("closed_at")) or parse_dt(row.get("timestamp"))
             prev_closed = parse_dt(prev.get("closed_at")) or parse_dt(prev.get("timestamp")) if prev else None
@@ -440,6 +440,15 @@ def merge_trade_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
         "trade_ids_with_multiple_records": sum(1 for count in duplicate_counts.values() if count > 1),
     }
     return trades, diagnostics
+
+
+def is_verified_bot_metric_row(row: dict[str, Any]) -> bool:
+    return (
+        row.get("owner") == "AEGIS"
+        and row.get("origin") == "BOT"
+        and row.get("ownership_status") == "VERIFIED"
+        and row.get("eligible_for_bot_metrics") is True
+    )
 
 
 def build_trade_metrics(

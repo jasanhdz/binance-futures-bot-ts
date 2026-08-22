@@ -89,6 +89,10 @@ function makeHarness(options: {
         : entryPrice * (1 - currentRoe / leverage);
     let stateValue: BotState = {
         mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+        positionOwner: 'AEGIS',
+        tradeOrigin: 'BOT',
+        ownershipStatus: 'VERIFIED',
+        eligibleForBotMetrics: true,
         lastSide: side,
         lastEntryPrice: entryPrice,
         lastLeverage: leverage,

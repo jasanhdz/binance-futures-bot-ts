@@ -7,6 +7,7 @@ import {
     AegisTurboTradeEventInput,
     AegisTurboTradeOpenInput
 } from '../infra/logging/AegisTurboHistoryLogger';
+import { isVerifiedAegisMetricRecord } from '../infra/logging/AegisTradeOwnership';
 
 type AnalyzeOptions = {
     date?: string;
@@ -383,7 +384,7 @@ function isOpenTrade(trade: TradeRecord): trade is AegisTurboTradeOpenInput & { 
 }
 
 function isCloseTrade(trade: TradeRecord): trade is AegisTurboTradeCloseInput & { timestamp: string } {
-    return trade.status === 'CLOSED';
+    return trade.status === 'CLOSED' && isVerifiedAegisMetricRecord(trade as unknown as Record<string, unknown>);
 }
 
 function scoreBucket(score?: number): string {

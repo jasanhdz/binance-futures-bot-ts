@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import { isVerifiedAegisMetricRecord } from '../infra/logging/AegisTradeOwnership';
 import { AegisLongRiskShadowAssessment, evaluateAegisLongRiskShadow } from '../domain/services/aegis-entry/guards/AegisLongRiskShadowGuardAdapter';
 
 type JsonRecord = Record<string, any>;
@@ -305,7 +306,7 @@ function pairTrades(rows: JsonRecord[]): Map<string, TradePair> {
         const pair: TradePair = pairs.get(tradeId) ?? { tradeId, symbol: row.symbol };
         pair.symbol = row.symbol ?? pair.symbol;
         if (row.status === 'OPEN' || row.opened_at && !row.closed_at) pair.open = row;
-        if (row.status === 'CLOSED' || row.closed_at) pair.close = row;
+        if ((row.status === 'CLOSED' || row.closed_at) && isVerifiedAegisMetricRecord(row)) pair.close = row;
         pairs.set(tradeId, pair);
     }
     return pairs;

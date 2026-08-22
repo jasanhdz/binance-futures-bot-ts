@@ -10,6 +10,14 @@ export type AegisTurboVotes = {
 
 export type AegisResearchStrategy = 'AEGIS_TURBO' | 'MOMENTUM_RIDE';
 
+export type AegisTradeOwnershipFields = {
+    owner: 'AEGIS' | 'EXTERNAL' | 'UNKNOWN';
+    origin: 'BOT' | 'MANUAL_EXTERNAL' | 'UNKNOWN';
+    ownership_status: 'VERIFIED' | 'TAINTED' | 'UNKNOWN';
+    eligible_for_bot_metrics: boolean;
+    exclusion_reason: string | null;
+};
+
 export type AegisTurboSignalHistoryInput = {
     timestamp?: string;
     signal_id?: string;
@@ -41,7 +49,7 @@ export type AegisTurboSignalHistoryInput = {
     metadata?: Record<string, unknown>;
 };
 
-export type AegisTurboTradeOpenInput = {
+export type AegisTurboTradeOpenInput = AegisTradeOwnershipFields & {
     timestamp?: string;
     trade_id: string;
     portfolio_session_id?: string;
@@ -69,7 +77,7 @@ export type AegisTurboTradeOpenInput = {
     metadata?: Record<string, unknown>;
 };
 
-export type AegisTurboTradeCloseInput = {
+export type AegisTurboTradeCloseInput = AegisTradeOwnershipFields & {
     timestamp?: string;
     trade_id: string;
     portfolio_session_id?: string;

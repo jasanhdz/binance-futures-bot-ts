@@ -92,6 +92,10 @@ function probeTrade(overrides: Record<string, unknown> = {}): Record<string, unk
         mfe_roe: 0.1149,
         mae_roe: -0.0141,
         status: 'CLOSED',
+        owner: 'AEGIS',
+        origin: 'BOT',
+        ownership_status: 'VERIFIED',
+        eligible_for_bot_metrics: true,
         metadata: {
             estimated: true,
             exit_type: 'EXIT_EYE_OPPOSITE_SIGNAL',

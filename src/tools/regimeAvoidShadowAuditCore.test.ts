@@ -153,6 +153,10 @@ function closeTrade(tradeId: string, symbol: string, side: 'LONG' | 'SHORT', pnl
         roe,
         mfe_roe: Math.max(roe, 0.12),
         mae_roe: Math.min(roe, -0.04),
+        owner: 'AEGIS',
+        origin: 'BOT',
+        ownership_status: 'VERIFIED',
+        eligible_for_bot_metrics: true,
         status: 'CLOSED'
     };
 }

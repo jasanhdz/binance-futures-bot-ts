@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { AegisClosedTradeOutcome } from '../../domain/services/AegisConsecutiveLossTracker';
+import { isVerifiedAegisMetricRecord } from './AegisTradeOwnership';
 
 export async function readAegisClosedTradeOutcomes(
   baseDir = path.join(process.cwd(), 'logs', 'aegis'),
@@ -29,6 +30,7 @@ export async function readAegisClosedTradeOutcomes(
       }
       if (record.status !== 'CLOSED' || record.strategy !== 'AEGIS_TURBO' || record.mode !== mode)
         continue;
+      if (!isVerifiedAegisMetricRecord(record)) continue;
       if (typeof record.trade_id !== 'string' || typeof record.closed_at !== 'string') continue;
       if (typeof record.pnl_usdt !== 'number' || !Number.isFinite(record.pnl_usdt)) continue;
       if (!Number.isFinite(Date.parse(record.closed_at))) continue;
