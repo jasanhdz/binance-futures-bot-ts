@@ -759,6 +759,13 @@ export class TradingService {
             && state.eligibleForBotMetrics === true;
     }
 
+    private isLegacyBotOwnedState(state: BotState): boolean {
+        return !this.isVerifiedBotOwnedState(state)
+            && state.mode !== 'IDLE'
+            && typeof state.lastTradeId === 'string'
+            && state.lastTradeId.startsWith('AEGIS-TURBO-');
+    }
+
     private stateForSymbol(symbol: string): StateStore {
         const normalized = this.normalizeSymbol(symbol);
         const scopedFactory = this.deps.state.forSymbol;
@@ -799,19 +806,36 @@ export class TradingService {
             const symbolState = this.stateForSymbol(symbol);
             const localState = symbolState.get();
             if (localState.mode !== 'IDLE' && !this.isVerifiedBotOwnedState(localState)) {
-                symbolState.set({
-                    positionOwner: 'UNKNOWN',
-                    tradeOrigin: 'UNKNOWN',
-                    ownershipStatus: 'UNKNOWN',
-                    eligibleForBotMetrics: false,
-                    metricsExclusionReason: 'LEGACY_OR_UNVERIFIED_LOCAL_STATE'
-                });
-                this.deps.logger.warn('aegis_unverified_local_position_state_excluded', {
-                    symbol,
-                    side: localState.lastSide,
-                    ownership: 'UNKNOWN',
-                    reason: 'LEGACY_OR_UNVERIFIED_LOCAL_STATE'
-                });
+                if (this.isLegacyBotOwnedState(localState)) {
+                    symbolState.set({
+                        positionOwner: 'AEGIS',
+                        tradeOrigin: 'BOT',
+                        ownershipStatus: 'VERIFIED',
+                        eligibleForBotMetrics: false,
+                        metricsExclusionReason: 'LEGACY_BOT_POSITION'
+                    });
+                    this.deps.logger.warn('aegis_legacy_bot_position_recovered', {
+                        symbol,
+                        side: localState.lastSide,
+                        tradeId: localState.lastTradeId,
+                        ownership: 'AEGIS_LEGACY',
+                        eligibleForBotMetrics: false
+                    });
+                } else {
+                    symbolState.set({
+                        positionOwner: 'UNKNOWN',
+                        tradeOrigin: 'UNKNOWN',
+                        ownershipStatus: 'UNKNOWN',
+                        eligibleForBotMetrics: false,
+                        metricsExclusionReason: 'LEGACY_OR_UNVERIFIED_LOCAL_STATE'
+                    });
+                    this.deps.logger.warn('aegis_unverified_local_position_state_excluded', {
+                        symbol,
+                        side: localState.lastSide,
+                        ownership: 'UNKNOWN',
+                        reason: 'LEGACY_OR_UNVERIFIED_LOCAL_STATE'
+                    });
+                }
             }
 
             for (const side of ['LONG', 'SHORT'] as Side[]) {
@@ -829,7 +853,8 @@ export class TradingService {
                 }
                 if (!position) continue;
 
-                if (this.isVerifiedBotOwnedState(symbolState.get()) && symbolState.get().lastSide === side) break;
+                const currentState = symbolState.get();
+                if ((this.isVerifiedBotOwnedState(currentState) || this.isLegacyBotOwnedState(currentState)) && currentState.lastSide === side) break;
                 this.deps.logger.warn('aegis_manual_external_position_detected', {
                     symbol,
                     side,
@@ -4001,7 +4026,7 @@ export class TradingService {
         const requireBrackets = this.getAegisTurboYamlConfig()?.require_brackets !== false;
 
         try {
-            if (!this.isVerifiedBotOwnedState(botState)) {
+            if (!this.isVerifiedBotOwnedState(botState) && !this.isLegacyBotOwnedState(botState)) {
                 const unmanagedPosition = await exchange.readActivePosition(symbol, side);
                 if (!unmanagedPosition) {
                     symbolState.set({
@@ -4051,7 +4076,7 @@ export class TradingService {
                 return;
             }
 
-            const externalQuantityChange = await this.reconcileManualPositionSizeIncrease({
+            const quantityChangeResult = await this.reconcileManualPositionSizeIncrease({
                 symbol,
                 side,
                 leverage,
@@ -4059,9 +4084,17 @@ export class TradingService {
                 botState,
                 symbolState
             });
-            if (externalQuantityChange) return;
-
-            if (requireBrackets) {
+            if (quantityChangeResult.changed) {
+                entryPrice = position.entryPrice || entryPrice;
+                leverage = position.leverage || leverage;
+                if (requireBrackets) {
+                    try {
+                        await this.replaceBracketsForNewEntryPrice(symbol, side, entryPrice, leverage, position, botState);
+                    } catch (bracketError) {
+                        logger.error('aegis_bracket_recreate_failed', { symbol, side, error: String(bracketError) });
+                    }
+                }
+            } else if (requireBrackets) {
                 try {
                     await this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, botState);
                 } catch (bracketError) {
@@ -4535,6 +4568,45 @@ export class TradingService {
         }
     }
 
+    private async replaceBracketsForNewEntryPrice(
+        symbol: string,
+        side: Side,
+        newEntryPrice: number,
+        leverage: number,
+        position: PositionInfo,
+        botState: BotState
+    ): Promise<void> {
+        const { exchange, logger } = this.deps;
+        const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
+        for (const order of openOrders) {
+            try {
+                await exchange.cancelOrderById(symbol, order.orderId);
+            } catch (error) {
+                logger.warn('aegis_bracket_cancel_failed', { symbol, side, orderId: order.orderId, error: String(error) });
+            }
+        }
+        const filters = await exchange.getSymbolFilters(symbol, leverage);
+        const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
+        const stopPrice = this.roundPrice(
+            this.bracketPrice(side, newEntryPrice, botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15, leverage, 'STOP'),
+            filters
+        );
+        const tpPrice = this.roundPrice(
+            this.bracketPrice(side, newEntryPrice, botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25, leverage, 'TP'),
+            filters
+        );
+        await exchange.placeStopClose(symbol, side, stopPrice);
+        await exchange.placeTpClose(symbol, side, tpPrice);
+        logger.info('aegis_brackets_replaced_for_new_entry', { symbol, side, newEntryPrice, stopPrice, tpPrice });
+        await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
+            tradeId: botState.lastTradeId,
+            newStop: stopPrice,
+            newTp: tpPrice,
+            reason: 'QUANTITY_CHANGED_ENTRY_PRICE_UPDATED',
+            metadata: { newEntryPrice, leverage }
+        });
+    }
+
     private async reconcileManualPositionSizeIncrease(input: {
         symbol: string;
         side: Side;
@@ -4542,17 +4614,18 @@ export class TradingService {
         position: PositionInfo;
         botState: BotState;
         symbolState: StateStore;
-    }): Promise<boolean> {
+    }): Promise<{ changed: boolean }> {
         const { logger } = this.deps;
         const previousQty = input.botState.lastEntryQty;
         const currentQty = input.position.qtyAbs;
-        if (!Number.isFinite(currentQty) || currentQty <= 0) return false;
+        if (!Number.isFinite(currentQty) || currentQty <= 0) return { changed: false };
 
         if (!Number.isFinite(previousQty) || (previousQty ?? 0) <= 0) {
             input.symbolState.set({
                 ownershipStatus: 'TAINTED',
                 eligibleForBotMetrics: false,
-                metricsExclusionReason: 'MANAGED_QUANTITY_BASELINE_MISSING'
+                metricsExclusionReason: 'MANAGED_QUANTITY_BASELINE_MISSING',
+                lastEntryQty: currentQty
             });
             logger.warn('aegis_managed_position_tainted', {
                 symbol: input.symbol,
@@ -4560,14 +4633,14 @@ export class TradingService {
                 previousQty,
                 currentQty,
                 reason: 'MANAGED_QUANTITY_BASELINE_MISSING',
-                action: 'NO_ORDER_OR_BRACKET_MUTATION'
+                action: 'CONTINUE_MANAGEMENT_TAINTED'
             });
-            return true;
+            return { changed: true };
         }
 
         const quantityTolerance = Math.max(1e-12, previousQty! * 1e-6);
         const sameQuantity = Math.abs(currentQty - previousQty!) <= quantityTolerance;
-        if (sameQuantity) return false;
+        if (sameQuantity) return { changed: false };
 
         const reason = currentQty > previousQty!
             ? 'EXTERNAL_QUANTITY_INCREASE'
@@ -4575,7 +4648,8 @@ export class TradingService {
         input.symbolState.set({
             ownershipStatus: 'TAINTED',
             eligibleForBotMetrics: false,
-            metricsExclusionReason: reason
+            metricsExclusionReason: reason,
+            lastEntryQty: currentQty
         });
         logger.warn('aegis_managed_position_tainted', {
             symbol: input.symbol,
@@ -4583,9 +4657,9 @@ export class TradingService {
             previousQty,
             currentQty,
             reason,
-            action: 'NO_ORDER_OR_BRACKET_MUTATION'
+            action: 'CONTINUE_MANAGEMENT_TAINTED'
         });
-        return true;
+        return { changed: true };
     }
 
     private bracketPrice(side: Side, entryPrice: number, roe: number, leverage: number, kind: 'STOP' | 'TP'): number {

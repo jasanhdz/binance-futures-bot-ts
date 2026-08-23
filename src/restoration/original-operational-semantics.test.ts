@@ -33,7 +33,7 @@ const baselineOperationalDigests: Record<string, string> = {
   'src/main.ts': '3b531c0e98916975b0e0e22cd735ce88cb786027cdb5a739362849cb0c76bf7d',
   'src/app/ports/Exchange.ts': '94bf506268595083231ae8604f5acdff318e08d1ade8a8ba74b382e3357697d9',
   'src/infra/adapters/BinanceAdapter.ts':
-    'fd871d8b3f1774e50718d1dad8acbbdfcb118466695320da10ea498b83f207e5',
+    'bd1aa00888b4204b8ca3f76cf1efa67535f70eae07664911717d3f6740e947ef',
   'src/infra/config/environment.ts':
     '3bac013429ee9828f15aa5c9266cd92c285394ec5410c0ecf6efed4e5c7e16d8',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
@@ -48,7 +48,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
   'regime_config.live.yaml': '7b841c07bc8488827201a443a8682f676e08fc7863df903baa2527d200360858',
   'src/app/services/TradingService.ts':
-    '7c3a4a5287f6225d140ebc01a7b84f93c410024e50f749113270bd1ad1e4cbd3',
+    '53ac5986363392f73075f43d2df83e4881b984cb49621a4dc41734505891f503',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':

@@ -727,7 +727,7 @@ export class BinanceExchange implements Exchange {
     });
     try {
       await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
-      this.log.debug('api_stop_upsert', { ms: Date.now() - startedAt, symbol, side, stopPrice, placement: 'algo_fallback' });
+      this.log.warn('api_stop_upsert_algo', { ms: Date.now() - startedAt, symbol, side, stopPrice });
       return true;
     } catch (fallbackError: any) {
       noteRateLimitFromError(fallbackError);
@@ -735,9 +735,10 @@ export class BinanceExchange implements Exchange {
         delete algoParams.positionSide;
         await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
         this.hedgeCache = undefined;
-        this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice, placement: 'algo_without_position_side' });
+        this.log.warn('api_stop_upsert_algo_without_position_side', { symbol, side, stopPrice });
         return true;
       }
+      this.log.warn('api_stop_algo_failed', { symbol, side, stopPrice, error: String(fallbackError) });
       throw fallbackError;
     }
   }
@@ -880,7 +881,7 @@ export class BinanceExchange implements Exchange {
     });
     try {
       await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
-      this.log.debug('api_tp_upsert', { ms: Date.now() - startedAt, symbol, side, tp: triggerPrice, placement: 'algo_fallback' });
+      this.log.warn('api_tp_upsert_algo', { ms: Date.now() - startedAt, symbol, side, tp: triggerPrice });
       return true;
     } catch (fallbackError: any) {
       noteRateLimitFromError(fallbackError);
@@ -888,25 +889,39 @@ export class BinanceExchange implements Exchange {
         delete algoParams.positionSide;
         await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
         this.hedgeCache = undefined;
-        this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice, placement: 'algo_without_position_side' });
+        this.log.warn('api_tp_upsert_algo_without_position_side', { symbol, side, tp: triggerPrice });
         return true;
       }
+      this.log.warn('api_tp_algo_failed', { symbol, side, tp: triggerPrice, error: String(fallbackError) });
       throw fallbackError;
     }
   }
 
   private async placeAlgoOrderRaw(params: any): Promise<any> {
-    const qs = new URLSearchParams(params).toString();
+    const timestamp = params.timestamp || Date.now();
+    const qsParams = { ...params, timestamp };
+    const queryString = Object.keys(qsParams)
+      .map(key => `${key}=${encodeURIComponent(qsParams[key])}`)
+      .join('&');
+
     const signature = require('crypto')
       .createHmac('sha256', CONFIG.API_SECRET)
-      .update(qs)
+      .update(queryString)
       .digest('hex');
 
-    const url = `${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${signature}`;
+    const signedParams = {
+      ...params,
+      timestamp,
+      signature,
+    };
 
-    const res = await fetch(url, {
+    const res = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
       method: 'POST',
-      headers: { 'X-MBX-APIKEY': CONFIG.API_KEY }
+      headers: {
+        'X-MBX-APIKEY': CONFIG.API_KEY,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams(signedParams).toString(),
     });
 
     if (!res.ok) {

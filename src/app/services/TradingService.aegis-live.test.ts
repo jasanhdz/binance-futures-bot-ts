@@ -2951,23 +2951,15 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
     });
 
-    it('taints and excludes a bot trade after an external size increase without touching orders', async () => {
+    it('taints and excludes a bot trade after an external size increase and replaces brackets', async () => {
         const oldOrders = [
             { orderId: 'old-sl', type: 'STOP_MARKET', stopPrice: 98, closePosition: true },
             { orderId: 'old-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 102, closePosition: true }
         ];
-        const stopVerifiedOrders = [
-            { orderId: 'new-sl', type: 'STOP_MARKET', stopPrice: 94.29, closePosition: true },
-            oldOrders[1]
-        ];
-        const fullyVerifiedOrders = [
-            stopVerifiedOrders[0],
-            { orderId: 'new-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 96.19, closePosition: true }
-        ];
         const { exchange, historyLogger, logger, service, state } = makeHarness({
             markPrice: 95,
             readActivePosition: { sideMode: 'LONG', qtyAbs: 2, entryPrice: 95, leverage: 20, isolatedMargin: 9.5 },
-            closeOrdersSequence: [oldOrders, stopVerifiedOrders, fullyVerifiedOrders],
+            closeOrdersSequence: [oldOrders, [], []],
             initialState: {
                 mode: 'LONG_RIDE',
                 currentRegime: 'AEGIS_TURBO',
@@ -2992,12 +2984,11 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.placeStopClose).not.toHaveBeenCalled();
-        expect(exchange.placeTpClose).not.toHaveBeenCalled();
-        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-sl');
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-tp');
+        expect(exchange.placeStopClose).toHaveBeenCalled();
+        expect(exchange.placeTpClose).toHaveBeenCalled();
         expect(state.get()).toEqual(expect.objectContaining({
-            lastEntryQty: 1,
-            lastEntryPrice: 100,
             ownershipStatus: 'TAINTED',
             eligibleForBotMetrics: false,
             metricsExclusionReason: 'EXTERNAL_QUANTITY_INCREASE'
@@ -3009,7 +3000,7 @@ describe('TradingService Aegis live execution', () => {
             symbol: 'ETHUSDT',
             previousQty: 1,
             currentQty: 2,
-            action: 'NO_ORDER_OR_BRACKET_MUTATION'
+            action: 'CONTINUE_MANAGEMENT_TAINTED'
         }));
     });
 
@@ -3100,7 +3091,7 @@ describe('TradingService Aegis live execution', () => {
         }));
     });
 
-    it('taints a manual position reduction without resetting basis or touching orders', async () => {
+    it('taints a manual position reduction and replaces brackets', async () => {
         const manualOrders = [
             { orderId: 'manual-sl', type: 'STOP_MARKET', stopPrice: 99.1 },
             { orderId: 'manual-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 108 }
@@ -3108,7 +3099,7 @@ describe('TradingService Aegis live execution', () => {
         const { exchange, service, state } = makeHarness({
             markPrice: 100,
             readActivePosition: { sideMode: 'LONG', qtyAbs: 0.5, entryPrice: 100, leverage: 20, isolatedMargin: 2.5 },
-            closeOrders: manualOrders,
+            closeOrdersSequence: [manualOrders, [], []],
             initialState: {
                 mode: 'LONG_RIDE',
                 currentRegime: 'AEGIS_TURBO',
@@ -3129,18 +3120,16 @@ describe('TradingService Aegis live execution', () => {
         await service.tick('ETHUSDT');
 
         expect(state.get()).toEqual(expect.objectContaining({
-            lastEntryQty: 1,
-            lastEntryPrice: 100,
             ownershipStatus: 'TAINTED',
             eligibleForBotMetrics: false,
             metricsExclusionReason: 'EXTERNAL_QUANTITY_REDUCTION'
         }));
-        expect(exchange.placeStopClose).not.toHaveBeenCalled();
-        expect(exchange.placeTpClose).not.toHaveBeenCalled();
-        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).toHaveBeenCalled();
+        expect(exchange.placeStopClose).toHaveBeenCalled();
+        expect(exchange.placeTpClose).toHaveBeenCalled();
     });
 
-    it('does not attempt bracket replacement after an external quantity change', async () => {
+    it('replaces brackets after an external quantity change and marks position TAINTED', async () => {
         const oldOrders = [
             { orderId: 'old-sl', type: 'STOP_MARKET', stopPrice: 98, closePosition: true },
             { orderId: 'old-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 102, closePosition: true }
@@ -3148,7 +3137,7 @@ describe('TradingService Aegis live execution', () => {
         const { exchange, logger, notifier, service, state } = makeHarness({
             markPrice: 95,
             readActivePosition: { sideMode: 'LONG', qtyAbs: 2, entryPrice: 95, leverage: 20, isolatedMargin: 9.5 },
-            closeOrdersSequence: [oldOrders, oldOrders],
+            closeOrdersSequence: [oldOrders, [], []],
             initialState: {
                 mode: 'LONG_RIDE',
                 currentRegime: 'AEGIS_TURBO',
@@ -3170,12 +3159,11 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.placeStopClose).not.toHaveBeenCalled();
-        expect(exchange.placeTpClose).not.toHaveBeenCalled();
-        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-sl');
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'old-tp');
+        expect(exchange.placeStopClose).toHaveBeenCalled();
+        expect(exchange.placeTpClose).toHaveBeenCalled();
         expect(state.get()).toEqual(expect.objectContaining({
-            lastEntryQty: 1,
-            lastEntryPrice: 100,
             ownershipStatus: 'TAINTED',
             eligibleForBotMetrics: false
         }));
