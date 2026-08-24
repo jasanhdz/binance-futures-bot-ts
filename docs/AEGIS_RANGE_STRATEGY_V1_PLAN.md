@@ -2,9 +2,11 @@
 
 **Fecha:** 2026-08-24
 
-**Estado:** Plan revisado y aprobado para preregistro; implementación pendiente
+**Estado:** `AEGIS_RANGE_STRATEGY_V1_DESIGN_APPROVED`
 
-**Fase autorizada inicialmente:** `RESEARCH_ONLY`
+**Fase autorizada:** `R0_PREREGISTRATION_AUTHORIZED`
+
+**Fases no autorizadas todavía:** R1, R2, `VALIDATION`, `HOLDOUT`, integración SHADOW y live
 
 **Objetivo:** Evaluar si los rechazos causales en soportes y resistencias de rangos laterales operables producen expectativa neta positiva después de costos.
 
@@ -127,6 +129,28 @@ Historical outcome
 
 La primera investigación no modificará `TradingService`, ejecución, órdenes, leverage, sizing, brackets, `AegisSymbolMode` ni `regime_config.live.yaml`.
 
+### 2.3 Jerarquía de hipótesis
+
+La hipótesis primaria es una estrategia Range agrupada sobre los 11 símbolos. Las especializaciones se preregistran así:
+
+- **Primaria:** pooled 11-symbol Range.
+- **Secundaria 1:** LONG.
+- **Secundaria 2:** SHORT.
+- **Secundaria 3:** majors, con membresía exacta definida en R0.
+- **Secundaria 4:** alts, con membresía exacta definida en R0.
+
+Las hipótesis secundarias requieren control de multiplicidad preregistrado. Los resultados por símbolo, mes y régimen son diagnósticos de estabilidad, no permisos automáticos para seleccionar ganadores.
+
+Una especialización descubierta después de observar `VALIDATION`, por ejemplo “solo LONG en BTC y ETH”, queda etiquetada como `HYPOTHESIS_GENERATION_ONLY`. No tiene autoridad de promoción y requiere un experimento futuro con datos no observados.
+
+R0 debe elegir explícitamente uno de estos contratos antes de abrir datos fuera de TRAIN:
+
+1. Estrategia global que debe pasar agregada y estable.
+2. LONG y SHORT como hipótesis independientes con multiplicity control.
+3. Símbolos o regímenes como hipótesis independientes con criterios y multiplicity control propios.
+
+El contrato elegido, su objetivo de selección y su corrección de multiplicidad forman parte del hash de `PRE_VALIDATION_SPEC_FROZEN`.
+
 ## 3. Invariantes de Causalidad
 
 Estas reglas son hard blockers del experimento, no factores de confianza:
@@ -149,6 +173,7 @@ Estas reglas son hard blockers del experimento, no factores de confianza:
 Cada operación de investigación almacenará como mínimo:
 
 ```text
+range_episode_id
 range_id
 decision_at
 entry_available_at
@@ -163,6 +188,8 @@ range_confidence_at_entry
 tail_risk_score_at_entry
 thesis_feature_hash
 ```
+
+`range_episode_id` es la unidad estadística primaria. Un episodio puede contener varios trades anidados que comparten régimen, niveles y estructura. `range_id` identifica la versión causal concreta de niveles usada por una tesis; R0 debe fijar cuándo una actualización de niveles conserva o inicia un nuevo episodio.
 
 ## 4. Componentes Research-Only
 
@@ -197,7 +224,8 @@ Responsabilidades:
 - Diferenciar `CHOP` desordenado de rango operable.
 - Rechazar niveles demasiado estrechos después de costos.
 - Rechazar breakouts, alta transición, datos incompletos y políticas de riesgo incumplidas.
-- Aplicar la política Range de tail risk sin modificar E4.
+- Mantener el experimento primario libre de E4 como selector de población.
+- Registrar tail risk solo como telemetría para el experimento secundario Range+E4.
 
 ### 4.4 `RangeSignalV1`
 
@@ -255,6 +283,7 @@ Se reutilizarán sus implementaciones causales cuando sean adecuadas, sin duplic
 
 ### 5.2 Fórmulas que deben preregistrarse antes del experimento
 
+- **Timeframe:** timeframe exacto de régimen, niveles, señal y ejecución. R0 debe elegir una única variante inicial; no se permite probar después 5m, 15m o combinaciones hasta encontrar la mejor.
 - **Range amplitude:** fórmula exacta y denominador (`midpoint`, soporte u otro).
 - **Zone tolerance:** distancia permitida alrededor del nivel, preferiblemente normalizada por ATR o precio.
 - **Touch:** penetración o aproximación válida, separación temporal mínima y regla para evitar contar varias velas del mismo contacto.
@@ -263,9 +292,48 @@ Se reutilizarán sus implementaciones causales cuando sean adecuadas, sin duplic
 - **Range confirmation:** mínimos de toques por lado y orden temporal permitido.
 - **False range:** etiqueta causal de fallo usada para evaluación, no para entradas previas.
 - **Breakout:** número de cierres, distancia mínima fuera del rango y tratamiento del buffer.
+- **Take profit:** midpoint exacto o buffer causal antes del midpoint.
+- **Stop loss:** distancia exacta respecto al nivel congelado, expresada en ATR, porcentaje u otra unidad preregistrada.
+- **Max hold:** duración exacta y momento causal de la salida.
+- **Reentry:** si se permiten reentradas, cooldown y máximo de trades por `range_episode_id`.
+- **Range episode lifecycle:** inicio, actualización, expiración, invalidación y condición de nuevo episodio.
+- **Split boundary policy:** purga de episodios que atraviesen fronteras de partición.
 - **Costs:** fees, slippage y funding aplicados por símbolo y periodo.
 
 Ninguna fórmula o threshold puede elegirse observando `VALIDATION` o `HOLDOUT`.
+
+### 5.3 Checklist de cierre de R0
+
+R0 no termina hasta congelar:
+
+```text
+timeframe exacto
+pivots exactos
+clustering exacto
+touch exacto
+rejection exacto
+entry exacta
+TP exacto
+SL exacto
+breakout exacto
+max hold exacto
+costos exactos
+reentry policy
+range episode definition
+TRAIN dates
+CALIBRATION dates
+VALIDATION dates
+HOLDOUT dates
+threshold grids
+selection objective
+side/symbol/regime policy
+multiplicity control
+bootstrap block size
+E4 OOS policy
+dataset/config/code hashes
+```
+
+El artefacto R0 completo permite solicitar autorización separada para R1/R2. El estado `PRE_VALIDATION_SPEC_FROZEN` solo se emite después de ejecutar TRAIN/CALIBRATION bajo ese preregistro. Si falta cualquiera de estos cierres, R1/R2 y especialmente `VALIDATION` siguen sin autorización.
 
 ## 6. Políticas y Thresholds Separados
 
@@ -276,11 +344,41 @@ E4 Tail Risk:
 BLOCK si score >= 0.4522452210875323
 ```
 
-### 6.2 Política Range de tail risk
+### 6.2 Separación científica de Range y E4
 
-`range_max_tail_risk_score = 0.40` es una hipótesis/política específica de Range. No reemplaza ni altera el threshold E4. Debe calibrarse solo en `TRAIN/CALIBRATION` y quedar congelada antes de abrir `VALIDATION`.
+El descubrimiento del edge usa dos experimentos separados:
 
-### 6.3 Volumen
+```text
+EXPERIMENTO PRIMARIO
+Range puro
+sin E4 como selector de población
+        |
+        v
+¿existe edge después de costos?
+
+EXPERIMENTO SECUNDARIO
+Range congelado + E4 frozen
+        |
+        v
+¿E4 mejora o empeora Range?
+```
+
+E4 no forma parte del gate primario para descubrir si Range posee edge. `tail_risk_score_at_entry` puede conservarse como telemetría, pero no filtrará la población primaria.
+
+Antes del experimento secundario debe demostrarse que sus fechas son genuinamente OOS respecto al entrenamiento y calibración de E4. Si no puede demostrarse, el resultado se etiqueta:
+
+```text
+CONTAMINATED_COMPATIBILITY_DIAGNOSTIC
+NO_PROMOTION_AUTHORITY
+```
+
+En una integración live futura, E4 seguirá siendo obligatorio. Esta separación solo evita atribuir a Range un edge producido por un filtro potencialmente entrenado sobre el mismo periodo.
+
+### 6.3 Política Range de tail risk
+
+`range_max_tail_risk_score = 0.40` permanece como hipótesis secundaria específica de compatibilidad Range+E4. No reemplaza ni altera el threshold E4, no filtra el experimento primario y solo puede calibrarse en `TRAIN/CALIBRATION` antes de `PRE_VALIDATION_FREEZE`.
+
+### 6.4 Volumen
 
 Se prohíbe el ambiguo `volume_threshold`. Se separan:
 
@@ -306,8 +404,24 @@ Los valores anteriores `0.5`, `1.5` y `2.0` quedan retirados del plan hasta prer
 - Resultados por símbolo, mes, régimen y partición.
 - Retornos normalizados por unit notional durante la investigación de edge.
 - Sin leverage ni `position_fraction` operacional en R1/R2.
+- El smoke test de 30 días usa exclusivamente datos pertenecientes a `TRAIN` o datos sintéticos.
+- Está prohibido usar directa o indirectamente `CALIBRATION`, `VALIDATION` o `HOLDOUT` para smoke tests o debugging visual.
 
-### 7.2 Particiones cronológicas
+### 7.2 Unidad estadística y range episodes
+
+La unidad estadística primaria es `range_episode_id`; los trades son observaciones anidadas dentro del episodio.
+
+Reglas obligatorias:
+
+1. Un `range_episode_id` puede contener múltiples trades, pero no se contarán como experimentos independientes.
+2. Un episodio completo pertenece a una sola partición.
+3. Un mismo episodio no puede caer parcialmente en TRAIN y parcialmente en `CALIBRATION`, `VALIDATION` o `HOLDOUT`.
+4. Los episodios que atraviesen fronteras de split se purgan según una política preregistrada.
+5. Reentradas, cooldown y máximo de trades por episodio deben fijarse en R0.
+6. Bootstrap, intervalos de confianza y estimación de N efectivo agrupan por episodio y por bloques temporales.
+7. La correlación transversal entre símbolos contemporáneos debe conservarse en el remuestreo.
+
+### 7.3 Particiones cronológicas
 
 ```text
 HISTORICAL DATA
@@ -316,7 +430,10 @@ HISTORICAL DATA
       |     descubrimiento y descarte de ideas
       |
       +-- CALIBRATION
-      |     elección final de fórmulas y thresholds
+      |     thresholds dentro de grids preregistrados
+      |
+      +-- PRE_VALIDATION_FREEZE
+      |     fórmulas, thresholds, políticas y hashes inmutables
       |
       +-- VALIDATION
       |     evaluación única sin retuning
@@ -327,19 +444,29 @@ HISTORICAL DATA
 
 Reglas:
 
-1. Tuning solo en `TRAIN` y `CALIBRATION`.
-2. Después de abrir `VALIDATION`, no se reajustan parámetros y se vuelve a declarar éxito.
-3. `HOLDOUT` permanece sellado hasta que exista una especificación congelada.
-4. Se usará block-bootstrap temporal para intervalos de confianza.
-5. No se tratarán BTC, ETH y SOL en el mismo instante como observaciones independientes.
-6. Las ventanas deberán incluir warmup causal sin filtrar información del futuro.
+1. TRAIN permite diseño, comparación de fórmulas y selección de familias.
+2. `CALIBRATION` solo permite elegir thresholds dentro de grids definidos antes de abrirla.
+3. Al terminar `CALIBRATION` se crea `PRE_VALIDATION_SPEC_FROZEN` con hashes de código, datos, configuración y especificación.
+4. Después de `PRE_VALIDATION_FREEZE`, ninguna fórmula, threshold, política de reentrada, salida, especialización o gate puede cambiar.
+5. `VALIDATION` se abre una sola vez con cero decisiones adaptativas.
+6. Después de abrir `VALIDATION`, no se reajustan parámetros para volver a declarar éxito.
+7. `HOLDOUT` permanece sellado hasta que `VALIDATION` pase el gate congelado.
+8. R3 verifica los hashes congelados antes de abrir `HOLDOUT` una sola vez.
+9. Se usará block-bootstrap temporal con tamaño de bloque preregistrado.
+10. No se tratarán BTC, ETH y SOL en el mismo instante como observaciones independientes.
+11. Las ventanas deberán incluir warmup causal sin filtrar información del futuro.
 
-### 7.3 Modelo de ejecución histórica
+### 7.4 Modelo de ejecución histórica
 
 - Señal generada únicamente al cierre de la vela.
-- Entrada y salida en `NEXT_BAR_OPEN`.
+- Entrada por señal en `NEXT_BAR_OPEN`.
+- Salida por breakout confirmado en `NEXT_BAR_OPEN` después del segundo cierre.
+- Salida por max hold en `NEXT_BAR_OPEN` después de cumplirse el límite.
+- TP y SL son órdenes resting y se simulan al tocarse intrabar conforme a la política de fill preregistrada; no esperan al siguiente open.
 - Fees, slippage y funding explícitos.
-- Si stop y target pueden tocarse dentro de la misma vela sin resolución intrabar, usar política conservadora preregistrada.
+- Si TP y SL pueden tocarse dentro de la misma vela sin resolución intrabar, resolver `adverse-first`.
+- Si el mercado abre atravesando el stop, aplicar un fill conservador de gap preregistrado, nunca el stop teórico mejor.
+- La precedencia exacta entre TP, SL, breakout y max hold debe quedar congelada en R0.
 - No usar el mejor precio de la vela para simular ejecución.
 - Registrar operaciones rechazadas y razones de abstención.
 
@@ -396,16 +523,22 @@ Sizing, leverage, correlación, concurrencia y presupuesto de riesgo solo se est
 
 ### PHASE R0 — Preregistration
 
+- Es la única fase autorizada actualmente.
 - Auditar la rama y commits actuales.
 - Documentar fórmulas, lookbacks y timestamps de disponibilidad.
 - Definir hard blockers y score descriptivo.
 - Definir costos y política de fills ambiguos.
 - Definir particiones cronológicas y sellar `HOLDOUT`.
-- Preregistrar thresholds candidatos sin mirar `VALIDATION`.
+- Fijar timeframe, range episodes, reentradas y lifecycle completo de operaciones.
+- Definir familias y grids de thresholds sin mirar fuera de TRAIN.
+- Definir jerarquía de hipótesis, multiplicity control y objetivo de selección.
+- Definir política OOS de E4.
 
-**Entregable:** especificación experimental congelada.
+**Entregable:** preregistro R0 completo, todavía sin autorizar R1/R2.
 
 ### PHASE R1 — Pure Research
+
+**Estado:** no autorizada todavía; requiere aprobación explícita del entregable R0.
 
 Crear componentes puros y testeables:
 
@@ -430,19 +563,35 @@ Agregar tests de causalidad, especialmente:
 
 ### PHASE R2 — Backtest
 
+**Estado:** no autorizada todavía; requiere R1 aprobada y tests causales completos.
+
 - Crear backtester research-only.
-- Ejecutar smoke test de 30 días para validar plumbing.
+- Ejecutar smoke test de 30 días solo sobre TRAIN o datos sintéticos para validar plumbing.
 - Ejecutar experimento completo con múltiples meses y los 11 símbolos.
-- Aplicar `TRAIN/CALIBRATION/VALIDATION`; mantener `HOLDOUT` sellado.
+- Usar TRAIN para fórmulas/familias y `CALIBRATION` solo para thresholds dentro de grids preregistrados.
 - Reportar métricas por lado, símbolo, mes y régimen.
 
-### PHASE R3 — Freeze
+### PRE_VALIDATION_FREEZE — Freeze obligatorio
 
-Solo si existe edge:
+Ocurre después de TRAIN/CALIBRATION y antes de abrir `VALIDATION`:
 
-- Congelar fórmulas y thresholds.
-- Publicar hashes de configuración y dataset.
-- Evaluar `HOLDOUT` una única vez.
+- Congelar fórmulas, thresholds, timeframe y lifecycle.
+- Congelar reentry policy y range episode definition.
+- Congelar jerarquía de hipótesis, multiplicity control y gate de éxito.
+- Congelar política E4 OOS y clasificación de diagnósticos contaminados.
+- Publicar hashes de código, configuración, dataset, splits y preregistro.
+- Emitir el estado `PRE_VALIDATION_SPEC_FROZEN`.
+
+Sin este estado, `VALIDATION` no puede ejecutarse.
+
+### PHASE R3 — Validation y Holdout
+
+Solo después de `PRE_VALIDATION_SPEC_FROZEN`:
+
+- Verificar que los hashes coinciden antes de cada ejecución.
+- Abrir `VALIDATION` una única vez, sin ajustes posteriores.
+- Evaluar el gate congelado sin seleccionar post-hoc lados, símbolos o regímenes.
+- Solo si `VALIDATION` pasa, abrir `HOLDOUT` una única vez.
 - Rechazar la estrategia si no mantiene expectativa, estabilidad y control de cola.
 
 ### PHASE R4 — Shadow Integration
@@ -505,20 +654,18 @@ Solo después de evidencia prospectiva suficiente podrá proponerse una integrac
 
 Esta arquitectura es un objetivo condicionado a R0-R5; no autoriza implementación live.
 
-## 12. Archivos Autorizados en la Primera Implementación
+## 12. Alcance Autorizado Ahora
 
-La fase `RESEARCH_ONLY` podrá crear nombres equivalentes a:
+Solo está autorizado R0 documental. Puede crear o actualizar:
 
-- `src/domain/services/range-v1/RangeDetectorV1.ts`
-- `src/domain/services/range-v1/RangeLevelsV1.ts`
-- `src/domain/services/range-v1/RangeSafetyV1.ts`
-- `src/domain/services/range-v1/RangeSignalV1.ts`
-- `src/domain/services/range-v1/RangeBreakoutV1.ts`
-- Tests colocados junto a cada componente.
-- Un backtester y utilidades research-only bajo `src/tools/` o un directorio de investigación dedicado.
-- Documentación de preregistro, dataset y resultados.
+- El preregistro R0 de Aegis Range Strategy V1.
+- Manifiestos documentales de datasets y splits, sin abrir `VALIDATION` ni `HOLDOUT`.
+- Registro de fórmulas, grids candidatos, costos, políticas y hashes.
+- Auditorías read-only del código y datos existentes.
 
-No están autorizados en R0-R2:
+R0 no autoriza todavía archivos de implementación como `RangeDetectorV1.ts`, tests ejecutables ni backtester. Eso pertenece a R1/R2 y requiere aprobación posterior del preregistro completo.
+
+No están autorizados:
 
 - `TradingService.ts`
 - Ejecución u órdenes
@@ -528,57 +675,68 @@ No están autorizados en R0-R2:
 - `AegisRegimeGuard.ts`
 - `regime_config.live.yaml`
 - E4 Tail Risk, su threshold o su infraestructura
+- Componentes Range ejecutables antes de aprobar R1
+- Backtests antes de aprobar R2
+- Abrir `VALIDATION` o `HOLDOUT`
 - Deploy o procesos PM2
 
-## 13. Entregables de la Primera Ejecución
+## 13. Entregables de R0
 
-Antes de ejecutar el experimento completo, entregar:
+Antes de solicitar autorización para R1, entregar:
 
-1. Archivos creados.
-2. Fórmulas exactas y lookbacks.
-3. Invariantes causales y timestamps de disponibilidad.
-4. Tests unitarios y de no-look-ahead.
-5. Diseño de dataset, particiones y costos.
-6. Diseño del backtest y política de fills.
-7. Inconsistencias encontradas en código o datos.
-8. Diff que confirme que producción no fue modificada.
+1. Timeframe exacto para régimen, niveles, señales y fills.
+2. Fórmulas exactas, lookbacks y tratamiento de datos insuficientes.
+3. Pivots, clustering, touches y `available_at` exactos.
+4. Definición exacta de `range_episode_id`, `range_id` y fronteras de episodios.
+5. Rejection, entry, TP, SL, breakout y max hold exactos.
+6. Precedencia exacta de fills, `adverse-first` y gap policy.
+7. Costos, slippage y funding exactos.
+8. Reentry policy, cooldown y máximo de trades por episodio.
+9. Fechas exactas de TRAIN, `CALIBRATION`, `VALIDATION` y `HOLDOUT`.
+10. Grids de thresholds que `CALIBRATION` podrá seleccionar.
+11. Objetivo de selección y gate de promoción.
+12. Jerarquía de hipótesis y multiplicity control.
+13. Tamaño de bloques para bootstrap temporal.
+14. Política E4 OOS y tratamiento de diagnósticos contaminados.
+15. Política de purga para episodios que atraviesan splits.
+16. Hashes de código, datos, configuración y especificación.
+17. Lista de inconsistencias encontradas.
+18. Diff que confirme que producción no fue modificada.
 
-## 14. Prompt de Implementación Research-Only
+El preregistro R0 aprobado será la base de `PRE_VALIDATION_SPEC_FROZEN`, pero el freeze final solo se emite después de TRAIN/CALIBRATION y antes de `VALIDATION`.
+
+## 14. Prompt Autorizado para R0
 
 ```text
-Revisa la rama y los commits actuales antes de cambiar código. Vamos a iniciar Aegis Range Strategy V1, NO "E4 Range".
+Revisa la rama y los commits actuales. Vamos a ejecutar únicamente PHASE R0 — PREREGISTRATION de Aegis Range Strategy V1, NO "E4 Range".
+
+No crear todavía RangeDetectorV1, RangeLevelsV1, RangeSafetyV1, RangeSignalV1, RangeBreakoutV1, tests ejecutables ni backtester. No ejecutar TRAIN, CALIBRATION, VALIDATION o HOLDOUT.
 
 E4 significa exclusivamente el Tail Risk Guard congelado existente (e4_tail_risk, threshold 0.4522452210875323). No modificar su modelo, threshold, FeatureBridge, API, precompute, adapter ni decisiones.
 
-Implementa únicamente la fase RESEARCH_ONLY de Range. No modificar todavía TradingService, ejecución, órdenes, leverage, sizing, brackets, AegisSymbolMode, AegisRegimeGuard ni regime_config.live.yaml.
+No modificar TradingService, ejecución, órdenes, leverage, sizing, brackets, AegisSymbolMode, AegisRegimeGuard, regime_config.live.yaml, PM2 ni producción.
 
-Reutiliza conceptualmente RegimeEngineV2, que ya dispone de ACCUMULATION_RANGE, CHOP, ADX, choppiness, ATR percentile, Bollinger width percentile, volume ratio, range breakout, failed breakouts y transition risk. No añadir RANGE_BOUND al legacy AegisRegimeGuard.
+Usa RegimeEngineV2 como fuente conceptual existente para ACCUMULATION_RANGE, CHOP, ADX, choppiness, ATR percentile, Bollinger width percentile, volume ratio, range breakout, failed breakouts y transition risk. No añadir RANGE_BOUND al guard legacy.
 
-Crear componentes puros y testeables: RangeDetectorV1, RangeLevelsV1, RangeSafetyV1, RangeSignalV1, RangeBreakoutV1 y un backtester research-only.
+Produce un preregistro documental que cierre exactamente:
+- timeframe de régimen, niveles, señal y ejecución;
+- pivots L/R y available_at;
+- clustering, touches, range amplitude y range episode lifecycle;
+- rejection candle, entry NEXT_BAR_OPEN, TP, SL, breakout y max hold;
+- resting TP/SL, adverse-first, gap policy y precedencia de fills;
+- costos, slippage y funding;
+- reentry, cooldown y máximo de trades por range episode;
+- fechas TRAIN/CALIBRATION/VALIDATION/HOLDOUT y política de purga;
+- threshold grids y objetivo de selección;
+- jerarquía pooled/LONG/SHORT/majors/alts y multiplicity control;
+- bootstrap temporal por range episode;
+- experimento primario Range puro sin E4 como selector;
+- experimento secundario Range+E4 y demostración OOS de E4;
+- hashes de código, datos, configuración y especificación.
 
-Requisitos estrictos de causalidad:
-- usar exclusivamente candles cerradas disponibles en decision_at;
-- ningún indicador puede usar datos posteriores a decision_at;
-- pivots/local extrema deben tener available_at explícito;
-- si se usan pivots L/R, el pivot solo existe después de cerrar los R candles posteriores;
-- al construir niveles en T solo pueden utilizarse pivots con available_at <= T;
-- nunca detectar un rango utilizando su historia futura y luego backtestear entradas anteriores dentro de ese rango;
-- rejection candle debe cerrar antes de generar señal;
-- entrada histórica = NEXT_BAR_OPEN;
-- confirmación de breakout por dos cierres solo está disponible después del segundo cierre; exit histórico = NEXT_BAR_OPEN;
-- congelar range_id, support, resistance, midpoint y thesis snapshot al abrir una operación; no ensanchar retrospectivamente SL o rango.
+TRAIN podrá seleccionar fórmulas y familias. CALIBRATION solo podrá seleccionar thresholds dentro de grids preregistrados. Después se emitirá PRE_VALIDATION_SPEC_FROZEN. VALIDATION y HOLDOUT no están autorizados ahora.
 
-Antes de codificar thresholds definitivos, documenta exactamente las fórmulas de BB width, ATR percentile/lookback, ADX, range amplitude, touches, rejection candle, volume ratio y breakout.
+El smoke test futuro de 30 días solo podrá usar TRAIN o datos sintéticos.
 
-No usar 3 of 4 ciegamente para condiciones que deban ser hard blockers. Separa invariantes del rango de los scores de confianza.
-
-Tratar range_max_tail_risk_score=0.40 como hipótesis/policy específica de Range. No alterar el threshold E4 congelado.
-
-Separar min_safety_volume_ratio, min_entry_volume_ratio y breakout_volume_ratio. No seleccionar valores mirando VALIDATION.
-
-El backtest de 30 días será solo smoke test. Diseñar el experimento final con particiones cronológicas TRAIN / CALIBRATION / VALIDATION y HOLDOUT sellado; tuning solo en TRAIN/CALIBRATION. Después de abrir VALIDATION/HOLDOUT no reajustar parámetros y volver a declarar éxito.
-
-Evaluar los 11 símbolos, LONG/SHORT por separado, por mes y por régimen. Métricas primarias: net expectancy after costs, profit factor, drawdown, MFE/MAE, tail/CVaR y estabilidad temporal. Win rate y trades/week son secundarios, nunca cuotas obligatorias.
-
-No implementar live ni tocar producción en esta fase. Al terminar entrega: archivos creados, fórmulas exactas, causal invariants, tests, diseño del dataset/backtest y cualquier inconsistencia encontrada antes de ejecutar el experimento.
+Entrega únicamente documentación, manifiestos y auditoría read-only. Al terminar informa cualquier decisión que no pueda congelarse sin evidencia adicional; no la resuelvas mirando VALIDATION.
 ```
