@@ -1112,7 +1112,7 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ROI -6.7% | PnL -$10.00 | 0.5h'));
     });
 
-    it('detects a startup manual position without adopting, bracketing, or journaling it', async () => {
+    it('detects a startup manual position and adopts it for exit logic only (no brackets)', async () => {
         const { exchange, historyLogger, logger, service, symbolStores } = makeHarness({
             symbolStates: { ETHUSDT: { mode: 'IDLE' } },
             readActivePosition: {
@@ -1126,11 +1126,13 @@ describe('TradingService Aegis live execution', () => {
 
         await service.start(false);
 
-        expect(symbolStores.get('ETHUSDT')?.get().mode).toBe('IDLE');
-        expect(logger.warn).toHaveBeenCalledWith('aegis_manual_external_position_detected', expect.objectContaining({
+        expect(symbolStores.get('ETHUSDT')?.get().mode).toBe('LONG_RIDE');
+        expect(symbolStores.get('ETHUSDT')?.get().positionOwner).toBe('EXTERNAL');
+        expect(symbolStores.get('ETHUSDT')?.get().tradeOrigin).toBe('MANUAL_EXTERNAL');
+        expect(logger.warn).toHaveBeenCalledWith('aegis_manual_external_position_adopted', expect.objectContaining({
             symbol: 'ETHUSDT',
             ownership: 'MANUAL/EXTERNAL',
-            action: 'NOT_ADOPTED_NOT_BRACKETED_NOT_JOURNALED'
+            action: 'MANAGE_EXIT_LOGIC_ONLY_NO_BRACKETS'
         }));
         expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.placeTpClose).not.toHaveBeenCalled();

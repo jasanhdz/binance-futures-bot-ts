@@ -855,13 +855,26 @@ export class TradingService {
 
                 const currentState = symbolState.get();
                 if ((this.isVerifiedBotOwnedState(currentState) || this.isLegacyBotOwnedState(currentState)) && currentState.lastSide === side) break;
-                this.deps.logger.warn('aegis_manual_external_position_detected', {
+                symbolState.set({
+                    mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+                    lastSide: side,
+                    lastEntryPrice: position.entryPrice,
+                    lastLeverage: position.leverage,
+                    lastEntryAt: Date.now(),
+                    lastTradeId: `MANUAL-${symbol}-${Date.now()}`,
+                    positionOwner: 'EXTERNAL',
+                    tradeOrigin: 'MANUAL_EXTERNAL',
+                    ownershipStatus: 'UNKNOWN',
+                    eligibleForBotMetrics: false,
+                    metricsExclusionReason: 'MANUAL_POSITION'
+                });
+                this.deps.logger.warn('aegis_manual_external_position_adopted', {
                     symbol,
                     side,
                     qtyAbs: position.qtyAbs,
                     entryPrice: position.entryPrice,
                     ownership: 'MANUAL/EXTERNAL',
-                    action: 'NOT_ADOPTED_NOT_BRACKETED_NOT_JOURNALED'
+                    action: 'MANAGE_EXIT_LOGIC_ONLY_NO_BRACKETS'
                 });
                 break;
             }
