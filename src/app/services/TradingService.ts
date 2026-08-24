@@ -854,7 +854,7 @@ export class TradingService {
                 if (!position) continue;
 
                 const currentState = symbolState.get();
-                if ((this.isVerifiedBotOwnedState(currentState) || this.isLegacyBotOwnedState(currentState)) && currentState.lastSide === side) break;
+                if (currentState.mode !== 'IDLE' && (this.isVerifiedBotOwnedState(currentState) || this.isLegacyBotOwnedState(currentState)) && currentState.lastSide === side) break;
                 symbolState.set({
                     mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                     lastSide: side,
