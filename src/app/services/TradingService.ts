@@ -866,7 +866,14 @@ export class TradingService {
                     tradeOrigin: 'MANUAL_EXTERNAL',
                     ownershipStatus: 'UNKNOWN',
                     eligibleForBotMetrics: false,
-                    metricsExclusionReason: 'MANUAL_POSITION'
+                    metricsExclusionReason: 'MANUAL_POSITION',
+                    lastTrailStop: undefined,
+                    lastBreakEvenStop: undefined,
+                    lastStopPrice: undefined,
+                    breakEvenArmed: false,
+                    breakEvenExecuted: false,
+                    peakRoe: 0,
+                    lowestRoe: 0
                 });
                 this.deps.logger.warn('aegis_manual_external_position_adopted', {
                     symbol,
