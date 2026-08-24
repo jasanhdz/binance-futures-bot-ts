@@ -4026,7 +4026,8 @@ export class TradingService {
         const requireBrackets = this.getAegisTurboYamlConfig()?.require_brackets !== false;
 
         try {
-            if (!this.isVerifiedBotOwnedState(botState) && !this.isLegacyBotOwnedState(botState)) {
+            const isBotOwned = this.isVerifiedBotOwnedState(botState) || this.isLegacyBotOwnedState(botState);
+            if (!isBotOwned) {
                 const unmanagedPosition = await exchange.readActivePosition(symbol, side);
                 if (!unmanagedPosition) {
                     symbolState.set({
@@ -4042,16 +4043,15 @@ export class TradingService {
                         exclusionReason: botState.metricsExclusionReason ?? 'UNVERIFIED_OWNERSHIP',
                         metricsUpdated: false
                     });
-                } else {
-                    logger.warn('aegis_manual_external_position_observed', {
-                        symbol,
-                        side,
-                        qtyAbs: unmanagedPosition.qtyAbs,
-                        ownershipStatus: botState.ownershipStatus ?? 'UNKNOWN',
-                        action: 'NO_ORDER_OR_BRACKET_MUTATION'
-                    });
+                    return;
                 }
-                return;
+                logger.warn('aegis_manual_external_position_observed', {
+                    symbol,
+                    side,
+                    qtyAbs: unmanagedPosition.qtyAbs,
+                    ownershipStatus: botState.ownershipStatus ?? 'UNKNOWN',
+                    action: 'MANAGE_EXIT_LOGIC_SKIP_BRACKETS'
+                });
             }
             const position = await exchange.readActivePosition(symbol, side);
             if (!position) {
@@ -4076,34 +4076,55 @@ export class TradingService {
                 return;
             }
 
-            const quantityChangeResult = await this.reconcileManualPositionSizeIncrease({
-                symbol,
-                side,
-                leverage,
-                position,
-                botState,
-                symbolState
-            });
-            if (quantityChangeResult.changed) {
-                entryPrice = position.entryPrice || entryPrice;
-                leverage = position.leverage || leverage;
-                if (requireBrackets) {
+            if (isBotOwned) {
+                const quantityChangeResult = await this.reconcileManualPositionSizeIncrease({
+                    symbol,
+                    side,
+                    leverage,
+                    position,
+                    botState,
+                    symbolState
+                });
+                if (quantityChangeResult.changed) {
+                    entryPrice = position.entryPrice || entryPrice;
+                    leverage = position.leverage || leverage;
+                    if (requireBrackets) {
+                        try {
+                            await this.replaceBracketsForNewEntryPrice(symbol, side, entryPrice, leverage, position, botState);
+                        } catch (bracketError) {
+                            logger.error('aegis_bracket_recreate_failed', { symbol, side, error: String(bracketError) });
+                        }
+                    }
+                } else if (requireBrackets) {
                     try {
-                        await this.replaceBracketsForNewEntryPrice(symbol, side, entryPrice, leverage, position, botState);
+                        await this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, botState);
                     } catch (bracketError) {
                         logger.error('aegis_bracket_recreate_failed', { symbol, side, error: String(bracketError) });
+                        await notifier.sendAlert(
+                            'AEGIS BRACKET RECREATE FAILED',
+                            `${symbol} | ${side}\n${String(bracketError).slice(0, 180)}`
+                        );
                     }
                 }
-            } else if (requireBrackets) {
-                try {
-                    await this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, botState);
-                } catch (bracketError) {
-                    logger.error('aegis_bracket_recreate_failed', { symbol, side, error: String(bracketError) });
-                    await notifier.sendAlert(
-                        'AEGIS BRACKET RECREATE FAILED',
-                        `${symbol} | ${side}\n${String(bracketError).slice(0, 180)}`
-                    );
+            } else {
+                if (position.entryPrice && position.entryPrice !== entryPrice) {
+                    entryPrice = position.entryPrice;
+                    symbolState.set({ lastEntryPrice: entryPrice });
                 }
+                if (position.leverage && position.leverage !== leverage) {
+                    leverage = position.leverage;
+                    symbolState.set({ lastLeverage: leverage });
+                }
+                if (!botState.lastEntryAt) {
+                    symbolState.set({ lastEntryAt: Date.now() });
+                }
+                logger.info('aegis_manual_position_exit_logic_active', {
+                    symbol,
+                    side,
+                    entryPrice,
+                    leverage,
+                    action: 'TRAILING_BREAK_EYE_ACTIVE_BRACKETS_SKIPPED'
+                });
             }
 
             const markPrice = await exchange.getMarkPrice(symbol);
