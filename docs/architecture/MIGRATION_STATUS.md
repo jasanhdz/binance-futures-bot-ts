@@ -6,9 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after commit `453c5e1`.
+Runtime architecture migration checkpoint after commit `d27f6f9`.
 
-The TypeScript build passes. The current Aegis live runtime suite passes 107/107 and the ExitEye suite passes 12/12. Shared strategy execution tests pass 8/8. Aegis execution intent factory tests pass 2/2. Aegis orchestrator tests pass 3/3. The full repository test command still has historical/environment failures caused by missing fixtures/artifacts and a missing audit database directory; these are tracked separately below and are not evidence of a current strategy-runtime regression.
+The TypeScript build passes. The required Phase 1 matrix passes 166/166, including Aegis live 108/108 and ExitEye 12/12. The full repository suite passes 819/821; both failures are the known restoration checks that require the absent root `regime_config.example.yaml` fixture.
 
 ## Completed foundations
 
@@ -30,7 +30,12 @@ The TypeScript build passes. The current Aegis live runtime suite passes 107/107
 - Momentum standalone entry is evaluated through `MomentumRideStrategy` and can execute through `SharedStrategyExecutionService` without requiring an Aegis entry approval.
 - Momentum has its own runtime protection/risk settings instead of inheriting Aegis Turbo SL/TP/liquidity/daily-loss values by accident.
 - Position lifecycle is routed by strategy identity and receives an explicit `StrategyLifecyclePolicy`.
-- Aegis ExitEye authority is restricted to Aegis lifecycle policy; Momentum must not inherit Aegis ExitEye authority.
+- The common lifecycle body lives in `StrategyPositionLifecycleCore`, outside `TradingService`.
+- `AegisPositionManager` owns the Aegis lifecycle composition with ExitEye; `MomentumRidePositionManager` cannot receive ExitEye through its construction path.
+- Manual/external positions retain common protective management without entering a strategy manager or receiving Aegis ExitEye authority.
+- Ownership recovery distinguishes owned, legacy-migratable, ambiguous, external and unknown state; ambiguous/unknown ownership fails closed.
+- Startup risk reconstruction reads verified Aegis and Momentum closes independently and deduplicates by trade ID.
+- Closed outcomes reconstruct loss streak/last-loss state but do not fabricate `tradesToday`, because a close journal alone does not prove an open occurred in the current UTC day.
 - Bracket lifecycle respects the strategy/config bracket requirement instead of forcing Aegis brackets when `require_brackets: false`.
 - Portfolio exposure counting defensively rejects a LONG object returned by a SHORT lookup (and vice versa) so one position is not double counted.
 - One-shot migration/audit workflows and scripts used during this phase have been removed after successful application.
@@ -47,7 +52,7 @@ Entry authority remains Aegis-specific:
 
 Important: Aegis policy remains upstream of execution. Its scientific/current-brain/E4 semantics must not be moved into shared execution.
 
-Position ownership is strategy-aware and routes to `AegisPositionManager`, but the manager currently delegates into the shared legacy-compatible lifecycle implementation inside `TradingService`.
+Position ownership is strategy-aware and routes to `AegisPositionManager`, which composes `StrategyPositionLifecycleCore` with the Aegis-only ExitEye callback.
 
 Exchange mutation is now routed through `SharedStrategyExecutionService` via `AegisExecutionIntentFactory`. Per-intent protection policies are enforced at the shared execution boundary, with `closeIfProtectionFails` always true for Aegis (preserving legacy fail-close behavior). The orchestrator no longer carries any synthetic Momentum authority.
 
@@ -61,27 +66,18 @@ This path must remain independent from Aegis current brain, CleanEntry, EntryQua
 
 The synthetic Momentum-inside-Aegis decision path has been retired. The orchestrator no longer imports or evaluates `MomentumRideGuardAdapter`; it cannot select `momentum_ride`, override Aegis denials, or attribute Aegis-opened positions to Momentum. The `MomentumRideGuardAdapter` file has been removed. Config types for the standalone `aegis.momentum_ride` YAML section are retained in `AegisEntryDecisionTypes` for the standalone Momentum strategy path.
 
-Position ownership routes to `MomentumRidePositionManager`, but that manager still delegates into the common lifecycle body in `TradingService` using `StrategyLifecyclePolicy` rather than owning a fully extracted lifecycle service.
+Position ownership routes to `MomentumRidePositionManager`, which owns its policy composition over `StrategyPositionLifecycleCore` and has no ExitEye callback surface.
 
 ## Highest-priority remaining work before Micro Burst
 
 1. ~~**Migrate Aegis exchange mutation to `SharedStrategyExecutionService`.**~~ DONE
 2. ~~**Remove the synthetic Momentum-inside-Aegis decision path.**~~ DONE
 
-3. **Extract position lifecycle implementation out of `TradingService`.**
-   - `AegisPositionManager` and `MomentumRidePositionManager` should become real owners, not thin delegates into one giant service method.
-   - Common exchange-safe primitives can be shared, but strategy-specific policy must remain behind the owning manager.
-   - Aegis-only ExitEye/guardian behaviors must be impossible to invoke for Momentum by construction.
+3. ~~**Extract position lifecycle implementation out of `TradingService`.**~~ DONE
 
-4. **Make restart/recovery strategy-generic.**
-   - Recover canonical `BOT` ownership.
-   - Continue reading legacy `AEGIS` ownership only as migration compatibility.
-   - Recover strategy identity/provenance and route to the correct position manager after restart.
-   - Unknown/ambiguous owner must fail closed into recovery/manual handling, never guess a strategy.
+4. ~~**Make restart/recovery strategy-generic.**~~ DONE
 
-5. **Finish per-strategy risk persistence/recovery.**
-   - Runtime `StrategyRiskLedger` is strategy-scoped, but startup reconstruction must be audited carefully so Aegis and Momentum loss streaks/trade counts cannot contaminate each other.
-   - Account-wide kill switches remain shared safety and must not be copied into strategy ledgers.
+5. ~~**Finish per-strategy risk persistence/recovery.**~~ DONE WITH DOCUMENTED JOURNAL LIMITATION
 
 6. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
    - Do not mark `FROZEN_LIVE` merely because code compiles.
@@ -92,13 +88,7 @@ Position ownership routes to `MomentumRidePositionManager`, but that manager sti
    - Do this incrementally; do not rewrite the bot from scratch.
 
 8. **Repair/triage repository-wide test infrastructure separately.**
-   Current `npm test` historical failures are caused by missing assets/environment:
-   - `tests/fixtures/brain_manifest.json` missing.
-   - `config/bundles/aegis-v17-research-artifact-v1.json` missing.
-   - `config/bundles/aegis-prospective-shadow-candidate-v1.json` missing.
-   - `regime_config.example.yaml` missing for restoration tests.
-   - `recentTradeLossAuditCore.test.ts` expects an audit DB directory that does not exist in clean CI.
-   Do not fabricate scientific/frozen artifacts just to make tests green. Either restore authoritative artifacts from their legitimate source, make the tests explicitly fixture-aware, or classify/remove tests if the associated subsystem is formally retired.
+   Current `npm test -- --run` has two failures because root `regime_config.example.yaml` is absent from this checkout. Do not fabricate or copy an unauthoritative fixture merely to satisfy the frozen digest check; restore it only from its legitimate source or make the restoration test explicitly fixture-aware in a separate infrastructure change.
 
 9. **Only after all above, begin `MICRO_BURST_V1`.**
 
@@ -124,10 +114,12 @@ At the latest runtime checkpoint:
 - `src/app/services/SharedStrategyExecutionService.test.ts`: 8/8 PASS.
 - `src/domain/strategies/aegis/AegisExecutionIntentFactory.test.ts`: 2/2 PASS.
 - `src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.test.ts`: 3/3 PASS.
-- `src/app/services/TradingService.aegis-live.test.ts`: 107/107 PASS.
+- Required Phase 1 targeted matrix: 166/166 PASS.
+- `src/app/services/TradingService.aegis-live.test.ts`: 108/108 PASS.
 - `src/app/services/TradingService.exit-eye.test.ts`: 12/12 PASS.
-- Strategy router / position manager router / Momentum entry policy targeted tests: PASS in the cleanup validation.
-- Full `npm test`: 852 passed, 10 failed; remaining failures are the missing historical fixtures/artifacts/audit DB listed above.
+- `src/app/strategy/OwnedPositionManagers.test.ts`: 4/4 PASS.
+- Strategy router / position manager router / Momentum entry policy / shared safety / ownership / risk ledger targeted tests: PASS.
+- Full `npm test -- --run`: 819 passed, 2 failed. Both failures are caused by the absent root `regime_config.example.yaml`; no scientific artifact or replacement hash was fabricated.
 
 ## Explicit prohibition
 
