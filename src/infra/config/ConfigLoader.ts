@@ -430,6 +430,14 @@ export interface AegisMomentumRideYamlConfig {
     };
     profiles?: Record<string, AegisMomentumRideSideYamlConfig>;
     symbols?: Record<string, AegisMomentumRideSymbolYamlConfig>;
+    protection?: {
+        hard_stop_roe?: number;
+        take_profit_roe?: number;
+        break_even_roe?: number;
+        trailing_activation_roe?: number;
+        trailing_callback_roe?: number;
+        max_hold_ms?: number;
+    };
     safety_caps?: {
         max_leverage?: number;
         max_position_fraction?: number;
@@ -439,6 +447,8 @@ export interface AegisMomentumRideYamlConfig {
         max_consecutive_momentum_losses?: number;
         cooldown_after_loss_minutes?: number;
         disable_symbol_after_stop_loss_minutes?: number;
+        max_liquidity_stress?: number;
+        daily_loss_stop_pct?: number;
         require_brackets?: boolean;
         require_profit_protection?: boolean;
     };
@@ -1038,6 +1048,14 @@ export class NinjaConfigManager {
             requireBtcEthNotContradicting: raw.require_btc_eth_not_contradicting !== false,
             requireBtcEthConfirmation: raw.require_btc_eth_confirmation === true,
             symbols,
+            protection: {
+                hardStopRoe: Math.min(-0.0001, this.finiteNumber(raw.protection?.hard_stop_roe, -0.40)),
+                takeProfitRoe: Math.max(0.0001, this.finiteNumber(raw.protection?.take_profit_roe, 0.50)),
+                breakEvenRoe: Math.max(0, this.finiteNumber(raw.protection?.break_even_roe, 0.08)),
+                trailingActivationRoe: Math.max(0, this.finiteNumber(raw.protection?.trailing_activation_roe, 0.15)),
+                trailingCallbackRoe: Math.max(0, this.finiteNumber(raw.protection?.trailing_callback_roe, 0.08)),
+                maxHoldMs: Math.max(60_000, Math.floor(this.finiteNumber(raw.protection?.max_hold_ms, 28_800_000)))
+            },
             safetyCaps: {
                 maxLeverage,
                 maxPositionFraction,
@@ -1047,6 +1065,8 @@ export class NinjaConfigManager {
                 maxConsecutiveMomentumLosses: Math.max(1, Math.floor(this.finiteNumber(safety.max_consecutive_momentum_losses, 2))),
                 cooldownAfterLossMinutes: Math.max(0, this.finiteNumber(safety.cooldown_after_loss_minutes, 60)),
                 disableSymbolAfterStopLossMinutes: Math.max(0, this.finiteNumber(safety.disable_symbol_after_stop_loss_minutes, 120)),
+                maxLiquidityStress: Math.max(0, this.finiteNumber(safety.max_liquidity_stress, 0.70)),
+                dailyLossStopPct: Math.max(0, this.finiteNumber(safety.daily_loss_stop_pct, 0.90)),
                 requireBrackets: safety.require_brackets !== false,
                 requireProfitProtection: safety.require_profit_protection !== false
             }

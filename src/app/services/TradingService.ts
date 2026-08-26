@@ -1801,7 +1801,6 @@ export class TradingService {
         }
         const hasOpenPosition = this.stateForSymbol(symbol).get().mode !== 'IDLE'
             || await exchange.hasOpenPosition(symbol, 'ANY');
-        const gateConfig = this.getAegisTurboGateConfig(symbol);
         const policy = {
             longEnabled: symbolConfig.long.enabled,
             shortEnabled: symbolConfig.short.enabled,
@@ -1810,8 +1809,8 @@ export class TradingService {
             maxTradesPerDay: config.safetyCaps.maxMomentumTradesPerDay,
             maxConsecutiveLosses: config.safetyCaps.maxConsecutiveMomentumLosses,
             minCooldownMs: config.safetyCaps.cooldownAfterLossMinutes * 60_000,
-            maxLiquidityStress: gateConfig.maxLiquidityStress,
-            dailyLossStopPct: gateConfig.dailyLossStopPct,
+            maxLiquidityStress: config.safetyCaps.maxLiquidityStress ?? 0.70,
+            dailyLossStopPct: config.safetyCaps.dailyLossStopPct ?? 0.90,
             maxOpenMomentumPositions: config.safetyCaps.maxOpenMomentumPositions,
             maxTotalOpenPositionsWhenMomentum: config.safetyCaps.maxTotalOpenPositionsWhenMomentum,
             disableSymbolAfterStopLossMs: config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000
@@ -1873,7 +1872,14 @@ export class TradingService {
         if (this.getSymbolMode(symbol) !== 'LIVE') return;
         if (!sideConfig.enabled || policy.leverage <= 0 || policy.positionFraction <= 0) return;
 
-        const protection = this.getAegisTurboGateConfig(symbol);
+        const protection = config.protection ?? {
+            hardStopRoe: -0.40,
+            takeProfitRoe: 0.50,
+            breakEvenRoe: 0.08,
+            trailingActivationRoe: 0.15,
+            trailingCallbackRoe: 0.08,
+            maxHoldMs: 28_800_000
+        };
         const execution = await this.sharedStrategyExecution.execute({
             identity,
             signalId,
@@ -1883,13 +1889,13 @@ export class TradingService {
             requestedAt: now,
             leverage: policy.leverage,
             positionFraction: policy.positionFraction,
-            stopRoe: protection.stopRoe,
+            stopRoe: protection.hardStopRoe,
             takeProfitRoe: protection.takeProfitRoe,
             metadata: {
                 authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
                 decisionReason: decision.reason,
                 decisionDiagnostics: decision.diagnostics,
-                protectionProfileSource: 'legacy_shared_protection_profile',
+                protectionProfileSource: 'momentum_owned_protection_profile',
                 aegisEntryPolicyUsed: false,
                 pythonBrainUsed: false
             }
@@ -1908,7 +1914,6 @@ export class TradingService {
         }
 
         const metadata = execution.metadata as Record<string, any>;
-        const guardianConfig = this.getAegisGuardianConfig(symbol, this.getAegisTurboRegimeConfig(symbol));
         const symbolState = this.stateForSymbol(symbol);
         symbolState.set({
             mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
@@ -1933,12 +1938,13 @@ export class TradingService {
             lastEntryQty: execution.quantity,
             lastEntryMargin: this.finiteNumber(metadata.marginUsed) ? metadata.marginUsed : undefined,
             lastPositionFraction: execution.positionFraction,
-            lastStopRoe: protection.stopRoe,
+            lastStopRoe: protection.hardStopRoe,
             lastTakeProfitRoe: protection.takeProfitRoe,
             lastStopPrice: this.finiteNumber(metadata.stopPrice) ? metadata.stopPrice : undefined,
-            lastBreakEvenRoe: guardianConfig.beTriggerRoe,
+            lastBreakEvenRoe: protection.breakEvenRoe,
             lastTrailingActivationRoe: protection.trailingActivationRoe,
             lastTrailingCallbackRoe: protection.trailingCallbackRoe,
+            lastMaxHoldMs: protection.maxHoldMs,
             lastBracketStatus: 'OK',
             breakEvenArmed: false,
             breakEvenExecuted: false,
@@ -1970,7 +1976,7 @@ export class TradingService {
             position_fraction: execution.positionFraction,
             margin_estimated: this.finiteNumber(metadata.marginUsed) ? metadata.marginUsed : undefined,
             notional_estimated: execution.entryPrice * execution.quantity,
-            stop_roe: protection.stopRoe,
+            stop_roe: protection.hardStopRoe,
             take_profit_roe: protection.takeProfitRoe,
             trailing_activation_roe: protection.trailingActivationRoe,
             trailing_callback_roe: protection.trailingCallbackRoe,
@@ -1984,7 +1990,7 @@ export class TradingService {
                 pythonBrainUsed: false,
                 aegisEntryPolicyUsed: false,
                 e4Used: false,
-                protectionProfileSource: 'legacy_shared_protection_profile'
+                protectionProfileSource: 'momentum_owned_protection_profile'
             }
         });
 
@@ -3753,6 +3759,7 @@ export class TradingService {
                 lastTakeProfitRoe: effectiveGate.takeProfitRoe,
                 lastTrailingActivationRoe: effectiveGate.trailingActivationRoe,
                 lastTrailingCallbackRoe: effectiveGate.trailingCallbackRoe,
+                lastMaxHoldMs: regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS,
                 lastPositionFraction: executedPositionFraction,
                 lastRequestedLeverage: effectiveGate.leverage,
                 lastActualLeverage: leverage,
@@ -4858,7 +4865,7 @@ export class TradingService {
                 : false;
             if (exitEyeClosed) return;
 
-            const maxHoldMs = regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
+            const maxHoldMs = botState.lastMaxHoldMs ?? regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
             if (tradeDuration > maxHoldMs && currentRoe > 0.02) {
                 const timeLimitReason = lifecyclePolicy.strategyId === 'MOMENTUM_RIDE'
                     ? 'MOMENTUM_TIME_LIMIT'

@@ -199,6 +199,18 @@ export interface AegisMomentumRideRuntimeConfig {
     requireBtcEthNotContradicting: boolean;
     requireBtcEthConfirmation: boolean;
     symbols: Record<string, AegisMomentumRideSymbolRuntimeConfig>;
+    /**
+     * Strategy-owned protection. Optional only for backward-compatible test/fixture
+     * construction; ConfigLoader always normalizes it in production.
+     */
+    protection?: {
+        hardStopRoe: number;
+        takeProfitRoe: number;
+        breakEvenRoe: number;
+        trailingActivationRoe: number;
+        trailingCallbackRoe: number;
+        maxHoldMs: number;
+    };
     safetyCaps: {
         maxLeverage: number;
         maxPositionFraction: number;
@@ -208,6 +220,9 @@ export interface AegisMomentumRideRuntimeConfig {
         maxConsecutiveMomentumLosses: number;
         cooldownAfterLossMinutes: number;
         disableSymbolAfterStopLossMinutes: number;
+        /** Backward-compatible optional fields; ConfigLoader supplies defaults. */
+        maxLiquidityStress?: number;
+        dailyLossStopPct?: number;
         requireBrackets: boolean;
         requireProfitProtection: boolean;
     };

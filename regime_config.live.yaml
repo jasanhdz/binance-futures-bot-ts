@@ -423,6 +423,15 @@ aegis:
         short:
           enabled: true
           profile: high_noise_alt_short
+    protection:
+      # Strategy-owned lifecycle. Values intentionally match the pre-migration
+      # effective protection so ownership changes without changing economics.
+      hard_stop_roe: -0.40
+      take_profit_roe: 0.50
+      break_even_roe: 0.08
+      trailing_activation_roe: 0.15
+      trailing_callback_roe: 0.08
+      max_hold_ms: 28800000
     safety_caps:
       max_leverage: 30
       max_position_fraction: 0.01
@@ -432,6 +441,8 @@ aegis:
       max_consecutive_momentum_losses: 2
       cooldown_after_loss_minutes: 60
       disable_symbol_after_stop_loss_minutes: 120
+      max_liquidity_stress: 0.70
+      daily_loss_stop_pct: 0.90
       require_brackets: true
       require_profit_protection: true
   event_risk:

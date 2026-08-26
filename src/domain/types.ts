@@ -95,6 +95,7 @@ export type BotState = {
   lastTakeProfitRoe?: number;
   lastTrailingActivationRoe?: number;
   lastTrailingCallbackRoe?: number;
+  lastMaxHoldMs?: number;
   lastAegisTurboScore?: number;
   lastAegisRawReason?: string;
   lastAegisGatedReason?: string;
