@@ -49,7 +49,15 @@ export type StrategyExecutionResult =
       metadata: Record<string, unknown>;
     }
   | {
-      status: 'DENIED' | 'FAILED';
+      status: 'DENIED';
+      identity: StrategyIdentity;
+      tradeId: string;
+      symbol: string;
+      reason: ExecutionDenialReason;
+      metadata: Record<string, unknown>;
+    }
+  | {
+      status: 'FAILED';
       identity: StrategyIdentity;
       tradeId: string;
       symbol: string;
