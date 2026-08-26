@@ -1,0 +1,83 @@
+name: Temporary Architecture Cleanup Audit
+
+on:
+  push:
+    branches:
+      - work/micro-burst-rider-v1-20260826
+    paths:
+      - .github/workflows/temporary-architecture-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/micro-burst-rider-v1-20260826
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Static architecture audit
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo '=== HEAD ==='
+          git log -1 --oneline
+
+          echo '=== STRATEGY LEGACY CANDIDATE REFERENCES ==='
+          for token in \
+            LegacyStrategyCompatibility \
+            LegacyEntryStrategyAdapter \
+            LegacyPositionManagerAdapter \
+            LegacyStrategyRuntimeFactory \
+            MomentumRideStrategyAdapter \
+            StrategyRuntimeCoordinator \
+            StrategyTelemetry; do
+            echo "--- $token ---"
+            git grep -n "$token" -- ':!*.test.ts' ':!docs/**' || true
+          done
+
+          echo '=== CONFIG REFERENCE CHECK ==='
+          git grep -n 'regimen.config.yaml' -- ':!*.md' || true
+
+          echo '=== POSITION OWNER REFERENCES ==='
+          git grep -n "positionOwner" -- 'src/**' || true
+
+          echo '=== STRATEGY RISK LEDGER REFERENCES ==='
+          git grep -n "strategyRiskLedger" -- 'src/**' || true
+
+          echo '=== AEGIS EXECUTION DUPLICATION MARKERS ==='
+          git grep -n -E "openMarket|placeStopClose|placeTpClose|SharedStrategyExecutionService|sharedStrategyExecution" -- 'src/app/services/TradingService.ts' 'src/app/services/SharedStrategyExecutionService.ts' || true
+
+          echo '=== PACKAGE SCRIPT TARGET CHECK ==='
+          node <<'NODE'
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          for (const [name, cmd] of Object.entries(pkg.scripts || {})) {
+            const matches = [...String(cmd).matchAll(/(?:^|\s)((?:src|scripts|train)\/[A-Za-z0-9_./-]+\.(?:ts|js|mjs|py))/g)];
+            if (!matches.length) continue;
+            for (const m of matches) {
+              const file = m[1];
+              console.log(`${fs.existsSync(file) ? 'OK' : 'MISSING'}\t${name}\t${file}`);
+            }
+          }
+          NODE
+
+          echo '=== TOP-LEVEL SOURCE DIR FILE COUNTS ==='
+          for d in src/*; do
+            [ -d "$d" ] || continue
+            printf '%s\t' "$d"
+            find "$d" -type f | wc -l
+          done
+
+      - name: Build and test baseline
+        run: |
+          npm ci
+          npm run build
+          npm test -- --reporter=dot
