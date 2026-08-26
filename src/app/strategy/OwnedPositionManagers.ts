@@ -1,31 +1,16 @@
-import { StrategyLifecyclePolicy, strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { PositionManagementResult } from '../../domain/strategy/StrategyDecision';
 import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
+import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
+import {
+  AegisPositionLifecycle,
+  StrategyPositionLifecycleContext,
+  StrategyPositionLifecycleCore,
+} from '../position/StrategyPositionLifecycleCore';
 import { StrategyPositionManager } from './PositionManagerRouter';
 
-export type OwnedPositionLifecycleDelegate<TContext> = (
-  identity: StrategyIdentity,
-  policy: StrategyLifecyclePolicy,
-  context: TContext,
-) => Promise<PositionManagementResult> | PositionManagementResult;
-
-abstract class BaseOwnedPositionManager<TContext>
-  implements StrategyPositionManager<TContext>
-{
-  abstract readonly strategyId: 'AEGIS_TURBO' | 'MOMENTUM_RIDE';
-
-  constructor(private readonly delegate: OwnedPositionLifecycleDelegate<TContext>) {}
-
-  manage(
-    identity: StrategyIdentity,
-    context: TContext,
-  ): Promise<PositionManagementResult> | PositionManagementResult {
-    if (identity.strategyId !== this.strategyId) {
-      throw new Error(
-        `POSITION_MANAGER_OWNERSHIP_MISMATCH:${this.strategyId}:${identity.strategyId}`,
-      );
-    }
-    return this.delegate(identity, strategyLifecyclePolicy(this.strategyId), context);
+function assertOwnership(expected: 'AEGIS_TURBO' | 'MOMENTUM_RIDE', identity: StrategyIdentity): void {
+  if (identity.strategyId !== expected) {
+    throw new Error(`POSITION_MANAGER_OWNERSHIP_MISMATCH:${expected}:${identity.strategyId}`);
   }
 }
 
@@ -33,14 +18,40 @@ abstract class BaseOwnedPositionManager<TContext>
  * Aegis-owned position lifecycle boundary.
  * Aegis-specific ExitEye/guardian behavior may exist behind this manager only.
  */
-export class AegisPositionManager<TContext> extends BaseOwnedPositionManager<TContext> {
+export class AegisPositionManager implements StrategyPositionManager<StrategyPositionLifecycleContext> {
   readonly strategyId = 'AEGIS_TURBO' as const;
+
+  constructor(private readonly lifecycle: AegisPositionLifecycle) {}
+
+  async manage(identity: StrategyIdentity, context: StrategyPositionLifecycleContext): Promise<PositionManagementResult> {
+    assertOwnership(this.strategyId, identity);
+    await this.lifecycle.manage(context);
+    return {
+      tradeId: context.botState.lastTradeId ?? `AEGIS-LEGACY-${context.symbol}`,
+      decision: 'NO_ACTION',
+      reason: 'aegis_position_manager_completed',
+      diagnostics: { lifecycleOwner: this.strategyId },
+    };
+  }
 }
 
 /**
  * Momentum-owned position lifecycle boundary.
  * It must never inherit Aegis current-brain/ExitEye authority.
  */
-export class MomentumRidePositionManager<TContext> extends BaseOwnedPositionManager<TContext> {
+export class MomentumRidePositionManager implements StrategyPositionManager<StrategyPositionLifecycleContext> {
   readonly strategyId = 'MOMENTUM_RIDE' as const;
+
+  constructor(private readonly lifecycle: StrategyPositionLifecycleCore) {}
+
+  async manage(identity: StrategyIdentity, context: StrategyPositionLifecycleContext): Promise<PositionManagementResult> {
+    assertOwnership(this.strategyId, identity);
+    await this.lifecycle.manage(strategyLifecyclePolicy('MOMENTUM_RIDE'), context);
+    return {
+      tradeId: context.botState.lastTradeId ?? `MOMENTUM-LEGACY-${context.symbol}`,
+      decision: 'NO_ACTION',
+      reason: 'momentum_position_manager_completed',
+      diagnostics: { lifecycleOwner: this.strategyId },
+    };
+  }
 }

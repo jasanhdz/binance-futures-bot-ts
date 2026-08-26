@@ -2,8 +2,6 @@ import { StrategyId } from './StrategyIdentity';
 
 export interface StrategyLifecyclePolicy {
   strategyId: StrategyId;
-  /** Aegis current-brain/ExitEye may only observe or mutate Aegis positions. */
-  useAegisExitEye: boolean;
   /** Legacy ProfitGuardian is allowed only while a strategy explicitly declares it. */
   useLegacyProfitGuardian: boolean;
   useBreakEven: boolean;
@@ -16,7 +14,6 @@ export interface StrategyLifecyclePolicy {
 
 const AEGIS_POLICY: StrategyLifecyclePolicy = {
   strategyId: 'AEGIS_TURBO',
-  useAegisExitEye: true,
   useLegacyProfitGuardian: true,
   useBreakEven: true,
   useTrailing: true,
@@ -28,7 +25,6 @@ const AEGIS_POLICY: StrategyLifecyclePolicy = {
 
 const MOMENTUM_POLICY: StrategyLifecyclePolicy = {
   strategyId: 'MOMENTUM_RIDE',
-  useAegisExitEye: false,
   // Keep the existing deterministic protective mechanics during migration,
   // but they are Momentum-owned once routed through this policy.
   useLegacyProfitGuardian: true,
@@ -42,7 +38,6 @@ const MOMENTUM_POLICY: StrategyLifecyclePolicy = {
 
 const MICRO_BURST_RESERVED_POLICY: StrategyLifecyclePolicy = {
   strategyId: 'MICRO_BURST_V1',
-  useAegisExitEye: false,
   useLegacyProfitGuardian: false,
   useBreakEven: false,
   useTrailing: false,
