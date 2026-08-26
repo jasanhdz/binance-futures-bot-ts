@@ -22,13 +22,10 @@ jobs:
       - name: Inspect runtime hotspots
         shell: bash
         run: |
-          set -euo pipefail
-          echo '=== PORTFOLIO EXPOSURE METHOD ==='
-          line=$(grep -n "readAegisPortfolioExposure" src/app/services/TradingService.ts | tail -1 | cut -d: -f1)
-          start=$((line-10)); end=$((line+120)); sed -n "${start},${end}p" src/app/services/TradingService.ts
-          echo '=== TICK METHOD ==='
-          line=$(grep -n -E "async tick\(|tick\(symbol" src/app/services/TradingService.ts | head -1 | cut -d: -f1)
-          start=$((line-20)); end=$((line+140)); sed -n "${start},${end}p" src/app/services/TradingService.ts
-          echo '=== MANAGE POSITION HEAD ==='
-          line=$(grep -n "managePositionLegacy" src/app/services/TradingService.ts | tail -1 | cut -d: -f1)
-          start=$((line)); end=$((line+145)); sed -n "${start},${end}p" src/app/services/TradingService.ts
+          set -u
+          echo '=== ALL EXPOSURE REFERENCES ==='
+          grep -n "readAegisPortfolioExposure" src/app/services/TradingService.ts || true
+          echo '=== STATE EXPOSURE HELPER ==='
+          grep -n "countStateOpenPositions" src/app/services/TradingService.ts || true
+          echo '=== POSITION LIFECYCLE DEFINITIONS ==='
+          grep -n -E "managePosition(Legacy|Lifecycle)|strategyLifecyclePolicy" src/app/services/TradingService.ts || true
