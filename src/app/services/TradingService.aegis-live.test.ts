@@ -2071,6 +2071,12 @@ describe('TradingService Aegis live execution', () => {
 	        expect(logger.error).toHaveBeenCalledWith('aegis_emergency_close_failed', expect.any(Object));
 	        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('AEGIS EMERGENCY CLOSE FAILED'));
 	        expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('AEGIS_POSITION_VERIFY_FAILED'));
+	        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+	            mode: 'LONG_RIDE',
+	            positionOwner: 'BOT',
+	            ownershipStatus: 'UNKNOWN',
+	            lastBracketStatus: 'PENDING'
+	        }));
 	        expect(state.set).not.toHaveBeenCalledWith(expect.objectContaining({
 	            currentRegime: 'AEGIS_TURBO'
 	        }));

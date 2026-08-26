@@ -8,9 +8,6 @@ import {
 
 export interface SharedStrategyExecutionConfig {
   feeBufferPct: number;
-  requireStop: boolean;
-  requireTakeProfit: boolean;
-  closeIfProtectionFails: boolean;
   confirmationAttempts: number;
   confirmationDelaysMs: number[];
   maxMarketOpenAttempts: number;
@@ -18,9 +15,6 @@ export interface SharedStrategyExecutionConfig {
 
 const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
   feeBufferPct: 0.05,
-  requireStop: true,
-  requireTakeProfit: true,
-  closeIfProtectionFails: true,
   confirmationAttempts: 3,
   confirmationDelaysMs: [300, 500, 1000],
   maxMarketOpenAttempts: 6,
@@ -55,16 +49,22 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     if (!Number.isFinite(intent.positionFraction) || intent.positionFraction <= 0 || intent.positionFraction > 1) {
       return denied(intent, 'INVALID_SIZE', baseMetadata);
     }
-    if (!Number.isFinite(intent.stopRoe) || Number(intent.stopRoe) >= 0) {
+    const useStop = intent.protection.requireStop || intent.stopRoe !== undefined;
+    const useTakeProfit = intent.protection.requireTakeProfit || intent.takeProfitRoe !== undefined;
+    if (useStop && (!Number.isFinite(intent.stopRoe) || Number(intent.stopRoe) >= 0)) {
       return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_stop_roe' });
     }
-    if (!Number.isFinite(intent.takeProfitRoe) || Number(intent.takeProfitRoe) <= 0) {
+    if (useTakeProfit && (!Number.isFinite(intent.takeProfitRoe) || Number(intent.takeProfitRoe) <= 0)) {
       return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_take_profit_roe' });
     }
 
     let opened = false;
     let openedQuantity = 0;
     let openedSideMode: PositionInfo['sideMode'] = 'BOTH';
+    let marketOpenAttempt = 0;
+    let failureStage: 'POSITION_CONFIRMATION' | 'PROTECTION' | 'EXCHANGE' | undefined;
+    let emergencyCloseError: string | undefined;
+    const quantityAdjustments: Array<Record<string, unknown>> = [];
     try {
       await this.exchange.setLeverage(intent.symbol, intent.leverage);
       await this.exchange.ensureMarginType(intent.symbol, 'ISOLATED');
@@ -93,7 +93,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         });
       }
 
-      let marketOpenAttempt = 1;
+      marketOpenAttempt = 1;
       let order: { avgPrice: number; orderId: string };
       while (true) {
         try {
@@ -134,6 +134,13 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             error: String(error),
           });
           if (!canRetry) throw error;
+          quantityAdjustments.push({
+            attempt: marketOpenAttempt,
+            previousQuantity: quantity,
+            nextQuantity,
+            availableBalance: refreshedAvailable,
+            error: String(error),
+          });
           quantity = nextQuantity;
           marketOpenAttempt += 1;
         }
@@ -143,76 +150,132 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       openedQuantity = quantity;
       const position = await this.confirmPosition(intent.symbol, intent.side);
       if (!position) {
-        await this.emergencyClose(intent, quantity, 'POSITION_CONFIRMATION_FAILED');
+        failureStage = 'POSITION_CONFIRMATION';
+        const recovery = await this.attemptEmergencyClose(
+          intent,
+          quantity,
+          'BOTH',
+          intent.failureCloseReasons?.positionConfirmation ?? 'POSITION_CONFIRMATION_FAILED',
+          true,
+        );
         return failed(intent, 'POSITION_CONFIRMATION_FAILED', {
           ...baseMetadata,
+          failureStage,
           orderId: order.orderId,
-          quantity,
+          entryPrice: order.avgPrice,
+          quantity: recovery.quantity,
+          sideMode: recovery.sideMode,
+          emergencyCloseError: recovery.emergencyCloseError,
+          positionStillOpen: recovery.positionStillOpen,
         });
       }
       openedSideMode = position.sideMode;
       openedQuantity = position.qtyAbs || quantity;
 
       const entryPrice = position.entryPrice > 0 ? position.entryPrice : order.avgPrice;
-      const stopPrice = roundPrice(
-        bracketPrice(intent.side, entryPrice, Number(intent.stopRoe), intent.leverage, 'STOP'),
-        filters,
-      );
-      const takeProfitPrice = roundPrice(
-        bracketPrice(intent.side, entryPrice, Number(intent.takeProfitRoe), intent.leverage, 'TP'),
-        filters,
-      );
+      const stopPrice = useStop
+        ? roundPrice(bracketPrice(intent.side, entryPrice, Number(intent.stopRoe), intent.leverage, 'STOP'), filters)
+        : undefined;
+      const takeProfitPrice = useTakeProfit
+        ? roundPrice(bracketPrice(intent.side, entryPrice, Number(intent.takeProfitRoe), intent.leverage, 'TP'), filters)
+        : undefined;
 
       let stopOk = false;
       let takeProfitOk = false;
       try {
-        stopOk = await this.exchange.placeStopClose(intent.symbol, intent.side, stopPrice);
-        if (this.config.requireStop && !stopOk) throw new Error('SHARED_EXECUTION_STOP_REJECTED');
-        takeProfitOk = await this.exchange.placeTpClose(intent.symbol, intent.side, takeProfitPrice);
-        if (this.config.requireTakeProfit && !takeProfitOk) throw new Error('SHARED_EXECUTION_TP_REJECTED');
-      } catch (error) {
-        if (this.config.closeIfProtectionFails) {
-          await this.exchange.closeSideMarketSafe(
-            intent.symbol,
-            intent.side,
-            openedQuantity,
-            openedSideMode,
-            'SHARED_EXECUTION_PROTECTION_FAILED',
-          );
-          opened = false;
+        if (stopPrice !== undefined) {
+          stopOk = await this.exchange.placeStopClose(intent.symbol, intent.side, stopPrice);
         }
+        if (intent.protection.requireStop && !stopOk) throw new Error('SHARED_EXECUTION_STOP_REJECTED');
+        if (takeProfitPrice !== undefined) {
+          takeProfitOk = await this.exchange.placeTpClose(intent.symbol, intent.side, takeProfitPrice);
+        }
+        if (intent.protection.requireTakeProfit && !takeProfitOk) throw new Error('SHARED_EXECUTION_TP_REJECTED');
+      } catch (error) {
+        failureStage = 'PROTECTION';
+        const recovery = intent.protection.closeIfProtectionFails
+          ? await this.attemptEmergencyClose(
+              intent,
+              openedQuantity,
+              openedSideMode,
+              intent.failureCloseReasons?.protection ?? 'SHARED_EXECUTION_PROTECTION_FAILED',
+            )
+          : { quantity: openedQuantity, sideMode: openedSideMode, positionStillOpen: true };
         return failed(intent, 'BRACKETS_FAILED', {
           ...baseMetadata,
+          failureStage,
+          orderId: order.orderId,
+          entryPrice,
+          quantity: recovery.quantity,
+          sideMode: recovery.sideMode,
           stopPrice,
           takeProfitPrice,
           stopOk,
           takeProfitOk,
           error: String(error),
+          emergencyCloseError: recovery.emergencyCloseError,
+          positionStillOpen: recovery.positionStillOpen,
         });
       }
 
-      const closeOrders = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
+      let closeOrders: Awaited<ReturnType<Exchange['listCloseOrdersForSide']>> = [];
+      if (intent.protection.requireStop || intent.protection.requireTakeProfit) {
+        try {
+          closeOrders = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
+        } catch (error) {
+          failureStage = 'PROTECTION';
+          const recovery = intent.protection.closeIfProtectionFails
+            ? await this.attemptEmergencyClose(
+                intent,
+                openedQuantity,
+                openedSideMode,
+                intent.failureCloseReasons?.protection ?? 'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
+              )
+            : { quantity: openedQuantity, sideMode: openedSideMode, positionStillOpen: true };
+          return failed(intent, 'BRACKETS_FAILED', {
+            ...baseMetadata,
+            failureStage,
+            orderId: order.orderId,
+            entryPrice,
+            quantity: recovery.quantity,
+            sideMode: recovery.sideMode,
+            stopPrice,
+            takeProfitPrice,
+            stopOk,
+            takeProfitOk,
+            error: String(error),
+            emergencyCloseError: recovery.emergencyCloseError,
+            positionStillOpen: recovery.positionStillOpen,
+          });
+        }
+      }
       const hasStop = closeOrders.some((order) => order.type.includes('STOP'));
       const hasTakeProfit = closeOrders.some((order) => order.type.includes('TAKE_PROFIT'));
-      if ((this.config.requireStop && !hasStop) || (this.config.requireTakeProfit && !hasTakeProfit)) {
-        if (this.config.closeIfProtectionFails) {
-          await this.exchange.closeSideMarketSafe(
-            intent.symbol,
-            intent.side,
-            openedQuantity,
-            openedSideMode,
-            'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
-          );
-          opened = false;
-        }
+      if ((intent.protection.requireStop && !hasStop) || (intent.protection.requireTakeProfit && !hasTakeProfit)) {
+        failureStage = 'PROTECTION';
+        const recovery = intent.protection.closeIfProtectionFails
+          ? await this.attemptEmergencyClose(
+              intent,
+              openedQuantity,
+              openedSideMode,
+              intent.failureCloseReasons?.protection ?? 'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
+            )
+          : { quantity: openedQuantity, sideMode: openedSideMode, positionStillOpen: true };
         return failed(intent, 'BRACKETS_FAILED', {
           ...baseMetadata,
+          failureStage,
+          orderId: order.orderId,
+          entryPrice,
+          quantity: recovery.quantity,
+          sideMode: recovery.sideMode,
           stopPrice,
           takeProfitPrice,
           stopOk,
           takeProfitOk,
           hasStop,
           hasTakeProfit,
+          emergencyCloseError: recovery.emergencyCloseError,
+          positionStillOpen: recovery.positionStillOpen,
         });
       }
 
@@ -242,11 +305,20 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           marginUsed,
           stopPrice,
           takeProfitPrice,
-          bracketsConfirmed: true,
+          stopOk,
+          takeProfitOk,
+          hasStop,
+          hasTakeProfit,
+          bracketsConfirmed:
+            (!intent.protection.requireStop || hasStop) &&
+            (!intent.protection.requireTakeProfit || hasTakeProfit),
           sideMode: position.sideMode,
+          marketOpenAttempts: marketOpenAttempt,
+          quantityAdjustments,
         },
       };
     } catch (error) {
+      failureStage ??= 'EXCHANGE';
       this.logger.error('shared_strategy_execution_failed', {
         ...baseMetadata,
         symbol: intent.symbol,
@@ -261,9 +333,11 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             intent.side,
             openedQuantity,
             openedSideMode,
-            'SHARED_EXECUTION_ERROR_CLOSED',
+            intent.failureCloseReasons?.unexpected ?? 'SHARED_EXECUTION_ERROR_CLOSED',
           );
+          opened = false;
         } catch (closeError) {
+          emergencyCloseError = String(closeError);
           this.logger.error('shared_strategy_execution_emergency_close_failed', {
             ...baseMetadata,
             symbol: intent.symbol,
@@ -273,7 +347,18 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           });
         }
       }
-      return failed(intent, 'EXCHANGE_REJECTED', { ...baseMetadata, error: String(error) });
+      return failed(intent, 'EXCHANGE_REJECTED', {
+        ...baseMetadata,
+        error: String(error),
+        marketOpenAttempts: marketOpenAttempt,
+        recoverableEntrySizeError: isRecoverableEntrySizeError(error),
+        failureStage,
+        emergencyCloseError,
+        positionStillOpen: opened,
+        quantity: openedQuantity || undefined,
+        sideMode: opened ? openedSideMode : undefined,
+        quantityAdjustments,
+      });
     }
   }
 
@@ -308,19 +393,59 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     return null;
   }
 
-  private async emergencyClose(
+  private async attemptEmergencyClose(
     intent: StrategyExecutionIntent,
     quantity: number,
+    sideMode: PositionInfo['sideMode'],
     reason: string,
-  ): Promise<void> {
-    const position = await this.exchange.readActivePosition(intent.symbol, intent.side);
-    await this.exchange.closeSideMarketSafe(
-      intent.symbol,
-      intent.side,
-      position?.qtyAbs ?? quantity,
-      position?.sideMode ?? 'BOTH',
-      reason,
-    );
+    reconcilePosition = false,
+  ): Promise<{
+    quantity: number;
+    sideMode: PositionInfo['sideMode'];
+    emergencyCloseError?: string;
+    positionStillOpen: boolean;
+  }> {
+    let closeQuantity = quantity;
+    let closeSideMode = sideMode;
+    if (reconcilePosition) {
+      try {
+        const position = await this.exchange.readActivePosition(intent.symbol, intent.side);
+        closeQuantity = position?.qtyAbs ?? closeQuantity;
+        closeSideMode = position?.sideMode ?? closeSideMode;
+      } catch (error) {
+        this.logger.warn('shared_strategy_execution_emergency_close_reconciliation_failed', {
+          strategyId: intent.identity.strategyId,
+          symbol: intent.symbol,
+          side: intent.side,
+          tradeId: intent.tradeId,
+          error: String(error),
+        });
+      }
+    }
+    try {
+      await this.exchange.closeSideMarketSafe(
+        intent.symbol,
+        intent.side,
+        closeQuantity,
+        closeSideMode,
+        reason,
+      );
+      return { quantity: closeQuantity, sideMode: closeSideMode, positionStillOpen: false };
+    } catch (error) {
+      this.logger.error('shared_strategy_execution_emergency_close_failed', {
+        strategyId: intent.identity.strategyId,
+        symbol: intent.symbol,
+        side: intent.side,
+        tradeId: intent.tradeId,
+        error: String(error),
+      });
+      return {
+        quantity: closeQuantity,
+        sideMode: closeSideMode,
+        emergencyCloseError: String(error),
+        positionStillOpen: true,
+      };
+    }
   }
 }
 

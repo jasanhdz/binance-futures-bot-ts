@@ -18,7 +18,19 @@ export interface StrategyExecutionIntent {
   takeProfitRoe?: number;
   structuralStopPrice?: number;
   destinationPrice?: number;
+  protection: StrategyProtectionExecutionPolicy;
+  failureCloseReasons?: {
+    positionConfirmation: string;
+    protection: string;
+    unexpected: string;
+  };
   metadata: Record<string, unknown>;
+}
+
+export interface StrategyProtectionExecutionPolicy {
+  requireStop: boolean;
+  requireTakeProfit: boolean;
+  closeIfProtectionFails: boolean;
 }
 
 export type ExecutionDenialReason =

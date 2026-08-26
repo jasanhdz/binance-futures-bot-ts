@@ -101,6 +101,7 @@ import { AegisPositionManager, MomentumRidePositionManager } from '../strategy/O
 import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
 import { resolveStrategyOwnership } from '../../domain/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../domain/strategies/aegis/AegisIdentity';
+import { AegisExecutionIntentFactory } from '../../domain/strategies/aegis/AegisExecutionIntentFactory';
 import { createMomentumRideLegacyIdentity } from '../../domain/strategies/momentum-ride/MomentumRideIdentity';
 import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
@@ -219,9 +220,6 @@ export class TradingService {
             deps.logger,
             {
                 feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
-                requireStop: true,
-                requireTakeProfit: true,
-                closeIfProtectionFails: true,
                 confirmationAttempts: 3,
                 confirmationDelaysMs: [300, 500, 1000],
                 maxMarketOpenAttempts: 6
@@ -1893,6 +1891,11 @@ export class TradingService {
             positionFraction: policy.positionFraction,
             stopRoe: protection.hardStopRoe,
             takeProfitRoe: protection.takeProfitRoe,
+            protection: {
+                requireStop: true,
+                requireTakeProfit: true,
+                closeIfProtectionFails: true
+            },
             metadata: {
                 authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
                 decisionReason: decision.reason,
@@ -2877,8 +2880,6 @@ export class TradingService {
         const { exchange, logger, notifier, configManager } = this.deps;
         const symbolState = this.stateForSymbol(symbol);
             const yaml = this.getAegisTurboYamlConfig();
-            let opened = false;
-            let openedSide: Side | null = null;
             let probeModeDecision: AegisProbeModeDecision | undefined;
 
         try {
@@ -3486,9 +3487,6 @@ export class TradingService {
             }
             // ═══════════════════════════════════════════════════════════════
 
-            await exchange.setLeverage(symbol, leverage);
-            await exchange.ensureMarginType(symbol, 'ISOLATED');
-
             await this.logAegisTradeEvent(symbol, 'ORDER_SUBMITTED', {
                 tradeId,
                 price: markPrice,
@@ -3504,230 +3502,193 @@ export class TradingService {
                     notionalEstimated: notional
                 }
             });
-            let result: { avgPrice: number; orderId: string };
-            let marketOpenAttempt = 1;
-            const maxMarketOpenAttempts = 6;
-            while (true) {
-                try {
-                    result = await exchange.marketOpen(symbol, side, quantity);
-                    break;
-                } catch (error) {
-                    if (!this.isRecoverableEntrySizeError(error)) {
-                        throw error;
-                    }
-
-                    const refreshedAccount = await this.readEntryAccountSnapshot();
-                    const refreshedAvailable = this.finiteNumber(refreshedAccount.availableBalance)
-                        ? Math.max(0, Number(refreshedAccount.availableBalance))
-                        : undefined;
-                    const balanceLimitedQuantity = refreshedAvailable === undefined
-                        ? quantity
-                        : this.roundQuantity(
-                            Math.min(
-                                refreshedAvailable * (1 - feeBufferPct) * positionFraction * leverage,
-                                this.finiteNumber(filters.notionalCap) && Number(filters.notionalCap) > 0
-                                    ? Number(filters.notionalCap)
-                                    : Number.POSITIVE_INFINITY
-                            ) / markPrice,
-                            filters
-                        );
-                    const reducedQuantity = this.roundQuantity(quantity * 0.90, filters);
-                    const nextQuantity = this.roundQuantity(
-                        Math.min(reducedQuantity, balanceLimitedQuantity),
-                        filters
-                    );
-                    const canRetry = marketOpenAttempt < maxMarketOpenAttempts
-                        && nextQuantity > 0
-                        && nextQuantity < quantity
-                        && nextQuantity * markPrice >= filters.minNotional;
-
-                    logger.warn('aegis_entry_quantity_rejected', {
-                        symbol,
-                        side,
-                        attempt: marketOpenAttempt,
-                        quantity,
-                        nextQuantity: canRetry ? nextQuantity : undefined,
-                        availableBalance: refreshedAvailable,
-                        error: String(error)
-                    });
-
-                    if (!canRetry) {
-                        await this.logAegisTradeEvent(symbol, 'ORDER_SIZE_REJECTED', {
-                            tradeId,
-                            reason: 'AEGIS_ENTRY_QUANTITY_ADJUSTMENT_EXHAUSTED',
-                            metadata: {
-                                side,
-                                attempts: marketOpenAttempt,
-                                lastQuantity: quantity,
-                                candidateQuantity: nextQuantity,
-                                availableBalance: refreshedAvailable,
-                                minNotional: filters.minNotional,
-                                error: String(error)
-                            }
-                        });
-                        await this.notifyError(
-                            symbol,
-                            'AEGIS ENTRY SIZE REJECTED',
-                            `Attempts=${marketOpenAttempt}; quantity=${quantity}; error=${String(error)}`
-                        );
-                        return;
-                    }
-
-                    await this.logAegisTradeEvent(symbol, 'ORDER_QUANTITY_ADJUSTED', {
-                        tradeId,
-                        reason: 'AEGIS_ENTRY_QUANTITY_RETRY',
-                        metadata: {
-                            side,
-                            attempt: marketOpenAttempt,
-                            previousQuantity: quantity,
-                            nextQuantity,
-                            availableBalance: refreshedAvailable,
-                            error: String(error)
-                        }
-                    });
-                    quantity = nextQuantity;
-                    notional = quantity * markPrice;
-                    margin = notional / leverage;
-                    executedPositionFraction = effectiveWallet > 0
-                        ? Math.min(positionFraction, margin / effectiveWallet)
-                        : 0;
-                    marketOpenAttempt++;
-                }
-            }
-            opened = true;
-            openedSide = side;
-
-            const positionData = await this.confirmAegisPositionWithRetries(symbol, side);
-            if (!positionData) {
-                logger.error('aegis_position_verify_failed_after_market_open', {
-                    symbol,
-                    side,
-                    quantity,
-                    avgPrice: result?.avgPrice,
-                    orderId: result?.orderId
-                });
-                await this.emergencyCloseUnverifiedAegisPosition(symbol, side, quantity, 'AEGIS_POSITION_VERIFY_FAILED', tradeId);
-                throw new Error('AEGIS_POSITION_VERIFY_FAILED_AFTER_MARKET_OPEN');
-            }
-            await this.logAegisTradeEvent(symbol, 'POSITION_CONFIRMED', {
-                tradeId,
-                price: positionData.entryPrice || result.avgPrice,
-                metadata: {
-                    side,
-                    quantity: positionData.qtyAbs || quantity,
-                    sideMode: positionData.sideMode,
-                    orderId: result?.orderId
-                }
-            });
-
-            const entryPrice = positionData.entryPrice || result.avgPrice;
-            const marginUsed = positionData.isolatedMargin || margin;
-            const stopPrice = this.roundPrice(this.bracketPrice(side, entryPrice, effectiveGate.stopRoe, leverage, 'STOP'), filters);
-            const tpPrice = this.roundPrice(this.bracketPrice(side, entryPrice, effectiveGate.takeProfitRoe, leverage, 'TP'), filters);
-
             const requireBrackets = yaml?.require_brackets !== false;
-            const closeIfBracketFails = yaml?.close_if_bracket_fails !== false;
-            let slOk = false;
-            let tpOk = false;
-            try {
-                slOk = await exchange.placeStopClose(symbol, side, stopPrice);
-                if (requireBrackets && !slOk) throw new Error('AEGIS_STOP_BRACKET_REJECTED');
-                tpOk = await exchange.placeTpClose(symbol, side, tpPrice);
-                if (requireBrackets && !tpOk) throw new Error('AEGIS_TP_BRACKET_REJECTED');
-            } catch (bracketError) {
-                logger.error('aegis_bracket_creation_failed', {
-                    symbol,
-                    side,
-                    stopPrice,
-                    tpPrice,
-                    slOk,
-                    tpOk,
-                    error: String(bracketError)
-                });
-                await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_ATTEMPT', {
-                    tradeId,
-                    reason: String(bracketError).includes('TP') ? 'TAKE_PROFIT_BRACKET_FAILED' : 'STOP_BRACKET_FAILED',
-                    metadata: { stopPrice, tpPrice, slOk, tpOk, error: String(bracketError) }
-                });
-                if (closeIfBracketFails) {
-                    await exchange.closeSideMarketSafe(symbol, side, positionData.qtyAbs, positionData.sideMode, 'AEGIS_BRACKET_FAILED');
-                    await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_SUCCESS', {
-                        tradeId,
-                        reason: 'AEGIS_BRACKET_FAILED',
-                        metadata: { stopPrice, tpPrice, slOk, tpOk }
-                    });
-                    symbolState.set({
-                        mode: 'IDLE',
-                        lastExitAt: Date.now(),
-                        lastExitReason: 'AEGIS_BRACKET_FAILED',
-                        lastBracketStatus: 'FAILED_CLOSED'
-                    });
-                    await notifier.sendMessage(
-                        `⚠️ **BRACKET FAILED**\n` +
-                        `Symbol: ${symbol}\n` +
-                        `Error: ${String(bracketError)}\n` +
-                        `ACTION REQUIRED: Check Open Orders!`
-                    );
-                    return;
-                }
-                throw bracketError;
-            }
-
-            const bracketStatus = requireBrackets
-                ? await this.validateAegisBrackets(symbol, side)
-                : { hasSL: slOk, hasTP: tpOk };
-
-            if (requireBrackets && (!slOk || !tpOk || !bracketStatus.hasSL || !bracketStatus.hasTP)) {
-                logger.error('aegis_bracket_validation_failed', {
-                    symbol,
-                    side,
-                    stopPrice,
-                    tpPrice,
-                    slOk,
-                    tpOk,
-                    hasSL: bracketStatus.hasSL,
-                    hasTP: bracketStatus.hasTP
-                });
-                await this.logAegisTradeEvent(symbol, 'BRACKET_MISSING', {
-                    tradeId,
-                    reason: 'AEGIS_REQUIRED_BRACKETS_MISSING',
-                    metadata: { stopPrice, tpPrice, slOk, tpOk, bracketStatus }
-                });
-                if (closeIfBracketFails) {
-                    await exchange.closeSideMarketSafe(symbol, side, positionData.qtyAbs, positionData.sideMode, 'AEGIS_BRACKET_FAILED');
-                    await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_SUCCESS', {
-                        tradeId,
-                        reason: 'AEGIS_BRACKET_FAILED',
-                        metadata: { stopPrice, tpPrice, slOk, tpOk, bracketStatus }
-                    });
-                    symbolState.set({
-                        mode: 'IDLE',
-                        lastExitAt: Date.now(),
-                        lastExitReason: 'AEGIS_BRACKET_FAILED',
-                        lastBracketStatus: 'FAILED_CLOSED'
-                    });
-                    await notifier.sendMessage(
-                        `⚠️ **BRACKET FAILED**\n` +
-                        `Symbol: ${symbol}\n` +
-                        `Error: AEGIS_REQUIRED_BRACKETS_MISSING\n` +
-                        `ACTION REQUIRED: Check Open Orders!`
-                    );
-                    return;
-                }
-                throw new Error('AEGIS_REQUIRED_BRACKETS_MISSING');
-            }
-
-            await this.logAegisTradeEvent(symbol, 'BRACKETS_CONFIRMED', {
-                tradeId,
-                metadata: { stopPrice, tpPrice, slOk, tpOk, bracketStatus }
-            });
-            const openedAtMs = await exchange.getServerTime();
-            const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
-            const guardianConfig = this.getAegisGuardianConfig(symbol, regimeConfig);
+            const configuredCloseIfBracketFails = yaml?.close_if_bracket_fails !== false;
             const finalStrategyLabel: AegisResearchStrategy = requestedStrategy === 'MOMENTUM_RIDE' || entryDecision.finalStrategy === 'momentum_ride'
                 ? 'MOMENTUM_RIDE'
                 : 'AEGIS_TURBO';
             const finalStrategyIdentity = this.strategyIdentity(finalStrategyLabel);
+            const executionIntent = AegisExecutionIntentFactory.create({
+                identity: finalStrategyIdentity,
+                signalId,
+                tradeId,
+                symbol,
+                side,
+                requestedAt: Date.now(),
+                risk: { leverage, positionFraction },
+                protection: {
+                    stopRoe: effectiveGate.stopRoe,
+                    takeProfitRoe: effectiveGate.takeProfitRoe,
+                    requireStop: requireBrackets,
+                    requireTakeProfit: requireBrackets,
+                    closeIfProtectionFails: configuredCloseIfBracketFails
+                },
+                failureCloseReasons: {
+                    positionConfirmation: 'AEGIS_POSITION_VERIFY_FAILED',
+                    protection: 'AEGIS_BRACKET_FAILED',
+                    unexpected: 'AEGIS_ENTRY_ERROR_CLOSED'
+                },
+                provenance: {
+                    source: 'aegis_approved_entry',
+                    requestedStrategy,
+                    finalStrategy: entryDecision.finalStrategy,
+                    decisionReason: entryDecision.finalReason,
+                    configuredCloseIfBracketFails,
+                    effectiveCloseIfProtectionFails: true,
+                    cleanEntryGuard: cleanEntryMetadata,
+                    probeMode: probeModeDecision?.metadata,
+                    entryPolicy: entryDecision.metadata
+                }
+            });
+            const execution = await this.sharedStrategyExecution.execute(executionIntent);
+            const executionMetadata = execution.metadata as Record<string, any>;
+            for (const adjustment of executionMetadata.quantityAdjustments ?? []) {
+                logger.warn('aegis_entry_quantity_rejected', { symbol, side, ...adjustment });
+                await this.logAegisTradeEvent(symbol, 'ORDER_QUANTITY_ADJUSTED', {
+                    tradeId,
+                    reason: 'AEGIS_ENTRY_QUANTITY_RETRY',
+                    metadata: { side, ...adjustment }
+                });
+            }
+            if (execution.status !== 'OPENED') {
+                if (executionMetadata.positionStillOpen === true) {
+                    symbolState.set({
+                        mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+                        positionOwner: 'BOT',
+                        tradeOrigin: 'BOT',
+                        ownershipStatus: 'UNKNOWN',
+                        eligibleForBotMetrics: false,
+                        metricsExclusionReason: 'entry_emergency_close_failed',
+                        lastSide: side,
+                        lastEntryPrice: this.finiteNumber(executionMetadata.entryPrice) ? executionMetadata.entryPrice : markPrice,
+                        lastLeverage: leverage,
+                        lastEntryAt: Date.now(),
+                        lastTradeId: tradeId,
+                        lastStrategy: finalStrategyLabel,
+                        lastStrategyVersion: finalStrategyIdentity.strategyVersion,
+                        lastStrategyHash: finalStrategyIdentity.strategyHash,
+                        lastConfigHash: finalStrategyIdentity.configHash,
+                        lastCodeCommitSha: finalStrategyIdentity.codeCommitSha,
+                        lastStrategyFreezeState: finalStrategyIdentity.freezeState,
+                        lastEntryQty: this.finiteNumber(executionMetadata.quantity) ? executionMetadata.quantity : quantity,
+                        lastPositionFraction: positionFraction,
+                        lastStopRoe: effectiveGate.stopRoe,
+                        lastTakeProfitRoe: effectiveGate.takeProfitRoe,
+                        lastBracketStatus: 'PENDING'
+                    });
+                }
+                if (execution.reason === 'POSITION_CONFIRMATION_FAILED' || executionMetadata.failureStage === 'POSITION_CONFIRMATION') {
+                    await exchange.readActivePosition(symbol, side).catch(() => null);
+                    logger.error('aegis_position_verify_failed_after_market_open', { symbol, side, tradeId });
+                    await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_ATTEMPT', {
+                        tradeId,
+                        reason: 'AEGIS_POSITION_VERIFY_FAILED',
+                        metadata: { side }
+                    });
+                    if (executionMetadata.emergencyCloseError) {
+                        logger.error('aegis_emergency_close_failed', { symbol, side, error: executionMetadata.emergencyCloseError });
+                        await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_FAILED', {
+                            tradeId,
+                            reason: 'AEGIS_POSITION_VERIFY_FAILED',
+                            metadata: { side, error: executionMetadata.emergencyCloseError }
+                        });
+                        await notifier.sendMessage(
+                            `⚠️ **AEGIS EMERGENCY CLOSE FAILED**\n` +
+                            `Symbol: ${symbol}\n` +
+                            `Reason: AEGIS_POSITION_VERIFY_FAILED\n` +
+                            `Error: ${String(executionMetadata.emergencyCloseError).slice(0, 180)}`
+                        );
+                    } else {
+                        await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_SUCCESS', {
+                            tradeId,
+                            reason: 'AEGIS_POSITION_VERIFY_FAILED',
+                            metadata: { side }
+                        });
+                        await notifier.sendMessage(
+                            `⚠️ **AEGIS EMERGENCY CLOSE**\n` +
+                            `Symbol: ${symbol}\n` +
+                            `Side: ${side}\n` +
+                            `Reason: AEGIS_POSITION_VERIFY_FAILED`
+                        );
+                    }
+                } else if (execution.reason === 'BRACKETS_FAILED' || executionMetadata.failureStage === 'PROTECTION') {
+                    logger.error(
+                        executionMetadata.error ? 'aegis_bracket_creation_failed' : 'aegis_bracket_validation_failed',
+                        { symbol, side, ...executionMetadata }
+                    );
+                    await this.logAegisTradeEvent(symbol, executionMetadata.error ? 'EMERGENCY_CLOSE_ATTEMPT' : 'BRACKET_MISSING', {
+                        tradeId,
+                        reason: executionMetadata.error
+                            ? (String(executionMetadata.error).includes('TP') ? 'TAKE_PROFIT_BRACKET_FAILED' : 'STOP_BRACKET_FAILED')
+                            : 'AEGIS_REQUIRED_BRACKETS_MISSING',
+                        metadata: executionMetadata
+                    });
+                    if (executionIntent.protection.closeIfProtectionFails) {
+                        if (executionMetadata.emergencyCloseError) {
+                            await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_FAILED', {
+                                tradeId,
+                                reason: 'AEGIS_BRACKET_FAILED',
+                                metadata: executionMetadata
+                            });
+                        } else {
+                            await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_SUCCESS', {
+                                tradeId,
+                                reason: 'AEGIS_BRACKET_FAILED',
+                                metadata: executionMetadata
+                            });
+                            symbolState.set({
+                                mode: 'IDLE',
+                                lastExitAt: Date.now(),
+                                lastExitReason: 'AEGIS_BRACKET_FAILED',
+                                lastBracketStatus: 'FAILED_CLOSED'
+                            });
+                        }
+                        await notifier.sendMessage(
+                            `⚠️ **BRACKET FAILED**\n` +
+                            `Symbol: ${symbol}\n` +
+                            `Error: ${String(executionMetadata.error ?? 'AEGIS_REQUIRED_BRACKETS_MISSING')}\n` +
+                            `ACTION REQUIRED: Check Open Orders!`
+                        );
+                    }
+                } else if (executionMetadata.recoverableEntrySizeError === true) {
+                    logger.warn('aegis_entry_quantity_rejected', { symbol, side, ...executionMetadata });
+                    await this.logAegisTradeEvent(symbol, 'ORDER_SIZE_REJECTED', {
+                        tradeId,
+                        reason: 'AEGIS_ENTRY_QUANTITY_ADJUSTMENT_EXHAUSTED',
+                        metadata: { side, ...executionMetadata }
+                    });
+                    await this.notifyError(symbol, 'AEGIS ENTRY SIZE REJECTED', executionMetadata.error);
+                } else {
+                    await this.notifyError(symbol, 'AEGIS ENTRY FAILED', executionMetadata.error ?? execution.reason);
+                }
+                return;
+            }
+
+            const entryPrice = execution.entryPrice;
+            const marginUsed = this.finiteNumber(executionMetadata.marginUsed) ? executionMetadata.marginUsed : margin;
+            const stopPrice = Number(executionMetadata.stopPrice);
+            const tpPrice = Number(executionMetadata.takeProfitPrice);
+            const bracketStatus = {
+                hasSL: executionMetadata.hasStop ?? requireBrackets,
+                hasTP: executionMetadata.hasTakeProfit ?? requireBrackets
+            };
+            await this.logAegisTradeEvent(symbol, 'POSITION_CONFIRMED', {
+                tradeId,
+                price: entryPrice,
+                metadata: {
+                    side,
+                    quantity: execution.quantity,
+                    sideMode: executionMetadata.sideMode,
+                    orderId: execution.orderId
+                }
+            });
+            await this.logAegisTradeEvent(symbol, 'BRACKETS_CONFIRMED', {
+                tradeId,
+                metadata: { stopPrice, tpPrice, bracketStatus }
+            });
+            const openedAtMs = execution.openedAt;
+            const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
+            const guardianConfig = this.getAegisGuardianConfig(symbol, regimeConfig);
             symbolState.set({
                 mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                 positionOwner: 'BOT',
@@ -3752,7 +3713,7 @@ export class TradingService {
                 lastPeakPrice: entryPrice,
                 lastEntryWallet: wallet,
                 lastEntryMargin: marginUsed,
-                lastEntryQty: positionData.qtyAbs || quantity,
+                lastEntryQty: execution.quantity,
                 lastMlProb: effectiveGate.turboScore,
                 lastAegisTurboScore: effectiveGate.turboScore,
                 lastAegisRawReason: effectiveGate.rawReason,
@@ -3769,7 +3730,7 @@ export class TradingService {
                 lastTrailingActivationRoe: effectiveGate.trailingActivationRoe,
                 lastTrailingCallbackRoe: effectiveGate.trailingCallbackRoe,
                 lastMaxHoldMs: regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS,
-                lastPositionFraction: executedPositionFraction,
+                lastPositionFraction: execution.positionFraction,
                 lastRequestedLeverage: effectiveGate.leverage,
                 lastActualLeverage: leverage,
                 lastBracketStatus: 'OK',
@@ -3796,11 +3757,11 @@ export class TradingService {
                 side,
                 opened_at: new Date(openedAtMs).toISOString(),
                 entry_price: entryPrice,
-                quantity: positionData.qtyAbs || quantity,
+                quantity: execution.quantity,
                 leverage,
-                position_fraction: executedPositionFraction,
+                position_fraction: execution.positionFraction,
                 margin_estimated: marginUsed,
-                notional_estimated: (positionData.qtyAbs || quantity) * entryPrice,
+                notional_estimated: execution.quantity * entryPrice,
                 turbo_score: effectiveGate.turboScore,
                 votes: effectiveGate.votes,
                 stop_roe: effectiveGate.stopRoe,
@@ -3825,7 +3786,7 @@ export class TradingService {
                     cleanEntryGuard: cleanEntryMetadata,
                     probeMode: probeModeDecision?.metadata,
                     entryPolicy: entryDecision.metadata,
-                    orderId: result?.orderId,
+                    orderId: execution.orderId,
                     estimated: true
                 }
             });
@@ -3839,7 +3800,7 @@ export class TradingService {
                 entryPrice,
                 markPrice,
                 marginUsed,
-                quantity: positionData.qtyAbs || quantity,
+                quantity: execution.quantity,
                 leverage,
                 metadata: { event: 'trade_open', tradeId }
             });
@@ -3854,10 +3815,10 @@ export class TradingService {
                 symbol,
                 side,
                 entryPrice,
-                quantity: positionData.qtyAbs || quantity,
+                quantity: execution.quantity,
                 margin: marginUsed,
                 leverage,
-                positionFraction: executedPositionFraction,
+                positionFraction: execution.positionFraction,
                 finalStrategy: entryDecision.finalStrategy,
                 turboScore: effectiveGate.turboScore,
                 votes: effectiveGate.votes,
@@ -3870,7 +3831,7 @@ export class TradingService {
                     symbol,
                     side,
                     entryPrice,
-                    quantity: positionData.qtyAbs || quantity,
+                    quantity: execution.quantity,
                     marginUsed,
                     wallet,
                     account: entryAccount,
@@ -3886,112 +3847,8 @@ export class TradingService {
             });
         } catch (error) {
             logger.error('aegis_entry_error_closed', { symbol, error: String(error) });
-            if (opened && openedSide) {
-                try {
-                    const position = await exchange.readActivePosition(symbol, openedSide);
-                    if (position) {
-                        await exchange.closeSideMarketSafe(symbol, openedSide, position.qtyAbs, position.sideMode, 'AEGIS_ENTRY_ERROR_CLOSED');
-                        await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_SUCCESS', {
-                            tradeId,
-                            reason: 'AEGIS_ENTRY_ERROR_CLOSED',
-                            metadata: { error: String(error), qtyAbs: position.qtyAbs }
-                        });
-                        symbolState.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_ENTRY_ERROR_CLOSED', probeModeActive: false });
-                        await notifier.sendMessage(
-                            `⚠️ **AEGIS ENTRY FAILED**\n` +
-                            `Symbol: ${symbol}\n` +
-                            `Error: ${String(error).slice(0, 180)}`
-                        );
-                    }
-                } catch (closeError) {
-                    logger.error('aegis_entry_error_close_failed', { symbol, error: String(closeError) });
-                    await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_FAILED', {
-                        tradeId,
-                        reason: 'AEGIS_ENTRY_ERROR_CLOSED',
-                        metadata: { error: String(closeError) }
-                    });
-                }
-            } else {
-                await this.notifyError(symbol, 'AEGIS ENTRY FAILED', error);
-            }
+            await this.notifyError(symbol, 'AEGIS ENTRY FAILED', error);
         }
-    }
-
-    private async confirmAegisPositionWithRetries(
-        symbol: string,
-        side: Side,
-        attempts = 3
-    ): Promise<PositionInfo | null> {
-        const delays = [300, 500, 1000];
-        for (let i = 0; i < attempts; i++) {
-            await this.sleep(delays[i] ?? delays[delays.length - 1]);
-            this.deps.logger.info('aegis_position_confirm_retry', {
-                symbol,
-                side,
-                attempt: i + 1
-            });
-            const position = await this.deps.exchange.readActivePosition(symbol, side);
-            if (position) return position;
-        }
-        return null;
-    }
-
-    private async emergencyCloseUnverifiedAegisPosition(
-        symbol: string,
-        side: Side,
-        quantity: number,
-        reason: string,
-        tradeId?: string
-    ): Promise<void> {
-        const { exchange, logger, notifier } = this.deps;
-        logger.error('aegis_emergency_close_attempt', { symbol, side, quantity, reason });
-        await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_ATTEMPT', {
-            tradeId,
-            reason,
-            metadata: { side, quantity }
-        });
-        try {
-            const position = await exchange.readActivePosition(symbol, side);
-            const qtyAbs = position?.qtyAbs ?? quantity;
-            const sideMode = position?.sideMode ?? 'BOTH';
-            await exchange.closeSideMarketSafe(symbol, side, qtyAbs, sideMode, reason);
-            logger.error('aegis_emergency_close_success', { symbol, side, qtyAbs, sideMode, reason });
-            await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_SUCCESS', {
-                tradeId,
-                reason,
-                metadata: { side, qtyAbs, sideMode }
-            });
-            await notifier.sendMessage(
-                `⚠️ **AEGIS EMERGENCY CLOSE**\n` +
-                `Symbol: ${symbol}\n` +
-                `Side: ${side}\n` +
-                `Reason: ${reason}\n` +
-                `Qty: ${qtyAbs}`
-            );
-        } catch (error) {
-            logger.error('aegis_emergency_close_failed', { symbol, side, quantity, reason, error: String(error) });
-            await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_FAILED', {
-                tradeId,
-                reason,
-                metadata: { side, quantity, error: String(error) }
-            });
-            await notifier.sendMessage(
-                `⚠️ **AEGIS EMERGENCY CLOSE FAILED**\n` +
-                `Symbol: ${symbol}\n` +
-                `Side: ${side}\n` +
-                `Reason: ${reason}\n` +
-                `Error: ${String(error).slice(0, 180)}`
-            );
-            throw error;
-        }
-    }
-
-    private async validateAegisBrackets(symbol: string, side: Side): Promise<{ hasSL: boolean; hasTP: boolean }> {
-        const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
-        return {
-            hasSL: orders.some(order => order.type.includes('STOP')),
-            hasTP: orders.some(order => order.type.includes('TAKE_PROFIT'))
-        };
     }
 
     private async getExitEyeSignal(symbol: string): Promise<AegisTradingSignal | null> {
@@ -5657,31 +5514,6 @@ export class TradingService {
     private roundQuantity(quantity: number, filters: SymbolFilters): number {
         const scale = 10 ** filters.qtyPrecision;
         return Number((Math.floor(quantity * scale) / scale).toFixed(filters.qtyPrecision));
-    }
-
-    private isRecoverableEntrySizeError(error: unknown): boolean {
-        const candidate = error as {
-            code?: unknown;
-            message?: unknown;
-            response?: { data?: { code?: unknown; msg?: unknown } };
-            body?: { code?: unknown; msg?: unknown };
-        };
-        const codes = [candidate?.code, candidate?.response?.data?.code, candidate?.body?.code]
-            .map(value => Number(value))
-            .filter(Number.isFinite);
-        if (codes.some(code => [-2019, -2027, -4005].includes(code))) return true;
-
-        const message = [
-            candidate?.message,
-            candidate?.response?.data?.msg,
-            candidate?.body?.msg,
-            String(error)
-        ].filter(Boolean).join(' ').toLowerCase();
-        return message.includes('margin is insufficient')
-            || message.includes('insufficient margin')
-            || message.includes('insufficient balance')
-            || message.includes('quantity greater than max quantity')
-            || message.includes('maximum allowable position');
     }
 
     private roundPrice(price: number, filters: SymbolFilters): number {
