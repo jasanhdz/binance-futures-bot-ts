@@ -32,7 +32,7 @@ describe('LegacyStrategyCompatibility', () => {
     expect(evaluator).toHaveBeenCalledTimes(2);
   });
 
-  it('prevents a legacy position manager from taking another strategy ownership', async () => {
+  it('prevents a legacy position manager from taking another strategy ownership', () => {
     const evaluator = vi.fn(() => ({
       tradeId: 'trade-1',
       decision: 'HOLD' as const,
@@ -41,7 +41,7 @@ describe('LegacyStrategyCompatibility', () => {
     }));
     const momentumManager = new LegacyPositionManagerAdapter('MOMENTUM_RIDE', evaluator);
 
-    await expect(momentumManager.manage(aegisIdentity, {})).rejects.toThrow(
+    expect(() => momentumManager.manage(aegisIdentity, {})).toThrow(
       'LEGACY_POSITION_MANAGER_OWNERSHIP_MISMATCH:MOMENTUM_RIDE:AEGIS_TURBO',
     );
     expect(evaluator).not.toHaveBeenCalled();
