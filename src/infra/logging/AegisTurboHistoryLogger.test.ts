@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { AegisTurboHistoryLogger } from './AegisTurboHistoryLogger';
+import {
+    AegisTurboHistoryLogger,
+    generateStrategyTradeId,
+    generateTradeId
+} from './AegisTurboHistoryLogger';
 
 describe('AegisTurboHistoryLogger', () => {
     let tempDir: string;
@@ -107,5 +111,53 @@ describe('AegisTurboHistoryLogger', () => {
         const row = JSON.parse(content.trim());
         expect(row.turbo_score).toBeNull();
         expect(row.metadata.value).toBeNull();
+    });
+
+    it('preserves MOMENTUM_RIDE attribution on close and lifecycle events', async () => {
+        const logger = new AegisTurboHistoryLogger({ baseDir: tempDir });
+        const ownership = {
+            owner: 'AEGIS' as const,
+            origin: 'BOT' as const,
+            ownership_status: 'VERIFIED' as const,
+            eligible_for_bot_metrics: true,
+            exclusion_reason: null,
+        };
+
+        await logger.logTradeClose({
+            ...ownership,
+            timestamp: '2026-08-26T10:15:00.000Z',
+            trade_id: 'MOMENTUM-RIDE-SUIUSDT-1',
+            symbol: 'SUIUSDT',
+            strategy: 'MOMENTUM_RIDE',
+            mode: 'LIVE',
+            closed_at: '2026-08-26T10:15:00.000Z',
+            exit_reason: 'TEST_EXIT',
+            status: 'CLOSED',
+            strategy_version: 'legacy-unfrozen',
+            code_commit_sha: 'test-sha',
+        });
+        await logger.logTradeEvent({
+            timestamp: '2026-08-26T10:15:00.000Z',
+            trade_id: 'MOMENTUM-RIDE-SUIUSDT-1',
+            symbol: 'SUIUSDT',
+            strategy: 'MOMENTUM_RIDE',
+            mode: 'LIVE',
+            event: 'TRADE_CLOSED',
+        });
+
+        const trades = await fs.readFile(path.join(tempDir, 'turbo_trades_2026-08-26.jsonl'), 'utf8');
+        const events = await fs.readFile(path.join(tempDir, 'turbo_trade_events_2026-08-26.jsonl'), 'utf8');
+        expect(JSON.parse(trades.trim()).strategy).toBe('MOMENTUM_RIDE');
+        expect(JSON.parse(events.trim()).strategy).toBe('MOMENTUM_RIDE');
+    });
+
+    it('keeps legacy Aegis trade ids stable and supports strategy-specific ids', () => {
+        const timestamp = new Date('2026-08-26T10:15:00.123Z');
+        expect(generateTradeId('SUIUSDT', timestamp)).toBe(
+            'AEGIS-TURBO-SUIUSDT-20260826-101500-123'
+        );
+        expect(generateStrategyTradeId('MOMENTUM_RIDE', 'SUIUSDT', timestamp)).toBe(
+            'MOMENTUM-RIDE-SUIUSDT-20260826-101500-123'
+        );
     });
 });

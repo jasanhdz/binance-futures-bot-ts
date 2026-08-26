@@ -1,6 +1,7 @@
 import path from 'path';
 import { promises as fs } from 'fs';
 import { Logger } from '../../app/ports/Logger';
+import { StrategyId } from '../../domain/strategy/StrategyIdentity';
 
 export type AegisTurboVotes = {
     long?: number;
@@ -8,7 +9,14 @@ export type AegisTurboVotes = {
     neutral?: number;
 };
 
-export type AegisResearchStrategy = 'AEGIS_TURBO' | 'MOMENTUM_RIDE';
+export type AegisResearchStrategy = Extract<StrategyId, 'AEGIS_TURBO' | 'MOMENTUM_RIDE'>;
+
+export type StrategyProvenanceFields = {
+    strategy_version?: string;
+    strategy_hash?: string;
+    config_hash?: string;
+    code_commit_sha?: string;
+};
 
 export type AegisTradeOwnershipFields = {
     owner: 'AEGIS' | 'EXTERNAL' | 'UNKNOWN';
@@ -18,7 +26,7 @@ export type AegisTradeOwnershipFields = {
     exclusion_reason: string | null;
 };
 
-export type AegisTurboSignalHistoryInput = {
+export type AegisTurboSignalHistoryInput = StrategyProvenanceFields & {
     timestamp?: string;
     signal_id?: string;
     portfolio_session_id?: string;
@@ -49,7 +57,7 @@ export type AegisTurboSignalHistoryInput = {
     metadata?: Record<string, unknown>;
 };
 
-export type AegisTurboTradeOpenInput = AegisTradeOwnershipFields & {
+export type AegisTurboTradeOpenInput = StrategyProvenanceFields & AegisTradeOwnershipFields & {
     timestamp?: string;
     trade_id: string;
     portfolio_session_id?: string;
@@ -77,12 +85,12 @@ export type AegisTurboTradeOpenInput = AegisTradeOwnershipFields & {
     metadata?: Record<string, unknown>;
 };
 
-export type AegisTurboTradeCloseInput = AegisTradeOwnershipFields & {
+export type AegisTurboTradeCloseInput = StrategyProvenanceFields & AegisTradeOwnershipFields & {
     timestamp?: string;
     trade_id: string;
     portfolio_session_id?: string;
     symbol: string;
-    strategy: 'AEGIS_TURBO';
+    strategy: AegisResearchStrategy;
     mode: string;
     side?: 'LONG' | 'SHORT';
     opened_at?: string;
@@ -105,12 +113,12 @@ export type AegisTurboTradeCloseInput = AegisTradeOwnershipFields & {
     metadata?: Record<string, unknown>;
 };
 
-export type AegisTurboTradeEventInput = {
+export type AegisTurboTradeEventInput = StrategyProvenanceFields & {
     timestamp?: string;
     trade_id?: string;
     portfolio_session_id?: string;
     symbol: string;
-    strategy: 'AEGIS_TURBO';
+    strategy: AegisResearchStrategy;
     mode: string;
     event:
         | 'SIGNAL_RECEIVED'
@@ -182,7 +190,16 @@ export function generateSignalId(symbol: string, timestamp: Date = new Date()): 
 }
 
 export function generateTradeId(symbol: string, timestamp: Date = new Date()): string {
-    return `AEGIS-TURBO-${safeToken(symbol)}-${formatIdTimestamp(timestamp)}`;
+    return generateStrategyTradeId('AEGIS_TURBO', symbol, timestamp);
+}
+
+export function generateStrategyTradeId(
+    strategy: AegisResearchStrategy,
+    symbol: string,
+    timestamp: Date = new Date()
+): string {
+    const prefix = strategy === 'MOMENTUM_RIDE' ? 'MOMENTUM-RIDE' : 'AEGIS-TURBO';
+    return `${prefix}-${safeToken(symbol)}-${formatIdTimestamp(timestamp)}`;
 }
 
 export function getPortfolioSessionId(timestamp: Date = new Date()): string {
