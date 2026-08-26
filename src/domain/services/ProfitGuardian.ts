@@ -23,6 +23,8 @@ export interface GuardianConfig {
     trailingCallbackRoe?: number;   // Safety Net Callback
     useAtrTrailing?: boolean;       // Enable ATR mode
     atrMultiplier?: number;         // e.g. 2.0 (2x ATR)
+    minimumProtectedRoeRatio?: number; // e.g. 0.70 = protect at least 70% of peak ROE
+    minimumProtectedRoeAbs?: number;   // e.g. 0.20 = absolute floor of 20% ROE
 }
 
 export const DEFAULT_GUARDIAN_CONFIG: GuardianConfig = {
@@ -32,7 +34,9 @@ export const DEFAULT_GUARDIAN_CONFIG: GuardianConfig = {
     trailingActivationRoe: 0.15,
     trailingCallbackRoe: 0.30,
     useAtrTrailing: true,
-    atrMultiplier: 2.0
+    atrMultiplier: 2.0,
+    minimumProtectedRoeRatio: 0.70,
+    minimumProtectedRoeAbs: 0.20
 };
 
 export type GuardianAction =
@@ -68,9 +72,29 @@ export function evaluateGuardianAction(
         // Si tenemos ATR habilitado y un valor de ATR válido, calculamos el Trailing dinámicamente
         if (config.useAtrTrailing && config.atrMultiplier && atrValue && atrValue > 0) {
             const trailingDistance = atrValue * config.atrMultiplier;
-            triggerPrice = positionSide === 'SHORT'
+            const atrTriggerPrice = positionSide === 'SHORT'
                 ? peakPrice + trailingDistance
                 : peakPrice - trailingDistance;
+
+            // Calculate ROE at ATR-based trigger price
+            const roeAtAtrTrigger = positionSide === 'SHORT'
+                ? (entryPrice - atrTriggerPrice) / entryPrice * leverage
+                : (atrTriggerPrice - entryPrice) / entryPrice * leverage;
+
+            // Apply dynamic protection floor
+            const minimumProtectedRoe = Math.max(
+                currentPeakRoe * (config.minimumProtectedRoeRatio ?? 0.70),
+                config.minimumProtectedRoeAbs ?? 0.20
+            );
+
+            if (roeAtAtrTrigger < minimumProtectedRoe) {
+                // ATR is too loose - use floor instead
+                triggerPrice = positionSide === 'SHORT'
+                    ? entryPrice * (1 - (minimumProtectedRoe / leverage))
+                    : entryPrice * (1 + (minimumProtectedRoe / leverage));
+            } else {
+                triggerPrice = atrTriggerPrice;
+            }
         } else {
             // Legacy / Fijo basado en porcentaje de ROE devuelto
             const triggerRoe = currentPeakRoe * (1 - callbackRoe);

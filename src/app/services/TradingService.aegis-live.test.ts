@@ -1180,6 +1180,161 @@ describe('TradingService Aegis live execution', () => {
         }));
     });
 
+    it('recreates a deleted manual LONG stop at the persisted trailing ratchet', async () => {
+        const { exchange, service, state } = makeHarness({
+            preserveUnverifiedState: true,
+            markPrice: 102,
+            closeOrders: [{ orderId: 'manual-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 105 }],
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            initialState: {
+                mode: 'LONG_RIDE',
+                positionOwner: 'EXTERNAL',
+                tradeOrigin: 'MANUAL_EXTERNAL',
+                ownershipStatus: 'UNKNOWN',
+                eligibleForBotMetrics: false,
+                lastSide: 'LONG',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryQty: 1,
+                lastEntryAt: Date.now(),
+                lastTrailStop: 101,
+                lastStopPrice: 101,
+                lastPeakPrice: 102,
+                peakRoe: 0.40,
+                lowestRoe: 0,
+                lastTrailingActivationRoe: 9
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 101);
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(state.get()).toEqual(expect.objectContaining({ lastTrailStop: 101, lastStopPrice: 101 }));
+    });
+
+    it('recreates a deleted manual SHORT stop at the persisted trailing ratchet', async () => {
+        const { exchange, service, state } = makeHarness({
+            preserveUnverifiedState: true,
+            markPrice: 98,
+            closeOrders: [{ orderId: 'manual-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 95 }],
+            readActivePosition: { sideMode: 'SHORT', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            initialState: {
+                mode: 'SHORT_RIDE',
+                positionOwner: 'EXTERNAL',
+                tradeOrigin: 'MANUAL_EXTERNAL',
+                ownershipStatus: 'UNKNOWN',
+                eligibleForBotMetrics: false,
+                lastSide: 'SHORT',
+                lastEntryPrice: 100,
+                lastLeverage: 20,
+                lastEntryQty: 1,
+                lastEntryAt: Date.now(),
+                lastTrailStop: 99,
+                lastStopPrice: 99,
+                lastPeakPrice: 98,
+                peakRoe: 0.40,
+                lowestRoe: 0,
+                lastTrailingActivationRoe: 9
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'SHORT', 99);
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(state.get()).toEqual(expect.objectContaining({ lastTrailStop: 99, lastStopPrice: 99 }));
+    });
+
+    it('adopts a manual SHORT position at runtime when bot is IDLE', async () => {
+        const { exchange, logger, service, state } = makeHarness({
+            markPrice: 0.762,
+            closeOrders: [{ orderId: 'manual-sl', type: 'STOP_MARKET', stopPrice: 0.78 }],
+            initialState: {
+                mode: 'IDLE',
+                lastSide: 'LONG',
+                lastEntryPrice: 0.753,
+                lastExitReason: 'EXCLUDED_POSITION_NOW_FLAT'
+            }
+        });
+        exchange.hasOpenPosition.mockResolvedValue(true);
+        exchange.readActivePosition.mockImplementation((_sym: string, side: string) =>
+            side === 'SHORT'
+                ? Promise.resolve({ sideMode: 'SHORT', qtyAbs: 100, entryPrice: 0.76, leverage: 40, isolatedMargin: 5 })
+                : Promise.resolve(null)
+        );
+
+        await service.tick('ETHUSDT');
+
+        expect(state.get()).toEqual(expect.objectContaining({
+            mode: 'SHORT_RIDE',
+            lastSide: 'SHORT',
+            lastEntryPrice: 0.76,
+            lastLeverage: 40,
+            positionOwner: 'EXTERNAL',
+            tradeOrigin: 'MANUAL_EXTERNAL',
+            ownershipStatus: 'UNKNOWN'
+        }));
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith('aegis_manual_position_adopted_runtime', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            side: 'SHORT'
+        }));
+    });
+
+    it('adopts a manual LONG position at runtime when bot is IDLE', async () => {
+        const { exchange, logger, service, state } = makeHarness({
+            markPrice: 104,
+            closeOrders: [],
+            initialState: {
+                mode: 'IDLE',
+                lastSide: 'SHORT',
+                lastExitReason: 'EXCLUDED_POSITION_NOW_FLAT'
+            }
+        });
+        exchange.hasOpenPosition.mockResolvedValue(true);
+        exchange.readActivePosition.mockImplementation((_sym: string, side: string) =>
+            side === 'LONG'
+                ? Promise.resolve({ sideMode: 'LONG', qtyAbs: 50, entryPrice: 105, leverage: 20, isolatedMargin: 10 })
+                : Promise.resolve(null)
+        );
+
+        await service.tick('ETHUSDT');
+
+        expect(state.get()).toEqual(expect.objectContaining({
+            mode: 'LONG_RIDE',
+            lastSide: 'LONG',
+            lastEntryPrice: 105,
+            lastLeverage: 20,
+            positionOwner: 'EXTERNAL',
+            tradeOrigin: 'MANUAL_EXTERNAL'
+        }));
+        expect(exchange.placeStopClose).toHaveBeenCalled();
+        expect(exchange.placeTpClose).toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith('aegis_manual_position_adopted_runtime', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            side: 'LONG'
+        }));
+    });
+
+    it('does not call lookForEntry when runtime adoption succeeds', async () => {
+        const { exchange, service, state } = makeHarness({
+            readActivePosition: { sideMode: 'LONG', qtyAbs: 1, entryPrice: 100, leverage: 20, isolatedMargin: 5 },
+            markPrice: 101,
+            closeOrders: [],
+            initialState: { mode: 'IDLE' }
+        });
+        exchange.hasOpenPosition.mockResolvedValue(true);
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(state.get().mode).toBe('LONG_RIDE');
+    });
+
 	    it('opens Aegis Turbo position with isolated margin and immediate brackets when env and YAML allow live', async () => {
 	        const { exchange, historyLogger, logger, notifier, service, state } = makeHarness();
 
@@ -3124,7 +3279,8 @@ describe('TradingService Aegis live execution', () => {
             lastActualLeverage: 40,
             lastTrailStop: 0.7622
         }));
-        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.7622, 100);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.7622);
+        expect(exchange.cancelOrderById.mock.invocationCallOrder[0]).toBeLessThan(exchange.placeStopClose.mock.invocationCallOrder[0]);
         expect(exchange.cancelStopOrdersForSide).not.toHaveBeenCalled();
         expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'manual-sl');
         expect(exchange.cancelOrderById).not.toHaveBeenCalledWith('ETHUSDT', 'manual-tp');
