@@ -46,8 +46,10 @@ import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
 import {
+    AegisResearchStrategy,
     AegisTurboHistoryLogger,
     generateSignalId,
+    generateStrategyTradeId,
     generateTradeId,
     getPortfolioSessionId
 } from '../../infra/logging/AegisTurboHistoryLogger';
@@ -95,6 +97,12 @@ import {
     AegisConsecutiveLossState,
     AegisConsecutiveLossStateStorePort
 } from '../../infra/state/AegisConsecutiveLossStateStore';
+import { PositionManagerRouter } from '../strategy/PositionManagerRouter';
+import { LegacyPositionManagerAdapter } from '../strategy/LegacyStrategyCompatibility';
+import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
+import { resolveStrategyOwnership } from '../../domain/strategy/StrategyPositionOwnership';
+import { createAegisMigrationIdentity } from '../../domain/strategies/aegis/AegisIdentity';
+import { createMomentumRideLegacyIdentity } from '../../domain/strategies/momentum-ride/MomentumRideIdentity';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -188,12 +196,42 @@ export class TradingService {
     private readonly symbolStateStores = new Map<string, StateStore>();
     private readonly exitEyeSignalCache = new Map<string, { at: number; signal: AegisTradingSignal }>();
     private readonly aegisTelegramBlockNotifier = new AegisTelegramBlockNotifier();
+    private readonly positionManagerRouter = new PositionManagerRouter<{ symbol: string; botState: BotState; symbolState: StateStore }>();
+    private readonly aegisStrategyIdentity: StrategyIdentity;
+    private readonly momentumStrategyIdentity: StrategyIdentity;
 
     constructor(
         private deps: TradingServiceDeps,
         private config: TradingServiceConfig
     ) {
         this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
+        this.aegisStrategyIdentity = createAegisMigrationIdentity();
+        this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
+
+        this.positionManagerRouter.register(new LegacyPositionManagerAdapter(
+            'AEGIS_TURBO',
+            async (_identity, context) => {
+                await this.managePositionLegacy(context.symbol, context.botState, context.symbolState);
+                return {
+                    tradeId: context.botState.lastTradeId ?? `AEGIS-LEGACY-${context.symbol}`,
+                    decision: 'NO_ACTION',
+                    reason: 'legacy_aegis_position_manager_completed',
+                    diagnostics: { compatibilityAdapter: true }
+                };
+            }
+        ));
+        this.positionManagerRouter.register(new LegacyPositionManagerAdapter(
+            'MOMENTUM_RIDE',
+            async (_identity, context) => {
+                await this.managePositionLegacy(context.symbol, context.botState, context.symbolState);
+                return {
+                    tradeId: context.botState.lastTradeId ?? `MOMENTUM-LEGACY-${context.symbol}`,
+                    decision: 'NO_ACTION',
+                    reason: 'legacy_momentum_position_manager_completed',
+                    diagnostics: { compatibilityAdapter: true }
+                };
+            }
+        ));
     }
 
     private getTradingMode(): string {
@@ -1318,7 +1356,7 @@ export class TradingService {
             }
 
             if (botState.mode !== 'IDLE') {
-                await this.managePosition(symbol, botState, symbolState);
+                await this.managePositionByOwner(symbol, botState, symbolState);
                 if (symbolState.get().mode === 'IDLE') {
                     const adopted = await this.tryAdoptManualPositionRuntime(symbol);
                     if (!adopted) {
@@ -1334,6 +1372,51 @@ export class TradingService {
         } catch (error) {
             this.deps.logger.warn('Process error', { symbol, error: String(error) });
         }
+    }
+
+    private strategyIdentityForState(botState: BotState): StrategyIdentity | null {
+        const ownership = resolveStrategyOwnership(botState);
+        if (ownership.status !== 'OWNED') return null;
+        if (ownership.strategyId === 'AEGIS_TURBO') return this.aegisStrategyIdentity;
+        if (ownership.strategyId === 'MOMENTUM_RIDE') return this.momentumStrategyIdentity;
+        return null;
+    }
+
+    private async managePositionByOwner(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
+        const identity = this.strategyIdentityForState(botState);
+        if (!identity) {
+            await this.managePositionLegacy(symbol, botState, symbolState);
+            return;
+        }
+
+        const routed = await this.positionManagerRouter.route(identity, { symbol, botState, symbolState });
+        if (routed.status === 'RECOVERY_REQUIRED') {
+            this.deps.logger.error('strategy_position_manager_recovery_required', {
+                symbol,
+                tradeId: botState.lastTradeId,
+                strategyId: identity.strategyId,
+                reason: routed.reason
+            });
+            return;
+        }
+    }
+
+    private strategyFromTradeId(tradeId?: string): AegisResearchStrategy | undefined {
+        if (!tradeId) return undefined;
+        if (tradeId.startsWith('MOMENTUM-RIDE-')) return 'MOMENTUM_RIDE';
+        if (tradeId.startsWith('AEGIS-TURBO-')) return 'AEGIS_TURBO';
+        return undefined;
+    }
+
+    private strategyIdentity(strategy: AegisResearchStrategy): StrategyIdentity {
+        return strategy === 'MOMENTUM_RIDE' ? this.momentumStrategyIdentity : this.aegisStrategyIdentity;
+    }
+
+    private strategyForSymbol(symbol: string, tradeId?: string): AegisResearchStrategy {
+        const fromTrade = this.strategyFromTradeId(tradeId);
+        if (fromTrade) return fromTrade;
+        const stateStrategy = this.stateForSymbol(symbol).get().lastStrategy;
+        return stateStrategy === 'MOMENTUM_RIDE' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
     }
 
     private async scanShadowOnly(symbol: string): Promise<void> {
@@ -1382,6 +1465,8 @@ export class TradingService {
             price?: number;
             gate?: AegisMicroLiveGateDecision;
             executed?: boolean;
+            strategy?: AegisResearchStrategy;
+            identity?: StrategyIdentity;
             metadata?: Record<string, unknown>;
         } = {}
     ): Promise<void> {
@@ -1389,11 +1474,18 @@ export class TradingService {
         const turbo = aegis?.turbo as any;
         const raw = turbo?.raw;
         const gated = turbo?.gated;
+        const inferredMomentum = signal.metadata?.momentum_stacking_replica === true;
+        const strategy = extras.strategy ?? (inferredMomentum ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO');
+        const identity = extras.identity ?? this.strategyIdentity(strategy);
         await this.historyLogger.logSignal({
             signal_id: extras.signalId ?? generateSignalId(symbol),
             portfolio_session_id: getPortfolioSessionId(),
             symbol,
-            strategy: 'AEGIS_TURBO',
+            strategy,
+            strategy_version: identity.strategyVersion,
+            strategy_hash: identity.strategyHash,
+            config_hash: identity.configHash,
+            code_commit_sha: identity.codeCommitSha,
             mode: this.getTradingMode(),
             price: extras.price,
             raw_action: raw?.action,
@@ -1438,14 +1530,22 @@ export class TradingService {
             oldTp?: number;
             newTp?: number;
             reason?: string;
+            strategy?: AegisResearchStrategy;
+            identity?: StrategyIdentity;
             metadata?: Record<string, unknown>;
         } = {}
     ): Promise<void> {
+        const strategy = input.strategy ?? this.strategyForSymbol(symbol, input.tradeId);
+        const identity = input.identity ?? this.strategyIdentity(strategy);
         await this.historyLogger.logTradeEvent({
             trade_id: input.tradeId,
             portfolio_session_id: getPortfolioSessionId(),
             symbol,
-            strategy: 'AEGIS_TURBO',
+            strategy,
+            strategy_version: identity.strategyVersion,
+            strategy_hash: identity.strategyHash,
+            config_hash: identity.configHash,
+            code_commit_sha: identity.codeCommitSha,
             mode: this.getTradingMode(),
             event,
             price: input.price,
@@ -1662,12 +1762,17 @@ export class TradingService {
             const baseSignal = await mlService.getSignal(symbol);
             const momentumConfig = this.getAegisMomentumRideConfig();
             const standaloneMomentum = await this.findStandaloneMomentumCandidate(symbol);
+            const selectedStrategy: AegisResearchStrategy = standaloneMomentum ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
             const signal = standaloneMomentum
                 ? this.withStandaloneMomentumCandidate(baseSignal, standaloneMomentum)
                 : baseSignal;
             const signalId = generateSignalId(symbol);
             this.logAegisScan(symbol, signal);
-            await this.logAegisTradeEvent(symbol, 'SIGNAL_RECEIVED', { metadata: { signalId } });
+            await this.logAegisTradeEvent(symbol, 'SIGNAL_RECEIVED', {
+                strategy: selectedStrategy,
+                identity: this.strategyIdentity(selectedStrategy),
+                metadata: { signalId }
+            });
 
             if (momentumConfig.standaloneMainReplica === true && !standaloneMomentum && momentumConfig.aegisFallbackEnabled === false) {
                 await this.logAegisTurboSignal(symbol, signal, {
@@ -1876,8 +1981,8 @@ export class TradingService {
                 return;
             }
 
-            const tradeId = generateTradeId(symbol);
-            await this.openAegisTurboPosition(symbol, signal, gateDecision, tradeId, signalId);
+            const tradeId = generateStrategyTradeId(selectedStrategy, symbol);
+            await this.openAegisTurboPosition(symbol, signal, gateDecision, tradeId, signalId, selectedStrategy);
         } catch (error) {
             if (this.shouldLogError(symbol, 'AEGIS_LOOK_FOR_ENTRY', 60000)) {
                 logger.error('Aegis lookForEntry error', { error: String(error) });
@@ -2507,7 +2612,8 @@ export class TradingService {
         signal: AegisTradingSignal,
         gate: AegisMicroLiveGateDecision,
         tradeId: string,
-        signalId?: string
+        signalId?: string,
+        requestedStrategy: AegisResearchStrategy = 'AEGIS_TURBO'
     ): Promise<void> {
         const { exchange, logger, notifier, configManager } = this.deps;
         const symbolState = this.stateForSymbol(symbol);
@@ -3359,7 +3465,10 @@ export class TradingService {
             const openedAtMs = await exchange.getServerTime();
             const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
             const guardianConfig = this.getAegisGuardianConfig(symbol, regimeConfig);
-            const finalStrategyLabel = entryDecision.finalStrategy === 'momentum_ride' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
+            const finalStrategyLabel: AegisResearchStrategy = requestedStrategy === 'MOMENTUM_RIDE' || entryDecision.finalStrategy === 'momentum_ride'
+                ? 'MOMENTUM_RIDE'
+                : 'AEGIS_TURBO';
+            const finalStrategyIdentity = this.strategyIdentity(finalStrategyLabel);
             symbolState.set({
                 mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
                 positionOwner: 'AEGIS',
@@ -3375,6 +3484,11 @@ export class TradingService {
                 lowestRoe: 0,
                 currentRegime: 'AEGIS_TURBO',
                 lastStrategy: finalStrategyLabel,
+                lastStrategyVersion: finalStrategyIdentity.strategyVersion,
+                lastStrategyHash: finalStrategyIdentity.strategyHash,
+                lastConfigHash: finalStrategyIdentity.configHash,
+                lastCodeCommitSha: finalStrategyIdentity.codeCommitSha,
+                lastStrategyFreezeState: finalStrategyIdentity.freezeState,
                 lastTradeId: tradeId,
                 lastPeakPrice: entryPrice,
                 lastEntryWallet: wallet,
@@ -3414,6 +3528,10 @@ export class TradingService {
                 portfolio_session_id: getPortfolioSessionId(),
                 symbol,
                 strategy: finalStrategyLabel,
+                strategy_version: finalStrategyIdentity.strategyVersion,
+                strategy_hash: finalStrategyIdentity.strategyHash,
+                config_hash: finalStrategyIdentity.configHash,
+                code_commit_sha: finalStrategyIdentity.codeCommitSha,
                 mode: this.getTradingMode(),
                 side,
                 opened_at: new Date(openedAtMs).toISOString(),
@@ -4316,7 +4434,7 @@ export class TradingService {
         );
     }
 
-    private async managePosition(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
+    private async managePositionLegacy(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
         const { exchange, logger, notifier } = this.deps;
         const side = botState.lastSide as Side;
         let entryPrice = botState.lastEntryPrice || 0;
@@ -4734,7 +4852,9 @@ export class TradingService {
         const exitType = this.describeAegisExit(reason, pnl, botState, side, exitPrice);
         const margin = this.entryMargin(botState);
         const pnlStr = this.formatSignedUsd(pnl);
-        const tradeId = botState.lastTradeId ?? generateTradeId(symbol, new Date(botState.lastEntryAt ?? Date.now()));
+        const closeStrategy: AegisResearchStrategy = botState.lastStrategy === 'MOMENTUM_RIDE' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
+        const closeIdentity = this.strategyIdentity(closeStrategy);
+        const tradeId = botState.lastTradeId ?? generateStrategyTradeId(closeStrategy, symbol, new Date(botState.lastEntryAt ?? Date.now()));
         const durationMinutes = durationMs / 60000;
 
         await this.historyLogger.logTradeClose({
@@ -4742,7 +4862,11 @@ export class TradingService {
             trade_id: tradeId,
             portfolio_session_id: getPortfolioSessionId(),
             symbol,
-            strategy: 'AEGIS_TURBO',
+            strategy: closeStrategy,
+            strategy_version: botState.lastStrategyVersion ?? closeIdentity.strategyVersion,
+            strategy_hash: botState.lastStrategyHash ?? closeIdentity.strategyHash,
+            config_hash: botState.lastConfigHash ?? closeIdentity.configHash,
+            code_commit_sha: botState.lastCodeCommitSha ?? closeIdentity.codeCommitSha,
             mode: this.getTradingMode(),
             side,
             opened_at: botState.lastEntryAt ? new Date(botState.lastEntryAt).toISOString() : undefined,
