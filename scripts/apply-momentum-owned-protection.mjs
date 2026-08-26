@@ -25,13 +25,13 @@ edit('src/domain/services/aegis-entry/AegisEntryDecisionTypes.ts', (source) => {
     source,
     'momentum runtime protection',
     `    requireBtcEthConfirmation: boolean;\n    symbols: Record<string, AegisMomentumRideSymbolRuntimeConfig>;\n    safetyCaps: {`,
-    `    requireBtcEthConfirmation: boolean;\n    symbols: Record<string, AegisMomentumRideSymbolRuntimeConfig>;\n    protection: {\n        hardStopRoe: number;\n        takeProfitRoe: number;\n        breakEvenRoe: number;\n        trailingActivationRoe: number;\n        trailingCallbackRoe: number;\n        maxHoldMs: number;\n    };\n    safetyCaps: {`,
+    `    requireBtcEthConfirmation: boolean;\n    symbols: Record<string, AegisMomentumRideSymbolRuntimeConfig>;\n    /**\n     * Strategy-owned protection. Optional only for backward-compatible test/fixture\n     * construction; ConfigLoader always normalizes it in production.\n     */\n    protection?: {\n        hardStopRoe: number;\n        takeProfitRoe: number;\n        breakEvenRoe: number;\n        trailingActivationRoe: number;\n        trailingCallbackRoe: number;\n        maxHoldMs: number;\n    };\n    safetyCaps: {`,
   );
   source = replaceOnce(
     source,
     'momentum runtime shared safety ownership',
     `        disableSymbolAfterStopLossMinutes: number;\n        requireBrackets: boolean;`,
-    `        disableSymbolAfterStopLossMinutes: number;\n        maxLiquidityStress: number;\n        dailyLossStopPct: number;\n        requireBrackets: boolean;`,
+    `        disableSymbolAfterStopLossMinutes: number;\n        /** Backward-compatible optional fields; ConfigLoader supplies defaults. */\n        maxLiquidityStress?: number;\n        dailyLossStopPct?: number;\n        requireBrackets: boolean;`,
   );
   return source;
 });
@@ -91,13 +91,13 @@ edit('src/app/services/TradingService.ts', (source) => {
     source,
     'momentum safety config ownership',
     `            minCooldownMs: config.safetyCaps.cooldownAfterLossMinutes * 60_000,\n            maxLiquidityStress: gateConfig.maxLiquidityStress,\n            dailyLossStopPct: gateConfig.dailyLossStopPct,`,
-    `            minCooldownMs: config.safetyCaps.cooldownAfterLossMinutes * 60_000,\n            maxLiquidityStress: config.safetyCaps.maxLiquidityStress,\n            dailyLossStopPct: config.safetyCaps.dailyLossStopPct,`,
+    `            minCooldownMs: config.safetyCaps.cooldownAfterLossMinutes * 60_000,\n            maxLiquidityStress: config.safetyCaps.maxLiquidityStress ?? 0.70,\n            dailyLossStopPct: config.safetyCaps.dailyLossStopPct ?? 0.90,`,
   );
   source = replaceOnce(
     source,
     'momentum protection source',
     `        const protection = this.getAegisTurboGateConfig(symbol);`,
-    `        const protection = config.protection;`,
+    `        const protection = config.protection ?? {\n            hardStopRoe: -0.40,\n            takeProfitRoe: 0.50,\n            breakEvenRoe: 0.08,\n            trailingActivationRoe: 0.15,\n            trailingCallbackRoe: 0.08,\n            maxHoldMs: 28_800_000\n        };`,
   );
   source = source.replaceAll(`stopRoe: protection.stopRoe`, `stopRoe: protection.hardStopRoe`);
   source = source.replaceAll(`takeProfitRoe: protection.takeProfitRoe`, `takeProfitRoe: protection.takeProfitRoe`);
