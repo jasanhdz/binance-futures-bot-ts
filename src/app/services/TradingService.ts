@@ -97,7 +97,7 @@ import {
     AegisConsecutiveLossStateStorePort
 } from '../../infra/state/AegisConsecutiveLossStateStore';
 import { PositionManagerRouter } from '../strategy/PositionManagerRouter';
-import { LegacyPositionManagerAdapter } from '../strategy/LegacyStrategyCompatibility';
+import { AegisPositionManager, MomentumRidePositionManager } from '../strategy/OwnedPositionManagers';
 import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
 import { resolveStrategyOwnership } from '../../domain/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../domain/strategies/aegis/AegisIdentity';
@@ -106,7 +106,7 @@ import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
 import { StrategyRouter } from '../strategy/StrategyRouter';
 import { MomentumRideStrategy, MomentumRideStrategyContext } from '../../domain/strategies/momentum-ride/MomentumRideStrategy';
-import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
+import { StrategyLifecyclePolicy, strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -236,27 +236,25 @@ export class TradingService {
             momentumRuntimeMode
         ));
 
-        this.positionManagerRouter.register(new LegacyPositionManagerAdapter(
-            'AEGIS_TURBO',
-            async (_identity, context) => {
-                await this.managePositionLegacy(context.symbol, context.botState, context.symbolState);
+        this.positionManagerRouter.register(new AegisPositionManager(
+            async (_identity, policy, context) => {
+                await this.managePositionLifecycle(policy, context.symbol, context.botState, context.symbolState);
                 return {
                     tradeId: context.botState.lastTradeId ?? `AEGIS-LEGACY-${context.symbol}`,
                     decision: 'NO_ACTION',
-                    reason: 'legacy_aegis_position_manager_completed',
-                    diagnostics: { compatibilityAdapter: true }
+                    reason: 'aegis_position_manager_completed',
+                    diagnostics: { lifecyclePolicy: policy }
                 };
             }
         ));
-        this.positionManagerRouter.register(new LegacyPositionManagerAdapter(
-            'MOMENTUM_RIDE',
-            async (_identity, context) => {
-                await this.managePositionLegacy(context.symbol, context.botState, context.symbolState);
+        this.positionManagerRouter.register(new MomentumRidePositionManager(
+            async (_identity, policy, context) => {
+                await this.managePositionLifecycle(policy, context.symbol, context.botState, context.symbolState);
                 return {
                     tradeId: context.botState.lastTradeId ?? `MOMENTUM-LEGACY-${context.symbol}`,
                     decision: 'NO_ACTION',
-                    reason: 'legacy_momentum_position_manager_completed',
-                    diagnostics: { compatibilityAdapter: true }
+                    reason: 'momentum_position_manager_completed',
+                    diagnostics: { lifecyclePolicy: policy }
                 };
             }
         ));
@@ -1413,7 +1411,8 @@ export class TradingService {
     private async managePositionByOwner(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
         const identity = this.strategyIdentityForState(botState);
         if (!identity) {
-            await this.managePositionLegacy(symbol, botState, symbolState);
+            // Legacy/manual compatibility remains isolated from strategy-owned managers.
+            await this.managePositionLifecycle(strategyLifecyclePolicy('AEGIS_TURBO'), symbol, botState, symbolState);
             return;
         }
 
@@ -4680,15 +4679,17 @@ export class TradingService {
         );
     }
 
-    private async managePositionLegacy(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
+    private async managePositionLifecycle(
+        lifecyclePolicy: StrategyLifecyclePolicy,
+        symbol: string,
+        botState: BotState,
+        symbolState: StateStore
+    ): Promise<void> {
         const { exchange, logger, notifier } = this.deps;
         const side = botState.lastSide as Side;
-        const lifecycleOwner = resolveStrategyOwnership(botState);
-        const lifecycleStrategy = lifecycleOwner.status === 'OWNED' ? lifecycleOwner.strategyId : 'AEGIS_TURBO';
-        const lifecyclePolicy = strategyLifecyclePolicy(lifecycleStrategy);
         let entryPrice = botState.lastEntryPrice || 0;
         let leverage = botState.lastActualLeverage || botState.lastLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
-        const requireBrackets = this.getAegisTurboYamlConfig()?.require_brackets !== false;
+        const requireBrackets = lifecyclePolicy.requireStopBracket || lifecyclePolicy.requireTakeProfitBracket;
 
         try {
             const isBotOwned = this.isVerifiedBotOwnedState(botState) || this.isLegacyBotOwnedState(botState);
@@ -4751,7 +4752,7 @@ export class TradingService {
                 posSideMode: position.sideMode
             });
 
-            if (isBotOwned) {
+            if (isBotOwned && lifecyclePolicy.allowManualQuantityReconciliation) {
                 const quantityChangeResult = await this.reconcileManualPositionSizeIncrease({
                     symbol,
                     side,
@@ -4859,10 +4860,22 @@ export class TradingService {
 
             const maxHoldMs = regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
             if (tradeDuration > maxHoldMs && currentRoe > 0.02) {
-                await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, 'AEGIS_TIME_LIMIT');
-                symbolState.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: 'AEGIS_TIME_LIMIT', probeModeActive: false });
+                const timeLimitReason = lifecyclePolicy.strategyId === 'MOMENTUM_RIDE'
+                    ? 'MOMENTUM_TIME_LIMIT'
+                    : 'AEGIS_TIME_LIMIT';
+                await exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, timeLimitReason);
+                symbolState.set({ mode: 'IDLE', lastExitAt: Date.now(), lastExitReason: timeLimitReason, probeModeActive: false });
                 const pnl = this.pnlFromRoe(this.entryMargin(botState), currentRoe);
-                await this.notifyExit(symbol, side, 'TIME_LIMIT', botState, { exitPrice: markPrice, finalRoe: currentRoe, pnl });
+                await this.notifyExit(symbol, side, timeLimitReason, botState, { exitPrice: markPrice, finalRoe: currentRoe, pnl });
+                return;
+            }
+
+            if (!lifecyclePolicy.useLegacyProfitGuardian) {
+                logger.debug('strategy_position_guardian_disabled', {
+                    symbol,
+                    strategyId: lifecyclePolicy.strategyId,
+                    tradeId: botState.lastTradeId
+                });
                 return;
             }
 
@@ -4895,7 +4908,9 @@ export class TradingService {
                 atrMultiplier: 1.5
             };
             const previousPeakRoe = botState.peakRoe ?? 0;
-            if (previousPeakRoe < guardianConfig.beTriggerRoe && updatedPeakRoe >= guardianConfig.beTriggerRoe) {
+            if (lifecyclePolicy.useBreakEven
+                && previousPeakRoe < guardianConfig.beTriggerRoe
+                && updatedPeakRoe >= guardianConfig.beTriggerRoe) {
                 symbolState.set({
                     breakEvenArmed: true,
                     lastBreakEvenRoe: guardianConfig.beTriggerRoe
@@ -4908,7 +4923,8 @@ export class TradingService {
                 });
             }
             if (
-                guardianConfig.trailingActivationRoe !== undefined
+                lifecyclePolicy.useTrailing
+                && guardianConfig.trailingActivationRoe !== undefined
                 && previousPeakRoe < guardianConfig.trailingActivationRoe
                 && updatedPeakRoe >= guardianConfig.trailingActivationRoe
             ) {
@@ -4929,7 +4945,7 @@ export class TradingService {
                 atrValue: currentAtr
             }, guardianConfig, botState.lastTrailStop ?? botState.lastBreakEvenStop ?? botState.lastStopPrice);
 
-            if (action.type === 'MOVE_SL_BE' && action.price) {
+            if (lifecyclePolicy.useBreakEven && action.type === 'MOVE_SL_BE' && action.price) {
                 const filters = await exchange.getSymbolFilters(symbol, leverage);
                 const breakEvenPrice = this.roundPrice(action.price, filters);
                 const existingStop = botState.lastTrailStop ?? botState.lastBreakEvenStop ?? botState.lastStopPrice;
@@ -5032,7 +5048,7 @@ export class TradingService {
                         );
                     }
                 }
-            } else if (action.type === 'MOVE_SL_TRAILING' && action.price) {
+            } else if (lifecyclePolicy.useTrailing && action.type === 'MOVE_SL_TRAILING' && action.price) {
                 const filters = await exchange.getSymbolFilters(symbol, leverage);
                 const trailingPrice = this.roundPrice(action.price, filters);
                 const moveResult = await this.safeMoveCloseStop({
@@ -5069,7 +5085,11 @@ export class TradingService {
                 await this.notifyExit(symbol, side, action.reason, botState, { exitPrice: markPrice, finalRoe: currentRoe, pnl });
             }
         } catch (error) {
-            logger.warn('Aegis management error', { symbol, error: String(error) });
+            logger.warn('strategy_position_management_error', {
+                symbol,
+                strategyId: lifecyclePolicy.strategyId,
+                error: String(error)
+            });
         }
     }
 
