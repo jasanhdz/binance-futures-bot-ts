@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  audit:
+  inspect:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,65 +19,16 @@ jobs:
           ref: work/micro-burst-rider-v1-20260826
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Static architecture audit
+      - name: Inspect runtime hotspots
         shell: bash
         run: |
-          set -uo pipefail
-          echo '=== HEAD ==='
-          git log -1 --oneline
-
-          echo '=== STRATEGY LEGACY CANDIDATE REFERENCES ==='
-          for token in \
-            LegacyStrategyCompatibility \
-            LegacyEntryStrategyAdapter \
-            LegacyPositionManagerAdapter \
-            LegacyStrategyRuntimeFactory \
-            MomentumRideStrategyAdapter \
-            StrategyRuntimeCoordinator \
-            StrategyTelemetry; do
-            echo "--- $token ---"
-            git grep -n "$token" -- ':!*.test.ts' ':!docs/**' || true
-          done
-
-          echo '=== CONFIG REFERENCE CHECK ==='
-          git grep -n 'regimen.config.yaml' -- ':!*.md' || true
-
-          echo '=== POSITION OWNER REFERENCES ==='
-          git grep -n "positionOwner" -- 'src/**' || true
-
-          echo '=== STRATEGY RISK LEDGER REFERENCES ==='
-          git grep -n "strategyRiskLedger" -- 'src/**' || true
-
-          echo '=== AEGIS EXECUTION DUPLICATION MARKERS ==='
-          git grep -n -E "openMarket|placeStopClose|placeTpClose|SharedStrategyExecutionService|sharedStrategyExecution" -- 'src/app/services/TradingService.ts' 'src/app/services/SharedStrategyExecutionService.ts' || true
-
-          echo '=== PACKAGE SCRIPT TARGET CHECK ==='
-          node <<'NODE'
-          const fs = require('fs');
-          const pkg = require('./package.json');
-          for (const [name, cmd] of Object.entries(pkg.scripts || {})) {
-            const matches = [...String(cmd).matchAll(/(?:^|\s)((?:src|scripts|train)\/[A-Za-z0-9_./-]+\.(?:ts|js|mjs|py))/g)];
-            if (!matches.length) continue;
-            for (const m of matches) {
-              const file = m[1];
-              console.log(`${fs.existsSync(file) ? 'OK' : 'MISSING'}\t${name}\t${file}`);
-            }
-          }
-          NODE
-
-          echo '=== TOP-LEVEL SOURCE DIR FILE COUNTS ==='
-          for d in src/*; do
-            [ -d "$d" ] || continue
-            printf '%s\t' "$d"
-            find "$d" -type f | wc -l
-          done
-
-      - name: Build and test baseline
-        run: |
-          npm ci
-          npm run build
-          npm test -- --reporter=dot
+          set -euo pipefail
+          echo '=== PORTFOLIO EXPOSURE METHOD ==='
+          line=$(grep -n "readAegisPortfolioExposure" src/app/services/TradingService.ts | tail -1 | cut -d: -f1)
+          start=$((line-10)); end=$((line+120)); sed -n "${start},${end}p" src/app/services/TradingService.ts
+          echo '=== TICK METHOD ==='
+          line=$(grep -n -E "async tick\(|tick\(symbol" src/app/services/TradingService.ts | head -1 | cut -d: -f1)
+          start=$((line-20)); end=$((line+140)); sed -n "${start},${end}p" src/app/services/TradingService.ts
+          echo '=== MANAGE POSITION HEAD ==='
+          line=$(grep -n "managePositionLegacy" src/app/services/TradingService.ts | tail -1 | cut -d: -f1)
+          start=$((line)); end=$((line+145)); sed -n "${start},${end}p" src/app/services/TradingService.ts
