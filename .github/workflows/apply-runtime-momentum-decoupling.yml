@@ -1,0 +1,49 @@
+name: Apply Runtime Momentum Decoupling
+
+on:
+  push:
+    branches:
+      - work/micro-burst-rider-v1-20260826
+    paths:
+      - scripts/apply-runtime-momentum-decoupling.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/micro-burst-rider-v1-20260826
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply migration
+        run: node scripts/apply-runtime-momentum-decoupling.mjs
+
+      - name: Build guardrail
+        run: |
+          npm ci
+          npm run build
+
+      - name: Commit as jasanhdz
+        env:
+          GIT_AUTHOR_NAME: Jasan Hernández
+          GIT_AUTHOR_EMAIL: 31332180+jasanhdz@users.noreply.github.com
+          GIT_COMMITTER_NAME: Jasan Hernández
+          GIT_COMMITTER_EMAIL: 31332180+jasanhdz@users.noreply.github.com
+        run: |
+          if git diff --quiet; then
+            echo "No runtime migration changes"
+            exit 0
+          fi
+          git config user.name "Jasan Hernández"
+          git config user.email "31332180+jasanhdz@users.noreply.github.com"
+          git add src/app/services/TradingService.ts
+          git commit -m "refactor: decouple momentum runtime from aegis policy"
+          git push origin HEAD:work/micro-burst-rider-v1-20260826
