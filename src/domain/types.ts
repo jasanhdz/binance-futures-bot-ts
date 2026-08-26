@@ -1,3 +1,5 @@
+import type { StrategyFreezeState, StrategyId } from './strategy/StrategyIdentity';
+
 export type Side = 'LONG' | 'SHORT';
 
 export type Candle = {
@@ -24,20 +26,18 @@ export type BotState = {
   peakRoe?: number;
   lastTPAt?: number;
   lastExitReason?: string;
-  lastExitAt?: number; // ← NUEVO
-  lowestRoe?: number; // MAE (Maximum Adverse Excursion)
-  lastCheckAt?: number; // Heartbeat for Smart Exit
-  lastAtrFetchedAt?: number; // Throttle for ATR fetch
-  lastAtrValue?: number;     // Cached ATR Value
+  lastExitAt?: number;
+  lowestRoe?: number;
+  lastCheckAt?: number;
+  lastAtrFetchedAt?: number;
+  lastAtrValue?: number;
 
-  // NUEVO: recordatorio de que ya armamos los brackets para esta posición
   bracketsArmedAt?: number;
-  // (opcional) recordar el modo real leído de la posición
   posSideMode?: 'BOTH' | 'LONG' | 'SHORT';
 
-  lastEntryQty?: number; // qty de la ENTRADA inicial (base para piramidación)
-  pyramidUnits?: number; // nº de adds realizados en este “ride”
-  lastPyramidPrice?: number; // precio de referencia del último add
+  lastEntryQty?: number;
+  pyramidUnits?: number;
+  lastPyramidPrice?: number;
   lastTrailStop?: number;
   bracketsAttached?: boolean;
   lastIntelliTpAt?: number;
@@ -64,20 +64,27 @@ export type BotState = {
   postExitReady?: boolean;
   postExitCondition?: 'pullback' | 'breakout' | 'timeout';
   lowFundsActive?: boolean;
-  lastMlProb?: number; // Probabilidad del modelo ML al entrar
-  lastMlThreshold?: number; // Threshold usado al entrar
+  lastMlProb?: number;
+  lastMlThreshold?: number;
 
   // Ninja Protocol v2.0
-  panicCounter?: number; // Contador de ticks consecutivos con señal de pánico
-  lastEntryTime?: number; // Timestamp de entrada para Time Decay
-  highestRatchetStop?: number; // High Water Mark para el Stop Loss (Monotonicity Enforcement)
+  panicCounter?: number;
+  lastEntryTime?: number;
+  highestRatchetStop?: number;
 
   // Native Brackets v8.0: Regime persistence for ensure-brackets.ts
   currentRegime?: 'AEGIS_TURBO' | 'BLOODBATH' | 'WHALE' | 'MONK' | 'BUNKER' | 'BERZERKER';
-  lastPeakPrice?: number; // Highest/Lowest price reached during trade (for trailing stop)
+  lastPeakPrice?: number;
 
-  // Aegis Turbo position metadata
-  lastStrategy?: 'AEGIS_TURBO' | 'MOMENTUM_RIDE';
+  // Canonical strategy ownership. These fields are additive during migration.
+  lastStrategy?: StrategyId;
+  lastStrategyVersion?: string;
+  lastStrategyHash?: string;
+  lastConfigHash?: string;
+  lastCodeCommitSha?: string;
+  lastStrategyFreezeState?: StrategyFreezeState;
+
+  // Aegis Turbo / legacy lifecycle metadata
   lastStopRoe?: number;
   lastBreakEvenRoe?: number;
   breakEvenArmed?: boolean;
@@ -117,7 +124,7 @@ export type BotState = {
   lastExitEyeAt?: number;
   lastExitEyeTelegramAt?: number;
 
-  shadowPos?: ShadowPosition | null; // <-- For shadow trading
+  shadowPos?: ShadowPosition | null;
 };
 
 export interface ShadowPosition {
@@ -134,10 +141,8 @@ export interface ShadowPosition {
   entryAt: number;
   peakPrice: number;
   lowestPrice: number;
-  peakRoe: number;        // Track max ROE for trailing stop
+  peakRoe: number;
 }
-
-
 
 type SignalCommon = {
   reason?: string;
@@ -154,7 +159,6 @@ export type Signal =
   | ({ action: 'EXIT' } & SignalCommon)
   | ({ action: 'IDLE' } & SignalCommon);
 
-// src/core/types.ts
 export type Trade = {
   side: 'LONG' | 'SHORT';
   entryIdx: number;
