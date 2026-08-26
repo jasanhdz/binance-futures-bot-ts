@@ -11,8 +11,8 @@ export interface MomentumRideEntryContext {
   timestamp: number;
   candles: Candle[];
   side: Side;
-  openPositionsCount: number;
-  openMomentumPositions: number;
+  openPositionsCount?: number;
+  openMomentumPositions?: number;
   symbolLastStopLossAt?: number;
   safety: Omit<
     SharedEntrySafetyContext,
@@ -34,9 +34,9 @@ export interface MomentumRideEntryPolicyConfig {
   minCooldownMs: number;
   maxLiquidityStress: number;
   dailyLossStopPct: number;
-  maxOpenMomentumPositions: number;
-  maxTotalOpenPositionsWhenMomentum: number;
-  disableSymbolAfterStopLossMs: number;
+  maxOpenMomentumPositions?: number;
+  maxTotalOpenPositionsWhenMomentum?: number;
+  disableSymbolAfterStopLossMs?: number;
 }
 
 export function evaluateMomentumRideEntry(
@@ -57,31 +57,36 @@ export function evaluateMomentumRideEntry(
     return noTrade(context, 'momentum_short_disabled', { pattern: pattern.diagnostics });
   }
 
-  if (context.openMomentumPositions >= config.maxOpenMomentumPositions) {
+  const openMomentumPositions = context.openMomentumPositions ?? 0;
+  const maxOpenMomentumPositions = config.maxOpenMomentumPositions ?? Number.POSITIVE_INFINITY;
+  if (openMomentumPositions >= maxOpenMomentumPositions) {
     return noTrade(context, 'momentum_max_open_positions_reached', {
       pattern: pattern.diagnostics,
-      openMomentumPositions: context.openMomentumPositions,
-      limit: config.maxOpenMomentumPositions,
+      openMomentumPositions,
+      limit: maxOpenMomentumPositions,
     });
   }
 
-  if (context.openPositionsCount >= config.maxTotalOpenPositionsWhenMomentum) {
+  const openPositionsCount = context.openPositionsCount ?? 0;
+  const maxTotalOpenPositions = config.maxTotalOpenPositionsWhenMomentum ?? Number.POSITIVE_INFINITY;
+  if (openPositionsCount >= maxTotalOpenPositions) {
     return noTrade(context, 'momentum_total_open_positions_reached', {
       pattern: pattern.diagnostics,
-      openPositionsCount: context.openPositionsCount,
-      limit: config.maxTotalOpenPositionsWhenMomentum,
+      openPositionsCount,
+      limit: maxTotalOpenPositions,
     });
   }
 
+  const disableSymbolAfterStopLossMs = config.disableSymbolAfterStopLossMs ?? 0;
   if (
     context.symbolLastStopLossAt !== undefined
-    && config.disableSymbolAfterStopLossMs > 0
-    && context.timestamp - context.symbolLastStopLossAt < config.disableSymbolAfterStopLossMs
+    && disableSymbolAfterStopLossMs > 0
+    && context.timestamp - context.symbolLastStopLossAt < disableSymbolAfterStopLossMs
   ) {
     return noTrade(context, 'momentum_symbol_stop_loss_cooldown', {
       pattern: pattern.diagnostics,
       symbolLastStopLossAt: context.symbolLastStopLossAt,
-      disableSymbolAfterStopLossMs: config.disableSymbolAfterStopLossMs,
+      disableSymbolAfterStopLossMs,
     });
   }
 
