@@ -6,6 +6,7 @@ on:
       - work/micro-burst-rider-v1-20260826
     paths:
       - scripts/apply-runtime-cleanup-v1.mjs
+      - .github/workflows/apply-runtime-cleanup-v1.yml
 
 permissions:
   contents: write
