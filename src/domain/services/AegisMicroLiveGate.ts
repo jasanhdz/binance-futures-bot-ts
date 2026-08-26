@@ -1,5 +1,6 @@
 import { AegisBlock } from './AegisStrategy';
 import { inspectCurrentBrainCanonicalDecision } from './CurrentBrainCanonicalDecision';
+import { evaluateSharedEntrySafety } from '../risk/SharedEntrySafetyGate';
 
 export interface AegisMicroLiveGateConfig {
   tradingMode: string;
@@ -116,6 +117,25 @@ function buildDecision(
   };
 }
 
+function evaluateOperationalSafety(
+  ctx: AegisMicroLiveGateContext,
+  config: AegisMicroLiveGateConfig,
+) {
+  return evaluateSharedEntrySafety({
+    hasOpenPosition: ctx.hasOpenPosition,
+    tradesToday: ctx.tradesToday,
+    maxTradesPerDay: config.maxTradesPerDay,
+    consecutiveLosses: ctx.consecutiveLosses,
+    maxConsecutiveLosses: config.maxConsecutiveLosses,
+    timeSinceLastExitMs: ctx.timeSinceLastExitMs,
+    minCooldownMs: config.minCooldownMs,
+    liquidityStress: ctx.liquidityStress,
+    maxLiquidityStress: config.maxLiquidityStress,
+    dailyPnlPct: ctx.dailyPnlPct,
+    dailyLossStopPct: config.dailyLossStopPct,
+  });
+}
+
 export function shouldEnterAegisTurboMicroLive(
   ctx: AegisMicroLiveGateContext,
   config: AegisMicroLiveGateConfig
@@ -145,28 +165,9 @@ export function shouldEnterAegisTurboMicroLive(
     return buildDecision(ctx, config, 'current_brain_canonical_contract_invalid');
   }
 
-  if (ctx.hasOpenPosition) {
-    return buildDecision(ctx, config, 'position_already_open');
-  }
-
-  if (ctx.tradesToday >= config.maxTradesPerDay) {
-    return buildDecision(ctx, config, 'max_trades_per_day_reached');
-  }
-
-  if (ctx.consecutiveLosses >= config.maxConsecutiveLosses) {
-    return buildDecision(ctx, config, 'max_consecutive_losses_reached');
-  }
-
-  if (ctx.timeSinceLastExitMs < config.minCooldownMs) {
-    return buildDecision(ctx, config, 'cooldown_active');
-  }
-
-  if (ctx.liquidityStress > config.maxLiquidityStress) {
-    return buildDecision(ctx, config, 'liquidity_stress_block');
-  }
-
-  if (ctx.dailyPnlPct !== undefined && ctx.dailyPnlPct <= -Math.abs(config.dailyLossStopPct)) {
-    return buildDecision(ctx, config, 'daily_loss_stop_reached');
+  const operationalSafety = evaluateOperationalSafety(ctx, config);
+  if (!operationalSafety.allowed) {
+    return buildDecision(ctx, config, operationalSafety.reason);
   }
 
   if (canonicalDecision.selected !== true) {
@@ -201,14 +202,10 @@ export function shouldEnterStackingMomentumLive(
   if (config.liveEnabled !== true) return buildDecision(ctx, config, 'aegis_live_disabled');
   if (config.yamlEnabled === false) return buildDecision(ctx, config, 'aegis_turbo_yaml_disabled');
   if (config.yamlEnabled === true && config.yamlLiveEnabled !== true) return buildDecision(ctx, config, 'aegis_turbo_yaml_live_disabled');
-  if (ctx.hasOpenPosition) return buildDecision(ctx, config, 'position_already_open');
-  if (ctx.tradesToday >= config.maxTradesPerDay) return buildDecision(ctx, config, 'max_trades_per_day_reached');
-  if (ctx.consecutiveLosses >= config.maxConsecutiveLosses) return buildDecision(ctx, config, 'max_consecutive_losses_reached');
-  if (ctx.timeSinceLastExitMs < config.minCooldownMs) return buildDecision(ctx, config, 'cooldown_active');
-  if (ctx.liquidityStress > config.maxLiquidityStress) return buildDecision(ctx, config, 'liquidity_stress_block');
-  if (ctx.dailyPnlPct !== undefined && ctx.dailyPnlPct <= -Math.abs(config.dailyLossStopPct)) {
-    return buildDecision(ctx, config, 'daily_loss_stop_reached');
-  }
+
+  const operationalSafety = evaluateOperationalSafety(ctx, config);
+  if (!operationalSafety.allowed) return buildDecision(ctx, config, operationalSafety.reason);
+
   if (side === 'SHORT' && config.allowShort !== true) return buildDecision(ctx, config, 'short_disabled');
   return buildDecision(
     ctx,
