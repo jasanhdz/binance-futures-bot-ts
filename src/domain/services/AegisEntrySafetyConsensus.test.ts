@@ -27,7 +27,6 @@ function decision(guards: AegisEntryGuardResult[], validRegime = false): AegisEn
         adjustedPositionFraction: 0.08,
         guards,
         strategyCandidates: {
-            momentum_ride: { decision: 'NOT_APPLICABLE', reason: 'momentum_no_pattern' },
             aegis_turbo: { decision: 'ALLOW', reason: 'all_enforced_guards_allowed' }
         },
         warnings: [],

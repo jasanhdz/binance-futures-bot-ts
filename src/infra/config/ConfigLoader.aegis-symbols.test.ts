@@ -11,7 +11,6 @@ const longRiskProbeBlockPolicy = {
     probeLongCriticalAction: 'BLOCK',
     probeLongHighAction: 'SHADOW',
     aegisLongCriticalAction: 'SHADOW',
-    momentumLongCriticalAction: 'SHADOW',
     minRiskLevelToBlockProbe: 'CRITICAL',
     blockOnlyProbeMode: true,
     blockOnlyLong: true
@@ -86,7 +85,6 @@ describe('NinjaConfigManager Aegis symbol modes', () => {
             .toEqual({
                 regime: 'SHADOW',
                 regime_context: 'SHADOW',
-                momentum_ride: 'SHADOW',
                 decision_brain: 'SHADOW',
                 entry_quality: 'SHADOW',
                 event_risk: 'SHADOW',
@@ -791,7 +789,6 @@ symbols:
             guards: {
                 regime: { enabled: true, mode: 'SHADOW' },
                 regime_context: { enabled: false, mode: 'SHADOW' },
-                momentum_ride: { enabled: false, mode: 'SHADOW' },
                 decision_brain: { enabled: true, mode: 'ENFORCE' },
                 entry_quality: { enabled: true, mode: 'SHADOW' },
                 event_risk: { enabled: false, mode: 'OFF' },
@@ -838,7 +835,6 @@ symbols:
             guards: {
                 regime: { enabled: true, mode: 'SHADOW' },
                 regime_context: { enabled: false, mode: 'SHADOW' },
-                momentum_ride: { enabled: false, mode: 'SHADOW' },
                 decision_brain: { enabled: true, mode: 'ENFORCE' },
                 entry_quality: { enabled: true, mode: 'SHADOW' },
                 event_risk: { enabled: true, mode: 'SHADOW' },
@@ -897,7 +893,6 @@ symbols:
             guards: {
                 regime: { enabled: false, mode: 'SHADOW' },
                 regime_context: { enabled: false, mode: 'SHADOW' },
-                momentum_ride: { enabled: false, mode: 'SHADOW' },
                 decision_brain: { enabled: false, mode: 'ENFORCE' },
                 entry_quality: { enabled: false, mode: 'OFF' },
                 event_risk: { enabled: false, mode: 'SHADOW' },
@@ -1357,7 +1352,7 @@ symbols:
         expect(momentum.symbols.XRPUSDT.long.positionFraction).toBe(0.03);
         expect(momentum.symbols.XRPUSDT.long.minTurboScore).toBe(0.85);
         expect(momentum.symbols.XRPUSDT.short.enabled).toBe(false);
-        expect(config.getAegisEntryPolicyConfig().guards.momentum_ride).toEqual({ enabled: true, mode: 'SHADOW' });
+        expect(config.getAegisEntryPolicyConfig().guards).not.toHaveProperty('momentum_ride');
     });
 
     it('resolves momentum_ride defaults, profiles and symbol side overrides', () => {
@@ -1601,6 +1596,6 @@ symbols:
             allowMomentumAgainstAegis: false,
             symbols: {}
         });
-        expect(config.getAegisEntryPolicyConfig().guards.momentum_ride).toEqual({ enabled: true, mode: 'SHADOW' });
+        expect(config.getAegisEntryPolicyConfig().guards).not.toHaveProperty('momentum_ride');
     });
 });

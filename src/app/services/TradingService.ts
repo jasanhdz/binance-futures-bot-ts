@@ -468,7 +468,6 @@ export class TradingService {
             enabled: false,
             mode: 'SHADOW',
             timeframe: '5m',
-            allowedFor: { momentumRide: true },
             indicators: {
                 emaFast: 7,
                 emaMid: 25,
@@ -549,7 +548,6 @@ export class TradingService {
         const eventRisk = this.getAegisEventRiskConfig();
         const regimeGuard = this.getAegisRegimeGuardConfig();
         const regimeContext = this.getAegisRegimeContextConfig();
-        const momentumRide = this.getAegisMomentumRideConfig();
         const cleanEntry = this.getAegisCleanEntryGuardConfig();
         const probeMode = this.getAegisProbeModeConfig();
         return {
@@ -562,10 +560,6 @@ export class TradingService {
                 regime_context: {
                     enabled: regimeContext.enabled,
                     mode: regimeContext.enabled ? regimeContext.mode : 'OFF'
-                },
-                momentum_ride: {
-                    enabled: momentumRide.enabled,
-                    mode: momentumRide.enabled ? momentumRide.mode : 'OFF'
                 },
                 decision_brain: {
                     enabled: this.getAegisDecisionEnforcementConfig().enabled,
@@ -593,7 +587,6 @@ export class TradingService {
                     probeLongCriticalAction: 'BLOCK',
                     probeLongHighAction: 'SHADOW',
                     aegisLongCriticalAction: 'SHADOW',
-                    momentumLongCriticalAction: 'SHADOW',
                     minRiskLevelToBlockProbe: 'CRITICAL',
                     blockOnlyProbeMode: true,
                     blockOnlyLong: true
@@ -726,7 +719,6 @@ export class TradingService {
             ...policy,
             guards: {
                 ...policy.guards,
-                momentum_ride: { ...policy.guards.momentum_ride, enabled: true, mode: 'SHADOW' },
                 clean_entry: { ...policy.guards.clean_entry, enabled: true, mode: 'SHADOW' },
                 event_risk: { ...policy.guards.event_risk, enabled: true, mode: 'SHADOW' },
                 entry_quality: { ...policy.guards.entry_quality, enabled: true, mode: 'SHADOW' },
@@ -2237,7 +2229,7 @@ export class TradingService {
             }
 
             const tradeId = generateStrategyTradeId(selectedStrategy, symbol);
-            await this.openAegisTurboPosition(symbol, signal, gateDecision, tradeId, signalId, selectedStrategy);
+            await this.openAegisTurboPosition(symbol, signal, gateDecision, tradeId, signalId);
         } catch (error) {
             if (this.shouldLogError(symbol, 'AEGIS_LOOK_FOR_ENTRY', 60000)) {
                 logger.error('Aegis lookForEntry error', { error: String(error) });
@@ -2838,7 +2830,6 @@ export class TradingService {
                 marketDistribution: undefined,
                 snapshotAgeSeconds: this.contextSnapshotAgeSeconds(eventRiskAutoRecord)
             },
-            momentumRideConfig: this.getAegisMomentumRideConfig(),
             cleanEntry: {
                 metadata: aegis?.clean_entry_guard as AegisCleanEntryGuardOutput['metadata'] | undefined,
                 config: this.getAegisCleanEntryGuardConfig()
@@ -2874,8 +2865,7 @@ export class TradingService {
         signal: AegisTradingSignal,
         gate: AegisMicroLiveGateDecision,
         tradeId: string,
-        signalId?: string,
-        requestedStrategy: AegisResearchStrategy = 'AEGIS_TURBO'
+        signalId?: string
     ): Promise<void> {
         const { exchange, logger, notifier, configManager } = this.deps;
         const symbolState = this.stateForSymbol(symbol);
@@ -2995,7 +2985,6 @@ export class TradingService {
                     phase_o_short_guard_modes_applied: true,
                     guardMode: 'SHADOW',
                     guard_modes: {
-                        momentum_ride: 'SHADOW',
                         clean_entry: 'SHADOW',
                         event_risk: 'SHADOW',
                         entry_quality: 'SHADOW',
@@ -3013,7 +3002,7 @@ export class TradingService {
                         min_notional: true,
                         link_no_entry: true
                     },
-                    shadowGuards: ['momentum_ride', 'clean_entry', 'event_risk', 'entry_quality', 'decision_brain', 'regime', 'probe_mode', 'short_gate', 'long_risk_shadow'],
+                    shadowGuards: ['clean_entry', 'event_risk', 'entry_quality', 'decision_brain', 'regime', 'probe_mode', 'short_gate', 'long_risk_shadow'],
                     enforcedGuards: ['phase_o_ml', 'brackets', 'max_trades_per_day', 'daily_loss_stop', 'exchange_min_notional', 'link_no_entry'],
                     technicalEntryProtectionEnforced: false,
                     technicalEntryProtectionStatus: 'OBSERVATION_ONLY_NOT_VALIDATED',
@@ -3504,9 +3493,7 @@ export class TradingService {
             });
             const requireBrackets = yaml?.require_brackets !== false;
             const configuredCloseIfBracketFails = yaml?.close_if_bracket_fails !== false;
-            const finalStrategyLabel: AegisResearchStrategy = requestedStrategy === 'MOMENTUM_RIDE' || entryDecision.finalStrategy === 'momentum_ride'
-                ? 'MOMENTUM_RIDE'
-                : 'AEGIS_TURBO';
+            const finalStrategyLabel: AegisResearchStrategy = 'AEGIS_TURBO';
             const finalStrategyIdentity = this.strategyIdentity(finalStrategyLabel);
             const executionIntent = AegisExecutionIntentFactory.create({
                 identity: finalStrategyIdentity,
@@ -3530,7 +3517,7 @@ export class TradingService {
                 },
                 provenance: {
                     source: 'aegis_approved_entry',
-                    requestedStrategy,
+                    requestedStrategy: 'AEGIS_TURBO',
                     finalStrategy: entryDecision.finalStrategy,
                     decisionReason: entryDecision.finalReason,
                     configuredCloseIfBracketFails,

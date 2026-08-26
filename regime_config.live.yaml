@@ -79,7 +79,6 @@ aegis:
       max_allowed_leverage: 30
     guard_modes:
       phase_o_ml: ENFORCE
-      momentum_ride: ENFORCE
       clean_entry: SHADOW
       event_risk: SHADOW
       entry_quality: SHADOW
@@ -120,9 +119,6 @@ aegis:
       regime_context:
         enabled: true
         mode: SHADOW
-      momentum_ride:
-        enabled: true
-        mode: SHADOW
       decision_brain:
         enabled: true
         mode: SHADOW
@@ -147,7 +143,6 @@ aegis:
         probe_long_critical_action: SHADOW
         probe_long_high_action: SHADOW
         aegis_long_critical_action: SHADOW
-        momentum_long_critical_action: SHADOW
         min_risk_level_to_block_probe: CRITICAL
         block_only_probe_mode: true
         block_only_long: true
@@ -187,8 +182,6 @@ aegis:
     enabled: true
     mode: SHADOW
     timeframe: 5m
-    allowed_for:
-      momentum_ride: true
     indicators:
       ema_fast: 7
       ema_mid: 25

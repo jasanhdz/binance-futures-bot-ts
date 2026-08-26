@@ -347,7 +347,6 @@ export interface AegisEntryGuardPolicyYamlConfig {
     probe_long_critical_action?: string;
     probe_long_high_action?: string;
     aegis_long_critical_action?: string;
-    momentum_long_critical_action?: string;
     min_risk_level_to_block_probe?: string;
     block_only_probe_mode?: boolean;
     block_only_long?: boolean;
@@ -362,9 +361,6 @@ export interface AegisRegimeContextYamlConfig {
     enabled?: boolean;
     mode?: AegisEntryPolicyMode | string;
     timeframe?: string;
-    allowed_for?: {
-        momentum_ride?: boolean;
-    };
     indicators?: {
         ema_fast?: number;
         ema_mid?: number;
@@ -996,9 +992,6 @@ export class NinjaConfigManager {
             enabled: raw.enabled === true,
             mode: this.normalizeEntryPolicyMode(raw.mode, 'SHADOW'),
             timeframe: typeof raw.timeframe === 'string' && raw.timeframe.trim() ? raw.timeframe.trim() : '5m',
-            allowedFor: {
-                momentumRide: raw.allowed_for?.momentum_ride !== false
-            },
             indicators: {
                 emaFast: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.ema_fast, 7))),
                 emaMid: Math.max(1, Math.floor(this.finiteNumber(raw.indicators?.ema_mid, 25))),
@@ -1080,7 +1073,6 @@ export class NinjaConfigManager {
         const eventRisk = this.getAegisEventRiskConfig();
         const regimeGuard = this.getAegisRegimeGuardConfig();
         const regimeContext = this.getAegisRegimeContextConfig();
-        const momentumRide = this.getAegisMomentumRideConfig();
         const cleanEntry = this.getAegisCleanEntryGuardConfig();
         const probeMode = this.getAegisProbeModeConfig();
         return {
@@ -1093,10 +1085,6 @@ export class NinjaConfigManager {
                 regime_context: this.normalizeEntryGuardPolicy(guards.regime_context, {
                     enabled: regimeContext.enabled,
                     mode: regimeContext.mode
-                }),
-                momentum_ride: this.normalizeEntryGuardPolicy(guards.momentum_ride, {
-                    enabled: momentumRide.enabled,
-                    mode: momentumRide.mode
                 }),
                 decision_brain: this.normalizeEntryGuardPolicy(guards.decision_brain, {
                     enabled: this.getAegisDecisionEnforcementConfig().enabled,
@@ -1124,7 +1112,6 @@ export class NinjaConfigManager {
                     probeLongCriticalAction: 'BLOCK',
                     probeLongHighAction: 'SHADOW',
                     aegisLongCriticalAction: 'SHADOW',
-                    momentumLongCriticalAction: 'SHADOW',
                     minRiskLevelToBlockProbe: 'CRITICAL',
                     blockOnlyProbeMode: true,
                     blockOnlyLong: true
@@ -1837,12 +1824,10 @@ export class NinjaConfigManager {
         const probeLongCriticalAction = this.normalizeLongRiskAction(raw?.probe_long_critical_action, fallback.probeLongCriticalAction);
         const probeLongHighAction = this.normalizeLongRiskAction(raw?.probe_long_high_action, fallback.probeLongHighAction);
         const aegisLongCriticalAction = this.normalizeLongRiskAction(raw?.aegis_long_critical_action, fallback.aegisLongCriticalAction);
-        const momentumLongCriticalAction = this.normalizeLongRiskAction(raw?.momentum_long_critical_action, fallback.momentumLongCriticalAction);
         const minRiskLevelToBlockProbe = this.normalizeLongRiskBlockLevel(raw?.min_risk_level_to_block_probe, fallback.minRiskLevelToBlockProbe);
         if (probeLongCriticalAction) policy.probeLongCriticalAction = probeLongCriticalAction;
         if (probeLongHighAction) policy.probeLongHighAction = probeLongHighAction;
         if (aegisLongCriticalAction) policy.aegisLongCriticalAction = aegisLongCriticalAction;
-        if (momentumLongCriticalAction) policy.momentumLongCriticalAction = momentumLongCriticalAction;
         if (minRiskLevelToBlockProbe) policy.minRiskLevelToBlockProbe = minRiskLevelToBlockProbe;
         if (raw?.block_only_probe_mode !== undefined || fallback.blockOnlyProbeMode !== undefined) {
             policy.blockOnlyProbeMode = raw?.block_only_probe_mode ?? fallback.blockOnlyProbeMode;

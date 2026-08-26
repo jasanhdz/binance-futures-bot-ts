@@ -247,9 +247,6 @@ function buildInput(input: AegisLongRiskShadowGuardAdapterInput): AegisLongRiskS
     const cleanEntry = input.guards.clean_entry;
     const eventRisk = input.guards.event_risk;
     const regime = input.guards.regime;
-    const momentumRide = input.guards.momentum_ride;
-    const momentumMetadata = asRecord(momentumRide?.metadata.momentumRide);
-    const regimeEngineV2 = asRecord(momentumMetadata?.regimeEngineV2);
     const marketWeakness = marketWeaknessFromContext(context);
     return {
         symbol: context.symbol,
@@ -267,9 +264,6 @@ function buildInput(input: AegisLongRiskShadowGuardAdapterInput): AegisLongRiskS
         ethScore: context.regime?.ethScore ?? context.eventRisk.ethScore,
         regimeLogged: String(regime?.metadata.regime ?? context.regimeContext?.label ?? ''),
         regimeWouldBlock: regime?.wouldBlock,
-        regimeEngineV2Environment: stringValue(regimeEngineV2?.momentumEnvironment),
-        regimeEngineV2TechnicalRegime: stringValue(regimeEngineV2?.technicalRegime),
-        regimeEngineV2TransitionRisk: stringValue(regimeEngineV2?.transitionRisk),
         marketWeakness
     };
 }

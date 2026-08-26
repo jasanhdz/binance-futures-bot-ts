@@ -7,7 +7,6 @@ const regimeContextConfig: AegisRegimeContextRuntimeConfig = {
     enabled: true,
     mode: 'SHADOW',
     timeframe: '5m',
-    allowedFor: { momentumRide: true },
     indicators: {
         emaFast: 7,
         emaMid: 25,

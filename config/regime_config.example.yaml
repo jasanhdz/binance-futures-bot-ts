@@ -91,16 +91,12 @@ REGIMES:
 # ═══════════════════════════════════════════════════════════════════════════
 # AEGIS ENTRY POLICY OVERLAYS (Safe Defaults)
 # ═══════════════════════════════════════════════════════════════════════════
-# Regime Context is middleware metadata for future overlays. Momentum Ride is
-# an optional strategy overlay with its own risk profile. Both are disabled in
-# this example by default; SHADOW/ENFORCE must be enabled intentionally.
+# Regime Context is middleware metadata. Momentum Ride is configured globally
+# below and runs through its standalone strategy runtime.
 aegis:
   entry_policy:
     guards:
       regime_context:
-        enabled: false
-        mode: SHADOW
-      momentum_ride:
         enabled: false
         mode: SHADOW
       long_risk_shadow:
@@ -109,7 +105,6 @@ aegis:
         probe_long_critical_action: BLOCK
         probe_long_high_action: SHADOW
         aegis_long_critical_action: SHADOW
-        momentum_long_critical_action: SHADOW
         min_risk_level_to_block_probe: CRITICAL
         block_only_probe_mode: true
         block_only_long: true
@@ -118,8 +113,6 @@ aegis:
     enabled: false
     mode: SHADOW
     timeframe: 5m
-    allowed_for:
-      momentum_ride: true
     indicators:
       ema_fast: 7
       ema_mid: 25

@@ -14,6 +14,7 @@ import {
 } from '../../domain/services/CurrentBrainCanonicalDecision';
 import { TradingService } from './TradingService';
 import { AegisMomentumRideRuntimeConfig } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
+import { E4TailRiskGuardAdapter } from '../../domain/services/aegis-entry/guards/E4TailRiskGuardAdapter';
 
 const originalConfig = { ...CONFIG };
 
@@ -811,7 +812,6 @@ function makeHarness(options: {
             enabled: false,
             mode: 'SHADOW',
             timeframe: '5m',
-            allowedFor: { momentumRide: true },
             indicators: { emaFast: 7, emaMid: 25, emaSlow: 99, atrWindow: 14, volumeWindow: 20, bollingerWindow: 20, adxWindow: 14, choppinessWindow: 14 },
             thresholds: { maxChoppinessForMomentum: 55, minAdxForMomentum: 18, minVolumeRatioForMomentum: 1.3, maxAtrPercentileForAggressive: 0.8, maxExhaustionScore: 0.6 }
         }),
@@ -1390,7 +1390,7 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('✅ Brackets confirmados'));
 	    });
 
-    it('uses Momentum Ride YAML risk profile when finalStrategy is momentum_ride', async () => {
+    it('keeps an Aegis-opened position attributed to Aegis when standalone Momentum is inactive', async () => {
         const { exchange, historyLogger, logger, service, state } = makeHarness({
             signal: signalWithRegimeContext({ turboScore: 0.94, votes: { long: 3, short: 0, neutral: 0 } }),
             cachedCandles: momentumCandles(),
@@ -1399,22 +1399,19 @@ describe('TradingService Aegis live execution', () => {
 
         await service.tick('ETHUSDT');
 
-        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 30);
-        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.002);
+        expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', expect.any(Number));
         expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
-            lastStrategy: 'MOMENTUM_RIDE',
-            lastActualLeverage: 30,
-            lastPositionFraction: 0.015
+            lastStrategy: 'AEGIS_TURBO',
+            lastActualLeverage: 15
         }));
         expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(expect.objectContaining({
-            strategy: 'MOMENTUM_RIDE',
-            leverage: 30,
-            position_fraction: 0.015
+            strategy: 'AEGIS_TURBO',
+            leverage: 15
         }));
         expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({
-            finalStrategy: 'momentum_ride',
-            leverage: 30,
-            positionFraction: 0.015
+            finalStrategy: 'aegis_turbo',
+            leverage: 15
         }));
     });
 
@@ -1456,7 +1453,8 @@ describe('TradingService Aegis live execution', () => {
         config.standaloneMainReplica = true;
         config.aegisFallbackEnabled = false;
 
-        const { exchange, logger, service, state } = makeHarness({
+        const e4Evaluate = vi.spyOn(E4TailRiskGuardAdapter, 'evaluate');
+        const { exchange, logger, mlService, service, state } = makeHarness({
             signal: abstainSignal,
             cachedCandles: momentumCandlesList,
             momentumRide: config
@@ -1474,6 +1472,49 @@ describe('TradingService Aegis live execution', () => {
             side: 'LONG',
             leverage: 30,
             positionFraction: 0.02
+        }));
+        expect(mlService.getSignal).not.toHaveBeenCalled();
+        expect(e4Evaluate).not.toHaveBeenCalled();
+    });
+
+    it('blocks standalone Momentum on a shared account-wide daily-loss veto', async () => {
+        const config = momentumRideRuntimeConfig(0.02);
+        config.standaloneMainReplica = true;
+        config.aegisFallbackEnabled = false;
+        config.safetyCaps.dailyLossStopPct = 0.1;
+        const loss = {
+            tradeId: 'MOMENTUM-RIDE-LOSS',
+            closedAt: new Date().toISOString(),
+            pnlUsdt: -2
+        };
+        const { exchange, historyLogger, service } = makeHarness({
+            cachedCandles: Array.from({ length: 80 }, (_, index) => {
+                const close = 100 + index * 0.01;
+                const isMomentum = index >= 77;
+                const open = isMomentum ? close - 0.2 : close - 0.05;
+                return {
+                    openTime: index * 300_000,
+                    timestamp: index * 300_000,
+                    open,
+                    high: Math.max(open, close) + 0.1,
+                    low: Math.min(open, close) - 0.1,
+                    close,
+                    volume: isMomentum ? 120 + (index - 77) * 2 : 100,
+                    buyVolume: 50,
+                    closeTime: (index + 1) * 300_000 - 1
+                };
+            }),
+            momentumRide: config,
+            closedTradeOutcomes: [loss]
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(historyLogger.logSignal).toHaveBeenCalledWith(expect.objectContaining({
+            strategy: 'MOMENTUM_RIDE',
+            gate_allowed: false,
+            reason: 'daily_loss_stop_reached'
         }));
     });
 
@@ -1774,7 +1815,6 @@ describe('TradingService Aegis live execution', () => {
                 enabled: true,
                 guards: {
                     regime_context: { enabled: false, mode: 'OFF' },
-                    momentum_ride: { enabled: false, mode: 'OFF' },
                     regime: { enabled: true, mode: 'SHADOW' },
                     short_gate: { enabled: false, mode: 'OFF' },
                     entry_quality: { enabled: true, mode: 'ENFORCE' },
@@ -1788,7 +1828,6 @@ describe('TradingService Aegis live execution', () => {
                         probeLongCriticalAction: 'BLOCK',
                         probeLongHighAction: 'SHADOW',
                         aegisLongCriticalAction: 'SHADOW',
-                        momentumLongCriticalAction: 'SHADOW',
                         minRiskLevelToBlockProbe: 'CRITICAL',
                         blockOnlyProbeMode: true,
                         blockOnlyLong: true

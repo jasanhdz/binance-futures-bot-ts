@@ -13,7 +13,6 @@ import { AegisCleanEntryGuardConfig, AegisCleanEntryGuardOutput } from '../Aegis
 import { AegisProbeModeDecision, AegisProbeModeRuntimeConfig } from '../AegisProbeMode';
 import { AegisShortGateConfig, AegisShortGateDecision } from '../AegisShortGate';
 import { AegisRegimeDecision, AegisRegimeGuardConfig, AegisRegimeLabel } from '../AegisRegimeGuard';
-import { RegimeEngineV2Decision } from '../regime-v2/RegimeEngineV2.types';
 
 export type AegisEntryPolicyMode = 'OFF' | 'SHADOW' | 'ENFORCE' | 'ENFORCE_PROBE_LONG_CRITICAL';
 export type AegisEntryFinalDecision = 'ALLOW' | 'DENY' | 'WAIT_CONFIRMATION';
@@ -28,7 +27,6 @@ export type AegisEntryGuardName =
     | 'event_risk'
     | 'decision_brain'
     | 'clean_entry'
-    | 'momentum_ride'
     | 'probe_mode'
     | 'long_risk_shadow'
     | 'e4_tail_risk';
@@ -47,7 +45,6 @@ export interface AegisEntryGuardPolicy {
     probeLongCriticalAction?: AegisLongRiskAction;
     probeLongHighAction?: AegisLongRiskAction;
     aegisLongCriticalAction?: AegisLongRiskAction;
-    momentumLongCriticalAction?: AegisLongRiskAction;
     minRiskLevelToBlockProbe?: AegisLongRiskBlockLevel;
     blockOnlyProbeMode?: boolean;
     blockOnlyLong?: boolean;
@@ -58,8 +55,7 @@ export interface AegisEntryPolicyRuntimeConfig {
     guards: Record<AegisEntryGuardName, AegisEntryGuardPolicy>;
 }
 
-export type AegisEntryStrategy = 'aegis_turbo' | 'momentum_ride';
-export type AegisEntryFinalStrategy = AegisEntryStrategy | 'none';
+export type AegisEntryFinalStrategy = 'aegis_turbo' | 'none';
 
 export type AegisRegimeTrendDirection = 'UP' | 'DOWN' | 'NEUTRAL' | 'UNKNOWN';
 export type AegisRegimeVolatilityState = 'LOW' | 'NORMAL' | 'HIGH' | 'UNKNOWN';
@@ -92,54 +88,10 @@ export interface AegisRegimeContext {
     indicators: AegisRegimeContextIndicators;
 }
 
-export interface AegisMomentumRideContext {
-    patternDetected: boolean;
-    patternSide?: Side;
-    candlesCount?: 2 | 3;
-    volumeRatio?: number;
-    closeNearExtreme?: boolean;
-    wickRatio?: number;
-    overextended?: boolean;
-    turboAgreement?: boolean;
-    btcEthAgreement?: boolean;
-    btcEthContradict?: boolean;
-    regimeConfirmed?: boolean;
-    researchMode?: boolean;
-    regimeUsedAsGate?: boolean;
-    regimeIgnoredForEntry?: boolean;
-    regimeIgnoreReason?: string;
-    regimeEngineV2?: {
-        technicalRegime: RegimeEngineV2Decision['technicalRegime'];
-        momentumEnvironment: RegimeEngineV2Decision['momentumEnvironment'];
-        transitionRisk: RegimeEngineV2Decision['transition']['risk'];
-        confidence: number;
-        falseBreakoutRisk?: number;
-        reasons: string[];
-        observedReason: string;
-    };
-    reasons: string[];
-}
-
-export interface AegisMomentumRiskProfile {
-    strategy: 'momentum_ride';
-    symbol: string;
-    side: Side;
-    leverage: number;
-    positionFraction: number;
-    maxOpenPositions: number;
-    cooldown: number;
-    sourceRule: string;
-    source: 'effective_config';
-    positionFractionSource: 'yaml';
-}
-
 export interface AegisRegimeContextRuntimeConfig {
     enabled: boolean;
     mode: AegisEntryPolicyMode;
     timeframe: string;
-    allowedFor: {
-        momentumRide: boolean;
-    };
     indicators: {
         emaFast: number;
         emaMid: number;
@@ -319,8 +271,6 @@ export interface AegisEntryContext {
         snapshotAgeSeconds?: number;
     };
     regimeContext?: AegisRegimeContext;
-    momentumRide?: AegisMomentumRideContext;
-    momentumRideConfig?: AegisMomentumRideRuntimeConfig;
     cleanEntry?: {
         metadata?: AegisCleanEntryGuardOutput['metadata'];
         config: AegisCleanEntryGuardConfig;
@@ -376,17 +326,14 @@ export interface AegisEntryDecisionTrace {
     finalReason: string;
     finalStrategy: AegisEntryFinalStrategy;
     strategy: AegisEntryFinalStrategy;
-    riskProfile?: AegisMomentumRiskProfile;
 }
 
 export interface AegisEntryStrategyCandidate {
     decision: AegisEntryFinalDecision | AegisEntryGuardDecision;
     reason: string;
-    riskProfile?: AegisMomentumRiskProfile;
 }
 
 export interface AegisEntryStrategyCandidates {
-    momentum_ride: AegisEntryStrategyCandidate;
     aegis_turbo: AegisEntryStrategyCandidate;
 }
 
@@ -400,7 +347,6 @@ export interface AegisEntryDecisionResult {
     finalStrategy: AegisEntryFinalStrategy;
     strategy: AegisEntryFinalStrategy;
     strategyCandidates: AegisEntryStrategyCandidates;
-    riskProfile?: AegisMomentumRiskProfile;
     guards: AegisEntryGuardResult[];
     trace: AegisEntryDecisionTrace;
     metadata: Record<string, unknown>;
@@ -410,7 +356,6 @@ export interface AegisEntryDecisionResult {
     decisions: {
         regime?: AegisRegimeDecision;
         regimeContext?: AegisRegimeContext;
-        momentumRide?: AegisMomentumRideContext;
         shortGate?: AegisShortGateDecision;
         entryQuality?: AegisEntryQualityGateDecision;
         eventRisk?: AegisEventRiskOverlayDecision;
