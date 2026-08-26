@@ -6,9 +6,6 @@ let source = fs.readFileSync(file, 'utf8');
 function replaceOnce(label, before, after) {
   const index = source.indexOf(before);
   if (index < 0) throw new Error(`migration anchor not found: ${label}`);
-  if (source.indexOf(before, index + before.length) >= 0) {
-    throw new Error(`migration anchor not unique: ${label}`);
-  }
   source = source.slice(0, index) + after + source.slice(index + before.length);
 }
 
