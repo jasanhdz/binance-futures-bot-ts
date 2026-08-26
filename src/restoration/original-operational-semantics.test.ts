@@ -48,7 +48,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
   'regime_config.live.yaml': '09e1d9d621b576b61eca3717b0c51cfdd4006af2ad2dbfd1004e27c699cdce6b',
   'src/app/services/TradingService.ts':
-    '8aca5ef94bf6cd08007654be51f3017ba8d40d9a4aab6b667ad5e15a29be5dbd',
+    'a014d642319df074af7545f352c03e0daf8e01e6e289e2c7878c9089812660be',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -75,13 +75,11 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/CurrentBrainCanonicalDecision.ts':
     'a32681b0c93eb9990ec942013196c213cb0487922e4045baa9ab13d2979b2bca',
   'src/domain/services/aegis-entry/AegisEntryDecisionTypes.ts':
-    'e78a09f7cbb297c9c807c05c373fe3eb8b4798893233e213b3c710eb3f3e13af',
+    '6b2fe511cc2faa68f859bb8883213147f68ae4217b13b7cef32d57e64bf54a0f',
   'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
-    'cf2ceacc263b4779e0a586bbae2257b543ca955c7c7855def62bfc06c3b1c680',
+    '2e9f078e18c41d6af3893bb94e201713bf2e9febf7b0cbcad86c8eb2de276273',
   'src/domain/services/aegis-entry/guards/ProbeModeGuardAdapter.ts':
     '95e0d011bd5e8db6a97c46238697ee3376415080c5c1503e0aeb793ff00d3858',
-  'src/domain/services/aegis-entry/guards/MomentumRideGuardAdapter.ts':
-    'bbcb1f0f872ca509841f91bacafa913cb4028c98c7633e5051e4b9b773f49d6a',
   'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':
     '041aadf526f858e70ce33d15516ba012dc3aca43f68d4ca2e88df265e054f07c',
   'src/infra/config/ConfigLoader.ts':

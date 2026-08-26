@@ -6,9 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture cleanup/migration checkpoint after commit family ending at `a8c93cffef79e0140a41aa870b041fe500168cb9`.
+Runtime architecture migration checkpoint after commit `453c5e1`.
 
-The TypeScript build passes. The current Aegis live runtime suite passes 107/107 and the ExitEye suite passes 12/12. The full repository test command still has historical/environment failures caused by missing fixtures/artifacts and a missing audit database directory; these are tracked separately below and are not evidence of a current strategy-runtime regression.
+The TypeScript build passes. The current Aegis live runtime suite passes 107/107 and the ExitEye suite passes 12/12. Shared strategy execution tests pass 8/8. Aegis execution intent factory tests pass 2/2. Aegis orchestrator tests pass 3/3. The full repository test command still has historical/environment failures caused by missing fixtures/artifacts and a missing audit database directory; these are tracked separately below and are not evidence of a current strategy-runtime regression.
 
 ## Completed foundations
 
@@ -49,7 +49,7 @@ Important: Aegis policy remains upstream of execution. Its scientific/current-br
 
 Position ownership is strategy-aware and routes to `AegisPositionManager`, but the manager currently delegates into the shared legacy-compatible lifecycle implementation inside `TradingService`.
 
-Initial Aegis exchange mutation is not yet fully migrated to `SharedStrategyExecutionService`; this is the highest-priority remaining architectural task.
+Exchange mutation is now routed through `SharedStrategyExecutionService` via `AegisExecutionIntentFactory`. Per-intent protection policies are enforced at the shared execution boundary, with `closeIfProtectionFails` always true for Aegis (preserving legacy fail-close behavior). The orchestrator no longer carries any synthetic Momentum authority.
 
 ### MOMENTUM_RIDE
 
@@ -59,22 +59,14 @@ Standalone Momentum entry path exists independently:
 
 This path must remain independent from Aegis current brain, CleanEntry, EntryQuality, DecisionBrain and E4 authority unless a future contract explicitly declares a shared account-level safety rule.
 
-However, legacy/synthetic Momentum support still exists inside `AegisEntryGuardOrchestrator` through `MomentumRideGuardAdapter`, `momentum_ride` guard ordering, `finalStrategy=momentum_ride`, `momentumHardSafety`, and related Aegis decision metadata. That compatibility path is now architectural debt and must be retired or isolated after proving that no required production/recovery path depends on it.
+The synthetic Momentum-inside-Aegis decision path has been retired. The orchestrator no longer imports or evaluates `MomentumRideGuardAdapter`; it cannot select `momentum_ride`, override Aegis denials, or attribute Aegis-opened positions to Momentum. The `MomentumRideGuardAdapter` file has been removed. Config types for the standalone `aegis.momentum_ride` YAML section are retained in `AegisEntryDecisionTypes` for the standalone Momentum strategy path.
 
 Position ownership routes to `MomentumRidePositionManager`, but that manager still delegates into the common lifecycle body in `TradingService` using `StrategyLifecyclePolicy` rather than owning a fully extracted lifecycle service.
 
 ## Highest-priority remaining work before Micro Burst
 
-1. **Migrate Aegis exchange mutation to `SharedStrategyExecutionService`.**
-   - Preserve every existing Aegis upstream guard and exact decision semantics.
-   - Shared execution must receive only an already-approved `StrategyExecutionIntent`.
-   - It must never call Aegis current brain, EntryQuality, CleanEntry, EventRisk, Probe, ShortGate, E4 or any strategy selector.
-
-2. **Remove the synthetic Momentum-inside-Aegis decision path.**
-   - Prove current standalone Momentum path covers all required live behavior first.
-   - Then remove or quarantine `MomentumRideGuardAdapter` from Aegis entry orchestration.
-   - Aegis `finalStrategy` should no longer become `momentum_ride` as a side effect of an Aegis evaluation.
-   - Momentum must be selected by the strategy router/strategy runtime, not by the Aegis guard chain.
+1. ~~**Migrate Aegis exchange mutation to `SharedStrategyExecutionService`.**~~ DONE
+2. ~~**Remove the synthetic Momentum-inside-Aegis decision path.**~~ DONE
 
 3. **Extract position lifecycle implementation out of `TradingService`.**
    - `AegisPositionManager` and `MomentumRidePositionManager` should become real owners, not thin delegates into one giant service method.
@@ -129,6 +121,9 @@ Position ownership routes to `MomentumRidePositionManager`, but that manager sti
 At the latest runtime checkpoint:
 
 - TypeScript build: PASS.
+- `src/app/services/SharedStrategyExecutionService.test.ts`: 8/8 PASS.
+- `src/domain/strategies/aegis/AegisExecutionIntentFactory.test.ts`: 2/2 PASS.
+- `src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.test.ts`: 3/3 PASS.
 - `src/app/services/TradingService.aegis-live.test.ts`: 107/107 PASS.
 - `src/app/services/TradingService.exit-eye.test.ts`: 12/12 PASS.
 - Strategy router / position manager router / Momentum entry policy targeted tests: PASS in the cleanup validation.
