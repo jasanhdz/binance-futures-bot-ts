@@ -411,6 +411,8 @@ export interface AegisMomentumRideYamlConfig {
     enabled?: boolean;
     mode?: AegisEntryPolicyMode | string;
     research_mode?: boolean;
+    standalone_main_replica?: boolean;
+    aegis_fallback_enabled?: boolean;
     regime_filter?: {
         enabled?: boolean;
         use_as_gate?: boolean;
@@ -1022,6 +1024,8 @@ export class NinjaConfigManager {
             enabled: raw.enabled === true,
             mode: this.normalizeEntryPolicyMode(raw.mode, 'SHADOW'),
             researchMode: raw.research_mode === true,
+            standaloneMainReplica: raw.standalone_main_replica === true,
+            aegisFallbackEnabled: raw.aegis_fallback_enabled !== false,
             regimeFilter: {
                 enabled: raw.regime_filter?.enabled === true,
                 useAsGate: raw.regime_filter?.use_as_gate === true,

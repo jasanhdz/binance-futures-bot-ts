@@ -1,4 +1,5 @@
 import { Side } from '../../../types';
+import { evaluateMainStackingMomentum } from '../../MainStackingMomentumStrategy';
 import { RegimeEngineV2 } from '../../regime-v2/RegimeEngineV2';
 import { RegimeEngineV2Decision, RegimeEngineV2InputCandle, RegimeEngineV2MarketAction } from '../../regime-v2/RegimeEngineV2.types';
 import {
@@ -264,6 +265,25 @@ function detectMomentumPattern(
     side: Side
 ): AegisMomentumRideContext {
     const candles = context.entryQuality.ruleGate.recentCandles ?? [];
+    if (context.signal.metadata?.momentum_stacking_replica === true) {
+        const exact = evaluateMainStackingMomentum(candles as any, side);
+        return {
+            patternDetected: exact.allowed,
+            patternSide: exact.allowed ? side : undefined,
+            candlesCount: 3,
+            volumeRatio: exact.diagnostics.volumeAverage && exact.diagnostics.requiredVolume
+                ? exact.diagnostics.requiredVolume / exact.diagnostics.volumeAverage
+                : undefined,
+            closeNearExtreme: exact.diagnostics.checks.wicks,
+            wickRatio: undefined,
+            overextended: exact.diagnostics.checks.extension === false,
+            turboAgreement: false,
+            btcEthAgreement: false,
+            btcEthContradict: false,
+            regimeConfirmed: false,
+            reasons: [exact.reason]
+        };
+    }
     const count = config.momentumCandles;
     if (candles.length < count + 1) {
         return baseContext(false, context.side, ['momentum_insufficient_candles']);

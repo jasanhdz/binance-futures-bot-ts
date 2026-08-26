@@ -208,6 +208,8 @@ aegis:
     enabled: true
     mode: ENFORCE
     research_mode: true
+    standalone_main_replica: true
+    aegis_fallback_enabled: false
     regime_filter:
       enabled: true
       use_as_gate: false

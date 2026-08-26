@@ -3,7 +3,8 @@ import {
     AegisMicroLiveGateConfig,
     AegisMicroLiveGateContext,
     buildAegisMicroLiveGateConfigFromEnv,
-    shouldEnterAegisTurboMicroLive
+    shouldEnterAegisTurboMicroLive,
+    shouldEnterStackingMomentumLive
 } from './AegisMicroLiveGate';
 import {
     CURRENT_BRAIN_AUTHORITY,
@@ -120,6 +121,27 @@ function baseCtx(): AegisMicroLiveGateContext {
 }
 
 describe('AegisMicroLiveGate', () => {
+    it('allows standalone momentum without forging a canonical brain decision', () => {
+        const ctx = baseCtx();
+        ctx.signal = baseSignal();
+        const decision = shouldEnterStackingMomentumLive(ctx, baseConfig(), 'LONG');
+
+        expect(decision).toMatchObject({
+            allowed: true,
+            side: 'LONG',
+            reason: 'allowed_main_stacking_momentum_replica'
+        });
+    });
+
+    it('keeps position and short safety gates for standalone momentum', () => {
+        const ctx = baseCtx();
+        ctx.hasOpenPosition = true;
+        expect(shouldEnterStackingMomentumLive(ctx, baseConfig(), 'LONG').reason).toBe('position_already_open');
+
+        ctx.hasOpenPosition = false;
+        expect(shouldEnterStackingMomentumLive(ctx, baseConfig(), 'SHORT').reason).toBe('short_disabled');
+    });
+
     it('denies if tradingMode is not AEGIS_TURBO_MICRO_LIVE', () => {
         const config = baseConfig();
         config.tradingMode = 'AEGIS_SHADOW';

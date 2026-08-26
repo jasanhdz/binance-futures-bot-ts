@@ -10,8 +10,14 @@ import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
 import {
     AegisMicroLiveGateDecision,
     buildAegisMicroLiveGateConfigFromEnv,
-    shouldEnterAegisTurboMicroLive
+    shouldEnterAegisTurboMicroLive,
+    shouldEnterStackingMomentumLive
 } from '../../domain/services/AegisMicroLiveGate';
+import {
+    evaluateMainStackingMomentum,
+    MainStackingMomentumDecision,
+    MAIN_STACKING_MOMENTUM_AUTHORITY
+} from '../../domain/services/MainStackingMomentumStrategy';
 import {
     AegisExitEyeYamlConfig,
     AegisEntryQualityGateRuntimeConfig,
@@ -1565,16 +1571,116 @@ export class TradingService {
         );
     }
 
+    private evaluateStandaloneMomentumGate(
+        symbol: string,
+        signal: AegisTradingSignal,
+        side: Side,
+        dailyPnlPct?: number
+    ): AegisMicroLiveGateDecision {
+        const botState = this.stateForSymbol(symbol).get();
+        return shouldEnterStackingMomentumLive(
+            {
+                symbol,
+                signal: { aegis: signal.metadata?.aegis ?? signal.aegis },
+                hasOpenPosition: botState.mode !== 'IDLE',
+                tradesToday: this.tradesToday,
+                consecutiveLosses: this.consecutiveLossTracker.value,
+                timeSinceLastExitMs: Date.now() - (botState.lastExitAt || 0),
+                liquidityStress: this.detector[symbol]?.getLiquidityStress() || 0,
+                dailyPnlPct
+            },
+            this.getAegisTurboGateConfig(symbol),
+            side
+        );
+    }
+
+    private async findStandaloneMomentumCandidate(symbol: string): Promise<MainStackingMomentumDecision | undefined> {
+        const config = this.getAegisMomentumRideConfig();
+        const symbolConfig = config.symbols[symbol];
+        if (config.enabled !== true || config.standaloneMainReplica !== true || !symbolConfig?.enabled) return undefined;
+
+        const now = Date.now();
+        const candles = (await this.deps.exchange.getCandles(symbol, '5m', 300))
+            .filter((candle) => this.isValidCandle(candle) && (!this.finiteNumber(candle.closeTime) || candle.closeTime <= now));
+        const sides: Side[] = ['LONG', 'SHORT'];
+        for (const side of sides) {
+            const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
+            if (!sideConfig.enabled) continue;
+            const decision = evaluateMainStackingMomentum(candles, side);
+            if (decision.allowed) return decision;
+        }
+        return undefined;
+    }
+
+    private withStandaloneMomentumCandidate(
+        signal: AegisTradingSignal,
+        candidate: MainStackingMomentumDecision
+    ): AegisTradingSignal {
+        const sourceAegis = signal.metadata?.aegis ?? signal.aegis ?? {};
+        const turbo = sourceAegis.turbo ?? {};
+        return {
+            ...signal,
+            action: candidate.side,
+            confidence: 1,
+            metadata: {
+                ...signal.metadata,
+                momentum_stacking_replica: true,
+                momentum_stacking_authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
+                momentum_stacking_diagnostics: candidate.diagnostics,
+                aegis: {
+                    ...sourceAegis,
+                    turbo: {
+                        ...turbo,
+                        action: candidate.side,
+                        reason: candidate.reason,
+                        raw: {
+                            ...turbo.raw,
+                            action: candidate.side,
+                            would_execute: true,
+                            reason: candidate.reason,
+                            turbo_score: 1
+                        },
+                        gated: {
+                            ...turbo.gated,
+                            action: candidate.side,
+                            would_execute: true,
+                            reason: candidate.reason,
+                            blocked_by: null
+                        }
+                    }
+                }
+            }
+        };
+    }
+
     private async lookForEntry(symbol: string): Promise<void> {
         const { mlService, exchange, logger } = this.deps;
         const symbolState = this.stateForSymbol(symbol);
         const tradingMode = this.getTradingMode();
 
         try {
-            const signal = await mlService.getSignal(symbol);
+            const baseSignal = await mlService.getSignal(symbol);
+            const momentumConfig = this.getAegisMomentumRideConfig();
+            const standaloneMomentum = await this.findStandaloneMomentumCandidate(symbol);
+            const signal = standaloneMomentum
+                ? this.withStandaloneMomentumCandidate(baseSignal, standaloneMomentum)
+                : baseSignal;
             const signalId = generateSignalId(symbol);
             this.logAegisScan(symbol, signal);
             await this.logAegisTradeEvent(symbol, 'SIGNAL_RECEIVED', { metadata: { signalId } });
+
+            if (momentumConfig.standaloneMainReplica === true && !standaloneMomentum && momentumConfig.aegisFallbackEnabled === false) {
+                await this.logAegisTurboSignal(symbol, signal, {
+                    signalId,
+                    executed: false,
+                    metadata: {
+                        ignored_reason: 'main_stacking_momentum_no_pattern',
+                        momentum_only: true,
+                        momentum_authority: MAIN_STACKING_MOMENTUM_AUTHORITY
+                    }
+                });
+                return;
+            }
 
             if (tradingMode === 'AEGIS_SHADOW') {
                 await this.logAegisTurboSignal(symbol, signal, { signalId, executed: false });
@@ -1624,7 +1730,9 @@ export class TradingService {
                 : undefined;
             this.lastDailyPnlPct = dailyPnlPct;
             const gateConfig = this.getAegisTurboGateConfig(symbol);
-            const gateDecision = this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
+            const gateDecision = standaloneMomentum
+                ? this.evaluateStandaloneMomentumGate(symbol, signal, standaloneMomentum.side, dailyPnlPct)
+                : this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
             await this.logEntryIntelligenceDispositionShadow(
                 symbol,
                 signal,

@@ -13,6 +13,7 @@ import {
     CURRENT_BRAIN_MODEL_SHA256
 } from '../../domain/services/CurrentBrainCanonicalDecision';
 import { TradingService } from './TradingService';
+import { AegisMomentumRideRuntimeConfig } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 
 const originalConfig = { ...CONFIG };
 
@@ -529,11 +530,13 @@ function momentumCandles() {
     ];
 }
 
-function momentumRideRuntimeConfig(positionFraction = 0.015) {
+function momentumRideRuntimeConfig(positionFraction = 0.015): AegisMomentumRideRuntimeConfig {
     return {
         enabled: true,
         mode: 'ENFORCE',
         researchMode: true,
+        standaloneMainReplica: false,
+        aegisFallbackEnabled: true,
         regimeFilter: {
             enabled: true,
             useAsGate: false,
@@ -692,7 +695,9 @@ function makeHarness(options: {
         hasOpenPosition: vi.fn().mockResolvedValue(false),
         getServerTime: vi.fn().mockResolvedValue(Date.now()),
         getLastCandle: vi.fn().mockResolvedValue(options.lastCandle ?? null),
-        getCandles: vi.fn().mockResolvedValue([]),
+        getCandles: vi.fn().mockImplementation(async (_symbol: string, _interval: string, _limit: number) => {
+            return options.cachedCandles ?? [];
+        }),
         getCachedCandles: vi.fn().mockReturnValue(options.cachedCandles ?? []),
         subscribeToCandles: vi.fn()
     };
@@ -1411,6 +1416,99 @@ describe('TradingService Aegis live execution', () => {
             leverage: 30,
             positionFraction: 0.015
         }));
+    });
+
+    it('enters on standalone momentum when Aegis signal is abstain/do-not-enter', async () => {
+        const momentumCandlesList = Array.from({ length: 80 }, (_, index) => {
+            const close = 100 + index * 0.01;
+            const isMomentum = index >= 77;
+            const open = isMomentum ? close - 0.2 : close - 0.05;
+            return {
+                openTime: index * 300_000,
+                timestamp: index * 300_000,
+                open,
+                high: Math.max(open, close) + 0.1,
+                low: Math.min(open, close) - 0.1,
+                close,
+                volume: isMomentum ? 120 + (index - 77) * 2 : 100,
+                buyVolume: 50,
+                closeTime: (index + 1) * 300_000 - 1
+            };
+        });
+        const abstainSignal: AegisTradingSignal = {
+            symbol: 'ETHUSDT',
+            action: 'PASS',
+            confidence: 0,
+            source: 'AEGIS_TURBO',
+            longProb: 0.33,
+            shortProb: 0.33,
+            neutralProb: 0.34,
+            metadata: {
+                aegis: {
+                    turbo: {
+                        raw: { action: 'HOLD', turbo_score: 0.4, votes: { long: 0, short: 0, neutral: 3 } },
+                        gated: { action: 'HOLD', reason: 'abstain' }
+                    }
+                }
+            }
+        };
+        const config = momentumRideRuntimeConfig(0.02);
+        config.standaloneMainReplica = true;
+        config.aegisFallbackEnabled = false;
+
+        const { exchange, logger, service, state } = makeHarness({
+            signal: abstainSignal,
+            cachedCandles: momentumCandlesList,
+            momentumRide: config
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', expect.any(Number));
+        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
+            lastStrategy: 'MOMENTUM_RIDE',
+            lastSide: 'LONG'
+        }));
+        expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({
+            finalStrategy: 'momentum_ride',
+            side: 'LONG'
+        }));
+    });
+
+    it('ignores non-momentum ticks when standalone momentum is active and no pattern exists', async () => {
+        const regularCandles = Array.from({ length: 80 }, (_, index) => ({
+            openTime: index * 300_000,
+            timestamp: index * 300_000,
+            open: 100,
+            high: 101,
+            low: 99,
+            close: 100,
+            volume: 100,
+            buyVolume: 50,
+            closeTime: (index + 1) * 300_000 - 1
+        }));
+        const abstainSignal: AegisTradingSignal = {
+            symbol: 'ETHUSDT',
+            action: 'PASS',
+            confidence: 0,
+            source: 'AEGIS_TURBO',
+            longProb: 0.33,
+            shortProb: 0.33,
+            neutralProb: 0.34
+        };
+        const config = momentumRideRuntimeConfig(0.02);
+        config.standaloneMainReplica = true;
+        config.aegisFallbackEnabled = false;
+
+        const { exchange, service } = makeHarness({
+            signal: abstainSignal,
+            cachedCandles: regularCandles,
+            momentumRide: config
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
     });
 
 	    it('blocks before marketOpen when verified bot-only daily loss stop is reached', async () => {

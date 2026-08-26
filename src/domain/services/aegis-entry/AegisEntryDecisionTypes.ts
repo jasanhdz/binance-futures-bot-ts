@@ -185,6 +185,8 @@ export interface AegisMomentumRideRuntimeConfig {
     enabled: boolean;
     mode: AegisEntryPolicyMode;
     researchMode: boolean;
+    standaloneMainReplica?: boolean;
+    aegisFallbackEnabled?: boolean;
     regimeFilter: {
         enabled: boolean;
         useAsGate: boolean;

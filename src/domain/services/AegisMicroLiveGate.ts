@@ -192,6 +192,35 @@ export function shouldEnterAegisTurboMicroLive(
   );
 }
 
+export function shouldEnterStackingMomentumLive(
+  ctx: AegisMicroLiveGateContext,
+  config: AegisMicroLiveGateConfig,
+  side: 'LONG' | 'SHORT',
+): AegisMicroLiveGateDecision {
+  if (config.tradingMode !== 'AEGIS_TURBO_MICRO_LIVE') return buildDecision(ctx, config, 'trading_mode_not_turbo_micro_live');
+  if (config.liveEnabled !== true) return buildDecision(ctx, config, 'aegis_live_disabled');
+  if (config.yamlEnabled === false) return buildDecision(ctx, config, 'aegis_turbo_yaml_disabled');
+  if (config.yamlEnabled === true && config.yamlLiveEnabled !== true) return buildDecision(ctx, config, 'aegis_turbo_yaml_live_disabled');
+  if (ctx.hasOpenPosition) return buildDecision(ctx, config, 'position_already_open');
+  if (ctx.tradesToday >= config.maxTradesPerDay) return buildDecision(ctx, config, 'max_trades_per_day_reached');
+  if (ctx.consecutiveLosses >= config.maxConsecutiveLosses) return buildDecision(ctx, config, 'max_consecutive_losses_reached');
+  if (ctx.timeSinceLastExitMs < config.minCooldownMs) return buildDecision(ctx, config, 'cooldown_active');
+  if (ctx.liquidityStress > config.maxLiquidityStress) return buildDecision(ctx, config, 'liquidity_stress_block');
+  if (ctx.dailyPnlPct !== undefined && ctx.dailyPnlPct <= -Math.abs(config.dailyLossStopPct)) {
+    return buildDecision(ctx, config, 'daily_loss_stop_reached');
+  }
+  if (side === 'SHORT' && config.allowShort !== true) return buildDecision(ctx, config, 'short_disabled');
+  return buildDecision(
+    ctx,
+    config,
+    'allowed_main_stacking_momentum_replica',
+    true,
+    side,
+    Math.min(DEFAULT_LEVERAGE, config.leverageCap),
+    Math.min(DEFAULT_POSITION_FRACTION, config.positionFractionCap),
+  );
+}
+
 function finiteConfigNumber(value: unknown): number | undefined {
   return finiteNumber(value) ? value : undefined;
 }

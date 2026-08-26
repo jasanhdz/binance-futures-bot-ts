@@ -46,9 +46,9 @@ const baselineOperationalDigests: Record<string, string> = {
 
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
-  'regime_config.live.yaml': '7b841c07bc8488827201a443a8682f676e08fc7863df903baa2527d200360858',
+  'regime_config.live.yaml': '09e1d9d621b576b61eca3717b0c51cfdd4006af2ad2dbfd1004e27c699cdce6b',
   'src/app/services/TradingService.ts':
-    '72ede0db4fa589404bddea2641fcd9777dcf8b61b581de65b3e8a20b8dd5cbc7',
+    '729a1f553d7ac8080e00b45601652f236a9482f143cb9e0a4eed7f14957d2994',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -65,7 +65,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/AegisEntryQualityGate.ts':
     '50d5a1eba0a0618bc3b6a41eb6fe1326ffa1562235dc0380c6792c480470947d',
   'src/domain/services/AegisMicroLiveGate.ts':
-    '35a30b4e03c048d74fccfe0d255a791b400ea93d17ba1be6b59a065c133efa80',
+    'a18fda3291baa07066492fd9f9b4085b784fdf7b1abb1cdab485310a2d596f58',
   'src/domain/services/AegisProbeMode.ts':
     'fa2e593f982326fcfb64831538179c05972f2d9325aad617398df26174a5b351',
   'src/domain/services/AegisRegimeGuard.ts':
@@ -75,17 +75,17 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/CurrentBrainCanonicalDecision.ts':
     'a32681b0c93eb9990ec942013196c213cb0487922e4045baa9ab13d2979b2bca',
   'src/domain/services/aegis-entry/AegisEntryDecisionTypes.ts':
-    'cba399d324f8387a4b84bd58bdfffea18ee8537b0f687fd446ca2690d387d643',
+    'e78a09f7cbb297c9c807c05c373fe3eb8b4798893233e213b3c710eb3f3e13af',
   'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
     'cf2ceacc263b4779e0a586bbae2257b543ca955c7c7855def62bfc06c3b1c680',
   'src/domain/services/aegis-entry/guards/ProbeModeGuardAdapter.ts':
     '95e0d011bd5e8db6a97c46238697ee3376415080c5c1503e0aeb793ff00d3858',
   'src/domain/services/aegis-entry/guards/MomentumRideGuardAdapter.ts':
-    'd4ef1cbc3f4ab42642f999bdc9f306cc1076465748074928d0ecba1c7cedac4a',
+    'bbcb1f0f872ca509841f91bacafa913cb4028c98c7633e5051e4b9b773f49d6a',
   'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':
     '041aadf526f858e70ce33d15516ba012dc3aca43f68d4ca2e88df265e054f07c',
   'src/infra/config/ConfigLoader.ts':
-    '355a59e509e334f478059d2897ee033b993675cdf8c870430391b9492acd5c70',
+    'cb4f38e1dba3f3e66fb52af2dc857230d829b3b31917f88ee1bee9ab2122086d',
 };
 
 type GuardFixture = [
