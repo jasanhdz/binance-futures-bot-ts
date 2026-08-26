@@ -1,5 +1,0 @@
-ccxt
-pandas
-python-dotenv
-matplotlib
-seaborn
