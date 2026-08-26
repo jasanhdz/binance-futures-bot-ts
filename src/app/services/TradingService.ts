@@ -1392,17 +1392,31 @@ export class TradingService {
 
     private strategyIdentityForState(botState: BotState): StrategyIdentity | null {
         const ownership = resolveStrategyOwnership(botState);
-        if (ownership.status !== 'OWNED') return null;
+        if (ownership.status !== 'OWNED' && ownership.status !== 'LEGACY_MIGRATABLE') return null;
         if (ownership.strategyId === 'AEGIS_TURBO') return this.aegisStrategyIdentity;
         if (ownership.strategyId === 'MOMENTUM_RIDE') return this.momentumStrategyIdentity;
         return null;
     }
 
     private async managePositionByOwner(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
+        const ownership = resolveStrategyOwnership(botState);
+        if (ownership.status === 'EXTERNAL') {
+            // Manual/external positions retain protective mechanics without
+            // receiving Aegis strategy authority such as ExitEye.
+            await this.managePositionLifecycle({
+                ...strategyLifecyclePolicy('AEGIS_TURBO'),
+                useAegisExitEye: false
+            }, symbol, botState, symbolState);
+            return;
+        }
+
         const identity = this.strategyIdentityForState(botState);
         if (!identity) {
-            // Legacy/manual compatibility remains isolated from strategy-owned managers.
-            await this.managePositionLifecycle(strategyLifecyclePolicy('AEGIS_TURBO'), symbol, botState, symbolState);
+            this.deps.logger.error('strategy_position_ownership_recovery_required', {
+                symbol,
+                tradeId: botState.lastTradeId,
+                ownership
+            });
             return;
         }
 

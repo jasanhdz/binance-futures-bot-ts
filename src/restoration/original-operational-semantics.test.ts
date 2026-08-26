@@ -48,7 +48,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
   'regime_config.live.yaml': '09e1d9d621b576b61eca3717b0c51cfdd4006af2ad2dbfd1004e27c699cdce6b',
   'src/app/services/TradingService.ts':
-    'a014d642319df074af7545f352c03e0daf8e01e6e289e2c7878c9089812660be',
+    'cfd06cfde2f80d5e101b7a0cbc865d26f735f78b0827d44d063a3871059ce107',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
