@@ -1357,7 +1357,7 @@ describe('TradingService Aegis live execution', () => {
 	        expect(state.set).toHaveBeenCalledWith(expect.objectContaining({
 	            currentRegime: 'AEGIS_TURBO',
 	            lastStrategy: 'AEGIS_TURBO',
-	            positionOwner: 'AEGIS',
+	            positionOwner: 'BOT',
 	            tradeOrigin: 'BOT',
 	            ownershipStatus: 'VERIFIED',
 	            eligibleForBotMetrics: true,
@@ -1469,9 +1469,11 @@ describe('TradingService Aegis live execution', () => {
             lastStrategy: 'MOMENTUM_RIDE',
             lastSide: 'LONG'
         }));
-        expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({
-            finalStrategy: 'momentum_ride',
-            side: 'LONG'
+        expect(logger.warn).toHaveBeenCalledWith('momentum_ride_live_entry', expect.objectContaining({
+            symbol: 'ETHUSDT',
+            side: 'LONG',
+            leverage: 30,
+            positionFraction: 0.02
         }));
     });
 

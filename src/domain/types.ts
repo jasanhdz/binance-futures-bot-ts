@@ -51,7 +51,8 @@ export type BotState = {
   lastEntryFilters?: Record<string, unknown>;
   lastCommissionEstimate?: number;
   lastOrderId?: string;
-  positionOwner?: 'AEGIS' | 'EXTERNAL' | 'UNKNOWN';
+  /** BOT is canonical. AEGIS remains readable only for persisted legacy state migration. */
+  positionOwner?: 'BOT' | 'AEGIS' | 'EXTERNAL' | 'UNKNOWN';
   tradeOrigin?: 'BOT' | 'MANUAL_EXTERNAL' | 'UNKNOWN';
   ownershipStatus?: TradeOwnershipStatus;
   eligibleForBotMetrics?: boolean;

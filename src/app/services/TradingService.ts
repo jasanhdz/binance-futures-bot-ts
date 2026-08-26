@@ -825,7 +825,7 @@ export class TradingService {
     }
 
     private isVerifiedBotOwnedState(state: BotState): boolean {
-        return state.positionOwner === 'AEGIS'
+        return (state.positionOwner === 'BOT' || state.positionOwner === 'AEGIS')
             && state.tradeOrigin === 'BOT'
             && state.ownershipStatus === 'VERIFIED'
             && state.eligibleForBotMetrics === true;
@@ -880,7 +880,7 @@ export class TradingService {
             if (localState.mode !== 'IDLE' && !this.isVerifiedBotOwnedState(localState)) {
                 if (this.isLegacyBotOwnedState(localState)) {
                     symbolState.set({
-                        positionOwner: 'AEGIS',
+                        positionOwner: 'BOT',
                         tradeOrigin: 'BOT',
                         ownershipStatus: 'VERIFIED',
                         eligibleForBotMetrics: false,
@@ -1680,7 +1680,9 @@ export class TradingService {
         dailyPnlPct?: number
     ): AegisMicroLiveGateDecision {
         const botState = this.stateForSymbol(symbol).get();
-        const timeSinceLastExitMs = Date.now() - (botState.lastExitAt || 0);
+        const now = Date.now();
+        const aegisRisk = this.strategyRiskLedger.snapshot('AEGIS_TURBO', now);
+        const timeSinceLastExitMs = this.strategyRiskLedger.timeSinceLastExitMs('AEGIS_TURBO', now);
         const liquidityStress = this.detector[symbol]?.getLiquidityStress() || 0;
 
         return shouldEnterAegisTurboMicroLive(
@@ -1688,8 +1690,8 @@ export class TradingService {
                 symbol,
                 signal: { aegis: signal.metadata?.aegis ?? signal.aegis },
                 hasOpenPosition: botState.mode !== 'IDLE',
-                tradesToday: this.tradesToday,
-                consecutiveLosses: this.consecutiveLossTracker.value,
+                tradesToday: aegisRisk.tradesToday,
+                consecutiveLosses: aegisRisk.consecutiveLosses,
                 timeSinceLastExitMs,
                 liquidityStress,
                 dailyPnlPct
@@ -1917,7 +1919,7 @@ export class TradingService {
         const symbolState = this.stateForSymbol(symbol);
         symbolState.set({
             mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
-            positionOwner: 'AEGIS',
+            positionOwner: 'BOT',
             tradeOrigin: 'BOT',
             ownershipStatus: 'VERIFIED',
             eligibleForBotMetrics: true,
@@ -2278,6 +2280,12 @@ export class TradingService {
             for (const side of ['LONG', 'SHORT'] as Side[]) {
                 const position = await this.deps.exchange.readActivePosition(symbol, side).catch(() => null);
                 if (!position) continue;
+                // Defensive adapter validation: a LONG object returned for a SHORT lookup
+                // (or vice versa) must not be counted as a second position. Hedge-mode
+                // adapters may still return BOTH and remain authoritative for their lookup.
+                if ((position.sideMode === 'LONG' || position.sideMode === 'SHORT') && position.sideMode !== side) {
+                    continue;
+                }
                 openPositions++;
                 if (side === 'LONG') longPositions++;
                 if (side === 'SHORT') shortPositions++;
@@ -2736,6 +2744,7 @@ export class TradingService {
         const stateExposure = this.countStateOpenPositions();
         const lastStopLossAt = this.mostRecentStopLossAt();
         const now = Date.now();
+        const aegisRisk = this.strategyRiskLedger.snapshot('AEGIS_TURBO', now);
         const sameSymbolPositionExists = this.stateForSymbol(input.symbol).get().mode !== 'IDLE'
             || await this.deps.exchange.hasOpenPosition(input.symbol, 'ANY').catch((error) => {
                 this.deps.logger.error('aegis_position_ownership_read_failed_entry_blocked', {
@@ -2842,8 +2851,8 @@ export class TradingService {
                 riskOffTailMax: eventRiskConfig.risk_off.max_tail_risk_score
             },
             operational: {
-                consecutiveLosses: this.consecutiveLossTracker.value,
-                tradesToday: this.tradesToday,
+                consecutiveLosses: aegisRisk.consecutiveLosses,
+                tradesToday: aegisRisk.tradesToday,
                 openPositionsCount: stateExposure.totalOpenPositions,
                 openMomentumPositions: stateExposure.openMomentumPositions,
                 openProbePositions: stateExposure.openProbePositions,
@@ -3721,7 +3730,7 @@ export class TradingService {
             const finalStrategyIdentity = this.strategyIdentity(finalStrategyLabel);
             symbolState.set({
                 mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
-                positionOwner: 'AEGIS',
+                positionOwner: 'BOT',
                 tradeOrigin: 'BOT',
                 ownershipStatus: 'VERIFIED',
                 eligibleForBotMetrics: true,
@@ -4696,7 +4705,13 @@ export class TradingService {
         const side = botState.lastSide as Side;
         let entryPrice = botState.lastEntryPrice || 0;
         let leverage = botState.lastActualLeverage || botState.lastLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
-        const requireBrackets = lifecyclePolicy.requireStopBracket || lifecyclePolicy.requireTakeProfitBracket;
+        const configuredRequireBrackets = lifecyclePolicy.strategyId === 'AEGIS_TURBO'
+            ? this.getAegisTurboYamlConfig()?.require_brackets !== false
+            : lifecyclePolicy.strategyId === 'MOMENTUM_RIDE'
+                ? this.getAegisMomentumRideConfig().safetyCaps.requireBrackets
+                : true;
+        const requireBrackets = configuredRequireBrackets
+            && (lifecyclePolicy.requireStopBracket || lifecyclePolicy.requireTakeProfitBracket);
 
         try {
             const isBotOwned = this.isVerifiedBotOwnedState(botState) || this.isLegacyBotOwnedState(botState);
