@@ -11,6 +11,9 @@ export interface MomentumRideEntryContext {
   timestamp: number;
   candles: Candle[];
   side: Side;
+  openPositionsCount: number;
+  openMomentumPositions: number;
+  symbolLastStopLossAt?: number;
   safety: Omit<
     SharedEntrySafetyContext,
     | 'maxTradesPerDay'
@@ -31,6 +34,9 @@ export interface MomentumRideEntryPolicyConfig {
   minCooldownMs: number;
   maxLiquidityStress: number;
   dailyLossStopPct: number;
+  maxOpenMomentumPositions: number;
+  maxTotalOpenPositionsWhenMomentum: number;
+  disableSymbolAfterStopLossMs: number;
 }
 
 export function evaluateMomentumRideEntry(
@@ -49,6 +55,34 @@ export function evaluateMomentumRideEntry(
   }
   if (context.side === 'SHORT' && !config.shortEnabled) {
     return noTrade(context, 'momentum_short_disabled', { pattern: pattern.diagnostics });
+  }
+
+  if (context.openMomentumPositions >= config.maxOpenMomentumPositions) {
+    return noTrade(context, 'momentum_max_open_positions_reached', {
+      pattern: pattern.diagnostics,
+      openMomentumPositions: context.openMomentumPositions,
+      limit: config.maxOpenMomentumPositions,
+    });
+  }
+
+  if (context.openPositionsCount >= config.maxTotalOpenPositionsWhenMomentum) {
+    return noTrade(context, 'momentum_total_open_positions_reached', {
+      pattern: pattern.diagnostics,
+      openPositionsCount: context.openPositionsCount,
+      limit: config.maxTotalOpenPositionsWhenMomentum,
+    });
+  }
+
+  if (
+    context.symbolLastStopLossAt !== undefined
+    && config.disableSymbolAfterStopLossMs > 0
+    && context.timestamp - context.symbolLastStopLossAt < config.disableSymbolAfterStopLossMs
+  ) {
+    return noTrade(context, 'momentum_symbol_stop_loss_cooldown', {
+      pattern: pattern.diagnostics,
+      symbolLastStopLossAt: context.symbolLastStopLossAt,
+      disableSymbolAfterStopLossMs: config.disableSymbolAfterStopLossMs,
+    });
   }
 
   const safety = evaluateSharedEntrySafety({
@@ -75,6 +109,11 @@ export function evaluateMomentumRideEntry(
     diagnostics: {
       pattern: pattern.diagnostics,
       sharedSafety: safety,
+      strategyRisk: {
+        tradesToday: context.safety.tradesToday,
+        consecutiveLosses: context.safety.consecutiveLosses,
+        timeSinceLastExitMs: context.safety.timeSinceLastExitMs,
+      },
       executionProfile: {
         leverage: config.leverage,
         positionFraction: config.positionFraction,
