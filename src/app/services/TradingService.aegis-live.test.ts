@@ -1112,14 +1112,14 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ROI -6.7% | PnL -$10.00 | 0.5h'));
     });
 
-    it('detects a startup manual position and adopts it for exit logic only (no brackets)', async () => {
+    it('adopts a startup manual position with its exchange leverage and preserves existing brackets', async () => {
         const { exchange, historyLogger, logger, service, symbolStores } = makeHarness({
             symbolStates: { ETHUSDT: { mode: 'IDLE' } },
             readActivePosition: {
                 sideMode: 'LONG',
                 qtyAbs: 0.02,
                 entryPrice: 3000,
-                leverage: 20,
+                leverage: 40,
                 isolatedMargin: 3
             }
         });
@@ -1129,15 +1129,55 @@ describe('TradingService Aegis live execution', () => {
         expect(symbolStores.get('ETHUSDT')?.get().mode).toBe('LONG_RIDE');
         expect(symbolStores.get('ETHUSDT')?.get().positionOwner).toBe('EXTERNAL');
         expect(symbolStores.get('ETHUSDT')?.get().tradeOrigin).toBe('MANUAL_EXTERNAL');
+        expect(symbolStores.get('ETHUSDT')?.get()).toEqual(expect.objectContaining({
+            lastLeverage: 40,
+            lastActualLeverage: 40,
+            lastEntryQty: 0.02,
+            lastEntryMargin: 3,
+            posSideMode: 'LONG'
+        }));
         expect(logger.warn).toHaveBeenCalledWith('aegis_manual_external_position_adopted', expect.objectContaining({
             symbol: 'ETHUSDT',
+            leverage: 40,
             ownership: 'MANUAL/EXTERNAL',
-            action: 'MANAGE_EXIT_LOGIC_ONLY_NO_BRACKETS'
+            action: 'MANAGE_GUARDS_AND_FILL_MISSING_BRACKETS'
         }));
         expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.placeTpClose).not.toHaveBeenCalled();
         expect(historyLogger.logTradeOpen).not.toHaveBeenCalled();
         expect(historyLogger.logTradeClose).not.toHaveBeenCalled();
+    });
+
+    it('adds default -40% SL and +100% TP for an unprotected manual 40x position', async () => {
+        const { exchange, service, symbolStores } = makeHarness({
+            symbols: ['SIUUSDT'],
+            symbolModes: { SIUUSDT: 'LIVE' },
+            symbolStates: { SIUUSDT: { mode: 'IDLE' } },
+            closeOrders: [],
+            symbolFilters: { qtyPrecision: 0, pricePrecision: 4, minNotional: 5, tickSize: 0.0001, stepSize: 1 },
+            regime: regimeConfig({ leverage: 20, hardStopRoe: -0.15, tpRoe: 0.25 }),
+            readActivePosition: {
+                sideMode: 'LONG',
+                qtyAbs: 100,
+                entryPrice: 0.7530,
+                leverage: 40,
+                isolatedMargin: 1.8825
+            },
+            markPrice: 0.7530
+        });
+
+        await service.start(false);
+
+        expect(exchange.placeStopClose).toHaveBeenCalledTimes(1);
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('SIUUSDT', 'LONG', 0.7455);
+        expect(exchange.placeTpClose).toHaveBeenCalledTimes(1);
+        expect(exchange.placeTpClose).toHaveBeenCalledWith('SIUUSDT', 'LONG', 0.7718);
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(symbolStores.get('SIUUSDT')?.get()).toEqual(expect.objectContaining({
+            lastLeverage: 40,
+            lastActualLeverage: 40,
+            lastEntryQty: 100
+        }));
     });
 
 	    it('opens Aegis Turbo position with isolated margin and immediate brackets when env and YAML allow live', async () => {
@@ -3037,6 +3077,58 @@ describe('TradingService Aegis live execution', () => {
         expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.placeTpClose).not.toHaveBeenCalled();
         expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+    });
+
+    it('uses live 40x leverage to activate trailing for an adopted manual position', async () => {
+        const manualOrders = [
+            { orderId: 'manual-sl', type: 'STOP_MARKET', stopPrice: 0.7455 },
+            { orderId: 'manual-tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 0.7681 }
+        ];
+        const { exchange, service, state } = makeHarness({
+            preserveUnverifiedState: true,
+            markPrice: 0.7630,
+            closeOrders: manualOrders,
+            symbolFilters: { qtyPrecision: 0, pricePrecision: 4, minNotional: 5, tickSize: 0.0001, stepSize: 1 },
+            readActivePosition: {
+                sideMode: 'LONG',
+                qtyAbs: 100,
+                entryPrice: 0.7530,
+                leverage: 40,
+                isolatedMargin: 1.8825
+            },
+            initialState: {
+                mode: 'LONG_RIDE',
+                positionOwner: 'EXTERNAL',
+                tradeOrigin: 'MANUAL_EXTERNAL',
+                ownershipStatus: 'UNKNOWN',
+                eligibleForBotMetrics: false,
+                metricsExclusionReason: 'MANUAL_POSITION',
+                lastSide: 'LONG',
+                lastEntryPrice: 0.7530,
+                lastLeverage: 20,
+                lastActualLeverage: 20,
+                lastEntryQty: 100,
+                lastEntryAt: Date.now(),
+                lastPeakPrice: 0.7530,
+                peakRoe: 0,
+                lowestRoe: 0,
+                lastTrailingActivationRoe: 0.40,
+                lastTrailingCallbackRoe: 0.08
+            }
+        });
+
+        await service.tick('ETHUSDT');
+
+        expect(state.get()).toEqual(expect.objectContaining({
+            lastLeverage: 40,
+            lastActualLeverage: 40,
+            lastTrailStop: 0.7622
+        }));
+        expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.7622, 100);
+        expect(exchange.cancelStopOrdersForSide).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'manual-sl');
+        expect(exchange.cancelOrderById).not.toHaveBeenCalledWith('ETHUSDT', 'manual-tp');
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
     });
 
     it('does not migrate or replace external quantity brackets when size is unchanged', async () => {
