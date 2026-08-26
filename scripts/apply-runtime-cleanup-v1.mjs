@@ -68,6 +68,26 @@ edit('src/app/services/TradingService.ts', (source) => {
   return source;
 });
 
+// The architecture migration intentionally changes two observable contracts:
+// 1) new bot-owned positions use the neutral owner BOT; AEGIS is legacy-read only.
+// 2) standalone Momentum entries have Momentum-native telemetry instead of masquerading
+//    as an Aegis live-entry event. Update only those exact expectations.
+edit('src/app/services/TradingService.aegis-live.test.ts', (source) => {
+  source = replaceOnce(
+    source,
+    'canonical bot owner test expectation',
+    `\t            positionOwner: 'AEGIS',\n\t            tradeOrigin: 'BOT',`,
+    `\t            positionOwner: 'BOT',\n\t            tradeOrigin: 'BOT',`,
+  );
+  source = replaceOnce(
+    source,
+    'standalone momentum telemetry expectation',
+    `        expect(logger.warn).toHaveBeenCalledWith('aegis_turbo_micro_live_entry', expect.objectContaining({\n            finalStrategy: 'momentum_ride',\n            side: 'LONG'\n        }));`,
+    `        expect(logger.warn).toHaveBeenCalledWith('momentum_ride_live_entry', expect.objectContaining({\n            symbol: 'ETHUSDT',\n            side: 'LONG',\n            leverage: 30,\n            positionFraction: 0.02\n        }));`,
+  );
+  return source;
+});
+
 // Remove package scripts whose source targets no longer exist. Keeping them makes the
 // public runtime surface lie about capabilities and obscures the architecture.
 edit('package.json', (source) => {
