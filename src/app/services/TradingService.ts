@@ -10,8 +10,7 @@ import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
 import {
     AegisMicroLiveGateDecision,
     buildAegisMicroLiveGateConfigFromEnv,
-    shouldEnterAegisTurboMicroLive,
-    shouldEnterStackingMomentumLive
+    shouldEnterAegisTurboMicroLive
 } from '../../domain/services/AegisMicroLiveGate';
 import {
     evaluateMainStackingMomentum,
@@ -103,6 +102,11 @@ import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
 import { resolveStrategyOwnership } from '../../domain/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../domain/strategies/aegis/AegisIdentity';
 import { createMomentumRideLegacyIdentity } from '../../domain/strategies/momentum-ride/MomentumRideIdentity';
+import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
+import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
+import { StrategyRouter } from '../strategy/StrategyRouter';
+import { MomentumRideStrategy, MomentumRideStrategyContext } from '../../domain/strategies/momentum-ride/MomentumRideStrategy';
+import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -199,6 +203,9 @@ export class TradingService {
     private readonly positionManagerRouter = new PositionManagerRouter<{ symbol: string; botState: BotState; symbolState: StateStore }>();
     private readonly aegisStrategyIdentity: StrategyIdentity;
     private readonly momentumStrategyIdentity: StrategyIdentity;
+    private readonly strategyRiskLedger = new StrategyRiskLedger();
+    private readonly sharedStrategyExecution: SharedStrategyExecutionService;
+    private readonly momentumStrategyRouter = new StrategyRouter<MomentumRideStrategyContext>();
 
     constructor(
         private deps: TradingServiceDeps,
@@ -207,6 +214,27 @@ export class TradingService {
         this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
         this.aegisStrategyIdentity = createAegisMigrationIdentity();
         this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
+        this.sharedStrategyExecution = new SharedStrategyExecutionService(
+            deps.exchange,
+            deps.logger,
+            {
+                feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
+                requireStop: true,
+                requireTakeProfit: true,
+                closeIfProtectionFails: true,
+                confirmationAttempts: 3,
+                confirmationDelaysMs: [300, 500, 1000],
+                maxMarketOpenAttempts: 6
+            }
+        );
+        const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
+        const momentumRuntimeMode = momentumRuntimeConfig.enabled !== true || momentumRuntimeConfig.mode === 'OFF'
+            ? 'OFF'
+            : momentumRuntimeConfig.mode === 'ENFORCE' ? 'LIVE' : 'SHADOW';
+        this.momentumStrategyRouter.register(new MomentumRideStrategy(
+            this.momentumStrategyIdentity,
+            momentumRuntimeMode
+        ));
 
         this.positionManagerRouter.register(new LegacyPositionManagerAdapter(
             'AEGIS_TURBO',
@@ -1671,43 +1699,23 @@ export class TradingService {
         );
     }
 
-    private evaluateStandaloneMomentumGate(
-        symbol: string,
-        signal: AegisTradingSignal,
-        side: Side,
-        dailyPnlPct?: number
-    ): AegisMicroLiveGateDecision {
-        const botState = this.stateForSymbol(symbol).get();
-        return shouldEnterStackingMomentumLive(
-            {
-                symbol,
-                signal: { aegis: signal.metadata?.aegis ?? signal.aegis },
-                hasOpenPosition: botState.mode !== 'IDLE',
-                tradesToday: this.tradesToday,
-                consecutiveLosses: this.consecutiveLossTracker.value,
-                timeSinceLastExitMs: Date.now() - (botState.lastExitAt || 0),
-                liquidityStress: this.detector[symbol]?.getLiquidityStress() || 0,
-                dailyPnlPct
-            },
-            this.getAegisTurboGateConfig(symbol),
-            side
-        );
-    }
-
-    private async findStandaloneMomentumCandidate(symbol: string): Promise<MainStackingMomentumDecision | undefined> {
+    private async findStandaloneMomentumCandidate(symbol: string): Promise<{ decision: MainStackingMomentumDecision; candles: Candle[] } | undefined> {
         const config = this.getAegisMomentumRideConfig();
         const symbolConfig = config.symbols[symbol];
         if (config.enabled !== true || config.standaloneMainReplica !== true || !symbolConfig?.enabled) return undefined;
 
         const now = Date.now();
-        const candles = (await this.deps.exchange.getCandles(symbol, '5m', 300))
-            .filter((candle) => this.isValidCandle(candle) && (!this.finiteNumber(candle.closeTime) || candle.closeTime <= now));
+        let candles = this.getCachedEntryQualityCandles(symbol);
+        if (candles.length < 120) {
+            candles = (await this.deps.exchange.getCandles(symbol, '5m', 300))
+                .filter((candle) => this.isValidCandle(candle) && (!this.finiteNumber(candle.closeTime) || candle.closeTime <= now));
+        }
         const sides: Side[] = ['LONG', 'SHORT'];
         for (const side of sides) {
             const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
             if (!sideConfig.enabled) continue;
             const decision = evaluateMainStackingMomentum(candles, side);
-            if (decision.allowed) return decision;
+            if (decision.allowed) return { decision, candles };
         }
         return undefined;
     }
@@ -1753,19 +1761,271 @@ export class TradingService {
         };
     }
 
+    private async lookForMomentumEntry(
+        symbol: string,
+        candidate: { decision: MainStackingMomentumDecision; candles: Candle[] }
+    ): Promise<void> {
+        const { exchange, logger, notifier } = this.deps;
+        const config = this.getAegisMomentumRideConfig();
+        const symbolConfig = config.symbols[symbol];
+        if (!symbolConfig?.enabled) return;
+
+        const side = candidate.decision.side;
+        const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
+        const now = Date.now();
+        const signalId = generateSignalId(symbol);
+        const tradeId = generateStrategyTradeId('MOMENTUM_RIDE', symbol);
+        const identity = this.momentumStrategyIdentity;
+
+        const balance = await exchange.getUSDTBalance();
+        const accountSnapshot = await this.readEntryAccountSnapshot(balance);
+        const dailyEquity = accountSnapshot.equityTotal ?? accountSnapshot.walletBalance ?? balance;
+        if (this.dailyStartBalance === null || this.dailyStartBalance <= 0) this.dailyStartBalance = dailyEquity;
+        const dayStart = Math.floor(now / 86400000) * 86400000;
+        const outcomes = await (
+            this.deps.closedTradeOutcomeReader?.()
+            ?? readAegisClosedTradeOutcomes(undefined, this.getTradingMode())
+        );
+        const botDailyPnlUsdt = outcomes.reduce((total, outcome) => {
+            const closedAt = Date.parse(outcome.closedAt);
+            return Number.isFinite(closedAt) && closedAt >= dayStart ? total + outcome.pnlUsdt : total;
+        }, 0);
+        const dailyPnlPct = this.dailyStartBalance > 0 ? botDailyPnlUsdt / this.dailyStartBalance : undefined;
+        this.lastDailyPnlPct = dailyPnlPct;
+
+        const strategyRisk = this.strategyRiskLedger.snapshot('MOMENTUM_RIDE', now);
+        const portfolioExposure = await this.readAegisPortfolioExposure();
+        let openMomentumPositions = 0;
+        for (const liveSymbol of this.getLiveAegisSymbols()) {
+            const state = this.stateForSymbol(liveSymbol).get();
+            if (state.mode !== 'IDLE' && state.lastStrategy === 'MOMENTUM_RIDE') openMomentumPositions += 1;
+        }
+        const hasOpenPosition = this.stateForSymbol(symbol).get().mode !== 'IDLE'
+            || await exchange.hasOpenPosition(symbol, 'ANY');
+        const gateConfig = this.getAegisTurboGateConfig(symbol);
+        const policy = {
+            longEnabled: symbolConfig.long.enabled,
+            shortEnabled: symbolConfig.short.enabled,
+            leverage: Math.min(sideConfig.leverage, config.safetyCaps.maxLeverage),
+            positionFraction: Math.min(sideConfig.positionFraction, config.safetyCaps.maxPositionFraction),
+            maxTradesPerDay: config.safetyCaps.maxMomentumTradesPerDay,
+            maxConsecutiveLosses: config.safetyCaps.maxConsecutiveMomentumLosses,
+            minCooldownMs: config.safetyCaps.cooldownAfterLossMinutes * 60_000,
+            maxLiquidityStress: gateConfig.maxLiquidityStress,
+            dailyLossStopPct: gateConfig.dailyLossStopPct,
+            maxOpenMomentumPositions: config.safetyCaps.maxOpenMomentumPositions,
+            maxTotalOpenPositionsWhenMomentum: config.safetyCaps.maxTotalOpenPositionsWhenMomentum,
+            disableSymbolAfterStopLossMs: config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000
+        };
+        const strategyContext: MomentumRideStrategyContext = {
+            symbol,
+            timestamp: now,
+            candles: candidate.candles,
+            side,
+            policy,
+            openPositionsCount: portfolioExposure.openPositions,
+            openMomentumPositions,
+            symbolLastStopLossAt: this.stateForSymbol(symbol).get().lastStopLossAt,
+            safety: {
+                hasOpenPosition,
+                tradesToday: strategyRisk.tradesToday,
+                consecutiveLosses: strategyRisk.consecutiveLosses,
+                timeSinceLastExitMs: this.strategyRiskLedger.timeSinceLastExitMs('MOMENTUM_RIDE', now),
+                liquidityStress: this.detector[symbol]?.getLiquidityStress() || 0,
+                dailyPnlPct
+            }
+        };
+        const decision = await this.momentumStrategyRouter.evaluate('MOMENTUM_RIDE', strategyContext);
+
+        await this.historyLogger.logSignal({
+            signal_id: signalId,
+            portfolio_session_id: getPortfolioSessionId(),
+            symbol,
+            strategy: 'MOMENTUM_RIDE',
+            strategy_version: identity.strategyVersion,
+            strategy_hash: identity.strategyHash,
+            config_hash: identity.configHash,
+            code_commit_sha: identity.codeCommitSha,
+            mode: this.getTradingMode(),
+            raw_action: side,
+            gated_action: decision.decision === 'ENTRY_INTENT' ? side : 'HOLD',
+            final_action: decision.decision === 'ENTRY_INTENT' ? side : 'HOLD',
+            reason: decision.reason,
+            gate_allowed: decision.decision === 'ENTRY_INTENT',
+            gate_reason: decision.reason,
+            executed: false,
+            trade_id: decision.decision === 'ENTRY_INTENT' ? tradeId : undefined,
+            leverage: policy.leverage,
+            position_fraction: policy.positionFraction,
+            metadata: {
+                authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
+                decisionMode: decision.mode,
+                diagnostics: decision.diagnostics,
+                pythonBrainUsed: false,
+                aegisEntryPolicyUsed: false,
+                e4Used: false
+            }
+        });
+
+        if (decision.decision !== 'ENTRY_INTENT') return;
+        if (decision.mode !== 'LIVE') return;
+        if (this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return;
+        if (CONFIG.AEGIS_LIVE_ENABLED !== true) return;
+        if (this.getSymbolMode(symbol) !== 'LIVE') return;
+        if (!sideConfig.enabled || policy.leverage <= 0 || policy.positionFraction <= 0) return;
+
+        const protection = this.getAegisTurboGateConfig(symbol);
+        const execution = await this.sharedStrategyExecution.execute({
+            identity,
+            signalId,
+            tradeId,
+            symbol,
+            side,
+            requestedAt: now,
+            leverage: policy.leverage,
+            positionFraction: policy.positionFraction,
+            stopRoe: protection.stopRoe,
+            takeProfitRoe: protection.takeProfitRoe,
+            metadata: {
+                authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
+                decisionReason: decision.reason,
+                decisionDiagnostics: decision.diagnostics,
+                protectionProfileSource: 'legacy_shared_protection_profile',
+                aegisEntryPolicyUsed: false,
+                pythonBrainUsed: false
+            }
+        });
+
+        await this.logAegisTradeEvent(symbol, execution.status === 'OPENED' ? 'POSITION_CONFIRMED' : 'ORDER_EXECUTION_FAILED', {
+            strategy: 'MOMENTUM_RIDE',
+            identity,
+            tradeId,
+            reason: execution.status === 'OPENED' ? 'momentum_shared_execution_opened' : execution.reason,
+            metadata: execution.metadata
+        });
+        if (execution.status !== 'OPENED') {
+            logger.warn('momentum_shared_execution_not_opened', { symbol, side, tradeId, status: execution.status, reason: execution.reason });
+            return;
+        }
+
+        const metadata = execution.metadata as Record<string, any>;
+        const guardianConfig = this.getAegisGuardianConfig(symbol, this.getAegisTurboRegimeConfig(symbol));
+        const symbolState = this.stateForSymbol(symbol);
+        symbolState.set({
+            mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+            positionOwner: 'AEGIS',
+            tradeOrigin: 'BOT',
+            ownershipStatus: 'VERIFIED',
+            eligibleForBotMetrics: true,
+            metricsExclusionReason: null,
+            lastSide: side,
+            lastEntryPrice: execution.entryPrice,
+            lastLeverage: execution.leverage,
+            lastActualLeverage: execution.leverage,
+            lastRequestedLeverage: policy.leverage,
+            lastEntryAt: execution.openedAt,
+            lastTradeId: tradeId,
+            lastStrategy: 'MOMENTUM_RIDE',
+            lastStrategyVersion: identity.strategyVersion,
+            lastStrategyHash: identity.strategyHash,
+            lastConfigHash: identity.configHash,
+            lastCodeCommitSha: identity.codeCommitSha,
+            lastStrategyFreezeState: identity.freezeState,
+            lastEntryQty: execution.quantity,
+            lastEntryMargin: this.finiteNumber(metadata.marginUsed) ? metadata.marginUsed : undefined,
+            lastPositionFraction: execution.positionFraction,
+            lastStopRoe: protection.stopRoe,
+            lastTakeProfitRoe: protection.takeProfitRoe,
+            lastStopPrice: this.finiteNumber(metadata.stopPrice) ? metadata.stopPrice : undefined,
+            lastBreakEvenRoe: guardianConfig.beTriggerRoe,
+            lastTrailingActivationRoe: protection.trailingActivationRoe,
+            lastTrailingCallbackRoe: protection.trailingCallbackRoe,
+            lastBracketStatus: 'OK',
+            breakEvenArmed: false,
+            breakEvenExecuted: false,
+            peakRoe: 0,
+            lowestRoe: 0,
+            lastPeakPrice: execution.entryPrice,
+            exitEyeNeutralCount: 0,
+            exitEyeOppositeCount: 0
+        });
+
+        this.strategyRiskLedger.recordOpen('MOMENTUM_RIDE', execution.openedAt);
+        this.tradesToday += 1;
+        await this.historyLogger.logTradeOpen({
+            ...VERIFIED_AEGIS_TRADE_OWNERSHIP,
+            trade_id: tradeId,
+            portfolio_session_id: getPortfolioSessionId(),
+            symbol,
+            strategy: 'MOMENTUM_RIDE',
+            strategy_version: identity.strategyVersion,
+            strategy_hash: identity.strategyHash,
+            config_hash: identity.configHash,
+            code_commit_sha: identity.codeCommitSha,
+            mode: this.getTradingMode(),
+            side,
+            opened_at: new Date(execution.openedAt).toISOString(),
+            entry_price: execution.entryPrice,
+            quantity: execution.quantity,
+            leverage: execution.leverage,
+            position_fraction: execution.positionFraction,
+            margin_estimated: this.finiteNumber(metadata.marginUsed) ? metadata.marginUsed : undefined,
+            notional_estimated: execution.entryPrice * execution.quantity,
+            stop_roe: protection.stopRoe,
+            take_profit_roe: protection.takeProfitRoe,
+            trailing_activation_roe: protection.trailingActivationRoe,
+            trailing_callback_roe: protection.trailingCallbackRoe,
+            sl_price: this.finiteNumber(metadata.stopPrice) ? metadata.stopPrice : undefined,
+            tp_price: this.finiteNumber(metadata.takeProfitPrice) ? metadata.takeProfitPrice : undefined,
+            brackets_confirmed: true,
+            status: 'OPEN',
+            metadata: {
+                authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
+                orderId: execution.orderId,
+                pythonBrainUsed: false,
+                aegisEntryPolicyUsed: false,
+                e4Used: false,
+                protectionProfileSource: 'legacy_shared_protection_profile'
+            }
+        });
+
+        logger.warn('momentum_ride_live_entry', {
+            symbol,
+            side,
+            tradeId,
+            entryPrice: execution.entryPrice,
+            quantity: execution.quantity,
+            leverage: execution.leverage,
+            positionFraction: execution.positionFraction
+        });
+        await notifier.sendMessage(
+            `⚡ **MOMENTUM RIDE ENTRY**\n` +
+            `${symbol} | ${side}\n` +
+            `Entrada: $${execution.entryPrice}\n` +
+            `Leverage: ${execution.leverage}x\n` +
+            `Strategy: MOMENTUM_RIDE\n` +
+            `Python/Aegis policy: NO`
+        );
+    }
+
     private async lookForEntry(symbol: string): Promise<void> {
         const { mlService, exchange, logger } = this.deps;
         const symbolState = this.stateForSymbol(symbol);
         const tradingMode = this.getTradingMode();
 
         try {
-            const baseSignal = await mlService.getSignal(symbol);
             const momentumConfig = this.getAegisMomentumRideConfig();
             const standaloneMomentum = await this.findStandaloneMomentumCandidate(symbol);
-            const selectedStrategy: AegisResearchStrategy = standaloneMomentum ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
-            const signal = standaloneMomentum
-                ? this.withStandaloneMomentumCandidate(baseSignal, standaloneMomentum)
-                : baseSignal;
+            if (standaloneMomentum) {
+                await this.lookForMomentumEntry(symbol, standaloneMomentum);
+                return;
+            }
+            if (momentumConfig.standaloneMainReplica === true && momentumConfig.aegisFallbackEnabled === false) {
+                return;
+            }
+
+            const signal = await mlService.getSignal(symbol);
+            const selectedStrategy: AegisResearchStrategy = 'AEGIS_TURBO';
             const signalId = generateSignalId(symbol);
             this.logAegisScan(symbol, signal);
             await this.logAegisTradeEvent(symbol, 'SIGNAL_RECEIVED', {
@@ -1773,19 +2033,6 @@ export class TradingService {
                 identity: this.strategyIdentity(selectedStrategy),
                 metadata: { signalId }
             });
-
-            if (momentumConfig.standaloneMainReplica === true && !standaloneMomentum && momentumConfig.aegisFallbackEnabled === false) {
-                await this.logAegisTurboSignal(symbol, signal, {
-                    signalId,
-                    executed: false,
-                    metadata: {
-                        ignored_reason: 'main_stacking_momentum_no_pattern',
-                        momentum_only: true,
-                        momentum_authority: MAIN_STACKING_MOMENTUM_AUTHORITY
-                    }
-                });
-                return;
-            }
 
             if (tradingMode === 'AEGIS_SHADOW') {
                 await this.logAegisTurboSignal(symbol, signal, { signalId, executed: false });
@@ -1835,9 +2082,7 @@ export class TradingService {
                 : undefined;
             this.lastDailyPnlPct = dailyPnlPct;
             const gateConfig = this.getAegisTurboGateConfig(symbol);
-            const gateDecision = standaloneMomentum
-                ? this.evaluateStandaloneMomentumGate(symbol, signal, standaloneMomentum.side, dailyPnlPct)
-                : this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
+            const gateDecision = this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
             await this.logEntryIntelligenceDispositionShadow(
                 symbol,
                 signal,
@@ -3585,6 +3830,7 @@ export class TradingService {
             });
 
             this.tradesToday++;
+            this.strategyRiskLedger.recordOpen(finalStrategyLabel, openedAtMs);
             if (phaseOShortLive) this.phaseOShortTradesToday++;
             this.lastEntryBalance = wallet;
             if (wallet > this.peakBalance) this.peakBalance = wallet;
@@ -4437,6 +4683,9 @@ export class TradingService {
     private async managePositionLegacy(symbol: string, botState: BotState, symbolState: StateStore): Promise<void> {
         const { exchange, logger, notifier } = this.deps;
         const side = botState.lastSide as Side;
+        const lifecycleOwner = resolveStrategyOwnership(botState);
+        const lifecycleStrategy = lifecycleOwner.status === 'OWNED' ? lifecycleOwner.strategyId : 'AEGIS_TURBO';
+        const lifecyclePolicy = strategyLifecyclePolicy(lifecycleStrategy);
         let entryPrice = botState.lastEntryPrice || 0;
         let leverage = botState.lastActualLeverage || botState.lastLeverage || this.getAegisTurboGateConfig(symbol).leverageCap;
         const requireBrackets = this.getAegisTurboYamlConfig()?.require_brackets !== false;
@@ -4592,18 +4841,20 @@ export class TradingService {
             const serverNow = await exchange.getServerTime();
             const tradeDuration = botState.lastEntryAt ? serverNow - botState.lastEntryAt : 0;
             const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
-            const exitEyeClosed = await this.evaluateExitEyeForPosition({
-                symbol,
-                side,
-                botState: symbolState.get(),
-                symbolState,
-                position,
-                markPrice,
-                currentRoe,
-                peakRoe: updatedPeakRoe,
-                lowestRoe: updatedLowestRoe,
-                tradeDurationMs: tradeDuration
-            });
+            const exitEyeClosed = lifecyclePolicy.useAegisExitEye
+                ? await this.evaluateExitEyeForPosition({
+                    symbol,
+                    side,
+                    botState: symbolState.get(),
+                    symbolState,
+                    position,
+                    markPrice,
+                    currentRoe,
+                    peakRoe: updatedPeakRoe,
+                    lowestRoe: updatedLowestRoe,
+                    tradeDurationMs: tradeDuration
+                })
+                : false;
             if (exitEyeClosed) return;
 
             const maxHoldMs = regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
@@ -4895,17 +5146,20 @@ export class TradingService {
                 mismatch_reason: exitType.mismatchReason
             }
         });
-        const streakUpdate = this.consecutiveLossTracker.record(tradeId, pnl);
-        if (streakUpdate.applied) {
-            await this.persistConsecutiveLossState(tradeId);
-            logger.info('aegis_consecutive_loss_streak_updated', {
-                symbol,
-                tradeId,
-                reason,
-                outcome: pnl < 0 ? 'LOSS' : 'NON_LOSS',
-                previous: streakUpdate.previous,
-                current: streakUpdate.current
-            });
+        this.strategyRiskLedger.recordClose(closeStrategy, tradeId, pnl, Date.now());
+        if (closeStrategy === 'AEGIS_TURBO') {
+            const streakUpdate = this.consecutiveLossTracker.record(tradeId, pnl);
+            if (streakUpdate.applied) {
+                await this.persistConsecutiveLossState(tradeId);
+                logger.info('aegis_consecutive_loss_streak_updated', {
+                    symbol,
+                    tradeId,
+                    reason,
+                    outcome: pnl < 0 ? 'LOSS' : 'NON_LOSS',
+                    previous: streakUpdate.previous,
+                    current: streakUpdate.current
+                });
+            }
         }
         const currentBalance = await exchange.getUSDTBalance();
         await this.logAegisTradeEvent(symbol, 'TRADE_CLOSED', {
@@ -4963,6 +5217,7 @@ export class TradingService {
                 ?? readAegisClosedTradeOutcomes(undefined, this.getTradingMode())
             );
             this.consecutiveLossTracker.restore(outcomes);
+            this.strategyRiskLedger.restoreClosedOutcomes(outcomes);
             this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
                 consecutiveLosses: this.consecutiveLossTracker.value,
                 processedClosedTrades: this.consecutiveLossTracker.processedCount,
@@ -5405,6 +5660,7 @@ export class TradingService {
             this.dailyStartBalance = null;
             this.lastDailyPnlPct = undefined;
             this.lastTradeDayReset = today;
+            this.strategyRiskLedger.resetDaily(Date.now());
         }
     }
 
