@@ -88,6 +88,7 @@ export class StrategyRiskLedger {
       const closedAt = Date.parse(outcome.closedAt);
       if (!Number.isFinite(closedAt)) continue;
       const state = this.state(strategyId, closedAt);
+      if (state.processedTradeIds.has(outcome.tradeId)) continue;
       state.processedTradeIds.add(outcome.tradeId);
       state.lastExitAt = closedAt;
       if (outcome.pnlUsdt < 0) {

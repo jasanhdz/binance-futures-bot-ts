@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { readAegisClosedTradeOutcomes } from './AegisClosedTradeHistoryReader';
+import {
+  readAegisClosedTradeOutcomes,
+  readStrategyClosedTradeOutcomes,
+} from './AegisClosedTradeHistoryReader';
 
 describe('readAegisClosedTradeOutcomes', () => {
   let tempDir: string;
@@ -78,5 +81,27 @@ describe('readAegisClosedTradeOutcomes', () => {
 
   it('returns no outcomes when the history directory does not exist', async () => {
     await expect(readAegisClosedTradeOutcomes(path.join(tempDir, 'missing'))).resolves.toEqual([]);
+  });
+
+  it('loads verified Aegis and Momentum outcomes for account-wide reconstruction', async () => {
+    const ownership = {
+      status: 'CLOSED',
+      mode: 'AEGIS_TURBO_MICRO_LIVE',
+      owner: 'AEGIS',
+      origin: 'BOT',
+      ownership_status: 'VERIFIED',
+      eligible_for_bot_metrics: true,
+      closed_at: '2026-07-27T01:30:00.000Z',
+      pnl_usdt: -1,
+    };
+    await fs.writeFile(
+      path.join(tempDir, 'turbo_trades_2026-07-27.jsonl'),
+      [
+        { ...ownership, trade_id: 'AEGIS-TURBO-1', strategy: 'AEGIS_TURBO' },
+        { ...ownership, trade_id: 'MOMENTUM-RIDE-1', strategy: 'MOMENTUM_RIDE' },
+      ].map((record) => JSON.stringify(record)).join('\n'),
+    );
+
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(2);
   });
 });

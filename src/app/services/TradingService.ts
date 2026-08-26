@@ -90,7 +90,10 @@ import {
     AegisClosedTradeOutcome,
     AegisConsecutiveLossTracker
 } from '../../domain/services/AegisConsecutiveLossTracker';
-import { readAegisClosedTradeOutcomes } from '../../infra/logging/AegisClosedTradeHistoryReader';
+import {
+    readAegisClosedTradeOutcomes,
+    readStrategyClosedTradeOutcomes
+} from '../../infra/logging/AegisClosedTradeHistoryReader';
 import { VERIFIED_AEGIS_TRADE_OWNERSHIP } from '../../infra/logging/AegisTradeOwnership';
 import {
     AegisConsecutiveLossState,
@@ -1789,7 +1792,7 @@ export class TradingService {
         const dayStart = Math.floor(now / 86400000) * 86400000;
         const outcomes = await (
             this.deps.closedTradeOutcomeReader?.()
-            ?? readAegisClosedTradeOutcomes(undefined, this.getTradingMode())
+            ?? readStrategyClosedTradeOutcomes(undefined, this.getTradingMode())
         );
         const botDailyPnlUsdt = outcomes.reduce((total, outcome) => {
             const closedAt = Date.parse(outcome.closedAt);
@@ -1834,7 +1837,7 @@ export class TradingService {
                 hasOpenPosition,
                 tradesToday: strategyRisk.tradesToday,
                 consecutiveLosses: strategyRisk.consecutiveLosses,
-                timeSinceLastExitMs: this.strategyRiskLedger.timeSinceLastExitMs('MOMENTUM_RIDE', now),
+                timeSinceLastExitMs: this.strategyRiskLedger.timeSinceLastLossMs('MOMENTUM_RIDE', now),
                 liquidityStress: this.detector[symbol]?.getLiquidityStress() || 0,
                 dailyPnlPct
             }
@@ -2087,7 +2090,7 @@ export class TradingService {
             const dayStart = Math.floor(Date.now() / 86400000) * 86400000;
             const verifiedOutcomes = await (
                 this.deps.closedTradeOutcomeReader?.()
-                ?? readAegisClosedTradeOutcomes(undefined, this.getTradingMode())
+                ?? readStrategyClosedTradeOutcomes(undefined, this.getTradingMode())
             );
             const botDailyPnlUsdt = verifiedOutcomes.reduce((total, outcome) => {
                 const closedAt = Date.parse(outcome.closedAt);
@@ -5112,12 +5115,17 @@ export class TradingService {
 
     private async restoreConsecutiveLossState(): Promise<void> {
         try {
-            const outcomes = await (
+            const aegisOutcomes = await (
                 this.deps.closedTradeOutcomeReader?.()
                 ?? readAegisClosedTradeOutcomes(undefined, this.getTradingMode())
             );
-            this.consecutiveLossTracker.restore(outcomes);
-            this.strategyRiskLedger.restoreClosedOutcomes(outcomes);
+            this.consecutiveLossTracker.restore(aegisOutcomes.filter((outcome) =>
+                !outcome.tradeId.startsWith('MOMENTUM-RIDE-')
+            ));
+            const strategyOutcomes = this.deps.closedTradeOutcomeReader
+                ? aegisOutcomes
+                : await readStrategyClosedTradeOutcomes(undefined, this.getTradingMode());
+            this.strategyRiskLedger.restoreClosedOutcomes(strategyOutcomes);
             this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
                 consecutiveLosses: this.consecutiveLossTracker.value,
                 processedClosedTrades: this.consecutiveLossTracker.processedCount,
