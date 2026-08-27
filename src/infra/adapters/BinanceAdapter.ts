@@ -72,6 +72,17 @@ function isTrueish(v: unknown): boolean {
   return v === true || v === 'true' || v === 'TRUE' || v === 1 || v === '1';
 }
 
+function isUnknownOrderError(error: unknown): boolean {
+  const candidate = error as {
+    code?: unknown;
+    response?: { data?: { code?: unknown } };
+    body?: { code?: unknown };
+  };
+  return [candidate?.code, candidate?.response?.data?.code, candidate?.body?.code]
+    .map((code) => Number(code))
+    .some((code) => code === -2013);
+}
+
 import { WebSocketManager } from './WebSocketManager';
 import {
   BinanceDepthDiffEvent,
@@ -708,7 +719,7 @@ export class BinanceExchange implements Exchange {
     };
   }
 
-  async marketOpen(symbol: string, side: Side, quantity: number) {
+  async marketOpen(symbol: string, side: Side, quantity: number, clientOrderId?: string) {
     const hedge = await this.mutationHedgeMode();
 
     const base: any = {
@@ -717,6 +728,7 @@ export class BinanceExchange implements Exchange {
       quantity: String(quantity),
       newOrderRespType: 'RESULT' as const,
       side: side === 'LONG' ? 'BUY' : 'SELL',
+      ...(clientOrderId ? { newClientOrderId: clientOrderId } : {}),
     };
     const payload = hedge ? { ...base, positionSide: side } : base;
 
@@ -741,6 +753,25 @@ export class BinanceExchange implements Exchange {
         return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
       }
       throw e;
+    }
+  }
+
+  async readMarketOpenByClientOrderId(
+    symbol: string,
+    clientOrderId: string,
+  ): Promise<{ avgPrice: number; orderId: string } | null> {
+    try {
+      const order = await this.enqueue(() =>
+        this.cli.futuresGetOrder({ symbol, origClientOrderId: clientOrderId }),
+      );
+      if (!['NEW', 'PARTIALLY_FILLED', 'FILLED'].includes(String(order.status))) {
+        throw new Error(`market open reconciliation returned non-accepted status: ${String(order.status)}`);
+      }
+      return { avgPrice: Number(order.avgPrice || 0), orderId: String(order.orderId) };
+    } catch (error) {
+      noteRateLimitFromError(error);
+      if (isUnknownOrderError(error)) return null;
+      throw error;
     }
   }
 

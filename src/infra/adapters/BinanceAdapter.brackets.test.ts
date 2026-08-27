@@ -4,6 +4,7 @@ const mockClient = vi.hoisted(() => ({
   futuresPing: vi.fn(() => Promise.resolve({})),
   futuresPositionMode: vi.fn(() => Promise.resolve({ dualSidePosition: true })),
   futuresOrder: vi.fn(() => Promise.resolve({ orderId: 123 })),
+  futuresGetOrder: vi.fn(() => Promise.resolve({ orderId: 123, avgPrice: '100', status: 'FILLED' })),
 }));
 
 vi.mock('binance-api-node', () => ({
@@ -25,6 +26,7 @@ describe('BinanceExchange bracket placement', () => {
     mockClient.futuresPing.mockResolvedValue({});
     mockClient.futuresPositionMode.mockResolvedValue({ dualSidePosition: true });
     mockClient.futuresOrder.mockResolvedValue({ orderId: 123 });
+    mockClient.futuresGetOrder.mockResolvedValue({ orderId: 123, avgPrice: '100', status: 'FILLED' });
   });
 
   it('places stop brackets as standard close-position orders first', async () => {
@@ -127,5 +129,21 @@ describe('BinanceExchange bracket placement', () => {
     );
 
     expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+  });
+
+  it('forwards a client order ID and reads market opens by that ID', async () => {
+    const exchange = new BinanceExchange(logger as any);
+
+    await exchange.marketOpen('BTCUSDT', 'LONG', 0.02, 'se_client-order-123');
+    const order = await exchange.readMarketOpenByClientOrderId('BTCUSDT', 'se_client-order-123');
+
+    expect(mockClient.futuresOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ newClientOrderId: 'se_client-order-123' }),
+    );
+    expect(mockClient.futuresGetOrder).toHaveBeenCalledWith({
+      symbol: 'BTCUSDT',
+      origClientOrderId: 'se_client-order-123',
+    });
+    expect(order).toEqual({ avgPrice: 100, orderId: '123' });
   });
 });

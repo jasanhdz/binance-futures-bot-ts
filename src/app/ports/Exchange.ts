@@ -109,7 +109,12 @@ export interface Exchange {
     symbol: string,
     side: Side,
     quantity: number,
+    clientOrderId?: string,
   ): Promise<{ avgPrice: number; orderId: string }>;
+  readMarketOpenByClientOrderId(
+    symbol: string,
+    clientOrderId: string,
+  ): Promise<{ avgPrice: number; orderId: string } | null>;
   placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean>;
   placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean>;
   closeSideMarketSafe(

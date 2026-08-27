@@ -46,6 +46,7 @@ function exchangeMock(): Exchange {
       minNotional: 5,
     }),
     marketOpen: vi.fn().mockResolvedValue({ avgPrice: 100, orderId: 'order-1' }),
+    readMarketOpenByClientOrderId: vi.fn().mockResolvedValue(null),
     readActivePosition: vi.fn().mockResolvedValue({
       sideMode: 'LONG',
       qtyAbs: 2,
@@ -94,6 +95,61 @@ describe('SharedStrategyExecutionService protection policy', () => {
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
     expect(exchange.listCloseOrdersForSide).not.toHaveBeenCalled();
+  });
+
+  it('uses a reconciled market fill after a lost open response without resubmitting', async () => {
+    vi.mocked(exchange.marketOpen).mockRejectedValueOnce(new Error('request timed out'));
+    vi.mocked(exchange.readMarketOpenByClientOrderId).mockResolvedValueOnce({
+      avgPrice: 101,
+      orderId: 'reconciled-order',
+    });
+
+    const result = await service.execute(intent());
+
+    expect(result).toMatchObject({ status: 'OPENED', orderId: 'reconciled-order', entryPrice: 100 });
+    expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+    expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledWith(
+      'ETHUSDT',
+      expect.stringMatching(/^se_[a-f0-9]{33}$/),
+    );
+  });
+
+  it('does not retry an ambiguous open error when reconciliation finds no order', async () => {
+    vi.mocked(exchange.marketOpen).mockRejectedValueOnce(new Error('request timed out'));
+
+    const result = await service.execute(intent());
+
+    expect(result).toMatchObject({ status: 'FAILED', reason: 'EXCHANGE_REJECTED' });
+    expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledTimes(1);
+    expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('reduces and safely retries only a definite size rejection after absent reconciliation', async () => {
+    vi.mocked(exchange.marketOpen)
+      .mockRejectedValueOnce({ code: -2019, message: 'Margin is insufficient' })
+      .mockResolvedValueOnce({ avgPrice: 100, orderId: 'order-2' });
+
+    const result = await service.execute(intent());
+
+    expect(result).toMatchObject({ status: 'OPENED', orderId: 'order-2' });
+    expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledTimes(1);
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(
+      1,
+      'ETHUSDT',
+      'LONG',
+      2,
+      expect.stringMatching(/^se_[a-f0-9]{33}$/),
+    );
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(
+      2,
+      'ETHUSDT',
+      'LONG',
+      1.8,
+      expect.stringMatching(/^se_[a-f0-9]{33}$/),
+    );
+    expect(vi.mocked(exchange.marketOpen).mock.calls[0]?.[3]).toBe(
+      vi.mocked(exchange.marketOpen).mock.calls[1]?.[3],
+    );
   });
 
   it('preserves the existing ROE stop calculation and placement path', async () => {

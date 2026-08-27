@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Exchange, PositionInfo, SymbolFilters, USDTAccountSnapshot } from '../ports/Exchange';
 import { Logger } from '../ports/Logger';
 import {
@@ -129,11 +130,33 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
 
       marketOpenAttempt = 1;
       let order: { avgPrice: number; orderId: string };
+      const clientOrderId = marketOpenClientOrderId(intent);
       while (true) {
         try {
-          order = await this.exchange.marketOpen(intent.symbol, intent.side, quantity);
+          order = await this.exchange.marketOpen(intent.symbol, intent.side, quantity, clientOrderId);
           break;
         } catch (error) {
+          let reconciledOrder: { avgPrice: number; orderId: string } | null;
+          try {
+            reconciledOrder = await this.exchange.readMarketOpenByClientOrderId(
+              intent.symbol,
+              clientOrderId,
+            );
+          } catch (reconciliationError) {
+            this.logger.error('shared_execution_market_open_reconciliation_failed', {
+              ...baseMetadata,
+              symbol: intent.symbol,
+              side: intent.side,
+              tradeId: intent.tradeId,
+              clientOrderId,
+              error: String(reconciliationError),
+            });
+            throw reconciliationError;
+          }
+          if (reconciledOrder) {
+            order = reconciledOrder;
+            break;
+          }
           if (
             !isRecoverableEntrySizeError(error) ||
             marketOpenAttempt >= this.config.maxMarketOpenAttempts
@@ -418,6 +441,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           sideMode: position.sideMode,
           marketOpenAttempts: marketOpenAttempt,
           quantityAdjustments,
+          clientOrderId,
         },
       };
     } catch (error) {
@@ -659,6 +683,23 @@ function isRecoverableEntrySizeError(error: unknown): boolean {
     message.includes('quantity greater than max quantity') ||
     message.includes('maximum allowable position')
   );
+}
+
+function marketOpenClientOrderId(intent: StrategyExecutionIntent): string {
+  const executionIntent = [
+    intent.identity.strategyId,
+    intent.identity.strategyVersion,
+    intent.identity.strategyHash ?? '',
+    intent.identity.configHash ?? '',
+    intent.identity.codeCommitSha,
+    intent.signalId ?? '',
+    intent.tradeId,
+    intent.symbol,
+    intent.side,
+    intent.requestedAt,
+  ].join('|');
+  // Binance accepts client order IDs up to 36 characters; retain a fixed prefix for auditability.
+  return `se_${createHash('sha256').update(executionIntent).digest('hex').slice(0, 33)}`;
 }
 
 function finite(value: unknown): value is number {
