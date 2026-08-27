@@ -44,15 +44,17 @@ const baselineOperationalDigests: Record<string, string> = {
     '282d6e7bd9e68e95f69543c80816f2b548768cdfef0031aeb16f8d860e22cab2',
 };
 
+// Phase 1 owner-authorized architecture checkpoint. These are operational
+// source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
-  'regime_config.example.yaml': '1d2a61eff556509f3c428d1b9804d4af57772a644358432044152a274c05b113',
-  'regime_config.live.yaml': '09e1d9d621b576b61eca3717b0c51cfdd4006af2ad2dbfd1004e27c699cdce6b',
+  'config/regime_config.example.yaml': 'e8afb7bf8b6388a1fe8dc08c1c6053530159d7b6577a77ee3e27a5f1718ca702',
+  'regime_config.live.yaml': '9fe6d035bc6fadbfb0611e8c691dc19b7a0802cb2ce59b81ce5b567392379e22',
   'src/app/services/TradingService.ts':
     'efbffc894fc3b95636605e12ee836ea34d6a9408aef6f309b8a7c33db44d193a',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
-    'd3c80274735bf8810681e00dc503158b7f43e5947c5e4066bccdb34c80f72211',
+    '8e1123200a113a482edc7d9826d1389b083b152e35b4b461b97abffd1eb6b690',
   'src/domain/index.ts': '0678dbf15543c538cd1654333ac0a3546486e3bdfb499ae1dbd28e94204109a5',
   'src/domain/services/AegisStrategy.ts':
     '13ed0714ec4c7e00cf9814d1761e478b0dd349e4f024a81ae3277395202cc51f',
@@ -65,7 +67,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/AegisEntryQualityGate.ts':
     '50d5a1eba0a0618bc3b6a41eb6fe1326ffa1562235dc0380c6792c480470947d',
   'src/domain/services/AegisMicroLiveGate.ts':
-    'a18fda3291baa07066492fd9f9b4085b784fdf7b1abb1cdab485310a2d596f58',
+    '997230d7f659771bade9550744bebf772e04bf861e2c23b5b93612b63253f7e8',
   'src/domain/services/AegisProbeMode.ts':
     'fa2e593f982326fcfb64831538179c05972f2d9325aad617398df26174a5b351',
   'src/domain/services/AegisRegimeGuard.ts':
@@ -83,7 +85,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':
     '041aadf526f858e70ce33d15516ba012dc3aca43f68d4ca2e88df265e054f07c',
   'src/infra/config/ConfigLoader.ts':
-    'cb4f38e1dba3f3e66fb52af2dc857230d829b3b31917f88ee1bee9ab2122086d',
+    '79a0eeff7635d72f67d56d421679913c083cc2cd6728d4141a0977a92b8fedd2',
 };
 
 type GuardFixture = [
@@ -198,7 +200,7 @@ describe('original TypeScript operational semantics', () => {
   });
 
   it('keeps Shadow, prospective, brain, and audit modules out of the operational path', () => {
-    const forbidden = /(?:from|require\()\s*['"][^'"]*(?:\/brain\/|\/prospective\/|\/audit\/)/;
+    const forbidden = /(?:from|require\()\s*['"][^'"]*(?:\/tooling\/|\/brain\/|\/prospective\/|\/audit\/)/;
     const operationalPaths = [
       ...Object.keys(baselineOperationalDigests),
       ...Object.keys(ownerAuthorizedCurrentBrainContractDigests),
