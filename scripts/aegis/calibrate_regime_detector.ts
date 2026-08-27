@@ -4,8 +4,8 @@ import {
     DEFAULT_CALIBRATION_THRESHOLDS,
     RegimeCalibrationOptions,
     renderCalibrationMarkdown
-} from '../../src/tools/regimeDetectorCalibrationCore';
-import { DEFAULT_DEEP_REGIME_SYMBOLS } from '../../src/tools/regimeDetectorDeepAuditCore';
+} from '../../src/tooling/aegis/regimeDetectorCalibrationCore';
+import { DEFAULT_DEEP_REGIME_SYMBOLS } from '../../src/tooling/aegis/regimeDetectorDeepAuditCore';
 
 async function main(): Promise<void> {
     const options = parseArgs(process.argv.slice(2));

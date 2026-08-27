@@ -6,8 +6,8 @@ import {
     AegisTurboTradeCloseInput,
     AegisTurboTradeEventInput,
     AegisTurboTradeOpenInput
-} from '../infra/logging/AegisTurboHistoryLogger';
-import { isVerifiedAegisMetricRecord } from '../infra/logging/AegisTradeOwnership';
+} from '../../infra/logging/AegisTurboHistoryLogger';
+import { isVerifiedAegisMetricRecord } from '../../infra/logging/AegisTradeOwnership';
 
 type AnalyzeOptions = {
     date?: string;

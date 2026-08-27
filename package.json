@@ -1,7 +1,7 @@
 {
   "name": "binance-futures-bot-ts",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "dist/main.js",
   "license": "MIT",
   "scripts": {
     "format": "prettier --write .",
@@ -11,9 +11,9 @@
     "start:testnet": "DOTENV_CONFIG_PATH=.env.testnet node -r dotenv/config dist/main.js",
     "start:prod": "DOTENV_CONFIG_PATH=.env node -r dotenv/config dist/main.js",
     "test": "vitest run",
-    "audit:usdm-readonly": "node -r dotenv/config dist/audit/binance-usdm-readonly-audit.js",
-    "audit:usdm-readonly:static": "node dist/audit/binance-usdm-readonly-static-safety.js",
-    "analyze:aegis-turbo": "ts-node src/tools/analyzeAegisTurboHistory.ts",
+    "audit:usdm-readonly": "node -r dotenv/config dist/tooling/audit/binance-usdm-readonly/binance-usdm-readonly-audit.js",
+    "audit:usdm-readonly:static": "node dist/tooling/audit/binance-usdm-readonly/binance-usdm-readonly-static-safety.js",
+    "analyze:aegis-turbo": "ts-node src/app/analysis/AegisTurboHistoryAnalyzer.ts",
     "audit:regime-guard": "ts-node scripts/aegis/audit_regime_guard.ts",
     "audit:regime-detector": "ts-node scripts/aegis/audit_regime_detector_deep.ts",
     "calibrate:regime-detector": "ts-node scripts/aegis/calibrate_regime_detector.ts",

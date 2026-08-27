@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RegimeEngineV2InputCandle } from '../domain/services/regime-v2/RegimeEngineV2.types';
+import { RegimeEngineV2InputCandle } from '../../domain/services/regime-v2/RegimeEngineV2.types';
 import { buildRegimeEngineV2MlDatasetRows } from './regimeEngineV2MlDatasetCore';
 
 describe('regimeEngineV2MlDatasetCore', () => {

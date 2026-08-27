@@ -1,7 +1,7 @@
 import {
     exportRegimeEngineV2MlDataset,
     RegimeEngineV2MlDatasetOptions
-} from '../../src/tools/regimeEngineV2MlDatasetCore';
+} from '../../src/tooling/aegis/regimeEngineV2MlDatasetCore';
 
 async function main(): Promise<void> {
     const options = parseArgs(process.argv.slice(2));

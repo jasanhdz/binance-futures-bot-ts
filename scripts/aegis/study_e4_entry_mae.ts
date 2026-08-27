@@ -1,4 +1,4 @@
-import { renderE4EntryMaeStudyMarkdown, runE4EntryMaeStudy } from '../../src/tools/e4EntryMaeStudyCore';
+import { renderE4EntryMaeStudyMarkdown, runE4EntryMaeStudy } from '../../src/tooling/aegis/e4EntryMaeStudyCore';
 
 async function main(): Promise<void> {
     const args = process.argv.slice(2);

@@ -1,6 +1,6 @@
 #!/usr/bin/env ts-node
 import path from 'path';
-import { auditRegimeGuard, DEFAULT_REGIME_AUDIT_SYMBOLS, renderConsoleSummary } from '../../src/tools/regimeGuardAuditCore';
+import { auditRegimeGuard, DEFAULT_REGIME_AUDIT_SYMBOLS, renderConsoleSummary } from '../../src/tooling/aegis/regimeGuardAuditCore';
 
 type CliOptions = {
     logsDir?: string;

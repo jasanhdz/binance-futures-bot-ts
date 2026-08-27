@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { RegimeEngineV2InputCandle } from '../domain/services/regime-v2/RegimeEngineV2.types';
+import { RegimeEngineV2InputCandle } from '../../domain/services/regime-v2/RegimeEngineV2.types';
 import {
     buildRegimeEngineV2AuditSamples,
     HitOutcome,

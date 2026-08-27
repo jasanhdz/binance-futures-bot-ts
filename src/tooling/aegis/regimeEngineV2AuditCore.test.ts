@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RegimeEngineV2Decision, RegimeEngineV2InputCandle } from '../domain/services/regime-v2/RegimeEngineV2.types';
+import { RegimeEngineV2Decision, RegimeEngineV2InputCandle } from '../../domain/services/regime-v2/RegimeEngineV2.types';
 import {
     buildRegimeEngineV2AuditReport,
     buildRegimeEngineV2AuditSamples,

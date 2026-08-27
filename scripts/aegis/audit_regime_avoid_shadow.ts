@@ -2,7 +2,7 @@ import {
     auditRegimeAvoidShadow,
     RegimeAvoidShadowAuditOptions,
     renderRegimeAvoidShadowMarkdown
-} from '../../src/tools/regimeAvoidShadowAuditCore';
+} from '../../src/tooling/aegis/regimeAvoidShadowAuditCore';
 
 async function main(): Promise<void> {
     const options = parseArgs(process.argv.slice(2));

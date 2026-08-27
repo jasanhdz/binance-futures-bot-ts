@@ -8,7 +8,7 @@ describe('recentTradeLossAuditCore', () => {
             'ts-node/register',
             '-e',
             [
-                "const { auditRecentLosingTrades } = require('./src/tools/recentTradeLossAuditCore');",
+                "const { auditRecentLosingTrades } = require('./src/tooling/aegis/recentTradeLossAuditCore');",
                 "auditRecentLosingTrades({ repoRoot: process.cwd(), symbols: ['ETHUSDT'], from: '2099-01-01', to: '2099-01-02', charts: false, writeReports: false })",
                 ".then((report) => { console.log(JSON.stringify({ trades: report.trades.length, warnings: report.warnings.length })); })",
                 ".catch((error) => { console.error(error); process.exit(1); });"

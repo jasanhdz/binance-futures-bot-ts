@@ -1,4 +1,4 @@
-import { auditLongRiskShadow } from '../../src/tools/longRiskShadowAuditCore';
+import { auditLongRiskShadow } from '../../src/tooling/aegis/longRiskShadowAuditCore';
 
 function arg(name: string): string | undefined {
     const index = process.argv.indexOf(name);

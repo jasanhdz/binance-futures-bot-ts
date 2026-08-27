@@ -11,7 +11,7 @@ import {
     formatSymbolSignalMessage
 } from '../messages/AegisMessageFormatter';
 import { formatAegisReason } from '../messages/AegisReasonFormatter';
-import { analyzeAegisTurboHistory } from '../../tools/analyzeAegisTurboHistory';
+import { analyzeAegisTurboHistory } from '../analysis/AegisTurboHistoryAnalyzer';
 import { CONFIG } from '../../infra/config/environment';
 import { TelegramCommandHandlerDeps, TelegramCommandHandlersPort } from './TelegramCommandTypes';
 import { AegisBlocksReportService } from './AegisBlocksReportService';

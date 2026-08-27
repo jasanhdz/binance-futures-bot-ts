@@ -2,7 +2,7 @@ import {
     auditRecentLosingTrades,
     RecentTradeLossAuditOptions,
     renderRecentLossAuditMarkdown
-} from '../../src/tools/recentTradeLossAuditCore';
+} from '../../src/tooling/aegis/recentTradeLossAuditCore';
 
 async function main(): Promise<void> {
     const options = parseArgs(process.argv.slice(2));

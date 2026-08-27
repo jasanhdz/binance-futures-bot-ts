@@ -2,7 +2,7 @@ import {
     auditRegimeEngineV2,
     RegimeEngineV2AuditOptions,
     renderRegimeEngineV2Markdown
-} from '../../src/tools/regimeEngineV2AuditCore';
+} from '../../src/tooling/aegis/regimeEngineV2AuditCore';
 
 async function main(): Promise<void> {
     const options = parseArgs(process.argv.slice(2));

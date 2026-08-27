@@ -10,7 +10,7 @@ import {
     TechnicalRegimeLabel,
     TechnicalRegimeThresholds
 } from './regimeDetectorDeepAuditCore';
-import { Side } from '../domain/types';
+import { Side } from '../../domain/types';
 
 export type BucketClassification =
     | 'strong_allow'

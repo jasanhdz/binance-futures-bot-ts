@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { isVerifiedAegisMetricRecord } from '../infra/logging/AegisTradeOwnership';
-import { AegisLongRiskShadowAssessment, evaluateAegisLongRiskShadow } from '../domain/services/aegis-entry/guards/AegisLongRiskShadowGuardAdapter';
+import { isVerifiedAegisMetricRecord } from '../../infra/logging/AegisTradeOwnership';
+import { AegisLongRiskShadowAssessment, evaluateAegisLongRiskShadow } from '../../domain/services/aegis-entry/guards/AegisLongRiskShadowGuardAdapter';
 
 type JsonRecord = Record<string, any>;
 

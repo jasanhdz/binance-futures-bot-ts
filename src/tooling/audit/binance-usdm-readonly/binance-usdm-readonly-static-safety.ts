@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const AUDIT_ENTRY_FILES = [
-  'src/audit/binance-usdm-readonly-audit.ts',
-  'src/audit/binance-usdm-readonly-audit-client.ts',
-  'src/audit/binance-usdm-readonly-reconciliation.ts',
+  'src/tooling/audit/binance-usdm-readonly/binance-usdm-readonly-audit.ts',
+  'src/tooling/audit/binance-usdm-readonly/binance-usdm-readonly-audit-client.ts',
+  'src/tooling/audit/binance-usdm-readonly/binance-usdm-readonly-reconciliation.ts',
 ] as const;
 
 const FORBIDDEN_IMPORT_FRAGMENTS = [

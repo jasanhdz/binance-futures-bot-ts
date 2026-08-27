@@ -1,7 +1,7 @@
 import { createReadStream, promises as fs } from 'fs';
 import path from 'path';
 import { createInterface } from 'readline';
-import { isVerifiedAegisMetricRecord } from '../infra/logging/AegisTradeOwnership';
+import { isVerifiedAegisMetricRecord } from '../../infra/logging/AegisTradeOwnership';
 
 type JsonRecord = Record<string, any>;
 
