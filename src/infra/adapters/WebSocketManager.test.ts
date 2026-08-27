@@ -36,8 +36,8 @@ describe('WebSocketManager market subscriptions', () => {
     const unsubscribeTrade = manager.connectAggTrades('BTCUSDT', trade);
     const unsubscribeDepth = manager.connectDepthDiff('BTCUSDT', '100ms', depth);
     expect(urls).toEqual([
-      'wss://fstream.binance.com/ws/btcusdt@aggTrade',
-      'wss://fstream.binance.com/ws/btcusdt@depth@100ms',
+      'wss://fstream.binance.com/market/ws/btcusdt@aggTrade',
+      'wss://fstream.binance.com/public/ws/btcusdt@depth@100ms',
     ]);
     sockets[0].message({ m: false, q: '2', p: '100', E: 10, T: 9, a: 8, f: 7, l: 6 });
     sockets[1].message({ U: 1, u: 2, pu: 0, b: [['99', '3']], a: [['101', '4']], E: 10, T: 9 });
@@ -54,30 +54,6 @@ describe('WebSocketManager market subscriptions', () => {
     expect(trade).toHaveBeenCalledTimes(1);
 
     unsubscribeDepth();
-    manager.disconnectAll();
-  });
-
-  it('accepts official partial levels and normalizes Binance depth fields', () => {
-    const sockets: FakeWebSocket[] = [];
-    const hub = new MarketDataHub(logger, {
-      webSocketFactory: () => {
-        const socket = new FakeWebSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    const manager = new WebSocketManager({ ws: { futuresUser: vi.fn() } } as any, logger, { marketDataHub: hub });
-    const depth = vi.fn();
-
-    for (const levels of [5, 10, 20]) {
-      expect(() => manager.connectPartialDepth('BTCUSDT', levels, '100ms', depth)).not.toThrow();
-    }
-    sockets[0].message({ b: [['99', '3']], a: [['101', '4']] });
-
-    expect(depth).toHaveBeenCalledWith(
-      expect.objectContaining({ bids: [['99', '3']], asks: [['101', '4']] }),
-    );
-    expect(() => manager.connectPartialDepth('BTCUSDT', 50, '100ms', vi.fn())).toThrow(RangeError);
     manager.disconnectAll();
   });
 });

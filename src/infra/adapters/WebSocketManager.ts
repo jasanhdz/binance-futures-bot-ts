@@ -72,9 +72,6 @@ export class WebSocketManager {
     speed: '100ms' | '250ms' | '500ms',
     callback: (depth: any) => void,
   ): () => void {
-    if (levels !== 5 && levels !== 10 && levels !== 20) {
-      throw new RangeError('Partial depth levels must be one of 5, 10, or 20');
-    }
     return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth${levels}@${speed}`, PUBLIC, (event) => {
       callback({ ...event, bids: event.b ?? event.bids ?? [], asks: event.a ?? event.asks ?? [] });
     });

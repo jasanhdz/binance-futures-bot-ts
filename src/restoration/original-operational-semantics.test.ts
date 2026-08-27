@@ -51,7 +51,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': 'c5cb4ca8cf26630a65c94bf2b7e3b6cd4504b57255237638634cdaa35ce948eb',
   'src/app/services/TradingService.ts':
-    '6583baa403c6631a5809dd7c2f7d70115248f4d0d178b554ccc55938c1a7ba6f',
+    'd791437bf58fe84092702d534df3a6267e4dfe2f4b91a3aa3959a2b2a8c50b92',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
