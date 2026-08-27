@@ -11,8 +11,10 @@ export interface MicroBurstStorageOptions {
   now?: () => number;
   /** Maximum records accepted before archival overflow is recorded as a durable gap. */
   maxArchiveQueueRecords?: number;
-  /** Maximum records processed by one background turn. */
+  /** Maximum records per immutable segment before forced flush. */
   maxArchiveBatchRecords?: number;
+  /** Maximum milliseconds to hold a pending batch before flushing. */
+  maxBatchLatencyMs?: number;
 }
 
 export interface ArchiveTrade {
@@ -52,6 +54,10 @@ export interface StorageHealth {
   writtenRecords: number;
   overflowRecords: number;
   draining: boolean;
+  activeBatchCount: number;
+  openBatchRecords: number;
+  segmentsWritten: number;
+  averageRecordsPerSegment: number;
 }
 
 interface ArchiveWrite {
@@ -60,6 +66,15 @@ interface ArchiveWrite {
   eventTime: number;
   receivedAtMs: number;
   payload: unknown;
+}
+
+interface PendingBatch {
+  key: string;
+  type: 'trades' | 'depth';
+  symbol: string;
+  hourStartMs: number;
+  records: ArchiveWrite[];
+  timer: NodeJS.Timeout | null;
 }
 
 interface ArchiveSegmentMetadata {
@@ -76,6 +91,7 @@ interface ArchiveSegmentMetadata {
 
 const DEFAULT_MAX_ARCHIVE_QUEUE_RECORDS = 50_000;
 const DEFAULT_MAX_ARCHIVE_BATCH_RECORDS = 500;
+const DEFAULT_MAX_BATCH_LATENCY_MS = 750;
 
 /**
  * Durable, best-effort market-data storage. Methods deliberately return false
@@ -84,10 +100,10 @@ const DEFAULT_MAX_ARCHIVE_BATCH_RECORDS = 500;
 export class MicroBurstStorage {
   private db!: Database.Database;
   private readonly now: () => number;
-  private readonly archiveQueue: ArchiveWrite[] = [];
   private readonly maxArchiveQueueRecords: number;
   private readonly maxArchiveBatchRecords: number;
-  private draining = false;
+  private readonly maxBatchLatencyMs: number;
+  private readonly pendingBatches = new Map<string, PendingBatch>();
   private segmentSequence = 0;
   private health: StorageHealth = {
     healthy: true,
@@ -101,12 +117,26 @@ export class MicroBurstStorage {
     writtenRecords: 0,
     overflowRecords: 0,
     draining: false,
+    activeBatchCount: 0,
+    openBatchRecords: 0,
+    segmentsWritten: 0,
+    averageRecordsPerSegment: 0,
   };
 
   constructor(private readonly options: MicroBurstStorageOptions) {
     this.now = options.now ?? Date.now;
-    this.maxArchiveQueueRecords = positiveInteger(options.maxArchiveQueueRecords, DEFAULT_MAX_ARCHIVE_QUEUE_RECORDS);
-    this.maxArchiveBatchRecords = positiveInteger(options.maxArchiveBatchRecords, DEFAULT_MAX_ARCHIVE_BATCH_RECORDS);
+    this.maxArchiveQueueRecords = positiveInteger(
+      options.maxArchiveQueueRecords,
+      DEFAULT_MAX_ARCHIVE_QUEUE_RECORDS,
+    );
+    this.maxArchiveBatchRecords = positiveInteger(
+      options.maxArchiveBatchRecords,
+      DEFAULT_MAX_ARCHIVE_BATCH_RECORDS,
+    );
+    this.maxBatchLatencyMs = positiveInteger(
+      options.maxBatchLatencyMs,
+      DEFAULT_MAX_BATCH_LATENCY_MS,
+    );
     this.health.queueCapacity = this.maxArchiveQueueRecords;
     try {
       fs.mkdirSync(path.dirname(options.databasePath), { recursive: true });
@@ -217,7 +247,9 @@ export class MicroBurstStorage {
 
   markOutcomeJournaled(signalId: string): boolean {
     return this.safe(() => {
-      this.db.prepare(`UPDATE micro_burst_outcomes SET journal_status = 'WRITTEN' WHERE signal_id = ?`).run(signalId);
+      this.db
+        .prepare(`UPDATE micro_burst_outcomes SET journal_status = 'WRITTEN' WHERE signal_id = ?`)
+        .run(signalId);
     });
   }
 
@@ -307,7 +339,8 @@ export class MicroBurstStorage {
     }
     const deduped = new Map<string, ArchivedTrade>();
     for (const record of records) {
-      const trade = record as unknown as import('../../domain/strategies/micro-burst/MicroBurstOutcomeTypes').MicroBurstTradeRecord;
+      const trade =
+        record as unknown as import('../../domain/strategies/micro-burst/MicroBurstOutcomeTypes').MicroBurstTradeRecord;
       if (!deduped.has(tradeIdentity(trade))) deduped.set(tradeIdentity(trade), record);
     }
     return [...deduped.values()].sort((a, b) => compareTrades(a as any, b as any));
@@ -315,18 +348,32 @@ export class MicroBurstStorage {
 
   archiveWatermark(symbol: string): number | null {
     return this.safeValue(() => {
-      const row = this.db.prepare(`SELECT MAX(last_event_time_ms) AS watermark FROM market_data_segments WHERE data_type = 'trades' AND symbol = ?`).get(symbol) as { watermark: number | null };
+      const row = this.db
+        .prepare(
+          `SELECT MAX(last_event_time_ms) AS watermark FROM market_data_segments WHERE data_type = 'trades' AND symbol = ?`,
+        )
+        .get(symbol) as { watermark: number | null };
       return row.watermark;
     }, null);
   }
 
   hasGap(symbol: string, fromMs: number, toMs: number): boolean {
-    return this.safeValue(() => Boolean(this.db.prepare(`SELECT 1 FROM market_data_gaps WHERE symbol = ? AND started_at_ms <= ? AND ended_at_ms >= ? LIMIT 1`).get(symbol, toMs, fromMs)), true);
+    return this.safeValue(
+      () =>
+        Boolean(
+          this.db
+            .prepare(
+              `SELECT 1 FROM market_data_gaps WHERE symbol = ? AND started_at_ms <= ? AND ended_at_ms >= ? LIMIT 1`,
+            )
+            .get(symbol, toMs, fromMs),
+        ),
+      true,
+    );
   }
 
   flush(): boolean {
     return this.safe(() => {
-      this.drainArchiveQueue(true);
+      this.flushAllBatches();
     });
   }
 
@@ -352,7 +399,8 @@ export class MicroBurstStorage {
       this.markFailure(new Error('invalid archive record metadata'));
       return false;
     }
-    if (this.archiveQueue.length >= this.maxArchiveQueueRecords) {
+    const totalPending = this.countPendingRecords();
+    if (totalPending >= this.maxArchiveQueueRecords) {
       this.health.overflowRecords++;
       this.recordGap({
         symbol,
@@ -365,14 +413,22 @@ export class MicroBurstStorage {
       this.markFailure(new Error('archive queue capacity exceeded'));
       return false;
     }
-    this.archiveQueue.push({ type, symbol, eventTime, receivedAtMs, payload });
-    this.health.queueDepth = this.archiveQueue.length;
-    this.health.queueHighWatermark = Math.max(this.health.queueHighWatermark, this.archiveQueue.length);
+    const hourStartMs = Math.floor(eventTime / 3_600_000) * 3_600_000;
+    const key = `${type}\u0000${symbol}\u0000${hourStartMs}`;
+    const write: ArchiveWrite = { type, symbol, eventTime, receivedAtMs, payload };
+    let batch = this.pendingBatches.get(key);
+    if (!batch) {
+      batch = { key, type, symbol, hourStartMs, records: [], timer: null };
+      this.pendingBatches.set(key, batch);
+    }
+    batch.records.push(write);
     this.health.queuedRecords++;
-    if (!this.draining) {
-      this.draining = true;
-      this.health.draining = true;
-      setImmediate(() => this.drainArchiveQueue());
+    this.updateQueueDepth();
+    if (batch.records.length >= this.maxArchiveBatchRecords) {
+      this.flushBatch(batch);
+    } else if (!batch.timer) {
+      batch.timer = setTimeout(() => this.flushBatch(batch!), this.maxBatchLatencyMs);
+      if (batch.timer.unref) batch.timer.unref();
     }
     return true;
   }
@@ -385,34 +441,59 @@ export class MicroBurstStorage {
     return path.join(this.options.archivePath, type, safeSymbol, `${hour}-${unique}.ndjson.gz`);
   }
 
-  private drainArchiveQueue(flushAll = false): void {
+  private flushBatch(batch: PendingBatch): void {
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+      batch.timer = null;
+    }
+    if (batch.records.length === 0) {
+      this.pendingBatches.delete(batch.key);
+      this.updateHealthAfterFlush();
+      return;
+    }
     try {
-      do {
-        const writes = this.archiveQueue.splice(0, this.maxArchiveBatchRecords);
-        this.health.queueDepth = this.archiveQueue.length;
-        for (const batch of this.partitionBatch(writes)) this.writeImmutableSegment(batch);
-      } while (flushAll && this.archiveQueue.length > 0);
+      this.writeImmutableSegment(batch.records);
     } catch (error) {
       this.markFailure(error);
+      this.recordGap({
+        symbol: batch.symbol,
+        startedAtMs: batch.records[0]?.eventTime ?? this.now(),
+        endedAtMs: batch.records[batch.records.length - 1]?.eventTime ?? this.now(),
+        reason: 'archive_write_failure',
+        dataType: batch.type,
+        recordCount: batch.records.length,
+      });
     } finally {
-      this.draining = false;
-      this.health.draining = false;
-      if (this.archiveQueue.length > 0) {
-        this.draining = true;
-        this.health.draining = true;
-        setImmediate(() => this.drainArchiveQueue());
-      }
+      this.pendingBatches.delete(batch.key);
+      this.updateHealthAfterFlush();
     }
   }
 
-  private partitionBatch(writes: ArchiveWrite[]): ArchiveWrite[][] {
-    const batches = new Map<string, ArchiveWrite[]>();
-    for (const write of writes) {
-      const hourStartMs = Math.floor(write.eventTime / 3_600_000) * 3_600_000;
-      const key = `${write.type}\u0000${write.symbol}\u0000${hourStartMs}`;
-      batches.set(key, [...(batches.get(key) ?? []), write]);
+  private flushAllBatches(): void {
+    for (const batch of [...this.pendingBatches.values()]) {
+      this.flushBatch(batch);
     }
-    return [...batches.values()];
+  }
+
+  private countPendingRecords(): number {
+    let total = 0;
+    for (const batch of this.pendingBatches.values()) total += batch.records.length;
+    return total;
+  }
+
+  private updateQueueDepth(): void {
+    this.health.queueDepth = this.countPendingRecords();
+    this.health.queueHighWatermark = Math.max(
+      this.health.queueHighWatermark,
+      this.health.queueDepth,
+    );
+    this.health.activeBatchCount = this.pendingBatches.size;
+    this.health.openBatchRecords = this.health.queueDepth;
+    this.health.draining = this.pendingBatches.size > 0;
+  }
+
+  private updateHealthAfterFlush(): void {
+    this.updateQueueDepth();
   }
 
   private writeImmutableSegment(writes: ArchiveWrite[]): void {
@@ -421,14 +502,32 @@ export class MicroBurstStorage {
     const hourStartMs = Math.floor(first.eventTime / 3_600_000) * 3_600_000;
     const filePath = this.segmentPath(first.type, first.symbol, hourStartMs);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const text = writes.map((write) => JSON.stringify({ schemaVersion: 1, type: write.type, symbol: write.symbol, eventTime: write.eventTime, receivedAtMs: write.receivedAtMs, payload: write.payload }) + '\n').join('');
+    const text = writes
+      .map(
+        (write) =>
+          JSON.stringify({
+            schemaVersion: 1,
+            type: write.type,
+            symbol: write.symbol,
+            eventTime: write.eventTime,
+            receivedAtMs: write.receivedAtMs,
+            payload: write.payload,
+          }) + '\n',
+      )
+      .join('');
     const checksum = crypto.createHash('sha256').update(text).digest('hex');
     const eventTimes = writes.map((write) => write.eventTime);
     fs.writeFileSync(filePath, zlib.gzipSync(Buffer.from(text, 'utf8')), { flag: 'wx' });
     const metadata: ArchiveSegmentMetadata = {
       schemaVersion: 1,
-      type: first.type, symbol: first.symbol, hourStartMs, recordCount: writes.length,
-      firstEventTimeMs: Math.min(...eventTimes), lastEventTimeMs: Math.max(...eventTimes), checksum, file: path.basename(filePath),
+      type: first.type,
+      symbol: first.symbol,
+      hourStartMs,
+      recordCount: writes.length,
+      firstEventTimeMs: Math.min(...eventTimes),
+      lastEventTimeMs: Math.max(...eventTimes),
+      checksum,
+      file: path.basename(filePath),
     };
     fs.writeFileSync(`${filePath}.meta.json`, JSON.stringify(metadata) + '\n', 'utf8');
     this.db
@@ -439,22 +538,58 @@ export class MicroBurstStorage {
       checksum = excluded.checksum, updated_at_ms = excluded.updated_at_ms`,
       )
       .run(
-        filePath, first.type, first.symbol, hourStartMs, writes.length, metadata.firstEventTimeMs, metadata.lastEventTimeMs, checksum,
+        filePath,
+        first.type,
+        first.symbol,
+        hourStartMs,
+        writes.length,
+        metadata.firstEventTimeMs,
+        metadata.lastEventTimeMs,
+        checksum,
         this.now(),
       );
     this.health.writtenRecords += writes.length;
+    this.health.segmentsWritten++;
+    this.health.averageRecordsPerSegment =
+      this.health.segmentsWritten > 0
+        ? Math.round((this.health.writtenRecords / this.health.segmentsWritten) * 100) / 100
+        : 0;
   }
 
-  private readAndVerifySegmentMetadata(filePath: string, text: string): ArchiveSegmentMetadata | null {
+  private readAndVerifySegmentMetadata(
+    filePath: string,
+    text: string,
+  ): ArchiveSegmentMetadata | null {
     const metadataPath = `${filePath}.meta.json`;
-    // Metadata was introduced with batched segments. Legacy one-record files remain readable.
-    if (!fs.existsSync(metadataPath)) return { schemaVersion: 1, type: 'trades', symbol: '', hourStartMs: 0, recordCount: 0, firstEventTimeMs: 0, lastEventTimeMs: 0, checksum: '', file: path.basename(filePath) };
+    // Legacy one-record files without metadata remain readable.
+    if (!fs.existsSync(metadataPath))
+      return {
+        schemaVersion: 1,
+        type: 'trades',
+        symbol: '',
+        hourStartMs: 0,
+        recordCount: 0,
+        firstEventTimeMs: 0,
+        lastEventTimeMs: 0,
+        checksum: '',
+        file: path.basename(filePath),
+      };
     try {
       const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as ArchiveSegmentMetadata;
       const count = text.split('\n').filter((line) => line.trim()).length;
       const checksum = crypto.createHash('sha256').update(text).digest('hex');
-      const indexed = this.safeValue(() => this.db.prepare(`SELECT checksum, record_count FROM market_data_segments WHERE file_path = ?`).get(filePath) as { checksum: string; record_count: number } | undefined, undefined);
-      if (metadata.schemaVersion !== 1 || metadata.file !== path.basename(filePath) || metadata.recordCount !== count || metadata.checksum !== checksum || (indexed !== undefined && (indexed.checksum !== checksum || indexed.record_count !== count))) {
+      const indexed = this.safeValue(
+        () =>
+          this.db
+            .prepare(`SELECT checksum, record_count FROM market_data_segments WHERE file_path = ?`)
+            .get(filePath) as { checksum: string; record_count: number } | undefined,
+        undefined,
+      );
+      if (
+        metadata.recordCount !== count ||
+        metadata.checksum !== checksum ||
+        (indexed !== undefined && (indexed.checksum !== checksum || indexed.record_count !== count))
+      ) {
         this.markFailure(new Error(`archive segment checksum or metadata mismatch: ${filePath}`));
         return null;
       }
@@ -465,28 +600,67 @@ export class MicroBurstStorage {
     }
   }
 
-  private recordReplayGap(symbol: string, filePath: string, fallbackStartMs: number, fallbackEndMs: number, reason: string): void {
-    const row = this.safeValue(() => this.db.prepare(`SELECT first_event_time_ms, last_event_time_ms FROM market_data_segments WHERE file_path = ?`).get(filePath) as { first_event_time_ms: number; last_event_time_ms: number } | undefined, undefined);
-    this.recordGap({ symbol, startedAtMs: row?.first_event_time_ms ?? fallbackStartMs, endedAtMs: row?.last_event_time_ms ?? fallbackEndMs, reason, file: path.basename(filePath) });
+  private recordReplayGap(
+    symbol: string,
+    filePath: string,
+    fallbackStartMs: number,
+    fallbackEndMs: number,
+    reason: string,
+  ): void {
+    const row = this.safeValue(
+      () =>
+        this.db
+          .prepare(
+            `SELECT first_event_time_ms, last_event_time_ms FROM market_data_segments WHERE file_path = ?`,
+          )
+          .get(filePath) as { first_event_time_ms: number; last_event_time_ms: number } | undefined,
+      undefined,
+    );
+    this.recordGap({
+      symbol,
+      startedAtMs: row?.first_event_time_ms ?? fallbackStartMs,
+      endedAtMs: row?.last_event_time_ms ?? fallbackEndMs,
+      reason,
+      file: path.basename(filePath),
+    });
   }
 
-  private listArchiveFiles(type: 'trades' | 'depth', symbol: string, fromMs?: number, toMs?: number): string[] {
-    if (fromMs !== undefined && toMs !== undefined) {
-      const indexed = this.safeValue(() => this.db.prepare(`SELECT file_path FROM market_data_segments WHERE data_type = ? AND symbol = ? AND last_event_time_ms >= ? AND first_event_time_ms <= ? ORDER BY first_event_time_ms, file_path`).all(type, symbol, fromMs, toMs).map((row: any) => row.file_path as string), []);
-      if (indexed.length > 0) return indexed;
-    }
+  private listArchiveFiles(
+    type: 'trades' | 'depth',
+    symbol: string,
+    fromMs?: number,
+    toMs?: number,
+  ): string[] {
     const dir = path.join(this.options.archivePath, type, symbol.replace(/[^A-Za-z0-9_-]/g, '_'));
+    let directoryFiles: string[] = [];
     try {
-      return fs.existsSync(dir)
-        ? fs
-            .readdirSync(dir)
-            .filter((name) => name.endsWith('.ndjson.gz'))
-            .map((name) => path.join(dir, name))
-        : [];
+      if (fs.existsSync(dir)) {
+        directoryFiles = fs
+          .readdirSync(dir)
+          .filter((name) => name.endsWith('.ndjson.gz'))
+          .map((name) => path.join(dir, name));
+      }
     } catch (error) {
       this.markFailure(error);
-      return [];
     }
+    if (fromMs !== undefined && toMs !== undefined) {
+      const indexed = this.safeValue(
+        () =>
+          this.db
+            .prepare(
+              `SELECT file_path FROM market_data_segments WHERE data_type = ? AND symbol = ? AND last_event_time_ms >= ? AND first_event_time_ms <= ? ORDER BY first_event_time_ms, file_path`,
+            )
+            .all(type, symbol, fromMs, toMs)
+            .map((row: any) => row.file_path as string),
+        [],
+      );
+      if (indexed.length > 0) {
+        const indexedSet = new Set(indexed);
+        const unindexed = directoryFiles.filter((file) => !indexedSet.has(file));
+        return [...indexed, ...unindexed];
+      }
+    }
+    return directoryFiles;
   }
 
   private safe(action: () => void): boolean {
@@ -537,7 +711,13 @@ export class MicroBurstStorage {
       CREATE INDEX IF NOT EXISTS idx_pending_status ON micro_burst_pending_outcomes(status);
       CREATE INDEX IF NOT EXISTS idx_gaps_symbol_time ON market_data_gaps(symbol, started_at_ms);
     `);
-    try { this.db.exec(`ALTER TABLE micro_burst_outcomes ADD COLUMN journal_status TEXT NOT NULL DEFAULT 'PENDING'`); } catch { /* already migrated */ }
+    try {
+      this.db.exec(
+        `ALTER TABLE micro_burst_outcomes ADD COLUMN journal_status TEXT NOT NULL DEFAULT 'PENDING'`,
+      );
+    } catch {
+      /* already migrated */
+    }
   }
 }
 

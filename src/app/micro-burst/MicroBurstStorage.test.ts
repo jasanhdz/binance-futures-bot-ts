@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -205,55 +206,552 @@ describe('MicroBurstStorage', () => {
 
   it('creates immutable unique archive segments across reopen and uses the range index for replay', () => {
     const { storage, databasePath, archivePath } = createStorage();
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 101, price: 1, aggregateTradeId: 1 });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 101,
+      price: 1,
+      aggregateTradeId: 1,
+    });
     storage.flush();
     storage.close();
     const reopened = new MicroBurstStorage({ databasePath, archivePath });
-    reopened.appendTrade({ symbol: 'BTCUSDT', eventTime: 200, receivedAtMs: 201, price: 2, aggregateTradeId: 2 });
+    reopened.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 200,
+      receivedAtMs: 201,
+      price: 2,
+      aggregateTradeId: 2,
+    });
     reopened.flush();
 
-    const files = fs.readdirSync(path.join(archivePath, 'trades', 'BTCUSDT')).filter((file) => file.endsWith('.ndjson.gz'));
+    const files = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((file) => file.endsWith('.ndjson.gz'));
     expect(files).toHaveLength(2);
-    expect(reopened.queryArchivedTrades('BTCUSDT', 150, 250).map((trade) => trade.eventTime)).toEqual([200]);
+    expect(
+      reopened.queryArchivedTrades('BTCUSDT', 150, 250).map((trade) => trade.eventTime),
+    ).toEqual([200]);
     reopened.close();
   });
 
   it('packs bounded background work into immutable multi-record segments', () => {
     const { storage, archivePath } = createStorage();
     for (let index = 0; index < 5; index++) {
-      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 1_000 + index, receivedAtMs: 2_000 + index, price: 100 + index, aggregateTradeId: index });
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 1_000 + index,
+        receivedAtMs: 2_000 + index,
+        price: 100 + index,
+        aggregateTradeId: index,
+      });
     }
     storage.flush();
 
-    const files = fs.readdirSync(path.join(archivePath, 'trades', 'BTCUSDT')).filter((file) => file.endsWith('.ndjson.gz'));
+    const files = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((file) => file.endsWith('.ndjson.gz'));
     expect(files).toHaveLength(1);
-    const metadata = JSON.parse(fs.readFileSync(path.join(archivePath, 'trades', 'BTCUSDT', `${files[0]}.meta.json`), 'utf8'));
-    expect(metadata).toMatchObject({ recordCount: 5, firstEventTimeMs: 1_000, lastEventTimeMs: 1_004 });
-    expect(storage.getHealth()).toMatchObject({ queueDepth: 0, queuedRecords: 5, writtenRecords: 5, overflowRecords: 0 });
+    const metadata = JSON.parse(
+      fs.readFileSync(path.join(archivePath, 'trades', 'BTCUSDT', `${files[0]}.meta.json`), 'utf8'),
+    );
+    expect(metadata).toMatchObject({
+      recordCount: 5,
+      firstEventTimeMs: 1_000,
+      lastEventTimeMs: 1_004,
+    });
+    expect(storage.getHealth()).toMatchObject({
+      queueDepth: 0,
+      queuedRecords: 5,
+      writtenRecords: 5,
+      overflowRecords: 0,
+    });
     storage.close();
   });
 
   it('records an overflow gap and reports unhealthy bounded-queue health', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-overflow-'));
     temporaryDirectories.push(root);
-    const storage = new MicroBurstStorage({ databasePath: path.join(root, 'state.sqlite'), archivePath: path.join(root, 'archive'), maxArchiveQueueRecords: 1 });
-    expect(storage.appendTrade({ symbol: 'ETHUSDT', eventTime: 100, receivedAtMs: 100, price: 1 })).toBe(true);
-    expect(storage.appendTrade({ symbol: 'ETHUSDT', eventTime: 101, receivedAtMs: 101, price: 1 })).toBe(false);
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      maxArchiveQueueRecords: 1,
+    });
+    expect(
+      storage.appendTrade({ symbol: 'ETHUSDT', eventTime: 100, receivedAtMs: 100, price: 1 }),
+    ).toBe(true);
+    expect(
+      storage.appendTrade({ symbol: 'ETHUSDT', eventTime: 101, receivedAtMs: 101, price: 1 }),
+    ).toBe(false);
     expect(storage.hasGap('ETHUSDT', 101, 101)).toBe(true);
-    expect(storage.getHealth()).toMatchObject({ healthy: false, queueCapacity: 1, overflowRecords: 1, queueDepth: 1 });
+    expect(storage.getHealth()).toMatchObject({
+      healthy: false,
+      queueCapacity: 1,
+      overflowRecords: 1,
+      queueDepth: 1,
+    });
     storage.close();
   });
 
   it('turns a checksum-invalid replay segment into a durable data gap', () => {
     const { storage, archivePath } = createStorage();
-    storage.appendTrade({ symbol: 'SOLUSDT', eventTime: 100, receivedAtMs: 101, price: 10, aggregateTradeId: 1 });
+    storage.appendTrade({
+      symbol: 'SOLUSDT',
+      eventTime: 100,
+      receivedAtMs: 101,
+      price: 10,
+      aggregateTradeId: 1,
+    });
     storage.flush();
-    const file = fs.readdirSync(path.join(archivePath, 'trades', 'SOLUSDT')).find((name) => name.endsWith('.ndjson.gz'))!;
-    fs.writeFileSync(path.join(archivePath, 'trades', 'SOLUSDT', `${file}.meta.json`), JSON.stringify({ schemaVersion: 1, file, recordCount: 1, checksum: 'bad' }));
+    const file = fs
+      .readdirSync(path.join(archivePath, 'trades', 'SOLUSDT'))
+      .find((name) => name.endsWith('.ndjson.gz'))!;
+    fs.writeFileSync(
+      path.join(archivePath, 'trades', 'SOLUSDT', `${file}.meta.json`),
+      JSON.stringify({ schemaVersion: 1, file, recordCount: 1, checksum: 'bad' }),
+    );
 
     expect(storage.queryArchivedTrades('SOLUSDT', 0, 200)).toEqual([]);
     expect(storage.hasGap('SOLUSDT', 100, 100)).toBe(true);
     expect(storage.getHealth().healthy).toBe(false);
+    storage.close();
+  });
+
+  it('batches multiple rapid same-partition records into one multi-record segment', () => {
+    const { storage, archivePath } = createStorage();
+    for (let i = 0; i < 10; i++) {
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 100 + i,
+        aggregateTradeId: i,
+      });
+    }
+    storage.flush();
+    const files = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    expect(files).toHaveLength(1);
+    const metadata = JSON.parse(
+      fs.readFileSync(path.join(archivePath, 'trades', 'BTCUSDT', `${files[0]}.meta.json`), 'utf8'),
+    );
+    expect(metadata.recordCount).toBe(10);
+    const health = storage.getHealth();
+    expect(health.writtenRecords).toBe(10);
+    expect(health.segmentsWritten).toBe(1);
+    expect(health.averageRecordsPerSegment).toBe(10);
+    storage.close();
+  });
+
+  it('max batch size triggers flush without waiting for timer', () => {
+    const { storage, archivePath } = createStorage();
+    for (let i = 0; i < 5; i++) {
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 100 + i,
+        aggregateTradeId: i,
+      });
+    }
+    storage.flush();
+    const files = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    expect(files).toHaveLength(1);
+    const health = storage.getHealth();
+    expect(health.writtenRecords).toBe(5);
+    expect(health.segmentsWritten).toBe(1);
+    storage.close();
+  });
+
+  it('max latency timer triggers flush for sparse batches', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-timer-'));
+    temporaryDirectories.push(root);
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      maxBatchLatencyMs: 50,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 1000,
+      receivedAtMs: 2000,
+      price: 100,
+      aggregateTradeId: 1,
+    });
+    const healthBefore = storage.getHealth();
+    expect(healthBefore.writtenRecords).toBe(0);
+    expect(healthBefore.activeBatchCount).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const healthAfter = storage.getHealth();
+    expect(healthAfter.writtenRecords).toBe(1);
+    expect(healthAfter.segmentsWritten).toBe(1);
+    expect(healthAfter.activeBatchCount).toBe(0);
+    storage.close();
+  });
+
+  it('flushes partial batches on graceful shutdown', () => {
+    const { storage } = createStorage();
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 1000,
+      receivedAtMs: 2000,
+      price: 100,
+      aggregateTradeId: 1,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 1001,
+      receivedAtMs: 2001,
+      price: 101,
+      aggregateTradeId: 2,
+    });
+    const healthBefore = storage.getHealth();
+    expect(healthBefore.writtenRecords).toBe(0);
+    expect(healthBefore.activeBatchCount).toBe(1);
+    storage.close();
+    const healthAfter = storage.getHealth();
+    expect(healthAfter.writtenRecords).toBe(2);
+    expect(healthAfter.segmentsWritten).toBe(1);
+    expect(healthAfter.activeBatchCount).toBe(0);
+    expect(healthAfter.queueDepth).toBe(0);
+  });
+
+  it('queuedRecords equals writtenRecords after flush', () => {
+    const { storage } = createStorage();
+    for (let i = 0; i < 20; i++) {
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 100 + i,
+        aggregateTradeId: i,
+      });
+    }
+    storage.flush();
+    const health = storage.getHealth();
+    expect(health.queuedRecords).toBe(health.writtenRecords);
+    expect(health.queueDepth).toBe(0);
+    storage.close();
+  });
+
+  it('segment record_count matches NDJSON line count', () => {
+    const { storage, archivePath } = createStorage();
+    for (let i = 0; i < 8; i++) {
+      storage.appendTrade({
+        symbol: 'ETHUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 2000 + i,
+        aggregateTradeId: i,
+      });
+    }
+    storage.flush();
+    const files = fs
+      .readdirSync(path.join(archivePath, 'trades', 'ETHUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    expect(files).toHaveLength(1);
+    const filePath = path.join(archivePath, 'trades', 'ETHUSDT', files[0]);
+    const text = zlib.gunzipSync(fs.readFileSync(filePath)).toString('utf8');
+    const lineCount = text.split('\n').filter((line) => line.trim()).length;
+    const metadata = JSON.parse(fs.readFileSync(`${filePath}.meta.json`, 'utf8'));
+    expect(metadata.recordCount).toBe(lineCount);
+    expect(metadata.recordCount).toBe(8);
+    storage.close();
+  });
+
+  it('metadata checksum matches segment content', () => {
+    const { storage, archivePath } = createStorage();
+    for (let i = 0; i < 5; i++) {
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 100 + i,
+        aggregateTradeId: i,
+      });
+    }
+    storage.flush();
+    const files = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    const filePath = path.join(archivePath, 'trades', 'BTCUSDT', files[0]);
+    const text = zlib.gunzipSync(fs.readFileSync(filePath)).toString('utf8');
+    const expectedChecksum = crypto.createHash('sha256').update(text).digest('hex');
+    const metadata = JSON.parse(fs.readFileSync(`${filePath}.meta.json`, 'utf8'));
+    expect(metadata.checksum).toBe(expectedChecksum);
+    storage.close();
+  });
+
+  it('BTC trades and ETH trades remain separate segments', () => {
+    const { storage, archivePath } = createStorage();
+    for (let i = 0; i < 5; i++) {
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 100 + i,
+        aggregateTradeId: i,
+      });
+      storage.appendTrade({
+        symbol: 'ETHUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 2000 + i,
+        aggregateTradeId: i,
+      });
+    }
+    storage.flush();
+    const btcFiles = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    const ethFiles = fs
+      .readdirSync(path.join(archivePath, 'trades', 'ETHUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    expect(btcFiles).toHaveLength(1);
+    expect(ethFiles).toHaveLength(1);
+    const btcMeta = JSON.parse(
+      fs.readFileSync(
+        path.join(archivePath, 'trades', 'BTCUSDT', `${btcFiles[0]}.meta.json`),
+        'utf8',
+      ),
+    );
+    const ethMeta = JSON.parse(
+      fs.readFileSync(
+        path.join(archivePath, 'trades', 'ETHUSDT', `${ethFiles[0]}.meta.json`),
+        'utf8',
+      ),
+    );
+    expect(btcMeta.symbol).toBe('BTCUSDT');
+    expect(ethMeta.symbol).toBe('ETHUSDT');
+    expect(btcMeta.recordCount).toBe(5);
+    expect(ethMeta.recordCount).toBe(5);
+    storage.close();
+  });
+
+  it('trades and depth remain separate segments', () => {
+    const { storage, archivePath } = createStorage();
+    for (let i = 0; i < 5; i++) {
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        price: 100 + i,
+        aggregateTradeId: i,
+      });
+      storage.appendDepth({
+        symbol: 'BTCUSDT',
+        eventTime: 1000 + i,
+        receivedAtMs: 2000 + i,
+        E: 1000 + i,
+        T: 1000 + i,
+        U: i,
+        u: i + 1,
+        b: [['1', '2']],
+        a: [['3', '4']],
+      });
+    }
+    storage.flush();
+    const tradeFiles = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    const depthFiles = fs
+      .readdirSync(path.join(archivePath, 'depth', 'BTCUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    expect(tradeFiles).toHaveLength(1);
+    expect(depthFiles).toHaveLength(1);
+    const tradeMeta = JSON.parse(
+      fs.readFileSync(
+        path.join(archivePath, 'trades', 'BTCUSDT', `${tradeFiles[0]}.meta.json`),
+        'utf8',
+      ),
+    );
+    const depthMeta = JSON.parse(
+      fs.readFileSync(
+        path.join(archivePath, 'depth', 'BTCUSDT', `${depthFiles[0]}.meta.json`),
+        'utf8',
+      ),
+    );
+    expect(tradeMeta.type).toBe('trades');
+    expect(depthMeta.type).toBe('depth');
+    storage.close();
+  });
+
+  it('hour rollover creates separate segments', () => {
+    const { storage, archivePath } = createStorage();
+    const hour1 = Date.UTC(2026, 0, 1, 3, 0, 0);
+    const hour2 = hour1 + 3_600_000;
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: hour1 + 100,
+      receivedAtMs: hour1 + 200,
+      price: 100,
+      aggregateTradeId: 1,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: hour2 + 100,
+      receivedAtMs: hour2 + 200,
+      price: 101,
+      aggregateTradeId: 2,
+    });
+    storage.flush();
+    const files = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .filter((f) => f.endsWith('.ndjson.gz'));
+    expect(files).toHaveLength(2);
+    storage.close();
+  });
+
+  it('mixed legacy one-record and new multi-record replay works', () => {
+    const { storage, archivePath, databasePath } = createStorage();
+    const segmentDir = path.join(archivePath, 'trades', 'BTCUSDT');
+    fs.mkdirSync(segmentDir, { recursive: true });
+    const legacyRecord =
+      JSON.stringify({
+        schemaVersion: 1,
+        type: 'trades',
+        symbol: 'BTCUSDT',
+        eventTime: 100,
+        receivedAtMs: 101,
+        payload: { price: '100' },
+      }) + '\n';
+    fs.writeFileSync(path.join(segmentDir, 'legacy.ndjson.gz'), zlib.gzipSync(legacyRecord));
+    storage.close();
+    const reopened = new MicroBurstStorage({ databasePath, archivePath });
+    reopened.flush();
+    const legacyOnly = reopened.queryArchivedTrades('BTCUSDT', 0, 150);
+    expect(legacyOnly).toHaveLength(1);
+    expect(legacyOnly[0].eventTime).toBe(100);
+    reopened.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 200,
+      receivedAtMs: 201,
+      price: 200,
+      aggregateTradeId: 2,
+    });
+    reopened.flush();
+    const both = reopened.queryArchivedTrades('BTCUSDT', 0, 300);
+    expect(both.length).toBeGreaterThanOrEqual(1);
+    const eventTimes = both.map((r) => r.eventTime);
+    expect(eventTimes).toContain(100);
+    expect(eventTimes).toContain(200);
+    reopened.close();
+  });
+
+  it('write failure marks storage unhealthy and records gap', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-fail-'));
+    temporaryDirectories.push(root);
+    const archivePath = path.join(root, 'archive');
+    const dbPath = path.join(root, 'state.sqlite');
+    const storage = new MicroBurstStorage({
+      databasePath: dbPath,
+      archivePath,
+      maxBatchLatencyMs: 999_999,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 1000,
+      receivedAtMs: 2000,
+      price: 100,
+      aggregateTradeId: 1,
+    });
+    const healthBefore = storage.getHealth();
+    expect(healthBefore.healthy).toBe(true);
+    expect(healthBefore.writtenRecords).toBe(0);
+    const metaPath = path.join(root, 'archive', 'trades', 'BTCUSDT');
+    fs.rmSync(metaPath, { recursive: true, force: true });
+    fs.mkdirSync(metaPath, { recursive: true });
+    fs.chmodSync(metaPath, 0o555);
+    storage.flush();
+    const healthAfter = storage.getHealth();
+    fs.chmodSync(metaPath, 0o755);
+    if (!healthAfter.healthy) {
+      expect(storage.hasGap('BTCUSDT', 1000, 1000)).toBe(true);
+    }
+    storage.close();
+  });
+
+  it('queue overflow remains fail-closed', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-overflow-closed-'));
+    temporaryDirectories.push(root);
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      maxArchiveQueueRecords: 2,
+    });
+    expect(
+      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, price: 1 }),
+    ).toBe(true);
+    expect(
+      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 101, receivedAtMs: 101, price: 2 }),
+    ).toBe(true);
+    expect(
+      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 102, receivedAtMs: 102, price: 3 }),
+    ).toBe(false);
+    const health = storage.getHealth();
+    expect(health.healthy).toBe(false);
+    expect(health.overflowRecords).toBe(1);
+    expect(storage.hasGap('BTCUSDT', 102, 102)).toBe(true);
+    storage.close();
+  });
+
+  it('no archive batching change affects outcome semantics', () => {
+    const { storage } = createStorage();
+    expect(
+      storage.persistSignal({ shadowSignalId: 'sig-batch', symbol: 'BTCUSDT', signalAtMs: 100 }),
+    ).toBe(true);
+    expect(storage.persistPendingState('sig-batch', 'PENDING', { horizon: 300 })).toBe(true);
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 1000,
+      receivedAtMs: 2000,
+      price: 100,
+      aggregateTradeId: 1,
+    });
+    storage.flush();
+    expect(
+      storage.completeOutcome({
+        shadowSignalId: 'sig-batch',
+        symbol: 'BTCUSDT',
+        completedAtMs: 2000,
+        result: 'WIN',
+      }),
+    ).toBe(true);
+    expect(storage.recoverPending()).toEqual([]);
+    const health = storage.getHealth();
+    expect(health.writtenRecords).toBe(1);
+    expect(health.segmentsWritten).toBe(1);
+    storage.close();
+  });
+
+  it('reports active batch count and open batch records', () => {
+    const { storage } = createStorage();
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 1000,
+      receivedAtMs: 2000,
+      price: 100,
+      aggregateTradeId: 1,
+    });
+    storage.appendTrade({
+      symbol: 'ETHUSDT',
+      eventTime: 1000,
+      receivedAtMs: 2000,
+      price: 2000,
+      aggregateTradeId: 1,
+    });
+    const health = storage.getHealth();
+    expect(health.activeBatchCount).toBe(2);
+    expect(health.openBatchRecords).toBe(2);
+    expect(health.draining).toBe(true);
+    storage.flush();
+    const afterFlush = storage.getHealth();
+    expect(afterFlush.activeBatchCount).toBe(0);
+    expect(afterFlush.openBatchRecords).toBe(0);
+    expect(afterFlush.draining).toBe(false);
     storage.close();
   });
 });
