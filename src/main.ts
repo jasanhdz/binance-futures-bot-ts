@@ -131,6 +131,7 @@ async function main() {
             }),
             {
               allowedChatIds: CONFIG.TELEGRAM_ALLOWED_CHAT_IDS,
+              allowedUserIds: CONFIG.TELEGRAM_ALLOWED_USER_IDS,
             },
           ),
         })

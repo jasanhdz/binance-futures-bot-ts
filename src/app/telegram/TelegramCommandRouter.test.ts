@@ -94,11 +94,67 @@ describe('TelegramCommandRouter', () => {
 
   it('passes /riskmode argument to handler for authorized chat', async () => {
     const h = handlers();
-    const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+    const router = new TelegramCommandRouter(h, {
+      allowedChatIds: ['123'],
+      allowedUserIds: ['42'],
+      now: () => 1000,
+    });
 
-    await router.handleMessage({ chatId: '123', text: '/riskmode RISK_OFF' });
+    await router.handleMessage({
+      chatId: '123',
+      fromUserId: '42',
+      text: '/riskmode RISK_OFF',
+    });
 
     expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF');
+  });
+
+  it('authorizes a mutating command only for the configured user in the configured chat', async () => {
+    const h = handlers();
+    const router = new TelegramCommandRouter(h, {
+      allowedChatIds: ['123'],
+      allowedUserIds: ['42'],
+      now: () => 1000,
+    });
+
+    await expect(
+      router.handleMessage({ chatId: '123', fromUserId: '42', text: '/riskmode RISK_OFF' }),
+    ).resolves.toBe('RISKMODE');
+    expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF');
+  });
+
+  it('rejects a mutating command from an unauthorized user', async () => {
+    const h = handlers();
+    const router = new TelegramCommandRouter(h, {
+      allowedChatIds: ['123'],
+      allowedUserIds: ['42'],
+      now: () => 1000,
+    });
+
+    await expect(
+      router.handleMessage({ chatId: '123', fromUserId: '99', text: '/riskmode RISK_OFF' }),
+    ).resolves.toBe('Unauthorized.');
+    expect(h.handleRiskMode).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mutating command when user authorization is not configured', async () => {
+    const h = handlers();
+    const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+    await expect(
+      router.handleMessage({ chatId: '123', fromUserId: '42', text: '/riskmode RISK_OFF' }),
+    ).resolves.toBe('Unauthorized.');
+    expect(h.handleRiskMode).not.toHaveBeenCalled();
+  });
+
+  it('preserves read-only riskmode behavior without user authorization', async () => {
+    const h = handlers();
+    const router = new TelegramCommandRouter(h, { allowedChatIds: ['123'], now: () => 1000 });
+
+    await expect(router.handleMessage({ chatId: '123', text: '/riskmode' })).resolves.toBe(
+      'RISKMODE',
+    );
+    expect(h.handleRiskMode).toHaveBeenCalledWith(undefined);
   });
 
   it('routes /blocks to handler for authorized chat', async () => {

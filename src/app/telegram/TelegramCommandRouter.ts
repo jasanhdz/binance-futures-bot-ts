@@ -29,6 +29,7 @@ const KNOWN_COMMANDS: TelegramCommandName[] = [
 export class TelegramCommandRouter {
   private readonly lastCommandAtByChat = new Map<string, number>();
   private readonly allowedChatIds: Set<string>;
+  private readonly allowedUserIds: Set<string>;
   private readonly rateLimitMs: number;
   private readonly now: () => number;
 
@@ -37,6 +38,7 @@ export class TelegramCommandRouter {
     options: TelegramCommandRouterOptions,
   ) {
     this.allowedChatIds = new Set(options.allowedChatIds.map(String));
+    this.allowedUserIds = new Set((options.allowedUserIds ?? []).map(String));
     this.rateLimitMs = options.rateLimitMs ?? 2000;
     this.now = options.now ?? Date.now;
   }
@@ -54,6 +56,15 @@ export class TelegramCommandRouter {
       return 'Unauthorized.';
     }
 
+    const command = this.parse(message.text);
+    if (
+      command.name === 'riskmode' &&
+      command.args.length > 0 &&
+      (!message.fromUserId || !this.allowedUserIds.has(String(message.fromUserId)))
+    ) {
+      return 'Unauthorized.';
+    }
+
     const now = this.now();
     const last = this.lastCommandAtByChat.get(String(message.chatId));
     if (last !== undefined && now - last < this.rateLimitMs) {
@@ -61,7 +72,6 @@ export class TelegramCommandRouter {
     }
     this.lastCommandAtByChat.set(String(message.chatId), now);
 
-    const command = this.parse(message.text);
     switch (command.name) {
       case 'help':
         return this.handlers.handleHelp();

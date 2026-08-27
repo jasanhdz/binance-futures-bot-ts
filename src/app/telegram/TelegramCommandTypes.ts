@@ -31,6 +31,7 @@ export interface TelegramInboundMessage {
   chatId: string;
   text?: string;
   messageId?: number;
+  fromUserId?: string;
   fromUsername?: string;
 }
 
@@ -68,6 +69,7 @@ export interface TelegramCommandHandlerDeps {
 
 export interface TelegramCommandRouterOptions {
   allowedChatIds: string[];
+  allowedUserIds?: string[];
   rateLimitMs?: number;
   now?: () => number;
 }

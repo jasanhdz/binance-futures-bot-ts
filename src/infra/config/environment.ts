@@ -92,6 +92,7 @@ export const CONFIG = {
     csvEnv('TELEGRAM_ALLOWED_CHAT_IDS').length > 0
       ? csvEnv('TELEGRAM_ALLOWED_CHAT_IDS')
       : csvEnv('TELEGRAM_CHAT_ID'),
+  TELEGRAM_ALLOWED_USER_IDS: csvEnv('TELEGRAM_ALLOWED_USER_IDS'),
 
   // --- Re-entry Logic (YAML) ---
   REENTER_ON_TP: trading.reenter_on_tp,

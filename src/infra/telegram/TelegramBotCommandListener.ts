@@ -8,7 +8,7 @@ type TelegramUpdate = {
     message_id?: number;
     text?: string;
     chat?: { id?: number | string };
-    from?: { username?: string };
+    from?: { id?: number; username?: string };
   };
 };
 
@@ -93,6 +93,8 @@ export class TelegramBotCommandListener {
       chatId: String(chatId),
       text,
       messageId: update.message?.message_id,
+      fromUserId:
+        update.message?.from?.id === undefined ? undefined : String(update.message.from.id),
       fromUsername: update.message?.from?.username,
     });
     if (!response) return;
