@@ -1,9 +1,9 @@
 # MICRO_BURST_V1 M3.2.4 — ARCHIVE BATCHING + COHORT STORAGE READINESS
 
-**Status: COMPLETE**
+**Status: SUPERSEDED BY M3.2.5**
 **Date: 2026-08-27**
-**Implementation Commit: da8a3d0eb370b3a254b56941d8ea27d05eae91d2**
-**Soak Commit: d5ec61ecb297735718a0a8ccde239c8ef1577f2a**
+**Implementation Commit: 427cc55334a6a9d079352c44afbffd28a749d139**
+**Soak Code Commit: 427cc55334a6a9d079352c44afbffd28a749d139**
 
 ---
 
@@ -86,7 +86,16 @@ Record count distribution shows real multi-record batching:
 - ...down to 1-record segments (legacy/tail)
 
 **Before (M3.2.3)**: 14,373 segments = 14,373 records → avg 1.0/segment
-**After (M3.2.4)**: 15,730 segments = 32,650 records → avg 2.1/segment
+**Correction (M3.2.5 audit)**: the M3.2.4 database reused M3.2.3 evidence. The cumulative
+15,730 segments / 32,650 records figure is not a valid M3.2.4 efficiency measurement.
+
+- M3.2.3 historical: 14,373 records / 14,373 segments.
+- M3.2.4 new-run delta: 18,277 records / 1,357 segments = **13.47 records/segment**.
+- At the observed 300-second rate: ~16,284 segments/hour, ~390,816 segments/day,
+  ~781,632 gzip/metadata files/day, and ~390,816 SQLite segment rows/day.
+
+The 750ms finalization policy therefore remained unsuitable for a days/weeks cohort. M3.2.5
+replaces it with durable active rolling segments.
 
 ## 5. Test Coverage
 
@@ -122,4 +131,4 @@ Existing one-record archive segments remain readable. The `listArchiveFiles` fix
 
 ---
 
-**Next**: M3.2.4 is complete. Official prospective cohort remains blocked pending product authorization.
+**Next**: M3.2.5 storage qualification. Official prospective cohort remains blocked pending product authorization.
