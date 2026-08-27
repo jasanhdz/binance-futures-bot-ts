@@ -138,6 +138,26 @@ describe('MicroBurstRuntime', () => {
     await runtime.stop();
   });
 
+  it('emits final archive queue evidence after graceful shutdown', async () => {
+    const info = vi.fn();
+    deps.logger.info = info;
+    deps.marketStorage = {
+      appendDepth: () => true,
+      persistCheckpoint: () => true,
+      flush: async () => true,
+      close: async () => {},
+      getHealth: () => ({ healthy: true, errorCount: 0, queueDepth: 0, queueCapacity: 10, queuedRecords: 4, writtenRecords: 4, overflowRecords: 0 }),
+    };
+    const runtime = new MicroBurstRuntime(deps, makeConfig({ marketArchive: { enabled: true } }));
+
+    await runtime.start();
+    await runtime.stop();
+
+    expect(info).toHaveBeenCalledWith('MICRO_BURST_SHADOW_HEALTH', expect.objectContaining({
+      phase: 'graceful_shutdown', archiveQueueDepth: 0, archiveQueuedRecords: 4, archiveWrittenRecords: 4, archiveOverflowRecords: 0,
+    }));
+  });
+
   it('reports formal readiness only for an official shadow cohort with a healthy archive queue', async () => {
     const flush = vi.fn(async () => true);
     const close = vi.fn(async () => {});

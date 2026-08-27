@@ -114,6 +114,17 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     expect(book.getHealth()).toBe('HEALTHY');
   });
 
+  it('does not fetch snapshots while a healthy book remains fresh', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d, 500, 10);
+    await startAndBridge(book, d);
+    d.clock.now.mockReturnValue(NOW + 105);
+
+    expect(book.getHealth()).toBe('HEALTHY');
+    expect(book.getHealth()).toBe('HEALTHY');
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it('uses receivedAtMs, not Binance or server timestamps, for staleness', async () => {
     const d = deps();
     const book = new SynchronizedOrderBook(SYMBOL, d, 500, 10);
@@ -132,6 +143,28 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.diffSource.emit(diff(200, 201, 200));
     await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(201));
     expect(book.getState().lastUpdateId).toBe(201);
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts only one snapshot resync when repeated health checks find a stale book', async () => {
+    let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
+    const resyncSnapshot = new Promise<BinanceDepthSnapshot>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    const d = deps([snapshot(100)]);
+    const book = new SynchronizedOrderBook(SYMBOL, d, 500, 10);
+    await startAndBridge(book, d);
+    d.snapshotSource.getSnapshot.mockImplementationOnce(() => resyncSnapshot);
+    d.clock.now.mockReturnValue(NOW + 112);
+
+    expect(book.getHealth()).toBe('STALE');
+    expect(book.getHealth()).toBe('STALE');
+    expect(book.getHealth()).toBe('STALE');
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2);
+
+    resolveSnapshot({ ...snapshot(200), receivedAtMs: NOW + 112 });
+    await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(200));
+    expect(book.getHealth()).toBe('UNSYNCED');
     expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2);
   });
 
@@ -160,6 +193,33 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.diffSource.emit({ ...diff(101, 101, 100), u: Number.NaN });
     await vi.waitFor(() => expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(book.getState().lastUpdateId).toBe(200);
+  });
+
+  it('keeps resyncCount cumulative across successful resynchronizations', async () => {
+    let resolveSecondSnapshot!: (value: BinanceDepthSnapshot) => void;
+    const secondSnapshot = new Promise<BinanceDepthSnapshot>((resolve) => {
+      resolveSecondSnapshot = resolve;
+    });
+    let resolveThirdSnapshot!: (value: BinanceDepthSnapshot) => void;
+    const thirdSnapshot = new Promise<BinanceDepthSnapshot>((resolve) => {
+      resolveThirdSnapshot = resolve;
+    });
+    const d = deps([snapshot(100)]);
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    await startAndBridge(book, d);
+
+    d.snapshotSource.getSnapshot.mockImplementationOnce(() => secondSnapshot);
+    d.diffSource.emit({ ...diff(102, 102, 101), u: Number.NaN });
+    d.diffSource.emit(diff(200, 201, 200));
+    resolveSecondSnapshot(snapshot(200));
+    await healthy(book);
+
+    d.snapshotSource.getSnapshot.mockImplementationOnce(() => thirdSnapshot);
+    d.diffSource.emit({ ...diff(202, 202, 201), u: Number.NaN });
+    d.diffSource.emit(diff(300, 301, 300));
+    resolveThirdSnapshot(snapshot(300));
+    await healthy(book);
+    expect(book.getState().resyncCount).toBe(2);
   });
 
   it('does not become healthy when the snapshot bridge is absent', async () => {

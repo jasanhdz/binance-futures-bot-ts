@@ -46,6 +46,10 @@ export interface MicroBurstRuntimeHealth {
   } | null;
   signalJournalHealthy: boolean;
   marketArchiveHealthy: boolean | null;
+  archiveQueueDepth: number | null;
+  archiveQueuedRecords: number | null;
+  archiveWrittenRecords: number | null;
+  archiveOverflowRecords: number | null;
   storageErrors: number;
   readiness: MicroBurstRuntimeReadiness;
 }
@@ -90,7 +94,16 @@ export interface MicroBurstRuntimeDeps {
     persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
     flush?(): boolean | Promise<boolean>;
     close?(): void | Promise<void>;
-    getHealth(): { healthy: boolean; errorCount: number; queueDepth?: number; queueCapacity?: number; draining?: boolean };
+    getHealth(): {
+      healthy: boolean;
+      errorCount: number;
+      queueDepth?: number;
+      queueCapacity?: number;
+      queuedRecords?: number;
+      writtenRecords?: number;
+      overflowRecords?: number;
+      draining?: boolean;
+    };
   };
   provenance?: { codeCommitSha: string; configHash: string; cohortId: string; officialCohortReady: boolean };
 }
@@ -340,8 +353,10 @@ export class MicroBurstRuntime {
     if (this.deps.outcomeTracker) {
       this.deps.outcomeTracker.flushPending(this.deps.clock.now());
     }
-    this.deps.logger.info('micro_burst_runtime_stopped');
-    this.stopPromise = this.drainAndCloseStorage().finally(() => {
+    this.stopPromise = this.drainAndCloseStorage().then(() => {
+      this.reportHealth('graceful_shutdown');
+      this.deps.logger.info('micro_burst_runtime_stopped');
+    }).finally(() => {
       this.stopPromise = null;
     });
     return this.stopPromise;
@@ -475,6 +490,7 @@ export class MicroBurstRuntime {
     const btcContext = this.btcProvider?.getBtcContext();
     const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.observedAtMs < 120_000;
 
+    const archiveHealth = this.deps.marketStorage?.getHealth();
     return {
       running: this.running,
       symbolCount: this.symbolStates.size,
@@ -489,8 +505,12 @@ export class MicroBurstRuntime {
       lastHealthReportAt: this.lastHealthReportAt,
       outcomeTracker: this.deps.outcomeTracker ? this.deps.outcomeTracker.getHealth() : null,
       signalJournalHealthy: this.journal.getHealth().healthy,
-      marketArchiveHealthy: this.deps.marketStorage ? this.deps.marketStorage.getHealth().healthy : null,
-      storageErrors: this.journal.getHealth().storageErrors + (this.deps.marketStorage?.getHealth().errorCount ?? 0),
+      marketArchiveHealthy: archiveHealth?.healthy ?? null,
+      archiveQueueDepth: archiveHealth?.queueDepth ?? null,
+      archiveQueuedRecords: archiveHealth?.queuedRecords ?? null,
+      archiveWrittenRecords: archiveHealth?.writtenRecords ?? null,
+      archiveOverflowRecords: archiveHealth?.overflowRecords ?? null,
+      storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       readiness: this.getReadiness(),
     };
   }
@@ -574,25 +594,34 @@ export class MicroBurstRuntime {
   private startHealthReporting(): void {
     this.healthTimer = setInterval(() => {
       if (!this.running) return;
-      const health = this.getHealth();
-      this.lastHealthReportAt = this.deps.clock.now();
-      this.deps.logger.info('MICRO_BURST_SHADOW_HEALTH', {
-        symbols: health.symbolCount,
-        healthyBooks: health.healthyBooks,
-        btcHealthy: health.btcHealthy,
-        evaluations: health.totalEvaluations,
-        uniqueSignals: health.totalUniqueSignals,
-        duplicates: health.totalDuplicateSignals,
-        invalidContexts: health.totalInvalidContexts,
-        resyncs: health.totalResyncs,
-        liveExecution: health.liveExecution,
-        signalJournalHealthy: health.signalJournalHealthy,
-        marketArchiveHealthy: health.marketArchiveHealthy,
-        pendingOutcomes: health.outcomeTracker?.pendingOutcomes ?? 0,
-        completedOutcomes: health.outcomeTracker?.completedOutcomes ?? 0,
-        storageErrors: health.storageErrors,
-      });
+      this.reportHealth('periodic');
     }, HEALTH_REPORT_INTERVAL_MS);
+  }
+
+  private reportHealth(phase: 'periodic' | 'graceful_shutdown'): void {
+    const health = this.getHealth();
+    this.lastHealthReportAt = this.deps.clock.now();
+    this.deps.logger.info('MICRO_BURST_SHADOW_HEALTH', {
+      phase,
+      symbols: health.symbolCount,
+      healthyBooks: health.healthyBooks,
+      btcHealthy: health.btcHealthy,
+      evaluations: health.totalEvaluations,
+      uniqueSignals: health.totalUniqueSignals,
+      duplicates: health.totalDuplicateSignals,
+      invalidContexts: health.totalInvalidContexts,
+      resyncs: health.totalResyncs,
+      liveExecution: health.liveExecution,
+      signalJournalHealthy: health.signalJournalHealthy,
+      marketArchiveHealthy: health.marketArchiveHealthy,
+      archiveQueueDepth: health.archiveQueueDepth,
+      archiveQueuedRecords: health.archiveQueuedRecords,
+      archiveWrittenRecords: health.archiveWrittenRecords,
+      archiveOverflowRecords: health.archiveOverflowRecords,
+      pendingOutcomes: health.outcomeTracker?.pendingOutcomes ?? 0,
+      completedOutcomes: health.outcomeTracker?.completedOutcomes ?? 0,
+      storageErrors: health.storageErrors,
+    });
   }
 
   private getTotalResyncs(): number {

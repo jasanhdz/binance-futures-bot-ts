@@ -142,9 +142,10 @@ export class SynchronizedOrderBook {
     if (
       (this.health === 'HEALTHY' || this.health === 'UNSYNCED') &&
       this.deps.clock.now() - this.observedAtMs > this.staleThresholdMs
-    )
+    ) {
       this.health = 'STALE';
       this.syncFromSnapshot();
+    }
     return this.health;
   }
 
@@ -252,7 +253,6 @@ export class SynchronizedOrderBook {
         return;
       }
       this.health = 'HEALTHY';
-      this.resyncCount = 0;
     } catch (error) {
       this.health = 'UNAVAILABLE';
       this.deps.logger.error('MicroBurst OrderBook snapshot failed', {

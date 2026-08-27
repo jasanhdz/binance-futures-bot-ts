@@ -5,6 +5,7 @@ import {
   resolveMarketDataEndpoint,
   streamWebSocketUrl,
 } from './MarketDataEndpoints';
+import { createWsWebSocket } from './WsWebSocketFactory';
 
 export interface RawWebSocket {
   close(): void;
@@ -39,12 +40,7 @@ type StreamConnection = {
   descriptor: MarketDataEndpointDescriptor;
 };
 
-const defaultWebSocketFactory = (url: string): RawWebSocket => {
-  if (typeof WebSocket === 'undefined') {
-    throw new Error('Global WebSocket is unavailable; provide a raw WebSocket implementation');
-  }
-  return new WebSocket(url) as unknown as RawWebSocket;
-};
+const defaultWebSocketFactory = (url: string): RawWebSocket => createWsWebSocket(url);
 
 /** Shares one raw stream socket per route and stream among its consumers. */
 export class MarketDataHub {

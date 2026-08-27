@@ -1,0 +1,46 @@
+# M3.2.2 production-read-only soak configuration. It must remain isolated.
+SYSTEM:
+  tick_interval_ms: 10000
+  max_trades_per_day: 0
+  global_leverage_default: 1
+
+REGIME_DETECTOR:
+  volatility_spread_low: 0.0008
+  volatility_spread_high: 0.0015
+  bias_strength_threshold: 0.20
+  obi_confirmation_threshold: 0.10
+
+REGIMES:
+  BUNKER: { leverage: 0, entry_threshold: 999.0, hard_stop_roe: 0.0, tp_roe: 0.0 }
+
+SYMBOLS: {}
+symbols:
+  defaults:
+    enabled: false
+    mode: OFF
+  entries: {}
+
+TRADING:
+  capital_usage_default: 0
+  max_risk_pct: 0
+
+micro_burst:
+  enabled: true
+  mode: SHADOW
+  symbols:
+    BTCUSDT: { enabled: true, bookDepthLevels: 20, bookDepthSpeed: 100ms }
+    ETHUSDT: { enabled: true, bookDepthLevels: 20, bookDepthSpeed: 100ms }
+  prospective_validation:
+    enabled: true
+    cohort_id: M3_2_2_RUNTIME_SOAK_PRE_OFFICIAL
+    horizons_ms: [15000, 30000, 60000, 120000, 300000]
+    conservative_entry_slippage_bps: 5
+  market_archive:
+    enabled: true
+    root_dir: data/micro-burst/m3_2_2-soak/market-data
+    sqlite_path: data/micro-burst/m3_2_2-soak/micro_burst_research.sqlite
+    trade_retention_ms: 600000
+    book_checkpoint_interval_ms: 60000
+    raw_trade_archive: true
+    raw_depth_archive: true
+    compression: gzip

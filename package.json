@@ -26,6 +26,8 @@
     "micro-burst:shadow-smoke": "npx tsx scripts/micro-burst-shadow-smoke.ts",
     "micro-burst:shadow-soak": "npx tsx scripts/micro-burst-shadow-soak.ts",
     "micro-burst:production-soak": "npm run build && bash scripts/run-micro-burst-m3_2_1-soak.sh",
+    "micro-burst:production-soak-m3_2_2": "bash scripts/run-micro-burst-m3_2_2-soak.sh",
+    "test:micro-burst-soak-launcher": "bash scripts/lib/micro-burst-m3_2_2-soak.test.sh",
     "micro-burst:analyze-shadow": "npx tsx scripts/micro-burst-analyze-shadow.ts"
   },
   "dependencies": {
@@ -36,12 +38,14 @@
     "dotenv": "^17.2.1",
     "js-yaml": "^4.1.1",
     "node-cron": "^4.2.1",
-    "onnxruntime-node": "^1.22.0-rev"
+    "onnxruntime-node": "^1.22.0-rev",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.3.1",
+    "@types/ws": "^8.18.1",
     "@types/yargs": "^17.0.33",
     "nodemon": "^3.1.10",
     "prettier": "^3.6.2",
