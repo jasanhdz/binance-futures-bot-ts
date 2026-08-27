@@ -1,14 +1,13 @@
 # MICRO_BURST_V1
 
-MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M1 adds a synchronized market data shadow plane for order book depth, BTC live context, reference price, aggTrade ingestion, temporal book history, and shadow evaluation telemetry. Mode remains OFF. SHADOW and LIVE authority are explicitly false.
+MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M2 wires the shadow evaluation into the live bot runtime with real market data, continuous evaluation, and structured signal journaling. The strategy cannot open, close, or modify any exchange position.
 
 ## Authority
 
-- Strategy mode remains `OFF`.
-- `MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED = false`.
-- `MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false`.
-- Shadow evaluation produces `WOULD_ENTER` telemetry but never calls `SharedStrategyExecutionService.execute()`.
-- The position manager may compute and translate an exit decision while OFF, but does not apply lifecycle or exchange mutations.
+- `MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED = true` — can evaluate and log decisions.
+- `MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false` — cannot execute.
+- Shadow evaluation produces `WOULD_ENTER` telemetry and persists unique signals to JSONL, but never calls `SharedStrategyExecutionService.execute()`.
+- The position manager may compute and translate an exit decision, but does not apply lifecycle or exchange mutations.
 
 ## Correctness Invariants
 
@@ -103,10 +102,25 @@ Dynamic exits belong only to `MicroBurstExitPolicy`; legacy lifecycle logic cann
 - `MicroBurstShadowEvaluator` with structured telemetry and duplicate signal suppression.
 - `MicroBurstConfigLoader` for YAML/environment configuration.
 
-## M2 Scope Pending
+## M2 Operational Shadow (Implemented)
 
-- Wire depth/aggTrade/BTC subscriptions in TradingService startup.
-- Wire shadow evaluation into TradingService tick loop.
-- Consume aggTrade data in entry policy for taker flow signals.
-- Tune temporal absorption/sweep thresholds.
-- Enable SHADOW mode in regime_config.live.yaml.
+- `MicroBurstRuntime` orchestrator: start/stop, evaluation loop, health reporting.
+- Wired into `TradingService` lifecycle: starts with bot, stops cleanly.
+- Real depth WebSocket per symbol via `SynchronizedOrderBook`.
+- Real BTC context via `BtcMicroContextProvider`.
+- Real aggTrade streaming per symbol via `MicroBurstAggTradeBuffer`.
+- Real reference price via `MicroBurstReferencePriceProvider`.
+- AggTrade taker flow integrated into `MicroBurstContext` and diagnostics.
+- `MicroBurstSignalJournal`: append-only JSONL for unique ENTRY_INTENT signals.
+- Evaluation loop with configurable interval and per-symbol in-flight guard.
+- Health reporting every 60s.
+- Config from YAML `micro_burst` section or environment variables.
+- Shadow authority enabled; LIVE authority disabled; exchange mutations impossible.
+- Static audit: 100 evaluations produce zero exchange mutations.
+
+## M3 Scope Pending
+
+- Tune S/R detection parameters for real market conditions.
+- Tune momentum thresholds and leverage tiers.
+- Validate temporal absorption/sweep thresholds.
+- Backtest signal quality with shadow journal data.

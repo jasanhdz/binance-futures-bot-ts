@@ -9,9 +9,20 @@ import { strategyLifecyclePolicy } from '../../strategy/StrategyLifecyclePolicy'
 
 const strategyDir = resolve(__dirname);
 
+const APPLICATION_LAYER_FILES = ['MicroBurstRuntime.ts', 'MicroBurstSignalJournal.ts'];
+
+function getDomainProductionFiles(): string[] {
+  return readdirSync(strategyDir)
+    .filter((name) =>
+      name.endsWith('.ts') &&
+      !name.includes('.test') &&
+      !APPLICATION_LAYER_FILES.includes(name),
+    );
+}
+
 describe('Micro Burst architecture boundaries', () => {
-  it('keeps shadow and live authority disabled', () => {
-    expect(MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED).toBe(false);
+  it('SHADOW authority enabled, LIVE authority disabled', () => {
+    expect(MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED).toBe(true);
     expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(false);
   });
 
@@ -29,8 +40,7 @@ describe('Micro Burst architecture boundaries', () => {
   });
 
   it('keeps domain production imports isolated from other strategies and legacy guardians', () => {
-    const imports = readdirSync(strategyDir)
-      .filter((name) => name.endsWith('.ts') && !name.includes('.test'))
+    const imports = getDomainProductionFiles()
       .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))
       .flatMap((source) => source.split('\n').filter((line) => line.startsWith('import ')))
       .join('\n');
@@ -47,8 +57,7 @@ describe('Micro Burst architecture boundaries', () => {
   });
 
   it('keeps causal domain logic free of wall-clock reads and index-to-epoch comparisons', () => {
-    const productionSource = readdirSync(strategyDir)
-      .filter((name) => name.endsWith('.ts') && !name.includes('.test'))
+    const productionSource = getDomainProductionFiles()
       .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))
       .join('\n');
     const contextBuilder = readFileSync(resolve(strategyDir, 'MicroBurstContextBuilder.ts'), 'utf8');

@@ -62,6 +62,8 @@ export interface Exchange {
   getCachedCandles?(symbol: string, interval: string, limit: number): Candle[];
   subscribeToCandles(symbol: string): void;
   subscribeToPartialDepth?(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void): void;
+  subscribeToAggTrades?(symbol: string, callback: (trade: { isBuyerMaker: boolean; quantity: string; price: string; eventTime: number }) => void): void;
+  getDepthSnapshot?(symbol: string, levels?: number): Promise<{ lastUpdateId: number; bids: [string, string][]; asks: [string, string][] }>;
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;
   getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;

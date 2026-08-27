@@ -423,6 +423,26 @@ export class BinanceExchange implements Exchange {
     this.wsManager.connectPartialDepth(symbol, levels, speed, callback);
   }
 
+  public subscribeToAggTrades(symbol: string, callback: (trade: { isBuyerMaker: boolean; quantity: string; price: string; eventTime: number }) => void): void {
+    this.wsManager.connectAggTrades(symbol, (trade) => {
+      callback({
+        isBuyerMaker: trade.isBuyerMaker,
+        quantity: trade.quantity,
+        price: trade.price,
+        eventTime: Date.now(),
+      });
+    });
+  }
+
+  public async getDepthSnapshot(symbol: string, levels = 20): Promise<{ lastUpdateId: number; bids: [string, string][]; asks: [string, string][] }> {
+    const book = await this.cli.futuresBook({ symbol, limit: levels });
+    return {
+      lastUpdateId: book.lastUpdateId,
+      bids: book.bids.map(b => [b.price, b.quantity] as [string, string]),
+      asks: book.asks.map(a => [a.price, a.quantity] as [string, string]),
+    };
+  }
+
   public simulateChaos(durationMs: number) {
     this.wsManager.simulateChaos(durationMs);
   }

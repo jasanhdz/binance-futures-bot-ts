@@ -36,11 +36,16 @@ export interface ReferencePriceProvider {
   }): MicroBurstReferencePrice | undefined;
 }
 
+export interface AggTradeFlowProvider {
+  getTakerFlow(symbol: string): { buyVolume: number; sellVolume: number; netTakerVolume: number; tradeCount: number };
+}
+
 export interface MicroBurstContextBuilderDeps {
   candles: CandleSnapshotProvider;
   btc?: BtcMicroContextProvider;
   book?: OrderBookSnapshotProvider;
   referencePrice?: ReferencePriceProvider;
+  aggTradeFlow?: AggTradeFlowProvider;
 }
 
 export interface MicroBurstContextBuildOptions {
@@ -248,6 +253,8 @@ export async function buildMicroBurstContext(
     dataQuality.invalidReasons.push('invalid_market_price');
   }
 
+  const aggTradeFlow = deps.aggTradeFlow?.getTakerFlow(symbol);
+
   return {
     symbol,
     timestamp: snapshotAtMs,
@@ -261,5 +268,13 @@ export async function buildMicroBurstContext(
     structuralClarity,
     microRegime,
     dataQuality,
+    ...(aggTradeFlow && aggTradeFlow.tradeCount > 0
+      ? { aggTradeFlow: {
+          buyTakerVolume: aggTradeFlow.buyVolume,
+          sellTakerVolume: aggTradeFlow.sellVolume,
+          netTakerFlow: aggTradeFlow.netTakerVolume,
+          tradeCount: aggTradeFlow.tradeCount,
+        }}
+      : {}),
   };
 }

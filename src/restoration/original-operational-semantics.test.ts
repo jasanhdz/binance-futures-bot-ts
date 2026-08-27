@@ -31,9 +31,9 @@ function sha256(path: string): string {
 
 const baselineOperationalDigests: Record<string, string> = {
   'src/main.ts': '3b531c0e98916975b0e0e22cd735ce88cb786027cdb5a739362849cb0c76bf7d',
-  'src/app/ports/Exchange.ts': '94bf506268595083231ae8604f5acdff318e08d1ade8a8ba74b382e3357697d9',
+  'src/app/ports/Exchange.ts': '9363cc949047efcdaa2174ff0931257dc184b7c391df3a51f9815f18d4281cde',
   'src/infra/adapters/BinanceAdapter.ts':
-    'bd1aa00888b4204b8ca3f76cf1efa67535f70eae07664911717d3f6740e947ef',
+    '4b5dfdab813d14d791d69e41181e6a0eafaf2bb728cb9d9a29c6b72d0996214b',
   'src/infra/config/environment.ts':
     '3bac013429ee9828f15aa5c9266cd92c285394ec5410c0ecf6efed4e5c7e16d8',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
@@ -51,7 +51,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '0d62db1adb7403f5e8e54ee0dcec2ffee8832c3e26b0279b9ace15e562a47b06',
   'src/app/services/TradingService.ts':
-    '377b7626be5bc97d3add2d1a4bff955406c041ae26a507f5c8cae26986921f4d',
+    '09131704e8d9a56166b056f02ace41743e275576c6009f1d2b2ba5301c182b4e',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':

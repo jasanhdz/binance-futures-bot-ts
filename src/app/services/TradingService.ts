@@ -113,6 +113,8 @@ import { StrategyRouter } from '../strategy/StrategyRouter';
 import { MomentumRideStrategy, MomentumRideStrategyContext } from '../../domain/strategies/momentum-ride/MomentumRideStrategy';
 import { MicroBurstStrategy, MicroBurstStrategyContext } from '../../domain/strategies/micro-burst/MicroBurstStrategy';
 import { createMicroBurstV1Identity } from '../../domain/strategies/micro-burst/MicroBurstIdentity';
+import { MicroBurstRuntime } from '../../domain/strategies/micro-burst/MicroBurstRuntime';
+import { parseMicroBurstConfig, isMicroBurstShadowMode } from '../../domain/strategies/micro-burst/MicroBurstConfigLoader';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 
@@ -217,6 +219,7 @@ export class TradingService {
     private readonly momentumStrategyRouter = new StrategyRouter<MomentumRideStrategyContext>();
     private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
     private readonly microBurstIdentity: StrategyIdentity;
+    private microBurstRuntime: MicroBurstRuntime | null = null;
 
     constructor(
         private deps: TradingServiceDeps,
@@ -248,6 +251,14 @@ export class TradingService {
             this.microBurstIdentity,
             'OFF'
         ));
+
+        const mbConfig = this.getMicroBurstConfig();
+        if (isMicroBurstShadowMode(mbConfig)) {
+            this.microBurstStrategyRouter.register(new MicroBurstStrategy(
+                this.microBurstIdentity,
+                'SHADOW'
+            ));
+        }
 
         this.positionLifecycleCore = new StrategyPositionLifecycleCore({
             exchange: deps.exchange,
@@ -290,6 +301,20 @@ export class TradingService {
 
     private getTradingMode(): string {
         return this.config.tradingMode || CONFIG.TRADING_MODE;
+    }
+
+    private getMicroBurstConfig() {
+        const manager = this.deps.configManager as any;
+        if (typeof manager.getMicroBurstConfig === 'function') {
+            return manager.getMicroBurstConfig();
+        }
+        const yamlConfig = typeof manager.getRegimeConfig === 'function'
+            ? manager.getRegimeConfig()
+            : undefined;
+        if (yamlConfig?.micro_burst) {
+            return parseMicroBurstConfig({ micro_burst: yamlConfig.micro_burst });
+        }
+        return parseMicroBurstConfig({});
     }
 
     private getAegisTurboYamlConfig(): AegisTurboYamlConfig | undefined {
@@ -1349,6 +1374,30 @@ export class TradingService {
         }
 
         this.isRunning = true;
+
+        const mbConfig = this.getMicroBurstConfig();
+        if (mbConfig.enabled && mbConfig.mode === 'SHADOW') {
+            try {
+                this.microBurstRuntime = new MicroBurstRuntime(
+                    {
+                        exchange: this.deps.exchange,
+                        logger: this.deps.logger,
+                        clock: { now: () => Date.now() },
+                        strategyRouter: this.microBurstStrategyRouter,
+                    },
+                    mbConfig,
+                );
+                await this.microBurstRuntime.start();
+                this.deps.logger.info('micro_burst_runtime_integrated', {
+                    mode: mbConfig.mode,
+                    symbols: Object.keys(mbConfig.symbols).filter(s => mbConfig.symbols[s].enabled),
+                });
+            } catch (err) {
+                this.deps.logger.error('micro_burst_runtime_startup_failed', { error: String(err) });
+                this.microBurstRuntime = null;
+            }
+        }
+
         this.hardWatchdogTimer = setInterval(() => {
             if (this.isRunning && (Date.now() - this.lastAlivePulseMs > 180000)) {
                 this.deps.logger.error('system_deadlock_detected');
@@ -1361,6 +1410,10 @@ export class TradingService {
 
     stop(): void {
         this.isRunning = false;
+        if (this.microBurstRuntime) {
+            this.microBurstRuntime.stop();
+            this.microBurstRuntime = null;
+        }
         this.deps.logger.info('Aegis bot stopped');
         if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
     }

@@ -116,7 +116,7 @@ export class MicroBurstShadowEvaluator {
 
       const result: MicroBurstShadowEvaluationResult = {
         strategyId: 'MICRO_BURST_V1',
-        strategyVersion: '0.2.0-correctness',
+        strategyVersion: '0.3.0-operational-shadow',
         symbol,
         snapshotAtMs,
         decision: envelope.decision,
@@ -160,7 +160,24 @@ export class MicroBurstShadowEvaluator {
         duplicateSuppressed,
         firstObservedAt,
         lastObservedAt,
-        diagnostics: envelope.diagnostics,
+        diagnostics: {
+          ...envelope.diagnostics,
+          ...(context.aggTradeFlow
+            ? {
+                takerBuyVolume: context.aggTradeFlow.buyTakerVolume,
+                takerSellVolume: context.aggTradeFlow.sellTakerVolume,
+                takerNetFlow: context.aggTradeFlow.netTakerFlow,
+                takerFlowSampleCount: context.aggTradeFlow.tradeCount,
+              }
+            : {}),
+          referencePriceSource: typeof envelope.diagnostics?.referencePriceSource === 'string'
+            ? envelope.diagnostics.referencePriceSource
+            : 'CLOSED_1M_CANDLE',
+          btcAcceleration: context.btcContext?.acceleration ?? null,
+          btcDirection: context.btcContext?.direction ?? null,
+          temporalAbsorptionDetected: context.bookPressure.temporalAbsorptionDetected ?? false,
+          temporalSweepDetected: context.bookPressure.temporalSweepDetected ?? false,
+        },
       };
 
       this.logTelemetry(result);
@@ -224,7 +241,7 @@ export class MicroBurstShadowEvaluator {
   private buildDisabledResult(symbol: string, snapshotAtMs: number): MicroBurstShadowEvaluationResult {
     return {
       strategyId: 'MICRO_BURST_V1',
-      strategyVersion: '0.2.0-correctness',
+      strategyVersion: '0.3.0-operational-shadow',
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',
@@ -259,7 +276,7 @@ export class MicroBurstShadowEvaluator {
   ): MicroBurstShadowEvaluationResult {
     return {
       strategyId: 'MICRO_BURST_V1',
-      strategyVersion: '0.2.0-correctness',
+      strategyVersion: '0.3.0-operational-shadow',
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',

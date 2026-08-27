@@ -166,6 +166,13 @@ export interface MicroBurstContext {
   structuralClarity: boolean;
   microRegime: MicroRegime;
   dataQuality: DataQualityDiagnostics;
+  /** AggTrade taker flow diagnostics from runtime. Undefined when no aggTrade source is available. */
+  aggTradeFlow?: {
+    buyTakerVolume: number;
+    sellTakerVolume: number;
+    netTakerFlow: number;
+    tradeCount: number;
+  };
 }
 
 // ── Entry ────────────────────────────────────────────────────
