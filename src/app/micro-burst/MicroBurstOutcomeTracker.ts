@@ -217,16 +217,13 @@ export class MicroBurstOutcomeTracker {
     ) {
       this.outcomeErrors++;
     }
-    this.tradeHistory.prune(this.deps.clock.now());
+    this.tradeHistory.prune(this.eventWatermarks.get(event.symbol) ?? event.eventTime);
     for (const [id, pending] of this.pending) {
       if (pending.signal.symbol !== event.symbol || event.eventTime <= pending.signal.signalAtMs)
         continue;
+      const watermark = this.eventWatermarks.get(pending.signal.symbol) ?? event.eventTime;
       pending.priceHistory = [
-        ...this.tradeHistory.query(
-          pending.signal.symbol,
-          pending.signal.signalAtMs,
-          event.eventTime,
-        ),
+        ...this.tradeHistory.query(pending.signal.symbol, pending.signal.signalAtMs, watermark),
       ];
 
       // Update peak/trough
@@ -246,6 +243,7 @@ export class MicroBurstOutcomeTracker {
 
       // Check horizon completions
       this.checkHorizonCompletions(id, pending);
+      if (pending.pendingHorizons.size === 0) this.completeOutcome(id, pending);
     }
   }
 
@@ -286,7 +284,6 @@ export class MicroBurstOutcomeTracker {
   }
 
   private checkHorizonCompletions(id: string, pending: PendingOutcome, forceTime?: number): void {
-    const now = forceTime ?? this.deps.clock.now();
     const t0 = pending.signal.signalAtMs;
 
     for (const horizonMs of pending.pendingHorizons) {
@@ -295,7 +292,8 @@ export class MicroBurstOutcomeTracker {
         this.eventWatermarks.get(pending.signal.symbol) ??
         this.deps.storage?.archiveWatermark(pending.signal.symbol) ??
         -Infinity;
-      if (now < horizonEnd || watermark < horizonEnd) continue;
+      // Market-event watermark, not local wall time, proves a causal horizon is observable.
+      if (watermark < horizonEnd) continue;
       if (this.deps.storage?.hasGap(pending.signal.symbol, t0, horizonEnd)) {
         this.deps.storage.persistPendingState(id, 'INCOMPLETE_DATA_GAP', {
           shadowSignalId: id,

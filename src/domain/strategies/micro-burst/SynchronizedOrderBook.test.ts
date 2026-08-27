@@ -241,12 +241,15 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     expect(book.getHealth()).not.toBe('HEALTHY');
   });
 
-  it('marks crossed books anomalous', async () => {
+  it('resyncs crossed books instead of leaving them terminally anomalous', async () => {
     const d = deps();
     const book = new SynchronizedOrderBook(SYMBOL, d);
     await startAndBridge(book, d);
     d.diffSource.emit(diff(102, 102, 101, { bids: [['101', '5']] }));
-    expect(book.getHealth()).toBe('ANOMALOUS');
+    expect(book.getHealth()).not.toBe('HEALTHY');
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2));
+    d.diffSource.emit(diff(100, 101, 100));
+    await healthy(book);
   });
 
   it('bounds the bootstrap buffer and forces a new snapshot', async () => {

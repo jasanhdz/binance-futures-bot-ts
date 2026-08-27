@@ -234,7 +234,7 @@ export class SynchronizedOrderBook {
       {
         const first = buffered[0];
         const snapshotUpdateId = this.lastUpdateId;
-        if (!(first.U <= snapshotUpdateId && snapshotUpdateId <= first.u)) {
+        if (!(first.U <= snapshotUpdateId + 1 && snapshotUpdateId + 1 <= first.u)) {
           this.desync('snapshot bridge missing');
           return;
         }
@@ -290,8 +290,13 @@ export class SynchronizedOrderBook {
     this.lastUpdateId = event.u;
     this.lastDiffAtMs = event.receivedAtMs;
     this.observedAtMs = event.receivedAtMs;
-    this.health = this.isBookValid() ? 'HEALTHY' : 'ANOMALOUS';
-    if (this.health === 'HEALTHY') this.recordTemporalObservation();
+    if (!this.isBookValid()) {
+      this.health = 'ANOMALOUS';
+      this.desync('crossed or empty book after diff-depth apply');
+      return;
+    }
+    this.health = 'HEALTHY';
+    this.recordTemporalObservation();
   }
 
   private isBookValid(): boolean {
