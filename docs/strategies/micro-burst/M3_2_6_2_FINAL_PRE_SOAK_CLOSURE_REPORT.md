@@ -4,10 +4,10 @@
 
 - Repository: `jasanhdz/binance-futures-bot-ts`
 - Branch: `work/micro-burst-rider-v1-20260826`
-- Base SHA: `6faf6ee95e95acc8f2ea7d254d026dae66396c70`
-- Implementation SHA: pending final commit
-- Report SHA: pending final commit
-- Working tree: dirty during implementation; clean tree is required before soak
+- Base SHA: `ee5aa5cc225c26a991a884869f19dc89243bfae7`
+- Implementation SHA: `19b7df9ff3994883f89aca999e6e8bc723513a50`
+- Report SHA: this documentation commit
+- Working tree: clean after this documentation commit
 - Version: `0.6.0-precohort-correctness`
 
 ## Verdict
@@ -34,6 +34,7 @@ The code-level correctness work is covered by the full test suite, but the final
 - Full Vitest: 106 files, 1,163 tests passed.
 - Build: `npm run build` passed.
 - Formatting check: `git diff --check` passed.
+- Exact CI: run `33127120902`, `head_sha=19b7df9ff3994883f89aca999e6e8bc723513a50`, completed/success.
 - Dependency audit: 5 high and 1 moderate advisories remain open; no forced remediation was applied.
 - Pre-cohort audit: `readyForSoak=false` because the local audit command has no fresh runtime/archive evidence.
 - Soak: not performed.

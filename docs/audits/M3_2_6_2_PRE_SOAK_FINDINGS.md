@@ -1,5 +1,11 @@
 # M3.2.6.2 Pre-Soak Findings
 
+Base SHA: `ee5aa5cc225c26a991a884869f19dc89243bfae7`
+
+Implementation SHA: `19b7df9ff3994883f89aca999e6e8bc723513a50`
+
+Exact CI: run `33127120902`, status `completed`, conclusion `success`.
+
 ## Scope
 
 Audit of the current Micro Burst implementation before the final 900-second SHADOW soak. The audit was performed against the dirty worktree after the M3.2.6.1 closure commits. No exchange mutation, official cohort, or soak was started.
