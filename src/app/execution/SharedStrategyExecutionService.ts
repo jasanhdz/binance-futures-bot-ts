@@ -49,11 +49,22 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     if (!Number.isFinite(intent.positionFraction) || intent.positionFraction <= 0 || intent.positionFraction > 1) {
       return denied(intent, 'INVALID_SIZE', baseMetadata);
     }
-    const useStop = intent.protection.requireStop || intent.stopRoe !== undefined;
-    const useTakeProfit = intent.protection.requireTakeProfit || intent.takeProfitRoe !== undefined;
-    if (useStop && (!Number.isFinite(intent.stopRoe) || Number(intent.stopRoe) >= 0)) {
+    const hasStopRoe = intent.stopRoe !== undefined;
+    const hasStructuralStop = intent.structuralStopPrice !== undefined;
+    if (hasStopRoe && (!Number.isFinite(intent.stopRoe) || Number(intent.stopRoe) >= 0)) {
       return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_stop_roe' });
     }
+    if (hasStructuralStop && (!Number.isFinite(intent.structuralStopPrice) || Number(intent.structuralStopPrice) <= 0)) {
+      return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_structural_stop_price' });
+    }
+    if (hasStopRoe && hasStructuralStop) {
+      return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'ambiguous_stop_specification' });
+    }
+    if (intent.protection.requireStop && !hasStopRoe && !hasStructuralStop) {
+      return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'missing_stop_specification' });
+    }
+    const stopSource = hasStructuralStop ? 'STRUCTURAL_PRICE' : hasStopRoe ? 'ROE' : undefined;
+    const useTakeProfit = intent.protection.requireTakeProfit || intent.takeProfitRoe !== undefined;
     if (useTakeProfit && (!Number.isFinite(intent.takeProfitRoe) || Number(intent.takeProfitRoe) <= 0)) {
       return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_take_profit_roe' });
     }
@@ -173,16 +184,28 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       openedQuantity = position.qtyAbs || quantity;
 
       const entryPrice = position.entryPrice > 0 ? position.entryPrice : order.avgPrice;
-      const stopPrice = useStop
-        ? roundPrice(bracketPrice(intent.side, entryPrice, Number(intent.stopRoe), intent.leverage, 'STOP'), filters)
-        : undefined;
+      const stopPrice = hasStructuralStop
+        ? roundPrice(Number(intent.structuralStopPrice), filters)
+        : hasStopRoe
+          ? roundPrice(bracketPrice(intent.side, entryPrice, Number(intent.stopRoe), intent.leverage, 'STOP'), filters)
+          : undefined;
       const takeProfitPrice = useTakeProfit
         ? roundPrice(bracketPrice(intent.side, entryPrice, Number(intent.takeProfitRoe), intent.leverage, 'TP'), filters)
         : undefined;
+      const stopAuditMetadata = stopSource === 'STRUCTURAL_PRICE'
+        ? { stopSource, requestedStructuralStopPrice: intent.structuralStopPrice, effectiveStopPrice: stopPrice }
+        : stopSource === 'ROE'
+          ? { stopSource, effectiveStopPrice: stopPrice }
+          : {};
 
       let stopOk = false;
       let takeProfitOk = false;
+      let protectionFailureDetail: string | undefined;
       try {
+        if (stopSource === 'STRUCTURAL_PRICE' && !isValidStructuralStopGeometry(intent.side, entryPrice, stopPrice)) {
+          protectionFailureDetail = 'invalid_structural_stop_geometry';
+          throw new Error('INVALID_STRUCTURAL_STOP_GEOMETRY');
+        }
         if (stopPrice !== undefined) {
           stopOk = await this.exchange.placeStopClose(intent.symbol, intent.side, stopPrice);
         }
@@ -210,8 +233,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           sideMode: recovery.sideMode,
           stopPrice,
           takeProfitPrice,
+          ...stopAuditMetadata,
           stopOk,
           takeProfitOk,
+          ...(protectionFailureDetail ? { reasonDetail: protectionFailureDetail } : {}),
           error: String(error),
           emergencyCloseError: recovery.emergencyCloseError,
           positionStillOpen: recovery.positionStillOpen,
@@ -241,6 +266,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             sideMode: recovery.sideMode,
             stopPrice,
             takeProfitPrice,
+            ...stopAuditMetadata,
             stopOk,
             takeProfitOk,
             error: String(error),
@@ -249,7 +275,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           });
         }
       }
-      const hasStop = closeOrders.some((order) => order.type.includes('STOP'));
+      const hasStop = closeOrders.some((order) =>
+        order.type.includes('STOP')
+        && (stopSource !== 'STRUCTURAL_PRICE' || roundPrice(order.stopPrice, filters) === stopPrice)
+      );
       const hasTakeProfit = closeOrders.some((order) => order.type.includes('TAKE_PROFIT'));
       if ((intent.protection.requireStop && !hasStop) || (intent.protection.requireTakeProfit && !hasTakeProfit)) {
         failureStage = 'PROTECTION';
@@ -270,10 +299,14 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           sideMode: recovery.sideMode,
           stopPrice,
           takeProfitPrice,
+          ...stopAuditMetadata,
           stopOk,
           takeProfitOk,
           hasStop,
           hasTakeProfit,
+          ...(stopSource === 'STRUCTURAL_PRICE' && intent.protection.requireStop && !hasStop
+            ? { reasonDetail: 'structural_stop_verification_failed' }
+            : {}),
           emergencyCloseError: recovery.emergencyCloseError,
           positionStillOpen: recovery.positionStillOpen,
         });
@@ -305,6 +338,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           marginUsed,
           stopPrice,
           takeProfitPrice,
+          ...stopAuditMetadata,
           stopOk,
           takeProfitOk,
           hasStop,
@@ -502,6 +536,15 @@ function bracketPrice(
   const move = Math.abs(roe) / leverage;
   if (kind === 'STOP') return side === 'LONG' ? entryPrice * (1 - move) : entryPrice * (1 + move);
   return side === 'LONG' ? entryPrice * (1 + move) : entryPrice * (1 - move);
+}
+
+function isValidStructuralStopGeometry(
+  side: 'LONG' | 'SHORT',
+  entryPrice: number,
+  stopPrice: number | undefined,
+): boolean {
+  if (!finite(entryPrice) || entryPrice <= 0 || !finite(stopPrice) || stopPrice <= 0) return false;
+  return side === 'LONG' ? stopPrice < entryPrice : stopPrice > entryPrice;
 }
 
 function isRecoverableEntrySizeError(error: unknown): boolean {

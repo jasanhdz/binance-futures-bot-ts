@@ -6,7 +6,7 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after MICRO_BURST_V1 M0.2 correctness patch.
+Runtime architecture migration checkpoint after MICRO_BURST_V1 M0.3 exact structural protection.
 
 Validation results are recorded below. This checkpoint does not grant runtime authority.
 
@@ -27,6 +27,7 @@ Validation results are recorded below. This checkpoint does not grant runtime au
 - Momentum standalone entry consumes Momentum-owned risk counters.
 - `SharedEntrySafetyGate` remains the shared operational safety boundary.
 - `SharedStrategyExecutionService` exists as the strategy-neutral exchange mutation boundary.
+- Shared execution accepts either the existing ROE stop path or one exact absolute structural stop, rejects ambiguous dual specifications, validates structural geometry against the confirmed fill after exchange rounding, and fails closed through the existing protection recovery path.
 - Momentum standalone entry is evaluated through `MomentumRideStrategy` and can execute through `SharedStrategyExecutionService` without requiring an Aegis entry approval.
 - Momentum has its own runtime protection/risk settings instead of inheriting Aegis Turbo SL/TP/liquidity/daily-loss values by accident.
 - Position lifecycle is routed by strategy identity and receives an explicit `StrategyLifecyclePolicy`.
@@ -99,7 +100,7 @@ The synthetic Momentum-inside-Aegis decision path has been retired. The orchestr
 
 Position ownership routes to `MomentumRidePositionManager`, which owns its policy composition over `StrategyPositionLifecycleCore` and has no ExitEye callback surface.
 
-### MICRO_BURST_V1 (M0.2 correctness contract)
+### MICRO_BURST_V1 (M0.3 exact structural protection)
 
 Deterministic tactical strategy contract implemented. Mode remains OFF. SHADOW and LIVE authority are explicitly false.
 
@@ -117,6 +118,10 @@ Key properties:
 - No Aegis dependencies (no Current Brain, E4, ExitEye)
 - Position manager computes/translates exits while OFF but applies no lifecycle/exchange mutation
 - Registered in StrategyRouter and PositionManagerRouter but mode remains OFF
+- Execution intent preserves `structuralStopPrice` as an absolute price through shared execution; no ROE conversion is permitted
+- Structural stop geometry is validated after the real fill and tick rounding; protection failure triggers emergency close
+- `destinationPrice` remains software-exit policy and does not become exchange take profit
+- No Micro Burst production execution call site exists
 
 ## Remaining work before Micro Burst live authority
 
@@ -128,22 +133,23 @@ Key properties:
 6. ~~**Phase 1 Cleanup and archive reorganization.**~~ DONE
 7. ~~**MICRO_BURST_V1 scaffold implementation.**~~ DONE (mode OFF, no live authority)
 8. ~~**MICRO_BURST_V1 M0.2 correctness patch.**~~ DONE (deterministic/fail-closed contracts, no authority)
-9. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
+9. ~~**MICRO_BURST_V1 M0.3 exact structural protection.**~~ DONE (shared execution boundary only, mode OFF)
+10. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
    - Do not mark `FROZEN_LIVE` merely because code compiles.
    - Generate deterministic hashes only after architecture and behavior are stable.
-10. **Reduce `TradingService` responsibility.**
+11. **Reduce `TradingService` responsibility.**
    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
    - Do this incrementally; do not rewrite the bot from scratch.
-11. **MICRO_BURST_V1 M1 Market Data Plane.**
+12. **MICRO_BURST_V1 M1 Market Data Plane.**
     - Add synchronized depth snapshot/diff handling, BTC stream, ticker/reference price, aggTrade and temporal book history.
     - Do not grant SHADOW or LIVE authority as part of data-plane construction.
-12. **MICRO_BURST_V1 tuning and validation.**
+13. **MICRO_BURST_V1 tuning and validation.**
     - Tune S/R detection parameters for real market conditions.
     - Tune momentum thresholds and leverage tiers based on backtesting.
     - Add BTC context pipeline to MicroBurstContextBuilder (currently null in production).
     - Wire order book depth to MicroBurstContextBuilder.
     - Validate exit policy timing parameters.
-13. **MICRO_BURST_V1 live authority activation.**
+14. **MICRO_BURST_V1 live authority activation.**
     - Only after tuning, testing, and explicit approval.
 
 ## Explicit architecture invariants
@@ -166,8 +172,11 @@ At the latest runtime checkpoint:
 
 - TypeScript build: PASS.
 - Micro Burst M0.2 correctness tests: 12/12 files, 97/97 PASS.
+- Micro Burst M0.3 tests: 12/12 files, 98/98 PASS.
+- M0.3 Aegis/Momentum/Micro Burst targeted matrix: 17/17 files, 240/240 PASS.
+- Full M0.3 suite: 83/83 files, 878/878 PASS.
 - Full clean-worktree suite: 83/83 files, 861/861 PASS.
-- `src/app/execution/SharedStrategyExecutionService.test.ts`: 8/8 PASS.
+- `src/app/execution/SharedStrategyExecutionService.test.ts`: 24/24 PASS at M0.3.
 - `src/domain/strategies/aegis/AegisExecutionIntentFactory.test.ts`: 2/2 PASS.
 - `src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.test.ts`: 3/3 PASS.
 - Required Phase 1 targeted matrix: 170/170 PASS.

@@ -1,6 +1,6 @@
 # MICRO_BURST_V1
 
-MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M0.2 defines correctness contracts only. It has no market-data WebSocket plane, dataset authority, SHADOW authority, LIVE authority, or operational exchange path.
+MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M0.3 adds exact structural-stop support at the shared execution boundary while keeping the strategy OFF. It has no market-data WebSocket plane, dataset authority, SHADOW authority, LIVE authority, or operational execution call site.
 
 ## Authority
 
@@ -28,7 +28,16 @@ MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M0.2 defines corre
 - Trailing V1 is a deterministic software callback that returns `CLOSE_MARKET`.
 - Break-even is the only dynamic `MOVE_STOP` action and cannot repeat or weaken an existing stop.
 - Execution intent creation is pure: `requestedAt` and `tradeId` are supplied by the caller.
+- Initial structural protection remains an absolute price through exchange tick rounding; it is never converted to ROE.
 - No domain import may depend on Aegis, CurrentBrain, E4, ExitEye, MomentumRide, or legacy ProfitGuardian.
+
+## Initial Execution Protection
+
+`createMicroBurstExecutionIntent()` supplies `structuralStopPrice`, `requireStop: true`, `requireTakeProfit: false`, and `closeIfProtectionFails: true`; it deliberately supplies no `stopRoe` or `takeProfitRoe`.
+
+`SharedStrategyExecutionService` now accepts either a negative ROE stop or one positive finite structural price, but denies both together as ambiguous. A structural stop is rounded only by exchange symbol filters and then checked against the confirmed fill: below entry for LONG and above entry for SHORT. Invalid geometry, placement failure, or failure to verify the exact rounded STOP follows the existing emergency-close path.
+
+`destinationPrice` remains owned by `MicroBurstExitPolicy` as a software destination. M0.3 does not create an exchange take-profit order and does not connect the factory to a production execution call site.
 
 ## Reference Price
 
@@ -92,4 +101,4 @@ Dynamic exits belong only to `MicroBurstExitPolicy`; legacy lifecycle logic cann
 - Temporal book history and real `imbalanceSlope`.
 - Temporal absorption and sweep detection.
 
-These are deliberately not implemented by M0.2.
+These are deliberately not implemented by M0.3.
