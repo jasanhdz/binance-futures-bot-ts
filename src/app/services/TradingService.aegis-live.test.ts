@@ -700,7 +700,8 @@ function makeHarness(options: {
             return options.cachedCandles ?? [];
         }),
         getCachedCandles: vi.fn().mockReturnValue(options.cachedCandles ?? []),
-        subscribeToCandles: vi.fn()
+        subscribeToCandles: vi.fn(),
+        subscribeToPartialDepth: vi.fn()
     };
     const logger = {
         info: vi.fn(),
@@ -978,6 +979,15 @@ describe('TradingService Aegis live execution', () => {
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧪 Probe Mode'));
         expect(notifier.sendMessage).not.toHaveBeenCalledWith(expect.stringContaining('Radar ETHUSDT'));
         expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('💼 Posiciones\nNinguna'));
+    });
+
+    it('subscribes to the valid top-20 partial depth stream at startup', async () => {
+        const { exchange, service } = makeHarness({ symbols: ['ETHUSDT'] });
+
+        await service.start(false);
+
+        expect(exchange.subscribeToPartialDepth).toHaveBeenCalledWith('ETHUSDT', 20, '100ms', expect.any(Function));
+        service.stop();
     });
 
     it('restores consecutive losses from the closed-trade journal at startup', async () => {

@@ -23,15 +23,15 @@ export function resolveMarketDataEndpoint(isTestnet: boolean): MarketDataEndpoin
 export function streamWebSocketUrl(
   endpoint: MarketDataEndpointConfig,
   stream: string,
-  descriptor: MarketDataEndpointDescriptor,
+  _descriptor: MarketDataEndpointDescriptor,
 ): string {
-  return `${endpoint.baseUrl}/${descriptor.accessMode}/ws/${stream}`;
+  return `${endpoint.baseUrl}/ws/${stream}`;
 }
 
 export function combinedStreamWebSocketUrl(
   endpoint: MarketDataEndpointConfig,
   streams: string[],
-  descriptor: MarketDataEndpointDescriptor,
+  _descriptor: MarketDataEndpointDescriptor,
 ): string {
-  return `${endpoint.baseUrl}/${descriptor.accessMode}/stream?streams=${streams.join('/')}`;
+  return `${endpoint.baseUrl}/stream?streams=${streams.join('/')}`;
 }

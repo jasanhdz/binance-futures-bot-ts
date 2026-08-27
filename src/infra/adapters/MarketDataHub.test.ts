@@ -33,18 +33,18 @@ class FakeWebSocket implements RawWebSocket {
 const logger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 describe('MarketDataHub', () => {
-  it('uses explicit public and market routes for production and testnet', () => {
+  it('uses official USD-M raw websocket paths while retaining logical route descriptors', () => {
     expect(streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@depth@100ms', PUBLIC)).toBe(
-      'wss://fstream.binance.com/public/ws/btcusdt@depth@100ms',
+      'wss://fstream.binance.com/ws/btcusdt@depth@100ms',
     );
     expect(streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@aggTrade', MARKET)).toBe(
-      'wss://fstream.binance.com/market/ws/btcusdt@aggTrade',
+      'wss://fstream.binance.com/ws/btcusdt@aggTrade',
     );
     expect(combinedStreamWebSocketUrl(resolveMarketDataEndpoint(false), ['btcusdt@kline_5m'], MARKET)).toBe(
-      'wss://fstream.binance.com/market/stream?streams=btcusdt@kline_5m',
+      'wss://fstream.binance.com/stream?streams=btcusdt@kline_5m',
     );
     expect(streamWebSocketUrl(resolveMarketDataEndpoint(true), 'btcusdt@markPrice@1s', MARKET)).toBe(
-      'wss://stream.binancefuture.com/market/ws/btcusdt@markPrice@1s',
+      'wss://stream.binancefuture.com/ws/btcusdt@markPrice@1s',
     );
   });
 

@@ -1372,7 +1372,7 @@ export class TradingService {
             this.deps.exchange.subscribeToCandles(symbol);
             this.detector[symbol] = new LiquidityVoidDetector(this.deps.logger);
             if (this.deps.exchange.subscribeToPartialDepth) {
-                this.deps.exchange.subscribeToPartialDepth(symbol, 50, '100ms', (depth: any) => {
+                this.deps.exchange.subscribeToPartialDepth(symbol, 20, '100ms', (depth: any) => {
                     if (!depth?.bids || !depth?.asks) return;
                     const mapper = (arr: any[]) => arr.map(row => Array.isArray(row)
                         ? { price: Number(row[0]), qty: Number(row[1]) }
