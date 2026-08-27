@@ -133,7 +133,12 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       const clientOrderId = marketOpenClientOrderId(intent);
       while (true) {
         try {
-          order = await this.exchange.marketOpen(intent.symbol, intent.side, quantity, clientOrderId);
+          order = await this.exchange.marketOpen(
+            intent.symbol,
+            intent.side,
+            quantity,
+            clientOrderId,
+          );
           break;
         } catch (error) {
           let reconciledOrder: { avgPrice: number; orderId: string } | null;
@@ -235,6 +240,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           sideMode: recovery.sideMode,
           emergencyCloseError: recovery.emergencyCloseError,
           positionStillOpen: recovery.positionStillOpen,
+          closeAmbiguous: recovery.closeAmbiguous,
         });
       }
       openedSideMode = position.sideMode;
@@ -329,6 +335,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           error: String(error),
           emergencyCloseError: recovery.emergencyCloseError,
           positionStillOpen: recovery.positionStillOpen,
+          closeAmbiguous: recovery.closeAmbiguous,
         });
       }
 
@@ -362,15 +369,16 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             error: String(error),
             emergencyCloseError: recovery.emergencyCloseError,
             positionStillOpen: recovery.positionStillOpen,
+            closeAmbiguous: recovery.closeAmbiguous,
           });
         }
       }
-      const hasStop = closeOrders.some(
-        (order) =>
-          order.type.includes('STOP') &&
-          (stopSource !== 'STRUCTURAL_PRICE' || roundPrice(order.stopPrice, filters) === stopPrice),
+      const hasStop = closeOrders.some((order) =>
+        exactBracket(order, 'STOP', stopPrice, intent, filters),
       );
-      const hasTakeProfit = closeOrders.some((order) => order.type.includes('TAKE_PROFIT'));
+      const hasTakeProfit = closeOrders.some((order) =>
+        exactBracket(order, 'TAKE_PROFIT', takeProfitPrice, intent, filters),
+      );
       if (
         (intent.protection.requireStop && !hasStop) ||
         (intent.protection.requireTakeProfit && !hasTakeProfit)
@@ -455,14 +463,15 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       });
       if (opened) {
         try {
-          await this.exchange.closeSideMarketSafe(
-            intent.symbol,
-            intent.side,
+          const recovery = await this.attemptEmergencyClose(
+            intent,
             openedQuantity,
             openedSideMode,
             intent.failureCloseReasons?.unexpected ?? 'SHARED_EXECUTION_ERROR_CLOSED',
+            true,
           );
-          opened = false;
+          opened = recovery.positionStillOpen;
+          emergencyCloseError = recovery.emergencyCloseError;
         } catch (closeError) {
           emergencyCloseError = String(closeError);
           this.logger.error('shared_strategy_execution_emergency_close_failed', {
@@ -481,6 +490,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         recoverableEntrySizeError: isRecoverableEntrySizeError(error),
         failureStage,
         emergencyCloseError,
+        closeAmbiguous: emergencyCloseError ? true : undefined,
         positionStillOpen: opened,
         quantity: openedQuantity || undefined,
         sideMode: opened ? openedSideMode : undefined,
@@ -541,32 +551,67 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     sideMode: PositionInfo['sideMode'];
     emergencyCloseError?: string;
     positionStillOpen: boolean;
+    closeAmbiguous?: boolean;
   }> {
     let closeQuantity = quantity;
     let closeSideMode = sideMode;
-    if (reconcilePosition) {
-      try {
-        const position = await this.exchange.readActivePosition(intent.symbol, intent.side);
-        closeQuantity = position?.qtyAbs ?? closeQuantity;
-        closeSideMode = position?.sideMode ?? closeSideMode;
-      } catch (error) {
-        this.logger.warn('shared_strategy_execution_emergency_close_reconciliation_failed', {
-          strategyId: intent.identity.strategyId,
-          symbol: intent.symbol,
-          side: intent.side,
-          tradeId: intent.tradeId,
-          error: String(error),
-        });
+    let positionObserved = true;
+    try {
+      // Never trust the pre-failure quantity: the open may have partially filled.
+      const position = await this.exchange.readActivePosition(intent.symbol, intent.side);
+      if (position) {
+        closeQuantity = position.qtyAbs;
+        closeSideMode = position.sideMode;
+      } else {
+        positionObserved = false;
       }
+    } catch (error) {
+      this.logger.warn('shared_strategy_execution_emergency_close_reconciliation_failed', {
+        strategyId: intent.identity.strategyId,
+        symbol: intent.symbol,
+        side: intent.side,
+        tradeId: intent.tradeId,
+        error: String(error),
+      });
     }
     try {
-      await this.exchange.closeSideMarketSafe(
-        intent.symbol,
-        intent.side,
-        closeQuantity,
-        closeSideMode,
-        reason,
-      );
+      if (positionObserved || !reconcilePosition) {
+        await this.exchange.closeSideMarketSafe(
+          intent.symbol,
+          intent.side,
+          closeQuantity,
+          closeSideMode,
+          reason,
+        );
+      }
+      // A successful close request is not proof of a flat account.
+      const remaining =
+        positionObserved || !reconcilePosition
+          ? await this.exchange.readActivePosition(intent.symbol, intent.side)
+          : null;
+      if (remaining) {
+        return {
+          quantity: closeQuantity,
+          sideMode: closeSideMode,
+          positionStillOpen: true,
+          closeAmbiguous: false,
+          emergencyCloseError: 'protected close did not flatten position',
+        };
+      }
+      try {
+        const orphans = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
+        for (const order of orphans as any[]) {
+          if (order.owner === 'BOT')
+            await this.exchange.cancelOrderById(intent.symbol, order.orderId);
+        }
+      } catch (cleanupError) {
+        return {
+          quantity: closeQuantity,
+          sideMode: closeSideMode,
+          positionStillOpen: false,
+          emergencyCloseError: String(cleanupError),
+        };
+      }
       return { quantity: closeQuantity, sideMode: closeSideMode, positionStillOpen: false };
     } catch (error) {
       this.logger.error('shared_strategy_execution_emergency_close_failed', {
@@ -581,6 +626,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         sideMode: closeSideMode,
         emergencyCloseError: String(error),
         positionStillOpen: true,
+        closeAmbiguous: true,
       };
     }
   }
@@ -654,6 +700,25 @@ function isValidStructuralStopGeometry(
 ): boolean {
   if (!finite(entryPrice) || entryPrice <= 0 || !finite(stopPrice) || stopPrice <= 0) return false;
   return side === 'LONG' ? stopPrice < entryPrice : stopPrice > entryPrice;
+}
+
+function exactBracket(
+  order: any,
+  kind: 'STOP' | 'TAKE_PROFIT',
+  expectedPrice: number | undefined,
+  intent: StrategyExecutionIntent,
+  filters: SymbolFilters,
+): boolean {
+  if (expectedPrice === undefined) return false;
+  const expectedType =
+    kind === 'STOP' ? ['STOP_MARKET', 'STOP'] : ['TAKE_PROFIT_MARKET', 'TAKE_PROFIT'];
+  if (!expectedType.includes(String(order.type))) return false;
+  if (roundPrice(Number(order.stopPrice), filters) !== expectedPrice) return false;
+  if (order.side !== (intent.side === 'LONG' ? 'SELL' : 'BUY')) return false;
+  if (order.positionSide !== 'BOTH' && order.positionSide !== intent.side) return false;
+  if (order.workingType !== 'MARK_PRICE') return false;
+  // Quantity alone is not proof that an order closes this position.
+  return order.closePosition === true || order.reduceOnly === true;
 }
 
 function isRecoverableEntrySizeError(error: unknown): boolean {

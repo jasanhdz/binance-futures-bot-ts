@@ -57,9 +57,26 @@ function exchangeMock(): Exchange {
     placeStopClose: vi.fn().mockResolvedValue(true),
     placeTpClose: vi.fn().mockResolvedValue(true),
     listCloseOrdersForSide: vi.fn().mockResolvedValue([
-      { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99 },
-      { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 102 },
+      {
+        orderId: 'sl',
+        type: 'STOP_MARKET',
+        stopPrice: 99,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+      },
+      {
+        orderId: 'tp',
+        type: 'TAKE_PROFIT_MARKET',
+        stopPrice: 102,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+      },
     ]),
+    cancelOrderById: vi.fn(),
     closeSideMarketSafe: vi.fn(),
     getServerTime: vi.fn().mockResolvedValue(2000),
   } as unknown as Exchange;
@@ -71,6 +88,9 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   beforeEach(() => {
     exchange = exchangeMock();
+    vi.mocked(exchange.closeSideMarketSafe).mockImplementation(async () => {
+      vi.mocked(exchange.readActivePosition).mockResolvedValue(null);
+    });
     service = new SharedStrategyExecutionService(
       exchange,
       {
@@ -106,7 +126,11 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
     const result = await service.execute(intent());
 
-    expect(result).toMatchObject({ status: 'OPENED', orderId: 'reconciled-order', entryPrice: 100 });
+    expect(result).toMatchObject({
+      status: 'OPENED',
+      orderId: 'reconciled-order',
+      entryPrice: 100,
+    });
     expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
     expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledWith(
       'ETHUSDT',
@@ -231,6 +255,49 @@ describe('SharedStrategyExecutionService protection policy', () => {
     );
   });
 
+  it('rereads after a post-open failure, verifies flat, and cancels only bot protections', async () => {
+    vi.mocked(exchange.getServerTime).mockRejectedValueOnce(new Error('clock unavailable'));
+    vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
+      { orderId: 'bot', type: 'STOP_MARKET', stopPrice: 99, owner: 'BOT' } as any,
+      { orderId: 'external', type: 'STOP_MARKET', stopPrice: 99, owner: 'UNKNOWN' } as any,
+    ]);
+
+    const result = await service.execute(intent());
+
+    expect(result).toMatchObject({ status: 'FAILED', reason: 'EXCHANGE_REJECTED' });
+    expect(exchange.readActivePosition).toHaveBeenCalledTimes(3);
+    expect(exchange.closeSideMarketSafe).toHaveBeenCalledWith(
+      'ETHUSDT',
+      'LONG',
+      2,
+      'LONG',
+      'SHARED_EXECUTION_ERROR_CLOSED',
+    );
+    expect(exchange.cancelOrderById).toHaveBeenCalledTimes(1);
+    expect(exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'bot');
+  });
+
+  it('does not match a price-only protection order', async () => {
+    vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
+      {
+        orderId: 'sl',
+        type: 'STOP_MARKET',
+        stopPrice: 99,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+      } as any,
+    ]);
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: false },
+      }),
+    );
+
+    expect(result).toMatchObject({ status: 'FAILED', reason: 'BRACKETS_FAILED' });
+  });
+
   it('reports recovery data without closing when fail-close is intentionally disabled', async () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([]);
     const result = await service.execute(
@@ -317,7 +384,15 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   it('places an exact rounded structural stop for LONG', async () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
-      { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99.8 },
+      {
+        orderId: 'sl',
+        type: 'STOP_MARKET',
+        stopPrice: 99.8,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+      },
     ]);
     const result = await service.execute(
       intent({
@@ -346,7 +421,15 @@ describe('SharedStrategyExecutionService protection policy', () => {
       isolatedMargin: 10,
     });
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
-      { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 100.2 },
+      {
+        orderId: 'sl',
+        type: 'STOP_MARKET',
+        stopPrice: 100.2,
+        side: 'BUY',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+      },
     ]);
     const result = await service.execute(
       intent({
@@ -507,7 +590,15 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   it('emergency-closes when structural stop verification has no exact STOP', async () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
-      { orderId: 'wrong-sl', type: 'STOP_MARKET', stopPrice: 99.79 },
+      {
+        orderId: 'wrong-sl',
+        type: 'STOP_MARKET',
+        stopPrice: 99.79,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+      },
     ]);
     const result = await service.execute(
       intent({

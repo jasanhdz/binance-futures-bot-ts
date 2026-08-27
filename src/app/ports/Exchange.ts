@@ -141,6 +141,10 @@ export interface Exchange {
       closePosition?: boolean;
       reduceOnly?: boolean;
       quantity?: number;
+      side?: 'BUY' | 'SELL';
+      positionSide?: 'BOTH' | 'LONG' | 'SHORT';
+      workingType?: 'MARK_PRICE' | 'CONTRACT_PRICE';
+      owner?: 'BOT' | 'UNKNOWN';
     }[]
   >;
 

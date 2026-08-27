@@ -12,6 +12,7 @@ import { Candle, Side } from '../../domain/types';
 import { CONFIG } from '../config/environment';
 import { Logger } from '../../app/ports/Logger';
 import { noteRateLimitFromError } from './rate-limit';
+import { randomBytes } from 'node:crypto';
 
 const DEFAULT_MIN_REQ_GAP_MS = Number(process.env.BINANCE_REQ_GAP_MS ?? 40);
 const EXCHANGE_INFO_TTL_MS = Number(process.env.BINANCE_EXCHANGEINFO_TTL_MS ?? 5 * 60_000);
@@ -70,6 +71,19 @@ function sleep(ms: number) {
 
 function isTrueish(v: unknown): boolean {
   return v === true || v === 'true' || v === 'TRUE' || v === 1 || v === '1';
+}
+
+function canonicalMarginType(value: unknown): 'ISOLATED' | 'CROSSED' | undefined {
+  const normalized = String(value ?? '').toUpperCase();
+  if (normalized === 'ISOLATED') return 'ISOLATED';
+  if (normalized === 'CROSS' || normalized === 'CROSSED') return 'CROSSED';
+  return undefined;
+}
+
+function bracketClientId(kind: 'sl' | 'tp', symbol: string, side: Side): string {
+  // Keep the ownership prefix while making retries and concurrent positions distinct.
+  const nonce = randomBytes(10).toString('hex');
+  return `se_${kind}_${nonce}_${symbol}_${side}`.slice(0, 36);
 }
 
 function isUnknownOrderError(error: unknown): boolean {
@@ -480,7 +494,7 @@ export class BinanceExchange implements Exchange {
         price: trade.price,
         // Prefer the exchange trade timestamp for causal outcome ordering.
         eventTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
-        receivedAtMs: Date.now(),
+        receivedAtMs: trade.receivedAtMs,
         tradeTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
         aggregateTradeId: (trade as any).aggregateTradeId,
         firstTradeId: (trade as any).firstTradeId,
@@ -589,7 +603,17 @@ export class BinanceExchange implements Exchange {
 
   async setLeverage(symbol: string, leverage: number) {
     try {
-      await this.enqueue(() => this.cli.futuresLeverage({ symbol, leverage }));
+      const response: any = await this.enqueue(() =>
+        this.cli.futuresLeverage({ symbol, leverage }),
+      );
+      if (Number(response?.leverage) !== leverage) {
+        throw new Error(`Binance leverage response mismatch: requested ${leverage}`);
+      }
+      const risk: any[] = await this.enqueue(() => this.cli.futuresPositionRisk({ symbol }));
+      const row = risk.find((item) => item.symbol === symbol);
+      if (!row || Number(row.leverage) !== leverage) {
+        throw new Error(`Binance leverage readback mismatch or unavailable for ${symbol}`);
+      }
     } catch (err) {
       noteRateLimitFromError(err);
       throw err;
@@ -597,24 +621,36 @@ export class BinanceExchange implements Exchange {
   }
 
   async ensureMarginType(symbol: string, marginType: 'ISOLATED' | 'CROSSED' = 'ISOLATED') {
-    const now = Date.now();
-    const cached = this.marginTypeCache.get(symbol);
-    if (cached && cached.type === marginType && now - cached.ts < 5 * 60_000) {
-      return;
-    }
+    const verify = async () => {
+      const info: any = await this.getAccountInfo(true);
+      const rows = (info.positions || []).filter((p: any) => p.symbol === symbol);
+      const values = rows
+        .map((p: any) => canonicalMarginType(p.marginType))
+        .filter(
+          (value: string | undefined): value is 'ISOLATED' | 'CROSSED' => value !== undefined,
+        );
+      return values.length > 0 && values.every((value: string) => value === marginType);
+    };
     try {
-      await this.enqueue(() => this.cli.futuresMarginType({ symbol, marginType }));
-      this.marginTypeCache.set(symbol, { type: marginType, ts: now });
+      if (!(await verify())) {
+        await this.enqueue(() => this.cli.futuresMarginType({ symbol, marginType }));
+      }
+      if (!(await verify())) throw new Error(`Binance margin type readback mismatch for ${symbol}`);
+      this.marginTypeCache.set(symbol, { type: marginType, ts: Date.now() });
     } catch (err: any) {
       noteRateLimitFromError(err);
       const msg = (err?.message || err?.msg || '').toString();
-      if (
-        /No need to change margin type/i.test(msg) ||
-        /margin type cannot be changed/i.test(msg)
-      ) {
-        this.marginTypeCache.set(symbol, { type: marginType, ts: now });
-        this.log.debug('margin_type_skip', { symbol, requested: marginType, err: msg });
-        return;
+      if (/No need to change margin type|margin type cannot be changed/i.test(msg)) {
+        try {
+          if (await verify()) {
+            this.marginTypeCache.set(symbol, { type: marginType, ts: Date.now() });
+            return;
+          }
+        } catch {
+          // Preserve the fail-closed ambiguity below when state cannot be read.
+        }
+        this.marginTypeCache.delete(symbol);
+        throw new Error(`Binance margin type change is ambiguous for ${symbol}: ${msg}`);
       }
       throw err;
     }
@@ -765,7 +801,9 @@ export class BinanceExchange implements Exchange {
         this.cli.futuresGetOrder({ symbol, origClientOrderId: clientOrderId }),
       );
       if (!['NEW', 'PARTIALLY_FILLED', 'FILLED'].includes(String(order.status))) {
-        throw new Error(`market open reconciliation returned non-accepted status: ${String(order.status)}`);
+        throw new Error(
+          `market open reconciliation returned non-accepted status: ${String(order.status)}`,
+        );
       }
       return { avgPrice: Number(order.avgPrice || 0), orderId: String(order.orderId) };
     } catch (error) {
@@ -799,6 +837,7 @@ export class BinanceExchange implements Exchange {
       triggerPrice: this.formatPrice(symbol, stopPrice),
       workingType: 'MARK_PRICE',
       timestamp: Date.now(),
+      clientAlgoId: bracketClientId('sl', symbol, side),
     };
 
     if (qty) {
@@ -961,6 +1000,7 @@ export class BinanceExchange implements Exchange {
       triggerPrice: this.formatPrice(symbol, triggerPrice),
       workingType: 'MARK_PRICE',
       timestamp: Date.now(),
+      clientAlgoId: bracketClientId('tp', symbol, side),
     };
 
     if (qty) {
@@ -1017,6 +1057,7 @@ export class BinanceExchange implements Exchange {
       stopPrice: this.formatPrice(symbol, triggerPrice),
       workingType: 'MARK_PRICE',
       newOrderRespType: 'RESULT' as const,
+      newClientOrderId: bracketClientId(type === 'STOP_MARKET' ? 'sl' : 'tp', symbol, side),
     };
     if (qty) {
       params.quantity = String(qty);
@@ -1490,6 +1531,7 @@ export class BinanceExchange implements Exchange {
   > {
     const wantSide = this.orderSideForPosition(side);
     const results: any[] = [];
+    const listingErrors: unknown[] = [];
 
     // 1. Check standard orders
     try {
@@ -1521,20 +1563,32 @@ export class BinanceExchange implements Exchange {
           if (o.side !== wantSide) return false;
           const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
           if (!hedgeOk) return false;
-          return true;
+          return (
+            isTrueish(o.closePosition) ||
+            isTrueish(o.reduceOnly) ||
+            Number(o.origQty || o.quantity) > 0
+          );
         })
         .map((o) => ({
           orderId: String(o.orderId),
           type: o.type as any,
           stopPrice: Number(o.stopPrice),
-          closePosition: Boolean(o.closePosition),
-          reduceOnly: Boolean(o.reduceOnly),
+          closePosition: isTrueish(o.closePosition),
+          reduceOnly: isTrueish(o.reduceOnly),
           quantity: Number(o.origQty || o.quantity || 0),
+          positionSide: o.positionSide || 'BOTH',
+          workingType: o.workingType,
+          owner: String(o.clientOrderId || o.origClientOrderId || o.clientAlgoId || '').startsWith(
+            'se_',
+          )
+            ? 'BOT'
+            : 'UNKNOWN',
         }));
 
       results.push(...standardOrders);
     } catch (err) {
       noteRateLimitFromError(err);
+      listingErrors.push(err);
       this.log.warn('list_standard_orders_fail', { symbol, err: (err as any)?.message });
     }
 
@@ -1556,8 +1610,10 @@ export class BinanceExchange implements Exchange {
         },
       );
 
-      if (response.ok) {
+      if (!response.ok) throw new Error(`open algo orders failed: ${response.status}`);
+      {
         const algoOrders = await response.json();
+        if (!Array.isArray(algoOrders)) throw new Error('open algo orders returned invalid data');
 
         this.log.debug('raw_algo_orders', {
           count: (algoOrders as any[]).length,
@@ -1577,27 +1633,43 @@ export class BinanceExchange implements Exchange {
             const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
             if (!hedgeOk) return false;
             // Match order type
-            const t = o.orderType;
+            const t = o.orderType || o.type;
             const isStop = t === 'STOP_MARKET' || t === 'STOP';
             const isTp = t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
-            return isStop || isTp;
+            return (
+              (isStop || isTp) &&
+              (isTrueish(o.closePosition) ||
+                isTrueish(o.reduceOnly) ||
+                Number(o.quantity || o.origQty) > 0)
+            );
           })
           .map((o) => ({
             orderId: 'ALGO_' + String(o.algoId),
-            type: o.orderType as any,
+            type: (o.orderType || o.type) as any,
             stopPrice: Number(o.triggerPrice || 0),
-            closePosition: Boolean(o.closePosition),
-            reduceOnly: Boolean(o.reduceOnly),
+            closePosition: isTrueish(o.closePosition),
+            reduceOnly: isTrueish(o.reduceOnly),
             quantity: Number(o.quantity || o.origQty || 0),
+            positionSide: o.positionSide || 'BOTH',
+            workingType: o.workingType,
+            owner: String(
+              o.clientOrderId || o.origClientOrderId || o.clientAlgoId || '',
+            ).startsWith('se_')
+              ? 'BOT'
+              : 'UNKNOWN',
           }));
 
         results.push(...validAlgoOrders);
       }
     } catch (err) {
-      // Algo orders might not be available, silently continue
+      noteRateLimitFromError(err);
+      listingErrors.push(err);
       this.log.debug('list_algo_orders_fail', { symbol, err: (err as any)?.message });
     }
 
+    if (listingErrors.length > 0) {
+      throw new Error(`close-order listing failed: ${listingErrors.map(String).join('; ')}`);
+    }
     return results;
   }
 
