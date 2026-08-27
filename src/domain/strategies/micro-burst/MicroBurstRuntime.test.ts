@@ -27,13 +27,13 @@ function makeDeps(): MicroBurstRuntimeDeps {
       getLastCandle: async () => null,
       subscribeToCandles: () => {},
       getMarkPrice: async () => 0,
-      getFundingRate: async => ({ rate: 0 }),
-      getBasisSnapshot: async => ({ markPrice: 0, indexPrice: 0, basisPct: 0 }),
+      getFundingRate: async () => ({ rate: 0 }),
+      getBasisSnapshot: async () => ({ markPrice: 0, indexPrice: 0, basisPct: 0 }),
       readLiquidationPrice: async () => null,
       getUSDTBalance: async () => 100,
       setLeverage: async () => {},
       ensureMarginType: async () => {},
-      getSymbolFilters: async => ({ tickSize: 0.01, stepSize: 0.001, pricePrecision: 2, qtyPrecision: 3, minNotional: 5 }),
+      getSymbolFilters: async () => ({ tickSize: 0.01, stepSize: 0.001, pricePrecision: 2, qtyPrecision: 3, minNotional: 5 }),
       hasOpenPosition: async () => false,
       readActivePosition: async () => null,
       marketOpen: async () => ({ avgPrice: 0, orderId: '' }),
@@ -180,19 +180,19 @@ describe('MicroBurstRuntime exchange mutation firewall', () => {
 
     const deps = makeDeps();
     const originalMarketOpen = deps.exchange.marketOpen;
-    deps.exchange.marketOpen = async (...args: any[]) => {
+    deps.exchange.marketOpen = async (symbol: string, side: any, quantity: number) => {
       marketOpenCalls.push('called');
-      return originalMarketOpen.apply(deps.exchange, args);
+      return originalMarketOpen.call(deps.exchange, symbol, side, quantity);
     };
-    deps.exchange.placeStopClose = async (...args: any[]) => {
+    deps.exchange.placeStopClose = async () => {
       placeStopCalls.push('called');
       return true;
     };
-    deps.exchange.placeTpClose = async (...args: any[]) => {
+    deps.exchange.placeTpClose = async () => {
       placeTpCalls.push('called');
       return true;
     };
-    deps.exchange.closeSideMarketSafe = async (...args: any[]) => {
+    deps.exchange.closeSideMarketSafe = async () => {
       closeCalls.push('called');
     };
 
