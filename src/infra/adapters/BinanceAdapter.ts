@@ -24,6 +24,8 @@ type CandleCacheEntry = {
   ttl: number;
 };
 
+type HedgeMode = boolean | 'UNKNOWN';
+
 const CANDLE_INTERVAL_SETTINGS: Record<string, { minFetch: number; ttl: number }> = {
   '1m': { minFetch: 240, ttl: 5_000 },
   '3m': { minFetch: 240, ttl: 7_000 },
@@ -279,7 +281,7 @@ export class BinanceExchange implements Exchange {
     }
   }
 
-  private async isHedgeMode(): Promise<boolean> {
+  private async isHedgeMode(): Promise<HedgeMode> {
     if (this.hedgeCache && Date.now() - this.hedgeCache.at < 60_000) {
       return this.hedgeCache.value;
     }
@@ -290,9 +292,16 @@ export class BinanceExchange implements Exchange {
       return val;
     } catch (err) {
       noteRateLimitFromError(err);
-      this.hedgeCache = { value: false, at: Date.now() };
-      return false;
+      return 'UNKNOWN';
     }
+  }
+
+  private async mutationHedgeMode(): Promise<boolean> {
+    const hedge = await this.isHedgeMode();
+    if (hedge === 'UNKNOWN') {
+      throw new Error('Cannot place order: Binance position mode is unknown');
+    }
+    return hedge;
   }
 
   private static posSideMismatch(e: any) {
@@ -700,7 +709,7 @@ export class BinanceExchange implements Exchange {
   }
 
   async marketOpen(symbol: string, side: Side, quantity: number) {
-    const hedge = await this.isHedgeMode();
+    const hedge = await this.mutationHedgeMode();
 
     const base: any = {
       symbol,
@@ -741,7 +750,7 @@ export class BinanceExchange implements Exchange {
     stopPrice: number,
     qty?: number,
   ): Promise<boolean> {
-    const hedge = await this.isHedgeMode();
+    const hedge = await this.mutationHedgeMode();
 
     const standardParams = this.buildStandardCloseTriggerParams(
       symbol,
@@ -843,7 +852,7 @@ export class BinanceExchange implements Exchange {
   }
 
   private async placeStopCloseAlgo(symbol: string, side: Side, stopPrice: number): Promise<void> {
-    const hedge = await this.isHedgeMode();
+    const hedge = await this.mutationHedgeMode();
 
     const params: any = {
       symbol,
@@ -903,7 +912,7 @@ export class BinanceExchange implements Exchange {
     triggerPrice: number,
     qty?: number,
   ): Promise<boolean> {
-    const hedge = await this.isHedgeMode();
+    const hedge = await this.mutationHedgeMode();
 
     const standardParams = this.buildStandardCloseTriggerParams(
       symbol,
@@ -1069,7 +1078,7 @@ export class BinanceExchange implements Exchange {
   }
 
   private async placeTpCloseAlgo(symbol: string, side: Side, triggerPrice: number): Promise<void> {
-    const hedge = await this.isHedgeMode();
+    const hedge = await this.mutationHedgeMode();
 
     const params: any = {
       symbol,
@@ -1137,30 +1146,20 @@ export class BinanceExchange implements Exchange {
       side: side === 'LONG' ? 'SELL' : 'BUY',
     };
 
+    if (sideMode !== 'BOTH' && sideMode !== side) {
+      throw new Error(`Cannot close ${side}: Binance position mode is unknown or mismatched`);
+    }
+
+    const payload =
+      sideMode === 'BOTH'
+        ? { ...base, reduceOnly: 'true' as const }
+        : { ...base, positionSide: side };
+
     try {
-      if (sideMode === 'BOTH') {
-        // v8.0: Add reduceOnly to prevent notional minimum errors on small positions
-        await this.enqueue(() => this.cli.futuresOrder({ ...base, reduceOnly: 'true' as const }));
-      } else {
-        await this.enqueue(() =>
-          this.cli.futuresOrder({ ...base, positionSide: side, reduceOnly: 'true' as const }),
-        );
-      }
+      await this.enqueue(() => this.cli.futuresOrder(payload));
       this.invalidateAccountInfo();
     } catch (e: any) {
       noteRateLimitFromError(e);
-      if (BinanceExchange.posSideMismatch(e)) {
-        await this.enqueue(() => this.cli.futuresOrder(base));
-        this.hedgeCache = undefined;
-        this.invalidateAccountInfo();
-        return;
-      }
-      const m = (e?.message || '').toLowerCase();
-      if (m.includes('reduceonly') || m.includes('reduce only')) {
-        await this.enqueue(() => this.cli.futuresOrder(base));
-        this.invalidateAccountInfo();
-        return;
-      }
       throw e;
     }
   }
