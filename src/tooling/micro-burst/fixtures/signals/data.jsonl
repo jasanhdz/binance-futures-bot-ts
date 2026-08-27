@@ -1,0 +1,3 @@
+{"shadowSignalId":"signal-1","book":{"status":"READY","ageMs":10}}
+{"shadowSignalId":"signal-1","book":{"status":"READY","ageMs":10}}
+{"shadowSignalId":"signal-2","book":{"status":"STALE","ageMs":null}}
