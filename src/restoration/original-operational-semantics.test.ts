@@ -48,7 +48,8 @@ const baselineOperationalDigests: Record<string, string> = {
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml': 'e8afb7bf8b6388a1fe8dc08c1c6053530159d7b6577a77ee3e27a5f1718ca702',
-  'regime_config.live.yaml': '9fe6d035bc6fadbfb0611e8c691dc19b7a0802cb2ce59b81ce5b567392379e22',
+  // Phase 1 cleanup: removed the dormant Sentinel config surface.
+  'regime_config.live.yaml': '0d62db1adb7403f5e8e54ee0dcec2ffee8832c3e26b0279b9ace15e562a47b06',
   'src/app/services/TradingService.ts':
     'efbffc894fc3b95636605e12ee836ea34d6a9408aef6f309b8a7c33db44d193a',
   'src/app/telegram/AegisBlocksReportService.ts':
@@ -84,8 +85,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '95e0d011bd5e8db6a97c46238697ee3376415080c5c1503e0aeb793ff00d3858',
   'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':
     '041aadf526f858e70ce33d15516ba012dc3aca43f68d4ca2e88df265e054f07c',
+  // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
-    '79a0eeff7635d72f67d56d421679913c083cc2cd6728d4141a0977a92b8fedd2',
+    'd76f6ee695fa7714fa8888bdde9140bce6e350c3b603ab6485ed55fe79abb1b8',
 };
 
 type GuardFixture = [

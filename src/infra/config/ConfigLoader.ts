@@ -38,7 +38,6 @@ export interface SystemConfig {
     tick_interval_ms: number;
     max_trades_per_day: number;
     global_leverage_default: number;
-    enable_sentinel: boolean;
 }
 
 export interface RegimeDetectorConfig {
@@ -1378,8 +1377,7 @@ export class NinjaConfigManager {
             SYSTEM: {
                 tick_interval_ms: 5000,
                 max_trades_per_day: 100,
-                global_leverage_default: 10,
-                enable_sentinel: true
+                global_leverage_default: 10
             },
             REGIME_DETECTOR: {
                 volatility_spread_low: 0.0008,

@@ -900,7 +900,7 @@ function makeHarness(options: {
         getLiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode === 'LIVE').map(([symbol]) => symbol)),
         getActiveAegisSymbols: vi.fn(() => Object.entries(symbolModes).filter(([, mode]) => mode !== 'OFF').map(([symbol]) => symbol)),
         validateSingleLiveAegisSymbol: vi.fn(),
-        system: { enable_sentinel: false },
+        system: {},
         trading: { fee_buffer_pct: 0.05 }
     };
     if (options.entryPolicy) {

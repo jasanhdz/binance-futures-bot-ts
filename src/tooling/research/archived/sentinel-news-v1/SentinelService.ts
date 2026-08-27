@@ -1,4 +1,4 @@
-import { CryptoPanicAdapter, CryptoPanicPost } from '../../infra/api/CryptoPanicAdapter';
+import { CryptoPanicAdapter, CryptoPanicPost } from './CryptoPanicAdapter';
 export interface SentinelStatus {
     isPanic: boolean;
     panicScore: number;

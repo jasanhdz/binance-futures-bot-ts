@@ -25,7 +25,6 @@ SYSTEM:
   tick_interval_ms: 2000
   max_trades_per_day: 100
   global_leverage_default: 15
-  enable_sentinel: false
 REGIME_DETECTOR:
   volatility_spread_low: 0.0008
   volatility_spread_high: 0.0015
