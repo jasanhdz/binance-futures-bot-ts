@@ -1,5 +1,7 @@
 # Prompt / Handoff para Codex — Strategy Runtime V2 Phase 1
 
+> **Documento histórico archivado.** Este handoff conserva instrucciones de una fase anterior y no representa el estado ni la autoridad actual del runtime. Consulta el [índice de autoridad documental](../README.md).
+
 > Este documento es una instrucción de implementación. No otorga autoridad live a `MICRO_BURST_V1`.
 
 ## Instrucción principal

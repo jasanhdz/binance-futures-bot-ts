@@ -4,13 +4,13 @@
 
 Aegis Turbo sigue operando multi-symbol en vivo. La política actual desactiva los caps de portfolio y conserva únicamente un filtro premium para SHORTS.
 
-Profit Protection v1 está activo como capa de salida: no bloquea entradas ni cambia sizing, pero permite mover el SL de posiciones abiertas cuando Break-Even o Exit Eye detectan profit protegible. Ver `docs/AEGIS_PROFIT_PROTECTION.md`.
+Profit Protection v1 está activo como capa de salida: no bloquea entradas ni cambia sizing, pero permite mover el SL de posiciones abiertas cuando Break-Even o Exit Eye detectan profit protegible. Ver [AEGIS_PROFIT_PROTECTION.md](../../strategies/aegis/lifecycle/AEGIS_PROFIT_PROTECTION.md).
 
-Clean Entry Confirmation Guard v1 está activo como capa posterior a Decision Enforcement. En `ENFORCE`, una señal aprobada pero sucia se convierte en `WAIT_CONFIRMATION` antes de `setLeverage`/`marketOpen`; no cambia dirección, sizing de entradas limpias, brackets ni salidas. Ver `docs/AEGIS_CLEAN_ENTRY_GUARD.md`.
+Clean Entry Confirmation Guard v1 está activo como capa posterior a Decision Enforcement. En `ENFORCE`, una señal aprobada pero sucia se convierte en `WAIT_CONFIRMATION` antes de `setLeverage`/`marketOpen`; no cambia dirección, sizing de entradas limpias, brackets ni salidas. Ver [AEGIS_CLEAN_ENTRY_GUARD.md](../../strategies/aegis/entry/AEGIS_CLEAN_ENTRY_GUARD.md).
 
-Las capas de entrada se coordinan desde `aegis.entry_policy`. Esta policy no cambia thresholds ni estrategia; solo define si cada guard corre en `OFF`, `SHADOW` o `ENFORCE`. Ver `docs/AEGIS_ENTRY_POLICY.md`.
+Las capas de entrada se coordinan desde `aegis.entry_policy`. Esta policy no cambia thresholds ni estrategia; solo define si cada guard corre en `OFF`, `SHADOW` o `ENFORCE`. Ver [AEGIS_ENTRY_POLICY.md](../../strategies/aegis/entry/AEGIS_ENTRY_POLICY.md).
 
-Regime Guard v1 queda activo en `SHADOW` como cadenero observacional. Evalua si el regimen de mercado parece apto para operar la señal, pero no bloquea live mientras siga en `SHADOW`. Ver `docs/AEGIS_REGIME_GUARD.md`.
+Regime Guard v1 queda activo en `SHADOW` como cadenero observacional. Evalua si el regimen de mercado parece apto para operar la señal, pero no bloquea live mientras siga en `SHADOW`. Ver [AEGIS_REGIME_GUARD.md](../../strategies/aegis/entry/AEGIS_REGIME_GUARD.md).
 
 Decisión activa:
 

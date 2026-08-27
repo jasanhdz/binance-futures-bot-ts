@@ -1,5 +1,7 @@
 # Aegis Range Strategy V1
 
+> **Archived research pointer.** This repository copy is non-authoritative and retained only for historical discovery. See the [documentation authority index](../../../README.md).
+
 The canonical scientific authority moved on 2026-08-24 to:
 
 ```text

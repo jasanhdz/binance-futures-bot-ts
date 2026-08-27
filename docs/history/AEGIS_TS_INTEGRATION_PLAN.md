@@ -1,5 +1,7 @@
 # Aegis TS Integration Plan
 
+> **Archived historical document.** This plan records an earlier integration phase and does not define current runtime architecture or status. Use the [documentation authority index](../README.md) for current references.
+
 ## Runtime Modes
 
 - `TRADING_MODE=AEGIS_SHADOW` is the default.
@@ -204,7 +206,7 @@ Fecha: 2026-05-07.
 
 Inbound Telegram commands are implemented as a read-only long polling listener. They are disabled by default and require both `TELEGRAM_COMMANDS_ENABLED=1` and non-empty `TELEGRAM_ALLOWED_CHAT_IDS`.
 
-Full command documentation lives in `docs/AEGIS_TELEGRAM_COMMANDS.md`.
+Full command documentation lives in [AEGIS_TELEGRAM_COMMANDS.md](../operations/aegis/AEGIS_TELEGRAM_COMMANDS.md).
 
 Operational notes:
 

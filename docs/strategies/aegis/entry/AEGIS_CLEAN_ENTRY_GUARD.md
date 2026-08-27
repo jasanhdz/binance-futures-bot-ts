@@ -103,7 +103,7 @@ Reasons principales:
 - `SHADOW`: registra `CLEAN_ENTRY_GUARD_SHADOW_ALLOW` o `CLEAN_ENTRY_GUARD_SHADOW_WAIT`, pero no bloquea `marketOpen`.
 - `ENFORCE`: registra `CLEAN_ENTRY_GUARD_ALLOW` o `CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION`; si espera confirmacion corta antes de `setLeverage`, `ensureMarginType` y `marketOpen`.
 
-Dentro de Entry Policy, `OFF`, `SHADOW` y `ENFORCE` se controlan desde `aegis.entry_policy.guards.clean_entry`. Ver `docs/AEGIS_ENTRY_POLICY.md`.
+Dentro de Entry Policy, `OFF`, `SHADOW` y `ENFORCE` se controlan desde `aegis.entry_policy.guards.clean_entry`. Ver [AEGIS_ENTRY_POLICY.md](./AEGIS_ENTRY_POLICY.md).
 
 ## /blocks
 
