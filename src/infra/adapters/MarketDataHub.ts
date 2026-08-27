@@ -151,10 +151,16 @@ export class MarketDataHub {
     if (this.connections.get(key) !== connection) return;
     try {
       const message = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(String(raw));
-      connection.lastMessageAtMs = Date.now();
+      const receivedAtMs = Date.now();
+      connection.lastMessageAtMs = receivedAtMs;
       for (const consumer of connection.consumers) {
         try {
-          consumer(message.data ?? message);
+          const payload = message.data ?? message;
+          consumer(
+            payload !== null && typeof payload === 'object'
+              ? { ...payload, receivedAtMs }
+              : payload,
+          );
         } catch (error) {
           this.logger.error('market_data_consumer_failed', { stream, error: String(error) });
         }

@@ -43,7 +43,13 @@ describe('WebSocketManager market subscriptions', () => {
     sockets[1].message({ U: 1, u: 2, pu: 0, b: [['99', '3']], a: [['101', '4']], E: 10, T: 9 });
 
     expect(trade).toHaveBeenCalledWith(
-      expect.objectContaining({ isBuyerMaker: false, quantity: '2', price: '100', tradeTime: 9 }),
+      expect.objectContaining({
+        isBuyerMaker: false,
+        quantity: '2',
+        price: '100',
+        tradeTime: 9,
+        receivedAtMs: expect.any(Number),
+      }),
     );
     expect(depth).toHaveBeenCalledWith(
       expect.objectContaining({ U: 1, u: 2, bids: [['99', '3']], asks: [['101', '4']] }),

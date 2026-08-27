@@ -12,6 +12,8 @@
  */
 
 const WebSocket = require('ws');
+import { parseAggTrade, parseDepth } from '../src/app/micro-burst/MicroBurstMarketData';
+import { DepthStreamGapDetector } from '../src/app/micro-burst/MicroBurstStreamGapDetector';
 
 const DURATION_S = Number(process.argv.find((_, i, a) => a[i - 1] === '--seconds') ?? 300);
 const DURATION_MS = DURATION_S * 1000;
@@ -84,7 +86,6 @@ const btc = {
   lastObservationAt: 0,
 };
 
-let exchangeMutations = 0;
 let shutdownClean = false;
 const startedAt = Date.now();
 
@@ -135,9 +136,11 @@ interface BookState {
   health: string;
   observedAtMs: number;
   resyncCount: number;
+  resyncInFlight: boolean;
 }
 
 const books: Record<string, BookState> = {};
+const depthDetectors: Record<string, DepthStreamGapDetector> = {};
 for (const sym of SYMBOLS) {
   books[sym] = {
     lastUpdateId: 0,
@@ -146,7 +149,13 @@ for (const sym of SYMBOLS) {
     health: 'UNAVAILABLE',
     observedAtMs: 0,
     resyncCount: 0,
+    resyncInFlight: false,
   };
+  depthDetectors[sym] = new DepthStreamGapDetector((gap) => {
+    perSymbol[sym].depth.gapDetections++;
+    books[sym].health = 'GAP';
+    void resyncDepthSnapshot(sym);
+  });
 }
 
 // ── AggTrade Buffer ──────────────────────────────────────────────────
@@ -205,20 +214,25 @@ function handleDepthEvent(sym: string, data: any): void {
   const m = perSymbol[sym].depth;
   m.rawWsEvents++;
 
-  const book = books[sym];
-  const lastUpdateId = data.u ?? data.lastUpdateId ?? 0;
-  const prevUpdateId = data.pu ?? 0;
-
-  if (lastUpdateId <= 0) {
+  const parsed = parseDepth(sym, data, Date.now());
+  if (!parsed) {
     m.rejectedWsEvents++;
     return;
   }
+  const book = books[sym];
+  if (book.resyncInFlight) return;
+  const decision = depthDetectors[sym].accept(parsed);
+  if (decision !== 'ACCEPT') {
+    if (decision === 'GAP') m.rejectedWsEvents++;
+    return;
+  }
+  const lastUpdateId = parsed.finalUpdateId;
 
   // First event — accept
   if (book.lastUpdateId === 0) {
     book.lastUpdateId = lastUpdateId;
-    if (data.b) applyDiff(book.bidBook, data.b);
-    if (data.a) applyDiff(book.askBook, data.a);
+    applyDiff(book.bidBook, parsed.bids as [string, string][]);
+    applyDiff(book.askBook, parsed.asks as [string, string][]);
     book.observedAtMs = Date.now();
     book.health = 'HEALTHY';
     m.acceptedWsEvents++;
@@ -229,28 +243,16 @@ function handleDepthEvent(sym: string, data: any): void {
   }
 
   // Continuity check
-  if (lastUpdateId === book.lastUpdateId + 1) {
-    if (data.b) applyDiff(book.bidBook, data.b);
-    if (data.a) applyDiff(book.askBook, data.a);
+  if (lastUpdateId > book.lastUpdateId) {
+    applyDiff(book.bidBook, parsed.bids as [string, string][]);
+    applyDiff(book.askBook, parsed.asks as [string, string][]);
     book.lastUpdateId = lastUpdateId;
     book.observedAtMs = Date.now();
     book.health = 'HEALTHY';
     m.acceptedWsEvents++;
     m.lastUpdateId = lastUpdateId;
     m.lastWsEventAt = Date.now();
-  } else if (lastUpdateId > book.lastUpdateId + 1) {
-    // Gap — accept but note it
-    m.gapDetections++;
-    m.previousUpdateId = book.lastUpdateId;
-    if (data.b) applyDiff(book.bidBook, data.b);
-    if (data.a) applyDiff(book.askBook, data.a);
-    book.lastUpdateId = lastUpdateId;
-    book.observedAtMs = Date.now();
-    m.acceptedWsEvents++;
-    m.lastUpdateId = lastUpdateId;
-    m.lastWsEventAt = Date.now();
   } else {
-    // Stale — reject
     m.rejectedWsEvents++;
   }
 }
@@ -385,10 +387,10 @@ async function evaluateContext(sym: string): Promise<void> {
 
 // ── REST Snapshot ────────────────────────────────────────────────────
 
-async function fetchDepthSnapshot(sym: string): Promise<void> {
+async function fetchDepthSnapshot(sym: string): Promise<boolean> {
   try {
     const res = await fetch(`${REST_BASE}/fapi/v1/depth?symbol=${sym}&limit=20`);
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const data = (await res.json()) as any;
     const book = books[sym];
     book.bidBook.clear();
@@ -404,12 +406,34 @@ async function fetchDepthSnapshot(sym: string): Promise<void> {
       if (price > 0 && qty > 0) book.askBook.set(price, qty);
     }
     book.lastUpdateId = data.lastUpdateId;
+    depthDetectors[sym].seedSnapshot(data.lastUpdateId);
     book.observedAtMs = Date.now();
     book.health = 'HEALTHY';
     perSymbol[sym].depth.restSnapshots++;
     perSymbol[sym].depth.lastUpdateId = data.lastUpdateId;
+    return true;
   } catch {
-    /* ok */
+    return false;
+  }
+}
+
+async function resyncDepthSnapshot(sym: string): Promise<void> {
+  const book = books[sym];
+  const metrics = perSymbol[sym].depth;
+  if (book.resyncInFlight) return;
+  book.resyncInFlight = true;
+  metrics.resyncAttempts++;
+  book.health = 'RESYNCING';
+  book.bidBook.clear();
+  book.askBook.clear();
+  try {
+    if (await fetchDepthSnapshot(sym)) {
+      book.resyncCount++;
+      metrics.resyncSuccesses++;
+    }
+  } finally {
+    book.resyncInFlight = false;
+    if (book.health === 'RESYNCING') book.health = 'UNAVAILABLE';
   }
 }
 
@@ -475,39 +499,42 @@ async function main(): Promise<void> {
         const m = perSymbol[sym].aggTrade;
         m.rawEvents++;
 
-        const eventTime = data.T ?? data.E ?? Date.now();
-        const price = Number(data.p);
-        const quantity = Number(data.q);
-        const isBuyerMaker = data.m;
-
-        if (!Number.isFinite(price) || price <= 0) {
-          m.rejectedEvents++;
-          m.rejectedByReason.malformed_price = (m.rejectedByReason.malformed_price || 0) + 1;
-          return;
-        }
-        if (!Number.isFinite(quantity) || quantity < 0) {
-          m.rejectedEvents++;
-          m.rejectedByReason.malformed_quantity = (m.rejectedByReason.malformed_quantity || 0) + 1;
-          return;
-        }
-        if (!Number.isFinite(eventTime) || eventTime <= 0) {
-          m.rejectedEvents++;
-          m.rejectedByReason.invalid_timestamp = (m.rejectedByReason.invalid_timestamp || 0) + 1;
+        const parsed = parseAggTrade(sym, data, Date.now());
+        if (!parsed) {
+          const price = Number(data.p);
+          const quantity = Number(data.q);
+          const eventTime = Number(data.T ?? data.E);
+          if (!Number.isFinite(price) || price <= 0) {
+            m.rejectedEvents++;
+            m.rejectedByReason.malformed_price = (m.rejectedByReason.malformed_price || 0) + 1;
+          } else if (!Number.isFinite(quantity) || quantity < 0) {
+            m.rejectedEvents++;
+            m.rejectedByReason.malformed_quantity =
+              (m.rejectedByReason.malformed_quantity || 0) + 1;
+          } else if (!Number.isFinite(eventTime) || eventTime <= 0 || typeof data.m !== 'boolean') {
+            m.rejectedEvents++;
+            m.rejectedByReason.invalid_timestamp = (m.rejectedByReason.invalid_timestamp || 0) + 1;
+          }
           return;
         }
 
         m.acceptedEvents++;
-        if (isBuyerMaker) {
+        if (parsed.isBuyerMaker) {
           m.takerSellEvents++;
-          m.takerSellVolume += quantity;
+          m.takerSellVolume += parsed.quantity;
         } else {
           m.takerBuyEvents++;
-          m.takerBuyVolume += quantity;
+          m.takerBuyVolume += parsed.quantity;
         }
         if (m.firstEventAt === 0) m.firstEventAt = Date.now();
         m.lastEventAt = Date.now();
 
-        pushAggTrade(sym, { eventTime, price, quantity, isBuyerMaker });
+        pushAggTrade(sym, {
+          eventTime: parsed.eventTimeMs,
+          price: parsed.price,
+          quantity: parsed.quantity,
+          isBuyerMaker: parsed.isBuyerMaker,
+        });
       }
     } catch {
       /* ignore parse errors */
@@ -614,7 +641,7 @@ async function main(): Promise<void> {
   console.log(`  btcRet3m:         ${btc.ret3m}`);
   console.log(`  btcRet5m:         ${btc.ret5m}`);
   console.log(`  btcAcceleration:  ${btc.acceleration}`);
-  console.log(`  exchangeMutations: ${exchangeMutations}`);
+  console.log(`  mode:              SHADOW (read-only; no mutation verdict)`);
   console.log(`  shutdownClean:    ${shutdownClean}`);
 
   // 8. Verdict
@@ -622,10 +649,8 @@ async function main(): Promise<void> {
   const allAggOk = SYMBOLS.every((s) => perSymbol[s].aggTrade.acceptedEvents > 0);
   const allRefOk = SYMBOLS.every((s) => perSymbol[s].refPrice.updates > 0);
   const anyValidCtx = SYMBOLS.some((s) => perSymbol[s].context.validContexts > 0);
-  const mutationsZero = exchangeMutations === 0;
-
   console.log(`\n${'='.repeat(60)}`);
-  if (allDepthOk && allAggOk && allRefOk && btc.healthy && anyValidCtx && mutationsZero) {
+  if (allDepthOk && allAggOk && allRefOk && btc.healthy && anyValidCtx) {
     console.log(`VERDICT: MICRO_BURST_V1_M2_1_CONTINUOUS_LIVE_DATA_VERIFIED`);
   } else {
     console.log(`VERDICT: M2_1_INCOMPLETE`);
@@ -634,7 +659,6 @@ async function main(): Promise<void> {
     if (!allRefOk) console.log(`  FAIL: reference price updates = 0`);
     if (!btc.healthy) console.log(`  FAIL: BTC context unhealthy`);
     if (!anyValidCtx) console.log(`  FAIL: no valid contexts produced`);
-    if (!mutationsZero) console.log(`  FAIL: exchange mutations detected`);
   }
   console.log(`${'='.repeat(60)}\n`);
 

@@ -3,6 +3,7 @@ import { Logger } from '../../app/ports/Logger';
 import { BinanceDepthDiffEvent } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
 import { MarketDataHub } from './MarketDataHub';
 import { MARKET, PUBLIC } from './MarketDataEndpoints';
+import { parseAggTrade, parseDepth } from '../../app/micro-burst/MicroBurstMarketData';
 
 export interface WebSocketConfig {
   reconnectIntervalMs?: number;
@@ -58,19 +59,32 @@ export class WebSocketManager {
 
   public connectAggTrades(
     symbol: string,
-    callback: (trade: { isBuyerMaker: boolean; quantity: string; price: string }) => void,
+    callback: (trade: {
+      isBuyerMaker: boolean;
+      quantity: string;
+      price: string;
+      eventTime: number;
+      receivedAtMs: number;
+      tradeTime?: number;
+      aggregateTradeId?: number;
+      firstTradeId?: number;
+      lastTradeId?: number;
+    }) => void,
   ): () => void {
     return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@aggTrade`, MARKET, (event) => {
+      const parsed = parseAggTrade(symbol, event, event.receivedAtMs);
+      if (!parsed) return;
       callback({
-        isBuyerMaker: Boolean(event.m),
-        quantity: String(event.q),
-        price: String(event.p),
-        eventTime: event.E,
-        tradeTime: event.T,
-        aggregateTradeId: event.a,
-        firstTradeId: event.f,
-        lastTradeId: event.l,
-      } as any);
+        isBuyerMaker: parsed.isBuyerMaker,
+        quantity: String(parsed.quantity),
+        price: String(parsed.price),
+        eventTime: parsed.eventTimeMs,
+        receivedAtMs: parsed.receivedAtMs,
+        tradeTime: parsed.tradeTimeMs,
+        aggregateTradeId: parsed.aggregateTradeId,
+        firstTradeId: parsed.firstTradeId,
+        lastTradeId: parsed.lastTradeId,
+      });
     });
   }
 
@@ -105,15 +119,17 @@ export class WebSocketManager {
       `${symbol.toLowerCase()}@depth@${speed}`,
       PUBLIC,
       (event) => {
+        const parsed = parseDepth(symbol, event, event.receivedAtMs);
+        if (!parsed) return;
         callback({
-          U: event.U,
-          u: event.u,
-          pu: event.pu,
-          bids: (event.b ?? []).map((level: any) => [String(level[0]), String(level[1])]),
-          asks: (event.a ?? []).map((level: any) => [String(level[0]), String(level[1])]),
-          E: event.E,
-          T: event.T,
-          receivedAtMs: Date.now(),
+          U: parsed.firstUpdateId,
+          u: parsed.finalUpdateId,
+          pu: parsed.previousFinalUpdateId ?? 0,
+          bids: parsed.bids.map((level) => [level[0], level[1]] as [string, string]),
+          asks: parsed.asks.map((level) => [level[0], level[1]] as [string, string]),
+          E: parsed.eventTimeMs,
+          T: parsed.transactionTimeMs ?? parsed.eventTimeMs,
+          receivedAtMs: parsed.receivedAtMs,
         });
       },
     );

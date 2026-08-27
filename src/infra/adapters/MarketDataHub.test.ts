@@ -65,8 +65,12 @@ describe('MarketDataHub', () => {
     sockets[0].message(JSON.stringify({ p: '100' }));
 
     expect(factory).toHaveBeenCalledTimes(1);
-    expect(first).toHaveBeenCalledWith({ p: '100' });
-    expect(second).toHaveBeenCalledWith({ p: '100' });
+    expect(first).toHaveBeenCalledWith(
+      expect.objectContaining({ p: '100', receivedAtMs: expect.any(Number) }),
+    );
+    expect(second).toHaveBeenCalledWith(
+      expect.objectContaining({ p: '100', receivedAtMs: expect.any(Number) }),
+    );
     expect(hub.getHealth()).toEqual([
       expect.objectContaining({ stream: 'btcusdt@aggTrade', consumers: 2, status: 'open' }),
     ]);
