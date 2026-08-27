@@ -30,21 +30,21 @@ function sha256(path: string): string {
 }
 
 const baselineOperationalDigests: Record<string, string> = {
-  'src/main.ts': 'fd76ec7bb348aa5ad02369ab751f0e4c9ca5f7e088f5d816b0a5c344deb30c94',
-  'src/app/ports/Exchange.ts': 'aadf18d8fb5d45d5aaa2fd275bd6721c276e0d96c1c59d36f0ab433848e899eb',
+  'src/main.ts': '48c3efb5976bf61ba2369f1ecf162fa81572a426a9df7560e2a7e1f13abacbd8',
+  'src/app/ports/Exchange.ts': '73b4f7912b9dcfaabc5b47ca12af7dbd4c942c0d065ff495a1d7f36f702ba837',
   'src/infra/adapters/BinanceAdapter.ts':
-    'ff07181dbf251d84ac62aacc99c51337be9db771f87cc24e2b7b058d8201b81a',
+    '487e67328c7bf6d9626996db1346215f5d2928214c1dbb7ffeb07f88a7889604',
   'src/infra/config/environment.ts':
-    '0b964b6217bae4bab10d709c17f4bc88e2b1a8b335816be734a1d2132861a3cc',
+    '2e869555220faee0270d1a3b02190a6a2fd59a133acb613494e16defc20a0de7',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
     '3715eded7eed195a8757df99813cccfb020ad14f5ee041764f998c122d93c535',
   'src/domain/services/ProfitGuardian.ts':
     'f95512ac4ecd82449dff30a1f63441f7297e57adf8b58ca32d8cca5409aa62fd',
   'src/infra/logging/FsStateStore.ts':
-    '9245acf585ab289c3254e16ccf78a77f25f096cd076426696a36fa8158b357d8',
+    'f5676949020243056ea5b81b0107890b390cc077d6efd5350732647c97b4c9af',
 };
 
-// Phase 1 owner-authorized architecture checkpoint. These are operational
+  // Phase 1 owner-authorized architecture checkpoint. These are operational
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
@@ -52,7 +52,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   'src/app/services/TradingService.ts':
-    'f9f78ffe1dae10761739b53cc8c448068fe595551f8df378feee8c9c6a1119fc',
+    '8eac77d85e074e368f3e53feecf26385656720b071cff24f04a231e3905c3e67',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
