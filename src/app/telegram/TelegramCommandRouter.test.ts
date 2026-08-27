@@ -97,6 +97,7 @@ describe('TelegramCommandRouter', () => {
     const router = new TelegramCommandRouter(h, {
       allowedChatIds: ['123'],
       allowedUserIds: ['42'],
+      mutationsEnabled: true,
       now: () => 1000,
     });
 
@@ -106,7 +107,7 @@ describe('TelegramCommandRouter', () => {
       text: '/riskmode RISK_OFF',
     });
 
-    expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF');
+    expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF', { chatId: '123', userId: '42' });
   });
 
   it('authorizes a mutating command only for the configured user in the configured chat', async () => {
@@ -114,13 +115,14 @@ describe('TelegramCommandRouter', () => {
     const router = new TelegramCommandRouter(h, {
       allowedChatIds: ['123'],
       allowedUserIds: ['42'],
+      mutationsEnabled: true,
       now: () => 1000,
     });
 
     await expect(
       router.handleMessage({ chatId: '123', fromUserId: '42', text: '/riskmode RISK_OFF' }),
     ).resolves.toBe('RISKMODE');
-    expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF');
+    expect(h.handleRiskMode).toHaveBeenCalledWith('RISK_OFF', { chatId: '123', userId: '42' });
   });
 
   it('rejects a mutating command from an unauthorized user', async () => {
@@ -134,6 +136,20 @@ describe('TelegramCommandRouter', () => {
     await expect(
       router.handleMessage({ chatId: '123', fromUserId: '99', text: '/riskmode RISK_OFF' }),
     ).resolves.toBe('Unauthorized.');
+    expect(h.handleRiskMode).not.toHaveBeenCalled();
+  });
+
+  it('rejects mutations by default while keeping the riskmode query available', async () => {
+    const h = handlers();
+    const router = new TelegramCommandRouter(h, {
+      allowedChatIds: ['123'],
+      allowedUserIds: ['42'],
+      now: () => 1000,
+    });
+
+    await expect(
+      router.handleMessage({ chatId: '123', fromUserId: '42', text: '/riskmode RISK_OFF' }),
+    ).resolves.toBe('Telegram mutations are disabled.');
     expect(h.handleRiskMode).not.toHaveBeenCalled();
   });
 

@@ -16,7 +16,13 @@ const longRiskProbeBlockPolicy = {
   blockOnlyLong: true,
 };
 
-function writeConfig(symbolsYaml: string, symbolOverridesYaml = '{}', extraYaml = ''): string {
+function writeConfig(
+  symbolsYaml: string,
+  symbolOverridesYaml = '{}',
+  extraYaml = '',
+  tickIntervalMs = 2000,
+  maxTradesPerDay = 100,
+): string {
   const filePath = path.join(os.tmpdir(), `aegis-symbols-${Date.now()}-${Math.random()}.yaml`);
   fs.writeFileSync(
     filePath,
@@ -24,8 +30,8 @@ function writeConfig(symbolsYaml: string, symbolOverridesYaml = '{}', extraYaml 
 SYMBOLS:
   ETHUSDT: 1.0
 SYSTEM:
-  tick_interval_ms: 2000
-  max_trades_per_day: 100
+  tick_interval_ms: ${tickIntervalMs}
+  max_trades_per_day: ${maxTradesPerDay}
   global_leverage_default: 15
 REGIME_DETECTOR:
   volatility_spread_low: 0.0008
@@ -77,6 +83,32 @@ describe('NinjaConfigManager Aegis symbol modes', () => {
         // best-effort cleanup
       }
     }
+  });
+
+  it('fails configuration startup instead of silently loading a fallback config', () => {
+    expect(
+      () => new NinjaConfigManager(path.join(os.tmpdir(), 'does-not-exist-aegis.yaml')),
+    ).toThrow('CONFIG_LOAD_FAILED');
+  });
+
+  it('preserves configured numeric zeroes', () => {
+    const config = new NinjaConfigManager(
+      writeConfig(
+        `
+symbols:
+  ETHUSDT:
+    enabled: true
+    mode: SHADOW
+`,
+        '{}',
+        '',
+        0,
+        0,
+      ),
+    );
+
+    expect(config.system.tick_interval_ms).toBe(0);
+    expect(config.system.max_trades_per_day).toBe(0);
   });
 
   it('keeps analytical overlays SHADOW while E4 remains the explicit final veto', () => {

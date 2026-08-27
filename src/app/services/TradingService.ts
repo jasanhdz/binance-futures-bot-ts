@@ -123,7 +123,10 @@ import {
   MicroBurstStrategyContext,
 } from '../../domain/strategies/micro-burst/MicroBurstStrategy';
 import { createMicroBurstV1Identity } from '../../domain/strategies/micro-burst/MicroBurstIdentity';
-import { MicroBurstRuntime } from '../../domain/strategies/micro-burst/MicroBurstRuntime';
+import {
+  MicroBurstRuntime,
+  MicroBurstRuntimeReadiness,
+} from '../../domain/strategies/micro-burst/MicroBurstRuntime';
 import {
   parseMicroBurstConfig,
   isMicroBurstShadowMode,
@@ -220,6 +223,7 @@ export interface AegisRuntimeSnapshot {
   dailyPnlPct?: number;
   lastTradeDayReset: number;
   liquidityStressBySymbol: Record<string, number>;
+  microBurstReadiness: MicroBurstRuntimeReadiness | null;
 }
 
 export class TradingService {
@@ -258,6 +262,7 @@ export class TradingService {
   private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
   private readonly microBurstIdentity: StrategyIdentity;
   private microBurstRuntime: MicroBurstRuntime | null = null;
+  private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
   private stopPromise: Promise<void> | null = null;
 
   private persistDailyRiskState(now = Date.now()): void {
@@ -265,8 +270,15 @@ export class TradingService {
       dailyRisk: {
         ...this.strategyRiskLedger.dailyState(now),
         tradesToday: this.tradesToday,
+        dailyStartBalance: this.dailyStartBalance,
       },
     });
+  }
+
+  private initializeDailyStartBalance(balance: number, now = Date.now()): void {
+    if (this.dailyStartBalance !== null && this.dailyStartBalance > 0) return;
+    this.dailyStartBalance = balance;
+    this.persistDailyRiskState(now);
   }
 
   constructor(
@@ -1321,7 +1333,12 @@ export class TradingService {
       dailyPnlPct: this.lastDailyPnlPct,
       lastTradeDayReset: this.lastTradeDayReset,
       liquidityStressBySymbol,
+      microBurstReadiness: this.microBurstReadiness,
     };
+  }
+
+  getMicroBurstReadiness(): MicroBurstRuntimeReadiness | null {
+    return this.microBurstReadiness;
   }
 
   async start(startLoop = true): Promise<void> {
@@ -1569,20 +1586,20 @@ export class TradingService {
     this.isRunning = true;
 
     const mbConfig = this.getMicroBurstConfig();
-    if (mbConfig.enabled && mbConfig.mode === 'SHADOW') {
+    if (mbConfig.enabled && mbConfig.mode !== 'OFF') {
       try {
         const provenance = this.getMicroBurstProvenance(mbConfig);
         const archiveConfig = mbConfig.marketArchive;
         const storage = archiveConfig?.enabled
           ? new MicroBurstStorage({
-               databasePath:
-                 archiveConfig.sqlitePath ?? 'data/micro-burst/micro_burst_research.sqlite',
-               archivePath: archiveConfig.rootDir ?? 'data/micro-burst/market-data',
-               maxActiveSegmentRecords: archiveConfig.maxActiveSegmentRecords,
-               maxActiveSegmentBytes: archiveConfig.maxActiveSegmentBytes,
-               maxActiveSegmentDurationMs: archiveConfig.maxActiveSegmentDurationMs,
-               durabilityFlushIntervalMs: archiveConfig.durabilityFlushIntervalMs,
-             })
+              databasePath:
+                archiveConfig.sqlitePath ?? 'data/micro-burst/micro_burst_research.sqlite',
+              archivePath: archiveConfig.rootDir ?? 'data/micro-burst/market-data',
+              maxActiveSegmentRecords: archiveConfig.maxActiveSegmentRecords,
+              maxActiveSegmentBytes: archiveConfig.maxActiveSegmentBytes,
+              maxActiveSegmentDurationMs: archiveConfig.maxActiveSegmentDurationMs,
+              durabilityFlushIntervalMs: archiveConfig.durabilityFlushIntervalMs,
+            })
           : undefined;
         const outcomeTracker = new MicroBurstOutcomeTracker({
           logger: this.deps.logger,
@@ -1605,6 +1622,7 @@ export class TradingService {
         outcomeTracker.recoverPending();
         await this.microBurstRuntime.start();
         const readiness = this.microBurstRuntime.getReadiness();
+        this.microBurstReadiness = readiness;
         if (readiness.ready) {
           this.deps.logger.info('MICRO_BURST_PROSPECTIVE_COHORT_READY', {
             ...readiness,
@@ -1620,7 +1638,25 @@ export class TradingService {
         });
       } catch (err) {
         this.deps.logger.error('micro_burst_runtime_startup_failed', { error: String(err) });
-        this.microBurstRuntime = null;
+        const readiness = this.microBurstRuntime?.getReadiness();
+        this.microBurstReadiness = readiness
+          ? {
+              ...readiness,
+              ready: false,
+              blockers: [...new Set([...readiness.blockers, 'NOT_READY'])],
+            }
+          : {
+              ready: false,
+              blockers: ['MICRO_BURST_RUNTIME_STARTUP_FAILED', 'NOT_READY'],
+              cohortId: null,
+              strategyVersion: null,
+              codeCommitSha: null,
+              configHash: null,
+              liveExecution: false,
+            };
+        this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
+          ...this.microBurstReadiness,
+        });
       }
     }
 
@@ -1643,6 +1679,8 @@ export class TradingService {
     if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
     this.stopPromise = (async () => {
       await microBurstRuntime?.stop();
+      const stores = [this.deps.state, ...this.symbolStateStores.values()];
+      await Promise.all(stores.map((store) => store.flush?.()));
     })().finally(() => {
       this.stopPromise = null;
     });
@@ -2121,8 +2159,8 @@ export class TradingService {
     const balance = await exchange.getUSDTBalance();
     const accountSnapshot = await this.readEntryAccountSnapshot(balance);
     const dailyEquity = accountSnapshot.equityTotal ?? accountSnapshot.walletBalance ?? balance;
-    if (this.dailyStartBalance === null || this.dailyStartBalance <= 0)
-      this.dailyStartBalance = dailyEquity;
+    this.initializeDailyStartBalance(dailyEquity, now);
+    const dailyStartBalance = this.dailyStartBalance;
     const dayStart = Math.floor(now / 86400000) * 86400000;
     const outcomes = await (this.deps.closedTradeOutcomeReader?.() ??
       readStrategyClosedTradeOutcomes(undefined, this.getTradingMode()));
@@ -2131,7 +2169,7 @@ export class TradingService {
       return Number.isFinite(closedAt) && closedAt >= dayStart ? total + outcome.pnlUsdt : total;
     }, 0);
     const dailyPnlPct =
-      this.dailyStartBalance > 0 ? botDailyPnlUsdt / this.dailyStartBalance : undefined;
+      dailyStartBalance && dailyStartBalance > 0 ? botDailyPnlUsdt / dailyStartBalance : undefined;
     this.lastDailyPnlPct = dailyPnlPct;
 
     const strategyRisk = this.strategyRiskLedger.snapshot('MOMENTUM_RIDE', now);
@@ -2432,12 +2470,11 @@ export class TradingService {
       const balance = await exchange.getUSDTBalance();
       const accountSnapshot = await this.readEntryAccountSnapshot(balance);
       const dailyEquity = accountSnapshot.equityTotal ?? accountSnapshot.walletBalance ?? balance;
-      if (this.dailyStartBalance === null || this.dailyStartBalance <= 0) {
-        this.dailyStartBalance = dailyEquity;
-      }
+      this.initializeDailyStartBalance(dailyEquity);
+      const dailyStartBalance = this.dailyStartBalance;
       const accountWideDailyPnlPct =
-        this.dailyStartBalance > 0
-          ? (dailyEquity - this.dailyStartBalance) / this.dailyStartBalance
+        dailyStartBalance && dailyStartBalance > 0
+          ? (dailyEquity - dailyStartBalance) / dailyStartBalance
           : undefined;
       const dayStart = Math.floor(Date.now() / 86400000) * 86400000;
       const verifiedOutcomes = await (this.deps.closedTradeOutcomeReader?.() ??
@@ -2447,7 +2484,9 @@ export class TradingService {
         return Number.isFinite(closedAt) && closedAt >= dayStart ? total + outcome.pnlUsdt : total;
       }, 0);
       const dailyPnlPct =
-        this.dailyStartBalance > 0 ? botDailyPnlUsdt / this.dailyStartBalance : undefined;
+        dailyStartBalance && dailyStartBalance > 0
+          ? botDailyPnlUsdt / dailyStartBalance
+          : undefined;
       this.lastDailyPnlPct = dailyPnlPct;
       const gateConfig = this.getAegisTurboGateConfig(symbol);
       const gateDecision = this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
@@ -5060,11 +5099,9 @@ export class TradingService {
         lastExitAt: Date.now(),
         lastExitReason: exitReason,
       });
-      const pnl = this.pnlFromRoe(this.entryMargin(input.botState), input.currentRoe);
       await this.notifyExit(input.symbol, input.side, exitReason, input.botState, {
         exitPrice: input.markPrice,
         finalRoe: input.currentRoe,
-        pnl,
       });
       await this.sendExitEyeTelegram(input.symbol, input.side, decision, true);
       return;
@@ -5149,12 +5186,13 @@ export class TradingService {
     const exitPrice = exit?.exitPrice ?? (await exchange.getMarkPrice(symbol));
     const finalRoe =
       exit?.finalRoe ?? this.calculateRoe(side, entryPrice || exitPrice, exitPrice, leverage);
-    const pnl = exit?.pnl ?? this.pnlFromRoe(this.entryMargin(botState), finalRoe);
+    const pnl = exit?.pnl;
     const durationMs = Date.now() - (botState.lastEntryAt || Date.now());
     const durationHrs = (durationMs / 3600000).toFixed(2);
     const exitType = this.describeAegisExit(reason, pnl, botState, side, exitPrice);
     const margin = this.entryMargin(botState);
-    const pnlStr = this.formatSignedUsd(pnl);
+    const pnlStr =
+      pnl === undefined ? 'UNKNOWN (exact close unavailable)' : this.formatSignedUsd(pnl);
     const closeStrategy: AegisResearchStrategy =
       botState.lastStrategy === 'MOMENTUM_RIDE' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
     const closeIdentity = this.strategyIdentity(closeStrategy);
@@ -5192,7 +5230,9 @@ export class TradingService {
       max_drawdown_roe: botState.lowestRoe,
       status: 'CLOSED',
       metadata: {
-        estimated: true,
+        estimated: pnl === undefined,
+        pnl_status: pnl === undefined ? 'UNKNOWN_EXACT_CLOSE_UNAVAILABLE' : 'EXACT_SUPPLIED',
+        mark_price_close_reference: true,
         exit_type: exitType.canonicalExitType,
         canonical_exit_type: exitType.canonicalExitType,
         display_exit_label: exitType.displayExitLabel,
@@ -5201,8 +5241,9 @@ export class TradingService {
         mismatch_reason: exitType.mismatchReason,
       },
     });
-    this.strategyRiskLedger.recordClose(closeStrategy, tradeId, pnl, Date.now());
-    if (closeStrategy === 'AEGIS_TURBO') {
+    if (pnl !== undefined)
+      this.strategyRiskLedger.recordClose(closeStrategy, tradeId, pnl, Date.now());
+    if (closeStrategy === 'AEGIS_TURBO' && pnl !== undefined) {
       const streakUpdate = this.consecutiveLossTracker.record(tradeId, pnl);
       if (streakUpdate.applied) {
         await this.persistConsecutiveLossState(tradeId);
@@ -5224,6 +5265,7 @@ export class TradingService {
       reason,
       metadata: {
         pnl,
+        pnlStatus: pnl === undefined ? 'UNKNOWN_EXACT_CLOSE_UNAVAILABLE' : 'EXACT_SUPPLIED',
         exitType: exitType.canonicalExitType,
         canonicalExitType: exitType.canonicalExitType,
         displayExitLabel: exitType.displayExitLabel,
@@ -5281,6 +5323,7 @@ export class TradingService {
       this.lastTradeDayReset = Math.floor(now / 86400000);
       if (dailyRisk?.dayKey === this.lastTradeDayReset) {
         this.tradesToday = dailyRisk.tradesToday;
+        this.dailyStartBalance = dailyRisk.dailyStartBalance ?? null;
         this.strategyRiskLedger.restoreDailyState(dailyRisk, now);
       }
       this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
@@ -5654,7 +5697,7 @@ export class TradingService {
 
   private describeAegisExit(
     reason: string,
-    pnl: number,
+    pnl: number | undefined,
     botState: BotState,
     side: Side,
     exitPrice: number,
@@ -5741,6 +5784,14 @@ export class TradingService {
     if (near(stopPrice)) {
       return build('💸', 'STOP_LOSS', 'Cierre por stop loss', 'STOP LOSS (SL)');
     }
+    if (pnl === undefined) {
+      return build(
+        '❔',
+        'CLOSE_OUTCOME_UNKNOWN',
+        'Cierre confirmado, pero el PnL realizado exacto no está disponible',
+        'CLOSE OUTCOME UNKNOWN',
+      );
+    }
     if (pnl >= 0) {
       return build(
         '💰',
@@ -5781,6 +5832,7 @@ export class TradingService {
       this.lastDailyPnlPct = undefined;
       this.lastTradeDayReset = today;
       this.strategyRiskLedger.resetDaily(Date.now());
+      this.persistDailyRiskState();
     }
   }
 

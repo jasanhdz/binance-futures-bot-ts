@@ -32,6 +32,7 @@ export class TelegramCommandRouter {
   private readonly allowedUserIds: Set<string>;
   private readonly rateLimitMs: number;
   private readonly now: () => number;
+  private readonly mutationsEnabled: boolean;
 
   constructor(
     private readonly handlers: TelegramCommandHandlersPort,
@@ -41,6 +42,7 @@ export class TelegramCommandRouter {
     this.allowedUserIds = new Set((options.allowedUserIds ?? []).map(String));
     this.rateLimitMs = options.rateLimitMs ?? 2000;
     this.now = options.now ?? Date.now;
+    this.mutationsEnabled = options.mutationsEnabled === true;
   }
 
   async handleMessage(
@@ -57,12 +59,11 @@ export class TelegramCommandRouter {
     }
 
     const command = this.parse(message.text);
-    if (
-      command.name === 'riskmode' &&
-      command.args.length > 0 &&
-      (!message.fromUserId || !this.allowedUserIds.has(String(message.fromUserId)))
-    ) {
-      return 'Unauthorized.';
+    if (command.name === 'riskmode' && command.args.length > 0) {
+      if (!message.fromUserId || !this.allowedUserIds.has(String(message.fromUserId))) {
+        return 'Unauthorized.';
+      }
+      if (!this.mutationsEnabled) return 'Telegram mutations are disabled.';
     }
 
     const now = this.now();
@@ -94,7 +95,12 @@ export class TelegramCommandRouter {
       case 'risk':
         return this.handlers.handleRisk();
       case 'riskmode':
-        return this.handlers.handleRiskMode(command.args[0]);
+        return command.args.length > 0 && message.fromUserId
+          ? this.handlers.handleRiskMode(command.args[0], {
+              chatId: String(message.chatId),
+              userId: String(message.fromUserId),
+            })
+          : this.handlers.handleRiskMode(command.args[0]);
       case 'brackets':
         return this.handlers.handleBrackets();
       case 'report':

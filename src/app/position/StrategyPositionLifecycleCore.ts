@@ -216,23 +216,21 @@ export class StrategyPositionLifecycleCore {
           markPrice,
           leverage,
         );
-        const pnl = this.ports.pnlFromRoe(this.ports.entryMargin(botState), finalRoe);
         logger.info('aegis_position_closed', {
           symbol,
-          pnl: pnl.toFixed(2),
+          pnl: 'UNKNOWN_EXACT_CLOSE_UNAVAILABLE',
           balance: balance.toFixed(2),
           consecutiveLosses: this.ports.consecutiveLosses(),
         });
         await this.ports.notifyExit(symbol, side, 'SL/TP', botState, {
           exitPrice: markPrice,
           finalRoe,
-          pnl,
         });
         symbolState.set({
           mode: 'IDLE',
           lastExitAt: Date.now(),
-          lastExitReason: pnl < 0 ? 'STOP_LOSS' : 'SL/TP',
-          lastStopLossAt: pnl < 0 ? Date.now() : botState.lastStopLossAt,
+          lastExitReason: 'SL/TP',
+          lastStopLossAt: botState.lastStopLossAt,
           probeModeActive: false,
         });
         return;
@@ -379,6 +377,7 @@ export class StrategyPositionLifecycleCore {
         if (exitEyeClosed) return;
       }
 
+      // Do not replace an entry's frozen policy with a later regime reload.
       const maxHoldMs = botState.lastMaxHoldMs ?? regimeConfig?.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
       if (tradeDuration > maxHoldMs && currentRoe > 0.02) {
         const timeLimitReason =
@@ -398,11 +397,9 @@ export class StrategyPositionLifecycleCore {
           lastExitReason: timeLimitReason,
           probeModeActive: false,
         });
-        const pnl = this.ports.pnlFromRoe(this.ports.entryMargin(botState), currentRoe);
         await this.ports.notifyExit(symbol, side, timeLimitReason, botState, {
           exitPrice: markPrice,
           finalRoe: currentRoe,
-          pnl,
         });
         return;
       }
@@ -635,11 +632,9 @@ export class StrategyPositionLifecycleCore {
           lastExitReason: action.reason,
           probeModeActive: false,
         });
-        const pnl = this.ports.pnlFromRoe(this.ports.entryMargin(botState), currentRoe);
         await this.ports.notifyExit(symbol, side, action.reason, botState, {
           exitPrice: markPrice,
           finalRoe: currentRoe,
-          pnl,
         });
       }
     } catch (error) {

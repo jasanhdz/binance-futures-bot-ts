@@ -1,6 +1,6 @@
 // src/infra/fs/FsStateStore.ts
 import fs from 'fs';
-import fsPromises from 'fs/promises';
+import fsPromises, { FileHandle } from 'fs/promises';
 import path from 'path';
 import { StateStore } from '../../app/ports/StateStore';
 import { BotState } from '../../domain/types';
@@ -19,8 +19,9 @@ function sanitizeKey(key: string) {
 export class FsStateStore implements StateStore {
   private readonly statePath: string;
   private memoryCache: BotState;
-  private isSaving: boolean = false;
+  private savePromise: Promise<void> | null = null;
   private pendingSave: boolean = false;
+  private saveError: unknown;
 
   constructor(
     private readonly key: string = 'default',
@@ -70,37 +71,67 @@ export class FsStateStore implements StateStore {
   }
 
   forSymbol(symbol: string): StateStore {
-    return new FsStateStore(`${this.key}_${sanitizeKey(symbol)}`, this.scope);
+    return new FsStateStore(`${this.key}_${sanitizeKey(symbol)}`, this.scope, this.baseDir);
   }
 
   /**
    * Mecanismo de escritura no bloqueante con debounce simple.
    * Si ya estamos guardando, marcamos 'pendingSave' para guardar de nuevo al terminar.
    */
-  private async scheduleDiskWrite() {
-    if (this.isSaving) {
+  private scheduleDiskWrite(): void {
+    if (this.savePromise) {
       this.pendingSave = true;
       return;
     }
 
-    this.isSaving = true;
-
-    try {
-      // Escribir a archivo temporal primero (Atomic Write pattern)
-      const tempPath = `${this.statePath}.tmp`;
-      const data = JSON.stringify(this.memoryCache, null, 2);
-
-      await fsPromises.writeFile(tempPath, data, 'utf8');
-      await fsPromises.rename(tempPath, this.statePath);
-    } catch (err) {
-      console.error('State async save failed:', err);
-    } finally {
-      this.isSaving = false;
-      // Si hubo cambios mientras guardábamos, lanzamos otra escritura
+    this.savePromise = this.writeState().finally(() => {
+      this.savePromise = null;
       if (this.pendingSave) {
         this.pendingSave = false;
         this.scheduleDiskWrite();
       }
+    });
+    void this.savePromise.catch(() => undefined);
+  }
+
+  async flush(): Promise<void> {
+    while (this.savePromise || this.pendingSave) {
+      if (!this.savePromise) {
+        this.pendingSave = false;
+        this.scheduleDiskWrite();
+      }
+      await this.savePromise;
+    }
+    if (this.saveError) {
+      const error = this.saveError;
+      this.saveError = undefined;
+      throw error;
+    }
+  }
+
+  private async writeState(): Promise<void> {
+    const tempPath = `${this.statePath}.tmp`;
+    const data = JSON.stringify(this.memoryCache, null, 2);
+    let file: FileHandle | undefined;
+    try {
+      file = await fsPromises.open(tempPath, 'w');
+      await file.writeFile(data, 'utf8');
+      await file.sync();
+      await file.close();
+      file = undefined;
+      await fsPromises.rename(tempPath, this.statePath);
+      const directory = await fsPromises.open(this.baseDir, 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } catch (err) {
+      this.saveError = err;
+      console.error('State async save failed:', err);
+      throw err;
+    } finally {
+      await file?.close().catch(() => undefined);
     }
   }
 }
@@ -121,6 +152,9 @@ function parseState(raw: string): BotState {
     (!Number.isInteger(dailyRisk.dayKey) ||
       !Number.isInteger(dailyRisk.tradesToday) ||
       dailyRisk.tradesToday < 0 ||
+      (dailyRisk.dailyStartBalance !== undefined &&
+        dailyRisk.dailyStartBalance !== null &&
+        (!Number.isFinite(dailyRisk.dailyStartBalance) || dailyRisk.dailyStartBalance <= 0)) ||
       !dailyRisk.strategyTradesToday ||
       typeof dailyRisk.strategyTradesToday !== 'object' ||
       Array.isArray(dailyRisk.strategyTradesToday) ||

@@ -699,7 +699,7 @@ export class NinjaConfigManager {
       return parsed;
     } catch (error) {
       console.error(`[NinjaConfig] Failed to load config from ${this.configPath}:`, error);
-      return this.getDefaultConfig();
+      throw new Error(`CONFIG_LOAD_FAILED: ${this.configPath}: ${String(error)}`);
     }
   }
 

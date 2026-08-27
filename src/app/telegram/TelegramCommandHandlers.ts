@@ -13,7 +13,11 @@ import {
 import { formatAegisReason } from '../messages/AegisReasonFormatter';
 import { analyzeAegisTurboHistory } from '../analysis/AegisTurboHistoryAnalyzer';
 import { CONFIG } from '../../infra/config/environment';
-import { TelegramCommandHandlerDeps, TelegramCommandHandlersPort } from './TelegramCommandTypes';
+import {
+  TelegramCommandHandlerDeps,
+  TelegramCommandHandlersPort,
+  TelegramMutationContext,
+} from './TelegramCommandTypes';
 import { AegisBlocksReportService } from './AegisBlocksReportService';
 import { AegisMomentumReportService } from './AegisMomentumReportService';
 import { AegisProbeReportService } from './AegisProbeReportService';
@@ -104,6 +108,10 @@ function normalizeEventRiskMode(
     return normalized;
   }
   return undefined;
+}
+
+function eventRiskPreviousMode(current: { mode?: string }): string {
+  return current.mode ?? 'NORMAL';
 }
 
 function todayIsoDate(): string {
@@ -244,13 +252,13 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
       `🛰️ /signal ETHUSDT - Señal de un símbolo\n` +
       `📊 /signals - Señales de símbolos activos\n` +
       `🛡️ /risk - Riesgo y límites\n` +
-      `🌐 /riskmode - Ver/cambiar Event Risk\n` +
+      `🌐 /riskmode - Consultar Event Risk (cambio solo con política autorizada)\n` +
       `🧷 /brackets - Estado de brackets\n` +
       `📈 /report today - Resumen de hoy\n` +
       `🛡️ /blocks - Bloqueos Aegis bajo demanda\n\n` +
       `🎢 /momentum - Diagnóstico Momentum Ride\n` +
       `🧪 /probe - Auditoría Probe Mode\n\n` +
-      `🔒 **Solo lectura**. No abre, cierra ni modifica operaciones.`
+      `🔒 **Solo lectura**, salvo el cambio explícito de modo Event Risk cuando la política Telegram está habilitada.`
     );
   }
 
@@ -516,7 +524,7 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
     );
   }
 
-  handleRiskMode(mode?: string): string {
+  async handleRiskMode(mode?: string, context?: TelegramMutationContext): Promise<string> {
     const current = this.eventRiskConfig();
     const nextMode = normalizeEventRiskMode(mode);
     if (!mode) {
@@ -534,17 +542,34 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
       return `Modo inválido. Usa: NORMAL, CAUTION, RISK_OFF o MANUAL_ONLY.`;
     }
 
+    if (this.deps.telegramMutationsEnabled !== true) {
+      return `Las mutaciones Telegram están desactivadas.`;
+    }
+
     if (current.manual_override_enabled !== true) {
+      await this.auditRiskModeMutation(
+        context,
+        eventRiskPreviousMode(current),
+        nextMode,
+        'manual_override_disabled',
+      );
       return `Event Risk manual override está desactivado. Cambia el modo por YAML.`;
     }
 
     const manager = this.deps.configManager as any;
     if (typeof manager.setAegisEventRiskMode !== 'function') {
+      await this.auditRiskModeMutation(
+        context,
+        eventRiskPreviousMode(current),
+        nextMode,
+        'runtime_read_only',
+      );
       return `Event Risk solo lectura en este runtime. Cambia el modo por YAML.`;
     }
 
-    const previousMode = current.mode ?? 'NORMAL';
+    const previousMode = eventRiskPreviousMode(current);
     const updated = manager.setAegisEventRiskMode(nextMode);
+    await this.auditRiskModeMutation(context, previousMode, nextMode, 'success');
     this.deps.logger?.warn('EVENT_RISK_MODE_CHANGED', {
       previousMode,
       mode: updated?.mode ?? nextMode,
@@ -558,6 +583,31 @@ export class TelegramCommandHandlers implements TelegramCommandHandlersPort {
       `Nuevo: **${updated?.mode ?? nextMode}**\n` +
       `Enforce: **${boolText(updated?.enforce)}**`
     );
+  }
+
+  private async auditRiskModeMutation(
+    context: TelegramMutationContext | undefined,
+    previous: string,
+    requested: string | undefined,
+    result: string,
+  ): Promise<void> {
+    if (!context || !requested || !this.deps.mutationAuditWriter) return;
+    try {
+      await this.deps.mutationAuditWriter.append({
+        timestamp: new Date().toISOString(),
+        chat: context.chatId,
+        user: context.userId,
+        command: 'riskmode',
+        previous,
+        requested,
+        result,
+      });
+    } catch (error) {
+      this.deps.logger?.warn('telegram_mutation_audit_failed', {
+        error: String(error),
+        command: 'riskmode',
+      });
+    }
   }
 
   async handleBrackets(): Promise<string> {

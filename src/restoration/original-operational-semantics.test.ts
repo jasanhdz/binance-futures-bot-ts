@@ -30,18 +30,18 @@ function sha256(path: string): string {
 }
 
 const baselineOperationalDigests: Record<string, string> = {
-  'src/main.ts': '48c3efb5976bf61ba2369f1ecf162fa81572a426a9df7560e2a7e1f13abacbd8',
-  'src/app/ports/Exchange.ts': '73b4f7912b9dcfaabc5b47ca12af7dbd4c942c0d065ff495a1d7f36f702ba837',
+  'src/main.ts': 'e289a662c2b6ac2b4da4e9f7ded993d7fb551ad908bc18f5c44ec1ab226ae119',
+  'src/app/ports/Exchange.ts': '45a4d79b0b380b1d479b7c5c96bae4d944aa060c32e395d3dc162c92860a583a',
   'src/infra/adapters/BinanceAdapter.ts':
-    '487e67328c7bf6d9626996db1346215f5d2928214c1dbb7ffeb07f88a7889604',
+    '9ddc164e05fd3f1796de6455cad5755b983332768592bc2d60c00f2543d881b2',
   'src/infra/config/environment.ts':
-    '2e869555220faee0270d1a3b02190a6a2fd59a133acb613494e16defc20a0de7',
+    '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
     '3715eded7eed195a8757df99813cccfb020ad14f5ee041764f998c122d93c535',
   'src/domain/services/ProfitGuardian.ts':
     'f95512ac4ecd82449dff30a1f63441f7297e57adf8b58ca32d8cca5409aa62fd',
   'src/infra/logging/FsStateStore.ts':
-    'f5676949020243056ea5b81b0107890b390cc077d6efd5350732647c97b4c9af',
+    '12008748b58eb6212068374b6964bc403cc72f7f5e7035275a578da1855b670a',
 };
 
   // Phase 1 owner-authorized architecture checkpoint. These are operational
@@ -52,7 +52,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   'src/app/services/TradingService.ts':
-    '8eac77d85e074e368f3e53feecf26385656720b071cff24f04a231e3905c3e67',
+    'c0aaeac85b41d3bf7379d1198af59b7f723e66c1608e64389b9d17fa4f494ecb',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

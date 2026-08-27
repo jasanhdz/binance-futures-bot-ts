@@ -22,15 +22,32 @@ describe('FsStateStore', () => {
         dayKey: 20600,
         tradesToday: 2,
         strategyTradesToday: { AEGIS_TURBO: 1, MOMENTUM_RIDE: 1 },
+        dailyStartBalance: 20,
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await state.flush();
 
     expect(new FsStateStore('default', 'test', directory).get().dailyRisk).toEqual({
       dayKey: 20600,
       tradesToday: 2,
       strategyTradesToday: { AEGIS_TURBO: 1, MOMENTUM_RIDE: 1 },
+      dailyStartBalance: 20,
     });
+  });
+
+  it('flushes pending writes and keeps child stores in the custom directory', async () => {
+    const state = new FsStateStore('default', 'test', directory);
+    const child = state.forSymbol?.('ethusdt');
+    expect(child).toBeDefined();
+    child?.set({ lastTradeId: 'child-trade' });
+
+    await child?.flush?.();
+
+    expect(
+      JSON.parse(
+        await fs.readFile(path.join(directory, 'state_TEST_DEFAULT_ETHUSDT.json'), 'utf8'),
+      ),
+    ).toEqual(expect.objectContaining({ lastTradeId: 'child-trade' }));
   });
 
   it('fails closed for corrupt or incompatible state', async () => {

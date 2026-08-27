@@ -65,6 +65,22 @@ export interface TelegramCommandHandlerDeps {
   blocksReportService?: AegisBlocksReportService;
   momentumReportService?: AegisMomentumReportService;
   probeReportService?: AegisProbeReportService;
+  telegramMutationsEnabled?: boolean;
+  mutationAuditWriter?: TelegramMutationAuditWriter;
+}
+
+export interface TelegramMutationAuditRecord {
+  timestamp: string;
+  chat: string;
+  user: string;
+  command: string;
+  previous: string;
+  requested: string;
+  result: string;
+}
+
+export interface TelegramMutationAuditWriter {
+  append(record: TelegramMutationAuditRecord): Promise<void>;
 }
 
 export interface TelegramCommandRouterOptions {
@@ -72,6 +88,12 @@ export interface TelegramCommandRouterOptions {
   allowedUserIds?: string[];
   rateLimitMs?: number;
   now?: () => number;
+  mutationsEnabled?: boolean;
+}
+
+export interface TelegramMutationContext {
+  chatId: string;
+  userId: string;
 }
 
 export interface TelegramCommandHandlersPort {
@@ -85,7 +107,10 @@ export interface TelegramCommandHandlersPort {
   handleSignal(symbol?: string): Promise<TelegramCommandResponse>;
   handleSignals(): Promise<TelegramCommandResponse>;
   handleRisk(): Promise<TelegramCommandResponse>;
-  handleRiskMode(mode?: string): Promise<TelegramCommandResponse> | TelegramCommandResponse;
+  handleRiskMode(
+    mode?: string,
+    context?: TelegramMutationContext,
+  ): Promise<TelegramCommandResponse> | TelegramCommandResponse;
   handleBrackets(): Promise<TelegramCommandResponse>;
   handleReportToday(): Promise<TelegramCommandResponse>;
   handleBlocks(args?: string[]): Promise<TelegramCommandResponse>;

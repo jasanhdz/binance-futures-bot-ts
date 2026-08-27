@@ -32,4 +32,49 @@ describe('LiquidityVoidDetector', () => {
     expect((detector as any).previousBidTotal).toBe(5);
     expect((detector as any).previousAskTotal).toBe(18);
   });
+
+  it('reports receive age and stale status without changing stress', () => {
+    const detector = new LiquidityVoidDetector({
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    });
+
+    expect(detector.getLiquidityStressStatus(10_000)).toEqual({
+      stress: 0,
+      status: 'NO_DATA',
+    });
+    detector.processDepthUpdate({
+      bidDepth: [{ price: 100, qty: 1 }],
+      askDepth: [{ price: 101, qty: 1 }],
+      receivedAtMs: 9_500,
+    });
+
+    expect(detector.getLiquidityStressStatus(10_000)).toMatchObject({
+      stress: 1,
+      status: 'FRESH',
+      lastReceivedAtMs: 9_500,
+      receiveAgeMs: 500,
+    });
+    expect(detector.getLiquidityStressStatus(10_501, 1_000).status).toBe('STALE');
+  });
+
+  it('detects sudden ask-side disappearance as well as bid-side disappearance', () => {
+    const detector = new LiquidityVoidDetector({
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    });
+    const update = (qty: number) =>
+      detector.processDepthUpdate({
+        bidDepth: [{ price: 100, qty: 1 }],
+        askDepth: [{ price: 101, qty }],
+      });
+
+    update(10);
+    update(4);
+    expect(detector.getLiquidityStress()).toBeGreaterThan(0);
+  });
 });

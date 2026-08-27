@@ -132,6 +132,10 @@ describe('MicroBurstRuntime', () => {
   it('rejects LIVE mode at startup', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'LIVE' }));
     await expect(runtime.start()).rejects.toThrow('MICRO_BURST_V1_LIVE_NOT_AUTHORIZED');
+    expect(runtime.getReadiness()).toMatchObject({
+      ready: false,
+      blockers: expect.arrayContaining(['RUNTIME_NOT_RUNNING']),
+    });
   });
 
   it('reports health with correct symbol count', async () => {

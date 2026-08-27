@@ -13,8 +13,7 @@ const SYMBOL_LIST = ninjaConfig.getActiveSymbols();
 const SYMBOL_ALLOCATIONS: Record<string, number> = ninjaConfig.getSymbolAllocations();
 
 // Defaults
-const DEFAULT_SYMBOL = 'BTCUSDT';
-const DEFAULT_LEVERAGE = ninjaConfig.system.global_leverage_default || 10;
+const DEFAULT_LEVERAGE = ninjaConfig.system.global_leverage_default ?? 10;
 
 function numberEnv(name: string): number | undefined {
   const raw = process.env[name];
@@ -53,8 +52,8 @@ export const CONFIG = {
   BOT_INTERVAL_SEC: Number(process.env.BOT_INTERVAL_SEC ?? 10),
 
   // --- Symbols & Sizing (YAML) ---
-  SYMBOL: SYMBOL_LIST[0] || DEFAULT_SYMBOL,
-  SYMBOLS: SYMBOL_LIST.length ? SYMBOL_LIST : [DEFAULT_SYMBOL],
+  SYMBOL: SYMBOL_LIST[0] ?? '',
+  SYMBOLS: SYMBOL_LIST,
   SYMBOL_ALLOCATIONS,
   SYMBOL_LEVERAGE: {} as Record<string, number>,
   SYMBOL_SHARE: trading.capital_usage_default,
@@ -93,6 +92,7 @@ export const CONFIG = {
       ? csvEnv('TELEGRAM_ALLOWED_CHAT_IDS')
       : csvEnv('TELEGRAM_CHAT_ID'),
   TELEGRAM_ALLOWED_USER_IDS: csvEnv('TELEGRAM_ALLOWED_USER_IDS'),
+  TELEGRAM_POLICY_MUTATIONS_ENABLED: process.env.TELEGRAM_POLICY_MUTATIONS_ENABLED === '1',
 
   // --- Re-entry Logic (YAML) ---
   REENTER_ON_TP: trading.reenter_on_tp,

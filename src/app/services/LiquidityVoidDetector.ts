@@ -8,6 +8,14 @@ export interface OrderBookLevel {
 export interface WsDepthUpdate {
   bidDepth: OrderBookLevel[];
   askDepth: OrderBookLevel[];
+  receivedAtMs?: number;
+}
+
+export interface LiquidityStressStatus {
+  stress: number;
+  status: 'NO_DATA' | 'FRESH' | 'STALE';
+  lastReceivedAtMs?: number;
+  receiveAgeMs?: number;
 }
 
 export class LiquidityVoidDetector {
@@ -21,12 +29,14 @@ export class LiquidityVoidDetector {
   private previousBidTotal = 0;
   private previousAskTotal = 0;
   private currentStress = 0;
+  private lastReceivedAtMs?: number;
 
   constructor(private logger: Logger) {}
 
   public processDepthUpdate(data: WsDepthUpdate): void {
     this.bidDepth = data.bidDepth;
     this.askDepth = data.askDepth;
+    this.lastReceivedAtMs = data.receivedAtMs ?? Date.now();
 
     const metrics = this.calculateMetrics();
     let stressScore = 0;
@@ -54,6 +64,14 @@ export class LiquidityVoidDetector {
       }
     }
 
+    if (this.previousAskTotal > 0) {
+      const liquidityVelocity =
+        (metrics.askTotalQty - this.previousAskTotal) / this.previousAskTotal;
+      if (liquidityVelocity < -0.5) {
+        stressScore += 0.3;
+      }
+    }
+
     this.previousBidTotal = metrics.bidTotalQty;
     this.previousAskTotal = metrics.askTotalQty;
 
@@ -62,6 +80,23 @@ export class LiquidityVoidDetector {
 
   public getLiquidityStress(): number {
     return this.currentStress;
+  }
+
+  public getLiquidityStressStatus(
+    nowMs = Date.now(),
+    freshnessWindowMs?: number,
+  ): LiquidityStressStatus {
+    if (this.lastReceivedAtMs === undefined) {
+      return { stress: this.currentStress, status: 'NO_DATA' };
+    }
+    const receiveAgeMs = Math.max(0, nowMs - this.lastReceivedAtMs);
+    return {
+      stress: this.currentStress,
+      status:
+        freshnessWindowMs === undefined || receiveAgeMs <= freshnessWindowMs ? 'FRESH' : 'STALE',
+      lastReceivedAtMs: this.lastReceivedAtMs,
+      receiveAgeMs,
+    };
   }
 
   private calculateMetrics() {

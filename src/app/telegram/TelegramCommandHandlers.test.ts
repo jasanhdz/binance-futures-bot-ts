@@ -296,6 +296,8 @@ function makeHandlers(overrides: Record<string, any> = {}) {
     blocksReportService: overrides.blocksReportService,
     momentumReportService: overrides.momentumReportService,
     probeReportService: overrides.probeReportService,
+    telegramMutationsEnabled: overrides.telegramMutationsEnabled ?? true,
+    mutationAuditWriter: overrides.mutationAuditWriter,
   });
   return { handlers, exchange, mlService, state, configManager, logger };
 }
@@ -611,9 +613,10 @@ describe('TelegramCommandHandlers', () => {
   });
 
   it('/riskmode cambia modo y loggea cuando está autorizado por config', async () => {
-    const { handlers, configManager, logger } = makeHandlers();
+    const mutationAuditWriter = { append: vi.fn().mockResolvedValue(undefined) };
+    const { handlers, configManager, logger } = makeHandlers({ mutationAuditWriter });
 
-    const text = await handlers.handleRiskMode('RISK_OFF');
+    const text = await handlers.handleRiskMode('RISK_OFF', { chatId: '123', userId: '42' });
 
     expect(configManager.setAegisEventRiskMode).toHaveBeenCalledWith('RISK_OFF');
     expect(logger.warn).toHaveBeenCalledWith(
@@ -623,7 +626,25 @@ describe('TelegramCommandHandlers', () => {
         mode: 'RISK_OFF',
       }),
     );
+    expect(mutationAuditWriter.append).toHaveBeenCalledWith({
+      timestamp: expect.any(String),
+      chat: '123',
+      user: '42',
+      command: 'riskmode',
+      previous: 'NORMAL',
+      requested: 'RISK_OFF',
+      result: 'success',
+    });
     expect(text).toContain('Nuevo: **RISK_OFF**');
+  });
+
+  it('/riskmode does not mutate when the independent policy flag is off', async () => {
+    const { handlers, configManager } = makeHandlers({ telegramMutationsEnabled: false });
+
+    await expect(
+      handlers.handleRiskMode('RISK_OFF', { chatId: '123', userId: '42' }),
+    ).resolves.toContain('mutaciones Telegram están desactivadas');
+    expect(configManager.setAegisEventRiskMode).not.toHaveBeenCalled();
   });
 
   it('/riskmode no cambia si manual override está desactivado', async () => {

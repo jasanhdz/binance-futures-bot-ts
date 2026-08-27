@@ -24,6 +24,7 @@ import { TelegramCommandHandlers } from './app/telegram/TelegramCommandHandlers'
 import { TelegramCommandRouter } from './app/telegram/TelegramCommandRouter';
 import { AegisBlocksReportService } from './app/telegram/AegisBlocksReportService';
 import { TelegramBotCommandListener } from './infra/telegram/TelegramBotCommandListener';
+import { TelegramMutationAuditWriter } from './infra/telegram/TelegramMutationAuditWriter';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ADAPTER WRAPPERS (to match port interfaces)
@@ -72,18 +73,19 @@ async function main() {
 
   const activeAegisSymbols = configManager.getActiveAegisSymbols();
   const legacyActiveSymbols = configManager.getActiveSymbols();
-  const tradingSymbols =
-    activeAegisSymbols.length > 0
-      ? activeAegisSymbols
-      : legacyActiveSymbols.length > 0
-        ? legacyActiveSymbols
-        : ['ETHUSDT'];
+  const tradingSymbols = activeAegisSymbols.length > 0 ? activeAegisSymbols : legacyActiveSymbols;
+
+  if (tradingSymbols.length === 0) {
+    throw new Error(
+      'STARTUP_NO_ACTIVE_SYMBOLS: configure at least one enabled Aegis or model-backed symbol',
+    );
+  }
 
   // Trading configuration
   const tradingConfig: TradingServiceConfig = {
     symbols: tradingSymbols,
-    tickIntervalMs: configManager.system.tick_interval_ms || 10000,
-    maxTradesPerDay: configManager.system.max_trades_per_day || 100,
+    tickIntervalMs: configManager.system.tick_interval_ms ?? 10000,
+    maxTradesPerDay: configManager.system.max_trades_per_day ?? 100,
     tradingMode: CONFIG.TRADING_MODE,
   };
 
@@ -128,10 +130,13 @@ async function main() {
               getRuntimeSnapshot: () => tradingService.getAegisRuntimeSnapshot(),
               getActiveSymbols: () => tradingConfig.symbols,
               blocksReportService: new AegisBlocksReportService(),
+              telegramMutationsEnabled: CONFIG.TELEGRAM_POLICY_MUTATIONS_ENABLED,
+              mutationAuditWriter: new TelegramMutationAuditWriter(),
             }),
             {
               allowedChatIds: CONFIG.TELEGRAM_ALLOWED_CHAT_IDS,
               allowedUserIds: CONFIG.TELEGRAM_ALLOWED_USER_IDS,
+              mutationsEnabled: CONFIG.TELEGRAM_POLICY_MUTATIONS_ENABLED,
             },
           ),
         })
@@ -182,4 +187,7 @@ async function main() {
 }
 
 // Run
-main().catch(console.error);
+main().catch((error) => {
+  console.error('❌ Fatal error:', error);
+  process.exitCode = 1;
+});

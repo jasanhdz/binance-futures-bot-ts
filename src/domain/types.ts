@@ -23,6 +23,7 @@ export type BotState = {
     dayKey: number;
     tradesToday: number;
     strategyTradesToday: Partial<Record<StrategyId, number>>;
+    dailyStartBalance?: number | null;
   };
   lastSide?: Side;
   lastEntryPrice?: number;
@@ -101,6 +102,7 @@ export type BotState = {
   lastTakeProfitRoe?: number;
   lastTrailingActivationRoe?: number;
   lastTrailingCallbackRoe?: number;
+  /** Frozen at entry; an open trade keeps its entry-time max-hold policy. */
   lastMaxHoldMs?: number;
   lastAegisTurboScore?: number;
   lastAegisRawReason?: string;
