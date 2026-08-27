@@ -53,6 +53,12 @@ export interface MicroBurstRuntimeHealth {
   archiveQueuedRecords: number | null;
   archiveWrittenRecords: number | null;
   archiveOverflowRecords: number | null;
+  archiveActiveSegmentCount: number | null;
+  archiveActiveSegmentRecords: number | null;
+  archiveSegmentsFinalized: number | null;
+  archiveRecordsDurablyFlushed: number | null;
+  archiveFinalizationQueueDepth: number | null;
+  archiveRecoveryFailures: number | null;
   storageErrors: number;
   readiness: MicroBurstRuntimeReadiness;
 }
@@ -122,6 +128,12 @@ export interface MicroBurstRuntimeDeps {
       writtenRecords?: number;
       overflowRecords?: number;
       draining?: boolean;
+      activeSegmentCount?: number;
+      activeSegmentRecords?: number;
+      segmentsFinalized?: number;
+      recordsDurablyFlushed?: number;
+      finalizationQueueDepth?: number;
+      recoveryFailures?: number;
     };
   };
   provenance?: {
@@ -563,6 +575,12 @@ export class MicroBurstRuntime {
       archiveQueuedRecords: archiveHealth?.queuedRecords ?? null,
       archiveWrittenRecords: archiveHealth?.writtenRecords ?? null,
       archiveOverflowRecords: archiveHealth?.overflowRecords ?? null,
+      archiveActiveSegmentCount: archiveHealth?.activeSegmentCount ?? null,
+      archiveActiveSegmentRecords: archiveHealth?.activeSegmentRecords ?? null,
+      archiveSegmentsFinalized: archiveHealth?.segmentsFinalized ?? null,
+      archiveRecordsDurablyFlushed: archiveHealth?.recordsDurablyFlushed ?? null,
+      archiveFinalizationQueueDepth: archiveHealth?.finalizationQueueDepth ?? null,
+      archiveRecoveryFailures: archiveHealth?.recoveryFailures ?? null,
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       readiness: this.getReadiness(),
     };

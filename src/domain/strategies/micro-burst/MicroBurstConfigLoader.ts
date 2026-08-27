@@ -101,6 +101,16 @@ function parseMarketArchive(raw: unknown): MicroBurstRuntimeConfig['marketArchiv
     rawTradeArchive: value.raw_trade_archive !== false,
     rawDepthArchive: value.raw_depth_archive !== false,
     compression: value.compression === 'gzip' ? 'gzip' : 'gzip',
+    maxActiveSegmentRecords:
+      typeof value.max_active_segment_records === 'number' ? value.max_active_segment_records : undefined,
+    maxActiveSegmentBytes:
+      typeof value.max_active_segment_bytes === 'number' ? value.max_active_segment_bytes : undefined,
+    maxActiveSegmentDurationMs:
+      typeof value.max_active_segment_duration_ms === 'number' ? value.max_active_segment_duration_ms : undefined,
+    durabilityFlushIntervalMs:
+      typeof value.durability_flush_interval_ms === 'number'
+        ? value.durability_flush_interval_ms
+        : undefined,
   };
 }
 

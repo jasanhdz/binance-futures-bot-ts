@@ -236,5 +236,9 @@ export interface MicroBurstRuntimeConfig {
     rawTradeArchive?: boolean;
     rawDepthArchive?: boolean;
     compression?: 'gzip';
+    maxActiveSegmentRecords?: number;
+    maxActiveSegmentBytes?: number;
+    maxActiveSegmentDurationMs?: number;
+    durabilityFlushIntervalMs?: number;
   };
 }

@@ -1566,10 +1566,14 @@ export class TradingService {
         const archiveConfig = mbConfig.marketArchive;
         const storage = archiveConfig?.enabled
           ? new MicroBurstStorage({
-              databasePath:
-                archiveConfig.sqlitePath ?? 'data/micro-burst/micro_burst_research.sqlite',
-              archivePath: archiveConfig.rootDir ?? 'data/micro-burst/market-data',
-            })
+               databasePath:
+                 archiveConfig.sqlitePath ?? 'data/micro-burst/micro_burst_research.sqlite',
+               archivePath: archiveConfig.rootDir ?? 'data/micro-burst/market-data',
+               maxActiveSegmentRecords: archiveConfig.maxActiveSegmentRecords,
+               maxActiveSegmentBytes: archiveConfig.maxActiveSegmentBytes,
+               maxActiveSegmentDurationMs: archiveConfig.maxActiveSegmentDurationMs,
+               durabilityFlushIntervalMs: archiveConfig.durabilityFlushIntervalMs,
+             })
           : undefined;
         const outcomeTracker = new MicroBurstOutcomeTracker({
           logger: this.deps.logger,
