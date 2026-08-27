@@ -52,7 +52,6 @@ export const trendBadge = (dir?: string) => {
 
 // ===== Config =====
 const logDir = path.resolve(__dirname, '../../../logs');
-const legacyPath = path.join(logDir, 'history.log');
 
 type Level = 'debug' | 'info' | 'warn' | 'error';
 const ORDER: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -85,6 +84,15 @@ function pruneOldLogs(retainDays: number) {
     const now = Date.now();
     const cutoff = now - retainDays * 86_400_000;
     for (const f of fs.readdirSync(logDir)) {
+      // `history.log` was the pre-structured flat compatibility stream. It is
+      // intentionally retired and purged on startup so only the current JSON
+      // event syntax remains in the generic runtime log family.
+      if (f === 'history.log') {
+        try {
+          fs.rmSync(path.join(logDir, f));
+        } catch { }
+        continue;
+      }
       if (!/^history-\d{4}-\d{2}-\d{2}\.log(\.gz)?$/.test(f)) continue;
       const t = Date.parse(f.slice(8, 18) + 'T00:00:00Z');
       if (Number.isFinite(t) && t < cutoff) {
@@ -211,7 +219,6 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
     }
 
     case 'raw_open_orders': {
-      // En lugar de volcar arrays enormes, resumimos:
       const count = ctx?.count ?? 0;
       const sample = Array.isArray(ctx?.sample) ? ctx.sample : [];
       const stops = sample.filter((o: any) => o.type?.includes('STOP'));
@@ -252,7 +259,6 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
     }
 
     case 'profit_guard_status': {
-      // Línea resumida con ROE actual y pico
       return `${color.gray(t)} 🛡️ ROE ${p(ctx?.roe ?? 0)} (peak ${p(ctx?.peak ?? 0)})`;
     }
 
@@ -350,20 +356,15 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       const r = ctx?.reason ?? '';
       const emoji =
         a === 'ENTER_LONG' ? '🟢' : a === 'ENTER_SHORT' ? '🔻' : a === 'EXIT' ? '🚪' : '⏸️';
-
-      // Log compacto: [hora] emoji ACCIÓN · razón
       return `${color.gray(t)} ${emoji}  ${s} ${color.bold(String(a))}${r ? ' · ' + r : ''}`;
     }
 
-    // 1) Agrega este case dentro de prettyLine(level, msg, ctx)
     case 'market_snapshot': {
       const t = new Date().toLocaleTimeString();
-
       const n = (x: any, d = 4) =>
         typeof x === 'number' && Number.isFinite(x) ? x.toFixed(d) : '—';
       const pct = (x?: number, d = 2) =>
         typeof x === 'number' && Number.isFinite(x) ? `${x >= 0 ? '+' : ''}${x.toFixed(d)}%` : '—';
-
       const sgn = (x?: number, s?: string) =>
         typeof x === 'number'
           ? (x > 0 ? color.ok : x < 0 ? color.error : color.gray)(s ?? String(x))
@@ -385,7 +386,6 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
         `RSI:${n(ctx?.rsi, 1)} ${color.gray('·')} ADX:${n(ctx?.adx, 1)} ${color.gray('·')} ` +
         `BBW:${pct(ctx?.bbw, 2)}`;
 
-      // (Opcional) Estructura de EMAs si las mandas en ctx
       const line3 =
         typeof ctx?.ema7 === 'number' &&
           typeof ctx?.ema25 === 'number' &&
@@ -401,7 +401,6 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       const s = ctx?.symbol ? ctx.symbol.replace('USDT', '') : '';
       const price = ctx?.price ? ctx.price.toFixed(2) : '0.00';
 
-      // MODE 1: COMBAT (Active Position)
       if (ctx?.pnl !== undefined && ctx?.roe !== undefined) {
         const pnl = ctx.pnl;
         const roe = ctx.roe;
@@ -409,25 +408,18 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
         const pnlSign = pnl >= 0 ? '+' : '-';
         const pnlStr = `${pnlSign}$${Math.abs(pnl).toFixed(2)}`;
         const roeStr = `${pnlSign}${Math.abs(roe).toFixed(2)}%`;
-
         const sideIcon = ctx.action === 'SHORT' ? '🔻' : '🔺';
         const sideText = ctx.action || 'POS';
-
         return `${color.gray(`[${t}]`)} ${sideIcon} ${color.bold(`${sideText} ${s}`)} @ $${price} | 💰 PnL: ${pnlColor(`${pnlStr} (${roeStr})`)}`;
       }
 
-      // MODE 2: HUNT (Idle)
       const sp = ctx?.shortProb || 0;
       const lp = ctx?.longProb || 0;
       const th = ctx?.threshold || 0.55;
-
       const spColor = sp > th ? color.ok : color.dim;
       const lpColor = lp > th ? color.ok : color.dim;
-
-      // Parse Blockers from Flags
       const f = ctx?.flags || {};
       const blockers: string[] = [];
-
       if (!f.near_resistance) blockers.push('RES');
       if (!f.is_tired) blockers.push('TIRED');
       if (!f.is_volatile) blockers.push('VOL');
@@ -485,12 +477,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       return `${color.gray(t)} 🚨 AegisEntryErrorClosed ${s} ${ctx?.error ?? ''}`;
     }
 
-    // Otherwise, use Table (Active Position)
-
-
-
     default: {
-      // Fallback: msg + pares clave=valor (plano, sin objetos anidados)
       const flat =
         ctx && typeof ctx === 'object'
           ? Object.entries(ctx)
@@ -526,13 +513,9 @@ function write(level: Level, msg: string, ctx?: any) {
     (level === 'error' ? console.error : level === 'warn' ? console.warn : console.log)(json);
   }
 
-  // 2) Archivo siempre estructurado (si está habilitado)
+  // 2) Archivo estructurado actual (si está habilitado)
   if (LOG_TO_FILE && !FILE_LOGGING_DISABLED) {
-    const json = JSON.stringify(payload);
-    append(todayPath(), json);
-    // Compat línea plana
-    const flat = `[${payload.ts}] ${msg}${ctx ? ' ' + JSON.stringify(ctx) : ''}`;
-    append(legacyPath, flat);
+    append(todayPath(), JSON.stringify(payload));
   }
 
   // 3) Telegram System Log (Errors & Warnings)
@@ -565,7 +548,7 @@ export class FsLogger implements Logger {
   }
 }
 
-// Limpieza opcional al arranque
+// Limpieza al arranque: retención de logs estructurados y retiro del flat legacy.
 try {
   pruneOldLogs(LOG_RETAIN_DAYS);
 } catch { }
