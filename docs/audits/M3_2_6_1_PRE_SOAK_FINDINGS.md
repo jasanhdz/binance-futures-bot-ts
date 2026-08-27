@@ -2,7 +2,7 @@
 
 Base audited SHA: `6faf6ee95e95acc8f2ea7d254d026dae66396c70`
 
-Current implementation SHA at audit time: `ecf8713d53cd5f09d8446055b69c068846a76328`
+Current implementation SHA at audit time: `3e82a37c2f8bb512b997776929f47ab1c00f224d`
 
 ## Audit Record
 
