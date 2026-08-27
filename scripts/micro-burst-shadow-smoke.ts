@@ -8,7 +8,9 @@
  *   npx tsx scripts/micro-burst-shadow-smoke.ts [--duration 45] [--symbols BTCUSDT,ETHUSDT,SOLUSDT]
  */
 
-const DURATION_MS = Number(process.argv.find((_, i, a) => a[i - 1] === '--duration') ?? 45_000);
+const durationSeconds = Number(process.argv.find((_, i, a) => a[i - 1] === '--duration') ?? 45);
+const DURATION_MS =
+  Number.isFinite(durationSeconds) && durationSeconds >= 0 ? durationSeconds * 1_000 : 45_000;
 const SYMBOLS = (
   process.argv.find((_, i, a) => a[i - 1] === '--symbols') ?? 'BTCUSDT,ETHUSDT,SOLUSDT'
 )
@@ -287,14 +289,12 @@ async function main(): Promise<void> {
   const mutationsZero = metrics.exchangeMutations === 0;
   const anyAggTrade = Array.from(metrics.aggTradeEvents.values()).some((v) => v > 0);
 
-  if (allDepthHealthy && allRefPrice && btcOk && mutationsZero) {
-    if (anyAggTrade) {
-      console.log(`\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED`);
-    } else {
-      console.log(
-        `\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED (aggTrade WS may need longer window)`,
-      );
-    }
+  if (allDepthHealthy && allRefPrice && btcOk && mutationsZero && anyAggTrade) {
+    console.log(`\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED`);
+  } else if (allDepthHealthy && allRefPrice && btcOk && mutationsZero) {
+    console.log(
+      `\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_PARTIAL — aggTrade WS data not observed`,
+    );
   } else if (mutationsZero) {
     console.log(
       `\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_READY (partial data — verify on server)`,
