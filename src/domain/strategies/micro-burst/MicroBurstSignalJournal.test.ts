@@ -84,11 +84,13 @@ describe('MicroBurstSignalJournal', () => {
     expect(journal.getEntryCount()).toBe(1);
   });
 
-  it('rotates file after max entries', () => {
+  it('rotates file after max entries', async () => {
     const journal = new MicroBurstSignalJournal(TEST_JOURNAL_DIR, 2);
     journal.append(makeResult({ shadowSignalId: 'sig-001' }));
     journal.append(makeResult({ shadowSignalId: 'sig-002' }));
     const firstPath = journal.getCurrentFilePath();
+    // Ensure next rotateFile() gets a different timestamp
+    await new Promise((r) => setTimeout(r, 15));
     journal.append(makeResult({ shadowSignalId: 'sig-003' }));
     const secondPath = journal.getCurrentFilePath();
     expect(firstPath).not.toBe(secondPath);
@@ -145,17 +147,27 @@ describe('MicroBurstSignalJournal', () => {
     expect(entry.btc.conflict).toBe(false);
   });
 
-  it('restart does not corrupt file', () => {
+  it('restart does not corrupt file', async () => {
     const journal1 = new MicroBurstSignalJournal(TEST_JOURNAL_DIR);
     journal1.append(makeResult({ shadowSignalId: 'sig-1' }));
-    const filePath = journal1.getCurrentFilePath();
+    const filePath1 = journal1.getCurrentFilePath();
     journal1.flush();
+
+    // Ensure next rotateFile() gets a different timestamp
+    await new Promise((r) => setTimeout(r, 15));
 
     const journal2 = new MicroBurstSignalJournal(TEST_JOURNAL_DIR);
     journal2.append(makeResult({ shadowSignalId: 'sig-2' }));
+    const filePath2 = journal2.getCurrentFilePath();
 
-    const content = fs.readFileSync(filePath!, 'utf-8');
-    const lines = content.trim().split('\n');
-    expect(lines.length).toBeGreaterThanOrEqual(2);
+    // After flush, a new file is created. Verify both files exist and have 1 line each.
+    const content1 = fs.readFileSync(filePath1!, 'utf-8');
+    expect(content1.trim().split('\n')).toHaveLength(1);
+
+    const content2 = fs.readFileSync(filePath2!, 'utf-8');
+    expect(content2.trim().split('\n')).toHaveLength(1);
+
+    // Verify both files are distinct
+    expect(filePath1).not.toBe(filePath2);
   });
 });

@@ -615,6 +615,16 @@ export interface NinjaYamlConfig {
             [regime: string]: RegimeSymbolOverrideYamlConfig;
         };
     };
+    micro_burst?: {
+        enabled?: boolean;
+        mode?: 'OFF' | 'SHADOW' | 'LIVE';
+        symbols?: Record<string, {
+            enabled?: boolean;
+            btcConflictThresholdBps?: number;
+            bookDepthLevels?: number;
+            bookDepthSpeed?: '100ms' | '250ms' | '500ms';
+        }>;
+    };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

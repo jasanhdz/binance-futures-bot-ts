@@ -47,7 +47,7 @@ const baselineOperationalDigests: Record<string, string> = {
 // Phase 1 owner-authorized architecture checkpoint. These are operational
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
-  'config/regime_config.example.yaml': 'e8afb7bf8b6388a1fe8dc08c1c6053530159d7b6577a77ee3e27a5f1718ca702',
+  'config/regime_config.example.yaml': 'b947e169f99d1987d461c26987c698c342ef45265bf1a9f8f474d6beaeb62e25',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '0d62db1adb7403f5e8e54ee0dcec2ffee8832c3e26b0279b9ace15e562a47b06',
   'src/app/services/TradingService.ts':
@@ -87,7 +87,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '041aadf526f858e70ce33d15516ba012dc3aca43f68d4ca2e88df265e054f07c',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
-    'd76f6ee695fa7714fa8888bdde9140bce6e350c3b603ab6485ed55fe79abb1b8',
+    '0af1d6d9cd765e0f8310bc4a57738e093ebfbe7c77d367680b009ff14dcfce3e',
 };
 
 type GuardFixture = [

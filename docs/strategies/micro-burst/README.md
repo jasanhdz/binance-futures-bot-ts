@@ -104,19 +104,47 @@ Dynamic exits belong only to `MicroBurstExitPolicy`; legacy lifecycle logic cann
 
 ## M2 Operational Shadow (Implemented)
 
-- `MicroBurstRuntime` orchestrator: start/stop, evaluation loop, health reporting.
-- Wired into `TradingService` lifecycle: starts with bot, stops cleanly.
-- Real depth WebSocket per symbol via `SynchronizedOrderBook`.
-- Real BTC context via `BtcMicroContextProvider`.
-- Real aggTrade streaming per symbol via `MicroBurstAggTradeBuffer`.
-- Real reference price via `MicroBurstReferencePriceProvider`.
+`MicroBurstRuntime` wires the shadow evaluation into the live bot runtime with real market data, continuous evaluation, and structured signal journaling. The strategy cannot open, close, or modify any exchange position.
+
+**Signal flow:**
+
+```
+TradingService.start()
+  └─ MicroBurstRuntime.start()
+       ├─ BtcMicroContextProvider (shared BTC 1m stream)
+       ├─ SynchronizedOrderBook per symbol (depth diff + snapshot sync)
+       ├─ MicroBurstAggTradeBuffer per symbol (aggTrade streaming, taker flow)
+       ├─ MicroBurstReferencePriceProvider per symbol (mark price / midpoint)
+       ├─ MicroBurstShadowEvaluator
+       │    └─ MicroBurstContextBuilder (candles + book + BTC + ref price + aggTrade)
+       │         └─ StrategyRouter.evaluate('MICRO_BURST_V1')
+       ├─ Evaluation loop (configurable interval, default 5s, per-symbol in-flight guard)
+       ├─ Health reporting (60s interval, MICRO_BURST_SHADOW_HEALTH log)
+       └─ MicroBurstSignalJournal (append-only JSONL persistence)
+```
+
+**What M2 enables:**
+
+- Real depth WebSocket per symbol via `SynchronizedOrderBook` with gap detection and resync.
+- Real BTC context via `BtcMicroContextProvider` (1m REST polling, 1m/3m/5m returns, acceleration).
+- Real aggTrade streaming per symbol via `MicroBurstAggTradeBuffer` (bounded rolling history, taker flow computation).
+- Real reference price via `MicroBurstReferencePriceProvider` (mark price polling, midpoint fallback, source tracking).
 - AggTrade taker flow integrated into `MicroBurstContext` and diagnostics.
-- `MicroBurstSignalJournal`: append-only JSONL for unique ENTRY_INTENT signals.
-- Evaluation loop with configurable interval and per-symbol in-flight guard.
-- Health reporting every 60s.
+- `MicroBurstSignalJournal`: append-only JSONL for unique `ENTRY_INTENT` signals with rotation at 10,000 entries.
+- Evaluation loop with configurable interval and per-symbol in-flight guard preventing overlapping evaluations.
+- Health reporting every 60s with `MICRO_BURST_SHADOW_HEALTH` structured log.
 - Config from YAML `micro_burst` section or environment variables.
-- Shadow authority enabled; LIVE authority disabled; exchange mutations impossible.
-- Static audit: 100 evaluations produce zero exchange mutations.
+
+**What M2 explicitly does NOT enable:**
+
+- No `SharedStrategyExecutionService.execute()` is called.
+- No `marketOpen` calls.
+- No `placeStopClose` calls.
+- No `placeTpClose` calls.
+- No `closeSideMarketSafe` calls.
+- No exchange mutation of any kind.
+- `liveExecution: false` is hardcoded in all evaluation results.
+- `MICRO_BURST_V1_LIVE_NOT_AUTHORIZED` thrown if LIVE mode attempted.
 
 ## M3 Scope Pending
 

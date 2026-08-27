@@ -178,6 +178,39 @@ aegis:
       require_profit_protection: true
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MICRO BURST V1 (Shadow Evaluation)
+# ═══════════════════════════════════════════════════════════════════════════
+# Micro Burst is a deterministic tactical strategy. M2 operational shadow mode
+# evaluates continuously using real market data but never executes trades.
+#
+# FIELDS:
+#   enabled             - Master switch. Must be true for any mode.
+#   mode                - OFF | SHADOW | LIVE
+#                         OFF: no evaluation, no subscriptions.
+#                         SHADOW: real market data + evaluation + journal, zero exchange mutation.
+#                         LIVE: NOT AUTHORIZED. Throws error at startup.
+#   symbols             - Per-symbol configuration (only listed symbols are evaluated).
+#     <SYMBOL>:
+#       enabled                     - Whether this symbol is evaluated.
+#       btcConflictThresholdBps    - Override BTC conflict threshold (optional, default 30 bps).
+#       bookDepthLevels            - Depth levels for order book (optional, default 20).
+#       bookDepthSpeed             - Depth stream speed: 100ms | 250ms | 500ms (optional).
+#
+# SAFE DEFAULT: mode=OFF, no symbols enabled.
+micro_burst:
+  enabled: false
+  mode: OFF
+  symbols: {}
+  # symbols:
+  #   BTCUSDT:
+  #     enabled: true
+  #   ETHUSDT:
+  #     enabled: true
+  #     btcConflictThresholdBps: 25
+  #   SOLUSDT:
+  #     enabled: true
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SYMBOL OVERRIDES (Per-Symbol Customization)
 # ═══════════════════════════════════════════════════════════════════════════
 # Override specific regime parameters for individual symbols.

@@ -6,7 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after MICRO_BURST_V1 M1 market data shadow plane.
+Runtime architecture migration checkpoint after MICRO_BURST_V1 M2 operational shadow.
+
+`MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_READY` — SHADOW authority enabled, LIVE authority disabled, runtime orchestrator wires real market data, evaluates continuously, persists unique signals to JSONL, zero exchange mutation possible.
 
 Validation results are recorded below. This checkpoint does not grant live authority.
 
@@ -158,22 +160,17 @@ Key properties:
 9. ~~**MICRO_BURST_V1 M0.3 exact structural protection.**~~ DONE (shared execution boundary only, mode OFF)
 10. ~~**MICRO_BURST_V1 M1 Market Data Plane.**~~ DONE (synchronized depth, BTC stream, reference price, aggTrade, shadow evaluation, mode OFF)
 11. ~~**MICRO_BURST_V1 M2 Operational Shadow.**~~ DONE (runtime wiring, real data streams, evaluation loop, signal journal, SHADOW authority)
-12. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
-    - Do not mark `FROZEN_LIVE` merely because code compiles.
-    - Generate deterministic hashes only after architecture and behavior are stable.
-12. **Reduce `TradingService` responsibility.**
-    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
-    - Do this incrementally; do not rewrite the bot from scratch.
-13. **MICRO_BURST_V1 M2 — Wire shadow evaluation in TradingService.**
-    - Wire depth/aggTrade/BTC subscriptions at startup.
-    - Wire `MicroBurstShadowEvaluator` into TradingService tick loop.
-    - Consume aggTrade data in entry policy for taker flow signals.
-    - Tune temporal absorption/sweep thresholds.
-    - Enable SHADOW mode in regime_config.live.yaml.
-14. **MICRO_BURST_V1 tuning and validation.**
+12. **MICRO_BURST_V1 M3 — Tune and validate.**
     - Tune S/R detection parameters for real market conditions.
     - Tune momentum thresholds and leverage tiers based on backtesting.
-    - Validate exit policy timing parameters.
+    - Validate temporal absorption/sweep thresholds.
+    - Tune BTC conflict threshold.
+13. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
+    - Do not mark `FROZEN_LIVE` merely because code compiles.
+    - Generate deterministic hashes only after architecture and behavior are stable.
+14. **Reduce `TradingService` responsibility.**
+    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
+    - Do this incrementally; do not rewrite the bot from scratch.
 15. **MICRO_BURST_V1 live authority activation.**
     - Only after tuning, testing, and explicit approval.
 
