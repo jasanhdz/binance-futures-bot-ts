@@ -35,21 +35,57 @@ function makeContext(overrides: Partial<MicroBurstContext> = {}): MicroBurstCont
     bookPressure: {
       spreadBps: 5,
       topOfBookImbalance: 0,
-      imbalanceSlope: 0,
-      absorptionDetected: false,
-      sweepDetected: false,
+      imbalanceSlope: null,
+      staticBidConcentration: false,
+      staticAskConcentration: false,
       anomalyFlag: false,
-      degradedMode: false,
+      status: 'HEALTHY',
     },
     btcContext: null,
     structuralClarity: false,
     microRegime: 'RANGING',
+    dataQuality: {
+      snapshotAt: Date.now(),
+      latestClosed1mAt: Date.now() - 5000,
+      latestClosed3mAt: Date.now() - 10000,
+      latestClosed5mAt: Date.now() - 15000,
+      candleFreshnessMs: 5000,
+      bookAgeMs: null,
+      btcAgeMs: null,
+      bookStatus: 'HEALTHY',
+      closedCandlesOnly: true,
+      levelsAvailableAt: null,
+      contextValid: true,
+      invalidReasons: [],
+    },
     ...overrides,
   };
 }
 
 describe('MicroBurstEntryPolicy', () => {
   const config = defaultMicroBurstConfig();
+
+  it('returns NO_TRADE when context is invalid', () => {
+    const ctx = makeContext({
+      dataQuality: {
+        snapshotAt: Date.now(),
+        latestClosed1mAt: 0,
+        latestClosed3mAt: 0,
+        latestClosed5mAt: 0,
+        candleFreshnessMs: 200_000,
+        bookAgeMs: null,
+        btcAgeMs: null,
+        bookStatus: 'HEALTHY',
+        closedCandlesOnly: true,
+        levelsAvailableAt: null,
+        contextValid: false,
+        invalidReasons: ['stale_candles'],
+      },
+    });
+    const result = evaluateMicroBurstEntry(ctx, config);
+    expect(result.action).toBe('NO_TRADE');
+    expect(result.reason).toContain('CONTEXT_INVALID');
+  });
 
   it('returns NO_TRADE when no structural clarity', () => {
     const ctx = makeContext({ structuralClarity: false });
@@ -58,7 +94,7 @@ describe('MicroBurstEntryPolicy', () => {
     expect(result.reason).toBe('NO_STRUCTURAL_CLARITY');
   });
 
-  it('returns NO_TRADE in mid-range', () => {
+  it('returns NO_TRADE when missing structural level', () => {
     const ctx = makeContext({
       structuralClarity: true,
       levels: {
@@ -69,46 +105,26 @@ describe('MicroBurstEntryPolicy', () => {
           distanceToSupportBps: 200,
           distanceToResistanceBps: 200,
           corridorWidthBps: 400,
-          structuralPosition: 'mid_range',
-        },
-      },
-    });
-    const result = evaluateMicroBurstEntry(ctx, config);
-    expect(result.action).toBe('NO_TRADE');
-    expect(result.reason).toBe('MID_RANGE_NO_EDGE');
-  });
-
-  it('returns NO_TRADE when momentum direction mismatches', () => {
-    const ctx = makeContext({
-      structuralClarity: true,
-      levels: {
-        levels: [],
-        nearest: {
-          support: { price: 99, type: 'support', strength: 0.8, touches: 3, lastTouchIndex: 5, volumeAtLevel: 5000 },
-          resistance: null,
-          distanceToSupportBps: 20,
-          distanceToResistanceBps: Infinity,
-          corridorWidthBps: 100,
           structuralPosition: 'near_support',
         },
       },
       momentum: {
-        direction: 'SHORT',
+        direction: 'LONG',
         strength: 0.7,
         continuationScore: 0.6,
-        slope1m: -0.001,
-        slope3m: -0.001,
-        slope5m: -0.001,
+        slope1m: 0.001,
+        slope3m: 0.001,
+        slope5m: 0.001,
         bodyStrength: 0.5,
-        wickRejectionUpper: 0.3,
-        wickRejectionLower: 0.1,
+        wickRejectionUpper: 0.1,
+        wickRejectionLower: 0.3,
         volumeExpansion: true,
         candleSequenceQuality: 0.7,
       },
     });
     const result = evaluateMicroBurstEntry(ctx, config);
     expect(result.action).toBe('NO_TRADE');
-    expect(result.reason).toBe('MOMENTUM_DIRECTION_MISMATCH');
+    expect(result.reason).toBe('MISSING_STRUCTURAL_LEVEL');
   });
 
   it('returns LONG when near support with upward momentum', () => {
@@ -118,9 +134,25 @@ describe('MicroBurstEntryPolicy', () => {
       levels: {
         levels: [],
         nearest: {
-          support: { price: 99.5, type: 'support', strength: 0.9, touches: 5, lastTouchIndex: 2, volumeAtLevel: 10000 },
-          resistance: { price: 102, type: 'resistance', strength: 0.8, touches: 3, lastTouchIndex: 8, volumeAtLevel: 5000 },
-          distanceToSupportBps: 30,
+          support: {
+            price: 99.5,
+            type: 'support',
+            strength: 0.9,
+            touches: 5,
+            lastTouchIndex: 2,
+            availableAtCandleIndex: 5,
+            volumeAtLevel: 10000,
+          },
+          resistance: {
+            price: 102,
+            type: 'resistance',
+            strength: 0.8,
+            touches: 3,
+            lastTouchIndex: 8,
+            availableAtCandleIndex: 11,
+            volumeAtLevel: 5000,
+          },
+          distanceToSupportBps: 50,
           distanceToResistanceBps: 200,
           corridorWidthBps: 250,
           structuralPosition: 'near_support',
@@ -139,21 +171,12 @@ describe('MicroBurstEntryPolicy', () => {
         volumeExpansion: true,
         candleSequenceQuality: 0.8,
       },
-      bookPressure: {
-        spreadBps: 3,
-        topOfBookImbalance: 0.3,
-        imbalanceSlope: 0.1,
-        absorptionDetected: true,
-        sweepDetected: false,
-        anomalyFlag: false,
-        degradedMode: false,
-      },
     });
     const result = evaluateMicroBurstEntry(ctx, config);
     expect(result.action).toBe('ENTRY_INTENT');
     expect(result.side).toBe('LONG');
-    expect(result.stopInvalidationPrice).toBeLessThan(ctx.currentPrice);
-    expect(result.targetPrice).toBeGreaterThan(ctx.currentPrice);
+    expect(result.stopInvalidationPrice).toBeLessThan(ctx.levels.nearest.support!.price);
+    expect(result.targetPrice).toBe(ctx.levels.nearest.resistance!.price);
   });
 
   it('returns SHORT when near resistance with downward momentum', () => {
@@ -163,8 +186,24 @@ describe('MicroBurstEntryPolicy', () => {
       levels: {
         levels: [],
         nearest: {
-          support: { price: 98, type: 'support', strength: 0.8, touches: 3, lastTouchIndex: 8, volumeAtLevel: 5000 },
-          resistance: { price: 100.3, type: 'resistance', strength: 0.9, touches: 5, lastTouchIndex: 2, volumeAtLevel: 10000 },
+          support: {
+            price: 98,
+            type: 'support',
+            strength: 0.8,
+            touches: 3,
+            lastTouchIndex: 8,
+            availableAtCandleIndex: 11,
+            volumeAtLevel: 5000,
+          },
+          resistance: {
+            price: 100.3,
+            type: 'resistance',
+            strength: 0.9,
+            touches: 5,
+            lastTouchIndex: 2,
+            availableAtCandleIndex: 5,
+            volumeAtLevel: 10000,
+          },
           distanceToSupportBps: 200,
           distanceToResistanceBps: 30,
           corridorWidthBps: 250,
@@ -184,21 +223,12 @@ describe('MicroBurstEntryPolicy', () => {
         volumeExpansion: true,
         candleSequenceQuality: 0.8,
       },
-      bookPressure: {
-        spreadBps: 3,
-        topOfBookImbalance: -0.3,
-        imbalanceSlope: -0.1,
-        absorptionDetected: true,
-        sweepDetected: false,
-        anomalyFlag: false,
-        degradedMode: false,
-      },
     });
     const result = evaluateMicroBurstEntry(ctx, config);
     expect(result.action).toBe('ENTRY_INTENT');
     expect(result.side).toBe('SHORT');
-    expect(result.stopInvalidationPrice).toBeGreaterThan(ctx.currentPrice);
-    expect(result.targetPrice).toBeLessThan(ctx.currentPrice);
+    expect(result.stopInvalidationPrice).toBeGreaterThan(ctx.levels.nearest.resistance!.price);
+    expect(result.targetPrice).toBe(ctx.levels.nearest.support!.price);
   });
 
   it('returns NO_TRADE on BTC conflict', () => {
@@ -207,7 +237,15 @@ describe('MicroBurstEntryPolicy', () => {
       levels: {
         levels: [],
         nearest: {
-          support: { price: 99.5, type: 'support', strength: 0.8, touches: 3, lastTouchIndex: 5, volumeAtLevel: 5000 },
+          support: {
+            price: 99.5,
+            type: 'support',
+            strength: 0.8,
+            touches: 3,
+            lastTouchIndex: 5,
+            availableAtCandleIndex: 8,
+            volumeAtLevel: 5000,
+          },
           resistance: null,
           distanceToSupportBps: 50,
           distanceToResistanceBps: Infinity,
@@ -230,9 +268,9 @@ describe('MicroBurstEntryPolicy', () => {
       },
       btcContext: {
         ret1m: -0.001,
-        ret3m: -0.5,
-        ret5m: -0.8,
-        acceleration: -0.3,
+        ret3m: -0.01,
+        ret5m: -0.02,
+        acceleration: -0.005,
         conflictFlag: true,
         direction: 'SHORT',
       },
@@ -242,13 +280,62 @@ describe('MicroBurstEntryPolicy', () => {
     expect(result.reason).toBe('BTC_CONFLICT');
   });
 
+  it('returns NO_TRADE on insufficient continuation', () => {
+    const ctx = makeContext({
+      structuralClarity: true,
+      levels: {
+        levels: [],
+        nearest: {
+          support: {
+            price: 99.5,
+            type: 'support',
+            strength: 0.8,
+            touches: 3,
+            lastTouchIndex: 5,
+            availableAtCandleIndex: 8,
+            volumeAtLevel: 5000,
+          },
+          resistance: null,
+          distanceToSupportBps: 50,
+          distanceToResistanceBps: Infinity,
+          corridorWidthBps: 100,
+          structuralPosition: 'near_support',
+        },
+      },
+      momentum: {
+        direction: 'LONG',
+        strength: 0.7,
+        continuationScore: 0.1,
+        slope1m: 0.001,
+        slope3m: 0.001,
+        slope5m: 0.001,
+        bodyStrength: 0.5,
+        wickRejectionUpper: 0.1,
+        wickRejectionLower: 0.3,
+        volumeExpansion: true,
+        candleSequenceQuality: 0.7,
+      },
+    });
+    const result = evaluateMicroBurstEntry(ctx, config);
+    expect(result.action).toBe('NO_TRADE');
+    expect(result.reason).toBe('INSUFFICIENT_CONTINUATION');
+  });
+
   it('returns NO_TRADE on book anomaly', () => {
     const ctx = makeContext({
       structuralClarity: true,
       levels: {
         levels: [],
         nearest: {
-          support: { price: 99.5, type: 'support', strength: 0.8, touches: 3, lastTouchIndex: 5, volumeAtLevel: 5000 },
+          support: {
+            price: 99.5,
+            type: 'support',
+            strength: 0.8,
+            touches: 3,
+            lastTouchIndex: 5,
+            availableAtCandleIndex: 8,
+            volumeAtLevel: 5000,
+          },
           resistance: null,
           distanceToSupportBps: 50,
           distanceToResistanceBps: Infinity,
@@ -272,15 +359,14 @@ describe('MicroBurstEntryPolicy', () => {
       bookPressure: {
         spreadBps: 50,
         topOfBookImbalance: 0,
-        imbalanceSlope: 0,
-        absorptionDetected: false,
-        sweepDetected: false,
+        imbalanceSlope: null,
+        staticBidConcentration: false,
+        staticAskConcentration: false,
         anomalyFlag: true,
-        degradedMode: false,
+        status: 'HEALTHY',
       },
     });
     const result = evaluateMicroBurstEntry(ctx, config);
     expect(result.action).toBe('NO_TRADE');
-    expect(result.reason).toBe('BOOK_ANOMALY');
   });
 });

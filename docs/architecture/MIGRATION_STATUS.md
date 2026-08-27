@@ -6,9 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after commit `a32ec56`.
+Runtime architecture migration checkpoint after M0.1 Hardening.
 
-The TypeScript build passes. The Phase 1 matrix passes 170/170. The full `npm test -- --run` suite passes 818/818.
+The TypeScript build passes. The full `npm test -- --run` suite passes 808/808.
 
 ## Completed foundations
 
@@ -108,6 +108,7 @@ MicroBurstContextBuilder -> MicroBurstEntryPolicy -> Shared Safety -> SharedStra
 ```
 
 Key properties:
+
 - Deterministic entry via S/R detection + micro-momentum + BTC context + book pressure
 - Two leverage tiers: HIGH (40x, >=0.75 confirmation) and MEDIUM (20x, >=0.50)
 - Fast exit: early failure, anomaly, break-even, trailing, max hold (5min)
@@ -165,11 +166,69 @@ At the latest runtime checkpoint:
 - `src/app/services/TradingService.aegis-live.test.ts`: 108/108 PASS.
 - `src/app/services/TradingService.exit-eye.test.ts`: 12/12 PASS.
 - `src/app/strategy/OwnedPositionManagers.test.ts`: 4/4 PASS.
-- MicroBurst strategy scaffold tests: 39/39 PASS.
+- MicroBurst M0.1 hardening tests: 44/44 PASS.
 - Strategy router / position manager router / Momentum entry policy / shared safety / ownership / risk ledger targeted tests: PASS.
 - Restoration/fronteras: 23/23 PASS.
-- Full `npm test -- --run`: 803 passed, 0 failed.
+- Full `npm test -- --run`: 808 passed, 0 failed.
+
+## M0.1 Hardening (current)
+
+MICRO_BURST_V1 M0.1 hardening completed. All 24 items addressed:
+
+### Types & conventions
+
+- Price returns in decimal (0.001 = 0.1% = 10 bps), ROE in decimal (0.10 = 10%).
+- `BookDataStatus` enum: HEALTHY | UNAVAILABLE | STALE | UNSYNCED | ANOMALOUS.
+- `BookPressureSignal.imbalanceSlope` is `number | null` — null when only single snapshot available.
+- Renamed `absorptionDetected`/`sweepDetected` → `staticBidConcentration`/`staticAskConcentration` (static proxies, not temporal).
+- `SupportResistanceLevel.availableAtCandleIndex` — causal timestamp for when level was confirmed.
+
+### Config governance
+
+- `srLookbackBars` separates from `srPivotLeftBars`/`srPivotRightBars`.
+- `nearLevelThresholdBps` used by context builder (was hardcoded at 50).
+- `momentumSlopePeriod` used by momentum analyzer (was hardcoded at 5).
+- `bookMinImbalance` used by book pressure analyzer (was hardcoded at 0.5).
+- `structuralInvalidationBufferBps` used for stop placement (was hardcoded at 0.3%).
+- `minRoomBps` enforced as entry gate (was absent).
+- `maxLeverageHardCap` enforced (50x default).
+
+### Context validity
+
+- `DataQualityDiagnostics` with `contextValid`, `invalidReasons`, `candleFreshnessMs`, `bookAgeMs`, `btcAgeMs`.
+- Closed candle filtering: only candles older than their interval are used.
+- Fail-closed: insufficient candles, stale data, unhealthy book → `contextValid: false`.
+- Entry policy rejects `contextValid: false`.
+
+### Entry policy
+
+- No fallback stop/target without structural level.
+- Room gate: `roomToTargetBps >= minRoomBps`.
+- Risk gate: `riskToInvalidationBps` computed.
+- Leverage/positionFraction carried into `StrategyEvaluationResult.diagnostics`.
+
+### Exit policy
+
+- Price-based trailing (not ROE-based).
+- Break-even uses price comparison (not excursion comparison).
+- Priority order: HARD_INVALIDATION → ANOMALY → BTC_REVERSAL → EARLY_FAILURE → TRAILING → BREAK_EVEN → MAX_HOLD → HOLD.
+- `MicroBurstExitContext` includes `currentPrice`, `entryPrice`, `peakPrice`, `troughPrice`.
+
+### Execution intent factory
+
+- `createMicroBurstExecutionIntent()` converts approved entry to `StrategyExecutionIntent`.
+- Preserves leverage, positionFraction, structuralStopPrice, destinationPrice.
+
+### Position manager
+
+- `MicroBurstPositionManager.evaluateExit()` integrated with exit policy.
+- Ownership assertion with clear error message.
+- Configurable via constructor.
+
+### Strategy class
+
+- Carries leverage/positionFraction/leverageTier/roomToTargetBps/riskToInvalidationBps into diagnostics.
 
 ## Explicit prohibition
 
-`MICRO_BURST_V1` scaffold is implemented and registered but mode defaults to OFF. No live authority is enabled. Entry policy, position manager, and lifecycle are functional but await tuning and explicit activation approval.
+`MICRO_BURST_V1` M0.1 hardening completed. Mode defaults to OFF. No live authority is enabled. Entry policy, exit policy, position manager, and lifecycle are hardened with fail-closed semantics. Live/shadow authority activation requires explicit approval after tuning and backtesting.

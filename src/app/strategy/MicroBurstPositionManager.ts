@@ -1,8 +1,18 @@
 import { PositionManagementResult } from '../../domain/strategy/StrategyDecision';
 import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
-import { StrategyPositionLifecycleCore, StrategyPositionLifecycleContext } from '../position/StrategyPositionLifecycleCore';
+import {
+  StrategyPositionLifecycleCore,
+  StrategyPositionLifecycleContext,
+} from '../position/StrategyPositionLifecycleCore';
 import { StrategyPositionManager } from './PositionManagerRouter';
+import {
+  MicroBurstConfig,
+  MicroBurstExitContext,
+  MicroBurstExitDecision,
+  defaultMicroBurstConfig,
+} from '../../domain/strategies/micro-burst/MicroBurstTypes';
+import { evaluateMicroBurstExit } from '../../domain/strategies/micro-burst/MicroBurstExitPolicy';
 
 function assertOwnership(expected: 'MICRO_BURST_V1', identity: StrategyIdentity): void {
   if (identity.strategyId !== expected) {
@@ -10,21 +20,32 @@ function assertOwnership(expected: 'MICRO_BURST_V1', identity: StrategyIdentity)
   }
 }
 
-/**
- * MicroBurst-owned position lifecycle boundary.
- * Uses the MICRO_BURST_RESERVED_POLICY: no legacy guardian, no break-even, no trailing.
- * Only stop bracket required. Exit policy is handled at the strategy level.
- */
-export class MicroBurstPositionManager implements StrategyPositionManager<StrategyPositionLifecycleContext> {
+export class MicroBurstPositionManager
+  implements StrategyPositionManager<StrategyPositionLifecycleContext>
+{
   readonly strategyId = 'MICRO_BURST_V1' as const;
 
-  constructor(private readonly lifecycle: StrategyPositionLifecycleCore) {}
+  private readonly config: MicroBurstConfig;
 
-  async manage(identity: StrategyIdentity, context: StrategyPositionLifecycleContext): Promise<PositionManagementResult> {
+  constructor(
+    private readonly lifecycle: StrategyPositionLifecycleCore,
+    config?: Partial<MicroBurstConfig>,
+  ) {
+    this.config = { ...defaultMicroBurstConfig(), ...config };
+  }
+
+  evaluateExit(exitContext: MicroBurstExitContext, side: 'LONG' | 'SHORT'): MicroBurstExitDecision {
+    return evaluateMicroBurstExit(exitContext, this.config, side);
+  }
+
+  async manage(
+    identity: StrategyIdentity,
+    context: StrategyPositionLifecycleContext,
+  ): Promise<PositionManagementResult> {
     assertOwnership(this.strategyId, identity);
     await this.lifecycle.manage(strategyLifecyclePolicy('MICRO_BURST_V1'), context);
     return {
-      tradeId: context.botState.lastTradeId ?? `MICRO-BURST-LEGACY-${context.symbol}`,
+      tradeId: context.botState.lastTradeId ?? `MICRO-BURST-V1-${context.symbol}`,
       decision: 'NO_ACTION',
       reason: 'micro_burst_position_manager_completed',
       diagnostics: { lifecycleOwner: this.strategyId },

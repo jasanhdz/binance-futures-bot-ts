@@ -2,6 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMicroBurstV1Identity } from './MicroBurstIdentity';
 import { MicroBurstPositionManager } from '../../../app/strategy/MicroBurstPositionManager';
 import { StrategyPositionLifecycleCore } from '../../../app/position/StrategyPositionLifecycleCore';
+import { BotState } from '../../../domain/types';
+import { defaultMicroBurstConfig } from './MicroBurstTypes';
+
+function makeBotState(overrides: Partial<BotState> = {}): BotState {
+  return {
+    mode: 'OFF',
+    symbols: [],
+    lastTradeId: undefined,
+    ...overrides,
+  } as unknown as BotState;
+}
 
 function makeMockLifecycle() {
   return {
@@ -24,7 +35,11 @@ describe('MicroBurstPositionManager', () => {
       codeCommitSha: 'abc',
     };
     await expect(
-      manager.manage(wrongIdentity, { symbol: 'ETHUSDT', botState: {}, symbolState: {} as any }),
+      manager.manage(wrongIdentity, {
+        symbol: 'ETHUSDT',
+        botState: makeBotState(),
+        symbolState: {} as any,
+      }),
     ).rejects.toThrow('POSITION_MANAGER_OWNERSHIP_MISMATCH');
   });
 
@@ -32,7 +47,11 @@ describe('MicroBurstPositionManager', () => {
     const lifecycle = makeMockLifecycle();
     const manager = new MicroBurstPositionManager(lifecycle);
     const identity = createMicroBurstV1Identity();
-    const context = { symbol: 'ETHUSDT', botState: { lastTradeId: 'MICRO-BURST-V1-123' }, symbolState: {} as any };
+    const context = {
+      symbol: 'ETHUSDT',
+      botState: makeBotState({ lastTradeId: 'MICRO-BURST-V1-123' }),
+      symbolState: {} as any,
+    };
 
     const result = await manager.manage(identity, context);
 
@@ -45,10 +64,15 @@ describe('MicroBurstPositionManager', () => {
     const lifecycle = makeMockLifecycle();
     const manager = new MicroBurstPositionManager(lifecycle);
     const identity = createMicroBurstV1Identity();
-    const context = { symbol: 'ETHUSDT', botState: {}, symbolState: {} as any };
+    const context = { symbol: 'ETHUSDT', botState: makeBotState(), symbolState: {} as any };
 
     const result = await manager.manage(identity, context);
 
-    expect(result.tradeId).toBe('MICRO-BURST-LEGACY-ETHUSDT');
+    expect(result.tradeId).toBe('MICRO-BURST-V1-ETHUSDT');
+  });
+
+  it('accepts config override', () => {
+    const manager = new MicroBurstPositionManager(makeMockLifecycle(), { maxLeverageHardCap: 30 });
+    expect(manager.strategyId).toBe('MICRO_BURST_V1');
   });
 });

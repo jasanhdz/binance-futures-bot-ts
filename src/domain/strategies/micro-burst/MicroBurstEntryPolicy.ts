@@ -2,151 +2,132 @@ import { Side } from '../../types';
 import { MicroBurstConfig, MicroBurstContext, MicroBurstEntryDecision } from './MicroBurstTypes';
 import { selectLeverageTier } from './MicroBurstLeveragePolicy';
 
-function noTrade(reason: string, diagnostics: Record<string, unknown> = {}): MicroBurstEntryDecision {
-  return { action: 'NO_TRADE', reason, confirmationStrength: 0, diagnostics };
-}
-
-function computeConfirmationStrength(
-  context: MicroBurstContext,
-  side: Side,
-): number {
-  const { momentum, levels, bookPressure, btcContext } = context;
-
-  let score = 0;
-
-  score += momentum.strength * 0.3;
-  score += momentum.continuationScore * 0.2;
-
-  if (side === 'LONG' && levels.nearest.support) {
-    const distBps = levels.nearest.distanceToSupportBps;
-    score += Math.max(0, 1 - distBps / 100) * 0.2;
-  } else if (side === 'SHORT' && levels.nearest.resistance) {
-    const distBps = levels.nearest.distanceToResistanceBps;
-    score += Math.max(0, 1 - distBps / 100) * 0.2;
-  }
-
-  if (!bookPressure.degradedMode) {
-    const imbalanceFavorable = side === 'LONG'
-      ? bookPressure.topOfBookImbalance > 0
-      : bookPressure.topOfBookImbalance < 0;
-    if (imbalanceFavorable) score += 0.15;
-    if (bookPressure.absorptionDetected) score += 0.1;
-  }
-
-  if (btcContext) {
-    const btcAligns = side === btcContext.direction || btcContext.direction === 'NEUTRAL';
-    if (btcAligns) score += 0.05;
-  }
-
-  return Math.min(1, score);
-}
-
-function computeStopInvalidation(
-  side: Side,
-  context: MicroBurstContext,
-): number {
-  const { currentPrice, levels } = context;
-
-  if (side === 'LONG' && levels.nearest.support) {
-    return levels.nearest.support.price * 0.998;
-  }
-  if (side === 'SHORT' && levels.nearest.resistance) {
-    return levels.nearest.resistance.price * 1.002;
-  }
-
-  const fallbackPct = side === 'LONG' ? 0.003 : -0.003;
-  return currentPrice * (1 + fallbackPct);
-}
-
-function computeTarget(
-  side: Side,
-  context: MicroBurstContext,
-): number {
-  const { currentPrice, levels } = context;
-
-  if (side === 'LONG' && levels.nearest.resistance) {
-    return levels.nearest.resistance.price;
-  }
-  if (side === 'SHORT' && levels.nearest.support) {
-    return levels.nearest.support.price;
-  }
-
-  const targetPct = side === 'LONG' ? 0.005 : -0.005;
-  return currentPrice * (1 + targetPct);
+function toBps(a: number, b: number): number {
+  if (b === 0) return Infinity;
+  return (Math.abs(a - b) / Math.min(Math.abs(a), Math.abs(b))) * 10_000;
 }
 
 export function evaluateMicroBurstEntry(
-  context: MicroBurstContext,
+  ctx: MicroBurstContext,
   config: MicroBurstConfig,
 ): MicroBurstEntryDecision {
-  const diag: Record<string, unknown> = {
-    symbol: context.symbol,
-    price: context.currentPrice,
-    regime: context.microRegime,
-  };
-
-  if (!context.structuralClarity) {
-    return noTrade('NO_STRUCTURAL_CLARITY', diag);
+  // ── Data quality gate ──
+  if (!ctx.dataQuality.contextValid) {
+    return {
+      action: 'NO_TRADE',
+      reason: `CONTEXT_INVALID:${ctx.dataQuality.invalidReasons.join(',')}`,
+      confirmationStrength: 0,
+      diagnostics: { dataQuality: ctx.dataQuality },
+    };
   }
 
-  const { structuralPosition } = context.levels.nearest;
-  if (structuralPosition === 'mid_range') {
-    return noTrade('MID_RANGE_NO_EDGE', diag);
+  // ── Structural clarity gate ──
+  if (!ctx.structuralClarity) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'NO_STRUCTURAL_CLARITY',
+      confirmationStrength: 0,
+      diagnostics: {
+        regime: ctx.microRegime,
+        bookHealthy: ctx.bookPressure.status === 'HEALTHY',
+        momentumDir: ctx.momentum.direction,
+      },
+    };
   }
 
-  const { momentum } = context;
-
-  let side: Side;
-  if (structuralPosition === 'near_support' && momentum.direction === 'LONG') {
-    side = 'LONG';
-  } else if (structuralPosition === 'near_resistance' && momentum.direction === 'SHORT') {
-    side = 'SHORT';
-  } else {
-    return noTrade('MOMENTUM_DIRECTION_MISMATCH', { ...diag, structuralPosition, momentumDir: momentum.direction });
+  // ── BTC conflict gate ──
+  if (ctx.btcContext?.conflictFlag) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'BTC_CONFLICT',
+      confirmationStrength: 0,
+      diagnostics: { btcConflict: true },
+    };
   }
 
-  if (momentum.continuationScore < config.momentumMinContinuationScore) {
-    return noTrade('INSUFFICIENT_CONTINUATION', { ...diag, continuationScore: momentum.continuationScore });
+  // ── Momentum continuation gate ──
+  if (ctx.momentum.continuationScore < config.momentumMinContinuationScore) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'INSUFFICIENT_CONTINUATION',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: { continuationScore: ctx.momentum.continuationScore },
+    };
   }
 
-  if (context.btcContext?.conflictFlag) {
-    return noTrade('BTC_CONFLICT', { ...diag, btcRet3m: context.btcContext.ret3m });
+  // ── Direction ──
+  const side: Side = ctx.levels.nearest.structuralPosition === 'near_support' ? 'LONG' : 'SHORT';
+
+  // ── Structural levels required (no fallback) ──
+  // For LONG near support: target = resistance (above), stop = below support
+  // For SHORT near resistance: target = support (below), stop = above resistance
+  const targetLevel = side === 'LONG' ? ctx.levels.nearest.resistance : ctx.levels.nearest.support;
+  const structuralLevel =
+    side === 'LONG' ? ctx.levels.nearest.support : ctx.levels.nearest.resistance;
+
+  if (!structuralLevel || !targetLevel) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'MISSING_STRUCTURAL_LEVEL',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: {
+        support: !!ctx.levels.nearest.support,
+        resistance: !!ctx.levels.nearest.resistance,
+      },
+    };
   }
 
-  if (!context.bookPressure.degradedMode && context.bookPressure.anomalyFlag) {
-    return noTrade('BOOK_ANOMALY', { ...diag, spreadBps: context.bookPressure.spreadBps });
+  const stopInvalidationPrice =
+    side === 'LONG'
+      ? structuralLevel.price * (1 - config.structuralInvalidationBufferBps / 10_000)
+      : structuralLevel.price * (1 + config.structuralInvalidationBufferBps / 10_000);
+  const targetPrice = targetLevel.price;
+
+  // ── Room gate ──
+  const roomToTargetBps = toBps(targetPrice, ctx.currentPrice) / 10_000;
+  const riskToInvalidationBps = toBps(stopInvalidationPrice, ctx.currentPrice) / 10_000;
+
+  if (roomToTargetBps < config.minRoomBps / 10_000) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'INSUFFICIENT_ROOM',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: { roomToTargetBps, minRoomBps: config.minRoomBps },
+    };
   }
 
-  const confirmationStrength = computeConfirmationStrength(context, side);
-  const tierResult = selectLeverageTier(confirmationStrength, config);
-
-  if (tierResult.tier === 'NO_TRADE') {
-    return noTrade('INSUFFICIENT_CONFIRMATION', { ...diag, confirmationStrength });
+  // ── Leverage selection ──
+  const leverageResult = selectLeverageTier(ctx.momentum.strength, config);
+  if (leverageResult.tier === 'NO_TRADE') {
+    return {
+      action: 'NO_TRADE',
+      reason: 'LOW_CONFIRMATION',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: { strength: ctx.momentum.strength },
+    };
   }
 
-  const stopInvalidation = computeStopInvalidation(side, context);
-  const target = computeTarget(side, context);
+  const effectiveLeverage = Math.min(leverageResult.leverage, config.maxLeverageHardCap);
 
   return {
     action: 'ENTRY_INTENT',
     side,
-    leverageTier: tierResult.tier,
-    leverage: tierResult.leverage,
-    positionFraction: tierResult.positionFraction,
-    stopInvalidationPrice: stopInvalidation,
-    targetPrice: target,
-    reason: `MICRO_BURST_${side}_NEAR_${structuralPosition === 'near_support' ? 'SUPPORT' : 'RESISTANCE'}`,
-    confirmationStrength,
+    leverageTier: leverageResult.tier,
+    leverage: effectiveLeverage,
+    positionFraction: leverageResult.positionFraction,
+    stopInvalidationPrice,
+    targetPrice,
+    roomToTargetBps,
+    riskToInvalidationBps,
+    reason: 'SIGNAL_CONFIRMED',
+    confirmationStrength: ctx.momentum.strength,
     diagnostics: {
-      ...diag,
-      side,
-      tier: tierResult.tier,
-      leverage: tierResult.leverage,
-      stopInvalidation,
-      target,
-      momentumStrength: momentum.strength,
-      continuationScore: momentum.continuationScore,
-      bookImbalance: context.bookPressure.topOfBookImbalance,
+      regime: ctx.microRegime,
+      momentumDir: ctx.momentum.direction,
+      bookPressure: ctx.bookPressure.status,
+      structuralPosition: ctx.levels.nearest.structuralPosition,
+      leverage: effectiveLeverage,
+      positionFraction: leverageResult.positionFraction,
     },
   };
 }

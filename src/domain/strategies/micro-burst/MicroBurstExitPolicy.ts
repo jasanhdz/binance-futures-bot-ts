@@ -1,80 +1,103 @@
 import { MicroBurstConfig, MicroBurstExitContext, MicroBurstExitDecision } from './MicroBurstTypes';
 
-function hold(reason: string, diagnostics: Record<string, unknown> = {}): MicroBurstExitDecision {
-  return { action: 'HOLD', reason: 'HOLD', diagnostics: { ...diagnostics, holdReason: reason } };
-}
-
-function closeMarket(reason: MicroBurstExitDecision['reason'], diagnostics: Record<string, unknown> = {}): MicroBurstExitDecision {
-  return { action: 'CLOSE_MARKET', reason, diagnostics };
-}
-
-function moveStop(reason: MicroBurstExitDecision['reason'], stopPrice: number, diagnostics: Record<string, unknown> = {}): MicroBurstExitDecision {
-  return { action: 'MOVE_STOP', reason, requestedStopPrice: stopPrice, diagnostics };
-}
-
 export function evaluateMicroBurstExit(
-  context: MicroBurstExitContext,
+  ctx: MicroBurstExitContext,
   config: MicroBurstConfig,
-  entryPrice: number,
   side: 'LONG' | 'SHORT',
-  currentPrice: number,
 ): MicroBurstExitDecision {
-  const diag: Record<string, unknown> = {
-    unrealizedRoe: context.unrealizedRoe,
-    timeInTradeMs: context.timeInTradeMs,
-    favorableExcursion: context.favorableExcursion,
-    adverseExcursion: context.adverseExcursion,
-  };
+  const dirMul = side === 'LONG' ? 1 : -1;
 
-  if (context.timeInTradeMs > config.exitMaxHoldMs) {
-    return closeMarket('MAX_HOLD', diag);
+  // ── Priority 1: HARD_INVALIDATION ──
+  if (ctx.unrealizedRoe < -config.structuralInvalidationBufferBps / 10_000) {
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'HARD_INVALIDATION',
+      diagnostics: { roe: ctx.unrealizedRoe },
+    };
   }
 
-  if (context.anomalyExitFlag) {
-    return closeMarket('ANOMALY', diag);
+  // ── Priority 2: ANOMALY ──
+  if (ctx.anomalyExitFlag) {
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'ANOMALY',
+      diagnostics: { anomalyFlag: true },
+    };
   }
 
-  if (context.currentBookPressure?.anomalyFlag) {
-    return closeMarket('ANOMALY', { ...diag, exitTrigger: 'BOOK_ANOMALY' });
+  // ── Priority 3: BTC_REVERSAL ──
+  if (ctx.currentBtcContext?.conflictFlag) {
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'BTC_REVERSAL',
+      diagnostics: { btcConflict: true },
+    };
   }
 
-  if (context.currentBtcContext?.conflictFlag && Math.abs(context.currentBtcContext.ret3m) > 0.005) {
-    return closeMarket('ANOMALY', { ...diag, exitTrigger: 'BTC_REVERSAL' });
-  }
-
-  if (context.momentumDecayFlag && context.unrealizedRoe < config.exitEarlyFailureMinExcursionRoe) {
-    return closeMarket('EARLY_FAILURE', diag);
-  }
-
+  // ── Priority 4: EARLY_FAILURE ──
   if (
-    context.timeInTradeMs < config.exitEarlyFailureWindowMs &&
-    context.favorableExcursion < config.exitEarlyFailureMinExcursionRoe &&
-    context.adverseExcursion > config.exitEarlyFailureMinExcursionRoe * 2
+    ctx.timeInTradeMs < config.exitEarlyFailureWindowMs &&
+    ctx.priceReturn * dirMul < config.exitEarlyFailureMinPriceReturn
   ) {
-    return closeMarket('EARLY_FAILURE', diag);
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'EARLY_FAILURE',
+      diagnostics: { timeMs: ctx.timeInTradeMs, priceReturn: ctx.priceReturn },
+    };
   }
 
-  if (context.unrealizedRoe >= config.exitBreakEvenThresholdRoe && context.adverseExcursion > 0) {
-    const breakEvenStop = entryPrice;
-    const currentStopIsWorse = side === 'LONG'
-      ? currentPrice > breakEvenStop
-      : currentPrice < breakEvenStop;
-    if (currentStopIsWorse) {
-      return moveStop('BREAK_EVEN', breakEvenStop, diag);
+  // ── Priority 6: TRAILING ──
+  // Once favorable excursion exceeds activation, close if price retraces from peak.
+  if (ctx.priceReturn * dirMul >= config.exitTrailingActivationPriceReturn) {
+    if (side === 'LONG') {
+      const drawdown = ctx.peakPrice > 0 ? (ctx.peakPrice - ctx.currentPrice) / ctx.peakPrice : 0;
+      if (drawdown >= config.exitTrailingCallbackPriceReturn) {
+        return {
+          action: 'CLOSE_MARKET',
+          reason: 'TRAILING',
+          diagnostics: { peakPrice: ctx.peakPrice, drawdown },
+        };
+      }
+    } else {
+      const drawup = ctx.peakPrice > 0 ? (ctx.currentPrice - ctx.peakPrice) / ctx.peakPrice : 0;
+      if (drawup >= config.exitTrailingCallbackPriceReturn) {
+        return {
+          action: 'CLOSE_MARKET',
+          reason: 'TRAILING',
+          diagnostics: { peakPrice: ctx.peakPrice, drawup },
+        };
+      }
     }
   }
 
-  if (context.unrealizedRoe >= config.exitTrailingActivationRoe) {
-    const trailingStopRoe = context.unrealizedRoe - config.exitTrailingCallbackRoe;
-    const trailingStopPrice = side === 'LONG'
-      ? entryPrice * (1 + trailingStopRoe)
-      : entryPrice * (1 - trailingStopRoe);
-    return moveStop('TRAILING', trailingStopPrice, diag);
+  // ── Priority 7: BREAK_EVEN ──
+  // Once favorable excursion exceeds activation, move stop to entry if price is still favorable.
+  if (ctx.priceReturn * dirMul >= config.exitBreakEvenMinPriceReturn) {
+    const stillFavorable =
+      side === 'LONG' ? ctx.currentPrice >= ctx.entryPrice : ctx.currentPrice <= ctx.entryPrice;
+    if (stillFavorable) {
+      return {
+        action: 'MOVE_STOP',
+        reason: 'BREAK_EVEN',
+        requestedStopPrice: ctx.entryPrice,
+        diagnostics: { currentPrice: ctx.currentPrice, entryPrice: ctx.entryPrice },
+      };
+    }
   }
 
-  if (context.unrealizedRoe <= -config.exitBreakEvenThresholdRoe) {
-    return closeMarket('EARLY_FAILURE', { ...diag, exitTrigger: 'ADVERSE_EXCURSION' });
+  // ── Priority 8: MAX_HOLD ──
+  if (ctx.timeInTradeMs >= config.exitMaxHoldMs) {
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'MAX_HOLD',
+      diagnostics: { timeMs: ctx.timeInTradeMs },
+    };
   }
 
-  return hold('POSITION_ACTIVE', diag);
+  // ── Default: HOLD ──
+  return {
+    action: 'HOLD',
+    reason: 'HOLD',
+    diagnostics: { timeMs: ctx.timeInTradeMs, priceReturn: ctx.priceReturn },
+  };
 }

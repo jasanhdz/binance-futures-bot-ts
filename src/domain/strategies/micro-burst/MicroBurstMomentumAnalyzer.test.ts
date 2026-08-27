@@ -20,14 +20,16 @@ function makeCandle(overrides: Partial<Candle> & { index?: number }): Candle {
 function makeTrendingCandles(direction: 'up' | 'down', count: number): Candle[] {
   const base = direction === 'up' ? 100 : 110;
   const delta = direction === 'up' ? 0.3 : -0.3;
-  return Array.from({ length: count }, (_, i) => makeCandle({
-    index: i,
-    open: base + delta * i,
-    high: base + delta * i + 0.5,
-    low: base + delta * i - 0.3,
-    close: base + delta * i + 0.3,
-    volume: 1000 + i * 50,
-  }));
+  return Array.from({ length: count }, (_, i) =>
+    makeCandle({
+      index: i,
+      open: base + delta * i,
+      high: base + delta * i + 0.5,
+      low: base + delta * i - 0.3,
+      close: base + delta * i + 0.3,
+      volume: 1000 + i * 50,
+    }),
+  );
 }
 
 describe('MicroBurstMomentumAnalyzer', () => {
@@ -67,14 +69,16 @@ describe('MicroBurstMomentumAnalyzer', () => {
   });
 
   it('detects volume expansion', () => {
-    const candles = Array.from({ length: 20 }, (_, i) => makeCandle({
-      index: i,
-      open: 100 + i * 0.1,
-      high: 100 + i * 0.1 + 0.5,
-      low: 100 + i * 0.1 - 0.3,
-      close: 100 + i * 0.1 + 0.3,
-      volume: i < 15 ? 1000 : 2000,
-    }));
+    const candles = Array.from({ length: 20 }, (_, i) =>
+      makeCandle({
+        index: i,
+        open: 100 + i * 0.1,
+        high: 100 + i * 0.1 + 0.5,
+        low: 100 + i * 0.1 - 0.3,
+        close: 100 + i * 0.1 + 0.3,
+        volume: i < 15 ? 1000 : 2000,
+      }),
+    );
     const result = analyzeMicroMomentum(candles, candles, candles);
     expect(result.volumeExpansion).toBe(true);
   });

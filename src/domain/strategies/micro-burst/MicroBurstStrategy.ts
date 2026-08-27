@@ -34,7 +34,14 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
       confidence: decision.confirmationStrength,
       destinationPrice: decision.targetPrice,
       structuralInvalidation: decision.stopInvalidationPrice,
-      diagnostics: decision.diagnostics,
+      diagnostics: {
+        ...decision.diagnostics,
+        leverage: decision.leverage,
+        positionFraction: decision.positionFraction,
+        leverageTier: decision.leverageTier,
+        roomToTargetBps: decision.roomToTargetBps,
+        riskToInvalidationBps: decision.riskToInvalidationBps,
+      },
     };
   }
 }

@@ -8,50 +8,88 @@ import {
 
 interface SROptions {
   lookbackBars: number;
+  pivotLeftBars: number;
+  pivotRightBars: number;
   clusterToleranceBps: number;
   minStrength: number;
+  nearLevelThresholdBps: number;
 }
 
 const DEFAULT_OPTIONS: SROptions = {
   lookbackBars: 20,
+  pivotLeftBars: 3,
+  pivotRightBars: 3,
   clusterToleranceBps: 15,
   minStrength: 0.3,
+  nearLevelThresholdBps: 50,
 };
 
 function toBps(a: number, b: number): number {
-  return Math.abs(a - b) / Math.min(Math.abs(a), Math.abs(b)) * 10_000;
+  return (Math.abs(a - b) / Math.min(Math.abs(a), Math.abs(b))) * 10_000;
 }
 
-function findSwingHighs(candles: Candle[], leftBars: number, rightBars: number): number[] {
-  const highs: number[] = [];
+function findSwingHighs(
+  candles: Candle[],
+  leftBars: number,
+  rightBars: number,
+): Array<{ price: number; pivotIndex: number; availableAtCandleIndex: number }> {
+  const results: Array<{ price: number; pivotIndex: number; availableAtCandleIndex: number }> = [];
   for (let i = leftBars; i < candles.length - rightBars; i++) {
     let isSwingHigh = true;
     for (let j = 1; j <= leftBars; j++) {
-      if (candles[i - j].high >= candles[i].high) { isSwingHigh = false; break; }
+      if (candles[i - j].high >= candles[i].high) {
+        isSwingHigh = false;
+        break;
+      }
     }
     if (!isSwingHigh) continue;
     for (let j = 1; j <= rightBars; j++) {
-      if (candles[i + j].high >= candles[i].high) { isSwingHigh = false; break; }
+      if (candles[i + j].high >= candles[i].high) {
+        isSwingHigh = false;
+        break;
+      }
     }
-    if (isSwingHigh) highs.push(candles[i].high);
+    if (isSwingHigh) {
+      results.push({
+        price: candles[i].high,
+        pivotIndex: i,
+        availableAtCandleIndex: i + rightBars,
+      });
+    }
   }
-  return highs;
+  return results;
 }
 
-function findSwingLows(candles: Candle[], leftBars: number, rightBars: number): number[] {
-  const lows: number[] = [];
+function findSwingLows(
+  candles: Candle[],
+  leftBars: number,
+  rightBars: number,
+): Array<{ price: number; pivotIndex: number; availableAtCandleIndex: number }> {
+  const results: Array<{ price: number; pivotIndex: number; availableAtCandleIndex: number }> = [];
   for (let i = leftBars; i < candles.length - rightBars; i++) {
     let isSwingLow = true;
     for (let j = 1; j <= leftBars; j++) {
-      if (candles[i - j].low <= candles[i].low) { isSwingLow = false; break; }
+      if (candles[i - j].low <= candles[i].low) {
+        isSwingLow = false;
+        break;
+      }
     }
     if (!isSwingLow) continue;
     for (let j = 1; j <= rightBars; j++) {
-      if (candles[i + j].low <= candles[i].low) { isSwingLow = false; break; }
+      if (candles[i + j].low <= candles[i].low) {
+        isSwingLow = false;
+        break;
+      }
     }
-    if (isSwingLow) lows.push(candles[i].low);
+    if (isSwingLow) {
+      results.push({
+        price: candles[i].low,
+        pivotIndex: i,
+        availableAtCandleIndex: i + rightBars,
+      });
+    }
   }
-  return lows;
+  return results;
 }
 
 function countTouches(candles: Candle[], level: number, toleranceBps: number): number {
@@ -74,22 +112,28 @@ function volumeAtLevel(candles: Candle[], level: number, toleranceBps: number): 
   return total;
 }
 
-function clusterLevels(
-  prices: number[],
+interface PivotWithMeta {
+  price: number;
+  pivotIndex: number;
+  availableAtCandleIndex: number;
+}
+
+function clusterPivots(
+  pivots: PivotWithMeta[],
   type: 'support' | 'resistance',
   candles: Candle[],
   toleranceBps: number,
   minStrength: number,
 ): SupportResistanceLevel[] {
-  if (prices.length === 0) return [];
+  if (pivots.length === 0) return [];
 
-  const sorted = [...prices].sort((a, b) => a - b);
-  const clusters: number[][] = [[sorted[0]]];
+  const sorted = [...pivots].sort((a, b) => a.price - b.price);
+  const clusters: PivotWithMeta[][] = [[sorted[0]]];
 
   for (let i = 1; i < sorted.length; i++) {
     const currentCluster = clusters[clusters.length - 1];
-    const clusterAvg = currentCluster.reduce((s, v) => s + v, 0) / currentCluster.length;
-    if (toBps(sorted[i], clusterAvg) <= toleranceBps) {
+    const clusterAvg = currentCluster.reduce((s, v) => s + v.price, 0) / currentCluster.length;
+    if (toBps(sorted[i].price, clusterAvg) <= toleranceBps) {
       currentCluster.push(sorted[i]);
     } else {
       clusters.push([sorted[i]]);
@@ -98,16 +142,22 @@ function clusterLevels(
 
   return clusters
     .map((cluster) => {
-      const avgPrice = cluster.reduce((s, v) => s + v, 0) / cluster.length;
+      const avgPrice = cluster.reduce((s, v) => s + v.price, 0) / cluster.length;
       const touches = countTouches(candles, avgPrice, toleranceBps);
       const vol = volumeAtLevel(candles, avgPrice, toleranceBps);
-      const strength = Math.min(1, (touches / 5) * 0.5 + (cluster.length / 3) * 0.3 + (vol > 0 ? 0.2 : 0));
+      const strength = Math.min(
+        1,
+        (touches / 5) * 0.5 + (cluster.length / 3) * 0.3 + (vol > 0 ? 0.2 : 0),
+      );
+      const lastTouchIdx = findLastTouchIndex(candles, avgPrice, toleranceBps);
+      const availableAt = Math.max(...cluster.map((p) => p.availableAtCandleIndex));
       return {
         price: avgPrice,
         type,
         strength,
         touches,
-        lastTouchIndex: findLastTouchIndex(candles, avgPrice, toleranceBps),
+        lastTouchIndex: lastTouchIdx,
+        availableAtCandleIndex: availableAt,
         volumeAtLevel: vol,
       };
     })
@@ -122,7 +172,11 @@ function findLastTouchIndex(candles: Candle[], level: number, toleranceBps: numb
   return -1;
 }
 
-function findNearest(price: number, levels: SupportResistanceLevel[]): NearestLevels {
+function findNearest(
+  price: number,
+  levels: SupportResistanceLevel[],
+  nearLevelThresholdBps: number,
+): NearestLevels {
   let nearestSupport: SupportResistanceLevel | null = null;
   let nearestResistance: SupportResistanceLevel | null = null;
   let minSupportDist = Infinity;
@@ -141,13 +195,14 @@ function findNearest(price: number, levels: SupportResistanceLevel[]): NearestLe
 
   const distToSupport = nearestSupport ? toBps(price, nearestSupport.price) : Infinity;
   const distToResistance = nearestResistance ? toBps(price, nearestResistance.price) : Infinity;
-  const corridorWidth = nearestSupport && nearestResistance
-    ? toBps(nearestResistance.price, nearestSupport.price)
-    : Infinity;
+  const corridorWidth =
+    nearestSupport && nearestResistance
+      ? toBps(nearestResistance.price, nearestSupport.price)
+      : Infinity;
 
   let structuralPosition: StructuralPosition = 'mid_range';
-  if (distToSupport <= 50) structuralPosition = 'near_support';
-  else if (distToResistance <= 50) structuralPosition = 'near_resistance';
+  if (distToSupport <= nearLevelThresholdBps) structuralPosition = 'near_support';
+  else if (distToResistance <= nearLevelThresholdBps) structuralPosition = 'near_resistance';
 
   return {
     support: nearestSupport,
@@ -164,17 +219,30 @@ export function detectSupportResistance(
   options?: Partial<SROptions>,
 ): SupportResistanceResult {
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const halfLookback = Math.floor(opts.lookbackBars / 2);
 
-  const swingHighs = findSwingHighs(candles, halfLookback, halfLookback);
-  const swingLows = findSwingLows(candles, halfLookback, halfLookback);
+  const sliced = candles.slice(-opts.lookbackBars);
 
-  const resistanceLevels = clusterLevels(swingHighs, 'resistance', candles, opts.clusterToleranceBps, opts.minStrength);
-  const supportLevels = clusterLevels(swingLows, 'support', candles, opts.clusterToleranceBps, opts.minStrength);
+  const swingHighs = findSwingHighs(sliced, opts.pivotLeftBars, opts.pivotRightBars);
+  const swingLows = findSwingLows(sliced, opts.pivotLeftBars, opts.pivotRightBars);
+
+  const resistanceLevels = clusterPivots(
+    swingHighs,
+    'resistance',
+    sliced,
+    opts.clusterToleranceBps,
+    opts.minStrength,
+  );
+  const supportLevels = clusterPivots(
+    swingLows,
+    'support',
+    sliced,
+    opts.clusterToleranceBps,
+    opts.minStrength,
+  );
 
   const allLevels = [...supportLevels, ...resistanceLevels];
-  const currentPrice = candles[candles.length - 1]?.close ?? 0;
-  const nearest = findNearest(currentPrice, allLevels);
+  const currentPrice = sliced[sliced.length - 1]?.close ?? 0;
+  const nearest = findNearest(currentPrice, allLevels, opts.nearLevelThresholdBps);
 
   return { levels: allLevels, nearest };
 }
