@@ -17,6 +17,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare test configuration
+        run: cp config/regime_config.example.yaml regime_config.yaml
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
