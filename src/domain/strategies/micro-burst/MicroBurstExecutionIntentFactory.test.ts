@@ -66,9 +66,17 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
       }),
       placeStopClose,
       placeTpClose: vi.fn(),
-      listCloseOrdersForSide: vi
-        .fn()
-        .mockResolvedValue([{ orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99.8 }]),
+      listCloseOrdersForSide: vi.fn().mockResolvedValue([
+        {
+          orderId: 'sl',
+          type: 'STOP_MARKET',
+          stopPrice: 99.8,
+          side: 'SELL',
+          positionSide: 'LONG',
+          workingType: 'MARK_PRICE',
+          closePosition: true,
+        },
+      ]),
       closeSideMarketSafe: vi.fn(),
       getServerTime: vi.fn().mockResolvedValue(2_000),
     } as unknown as Exchange;

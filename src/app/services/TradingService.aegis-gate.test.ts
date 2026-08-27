@@ -173,7 +173,11 @@ describe('TradingService Aegis micro-live gate dry-run', () => {
     expect(exchange.marketOpen).not.toHaveBeenCalled();
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
-    expect(state.set).not.toHaveBeenCalled();
+    expect(state.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dailyRisk: expect.any(Object),
+      }),
+    );
   });
 
   it('denies without execution when AEGIS_LIVE_ENABLED=true but YAML live is absent', async () => {
@@ -205,6 +209,10 @@ describe('TradingService Aegis micro-live gate dry-run', () => {
     expect(exchange.marketOpen).not.toHaveBeenCalled();
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
-    expect(state.set).not.toHaveBeenCalled();
+    expect(state.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dailyRisk: expect.any(Object),
+      }),
+    );
   });
 });

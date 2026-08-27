@@ -2519,7 +2519,7 @@ describe('TradingService Aegis live execution', () => {
     await service.tick('ETHUSDT');
 
     expect(exchange.marketOpen).toHaveBeenCalled();
-    expect(exchange.readActivePosition).toHaveBeenCalledTimes(5);
+    expect(exchange.readActivePosition).toHaveBeenCalledTimes(6);
     expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
@@ -4768,11 +4768,16 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    const clientOrderId = exchange.marketOpen.mock.calls[0][3];
-    expect(clientOrderId).toEqual(expect.any(String));
-    expect(exchange.marketOpen).toHaveBeenNthCalledWith(1, 'ETHUSDT', 'LONG', 0.085, clientOrderId);
-    expect(exchange.marketOpen).toHaveBeenNthCalledWith(2, 'ETHUSDT', 'LONG', 0.076, clientOrderId);
-    expect(exchange.marketOpen).toHaveBeenNthCalledWith(3, 'ETHUSDT', 'LONG', 0.068, clientOrderId);
+    const clientOrderIds = exchange.marketOpen.mock.calls.map((call: any[]) => call[3]);
+    expect(clientOrderIds).toEqual([
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+    ]);
+    expect(new Set(clientOrderIds)).toHaveLength(3);
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(1, 'ETHUSDT', 'LONG', 0.085, clientOrderIds[0]);
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(2, 'ETHUSDT', 'LONG', 0.076, clientOrderIds[1]);
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(3, 'ETHUSDT', 'LONG', 0.068, clientOrderIds[2]);
     expect(logger.warn).toHaveBeenCalledWith('shared_execution_quantity_retry', expect.any(Object));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -4797,7 +4802,9 @@ describe('TradingService Aegis live execution', () => {
     await service.tick('ETHUSDT');
 
     expect(exchange.marketOpen).toHaveBeenCalledTimes(6);
-    expect(exchange.readActivePosition).not.toHaveBeenCalled();
+    expect(exchange.readActivePosition).toHaveBeenCalledTimes(1);
+    const clientOrderIds = exchange.marketOpen.mock.calls.map((call: any[]) => call[3]);
+    expect(new Set(clientOrderIds)).toHaveLength(6);
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'ORDER_SIZE_REJECTED',

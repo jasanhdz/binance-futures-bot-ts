@@ -88,7 +88,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '863f1b429d43f6e527120cafa01ef0dc82bce34d72161558e9ddf7f887236a07',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
-    '9421e6a8a38f353835b7010171fe3b1a06757250f6629263066a7d5d8172f1b7',
+    '9191178da347b99811181cfa4181cc7bf916cc669a4bd5e37424918c44ae64a8',
 };
 
 type GuardFixture = [

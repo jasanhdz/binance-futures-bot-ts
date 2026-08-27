@@ -179,11 +179,13 @@ describe('durable execution end-to-end acceptance', () => {
       missingVenue,
     );
     const uncertain = await missingCoordinator.submit(missing);
-    expect(uncertain.state).toBe('RECONCILIATION_REQUIRED');
-    expect(uncertain.retryAuthorized).toBe(true);
+    expect(uncertain.state).toBe('MARKET_OPEN_AMBIGUOUS');
+    expect(uncertain.retryAuthorized).toBe(false);
     missingVenue.behavior = 'FILL';
-    expect((await missingCoordinator.submit(missing)).state).toBe('PROTECTED');
-    expect(new Set(missingVenue.entryCalls)).toEqual(new Set([missing.clientOrderId]));
+    const stillAmbiguous = await missingCoordinator.submit(missing);
+    expect(stillAmbiguous.state).toBe('MARKET_OPEN_AMBIGUOUS');
+    expect(stillAmbiguous.retryAuthorized).toBe(false);
+    expect(missingVenue.entryCalls).toEqual([missing.clientOrderId]);
   });
 
   it('fails closed on a definitive entry rejection', async () => {
