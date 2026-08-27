@@ -183,6 +183,11 @@ export interface MicroBurstContext {
     sellTakerVolume: number;
     netTakerFlow: number;
     tradeCount: number;
+    requestedWindowMs?: number;
+    observedWindowMs?: number;
+    observedSampleCount?: number;
+    eventWatermarkMs?: number | null;
+    capacityTruncated?: boolean;
   };
 }
 

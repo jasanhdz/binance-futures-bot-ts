@@ -328,7 +328,19 @@ export class MicroBurstRuntime {
       aggTradeFlow: {
         getTakerFlow: (sym: string) => {
           const state = this.symbolStates.get(sym);
-          if (!state) return { buyVolume: 0, sellVolume: 0, netTakerVolume: 0, tradeCount: 0 };
+          if (!state) {
+            return {
+              buyVolume: 0,
+              sellVolume: 0,
+              netTakerVolume: 0,
+              tradeCount: 0,
+              requestedWindowMs: 300_000,
+              observedWindowMs: 0,
+              observedSampleCount: 0,
+              eventWatermarkMs: null,
+              capacityTruncated: false,
+            };
+          }
           return state.aggTradeBuffer.getTakerFlow();
         },
       },

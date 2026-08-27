@@ -46,6 +46,11 @@ export interface AggTradeFlowProvider {
     sellVolume: number;
     netTakerVolume: number;
     tradeCount: number;
+    requestedWindowMs?: number;
+    observedWindowMs?: number;
+    observedSampleCount?: number;
+    eventWatermarkMs?: number | null;
+    capacityTruncated?: boolean;
   };
 }
 
@@ -288,6 +293,11 @@ export async function buildMicroBurstContext(
             sellTakerVolume: aggTradeFlow.sellVolume,
             netTakerFlow: aggTradeFlow.netTakerVolume,
             tradeCount: aggTradeFlow.tradeCount,
+            requestedWindowMs: aggTradeFlow.requestedWindowMs,
+            observedWindowMs: aggTradeFlow.observedWindowMs,
+            observedSampleCount: aggTradeFlow.observedSampleCount,
+            eventWatermarkMs: aggTradeFlow.eventWatermarkMs,
+            capacityTruncated: aggTradeFlow.capacityTruncated,
           },
         }
       : {}),

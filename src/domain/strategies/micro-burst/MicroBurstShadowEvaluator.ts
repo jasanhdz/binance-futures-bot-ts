@@ -172,6 +172,11 @@ export class MicroBurstShadowEvaluator {
                 takerSellVolume: context.aggTradeFlow.sellTakerVolume,
                 takerNetFlow: context.aggTradeFlow.netTakerFlow,
                 takerFlowSampleCount: context.aggTradeFlow.tradeCount,
+                takerFlowRequestedWindowMs: context.aggTradeFlow.requestedWindowMs,
+                takerFlowObservedWindowMs: context.aggTradeFlow.observedWindowMs,
+                takerFlowObservedSampleCount: context.aggTradeFlow.observedSampleCount,
+                takerFlowEventWatermarkMs: context.aggTradeFlow.eventWatermarkMs,
+                takerFlowCapacityTruncated: context.aggTradeFlow.capacityTruncated,
               }
             : {}),
           referencePriceSource:
