@@ -10,6 +10,7 @@ import {
   OrderBookSnapshot,
   defaultMicroBurstConfig,
 } from './MicroBurstTypes';
+import { MicroBurstReferencePrice } from './MicroBurstMarketDataTypes';
 import { analyzeBookPressure, isBookHealthy } from './MicroBurstBookPressureAnalyzer';
 import { hasBtcConflict } from './MicroBurstBtcContext';
 import { analyzeMicroMomentum } from './MicroBurstMomentumAnalyzer';
@@ -28,10 +29,18 @@ export interface OrderBookSnapshotProvider {
   getDepthSnapshot(symbol: string): OrderBookSnapshot | undefined;
 }
 
+export interface ReferencePriceProvider {
+  getReferencePrice(symbol: string, bookSnapshot?: {
+    bidDepth: { price: number }[];
+    askDepth: { price: number }[];
+  }): MicroBurstReferencePrice | undefined;
+}
+
 export interface MicroBurstContextBuilderDeps {
   candles: CandleSnapshotProvider;
   btc?: BtcMicroContextProvider;
   book?: OrderBookSnapshotProvider;
+  referencePrice?: ReferencePriceProvider;
 }
 
 export interface MicroBurstContextBuildOptions {
@@ -196,6 +205,7 @@ export async function buildMicroBurstContext(
     minImbalance: config.bookMinImbalance,
     freshnessMaxMs: config.bookFreshnessMaxMs,
   });
+  const refPrice = deps.referencePrice?.getReferencePrice(symbol, bookSnapshot);
   const btcRaw = deps.btc?.getBtcContext();
   const candidateSide: Side | 'NEUTRAL' =
     levels.nearest.structuralPosition === 'near_support'
@@ -233,10 +243,16 @@ export async function buildMicroBurstContext(
     dataQuality.invalidReasons.push('invalid_reference_price');
   }
 
+  if (refPrice && (!Number.isFinite(refPrice.price) || refPrice.price <= 0)) {
+    dataQuality.contextValid = false;
+    dataQuality.invalidReasons.push('invalid_market_price');
+  }
+
   return {
     symbol,
     timestamp: snapshotAtMs,
     currentPrice,
+    marketPriceAtSnapshot: refPrice?.price,
     candles,
     levels,
     momentum,

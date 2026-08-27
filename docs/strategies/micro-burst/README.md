@@ -1,12 +1,13 @@
 # MICRO_BURST_V1
 
-MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M0.3 adds exact structural-stop support at the shared execution boundary while keeping the strategy OFF. It has no market-data WebSocket plane, dataset authority, SHADOW authority, LIVE authority, or operational execution call site.
+MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M1 adds a synchronized market data shadow plane for order book depth, BTC live context, reference price, aggTrade ingestion, temporal book history, and shadow evaluation telemetry. Mode remains OFF. SHADOW and LIVE authority are explicitly false.
 
 ## Authority
 
 - Strategy mode remains `OFF`.
 - `MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED = false`.
 - `MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false`.
+- Shadow evaluation produces `WOULD_ENTER` telemetry but never calls `SharedStrategyExecutionService.execute()`.
 - The position manager may compute and translate an exit decision while OFF, but does not apply lifecycle or exchange mutations.
 
 ## Correctness Invariants
@@ -90,15 +91,22 @@ They were not tuned in M0.2.
 
 Dynamic exits belong only to `MicroBurstExitPolicy`; legacy lifecycle logic cannot supply them.
 
-## M1 Market Data Plane Pending
+## M1 Market Data Plane (Implemented)
 
-- Depth WebSocket ingestion.
-- REST snapshot plus depth-diff synchronization and update-ID gap recovery.
-- Typed observed timestamps and synchronized book provider adapter.
-- Live ticker/mark/reference price at snapshot.
-- BTC live context stream.
-- `aggTrade` ingestion.
-- Temporal book history and real `imbalanceSlope`.
-- Temporal absorption and sweep detection.
+- Depth WebSocket ingestion and Binance Futures synchronization algorithm.
+- REST snapshot + diff synchronization with update-ID gap detection and resync.
+- Typed `OrderBookSnapshotProvider` with `HEALTHY|UNAVAILABLE|STALE|UNSYNCED|ANOMALOUS` health.
+- Temporal book history with real `imbalanceSlope`, absorption, and sweep detection.
+- Live BTC context stream with 1m/3m/5m decimal returns and acceleration.
+- `marketPriceAtSnapshot` (mark price / midpoint) for runtime live reference price.
+- `aggTrade` bounded rolling history for taker flow.
+- `MicroBurstShadowEvaluator` with structured telemetry and duplicate signal suppression.
+- `MicroBurstConfigLoader` for YAML/environment configuration.
 
-These are deliberately not implemented by M0.3.
+## M2 Scope Pending
+
+- Wire depth/aggTrade/BTC subscriptions in TradingService startup.
+- Wire shadow evaluation into TradingService tick loop.
+- Consume aggTrade data in entry policy for taker flow signals.
+- Tune temporal absorption/sweep thresholds.
+- Enable SHADOW mode in regime_config.live.yaml.

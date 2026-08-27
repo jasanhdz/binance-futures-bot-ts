@@ -83,6 +83,10 @@ export interface BookPressureSignal {
   topOfBookImbalance: number;
   /** null when temporal book data is unavailable (single snapshot only). */
   imbalanceSlope: number | null;
+  /** Temporal: true absorption detected from multiple observations. */
+  temporalAbsorptionDetected: boolean;
+  /** Temporal: true sweep detected from multiple observations. */
+  temporalSweepDetected: boolean;
   /** Static proxy: top level concentration anomaly (NOT temporal absorption). */
   staticBidConcentration: boolean;
   /** Static proxy: depth discontinuity above best ask (NOT temporal sweep). */
@@ -152,6 +156,8 @@ export interface MicroBurstContext {
   timestamp: number;
   /** Latest closed 1m candle close available at timestamp; not a live bid/ask. */
   currentPrice: number;
+  /** Live runtime reference price (mark price or midpoint) at snapshot time. Undefined when no live source is available. */
+  marketPriceAtSnapshot?: number;
   candles: MicroBurstCandleSet;
   levels: SupportResistanceResult;
   momentum: MicroMomentumSignal;

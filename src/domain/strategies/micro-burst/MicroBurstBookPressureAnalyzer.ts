@@ -4,18 +4,25 @@ import {
   OrderBookDepthLevel,
   OrderBookSnapshot,
 } from './MicroBurstTypes';
+import { TemporalBookSnapshot } from './MicroBurstMarketDataTypes';
 import { priceDistanceToBps } from './MicroBurstUnits';
 
 interface BookPressureOptions {
   anomalySpreadBps: number;
   minImbalance: number;
   freshnessMaxMs: number;
+  /** Minimum temporal observations needed to compute slope. */
+  minTemporalObservations: number;
+  /** Number of observations for slope calculation window. */
+  slopeWindow: number;
 }
 
 const DEFAULT_OPTIONS: BookPressureOptions = {
   anomalySpreadBps: 20,
   minImbalance: 0.2,
   freshnessMaxMs: 30_000,
+  minTemporalObservations: 3,
+  slopeWindow: 5,
 };
 
 function unavailableSignal(status: BookDataStatus): BookPressureSignal {
@@ -23,6 +30,8 @@ function unavailableSignal(status: BookDataStatus): BookPressureSignal {
     spreadBps: Infinity,
     topOfBookImbalance: 0,
     imbalanceSlope: null,
+    temporalAbsorptionDetected: false,
+    temporalSweepDetected: false,
     staticBidConcentration: false,
     staticAskConcentration: false,
     anomalyFlag: status === 'ANOMALOUS',
@@ -66,10 +75,80 @@ function totalQty(levels: OrderBookDepthLevel[], count: number): number {
   return levels.slice(0, count).reduce((sum, level) => sum + level.qty, 0);
 }
 
+function computeLinearSlope(values: number[]): number {
+  const n = values.length;
+  if (n < 2) return 0;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += values[i];
+    sumXY += i * values[i];
+    sumX2 += i * i;
+  }
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return 0;
+  return (n * sumXY - sumX * sumY) / denom;
+}
+
+function computeImbalanceSlope(
+  temporalHistory: TemporalBookSnapshot[],
+  windowSize: number,
+): number | null {
+  if (temporalHistory.length < 2) return null;
+  const recent = temporalHistory.slice(-windowSize);
+  if (recent.length < 2) return null;
+  const imbalances = recent.map((s) => s.topOfBookImbalance);
+  return computeLinearSlope(imbalances);
+}
+
+function detectTemporalAbsorption(
+  temporalHistory: TemporalBookSnapshot[],
+  currentSnapshot: TemporalBookSnapshot,
+): boolean {
+  if (temporalHistory.length < 3) return false;
+
+  const recent = temporalHistory.slice(-5);
+  const prevAvgImbalance = recent.slice(0, -1).reduce((s, h) => s + h.topOfBookImbalance, 0) / (recent.length - 1);
+  const currentImbalance = currentSnapshot.topOfBookImbalance;
+
+  const bidQtyGrowth = currentSnapshot.bestBidQty / (recent[0]?.bestBidQty || 1);
+  const askQtyGrowth = currentSnapshot.bestAskQty / (recent[0]?.bestAskQty || 1);
+
+  return (
+    currentImbalance > prevAvgImbalance * 1.5 &&
+    (bidQtyGrowth > 2.0 || askQtyGrowth > 2.0) &&
+    currentSnapshot.spreadBps < 10
+  );
+}
+
+function detectTemporalSweep(
+  temporalHistory: TemporalBookSnapshot[],
+  currentSnapshot: TemporalBookSnapshot,
+): boolean {
+  if (temporalHistory.length < 3) return false;
+
+  const recent = temporalHistory.slice(-5);
+  const prevAvgImbalance = recent.slice(0, -1).reduce((s, h) => s + h.topOfBookImbalance, 0) / (recent.length - 1);
+  const currentImbalance = currentSnapshot.topOfBookImbalance;
+
+  const bidQtyDrop = currentSnapshot.bestBidQty / (recent[0]?.bestBidQty || 1);
+  const askQtyDrop = currentSnapshot.bestAskQty / (recent[0]?.bestAskQty || 1);
+
+  return (
+    currentImbalance > prevAvgImbalance * 2.0 &&
+    (bidQtyDrop < 0.3 || askQtyDrop < 0.3) &&
+    currentSnapshot.spreadBps > 15
+  );
+}
+
 export function analyzeBookPressure(
   snapshot: OrderBookSnapshot | undefined,
   snapshotAtMs: number,
   options?: Partial<BookPressureOptions>,
+  temporalHistory?: TemporalBookSnapshot[],
 ): BookPressureSignal {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   if (!snapshot) return unavailableSignal('UNAVAILABLE');
@@ -92,10 +171,33 @@ export function analyzeBookPressure(
       ? 'ANOMALOUS'
       : 'HEALTHY';
 
+  const currentTemporalSnapshot: TemporalBookSnapshot = {
+    observedAtMs: snapshotAtMs,
+    topOfBookImbalance,
+    bestBidQty: snapshot.bidDepth[0]?.qty ?? 0,
+    bestAskQty: snapshot.askDepth[0]?.qty ?? 0,
+    bidTop5Qty: bidTop5,
+    askTop5Qty: askTop5,
+    spreadBps,
+  };
+
+  let imbalanceSlope: number | null = null;
+  let temporalAbsorptionDetected = false;
+  let temporalSweepDetected = false;
+
+  if (temporalHistory && temporalHistory.length >= opts.minTemporalObservations) {
+    const combined = [...temporalHistory, currentTemporalSnapshot];
+    imbalanceSlope = computeImbalanceSlope(combined, opts.slopeWindow);
+    temporalAbsorptionDetected = detectTemporalAbsorption(combined, currentTemporalSnapshot);
+    temporalSweepDetected = detectTemporalSweep(combined, currentTemporalSnapshot);
+  }
+
   return {
     spreadBps,
     topOfBookImbalance,
-    imbalanceSlope: null,
+    imbalanceSlope,
+    temporalAbsorptionDetected,
+    temporalSweepDetected,
     staticBidConcentration: snapshot.bidDepth[0].qty / (bidTop5 || 1) > 0.5,
     staticAskConcentration: snapshot.askDepth[0].qty / (askTop5 || 1) > 0.5,
     anomalyFlag: status === 'ANOMALOUS',

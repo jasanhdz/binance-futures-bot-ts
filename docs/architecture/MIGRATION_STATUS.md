@@ -6,9 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after MICRO_BURST_V1 M0.3 exact structural protection.
+Runtime architecture migration checkpoint after MICRO_BURST_V1 M1 market data shadow plane.
 
-Validation results are recorded below. This checkpoint does not grant runtime authority.
+Validation results are recorded below. This checkpoint does not grant live authority.
 
 ## Completed foundations
 
@@ -100,18 +100,28 @@ The synthetic Momentum-inside-Aegis decision path has been retired. The orchestr
 
 Position ownership routes to `MomentumRidePositionManager`, which owns its policy composition over `StrategyPositionLifecycleCore` and has no ExitEye callback surface.
 
-### MICRO_BURST_V1 (M0.3 exact structural protection)
+### MICRO_BURST_V1 (M1 market data shadow plane)
 
-Deterministic tactical strategy contract implemented. Mode remains OFF. SHADOW and LIVE authority are explicitly false.
+Deterministic tactical strategy with synchronized market data plane. Mode remains OFF. SHADOW and LIVE authority are explicitly false. Shadow evaluation produces structured telemetry but never executes.
 
 ```
-MicroBurstContextBuilder -> MicroBurstEntryPolicy -> Shared Safety -> SharedStrategyExecutionService -> MicroBurstPositionManager
+Binance WS (depth/aggTrade) → SynchronizedOrderBook
+                                   │
+BTC REST 1m → BtcMicroContextProvider
+                                   │
+Mark Price → MicroBurstReferencePriceProvider
+                                   │
+                              MicroBurstContextBuilder
+                                   │
+                              MicroBurstStrategy.evaluate()
+                                   │
+                              MicroBurstShadowEvaluator → telemetry logs
 ```
 
 Key properties:
 
 - Deterministic replay via explicit snapshot time, closed-candle filtering, causal S/R, typed BTC timestamps, and typed book status
-- Direction-aligned entry via S/R + micro-momentum + required BTC and order-book context
+- Direction-aligned entry via S/R + micro-momentum + required BTC and order book context
 - Two leverage tiers: HIGH (40x, >=0.75 confirmation) and MEDIUM (20x, >=0.50)
 - Structural-price invalidation, time-to-prove, target, software trailing, idempotent break-even, and max hold
 - Uses `MICRO_BURST_RESERVED_POLICY`: no guardian, no break-even, no trailing in lifecycle
@@ -122,6 +132,14 @@ Key properties:
 - Structural stop geometry is validated after the real fill and tick rounding; protection failure triggers emergency close
 - `destinationPrice` remains software-exit policy and does not become exchange take profit
 - No Micro Burst production execution call site exists
+- Synchronized order book with Binance depth diff algorithm, gap detection, resync
+- Temporal book history with real `imbalanceSlope`, absorption, sweep detection
+- BTC live context with 1m/3m/5m decimal returns and acceleration
+- `marketPriceAtSnapshot` (mark price / midpoint) for runtime reference price
+- `aggTrade` bounded rolling history for taker flow diagnostics
+- Shadow evaluation with structured telemetry and duplicate signal suppression
+- All components use injected clock — no `Date.now()` in domain production code
+- SHADOW authority disabled; LIVE authority disabled; no exchange mutation possible
 
 ## Remaining work before Micro Burst live authority
 
@@ -134,22 +152,24 @@ Key properties:
 7. ~~**MICRO_BURST_V1 scaffold implementation.**~~ DONE (mode OFF, no live authority)
 8. ~~**MICRO_BURST_V1 M0.2 correctness patch.**~~ DONE (deterministic/fail-closed contracts, no authority)
 9. ~~**MICRO_BURST_V1 M0.3 exact structural protection.**~~ DONE (shared execution boundary only, mode OFF)
-10. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
-   - Do not mark `FROZEN_LIVE` merely because code compiles.
-   - Generate deterministic hashes only after architecture and behavior are stable.
-11. **Reduce `TradingService` responsibility.**
-   - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
-   - Do this incrementally; do not rewrite the bot from scratch.
-12. **MICRO_BURST_V1 M1 Market Data Plane.**
-    - Add synchronized depth snapshot/diff handling, BTC stream, ticker/reference price, aggTrade and temporal book history.
-    - Do not grant SHADOW or LIVE authority as part of data-plane construction.
-13. **MICRO_BURST_V1 tuning and validation.**
+10. ~~**MICRO_BURST_V1 M1 Market Data Plane.**~~ DONE (synchronized depth, BTC stream, reference price, aggTrade, shadow evaluation, mode OFF)
+11. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
+    - Do not mark `FROZEN_LIVE` merely because code compiles.
+    - Generate deterministic hashes only after architecture and behavior are stable.
+12. **Reduce `TradingService` responsibility.**
+    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
+    - Do this incrementally; do not rewrite the bot from scratch.
+13. **MICRO_BURST_V1 M2 — Wire shadow evaluation in TradingService.**
+    - Wire depth/aggTrade/BTC subscriptions at startup.
+    - Wire `MicroBurstShadowEvaluator` into TradingService tick loop.
+    - Consume aggTrade data in entry policy for taker flow signals.
+    - Tune temporal absorption/sweep thresholds.
+    - Enable SHADOW mode in regime_config.live.yaml.
+14. **MICRO_BURST_V1 tuning and validation.**
     - Tune S/R detection parameters for real market conditions.
     - Tune momentum thresholds and leverage tiers based on backtesting.
-    - Add BTC context pipeline to MicroBurstContextBuilder (currently null in production).
-    - Wire order book depth to MicroBurstContextBuilder.
     - Validate exit policy timing parameters.
-14. **MICRO_BURST_V1 live authority activation.**
+15. **MICRO_BURST_V1 live authority activation.**
     - Only after tuning, testing, and explicit approval.
 
 ## Explicit architecture invariants
@@ -168,25 +188,18 @@ Key properties:
 
 ## Validation checkpoint
 
-At the latest runtime checkpoint:
+At the latest runtime checkpoint (M1):
 
 - TypeScript build: PASS.
-- Micro Burst M0.2 correctness tests: 12/12 files, 97/97 PASS.
-- Micro Burst M0.3 tests: 12/12 files, 98/98 PASS.
-- M0.3 Aegis/Momentum/Micro Burst targeted matrix: 17/17 files, 240/240 PASS.
-- Full M0.3 suite: 83/83 files, 878/878 PASS.
-- Full clean-worktree suite: 83/83 files, 861/861 PASS.
-- `src/app/execution/SharedStrategyExecutionService.test.ts`: 24/24 PASS at M0.3.
-- `src/domain/strategies/aegis/AegisExecutionIntentFactory.test.ts`: 2/2 PASS.
-- `src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.test.ts`: 3/3 PASS.
-- Required Phase 1 targeted matrix: 170/170 PASS.
-- `src/app/services/TradingService.aegis-live.test.ts`: 108/108 PASS.
-- `src/app/services/TradingService.exit-eye.test.ts`: 12/12 PASS.
-- `src/app/strategy/OwnedPositionManagers.test.ts`: 4/4 PASS.
-- MicroBurst M0.1 hardening baseline: 44/44 PASS (superseded by M0.2 coverage).
-- Strategy router / position manager router / Momentum entry policy / shared safety / ownership / risk ledger targeted tests: PASS.
-- Restoration/fronteras: 23/23 PASS.
-- Full `npm test -- --run`: 861 passed, 0 failed at M0.2.
+- Full M1 suite: 91/91 files, 935/935 PASS.
+- M1 new component tests: 8 test files, 58 tests PASS.
+- M1 static audit: 5/5 PASS (no exchange mutation, no Date.now, no forbidden imports).
+- Micro Burst architecture invariants: PASS.
+- Shared execution: 24/24 PASS.
+- Aegis live: 108/108 PASS.
+- Position managers: 4/4 PASS.
+- Restoration: 4/4 PASS.
+- Targeted matrix (micro-burst + shared execution + aegis-live + momentum + routers + restoration): 298/298 PASS.
 
 ## M0.1 Hardening (superseded by M0.2)
 
@@ -248,4 +261,4 @@ MICRO_BURST_V1 M0.1 hardening completed. All 24 items addressed:
 
 ## Explicit prohibition
 
-`MICRO_BURST_V1` M0.1 hardening completed. Mode defaults to OFF. No live authority is enabled. Entry policy, exit policy, position manager, and lifecycle are hardened with fail-closed semantics. Live/shadow authority activation requires explicit approval after tuning and backtesting.
+`MICRO_BURST_V1` M1 market data shadow plane completed. Mode defaults to OFF. No live authority is enabled. Synchronized order book, BTC context, reference price, aggTrade buffer, shadow evaluation, and duplicate signal suppression are implemented. Live/shadow authority activation requires explicit approval after wiring, tuning, and backtesting.

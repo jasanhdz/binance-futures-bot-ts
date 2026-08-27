@@ -69,6 +69,8 @@ export function makeMicroBurstContext(
       spreadBps: 5,
       topOfBookImbalance: 0.1,
       imbalanceSlope: null,
+      temporalAbsorptionDetected: false,
+      temporalSweepDetected: false,
       staticBidConcentration: false,
       staticAskConcentration: false,
       anomalyFlag: false,
