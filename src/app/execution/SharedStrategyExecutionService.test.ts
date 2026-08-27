@@ -34,7 +34,9 @@ function exchangeMock(): Exchange {
     setLeverage: vi.fn(),
     ensureMarginType: vi.fn(),
     getUSDTBalance: vi.fn().mockResolvedValue(100),
-    getUSDTAccountSnapshot: vi.fn().mockResolvedValue({ walletBalance: 100, availableBalance: 100 }),
+    getUSDTAccountSnapshot: vi
+      .fn()
+      .mockResolvedValue({ walletBalance: 100, availableBalance: 100 }),
     getMarkPrice: vi.fn().mockResolvedValue(100),
     getSymbolFilters: vi.fn().mockResolvedValue({
       tickSize: 0.01,
@@ -68,17 +70,21 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   beforeEach(() => {
     exchange = exchangeMock();
-    service = new SharedStrategyExecutionService(exchange, {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    }, {
-      feeBufferPct: 0,
-      confirmationAttempts: 1,
-      confirmationDelaysMs: [0],
-      maxMarketOpenAttempts: 2,
-    });
+    service = new SharedStrategyExecutionService(
+      exchange,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+      {
+        feeBufferPct: 0,
+        confirmationAttempts: 1,
+        confirmationDelaysMs: [0],
+        maxMarketOpenAttempts: 2,
+      },
+    );
   });
 
   it('opens without validating or placing protection that the intent does not use', async () => {
@@ -91,29 +97,37 @@ describe('SharedStrategyExecutionService protection policy', () => {
   });
 
   it('preserves the existing ROE stop calculation and placement path', async () => {
-    const result = await service.execute(intent({
-      stopRoe: -0.2,
-      protection: {
-        requireStop: true,
-        requireTakeProfit: false,
-        closeIfProtectionFails: true,
-      },
-    }));
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        protection: {
+          requireStop: true,
+          requireTakeProfit: false,
+          closeIfProtectionFails: true,
+        },
+      }),
+    );
 
     expect(result.status).toBe('OPENED');
     expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99);
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
-    expect(result.metadata).toMatchObject({ stopSource: 'ROE', stopPrice: 99, effectiveStopPrice: 99 });
+    expect(result.metadata).toMatchObject({
+      stopSource: 'ROE',
+      stopPrice: 99,
+      effectiveStopPrice: 99,
+    });
   });
 
   it('rejects a missing required field before mutating the exchange', async () => {
-    const result = await service.execute(intent({
-      protection: {
-        requireStop: true,
-        requireTakeProfit: false,
-        closeIfProtectionFails: true,
-      },
-    }));
+    const result = await service.execute(
+      intent({
+        protection: {
+          requireStop: true,
+          requireTakeProfit: false,
+          closeIfProtectionFails: true,
+        },
+      }),
+    );
 
     expect(result).toMatchObject({ status: 'DENIED', reason: 'INVALID_SIZE' });
     expect(exchange.setLeverage).not.toHaveBeenCalled();
@@ -129,14 +143,16 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   it('closes an opened position when mandatory protection cannot be verified', async () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([]);
-    const result = await service.execute(intent({
-      stopRoe: -0.2,
-      protection: {
-        requireStop: true,
-        requireTakeProfit: false,
-        closeIfProtectionFails: true,
-      },
-    }));
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        protection: {
+          requireStop: true,
+          requireTakeProfit: false,
+          closeIfProtectionFails: true,
+        },
+      }),
+    );
 
     expect(result).toMatchObject({
       status: 'FAILED',
@@ -161,14 +177,16 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   it('reports recovery data without closing when fail-close is intentionally disabled', async () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([]);
-    const result = await service.execute(intent({
-      stopRoe: -0.2,
-      protection: {
-        requireStop: true,
-        requireTakeProfit: false,
-        closeIfProtectionFails: false,
-      },
-    }));
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        protection: {
+          requireStop: true,
+          requireTakeProfit: false,
+          closeIfProtectionFails: false,
+        },
+      }),
+    );
 
     expect(result).toMatchObject({
       status: 'FAILED',
@@ -188,14 +206,16 @@ describe('SharedStrategyExecutionService protection policy', () => {
   it('attempts protection emergency close only once when that close fails', async () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([]);
     vi.mocked(exchange.closeSideMarketSafe).mockRejectedValue(new Error('protection close failed'));
-    const result = await service.execute(intent({
-      stopRoe: -0.2,
-      protection: {
-        requireStop: true,
-        requireTakeProfit: false,
-        closeIfProtectionFails: true,
-      },
-    }));
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        protection: {
+          requireStop: true,
+          requireTakeProfit: false,
+          closeIfProtectionFails: true,
+        },
+      }),
+    );
 
     expect(result).toMatchObject({
       status: 'FAILED',
@@ -210,16 +230,16 @@ describe('SharedStrategyExecutionService protection policy', () => {
   });
 
   it('attempts confirmation emergency close only once when that close fails', async () => {
-    vi.mocked(exchange.readActivePosition)
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        sideMode: 'LONG',
-        qtyAbs: 2,
-        entryPrice: 100,
-        leverage: 20,
-        isolatedMargin: 10,
-      });
-    vi.mocked(exchange.closeSideMarketSafe).mockRejectedValue(new Error('confirmation close failed'));
+    vi.mocked(exchange.readActivePosition).mockResolvedValueOnce(null).mockResolvedValueOnce({
+      sideMode: 'LONG',
+      qtyAbs: 2,
+      entryPrice: 100,
+      leverage: 20,
+      isolatedMargin: 10,
+    });
+    vi.mocked(exchange.closeSideMarketSafe).mockRejectedValue(
+      new Error('confirmation close failed'),
+    );
 
     const result = await service.execute(intent());
 
@@ -243,10 +263,12 @@ describe('SharedStrategyExecutionService protection policy', () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
       { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99.8 },
     ]);
-    const result = await service.execute(intent({
-      structuralStopPrice: 99.804,
-      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-    }));
+    const result = await service.execute(
+      intent({
+        structuralStopPrice: 99.804,
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+      }),
+    );
 
     expect(result.status).toBe('OPENED');
     expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99.8);
@@ -261,16 +283,22 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   it('places an exact rounded structural stop for SHORT', async () => {
     vi.mocked(exchange.readActivePosition).mockResolvedValue({
-      sideMode: 'SHORT', qtyAbs: 2, entryPrice: 100, leverage: 20, isolatedMargin: 10,
+      sideMode: 'SHORT',
+      qtyAbs: 2,
+      entryPrice: 100,
+      leverage: 20,
+      isolatedMargin: 10,
     });
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
       { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 100.2 },
     ]);
-    const result = await service.execute(intent({
-      side: 'SHORT',
-      structuralStopPrice: 100.204,
-      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-    }));
+    const result = await service.execute(
+      intent({
+        side: 'SHORT',
+        structuralStopPrice: 100.204,
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+      }),
+    );
 
     expect(result.status).toBe('OPENED');
     expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'SHORT', 100.2);
@@ -281,37 +309,48 @@ describe('SharedStrategyExecutionService protection policy', () => {
     ['LONG', 100.2],
     ['SHORT', 100],
     ['SHORT', 99.8],
-  ] as const)('fails closed when %s structural stop geometry is invalid at %s', async (side, stop) => {
-    vi.mocked(exchange.readActivePosition).mockResolvedValue({
-      sideMode: side, qtyAbs: 2, entryPrice: 100, leverage: 20, isolatedMargin: 10,
-    });
-    const result = await service.execute(intent({
-      side,
-      structuralStopPrice: stop,
-      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-    }));
+  ] as const)(
+    'fails closed when %s structural stop geometry is invalid at %s',
+    async (side, stop) => {
+      vi.mocked(exchange.readActivePosition).mockResolvedValue({
+        sideMode: side,
+        qtyAbs: 2,
+        entryPrice: 100,
+        leverage: 20,
+        isolatedMargin: 10,
+      });
+      const result = await service.execute(
+        intent({
+          side,
+          structuralStopPrice: stop,
+          protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+        }),
+      );
 
-    expect(result).toMatchObject({
-      status: 'FAILED',
-      reason: 'BRACKETS_FAILED',
-      metadata: {
-        failureStage: 'PROTECTION',
-        reasonDetail: 'invalid_structural_stop_geometry',
-        error: 'Error: INVALID_STRUCTURAL_STOP_GEOMETRY',
-        positionStillOpen: false,
-      },
-    });
-    expect(exchange.placeStopClose).not.toHaveBeenCalled();
-    expect(exchange.closeSideMarketSafe).toHaveBeenCalledTimes(1);
-  });
+      expect(result).toMatchObject({
+        status: 'FAILED',
+        reason: 'BRACKETS_FAILED',
+        metadata: {
+          failureStage: 'PROTECTION',
+          reasonDetail: 'invalid_structural_stop_geometry',
+          error: 'Error: INVALID_STRUCTURAL_STOP_GEOMETRY',
+          positionStillOpen: false,
+        },
+      });
+      expect(exchange.placeStopClose).not.toHaveBeenCalled();
+      expect(exchange.closeSideMarketSafe).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([NaN, Number.POSITIVE_INFINITY, 0, -1])(
     'denies invalid structural stop %s before opening the market position',
     async (structuralStopPrice) => {
-      const result = await service.execute(intent({
-        structuralStopPrice,
-        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-      }));
+      const result = await service.execute(
+        intent({
+          structuralStopPrice,
+          protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+        }),
+      );
 
       expect(result).toMatchObject({
         status: 'DENIED',
@@ -324,11 +363,13 @@ describe('SharedStrategyExecutionService protection policy', () => {
   );
 
   it('denies an ambiguous stop specification before exchange mutation', async () => {
-    const result = await service.execute(intent({
-      stopRoe: -0.2,
-      structuralStopPrice: 99.8,
-      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-    }));
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        structuralStopPrice: 99.8,
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+      }),
+    );
 
     expect(result).toMatchObject({
       status: 'DENIED',
@@ -339,9 +380,11 @@ describe('SharedStrategyExecutionService protection policy', () => {
   });
 
   it('reports a missing stop specification distinctly', async () => {
-    const result = await service.execute(intent({
-      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-    }));
+    const result = await service.execute(
+      intent({
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+      }),
+    );
 
     expect(result).toMatchObject({
       status: 'DENIED',
@@ -352,12 +395,18 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
   it('fails closed when tick rounding moves a structural stop onto the fill', async () => {
     vi.mocked(exchange.getSymbolFilters).mockResolvedValue({
-      tickSize: 1, stepSize: 0.001, pricePrecision: 0, qtyPrecision: 3, minNotional: 5,
+      tickSize: 1,
+      stepSize: 0.001,
+      pricePrecision: 0,
+      qtyPrecision: 3,
+      minNotional: 5,
     });
-    const result = await service.execute(intent({
-      structuralStopPrice: 99.6,
-      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-    }));
+    const result = await service.execute(
+      intent({
+        structuralStopPrice: 99.6,
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+      }),
+    );
 
     expect(result).toMatchObject({
       status: 'FAILED',
@@ -380,16 +429,20 @@ describe('SharedStrategyExecutionService protection policy', () => {
       } else {
         vi.mocked(exchange.placeStopClose).mockResolvedValue(false);
       }
-      const result = await service.execute(intent({
-        structuralStopPrice: 99.8,
-        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-      }));
+      const result = await service.execute(
+        intent({
+          structuralStopPrice: 99.8,
+          protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+        }),
+      );
 
       expect(result).toMatchObject({
         status: 'FAILED',
         reason: 'BRACKETS_FAILED',
         metadata: {
-          stopSource: 'STRUCTURAL_PRICE', effectiveStopPrice: 99.8, positionStillOpen: false,
+          stopSource: 'STRUCTURAL_PRICE',
+          effectiveStopPrice: 99.8,
+          positionStillOpen: false,
         },
       });
       expect(exchange.closeSideMarketSafe).toHaveBeenCalledTimes(1);
@@ -400,10 +453,12 @@ describe('SharedStrategyExecutionService protection policy', () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
       { orderId: 'wrong-sl', type: 'STOP_MARKET', stopPrice: 99.79 },
     ]);
-    const result = await service.execute(intent({
-      structuralStopPrice: 99.8,
-      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
-    }));
+    const result = await service.execute(
+      intent({
+        structuralStopPrice: 99.8,
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+      }),
+    );
 
     expect(result).toMatchObject({
       status: 'FAILED',

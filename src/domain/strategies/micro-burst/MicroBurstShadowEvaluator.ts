@@ -42,7 +42,10 @@ export class MicroBurstShadowEvaluator {
     }
   }
 
-  async evaluate(input: { symbol: string; snapshotAtMs?: number }): Promise<MicroBurstShadowEvaluationResult> {
+  async evaluate(input: {
+    symbol: string;
+    snapshotAtMs?: number;
+  }): Promise<MicroBurstShadowEvaluationResult> {
     const { symbol } = input;
     const symConfig = this.symbolConfigs.get(symbol);
 
@@ -54,19 +57,16 @@ export class MicroBurstShadowEvaluator {
       return this.buildDisabledResult(symbol, input.snapshotAtMs ?? this.deps.clock.now());
     }
 
-    const snapshotAtMs = input.snapshotAtMs ?? await this.deps.getServerTime();
+    const snapshotAtMs = input.snapshotAtMs ?? (await this.deps.getServerTime());
 
     try {
-      const context = await buildMicroBurstContext(
-        symbol,
-        this.deps.contextBuilderDeps,
-        {
-          snapshotAtMs,
-          config: symConfig.btcConflictThresholdBps !== undefined
+      const context = await buildMicroBurstContext(symbol, this.deps.contextBuilderDeps, {
+        snapshotAtMs,
+        config:
+          symConfig.btcConflictThresholdBps !== undefined
             ? { btcConflictThresholdBps: symConfig.btcConflictThresholdBps }
             : undefined,
-        },
-      );
+      });
 
       const strategyContext: MicroBurstStrategyContext = {
         ...context,
@@ -84,15 +84,18 @@ export class MicroBurstShadowEvaluator {
       const structuralInvalidation = envelope.structuralInvalidation ?? null;
       const destinationPrice = envelope.destinationPrice ?? null;
 
-      const roomToTargetBps = envelope.destinationPrice && referencePrice > 0
-        ? priceDistanceToBps(referencePrice, envelope.destinationPrice)
-        : null;
-      const riskToInvalidationBps = envelope.structuralInvalidation && referencePrice > 0
-        ? priceDistanceToBps(referencePrice, envelope.structuralInvalidation)
-        : null;
-      const rewardRisk = roomToTargetBps !== null && riskToInvalidationBps !== null && riskToInvalidationBps > 0
-        ? roomToTargetBps / riskToInvalidationBps
-        : null;
+      const roomToTargetBps =
+        envelope.destinationPrice && referencePrice > 0
+          ? priceDistanceToBps(referencePrice, envelope.destinationPrice)
+          : null;
+      const riskToInvalidationBps =
+        envelope.structuralInvalidation && referencePrice > 0
+          ? priceDistanceToBps(referencePrice, envelope.structuralInvalidation)
+          : null;
+      const rewardRisk =
+        roomToTargetBps !== null && riskToInvalidationBps !== null && riskToInvalidationBps > 0
+          ? roomToTargetBps / riskToInvalidationBps
+          : null;
 
       const wouldEnter = envelope.decision === 'ENTRY_INTENT';
 
@@ -171,9 +174,10 @@ export class MicroBurstShadowEvaluator {
                 takerFlowSampleCount: context.aggTradeFlow.tradeCount,
               }
             : {}),
-          referencePriceSource: typeof envelope.diagnostics?.referencePriceSource === 'string'
-            ? envelope.diagnostics.referencePriceSource
-            : 'CLOSED_1M_CANDLE',
+          referencePriceSource:
+            typeof envelope.diagnostics?.referencePriceSource === 'string'
+              ? envelope.diagnostics.referencePriceSource
+              : 'CLOSED_1M_CANDLE',
           btcAcceleration: context.btcContext?.acceleration ?? null,
           btcDirection: context.btcContext?.direction ?? null,
           temporalAbsorptionDetected: context.bookPressure.temporalAbsorptionDetected ?? false,
@@ -233,13 +237,22 @@ export class MicroBurstShadowEvaluator {
     };
 
     if (result.wouldEnter) {
-      this.deps.logger.info('micro_burst_shadow_entry_intent', log as unknown as Record<string, unknown>);
+      this.deps.logger.info(
+        'micro_burst_shadow_entry_intent',
+        log as unknown as Record<string, unknown>,
+      );
     } else {
-      this.deps.logger.debug('micro_burst_shadow_no_trade', log as unknown as Record<string, unknown>);
+      this.deps.logger.debug(
+        'micro_burst_shadow_no_trade',
+        log as unknown as Record<string, unknown>,
+      );
     }
   }
 
-  private buildDisabledResult(symbol: string, snapshotAtMs: number): MicroBurstShadowEvaluationResult {
+  private buildDisabledResult(
+    symbol: string,
+    snapshotAtMs: number,
+  ): MicroBurstShadowEvaluationResult {
     return {
       strategyId: 'MICRO_BURST_V1',
       strategyVersion: MICRO_BURST_V1_VERSION,
@@ -257,7 +270,14 @@ export class MicroBurstShadowEvaluator {
       rewardRisk: null,
       momentum: { direction: 'NEUTRAL', strength: 0, continuationScore: 0 },
       book: { status: 'UNAVAILABLE', ageMs: null, imbalance: 0, imbalanceSlope: null },
-      btc: { status: 'UNAVAILABLE', ageMs: null, ret1m: null, ret3m: null, ret5m: null, conflict: false },
+      btc: {
+        status: 'UNAVAILABLE',
+        ageMs: null,
+        ret1m: null,
+        ret3m: null,
+        ret5m: null,
+        conflict: false,
+      },
       microRegime: 'RANGING',
       dataQuality: { contextValid: false, invalidReasons: ['strategy_disabled'] },
       wouldEnter: false,
@@ -292,7 +312,14 @@ export class MicroBurstShadowEvaluator {
       rewardRisk: null,
       momentum: { direction: 'NEUTRAL', strength: 0, continuationScore: 0 },
       book: { status: 'UNAVAILABLE', ageMs: null, imbalance: 0, imbalanceSlope: null },
-      btc: { status: 'UNAVAILABLE', ageMs: null, ret1m: null, ret3m: null, ret5m: null, conflict: false },
+      btc: {
+        status: 'UNAVAILABLE',
+        ageMs: null,
+        ret1m: null,
+        ret3m: null,
+        ret5m: null,
+        conflict: false,
+      },
       microRegime: 'RANGING',
       dataQuality: { contextValid: false, invalidReasons: ['evaluation_error'] },
       wouldEnter: false,

@@ -4,8 +4,12 @@ import { describe, expect, it } from 'vitest';
 import { ProspectiveOutcomeRecord } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
 import { analyzeMicroBurstProspective } from './MicroBurstProspectiveAnalyzer';
 
-const fixture = (name: string): Record<string, unknown>[] => fs.readFileSync(path.join(__dirname, 'fixtures', name, 'data.jsonl'), 'utf8')
-  .trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+const fixture = (name: string): Record<string, unknown>[] =>
+  fs
+    .readFileSync(path.join(__dirname, 'fixtures', name, 'data.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 
 describe('MicroBurstProspectiveAnalyzer', () => {
   it('deduplicates fixture IDs, separates cohorts, and refuses fabricated controls', () => {
@@ -28,20 +32,63 @@ describe('MicroBurstProspectiveAnalyzer', () => {
 
   it('reconstructs time-shift entry from the first post-shift trade without crossing symbols', () => {
     const signal = {
-      shadowSignalId: 'shifted', strategyId: 'MICRO_BURST_V1', strategyVersion: 'v1', codeCommitSha: 'sha', configHash: 'cfg',
-      symbol: 'BTCUSDT', side: 'LONG', signalAtMs: 100, marketPriceAtSignal: 50, referencePriceSource: 'TEST',
-      structuralStopPrice: 1, destinationPrice: 1_000, support: null, resistance: null, roomToTargetBps: 1, riskToInvalidationBps: 1,
-      rewardRisk: 1, momentum: {}, book: {}, tradeFlow: {}, btc: {}, confidence: 1, leverageTier: 'TEST', leverage: 1, positionFraction: 1, microRegime: 'TEST',
+      shadowSignalId: 'shifted',
+      strategyId: 'MICRO_BURST_V1',
+      strategyVersion: 'v1',
+      codeCommitSha: 'sha',
+      configHash: 'cfg',
+      symbol: 'BTCUSDT',
+      side: 'LONG',
+      signalAtMs: 100,
+      marketPriceAtSignal: 50,
+      referencePriceSource: 'TEST',
+      structuralStopPrice: 1,
+      destinationPrice: 1_000,
+      support: null,
+      resistance: null,
+      roomToTargetBps: 1,
+      riskToInvalidationBps: 1,
+      rewardRisk: 1,
+      momentum: {},
+      book: {},
+      tradeFlow: {},
+      btc: {},
+      confidence: 1,
+      leverageTier: 'TEST',
+      leverage: 1,
+      positionFraction: 1,
+      microRegime: 'TEST',
     };
     const report = analyzeMicroBurstProspective({
       signals: [signal],
       outcomes: [],
-      archiveTrades: (symbol) => symbol === 'BTCUSDT' ? [
-        { eventTime: 300_101, receivedAtMs: 300_101, price: 100, quantity: 1, isBuyerMaker: false },
-        { eventTime: 600_100, receivedAtMs: 600_100, price: 110, quantity: 1, isBuyerMaker: false },
-      ] : [
-        { eventTime: 300_101, receivedAtMs: 300_101, price: 1, quantity: 1, isBuyerMaker: false },
-      ],
+      archiveTrades: (symbol) =>
+        symbol === 'BTCUSDT'
+          ? [
+              {
+                eventTime: 300_101,
+                receivedAtMs: 300_101,
+                price: 100,
+                quantity: 1,
+                isBuyerMaker: false,
+              },
+              {
+                eventTime: 600_100,
+                receivedAtMs: 600_100,
+                price: 110,
+                quantity: 1,
+                isBuyerMaker: false,
+              },
+            ]
+          : [
+              {
+                eventTime: 300_101,
+                receivedAtMs: 300_101,
+                price: 1,
+                quantity: 1,
+                isBuyerMaker: false,
+              },
+            ],
     });
 
     expect(report.text).toContain('TIME_SHIFT (forward 300s): N=1 mean_300s=1000.0bps');

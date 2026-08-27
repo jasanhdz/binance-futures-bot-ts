@@ -11,12 +11,12 @@ The normal runtime opened `depth50@100ms` sockets but received no messages. The 
 
 An isolated websocket probe on 2026-08-27 established the environment-specific routing contract:
 
-| Route and stream | Result |
-| --- | --- |
-| `wss://fstream.binance.com/public/ws/btcusdt@depth20@100ms` | Received `depthUpdate` |
+| Route and stream                                            | Result                      |
+| ----------------------------------------------------------- | --------------------------- |
+| `wss://fstream.binance.com/public/ws/btcusdt@depth20@100ms` | Received `depthUpdate`      |
 | `wss://fstream.binance.com/public/ws/btcusdt@depth50@100ms` | Timed out without a message |
-| `wss://fstream.binance.com/market/ws/btcusdt@aggTrade` | Received `aggTrade` |
-| Raw `/ws` for `btcusdt@aggTrade` | Timed out without a message |
+| `wss://fstream.binance.com/market/ws/btcusdt@aggTrade`      | Received `aggTrade`         |
+| Raw `/ws` for `btcusdt@aggTrade`                            | Timed out without a message |
 
 The initial raw-route interpretation was deployed in `91a822d` and caused both market and kline streams to become stale. It was immediately reverted by `5ffd7b4`. The final correction deliberately retains the established `PUBLIC` and `MARKET` route descriptors.
 

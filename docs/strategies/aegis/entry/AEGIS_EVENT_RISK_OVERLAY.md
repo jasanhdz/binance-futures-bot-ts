@@ -133,7 +133,7 @@ También aparece en `/debug/runtime`:
     "confidence": 0.72,
     "reasons": ["btc_weak_or_hold"],
     "last_update": "2026-05-14T00:00:00+00:00",
-    "cache_status": {"status": "warm", "evaluations": 1}
+    "cache_status": { "status": "warm", "evaluations": 1 }
   }
 }
 ```

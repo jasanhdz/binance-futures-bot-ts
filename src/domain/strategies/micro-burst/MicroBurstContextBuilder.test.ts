@@ -126,7 +126,10 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
       depsWith(freshCandleSets(), healthyBook(), null),
       { snapshotAtMs: SNAPSHOT_AT_MS },
     );
-    expect(unavailable.dataQuality).toMatchObject({ btcStatus: 'UNAVAILABLE', contextValid: false });
+    expect(unavailable.dataQuality).toMatchObject({
+      btcStatus: 'UNAVAILABLE',
+      contextValid: false,
+    });
 
     const stale = await buildMicroBurstContext(
       'ETHUSDT',
@@ -155,9 +158,15 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     });
     expect(replay).toEqual(baseline);
     expect(replay.currentPrice).toBe(historical['1m'][historical['1m'].length - 1].close);
-    expect(replay.candles.candles1m.every((candle) => candle.closeTime <= SNAPSHOT_AT_MS)).toBe(true);
-    expect(replay.candles.candles3m.every((candle) => candle.closeTime <= SNAPSHOT_AT_MS)).toBe(true);
-    expect(replay.candles.candles5m.every((candle) => candle.closeTime <= SNAPSHOT_AT_MS)).toBe(true);
+    expect(replay.candles.candles1m.every((candle) => candle.closeTime <= SNAPSHOT_AT_MS)).toBe(
+      true,
+    );
+    expect(replay.candles.candles3m.every((candle) => candle.closeTime <= SNAPSHOT_AT_MS)).toBe(
+      true,
+    );
+    expect(replay.candles.candles5m.every((candle) => candle.closeTime <= SNAPSHOT_AT_MS)).toBe(
+      true,
+    );
     expect(replay.levels.levels.every((level) => level.availableAtMs <= SNAPSHOT_AT_MS)).toBe(true);
   });
 });

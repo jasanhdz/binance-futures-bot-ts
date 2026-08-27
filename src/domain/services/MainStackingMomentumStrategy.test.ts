@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { Candle, Side } from '../types';
-import { evaluateMainStackingMomentum, MAIN_STACKING_MOMENTUM_AUTHORITY } from './MainStackingMomentumStrategy';
+import {
+  evaluateMainStackingMomentum,
+  MAIN_STACKING_MOMENTUM_AUTHORITY,
+} from './MainStackingMomentumStrategy';
 
 function momentumCandles(side: Side): Candle[] {
   const direction = side === 'LONG' ? 1 : -1;

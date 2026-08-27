@@ -11,12 +11,10 @@ const strategyDir = resolve(__dirname);
 const APPLICATION_LAYER_FILES = ['MicroBurstRuntime.ts', 'MicroBurstSignalJournal.ts'];
 
 function getDomainProductionFiles(): string[] {
-  return readdirSync(strategyDir)
-    .filter((name) =>
-      name.endsWith('.ts') &&
-      !name.includes('.test') &&
-      !APPLICATION_LAYER_FILES.includes(name),
-    );
+  return readdirSync(strategyDir).filter(
+    (name) =>
+      name.endsWith('.ts') && !name.includes('.test') && !APPLICATION_LAYER_FILES.includes(name),
+  );
 }
 
 describe('Micro Burst M3 static audit', () => {
@@ -25,12 +23,7 @@ describe('Micro Burst M3 static audit', () => {
       .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))
       .join('\n');
 
-    const forbiddenCalls = [
-      'marketOpen',
-      'placeStopClose',
-      'placeTpClose',
-      'closeSideMarketSafe',
-    ];
+    const forbiddenCalls = ['marketOpen', 'placeStopClose', 'placeTpClose', 'closeSideMarketSafe'];
 
     for (const call of forbiddenCalls) {
       expect(productionSource).not.toContain(call);
@@ -79,12 +72,13 @@ describe('Micro Burst M3 static audit', () => {
   });
 
   it('application layer files do not invoke exchange mutation', () => {
-    const appSource = APPLICATION_LAYER_FILES
-      .map((name) => {
-        try { return readFileSync(resolve(strategyDir, name), 'utf8'); }
-        catch { return ''; }
-      })
-      .join('\n');
+    const appSource = APPLICATION_LAYER_FILES.map((name) => {
+      try {
+        return readFileSync(resolve(strategyDir, name), 'utf8');
+      } catch {
+        return '';
+      }
+    }).join('\n');
 
     const forbiddenCalls = [
       'marketOpen',
@@ -100,11 +94,13 @@ describe('Micro Burst M3 static audit', () => {
   });
 
   it('application layer files do not import SharedStrategyExecutionService', () => {
-    const appImports = APPLICATION_LAYER_FILES
-      .map((name) => {
-        try { return readFileSync(resolve(strategyDir, name), 'utf8'); }
-        catch { return ''; }
-      })
+    const appImports = APPLICATION_LAYER_FILES.map((name) => {
+      try {
+        return readFileSync(resolve(strategyDir, name), 'utf8');
+      } catch {
+        return '';
+      }
+    })
       .join('\n')
       .split('\n')
       .filter((line) => line.startsWith('import '))

@@ -15,8 +15,12 @@ const WebSocket = require('ws');
 
 const DURATION_S = Number(process.argv.find((_, i, a) => a[i - 1] === '--seconds') ?? 300);
 const DURATION_MS = DURATION_S * 1000;
-const SYMBOLS = (process.argv.find((_, i, a) => a[i - 1] === '--symbols') ?? 'BTCUSDT,ETHUSDT,SOLUSDT')
-  .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+const SYMBOLS = (
+  process.argv.find((_, i, a) => a[i - 1] === '--symbols') ?? 'BTCUSDT,ETHUSDT,SOLUSDT'
+)
+  .split(',')
+  .map((s) => s.trim().toUpperCase())
+  .filter(Boolean);
 
 const WS_BASE = 'wss://fstream.binance.com';
 const REST_BASE = 'https://fapi.binance.com';
@@ -87,16 +91,31 @@ const startedAt = Date.now();
 function makeSymbolMetrics(): SymbolMetrics {
   return {
     depth: {
-      restSnapshots: 0, rawWsEvents: 0, acceptedWsEvents: 0, rejectedWsEvents: 0,
-      gapDetections: 0, resyncAttempts: 0, resyncSuccesses: 0,
-      lastUpdateId: 0, previousUpdateId: 0, firstWsEventAt: 0, lastWsEventAt: 0,
-      bookStatus: 'UNAVAILABLE', bookAgeMs: 0,
+      restSnapshots: 0,
+      rawWsEvents: 0,
+      acceptedWsEvents: 0,
+      rejectedWsEvents: 0,
+      gapDetections: 0,
+      resyncAttempts: 0,
+      resyncSuccesses: 0,
+      lastUpdateId: 0,
+      previousUpdateId: 0,
+      firstWsEventAt: 0,
+      lastWsEventAt: 0,
+      bookStatus: 'UNAVAILABLE',
+      bookAgeMs: 0,
     },
     aggTrade: {
-      rawEvents: 0, acceptedEvents: 0, rejectedEvents: 0,
-      takerBuyEvents: 0, takerSellEvents: 0,
-      takerBuyVolume: 0, takerSellVolume: 0,
-      rejectedByReason: {}, firstEventAt: 0, lastEventAt: 0,
+      rawEvents: 0,
+      acceptedEvents: 0,
+      rejectedEvents: 0,
+      takerBuyEvents: 0,
+      takerSellEvents: 0,
+      takerBuyVolume: 0,
+      takerSellVolume: 0,
+      rejectedByReason: {},
+      firstEventAt: 0,
+      lastEventAt: 0,
     },
     refPrice: { updates: 0, source: 'NONE', lastPrice: 0, ageMs: 0 },
     context: { evaluations: 0, validContexts: 0, invalidContexts: 0, invalidReasons: {} },
@@ -121,8 +140,12 @@ interface BookState {
 const books: Record<string, BookState> = {};
 for (const sym of SYMBOLS) {
   books[sym] = {
-    lastUpdateId: 0, bidBook: new Map(), askBook: new Map(),
-    health: 'UNAVAILABLE', observedAtMs: 0, resyncCount: 0,
+    lastUpdateId: 0,
+    bidBook: new Map(),
+    askBook: new Map(),
+    health: 'UNAVAILABLE',
+    observedAtMs: 0,
+    resyncCount: 0,
   };
 }
 
@@ -144,22 +167,34 @@ function pushAggTrade(sym: string, event: AggTradeEvent): void {
   while (buf.length > 200) buf.shift();
 }
 
-function getTakerFlow(sym: string): { buyVolume: number; sellVolume: number; netTakerVolume: number; tradeCount: number } {
+function getTakerFlow(sym: string): {
+  buyVolume: number;
+  sellVolume: number;
+  netTakerVolume: number;
+  tradeCount: number;
+} {
   const now = Date.now();
-  const recent = aggTradeBuffers[sym].filter(e => now - e.eventTime < 60_000);
-  let buyVolume = 0, sellVolume = 0;
+  const recent = aggTradeBuffers[sym].filter((e) => now - e.eventTime < 60_000);
+  let buyVolume = 0,
+    sellVolume = 0;
   for (const t of recent) {
     if (t.isBuyerMaker) sellVolume += t.quantity;
     else buyVolume += t.quantity;
   }
-  return { buyVolume, sellVolume, netTakerVolume: buyVolume - sellVolume, tradeCount: recent.length };
+  return {
+    buyVolume,
+    sellVolume,
+    netTakerVolume: buyVolume - sellVolume,
+    tradeCount: recent.length,
+  };
 }
 
 // ── Book Operations ──────────────────────────────────────────────────
 
 function applyDiff(book: Map<number, number>, diffs: [string, string][]): void {
   for (const [pStr, qStr] of diffs) {
-    const price = Number(pStr), qty = Number(qStr);
+    const price = Number(pStr),
+      qty = Number(qStr);
     if (!Number.isFinite(price) || price <= 0) continue;
     if (qty === 0) book.delete(price);
     else if (Number.isFinite(qty) && qty > 0) book.set(price, qty);
@@ -174,7 +209,10 @@ function handleDepthEvent(sym: string, data: any): void {
   const lastUpdateId = data.u ?? data.lastUpdateId ?? 0;
   const prevUpdateId = data.pu ?? 0;
 
-  if (lastUpdateId <= 0) { m.rejectedWsEvents++; return; }
+  if (lastUpdateId <= 0) {
+    m.rejectedWsEvents++;
+    return;
+  }
 
   // First event — accept
   if (book.lastUpdateId === 0) {
@@ -224,7 +262,7 @@ async function fetchCandles(symbol: string, interval: string, limit: number): Pr
     const url = `${REST_BASE}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const res = await fetch(url);
     if (!res.ok) return [];
-    const data = await res.json() as any[];
+    const data = (await res.json()) as any[];
     return data.map((k: any) => ({
       openTime: k[0],
       open: Number(k[1]),
@@ -235,7 +273,9 @@ async function fetchCandles(symbol: string, interval: string, limit: number): Pr
       closeTime: k[6],
       buyVolume: Number(k[9]),
     }));
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 // ── BTC Context ──────────────────────────────────────────────────────
@@ -255,7 +295,9 @@ async function pollBtc(): Promise<void> {
       btc.healthy = true;
       btc.lastObservationAt = Date.now();
     }
-  } catch { /* ok */ }
+  } catch {
+    /* ok */
+  }
 }
 
 // ── Reference Price ──────────────────────────────────────────────────
@@ -266,7 +308,7 @@ async function pollMarkPrices(): Promise<void> {
   try {
     const res = await fetch(`${REST_BASE}/fapi/v1/premiumIndex`);
     if (!res.ok) return;
-    const data = await res.json() as any[];
+    const data = (await res.json()) as any[];
     for (const entry of data) {
       if (SYMBOLS.includes(entry.symbol)) {
         markPrices[entry.symbol] = { price: Number(entry.markPrice), at: Date.now() };
@@ -276,13 +318,15 @@ async function pollMarkPrices(): Promise<void> {
         perSymbol[entry.symbol].refPrice.ageMs = 0;
       }
     }
-  } catch { /* ok */ }
+  } catch {
+    /* ok */
+  }
 }
 
 // ── Context Builder (simplified) ─────────────────────────────────────
 
 function filterClosed(candles: any[], snapshotAtMs: number): any[] {
-  return candles.filter(c => c.closeTime <= snapshotAtMs);
+  return candles.filter((c) => c.closeTime <= snapshotAtMs);
 }
 
 async function evaluateContext(sym: string): Promise<void> {
@@ -345,16 +389,18 @@ async function fetchDepthSnapshot(sym: string): Promise<void> {
   try {
     const res = await fetch(`${REST_BASE}/fapi/v1/depth?symbol=${sym}&limit=20`);
     if (!res.ok) return;
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     const book = books[sym];
     book.bidBook.clear();
     book.askBook.clear();
     for (const [p, q] of data.bids) {
-      const price = Number(p), qty = Number(q);
+      const price = Number(p),
+        qty = Number(q);
       if (price > 0 && qty > 0) book.bidBook.set(price, qty);
     }
     for (const [p, q] of data.asks) {
-      const price = Number(p), qty = Number(q);
+      const price = Number(p),
+        qty = Number(q);
       if (price > 0 && qty > 0) book.askBook.set(price, qty);
     }
     book.lastUpdateId = data.lastUpdateId;
@@ -362,7 +408,9 @@ async function fetchDepthSnapshot(sym: string): Promise<void> {
     book.health = 'HEALTHY';
     perSymbol[sym].depth.restSnapshots++;
     perSymbol[sym].depth.lastUpdateId = data.lastUpdateId;
-  } catch { /* ok */ }
+  } catch {
+    /* ok */
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -373,7 +421,7 @@ async function main(): Promise<void> {
 
   // 1. Initial REST data
   console.log('[1/5] Initial REST snapshots...');
-  await Promise.all(SYMBOLS.map(s => fetchDepthSnapshot(s)));
+  await Promise.all(SYMBOLS.map((s) => fetchDepthSnapshot(s)));
   console.log('  Depth snapshots OK');
 
   console.log('[2/5] Initial BTC context...');
@@ -405,7 +453,9 @@ async function main(): Promise<void> {
     console.log('  WS CONNECTED');
   });
 
-  ws.on('ping', (data: any) => { ws.pong(data); });
+  ws.on('ping', (data: any) => {
+    ws.pong(data);
+  });
 
   ws.on('message', (raw: any) => {
     try {
@@ -459,11 +509,16 @@ async function main(): Promise<void> {
 
         pushAggTrade(sym, { eventTime, price, quantity, isBuyerMaker });
       }
-    } catch { /* ignore parse errors */ }
+    } catch {
+      /* ignore parse errors */
+    }
   });
 
   ws.on('error', (err: any) => console.log(`  WS ERROR: ${err.message}`));
-  ws.on('close', (code: any) => { wsConnected = false; console.log(`  WS CLOSE: code=${code}`); });
+  ws.on('close', (code: any) => {
+    wsConnected = false;
+    console.log(`  WS CLOSE: code=${code}`);
+  });
 
   // 3. Periodic tasks
   console.log('[5/5] Starting periodic tasks...\n');
@@ -478,13 +533,17 @@ async function main(): Promise<void> {
 
   // 4. Wait for soak duration
   const evalStart = Date.now() + 10_000; // first eval after 10s warmup
-  await new Promise(r => setTimeout(r, DURATION_MS));
+  await new Promise((r) => setTimeout(r, DURATION_MS));
 
   // 5. Cleanup
   clearInterval(btcTimer);
   clearInterval(refTimer);
   clearInterval(evalTimer);
-  try { ws.close(); } catch { /* ok */ }
+  try {
+    ws.close();
+  } catch {
+    /* ok */
+  }
   shutdownClean = true;
 
   // 6. Final BTC poll
@@ -513,7 +572,9 @@ async function main(): Promise<void> {
     console.log(`  gapDetections:    ${m.depth.gapDetections}`);
     console.log(`  lastUpdateId:     ${m.depth.lastUpdateId}`);
     console.log(`  bookStatus:       ${books[sym].health}`);
-    console.log(`  bookAgeMs:        ${books[sym].observedAtMs > 0 ? Date.now() - books[sym].observedAtMs : 'N/A'}`);
+    console.log(
+      `  bookAgeMs:        ${books[sym].observedAtMs > 0 ? Date.now() - books[sym].observedAtMs : 'N/A'}`,
+    );
     console.log(`AGGTRADE`);
     console.log(`  rawEvents:        ${m.aggTrade.rawEvents}`);
     console.log(`  acceptedEvents:   ${m.aggTrade.acceptedEvents}`);
@@ -522,7 +583,9 @@ async function main(): Promise<void> {
     console.log(`  takerSellEvents:  ${m.aggTrade.takerSellEvents}`);
     console.log(`  takerBuyVolume:   ${m.aggTrade.takerBuyVolume.toFixed(4)}`);
     console.log(`  takerSellVolume:  ${m.aggTrade.takerSellVolume.toFixed(4)}`);
-    console.log(`  netTakerFlow:     ${(m.aggTrade.takerBuyVolume - m.aggTrade.takerSellVolume).toFixed(4)}`);
+    console.log(
+      `  netTakerFlow:     ${(m.aggTrade.takerBuyVolume - m.aggTrade.takerSellVolume).toFixed(4)}`,
+    );
     if (Object.keys(m.aggTrade.rejectedByReason).length > 0) {
       console.log(`  rejectedByReason: ${JSON.stringify(m.aggTrade.rejectedByReason)}`);
     }
@@ -555,10 +618,10 @@ async function main(): Promise<void> {
   console.log(`  shutdownClean:    ${shutdownClean}`);
 
   // 8. Verdict
-  const allDepthOk = SYMBOLS.every(s => perSymbol[s].depth.acceptedWsEvents > 0);
-  const allAggOk = SYMBOLS.every(s => perSymbol[s].aggTrade.acceptedEvents > 0);
-  const allRefOk = SYMBOLS.every(s => perSymbol[s].refPrice.updates > 0);
-  const anyValidCtx = SYMBOLS.some(s => perSymbol[s].context.validContexts > 0);
+  const allDepthOk = SYMBOLS.every((s) => perSymbol[s].depth.acceptedWsEvents > 0);
+  const allAggOk = SYMBOLS.every((s) => perSymbol[s].aggTrade.acceptedEvents > 0);
+  const allRefOk = SYMBOLS.every((s) => perSymbol[s].refPrice.updates > 0);
+  const anyValidCtx = SYMBOLS.some((s) => perSymbol[s].context.validContexts > 0);
   const mutationsZero = exchangeMutations === 0;
 
   console.log(`\n${'='.repeat(60)}`);
@@ -578,4 +641,7 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((err) => { console.error('Soak test crashed:', err); process.exit(1); });
+main().catch((err) => {
+  console.error('Soak test crashed:', err);
+  process.exit(1);
+});

@@ -109,11 +109,9 @@ describe('MicroBurstEntryPolicy correctness', () => {
     const context = makeMicroBurstContext({ currentPrice: Number.NaN });
     const decision = evaluateMicroBurstEntry(context, config);
     expect(decision.action).toBe('NO_TRADE');
-    expect([
-      'INVALID_STRUCTURAL_GEOMETRY',
-      'INSUFFICIENT_ROOM',
-      'INVALID_REWARD_RISK',
-    ]).toContain(decision.reason);
+    expect(['INVALID_STRUCTURAL_GEOMETRY', 'INSUFFICIENT_ROOM', 'INVALID_REWARD_RISK']).toContain(
+      decision.reason,
+    );
   });
 
   it('rejects zero structural risk instead of producing infinite reward/risk', () => {
@@ -137,6 +135,8 @@ describe('MicroBurstEntryPolicy correctness', () => {
 
   it('is deterministic for the same context', () => {
     const context = makeMicroBurstContext();
-    expect(evaluateMicroBurstEntry(context, config)).toEqual(evaluateMicroBurstEntry(context, config));
+    expect(evaluateMicroBurstEntry(context, config)).toEqual(
+      evaluateMicroBurstEntry(context, config),
+    );
   });
 });

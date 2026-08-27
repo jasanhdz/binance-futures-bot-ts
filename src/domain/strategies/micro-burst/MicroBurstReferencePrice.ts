@@ -5,7 +5,9 @@ const STALE_THRESHOLD_MS = 5_000;
 
 export interface MicroBurstReferencePriceDeps {
   getMarkPrice(symbol: string): Promise<number>;
-  getDepthSnapshot?(symbol: string): { bidDepth: { price: number }[]; askDepth: { price: number }[] } | undefined;
+  getDepthSnapshot?(
+    symbol: string,
+  ): { bidDepth: { price: number }[]; askDepth: { price: number }[] } | undefined;
   logger: Logger;
 }
 
@@ -38,16 +40,24 @@ export class MicroBurstReferencePriceProvider {
     }
   }
 
-  getReferencePrice(symbol: string, bookSnapshot?: {
-    bidDepth: { price: number }[];
-    askDepth: { price: number }[];
-  }): MicroBurstReferencePrice | undefined {
+  getReferencePrice(
+    symbol: string,
+    bookSnapshot?: {
+      bidDepth: { price: number }[];
+      askDepth: { price: number }[];
+    },
+  ): MicroBurstReferencePrice | undefined {
     const now = this.clock.now();
 
     if (bookSnapshot && bookSnapshot.bidDepth.length > 0 && bookSnapshot.askDepth.length > 0) {
       const bestBid = bookSnapshot.bidDepth[0].price;
       const bestAsk = bookSnapshot.askDepth[0].price;
-      if (Number.isFinite(bestBid) && bestBid > 0 && Number.isFinite(bestAsk) && bestAsk > bestBid) {
+      if (
+        Number.isFinite(bestBid) &&
+        bestBid > 0 &&
+        Number.isFinite(bestAsk) &&
+        bestAsk > bestBid
+      ) {
         const midpoint = (bestBid + bestAsk) / 2;
         return {
           price: midpoint,

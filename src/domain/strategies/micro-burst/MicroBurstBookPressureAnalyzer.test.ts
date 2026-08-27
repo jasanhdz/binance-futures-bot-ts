@@ -54,11 +54,43 @@ describe('MicroBurstBookPressureAnalyzer status contract', () => {
 
   it('uses only causal temporal observations for signed imbalance slope', () => {
     const history: TemporalBookSnapshot[] = [
-      { observedAtMs: SNAPSHOT_AT_MS - 4_000, signedTopOfBookImbalance: 0.4, topOfBookImbalance: 0.4, bestBidQty: 1, bestAskQty: 2, bidTop5Qty: 1, askTop5Qty: 2, spreadBps: 5 },
-      { observedAtMs: SNAPSHOT_AT_MS - 3_000, signedTopOfBookImbalance: 0.2, topOfBookImbalance: 0.2, bestBidQty: 1, bestAskQty: 2, bidTop5Qty: 1, askTop5Qty: 2, spreadBps: 5 },
-      { observedAtMs: SNAPSHOT_AT_MS + 1, signedTopOfBookImbalance: -1, topOfBookImbalance: 1, bestBidQty: 1, bestAskQty: 2, bidTop5Qty: 1, askTop5Qty: 2, spreadBps: 5 },
+      {
+        observedAtMs: SNAPSHOT_AT_MS - 4_000,
+        signedTopOfBookImbalance: 0.4,
+        topOfBookImbalance: 0.4,
+        bestBidQty: 1,
+        bestAskQty: 2,
+        bidTop5Qty: 1,
+        askTop5Qty: 2,
+        spreadBps: 5,
+      },
+      {
+        observedAtMs: SNAPSHOT_AT_MS - 3_000,
+        signedTopOfBookImbalance: 0.2,
+        topOfBookImbalance: 0.2,
+        bestBidQty: 1,
+        bestAskQty: 2,
+        bidTop5Qty: 1,
+        askTop5Qty: 2,
+        spreadBps: 5,
+      },
+      {
+        observedAtMs: SNAPSHOT_AT_MS + 1,
+        signedTopOfBookImbalance: -1,
+        topOfBookImbalance: 1,
+        bestBidQty: 1,
+        bestAskQty: 2,
+        bidTop5Qty: 1,
+        askTop5Qty: 2,
+        spreadBps: 5,
+      },
     ];
-    const signal = analyzeBookPressure(book(), SNAPSHOT_AT_MS, { minTemporalObservations: 2 }, history);
+    const signal = analyzeBookPressure(
+      book(),
+      SNAPSHOT_AT_MS,
+      { minTemporalObservations: 2 },
+      history,
+    );
     expect(signal.imbalanceSlope).toBeCloseTo(-0.2);
   });
 
@@ -84,11 +116,21 @@ describe('MicroBurstBookPressureAnalyzer status contract', () => {
     ['negative quantity', book({ askDepth: [{ price: 100.05, qty: -1 }] })],
     [
       'unsorted bids',
-      book({ bidDepth: [{ price: 99.9, qty: 1 }, { price: 100, qty: 1 }] }),
+      book({
+        bidDepth: [
+          { price: 99.9, qty: 1 },
+          { price: 100, qty: 1 },
+        ],
+      }),
     ],
     [
       'unsorted asks',
-      book({ askDepth: [{ price: 100.1, qty: 1 }, { price: 100.05, qty: 1 }] }),
+      book({
+        askDepth: [
+          { price: 100.1, qty: 1 },
+          { price: 100.05, qty: 1 },
+        ],
+      }),
     ],
   ] as const)('rejects %s as UNSYNCED', (_name, snapshot) => {
     expect(validateOrderBookSnapshot(snapshot)).toBe('UNSYNCED');

@@ -71,10 +71,11 @@ export async function readStrategyClosedTradeOutcomes(
         continue;
       }
       if (
-        record.status !== 'CLOSED'
-        || (record.strategy !== 'AEGIS_TURBO' && record.strategy !== 'MOMENTUM_RIDE')
-        || record.mode !== mode
-      ) continue;
+        record.status !== 'CLOSED' ||
+        (record.strategy !== 'AEGIS_TURBO' && record.strategy !== 'MOMENTUM_RIDE') ||
+        record.mode !== mode
+      )
+        continue;
       if (!isVerifiedAegisMetricRecord(record)) continue;
       if (typeof record.trade_id !== 'string' || typeof record.closed_at !== 'string') continue;
       if (typeof record.pnl_usdt !== 'number' || !Number.isFinite(record.pnl_usdt)) continue;

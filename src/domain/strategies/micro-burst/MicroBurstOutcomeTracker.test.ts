@@ -29,9 +29,25 @@ function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignal
     riskToInvalidationBps: 63,
     rewardRisk: 1.0,
     momentum: { direction: 'LONG', strength: 0.7, continuationScore: 0.6 },
-    book: { status: 'HEALTHY', ageMs: 100, imbalance: 0.6, imbalanceSlope: 0.02, temporalAbsorption: false, temporalSweep: false },
+    book: {
+      status: 'HEALTHY',
+      ageMs: 100,
+      imbalance: 0.6,
+      imbalanceSlope: 0.02,
+      temporalAbsorption: false,
+      temporalSweep: false,
+    },
     tradeFlow: { buyTakerVolume: 100, sellTakerVolume: 80, netTakerFlow: 20, sampleCount: 50 },
-    btc: { status: 'HEALTHY', ageMs: 50, ret1m: 0.001, ret3m: 0.002, ret5m: 0.003, acceleration: -0.001, direction: 'LONG', conflict: false },
+    btc: {
+      status: 'HEALTHY',
+      ageMs: 50,
+      ret1m: 0.001,
+      ret3m: 0.002,
+      ret5m: 0.003,
+      acceleration: -0.001,
+      direction: 'LONG',
+      conflict: false,
+    },
     confidence: 0.8,
     leverageTier: 'HIGH_CONFIRMATION',
     leverage: 40,
@@ -44,7 +60,12 @@ function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignal
 function createTracker(journalDir: string) {
   const journal = new MicroBurstOutcomeJournal(journalDir);
   let currentTime = 1_000_000;
-  const clock = { now: () => currentTime, advance: (ms: number) => { currentTime += ms; } };
+  const clock = {
+    now: () => currentTime,
+    advance: (ms: number) => {
+      currentTime += ms;
+    },
+  };
   const logger = {
     info: () => {},
     warn: () => {},
@@ -160,7 +181,9 @@ describe('MicroBurstOutcomeTracker', () => {
     });
 
     for (let i = 0; i < 5; i++) {
-      tracker2.trackSignal(makeSignal({ shadowSignalId: `signal-${i}`, signalAtMs: 1_000_000 + i }));
+      tracker2.trackSignal(
+        makeSignal({ shadowSignalId: `signal-${i}`, signalAtMs: 1_000_000 + i }),
+      );
     }
 
     // Should only keep 3
@@ -169,10 +192,16 @@ describe('MicroBurstOutcomeTracker', () => {
 
   it('persists capacity eviction as terminal so restart recovery cannot resurrect it', () => {
     const storageRoot = path.join(TEST_DIR, 'capacity');
-    const storage = new MicroBurstStorage({ databasePath: path.join(storageRoot, 'state.sqlite'), archivePath: path.join(storageRoot, 'archive') });
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(storageRoot, 'state.sqlite'),
+      archivePath: path.join(storageRoot, 'archive'),
+    });
     const tracker = new MicroBurstOutcomeTracker({
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      clock: { now: () => 1_000_000 }, journal: new MicroBurstOutcomeJournal(path.join(storageRoot, 'journal')), storage, maxPendingOutcomes: 1,
+      clock: { now: () => 1_000_000 },
+      journal: new MicroBurstOutcomeJournal(path.join(storageRoot, 'journal')),
+      storage,
+      maxPendingOutcomes: 1,
     });
     tracker.trackSignal(makeSignal({ shadowSignalId: 'oldest', signalAtMs: 1_000_000 }));
     tracker.trackSignal(makeSignal({ shadowSignalId: 'newest', signalAtMs: 1_000_001 }));
@@ -203,9 +232,25 @@ describe('MicroBurstOutcomeTracker', () => {
       leverage: 40,
       microRegime: 'RANGING',
       momentum: { direction: 'LONG', strength: 0.7, continuationScore: 0.6 },
-      book: { status: 'HEALTHY', ageMs: 100, imbalance: 0.6, imbalanceSlope: null, temporalAbsorption: false, temporalSweep: false },
+      book: {
+        status: 'HEALTHY',
+        ageMs: 100,
+        imbalance: 0.6,
+        imbalanceSlope: null,
+        temporalAbsorption: false,
+        temporalSweep: false,
+      },
       tradeFlow: { buyTakerVolume: 0, sellTakerVolume: 0, netTakerFlow: 0, sampleCount: 0 },
-      btc: { status: 'HEALTHY', ageMs: 50, ret1m: null, ret3m: null, ret5m: null, acceleration: null, direction: null, conflict: false },
+      btc: {
+        status: 'HEALTHY',
+        ageMs: 50,
+        ret1m: null,
+        ret3m: null,
+        ret5m: null,
+        acceleration: null,
+        direction: null,
+        conflict: false,
+      },
       horizons: {},
       barrierOutcome: 'NEITHER',
       dynamicExitOutcome: null,

@@ -53,6 +53,8 @@ export function evaluateSharedEntrySafety(
   return { allowed: true, reason: 'shared_entry_safety_allowed' };
 }
 
-function denied(reason: Exclude<SharedEntrySafetyReason, 'shared_entry_safety_allowed'>): SharedEntrySafetyDecision {
+function denied(
+  reason: Exclude<SharedEntrySafetyReason, 'shared_entry_safety_allowed'>,
+): SharedEntrySafetyDecision {
   return { allowed: false, reason };
 }

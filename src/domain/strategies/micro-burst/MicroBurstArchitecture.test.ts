@@ -12,12 +12,10 @@ const strategyDir = resolve(__dirname);
 const APPLICATION_LAYER_FILES = ['MicroBurstRuntime.ts', 'MicroBurstSignalJournal.ts'];
 
 function getDomainProductionFiles(): string[] {
-  return readdirSync(strategyDir)
-    .filter((name) =>
-      name.endsWith('.ts') &&
-      !name.includes('.test') &&
-      !APPLICATION_LAYER_FILES.includes(name),
-    );
+  return readdirSync(strategyDir).filter(
+    (name) =>
+      name.endsWith('.ts') && !name.includes('.test') && !APPLICATION_LAYER_FILES.includes(name),
+  );
 }
 
 describe('Micro Burst architecture boundaries', () => {
@@ -60,7 +58,10 @@ describe('Micro Burst architecture boundaries', () => {
     const productionSource = getDomainProductionFiles()
       .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))
       .join('\n');
-    const contextBuilder = readFileSync(resolve(strategyDir, 'MicroBurstContextBuilder.ts'), 'utf8');
+    const contextBuilder = readFileSync(
+      resolve(strategyDir, 'MicroBurstContextBuilder.ts'),
+      'utf8',
+    );
     expect(productionSource).not.toContain('Date.now()');
     expect(contextBuilder).not.toContain('availableAtCandleIndex');
   });

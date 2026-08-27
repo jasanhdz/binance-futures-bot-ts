@@ -33,7 +33,13 @@ function makeDeps(): MicroBurstRuntimeDeps {
       getUSDTBalance: async () => 100,
       setLeverage: async () => {},
       ensureMarginType: async () => {},
-      getSymbolFilters: async () => ({ tickSize: 0.01, stepSize: 0.001, pricePrecision: 2, qtyPrecision: 3, minNotional: 5 }),
+      getSymbolFilters: async () => ({
+        tickSize: 0.01,
+        stepSize: 0.001,
+        pricePrecision: 2,
+        qtyPrecision: 3,
+        minNotional: 5,
+      }),
       hasOpenPosition: async () => false,
       readActivePosition: async () => null,
       marketOpen: async () => ({ avgPrice: 0, orderId: '' }),
@@ -146,16 +152,31 @@ describe('MicroBurstRuntime', () => {
       persistCheckpoint: () => true,
       flush: async () => true,
       close: async () => {},
-      getHealth: () => ({ healthy: true, errorCount: 0, queueDepth: 0, queueCapacity: 10, queuedRecords: 4, writtenRecords: 4, overflowRecords: 0 }),
+      getHealth: () => ({
+        healthy: true,
+        errorCount: 0,
+        queueDepth: 0,
+        queueCapacity: 10,
+        queuedRecords: 4,
+        writtenRecords: 4,
+        overflowRecords: 0,
+      }),
     };
     const runtime = new MicroBurstRuntime(deps, makeConfig({ marketArchive: { enabled: true } }));
 
     await runtime.start();
     await runtime.stop();
 
-    expect(info).toHaveBeenCalledWith('MICRO_BURST_SHADOW_HEALTH', expect.objectContaining({
-      phase: 'graceful_shutdown', archiveQueueDepth: 0, archiveQueuedRecords: 4, archiveWrittenRecords: 4, archiveOverflowRecords: 0,
-    }));
+    expect(info).toHaveBeenCalledWith(
+      'MICRO_BURST_SHADOW_HEALTH',
+      expect.objectContaining({
+        phase: 'graceful_shutdown',
+        archiveQueueDepth: 0,
+        archiveQueuedRecords: 4,
+        archiveWrittenRecords: 4,
+        archiveOverflowRecords: 0,
+      }),
+    );
   });
 
   it('reports formal readiness only for an official shadow cohort with a healthy archive queue', async () => {
@@ -174,14 +195,21 @@ describe('MicroBurstRuntime', () => {
       cohortId: 'MBV1-M3_2-abc123-def456',
       officialCohortReady: true,
     };
-    const runtime = new MicroBurstRuntime(deps, makeConfig({
-      prospectiveValidation: { enabled: true },
-      marketArchive: { enabled: true },
-    }));
+    const runtime = new MicroBurstRuntime(
+      deps,
+      makeConfig({
+        prospectiveValidation: { enabled: true },
+        marketArchive: { enabled: true },
+      }),
+    );
 
     await runtime.start();
 
-    expect(runtime.getReadiness()).toMatchObject({ ready: true, blockers: [], liveExecution: false });
+    expect(runtime.getReadiness()).toMatchObject({
+      ready: true,
+      blockers: [],
+      liveExecution: false,
+    });
     await runtime.stop();
     expect(flush).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);

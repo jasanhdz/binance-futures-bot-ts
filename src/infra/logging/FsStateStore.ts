@@ -22,7 +22,10 @@ export class FsStateStore implements StateStore {
   private isSaving: boolean = false;
   private pendingSave: boolean = false;
 
-  constructor(private readonly key: string = 'default', private readonly scope = 'prod') {
+  constructor(
+    private readonly key: string = 'default',
+    private readonly scope = 'prod',
+  ) {
     const scopeSuffix = this.scope ? `_${sanitizeKey(this.scope)}` : '';
     const keySuffix = key === 'default' ? '' : `_${sanitizeKey(key)}`;
     this.statePath = path.join(dataDir, `state${scopeSuffix}${keySuffix}.json`);
@@ -86,7 +89,6 @@ export class FsStateStore implements StateStore {
 
       await fsPromises.writeFile(tempPath, data, 'utf8');
       await fsPromises.rename(tempPath, this.statePath);
-
     } catch (err) {
       console.error('State async save failed:', err);
     } finally {

@@ -32,7 +32,7 @@ describe('MicroBurstLeveragePolicy', () => {
   });
 
   it('returns MEDIUM at exact boundary', () => {
-    const result = selectLeverageTier(0.50, config);
+    const result = selectLeverageTier(0.5, config);
     expect(result.tier).toBe('MEDIUM_CONFIRMATION');
   });
 

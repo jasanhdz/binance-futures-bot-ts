@@ -274,9 +274,9 @@ protection policy if needed
 Hoy `SharedStrategyExecutionService` tiene configuración de protección global como:
 
 ```ts
-requireStop
-requireTakeProfit
-closeIfProtectionFails
+requireStop;
+requireTakeProfit;
+closeIfProtectionFails;
 ```
 
 pero Aegis tiene configuración por estrategia como `require_brackets` y Momentum tiene sus propios caps.

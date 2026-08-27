@@ -52,7 +52,10 @@ export class MarketDataHub {
   private readonly watchdogTimer: NodeJS.Timeout;
   private closed = false;
 
-  constructor(private readonly logger: Logger, config: MarketDataHubConfig = {}) {
+  constructor(
+    private readonly logger: Logger,
+    config: MarketDataHubConfig = {},
+  ) {
     this.endpoint = config.endpoint ?? resolveMarketDataEndpoint(config.isTestnet ?? false);
     this.watchdogTimeoutMs = config.watchdogTimeoutMs ?? 60_000;
     this.reconnectDelayMs = config.reconnectDelayMs ?? 5_000;
@@ -68,7 +71,12 @@ export class MarketDataHub {
     const key = `${descriptor.accessMode}:${stream}`;
     let connection = this.connections.get(key);
     if (!connection) {
-      connection = { consumers: new Set(), status: 'connecting', intentionallyClosed: false, descriptor };
+      connection = {
+        consumers: new Set(),
+        status: 'connecting',
+        intentionallyClosed: false,
+        descriptor,
+      };
       this.connections.set(key, connection);
     }
     connection.consumers.add(consumer);
@@ -110,7 +118,9 @@ export class MarketDataHub {
     connection.intentionallyClosed = false;
     connection.status = 'connecting';
     try {
-      const socket = this.webSocketFactory(streamWebSocketUrl(this.endpoint, stream, connection.descriptor));
+      const socket = this.webSocketFactory(
+        streamWebSocketUrl(this.endpoint, stream, connection.descriptor),
+      );
       connection.socket = socket;
       socket.onopen = () => {
         if (this.connections.get(key) !== connection) return;
@@ -132,7 +142,12 @@ export class MarketDataHub {
     }
   }
 
-  private handleMessage(key: string, stream: string, connection: StreamConnection, raw: unknown): void {
+  private handleMessage(
+    key: string,
+    stream: string,
+    connection: StreamConnection,
+    raw: unknown,
+  ): void {
     if (this.connections.get(key) !== connection) return;
     try {
       const message = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(String(raw));
@@ -159,7 +174,10 @@ export class MarketDataHub {
         connection.lastMessageAtMs !== undefined &&
         now - connection.lastMessageAtMs > this.watchdogTimeoutMs
       ) {
-        this.logger.warn('market_data_ws_stale', { stream, elapsed: now - connection.lastMessageAtMs });
+        this.logger.warn('market_data_ws_stale', {
+          stream,
+          elapsed: now - connection.lastMessageAtMs,
+        });
         this.reconnect(key, stream, connection);
       }
     }

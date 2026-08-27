@@ -32,15 +32,17 @@ describe('BinanceExchange bracket placement', () => {
 
     await exchange.placeStopClose('BTCUSDT', 'LONG', 100);
 
-    expect(mockClient.futuresOrder).toHaveBeenCalledWith(expect.objectContaining({
-      symbol: 'BTCUSDT',
-      side: 'SELL',
-      type: 'STOP_MARKET',
-      stopPrice: '100.00',
-      closePosition: 'true',
-      positionSide: 'LONG',
-      workingType: 'MARK_PRICE',
-    }));
+    expect(mockClient.futuresOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: 'BTCUSDT',
+        side: 'SELL',
+        type: 'STOP_MARKET',
+        stopPrice: '100.00',
+        closePosition: 'true',
+        positionSide: 'LONG',
+        workingType: 'MARK_PRICE',
+      }),
+    );
   });
 
   it('places take-profit brackets as standard hedge-side close orders when quantity is provided', async () => {
@@ -48,16 +50,20 @@ describe('BinanceExchange bracket placement', () => {
 
     await exchange.placeTpClose('BTCUSDT', 'SHORT', 95, 0.02);
 
-    expect(mockClient.futuresOrder).toHaveBeenCalledWith(expect.objectContaining({
-      symbol: 'BTCUSDT',
-      side: 'BUY',
-      type: 'TAKE_PROFIT_MARKET',
-      stopPrice: '95.00',
-      quantity: '0.02',
-      positionSide: 'SHORT',
-      workingType: 'MARK_PRICE',
-    }));
-    const firstCallParams = (mockClient.futuresOrder.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect(mockClient.futuresOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: 'BTCUSDT',
+        side: 'BUY',
+        type: 'TAKE_PROFIT_MARKET',
+        stopPrice: '95.00',
+        quantity: '0.02',
+        positionSide: 'SHORT',
+        workingType: 'MARK_PRICE',
+      }),
+    );
+    const firstCallParams = (
+      mockClient.futuresOrder.mock.calls[0] as unknown as [Record<string, unknown>]
+    )[0];
     expect(firstCallParams).not.toHaveProperty('reduceOnly');
   });
 });

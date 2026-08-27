@@ -34,18 +34,18 @@ const logger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi
 
 describe('MarketDataHub', () => {
   it('uses explicit public and market routes for production and testnet', () => {
-    expect(streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@depth@100ms', PUBLIC)).toBe(
-      'wss://fstream.binance.com/public/ws/btcusdt@depth@100ms',
-    );
+    expect(
+      streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@depth@100ms', PUBLIC),
+    ).toBe('wss://fstream.binance.com/public/ws/btcusdt@depth@100ms');
     expect(streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@aggTrade', MARKET)).toBe(
       'wss://fstream.binance.com/market/ws/btcusdt@aggTrade',
     );
-    expect(combinedStreamWebSocketUrl(resolveMarketDataEndpoint(false), ['btcusdt@kline_5m'], MARKET)).toBe(
-      'wss://fstream.binance.com/market/stream?streams=btcusdt@kline_5m',
-    );
-    expect(streamWebSocketUrl(resolveMarketDataEndpoint(true), 'btcusdt@markPrice@1s', MARKET)).toBe(
-      'wss://stream.binancefuture.com/market/ws/btcusdt@markPrice@1s',
-    );
+    expect(
+      combinedStreamWebSocketUrl(resolveMarketDataEndpoint(false), ['btcusdt@kline_5m'], MARKET),
+    ).toBe('wss://fstream.binance.com/market/stream?streams=btcusdt@kline_5m');
+    expect(
+      streamWebSocketUrl(resolveMarketDataEndpoint(true), 'btcusdt@markPrice@1s', MARKET),
+    ).toBe('wss://stream.binancefuture.com/market/ws/btcusdt@markPrice@1s');
   });
 
   it('fans out one physical stream socket and closes it after the final consumer leaves', () => {

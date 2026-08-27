@@ -11,10 +11,7 @@ import {
   freezeSignalSnapshot,
   OUTCOME_HORIZONS_MS,
 } from './MicroBurstOutcomeEngine';
-import {
-  ShadowSignalSnapshot,
-  CostScenario,
-} from './MicroBurstOutcomeTypes';
+import { ShadowSignalSnapshot, CostScenario } from './MicroBurstOutcomeTypes';
 import { defaultMicroBurstConfig } from './MicroBurstTypes';
 
 // ── Fixtures ───────────────────────────────────────────────
@@ -39,9 +36,25 @@ function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignal
     riskToInvalidationBps: 63,
     rewardRisk: 1.0,
     momentum: { direction: 'LONG', strength: 0.7, continuationScore: 0.6 },
-    book: { status: 'HEALTHY', ageMs: 100, imbalance: 0.6, imbalanceSlope: 0.02, temporalAbsorption: false, temporalSweep: false },
+    book: {
+      status: 'HEALTHY',
+      ageMs: 100,
+      imbalance: 0.6,
+      imbalanceSlope: 0.02,
+      temporalAbsorption: false,
+      temporalSweep: false,
+    },
     tradeFlow: { buyTakerVolume: 100, sellTakerVolume: 80, netTakerFlow: 20, sampleCount: 50 },
-    btc: { status: 'HEALTHY', ageMs: 50, ret1m: 0.001, ret3m: 0.002, ret5m: 0.003, acceleration: -0.001, direction: 'LONG', conflict: false },
+    btc: {
+      status: 'HEALTHY',
+      ageMs: 50,
+      ret1m: 0.001,
+      ret3m: 0.002,
+      ret5m: 0.003,
+      acceleration: -0.001,
+      direction: 'LONG',
+      conflict: false,
+    },
     confidence: 0.8,
     leverageTier: 'HIGH_CONFIRMATION',
     leverage: 40,
@@ -359,18 +372,14 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
 
   it('detects HARD_INVALIDATION for LONG when price drops below stop', () => {
     const signal = makeSignal({ structuralStopPrice: 78500, destinationPrice: 79500 });
-    const priceHistory = [
-      { eventTime: 1_001_000, price: 78400 },
-    ];
+    const priceHistory = [{ eventTime: 1_001_000, price: 78400 }];
     const result = simulateDynamicExit(signal, 79000, priceHistory);
     expect(result?.counterfactualExitReason).toBe('HARD_INVALIDATION');
   });
 
   it('detects TARGET for LONG when price reaches destination', () => {
     const signal = makeSignal({ structuralStopPrice: 78500, destinationPrice: 79500 });
-    const priceHistory = [
-      { eventTime: 1_001_000, price: 79600 },
-    ];
+    const priceHistory = [{ eventTime: 1_001_000, price: 79600 }];
     const result = simulateDynamicExit(signal, 79000, priceHistory);
     expect(result?.counterfactualExitReason).toBe('TARGET');
   });
@@ -387,39 +396,53 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
 
   it('SHORT: detects HARD_INVALIDATION when price rises above stop', () => {
     const signal = makeShortSignal({ structuralStopPrice: 79500, destinationPrice: 78500 });
-    const priceHistory = [
-      { eventTime: 1_001_000, price: 79600 },
-    ];
+    const priceHistory = [{ eventTime: 1_001_000, price: 79600 }];
     const result = simulateDynamicExit(signal, 79000, priceHistory);
     expect(result?.counterfactualExitReason).toBe('HARD_INVALIDATION');
   });
 
   it('SHORT: detects TARGET when price drops to destination', () => {
     const signal = makeShortSignal({ structuralStopPrice: 79500, destinationPrice: 78500 });
-    const priceHistory = [
-      { eventTime: 1_001_000, price: 78400 },
-    ];
+    const priceHistory = [{ eventTime: 1_001_000, price: 78400 }];
     const result = simulateDynamicExit(signal, 79000, priceHistory);
     expect(result?.counterfactualExitReason).toBe('TARGET');
   });
 
   it('closes a LONG on a later break-even touch and ignores later prices', () => {
-    const config = { ...defaultMicroBurstConfig(), exitBreakEvenActivationBps: 10, exitTrailingActivationBps: 1_000 };
-    const result = simulateDynamicExit(makeSignal(), 79000, [
-      { eventTime: 1_001_000, price: 79100 },
-      { eventTime: 1_002_000, price: 79000 },
-      { eventTime: 1_003_000, price: 80000 },
-    ], config);
+    const config = {
+      ...defaultMicroBurstConfig(),
+      exitBreakEvenActivationBps: 10,
+      exitTrailingActivationBps: 1_000,
+    };
+    const result = simulateDynamicExit(
+      makeSignal(),
+      79000,
+      [
+        { eventTime: 1_001_000, price: 79100 },
+        { eventTime: 1_002_000, price: 79000 },
+        { eventTime: 1_003_000, price: 80000 },
+      ],
+      config,
+    );
     expect(result?.counterfactualExitReason).toBe('BREAK_EVEN');
     expect(result?.counterfactualExitPrice).toBe(79000);
   });
 
   it('closes a SHORT on a later break-even touch', () => {
-    const config = { ...defaultMicroBurstConfig(), exitBreakEvenActivationBps: 10, exitTrailingActivationBps: 1_000 };
-    const result = simulateDynamicExit(makeShortSignal(), 79000, [
-      { eventTime: 1_001_000, price: 78900 },
-      { eventTime: 1_002_000, price: 79000 },
-    ], config);
+    const config = {
+      ...defaultMicroBurstConfig(),
+      exitBreakEvenActivationBps: 10,
+      exitTrailingActivationBps: 1_000,
+    };
+    const result = simulateDynamicExit(
+      makeShortSignal(),
+      79000,
+      [
+        { eventTime: 1_001_000, price: 78900 },
+        { eventTime: 1_002_000, price: 79000 },
+      ],
+      config,
+    );
     expect(result?.counterfactualExitReason).toBe('BREAK_EVEN');
   });
 });
@@ -428,12 +451,14 @@ describe('MicroBurstOutcomeEngine high-frequency horizons', () => {
   it('preserves an early first touch across more than 10k events and freezes horizons', () => {
     const signal = makeSignal({ structuralStopPrice: 78500, destinationPrice: 79500 });
     const prices = Array.from({ length: 10_501 }, (_, index) => ({
-      eventTime: signal.signalAtMs + 1 + Math.floor(index * 300_000 / 10_500),
+      eventTime: signal.signalAtMs + 1 + Math.floor((index * 300_000) / 10_500),
       price: index === 1 ? 79600 : 79000,
     })).reverse();
     const horizons = computeAllHorizons(signal, 79000, prices);
     expect(horizons[300_000].barrierOutcome).toBe('TARGET_FIRST');
-    expect(horizons[300_000].firstTouchAtMs).toBe(signal.signalAtMs + 1 + Math.floor(300_000 / 10_500));
+    expect(horizons[300_000].firstTouchAtMs).toBe(
+      signal.signalAtMs + 1 + Math.floor(300_000 / 10_500),
+    );
     expect(Object.isFrozen(horizons)).toBe(true);
     expect(Object.isFrozen(horizons[300_000])).toBe(true);
   });
@@ -462,9 +487,25 @@ describe('MicroBurstOutcomeEngine freeze snapshot', () => {
       riskToInvalidationBps: 63,
       rewardRisk: 1.0,
       momentum: { direction: 'LONG', strength: 0.7, continuationScore: 0.6 },
-      book: { status: 'HEALTHY', ageMs: 100, imbalance: 0.6, imbalanceSlope: 0.02, temporalAbsorption: false, temporalSweep: false },
+      book: {
+        status: 'HEALTHY',
+        ageMs: 100,
+        imbalance: 0.6,
+        imbalanceSlope: 0.02,
+        temporalAbsorption: false,
+        temporalSweep: false,
+      },
       tradeFlow: { buyTakerVolume: 100, sellTakerVolume: 80, netTakerFlow: 20, sampleCount: 50 },
-      btc: { status: 'HEALTHY', ageMs: 50, ret1m: 0.001, ret3m: 0.002, ret5m: 0.003, acceleration: -0.001, direction: 'LONG', conflict: false },
+      btc: {
+        status: 'HEALTHY',
+        ageMs: 50,
+        ret1m: 0.001,
+        ret3m: 0.002,
+        ret5m: 0.003,
+        acceleration: -0.001,
+        direction: 'LONG',
+        conflict: false,
+      },
       confidence: 0.8,
       leverageTier: 'HIGH_CONFIRMATION',
       leverage: 40,

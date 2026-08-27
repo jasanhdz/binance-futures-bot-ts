@@ -14,6 +14,7 @@ The architecture enforces strict separation:
 ### Signal Immutability
 
 When a `wouldEnter` signal is generated at T0:
+
 1. A `ShadowSignalSnapshot` is frozen with ALL decision data
 2. The snapshot is immutable — no post-T0 data can alter it
 3. Side, entry price, stop, target, confidence, leverage are all frozen
@@ -30,6 +31,7 @@ When a `wouldEnter` signal is generated at T0:
 ### Domain Layer (Pure Functions)
 
 **`MicroBurstOutcomeTypes.ts`** — All type definitions:
+
 - `ShadowSignalSnapshot` — frozen signal at T0
 - `EntryPriceModel` — SIGNAL_PRICE, NEXT_TRADE, CONSERVATIVE_SLIPPAGE
 - `CostScenario` — configurable fee + slippage
@@ -40,6 +42,7 @@ When a `wouldEnter` signal is generated at T0:
 - `PendingOutcome` — in-memory state for tracking
 
 **`MicroBurstOutcomeEngine.ts`** — Pure computation:
+
 - `sideAwareReturnBps()` — LONG: (price/entry-1), SHORT: (entry/price-1)
 - `computeHorizonOutcome()` — MFE/MAE/barrier per horizon
 - `computeAllHorizons()` — all 5 horizons
@@ -53,6 +56,7 @@ When a `wouldEnter` signal is generated at T0:
 ### Application Layer (I/O)
 
 **`MicroBurstOutcomeTracker.ts`** — Manages pending outcomes:
+
 - `trackSignal()` — registers frozen snapshot
 - `processTradeEvent()` — feeds price data after T0
 - `flushPending()` — force-completes matured outcomes
@@ -61,6 +65,7 @@ When a `wouldEnter` signal is generated at T0:
 - Eviction: oldest pending removed when over limit
 
 **`MicroBurstOutcomeJournal.ts`** — JSONL append-only:
+
 - Persisted to `logs/micro-burst/shadow-outcomes/`
 - File rotation at 10,000 entries
 - Idempotency by `shadowSignalId`
@@ -68,6 +73,7 @@ When a `wouldEnter` signal is generated at T0:
 - `loadPendingSignalIds()` for restart recovery
 
 **`MicroBurstProspectiveAnalyzer.ts`** (via `scripts/micro-burst-analyze-shadow.ts`):
+
 - Reads signal + outcome journals
 - Per-horizon analysis: mean/median/p10/p25/p75/p90
 - Cost scenario analysis
@@ -78,9 +84,11 @@ When a `wouldEnter` signal is generated at T0:
 ## Outcome Horizons
 
 Measured from T0:
+
 - 15s, 30s, 60s, 120s, 300s
 
 For each horizon:
+
 - MFE bps (max favorable excursion)
 - MAE bps (max adverse excursion)
 - finalReturnBps
@@ -100,13 +108,13 @@ Models are kept separate. Results are never mixed.
 
 ## Cost Scenarios
 
-| Label | Fee bps | Slippage bps | Total cost |
-|-------|---------|--------------|------------|
-| cost_0 | 0 | 0 | 0 |
-| cost_10 | 7 | 3 | 10 |
-| cost_14 | 10 | 4 | 14 |
-| cost_20 | 14 | 6 | 20 |
-| cost_30 | 20 | 10 | 30 |
+| Label   | Fee bps | Slippage bps | Total cost |
+| ------- | ------- | ------------ | ---------- |
+| cost_0  | 0       | 0            | 0          |
+| cost_10 | 7       | 3            | 10         |
+| cost_14 | 10      | 4            | 14         |
+| cost_20 | 14      | 6            | 20         |
+| cost_30 | 20      | 10           | 30         |
 
 ## First-Touch Semantics
 
@@ -119,6 +127,7 @@ Models are kept separate. Results are never mixed.
 ## Dynamic Exit Counterfactual
 
 Reuses the existing `evaluateMicroBurstExit()` from `MicroBurstExitPolicy.ts`:
+
 - HARD_INVALIDATION, TARGET, BREAK_EVEN, TRAILING, EARLY_FAILURE, BTC_REVERSAL, ANOMALY_EXIT, MAX_HOLD, HOLD_AT_HORIZON
 - Simulates position lifecycle against price trajectory
 - No new exit logic — purely shadow simulation
@@ -146,6 +155,7 @@ Reuses the existing `evaluateMicroBurstExit()` from `MicroBurstExitPolicy.ts`:
 ## Anti-Lookahead Guarantees
 
 Verified by tests:
+
 - Frozen signal snapshot is immutable
 - Post-T0 trades cannot alter entry price model
 - Post-T0 data cannot change structural stop/target
@@ -168,6 +178,7 @@ C. Simple momentum baseline (optional)
 ## Static Firewall
 
 Extended to include M3:
+
 - Domain files: no exchange mutation, no Exchange port import, no Date.now()
 - Application files: no exchange mutation, no SharedStrategyExecutionService import
 - LIVE authority: false
@@ -176,12 +187,14 @@ Extended to include M3:
 ## Tests
 
 ### New Test Files (60+ tests)
+
 - `MicroBurstOutcomeEngine.test.ts` — 25 tests: side-aware returns, horizons, first-touch, costs, entry models, dynamic exit, freeze snapshot, pending outcome
 - `MicroBurstOutcomeAntiLookahead.test.ts` — 12 tests: immutability, lookahead rejection, negative controls, determinism
 - `MicroBurstOutcomeJournal.test.ts` — 8 tests: append, dedup, JSONL validity, credentials, immutability
 - `MicroBurstOutcomeTracker.test.ts` — 10 tests: tracking, dedup, trade processing, completion, eviction, restart recovery
 
 ### Regression
+
 - All 1022/1022 tests pass
 - M0, M1, M2, M2.1, Aegis, Momentum, Shared Execution, routers, restoration, static firewall — all green
 

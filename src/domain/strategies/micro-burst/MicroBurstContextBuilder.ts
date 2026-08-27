@@ -31,14 +31,22 @@ export interface OrderBookSnapshotProvider {
 }
 
 export interface ReferencePriceProvider {
-  getReferencePrice(symbol: string, bookSnapshot?: {
-    bidDepth: { price: number }[];
-    askDepth: { price: number }[];
-  }): MicroBurstReferencePrice | undefined;
+  getReferencePrice(
+    symbol: string,
+    bookSnapshot?: {
+      bidDepth: { price: number }[];
+      askDepth: { price: number }[];
+    },
+  ): MicroBurstReferencePrice | undefined;
 }
 
 export interface AggTradeFlowProvider {
-  getTakerFlow(symbol: string): { buyVolume: number; sellVolume: number; netTakerVolume: number; tradeCount: number };
+  getTakerFlow(symbol: string): {
+    buyVolume: number;
+    sellVolume: number;
+    netTakerVolume: number;
+    tradeCount: number;
+  };
 }
 
 export interface MicroBurstContextBuilderDeps {
@@ -211,11 +219,16 @@ export async function buildMicroBurstContext(
     config.momentumSlopePeriod,
   );
   const bookSnapshot = deps.book?.getDepthSnapshot(symbol);
-  const bookPressure = analyzeBookPressure(bookSnapshot, snapshotAtMs, {
-    anomalySpreadBps: config.bookAnomalySpreadBps,
-    minImbalance: config.bookMinImbalance,
-    freshnessMaxMs: config.bookFreshnessMaxMs,
-  }, bookSnapshot?.temporalHistory);
+  const bookPressure = analyzeBookPressure(
+    bookSnapshot,
+    snapshotAtMs,
+    {
+      anomalySpreadBps: config.bookAnomalySpreadBps,
+      minImbalance: config.bookMinImbalance,
+      freshnessMaxMs: config.bookFreshnessMaxMs,
+    },
+    bookSnapshot?.temporalHistory,
+  );
   const btcRaw = deps.btc?.getBtcContext();
   const candidateSide: Side | 'NEUTRAL' =
     levels.nearest.structuralPosition === 'near_support'
@@ -269,12 +282,14 @@ export async function buildMicroBurstContext(
     microRegime,
     dataQuality,
     ...(aggTradeFlow && aggTradeFlow.tradeCount > 0
-      ? { aggTradeFlow: {
-          buyTakerVolume: aggTradeFlow.buyVolume,
-          sellTakerVolume: aggTradeFlow.sellVolume,
-          netTakerFlow: aggTradeFlow.netTakerVolume,
-          tradeCount: aggTradeFlow.tradeCount,
-        }}
+      ? {
+          aggTradeFlow: {
+            buyTakerVolume: aggTradeFlow.buyVolume,
+            sellTakerVolume: aggTradeFlow.sellVolume,
+            netTakerFlow: aggTradeFlow.netTakerVolume,
+            tradeCount: aggTradeFlow.tradeCount,
+          },
+        }
       : {}),
   };
 }

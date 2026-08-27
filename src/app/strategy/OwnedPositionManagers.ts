@@ -8,7 +8,10 @@ import {
 } from '../position/StrategyPositionLifecycleCore';
 import { StrategyPositionManager } from './PositionManagerRouter';
 
-function assertOwnership(expected: 'AEGIS_TURBO' | 'MOMENTUM_RIDE', identity: StrategyIdentity): void {
+function assertOwnership(
+  expected: 'AEGIS_TURBO' | 'MOMENTUM_RIDE',
+  identity: StrategyIdentity,
+): void {
   if (identity.strategyId !== expected) {
     throw new Error(`POSITION_MANAGER_OWNERSHIP_MISMATCH:${expected}:${identity.strategyId}`);
   }
@@ -18,12 +21,17 @@ function assertOwnership(expected: 'AEGIS_TURBO' | 'MOMENTUM_RIDE', identity: St
  * Aegis-owned position lifecycle boundary.
  * Aegis-specific ExitEye/guardian behavior may exist behind this manager only.
  */
-export class AegisPositionManager implements StrategyPositionManager<StrategyPositionLifecycleContext> {
+export class AegisPositionManager
+  implements StrategyPositionManager<StrategyPositionLifecycleContext>
+{
   readonly strategyId = 'AEGIS_TURBO' as const;
 
   constructor(private readonly lifecycle: AegisPositionLifecycle) {}
 
-  async manage(identity: StrategyIdentity, context: StrategyPositionLifecycleContext): Promise<PositionManagementResult> {
+  async manage(
+    identity: StrategyIdentity,
+    context: StrategyPositionLifecycleContext,
+  ): Promise<PositionManagementResult> {
     assertOwnership(this.strategyId, identity);
     await this.lifecycle.manage(context);
     return {
@@ -39,12 +47,17 @@ export class AegisPositionManager implements StrategyPositionManager<StrategyPos
  * Momentum-owned position lifecycle boundary.
  * It must never inherit Aegis current-brain/ExitEye authority.
  */
-export class MomentumRidePositionManager implements StrategyPositionManager<StrategyPositionLifecycleContext> {
+export class MomentumRidePositionManager
+  implements StrategyPositionManager<StrategyPositionLifecycleContext>
+{
   readonly strategyId = 'MOMENTUM_RIDE' as const;
 
   constructor(private readonly lifecycle: StrategyPositionLifecycleCore) {}
 
-  async manage(identity: StrategyIdentity, context: StrategyPositionLifecycleContext): Promise<PositionManagementResult> {
+  async manage(
+    identity: StrategyIdentity,
+    context: StrategyPositionLifecycleContext,
+  ): Promise<PositionManagementResult> {
     assertOwnership(this.strategyId, identity);
     await this.lifecycle.manage(strategyLifecyclePolicy('MOMENTUM_RIDE'), context);
     return {

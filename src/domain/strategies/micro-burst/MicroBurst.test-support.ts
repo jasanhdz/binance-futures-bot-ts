@@ -15,10 +15,7 @@ export function makeBtcContext(overrides: Partial<BtcContext> = {}): BtcContext 
   };
 }
 
-export function makeLevel(
-  type: 'support' | 'resistance',
-  price: number,
-): SupportResistanceLevel {
+export function makeLevel(type: 'support' | 'resistance', price: number): SupportResistanceLevel {
   return {
     price,
     type,
@@ -40,7 +37,11 @@ export function makeMicroBurstContext(
     symbol: 'ETHUSDT',
     timestamp: TEST_SNAPSHOT_AT_MS,
     currentPrice: 100,
-    decisionPrice: Object.freeze({ price: 100, source: 'CANDLE' as const, observedAtMs: TEST_SNAPSHOT_AT_MS }),
+    decisionPrice: Object.freeze({
+      price: 100,
+      source: 'CANDLE' as const,
+      observedAtMs: TEST_SNAPSHOT_AT_MS,
+    }),
     candles: { candles1m: [], candles3m: [], candles5m: [] },
     levels: {
       levels: [makeLevel('support', 99.7), makeLevel('resistance', 102)],

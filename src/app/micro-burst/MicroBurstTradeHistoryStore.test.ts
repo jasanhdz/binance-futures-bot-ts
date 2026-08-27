@@ -22,7 +22,10 @@ describe('MicroBurstTradeHistoryStore', () => {
   it('retains more than 10k events in 300 seconds and prunes strictly by exchange event time', () => {
     const store = new MicroBurstTradeHistoryStore();
     for (let index = 10_500; index >= 0; index--) {
-      store.append('ETHUSDT', trade(1_000_000 + Math.floor(index * 300_000 / 10_500), index === 1 ? 90 : 100));
+      store.append(
+        'ETHUSDT',
+        trade(1_000_000 + Math.floor((index * 300_000) / 10_500), index === 1 ? 90 : 100),
+      );
     }
 
     const history = store.query('ETHUSDT', 999_999, 1_300_000);

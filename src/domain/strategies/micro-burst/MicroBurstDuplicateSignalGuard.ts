@@ -73,7 +73,13 @@ export class MicroBurstDuplicateSignalGuard {
       };
     }
 
-    const shadowSignalId = generateShadowSignalId(strategy, symbol, side, structuralLevel, snapshotAtMs);
+    const shadowSignalId = generateShadowSignalId(
+      strategy,
+      symbol,
+      side,
+      structuralLevel,
+      snapshotAtMs,
+    );
     const record: SignalRecord = {
       shadowSignalId,
       firstObservedAt: now,

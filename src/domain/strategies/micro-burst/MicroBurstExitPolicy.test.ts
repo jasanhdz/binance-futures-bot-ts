@@ -102,15 +102,15 @@ describe.each([
   });
 
   it('holds at proofWindow - 1 without progress', () => {
-    expect(evaluateMicroBurstExit(proofContext(config.exitProofWindowMs - 1), config, side).reason).toBe(
-      'HOLD',
-    );
+    expect(
+      evaluateMicroBurstExit(proofContext(config.exitProofWindowMs - 1), config, side).reason,
+    ).toBe('HOLD');
   });
 
   it('fails at proofWindow when MFE is insufficient', () => {
-    expect(evaluateMicroBurstExit(proofContext(config.exitProofWindowMs), config, side).reason).toBe(
-      'EARLY_FAILURE',
-    );
+    expect(
+      evaluateMicroBurstExit(proofContext(config.exitProofWindowMs), config, side).reason,
+    ).toBe('EARLY_FAILURE');
   });
 
   it('does not fail proof after sufficient MFE', () => {
@@ -191,19 +191,62 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
   });
 
   it.each([
-    ['hard invalidation beats target', makeExitContext({ currentPrice: 99, destinationPrice: 99 }), 'LONG', 'HARD_INVALIDATION'],
-    ['anomaly beats target', makeExitContext({ currentPrice: 102, peakPrice: 102, anomalyExitFlag: true }), 'LONG', 'ANOMALY'],
-    ['BTC reversal beats target', makeExitContext({ currentPrice: 102, peakPrice: 102, currentBtcContext: makeBtcContext({ conflictFlag: true, direction: 'SHORT' }) }), 'LONG', 'BTC_REVERSAL'],
-    ['target beats trailing', makeExitContext({ currentPrice: 102, peakPrice: 103 }), 'LONG', 'TARGET'],
-    ['target beats max hold', makeExitContext({ currentPrice: 102, peakPrice: 102, timeInTradeMs: 999_999 }), 'LONG', 'TARGET'],
-    ['proof failure beats max hold', makeExitContext({ timeInTradeMs: 999_999, peakPrice: 100.02 }), 'LONG', 'EARLY_FAILURE'],
-    ['break-even beats max hold once', makeExitContext({ currentPrice: 100.12, peakPrice: 100.12, timeInTradeMs: 999_999 }), 'LONG', 'BREAK_EVEN'],
+    [
+      'hard invalidation beats target',
+      makeExitContext({ currentPrice: 99, destinationPrice: 99 }),
+      'LONG',
+      'HARD_INVALIDATION',
+    ],
+    [
+      'anomaly beats target',
+      makeExitContext({ currentPrice: 102, peakPrice: 102, anomalyExitFlag: true }),
+      'LONG',
+      'ANOMALY',
+    ],
+    [
+      'BTC reversal beats target',
+      makeExitContext({
+        currentPrice: 102,
+        peakPrice: 102,
+        currentBtcContext: makeBtcContext({ conflictFlag: true, direction: 'SHORT' }),
+      }),
+      'LONG',
+      'BTC_REVERSAL',
+    ],
+    [
+      'target beats trailing',
+      makeExitContext({ currentPrice: 102, peakPrice: 103 }),
+      'LONG',
+      'TARGET',
+    ],
+    [
+      'target beats max hold',
+      makeExitContext({ currentPrice: 102, peakPrice: 102, timeInTradeMs: 999_999 }),
+      'LONG',
+      'TARGET',
+    ],
+    [
+      'proof failure beats max hold',
+      makeExitContext({ timeInTradeMs: 999_999, peakPrice: 100.02 }),
+      'LONG',
+      'EARLY_FAILURE',
+    ],
+    [
+      'break-even beats max hold once',
+      makeExitContext({ currentPrice: 100.12, peakPrice: 100.12, timeInTradeMs: 999_999 }),
+      'LONG',
+      'BREAK_EVEN',
+    ],
   ] as const)('%s', (_name, context, side, reason) => {
     expect(evaluateMicroBurstExit(context, config, side).reason).toBe(reason);
   });
 
   it('is deterministic for the same exit context', () => {
-    const context = makeExitContext({ currentPrice: 100.02, peakPrice: 100.02, timeInTradeMs: 10_000 });
+    const context = makeExitContext({
+      currentPrice: 100.02,
+      peakPrice: 100.02,
+      timeInTradeMs: 10_000,
+    });
     expect(evaluateMicroBurstExit(context, config, 'LONG')).toEqual(
       evaluateMicroBurstExit(context, config, 'LONG'),
     );

@@ -12,13 +12,18 @@ const outcomesDir = argument('--outcomes-dir') ?? 'logs/micro-burst/shadow-outco
 const seed = Number(argument('--seed') ?? '1');
 const databasePath = argument('--database');
 const archivePath = argument('--archive-dir');
-const storage = databasePath && archivePath ? new MicroBurstStorage({ databasePath, archivePath }) : undefined;
+const storage =
+  databasePath && archivePath ? new MicroBurstStorage({ databasePath, archivePath }) : undefined;
 
 const report = analyzeMicroBurstProspective({
   signals: loadJsonl(signalsDir),
-  outcomes: storage ? loadOutcomesFromSqlite(databasePath!) : loadJsonl(outcomesDir) as ProspectiveOutcomeRecord[],
+  outcomes: storage
+    ? loadOutcomesFromSqlite(databasePath!)
+    : (loadJsonl(outcomesDir) as ProspectiveOutcomeRecord[]),
   seed: Number.isFinite(seed) ? seed : 1,
-  archiveTrades: storage ? (symbol, fromMs, toMs) => storage.queryArchivedTrades(symbol, fromMs, toMs) as any : undefined,
+  archiveTrades: storage
+    ? (symbol, fromMs, toMs) => storage.queryArchivedTrades(symbol, fromMs, toMs) as any
+    : undefined,
 });
 console.log(report.text);
 storage?.close();
@@ -33,8 +38,16 @@ function loadOutcomesFromSqlite(databasePath: string): ProspectiveOutcomeRecord[
   // The analyzer currently receives SQLite-authoritative records through this minimal read-only companion query.
   const db = new Database(databasePath, { readonly: true });
   try {
-    return db.prepare(`SELECT outcome_json FROM micro_burst_outcomes ORDER BY completed_at_ms, signal_id`).all()
-      .flatMap((row: { outcome_json: string }) => { try { return [JSON.parse(row.outcome_json) as ProspectiveOutcomeRecord]; } catch { return []; } });
+    return db
+      .prepare(`SELECT outcome_json FROM micro_burst_outcomes ORDER BY completed_at_ms, signal_id`)
+      .all()
+      .flatMap((row: { outcome_json: string }) => {
+        try {
+          return [JSON.parse(row.outcome_json) as ProspectiveOutcomeRecord];
+        } catch {
+          return [];
+        }
+      });
   } finally {
     db.close();
   }
@@ -42,10 +55,21 @@ function loadOutcomesFromSqlite(databasePath: string): ProspectiveOutcomeRecord[
 
 function loadJsonl(directory: string): Record<string, unknown>[] {
   if (!fs.existsSync(directory)) return [];
-  return fs.readdirSync(directory).filter((file) => file.endsWith('.jsonl')).sort().flatMap((file) =>
-    fs.readFileSync(path.join(directory, file), 'utf8').split('\n').flatMap((line) => {
-      if (!line.trim()) return [];
-      try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
-    }),
-  );
+  return fs
+    .readdirSync(directory)
+    .filter((file) => file.endsWith('.jsonl'))
+    .sort()
+    .flatMap((file) =>
+      fs
+        .readFileSync(path.join(directory, file), 'utf8')
+        .split('\n')
+        .flatMap((line) => {
+          if (!line.trim()) return [];
+          try {
+            return [JSON.parse(line) as Record<string, unknown>];
+          } catch {
+            return [];
+          }
+        }),
+    );
 }

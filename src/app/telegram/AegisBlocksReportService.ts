@@ -1,77 +1,83 @@
 import path from 'path';
 import { promises as fs } from 'fs';
 
-export type AegisBlocksReportMode = 'summary' | 'reasons' | 'symbols' | 'detail' | 'top' | 'near-miss';
+export type AegisBlocksReportMode =
+  | 'summary'
+  | 'reasons'
+  | 'symbols'
+  | 'detail'
+  | 'top'
+  | 'near-miss';
 
 export type AegisBlocksReportInput = {
-    symbol?: string;
-    windowMinutes: number;
-    mode: AegisBlocksReportMode;
+  symbol?: string;
+  windowMinutes: number;
+  mode: AegisBlocksReportMode;
 };
 
 export type AegisBlockSample = {
-    timestamp: string;
-    symbol: string;
-    side: string;
-    reason: string;
-    event: string;
-    setupGrade: string | null;
-    turboScore: number | null;
-    votes: { long?: number; short?: number; neutral?: number } | null;
-    decisionBrain: string | null;
-    entryQuality: string | null;
-    entryQualityScore: number | null;
-    tailRiskScore: number | null;
-    eventRiskMode: string | null;
-    eventRiskReason: string | null;
-    eventRiskWouldBlock: boolean | null;
-    entryPolicy: {
-        finalDecision: string | null;
-        finalReason: string | null;
-    } | null;
-    regime: {
-        label: string | null;
-        confidence: number | null;
-        reason: string | null;
-        source: string | null;
-        wouldBlock: boolean | null;
-    } | null;
-    probeMode: {
-        enabled: boolean | null;
-        allowed: boolean | null;
-        reason: string | null;
-    } | null;
-    aPlus: boolean | null;
-    rawWouldExecute: boolean | null;
+  timestamp: string;
+  symbol: string;
+  side: string;
+  reason: string;
+  event: string;
+  setupGrade: string | null;
+  turboScore: number | null;
+  votes: { long?: number; short?: number; neutral?: number } | null;
+  decisionBrain: string | null;
+  entryQuality: string | null;
+  entryQualityScore: number | null;
+  tailRiskScore: number | null;
+  eventRiskMode: string | null;
+  eventRiskReason: string | null;
+  eventRiskWouldBlock: boolean | null;
+  entryPolicy: {
+    finalDecision: string | null;
+    finalReason: string | null;
+  } | null;
+  regime: {
+    label: string | null;
+    confidence: number | null;
+    reason: string | null;
     source: string | null;
-    tradeId: string | null;
+    wouldBlock: boolean | null;
+  } | null;
+  probeMode: {
+    enabled: boolean | null;
+    allowed: boolean | null;
+    reason: string | null;
+  } | null;
+  aPlus: boolean | null;
+  rawWouldExecute: boolean | null;
+  source: string | null;
+  tradeId: string | null;
 };
 
 export type AegisBlocksReportOutput = {
-    windowStart: string;
-    windowEnd: string;
-    totalBlocks: number;
-    bySymbol: Record<string, number>;
-    bySide: Record<string, number>;
-    byReason: Record<string, number>;
-    byDecisionBrain: Record<string, number>;
-    byEntryQuality: Record<string, number>;
-    byEventRisk: Record<string, number>;
-    bySetupGrade: Record<string, number>;
-    allowedEvents: Record<string, number>;
-    topBlocks: Array<{ key: string; count: number }>;
-    nearMisses: AegisBlockSample[];
-    samples: AegisBlockSample[];
-    warnings: string[];
+  windowStart: string;
+  windowEnd: string;
+  totalBlocks: number;
+  bySymbol: Record<string, number>;
+  bySide: Record<string, number>;
+  byReason: Record<string, number>;
+  byDecisionBrain: Record<string, number>;
+  byEntryQuality: Record<string, number>;
+  byEventRisk: Record<string, number>;
+  bySetupGrade: Record<string, number>;
+  allowedEvents: Record<string, number>;
+  topBlocks: Array<{ key: string; count: number }>;
+  nearMisses: AegisBlockSample[];
+  samples: AegisBlockSample[];
+  warnings: string[];
 };
 
 export type ParsedBlocksCommand = AegisBlocksReportInput & {
-    valid: true;
+  valid: true;
 };
 
 export type InvalidBlocksCommand = {
-    valid: false;
-    help: string;
+  valid: false;
+  help: string;
 };
 
 type JsonRecord = Record<string, any>;
@@ -81,632 +87,770 @@ const DEFAULT_WINDOW_MINUTES = 60;
 const MAX_TELEGRAM_MESSAGE_CHARS = 3500;
 
 const WINDOW_MINUTES: Record<string, number> = {
-    '15m': 15,
-    '30m': 30,
-    '1h': 60,
-    '2h': 120,
-    '4h': 240,
-    '6h': 360,
-    '12h': 720,
-    '24h': 1440
+  '15m': 15,
+  '30m': 30,
+  '1h': 60,
+  '2h': 120,
+  '4h': 240,
+  '6h': 360,
+  '12h': 720,
+  '24h': 1440,
 };
 
 const BLOCK_EVENTS = new Set([
-    'ENTRY_POLICY_DECISION',
-    'DECISION_ENFORCEMENT_DENIED',
-    'ENTRY_QUALITY_GATE_SHADOW_BLOCK',
-    'ENTRY_QUALITY_GATE_DENIED',
-    'EVENT_RISK_SHADOW_BLOCK',
-    'EVENT_RISK_DENIED',
-    'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
-    'CLEAN_ENTRY_GUARD_SHADOW_WAIT',
-    'PROBE_MODE_DENIED'
+  'ENTRY_POLICY_DECISION',
+  'DECISION_ENFORCEMENT_DENIED',
+  'ENTRY_QUALITY_GATE_SHADOW_BLOCK',
+  'ENTRY_QUALITY_GATE_DENIED',
+  'EVENT_RISK_SHADOW_BLOCK',
+  'EVENT_RISK_DENIED',
+  'CLEAN_ENTRY_GUARD_WAIT_CONFIRMATION',
+  'CLEAN_ENTRY_GUARD_SHADOW_WAIT',
+  'PROBE_MODE_DENIED',
 ]);
 
 const BLOCK_REASONS = new Set([
-    'event_risk_caution_denied_weak_setup',
-    'event_risk_caution_would_block_denied',
-    'event_risk_risk_off_denied_non_a_plus',
-    'entry_quality_shadow_block_hard_denied',
-    'decision_brain_wait_confirmation',
-    'decision_brain_do_not_enter',
-    'decision_brain_manual_only',
-    'turbo_score_below_threshold',
-    'raw_would_execute_false',
-    'clean_entry_wait_confirmation',
-    'clean_entry_shadow_wait',
-    'clean_entry_event_risk_would_block',
-    'clean_entry_rule_gate_insufficient_context',
-    'clean_entry_model_features_missing',
-    'clean_entry_model_block_shadow',
-    'clean_entry_tail_risk_high',
-    'clean_entry_decision_brain_not_enter_now',
-    'clean_entry_missing_critical_data',
-    'probe_event_risk_mode_not_allowed',
-    'probe_event_risk_risk_off',
-    'probe_event_risk_manual_only',
-    'probe_decision_brain_not_enter_now',
-    'probe_entry_quality_not_allow',
-    'probe_entry_quality_block_shadow',
-    'probe_feature_status_not_ok',
-    'probe_feature_parity_too_low',
-    'probe_tail_risk_too_high',
-    'probe_turbo_score_too_low',
-    'probe_setup_grade_not_clean',
-    'probe_clean_entry_block_reasons_not_allowed',
-    'probe_same_symbol_position_open',
-    'probe_recent_stop_loss',
-    'probe_consecutive_losses',
-    'probe_min_minutes_between_entries',
-    'probe_entries_per_hour_exceeded',
-    'probe_open_probe_positions_exceeded',
-    'probe_total_open_positions_exceeded',
-    'regime_trade_allowed',
-    'regime_disabled',
-    'regime_shadow_would_block',
-    'regime_chop_block',
-    'regime_risk_off_block',
-    'regime_exhaustion_block',
-    'regime_high_vol_risk_block',
-    'regime_unknown_block',
-    'regime_low_confidence',
-    'regime_btc_eth_not_aligned',
-    'regime_alt_long_btc_short_block',
-    'regime_alt_short_btc_long_block',
-    'regime_tail_risk_high',
-    'regime_stale_snapshot',
-    'regime_model_unavailable',
-    'regime_invalid_source'
+  'event_risk_caution_denied_weak_setup',
+  'event_risk_caution_would_block_denied',
+  'event_risk_risk_off_denied_non_a_plus',
+  'entry_quality_shadow_block_hard_denied',
+  'decision_brain_wait_confirmation',
+  'decision_brain_do_not_enter',
+  'decision_brain_manual_only',
+  'turbo_score_below_threshold',
+  'raw_would_execute_false',
+  'clean_entry_wait_confirmation',
+  'clean_entry_shadow_wait',
+  'clean_entry_event_risk_would_block',
+  'clean_entry_rule_gate_insufficient_context',
+  'clean_entry_model_features_missing',
+  'clean_entry_model_block_shadow',
+  'clean_entry_tail_risk_high',
+  'clean_entry_decision_brain_not_enter_now',
+  'clean_entry_missing_critical_data',
+  'probe_event_risk_mode_not_allowed',
+  'probe_event_risk_risk_off',
+  'probe_event_risk_manual_only',
+  'probe_decision_brain_not_enter_now',
+  'probe_entry_quality_not_allow',
+  'probe_entry_quality_block_shadow',
+  'probe_feature_status_not_ok',
+  'probe_feature_parity_too_low',
+  'probe_tail_risk_too_high',
+  'probe_turbo_score_too_low',
+  'probe_setup_grade_not_clean',
+  'probe_clean_entry_block_reasons_not_allowed',
+  'probe_same_symbol_position_open',
+  'probe_recent_stop_loss',
+  'probe_consecutive_losses',
+  'probe_min_minutes_between_entries',
+  'probe_entries_per_hour_exceeded',
+  'probe_open_probe_positions_exceeded',
+  'probe_total_open_positions_exceeded',
+  'regime_trade_allowed',
+  'regime_disabled',
+  'regime_shadow_would_block',
+  'regime_chop_block',
+  'regime_risk_off_block',
+  'regime_exhaustion_block',
+  'regime_high_vol_risk_block',
+  'regime_unknown_block',
+  'regime_low_confidence',
+  'regime_btc_eth_not_aligned',
+  'regime_alt_long_btc_short_block',
+  'regime_alt_short_btc_long_block',
+  'regime_tail_risk_high',
+  'regime_stale_snapshot',
+  'regime_model_unavailable',
+  'regime_invalid_source',
 ]);
 
-const REGIME_CONTEXT_DIAGNOSTIC_REASONS = new Set([
-    'regime_context_insufficient_data'
-]);
+const REGIME_CONTEXT_DIAGNOSTIC_REASONS = new Set(['regime_context_insufficient_data']);
 
 const MOMENTUM_DIAGNOSTIC_REASONS = new Set([
-    'momentum_regime_not_confirmed',
-    'momentum_turbo_not_confirmed',
-    'momentum_turbo_contradict',
-    'momentum_side_contradict',
-    'momentum_btc_eth_contradict',
-    'momentum_btc_eth_not_confirmed',
-    'momentum_tail_risk_high',
-    'momentum_safety_cap_exceeded',
-    'momentum_override_reserved_not_active',
-    'regime_observed_allow',
-    'regime_observed_watch',
-    'regime_observed_avoid',
-    'regime_observed_unknown',
-    'regime_observed_avoid_ignored_by_research_mode',
-    'regime_observed_unknown_ignored_by_research_mode'
+  'momentum_regime_not_confirmed',
+  'momentum_turbo_not_confirmed',
+  'momentum_turbo_contradict',
+  'momentum_side_contradict',
+  'momentum_btc_eth_contradict',
+  'momentum_btc_eth_not_confirmed',
+  'momentum_tail_risk_high',
+  'momentum_safety_cap_exceeded',
+  'momentum_override_reserved_not_active',
+  'regime_observed_allow',
+  'regime_observed_watch',
+  'regime_observed_avoid',
+  'regime_observed_unknown',
+  'regime_observed_avoid_ignored_by_research_mode',
+  'regime_observed_unknown_ignored_by_research_mode',
 ]);
 
 const ALLOWED_EVENTS = new Set([
-    'GATE_ALLOWED',
-    'ORDER_SUBMITTED',
-    'POSITION_CONFIRMED',
-    'BRACKETS_CONFIRMED',
-    'PROBE_MODE_ALLOWED',
-    'TRADE_CLOSED'
+  'GATE_ALLOWED',
+  'ORDER_SUBMITTED',
+  'POSITION_CONFIRMED',
+  'BRACKETS_CONFIRMED',
+  'PROBE_MODE_ALLOWED',
+  'TRADE_CLOSED',
 ]);
 
 export class AegisBlocksReportService {
-    private readonly baseDir: string;
-    private readonly now: () => Date;
+  private readonly baseDir: string;
+  private readonly now: () => Date;
 
-    constructor(options: { baseDir?: string; now?: () => Date } = {}) {
-        this.baseDir = options.baseDir ?? path.join(process.cwd(), 'logs', 'aegis');
-        this.now = options.now ?? (() => new Date());
+  constructor(options: { baseDir?: string; now?: () => Date } = {}) {
+    this.baseDir = options.baseDir ?? path.join(process.cwd(), 'logs', 'aegis');
+    this.now = options.now ?? (() => new Date());
+  }
+
+  parseCommand(args: string[]): ParsedBlocksCommand | InvalidBlocksCommand {
+    return parseBlocksCommand(args);
+  }
+
+  async buildTelegramMessages(args: string[]): Promise<string[]> {
+    const parsed = this.parseCommand(args);
+    if (!parsed.valid) return [parsed.help];
+
+    const report = await this.buildReport(parsed);
+    return formatBlocksReportMessages(report, parsed);
+  }
+
+  async buildReport(input: AegisBlocksReportInput): Promise<AegisBlocksReportOutput> {
+    const windowMinutes = Math.min(input.windowMinutes, MAX_WINDOW_MINUTES);
+    const windowEndDate = this.now();
+    const windowStartDate = new Date(windowEndDate.getTime() - windowMinutes * 60 * 1000);
+    const warnings: string[] = [];
+    const rows = await this.readRows(windowStartDate, windowEndDate, warnings);
+    const symbolFilter = input.symbol?.toUpperCase();
+
+    const blocks: AegisBlockSample[] = [];
+    const allowedEvents: Record<string, number> = {};
+
+    for (const row of rows) {
+      const timestampMs = timestampMsFromRow(row);
+      if (
+        timestampMs === undefined ||
+        timestampMs < windowStartDate.getTime() ||
+        timestampMs > windowEndDate.getTime()
+      ) {
+        continue;
+      }
+
+      const symbol = stableText(row.symbol ?? row.metadata?.symbol).toUpperCase();
+      if (symbolFilter && symbol !== symbolFilter) continue;
+
+      const event = stableText(row.event);
+      if (ALLOWED_EVENTS.has(event)) {
+        increment(allowedEvents, event);
+      }
+
+      if (!isBlockRow(row)) continue;
+      blocks.push(extractBlockSample(row));
     }
 
-    parseCommand(args: string[]): ParsedBlocksCommand | InvalidBlocksCommand {
-        return parseBlocksCommand(args);
+    const bySymbol: Record<string, number> = {};
+    const bySide: Record<string, number> = {};
+    const byReason: Record<string, number> = {};
+    const byDecisionBrain: Record<string, number> = {};
+    const byEntryQuality: Record<string, number> = {};
+    const byEventRisk: Record<string, number> = {};
+    const bySetupGrade: Record<string, number> = {};
+
+    for (const block of blocks) {
+      increment(bySymbol, block.symbol);
+      increment(bySide, block.side);
+      increment(byReason, block.reason);
+      increment(byDecisionBrain, block.decisionBrain ?? 'N/D');
+      increment(byEntryQuality, block.entryQuality ?? 'N/D');
+      increment(byEventRisk, block.eventRiskMode ?? 'N/D');
+      increment(bySetupGrade, block.setupGrade ?? 'N/D');
     }
 
-    async buildTelegramMessages(args: string[]): Promise<string[]> {
-        const parsed = this.parseCommand(args);
-        if (!parsed.valid) return [parsed.help];
+    const topBlocks = topEntries(bySymbol, 5)
+      .concat(topEntries(byReason, 5))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
 
-        const report = await this.buildReport(parsed);
-        return formatBlocksReportMessages(report, parsed);
-    }
+    return {
+      windowStart: windowStartDate.toISOString(),
+      windowEnd: windowEndDate.toISOString(),
+      totalBlocks: blocks.length,
+      bySymbol,
+      bySide,
+      byReason,
+      byDecisionBrain,
+      byEntryQuality,
+      byEventRisk,
+      bySetupGrade,
+      allowedEvents,
+      topBlocks,
+      nearMisses: blocks.filter(isNearMiss).sort(compareNearMiss).slice(0, 5),
+      samples: blocks.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 8),
+      warnings,
+    };
+  }
 
-    async buildReport(input: AegisBlocksReportInput): Promise<AegisBlocksReportOutput> {
-        const windowMinutes = Math.min(input.windowMinutes, MAX_WINDOW_MINUTES);
-        const windowEndDate = this.now();
-        const windowStartDate = new Date(windowEndDate.getTime() - windowMinutes * 60 * 1000);
-        const warnings: string[] = [];
-        const rows = await this.readRows(windowStartDate, windowEndDate, warnings);
-        const symbolFilter = input.symbol?.toUpperCase();
+  private async readRows(
+    windowStart: Date,
+    windowEnd: Date,
+    warnings: string[],
+  ): Promise<JsonRecord[]> {
+    const rows: JsonRecord[] = [];
+    for (const date of datesInRange(windowStart, windowEnd)) {
+      const filePath = path.join(this.baseDir, `turbo_trade_events_${date}.jsonl`);
+      let content = '';
+      try {
+        content = await fs.readFile(filePath, 'utf8');
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT')
+          warnings.push(`No se pudo leer ${path.basename(filePath)}: ${String(error)}`);
+        continue;
+      }
 
-        const blocks: AegisBlockSample[] = [];
-        const allowedEvents: Record<string, number> = {};
-
-        for (const row of rows) {
-            const timestampMs = timestampMsFromRow(row);
-            if (timestampMs === undefined || timestampMs < windowStartDate.getTime() || timestampMs > windowEndDate.getTime()) {
-                continue;
-            }
-
-            const symbol = stableText(row.symbol ?? row.metadata?.symbol).toUpperCase();
-            if (symbolFilter && symbol !== symbolFilter) continue;
-
-            const event = stableText(row.event);
-            if (ALLOWED_EVENTS.has(event)) {
-                increment(allowedEvents, event);
-            }
-
-            if (!isBlockRow(row)) continue;
-            blocks.push(extractBlockSample(row));
+      const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+      let corrupt = 0;
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === 'object') rows.push(parsed);
+        } catch {
+          corrupt += 1;
         }
-
-        const bySymbol: Record<string, number> = {};
-        const bySide: Record<string, number> = {};
-        const byReason: Record<string, number> = {};
-        const byDecisionBrain: Record<string, number> = {};
-        const byEntryQuality: Record<string, number> = {};
-        const byEventRisk: Record<string, number> = {};
-        const bySetupGrade: Record<string, number> = {};
-
-        for (const block of blocks) {
-            increment(bySymbol, block.symbol);
-            increment(bySide, block.side);
-            increment(byReason, block.reason);
-            increment(byDecisionBrain, block.decisionBrain ?? 'N/D');
-            increment(byEntryQuality, block.entryQuality ?? 'N/D');
-            increment(byEventRisk, block.eventRiskMode ?? 'N/D');
-            increment(bySetupGrade, block.setupGrade ?? 'N/D');
-        }
-
-        const topBlocks = topEntries(bySymbol, 5)
-            .concat(topEntries(byReason, 5))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 8);
-
-        return {
-            windowStart: windowStartDate.toISOString(),
-            windowEnd: windowEndDate.toISOString(),
-            totalBlocks: blocks.length,
-            bySymbol,
-            bySide,
-            byReason,
-            byDecisionBrain,
-            byEntryQuality,
-            byEventRisk,
-            bySetupGrade,
-            allowedEvents,
-            topBlocks,
-            nearMisses: blocks.filter(isNearMiss).sort(compareNearMiss).slice(0, 5),
-            samples: blocks.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 8),
-            warnings
-        };
+      }
+      if (corrupt > 0)
+        warnings.push(`${path.basename(filePath)}: ${corrupt} líneas JSON corruptas ignoradas`);
     }
-
-    private async readRows(windowStart: Date, windowEnd: Date, warnings: string[]): Promise<JsonRecord[]> {
-        const rows: JsonRecord[] = [];
-        for (const date of datesInRange(windowStart, windowEnd)) {
-            const filePath = path.join(this.baseDir, `turbo_trade_events_${date}.jsonl`);
-            let content = '';
-            try {
-                content = await fs.readFile(filePath, 'utf8');
-            } catch (error: any) {
-                if (error?.code !== 'ENOENT') warnings.push(`No se pudo leer ${path.basename(filePath)}: ${String(error)}`);
-                continue;
-            }
-
-            const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
-            let corrupt = 0;
-            for (const line of lines) {
-                try {
-                    const parsed = JSON.parse(line);
-                    if (parsed && typeof parsed === 'object') rows.push(parsed);
-                } catch {
-                    corrupt += 1;
-                }
-            }
-            if (corrupt > 0) warnings.push(`${path.basename(filePath)}: ${corrupt} líneas JSON corruptas ignoradas`);
-        }
-        return rows;
-    }
+    return rows;
+  }
 }
 
 export function parseBlocksCommand(args: string[]): ParsedBlocksCommand | InvalidBlocksCommand {
-    const tokens = args.map((arg) => arg.trim()).filter(Boolean);
-    if (tokens.length === 0) return parsed('summary', undefined, DEFAULT_WINDOW_MINUTES);
+  const tokens = args.map((arg) => arg.trim()).filter(Boolean);
+  if (tokens.length === 0) return parsed('summary', undefined, DEFAULT_WINDOW_MINUTES);
 
-    const first = tokens[0]?.toLowerCase();
-    if (first === 'reasons' || first === 'symbols' || first === 'top' || first === 'near-miss') {
-        const windowMinutes = tokens[1] ? parseWindowMinutes(tokens[1]) : DEFAULT_WINDOW_MINUTES;
-        if (!windowMinutes || tokens.length > 2) return invalidBlocksCommand();
-        return parsed(first, undefined, windowMinutes);
-    }
+  const first = tokens[0]?.toLowerCase();
+  if (first === 'reasons' || first === 'symbols' || first === 'top' || first === 'near-miss') {
+    const windowMinutes = tokens[1] ? parseWindowMinutes(tokens[1]) : DEFAULT_WINDOW_MINUTES;
+    if (!windowMinutes || tokens.length > 2) return invalidBlocksCommand();
+    return parsed(first, undefined, windowMinutes);
+  }
 
-    if (first === 'detail') {
-        const symbol = normalizeSymbol(tokens[1]);
-        const windowMinutes = tokens[2] ? parseWindowMinutes(tokens[2]) : DEFAULT_WINDOW_MINUTES;
-        if (!symbol || !windowMinutes || tokens.length > 3) return invalidBlocksCommand();
-        return parsed('detail', symbol, windowMinutes);
-    }
+  if (first === 'detail') {
+    const symbol = normalizeSymbol(tokens[1]);
+    const windowMinutes = tokens[2] ? parseWindowMinutes(tokens[2]) : DEFAULT_WINDOW_MINUTES;
+    if (!symbol || !windowMinutes || tokens.length > 3) return invalidBlocksCommand();
+    return parsed('detail', symbol, windowMinutes);
+  }
 
-    const onlyWindow = parseWindowMinutes(tokens[0]);
-    if (onlyWindow && tokens.length === 1) return parsed('summary', undefined, onlyWindow);
+  const onlyWindow = parseWindowMinutes(tokens[0]);
+  if (onlyWindow && tokens.length === 1) return parsed('summary', undefined, onlyWindow);
 
-    const symbol = normalizeSymbol(tokens[0]);
-    if (symbol) {
-        const windowMinutes = tokens[1] ? parseWindowMinutes(tokens[1]) : DEFAULT_WINDOW_MINUTES;
-        if (!windowMinutes || tokens.length > 2) return invalidBlocksCommand();
-        return parsed('summary', symbol, windowMinutes);
-    }
+  const symbol = normalizeSymbol(tokens[0]);
+  if (symbol) {
+    const windowMinutes = tokens[1] ? parseWindowMinutes(tokens[1]) : DEFAULT_WINDOW_MINUTES;
+    if (!windowMinutes || tokens.length > 2) return invalidBlocksCommand();
+    return parsed('summary', symbol, windowMinutes);
+  }
 
-    return invalidBlocksCommand();
+  return invalidBlocksCommand();
 }
 
-function parsed(mode: AegisBlocksReportMode, symbol: string | undefined, windowMinutes: number): ParsedBlocksCommand {
-    return {
-        valid: true,
-        mode,
-        symbol,
-        windowMinutes: Math.min(windowMinutes, MAX_WINDOW_MINUTES)
-    };
+function parsed(
+  mode: AegisBlocksReportMode,
+  symbol: string | undefined,
+  windowMinutes: number,
+): ParsedBlocksCommand {
+  return {
+    valid: true,
+    mode,
+    symbol,
+    windowMinutes: Math.min(windowMinutes, MAX_WINDOW_MINUTES),
+  };
 }
 
 function invalidBlocksCommand(): InvalidBlocksCommand {
-    return { valid: false, help: blocksHelpMessage() };
+  return { valid: false, help: blocksHelpMessage() };
 }
 
 function blocksHelpMessage(): string {
-    return [
-        'Uso: /blocks [15m|30m|1h|2h|4h|6h|12h|24h]',
-        '/blocks SYMBOL [ventana]',
-        '/blocks reasons [ventana] | symbols [ventana] | top [ventana]',
-        '/blocks detail SYMBOL [ventana]',
-        '/blocks near-miss [ventana]'
-    ].join('\n');
+  return [
+    'Uso: /blocks [15m|30m|1h|2h|4h|6h|12h|24h]',
+    '/blocks SYMBOL [ventana]',
+    '/blocks reasons [ventana] | symbols [ventana] | top [ventana]',
+    '/blocks detail SYMBOL [ventana]',
+    '/blocks near-miss [ventana]',
+  ].join('\n');
 }
 
 function parseWindowMinutes(value: string): number | undefined {
-    return WINDOW_MINUTES[value.toLowerCase()];
+  return WINDOW_MINUTES[value.toLowerCase()];
 }
 
 function normalizeSymbol(value?: string): string | undefined {
-    const symbol = String(value ?? '').trim().toUpperCase();
-    if (!/^[A-Z0-9]{3,20}$/.test(symbol)) return undefined;
-    if (WINDOW_MINUTES[symbol.toLowerCase()]) return undefined;
-    return symbol;
+  const symbol = String(value ?? '')
+    .trim()
+    .toUpperCase();
+  if (!/^[A-Z0-9]{3,20}$/.test(symbol)) return undefined;
+  if (WINDOW_MINUTES[symbol.toLowerCase()]) return undefined;
+  return symbol;
 }
 
 function isBlockRow(row: JsonRecord): boolean {
-    const event = stableText(row.event);
-    const reason = stableText(row.reason ?? row.metadata?.reason);
-    if (event === 'ENTRY_POLICY_DECISION') {
-        const finalDecision = stableText(row.metadata?.entryPolicy?.finalDecision ?? row.metadata?.finalDecision);
-        return finalDecision !== 'ALLOW';
-    }
-    const entryPolicyDecision = stableText(row.metadata?.entryPolicy?.finalDecision);
-    if (entryPolicyDecision !== 'N/D' && entryPolicyDecision !== 'ALLOW') {
-        return false;
-    }
-    if (REGIME_CONTEXT_DIAGNOSTIC_REASONS.has(reason) || MOMENTUM_DIAGNOSTIC_REASONS.has(reason)) {
-        return false;
-    }
-    return BLOCK_EVENTS.has(event) || BLOCK_REASONS.has(reason);
+  const event = stableText(row.event);
+  const reason = stableText(row.reason ?? row.metadata?.reason);
+  if (event === 'ENTRY_POLICY_DECISION') {
+    const finalDecision = stableText(
+      row.metadata?.entryPolicy?.finalDecision ?? row.metadata?.finalDecision,
+    );
+    return finalDecision !== 'ALLOW';
+  }
+  const entryPolicyDecision = stableText(row.metadata?.entryPolicy?.finalDecision);
+  if (entryPolicyDecision !== 'N/D' && entryPolicyDecision !== 'ALLOW') {
+    return false;
+  }
+  if (REGIME_CONTEXT_DIAGNOSTIC_REASONS.has(reason) || MOMENTUM_DIAGNOSTIC_REASONS.has(reason)) {
+    return false;
+  }
+  return BLOCK_EVENTS.has(event) || BLOCK_REASONS.has(reason);
 }
 
 function extractBlockSample(row: JsonRecord): AegisBlockSample {
-    const metadata = row.metadata ?? {};
-    const event = stableText(row.event);
-    const cleanEntryGuard = metadata.cleanEntryGuard ?? {};
-    const probeMode = metadata.probeMode ?? cleanEntryGuard.probeMode ?? {};
-    const entryPolicy = metadata.entryPolicy ?? (event === 'ENTRY_POLICY_DECISION' ? metadata : {});
-    const regime = entryPolicy.regime ?? metadata.regime ?? {};
-    const checks = metadata.checks ?? {};
-    const cleanEntryReason = event.startsWith('CLEAN_ENTRY_GUARD') ? cleanEntryGuard.reasons?.[0] : undefined;
-    const probeReason = event.startsWith('PROBE_MODE') ? probeMode.reason : undefined;
-    const reason = stableText(probeReason ?? cleanEntryReason ?? entryPolicy.finalReason ?? row.reason ?? metadata.reason ?? cleanEntryGuard.reasons?.[0] ?? metadata.eventRiskReason ?? event);
-    return {
-        timestamp: timestampText(row),
-        symbol: stableText(row.symbol ?? metadata.symbol).toUpperCase(),
-        side: normalizeSide(metadata.side ?? cleanEntryGuard.side ?? row.side ?? row.raw_action ?? row.final_action),
-        reason,
-        event,
-        setupGrade: nullableText(metadata.setupGrade ?? metadata.setup_grade ?? cleanEntryGuard.setupGrade ?? row.setupGrade ?? row.setup_grade),
-        turboScore: finiteNumber(metadata.turboScore ?? metadata.turbo_score ?? cleanEntryGuard.turboScore ?? row.turbo_score ?? checks.turboScore),
-        votes: normalizeVotes(metadata.votes ?? cleanEntryGuard.votes ?? row.votes),
-        decisionBrain: nullableText(metadata.decisionBrainDecision ?? metadata.decision_brain_decision ?? cleanEntryGuard.decisionBrain ?? metadata.decisionBrain ?? metadata.decision_brain?.decision),
-        entryQuality: nullableText(metadata.entryQualityModelRecommendation ?? metadata.entryQualityRecommendation ?? metadata.entry_quality_recommendation ?? cleanEntryGuard.entryQualityModelRecommendation ?? cleanEntryGuard.entryQualityRecommendation ?? metadata.entryQualityGateAction ?? metadata.action ?? metadata.entryQuality),
-        entryQualityScore: finiteNumber(metadata.entryQualityModelScore ?? metadata.entryQualityScore ?? metadata.entry_quality_score ?? cleanEntryGuard.entryQualityModelScore ?? cleanEntryGuard.entryQualityScore ?? checks.entryQualityScore),
-        tailRiskScore: finiteNumber(metadata.tailRiskScore ?? metadata.tail_risk_score ?? cleanEntryGuard.tailRiskScore ?? checks.tailRiskScore),
-        eventRiskMode: nullableText(metadata.eventRiskMode ?? metadata.event_risk_mode ?? cleanEntryGuard.eventRiskMode ?? (event.startsWith('EVENT_RISK') ? metadata.mode : undefined)),
-        eventRiskReason: nullableText(metadata.eventRiskReason ?? metadata.event_risk_reason ?? cleanEntryGuard.eventRiskReason ?? (event.startsWith('EVENT_RISK') ? metadata.reason : undefined)),
-        eventRiskWouldBlock: nullableBoolean(metadata.eventRiskWouldBlock ?? metadata.event_risk_would_block ?? cleanEntryGuard.eventRiskWouldBlock ?? metadata.wouldBlock ?? checks.eventRiskWouldBlock),
-        entryPolicy: Object.keys(entryPolicy).length > 0 ? {
+  const metadata = row.metadata ?? {};
+  const event = stableText(row.event);
+  const cleanEntryGuard = metadata.cleanEntryGuard ?? {};
+  const probeMode = metadata.probeMode ?? cleanEntryGuard.probeMode ?? {};
+  const entryPolicy = metadata.entryPolicy ?? (event === 'ENTRY_POLICY_DECISION' ? metadata : {});
+  const regime = entryPolicy.regime ?? metadata.regime ?? {};
+  const checks = metadata.checks ?? {};
+  const cleanEntryReason = event.startsWith('CLEAN_ENTRY_GUARD')
+    ? cleanEntryGuard.reasons?.[0]
+    : undefined;
+  const probeReason = event.startsWith('PROBE_MODE') ? probeMode.reason : undefined;
+  const reason = stableText(
+    probeReason ??
+      cleanEntryReason ??
+      entryPolicy.finalReason ??
+      row.reason ??
+      metadata.reason ??
+      cleanEntryGuard.reasons?.[0] ??
+      metadata.eventRiskReason ??
+      event,
+  );
+  return {
+    timestamp: timestampText(row),
+    symbol: stableText(row.symbol ?? metadata.symbol).toUpperCase(),
+    side: normalizeSide(
+      metadata.side ?? cleanEntryGuard.side ?? row.side ?? row.raw_action ?? row.final_action,
+    ),
+    reason,
+    event,
+    setupGrade: nullableText(
+      metadata.setupGrade ??
+        metadata.setup_grade ??
+        cleanEntryGuard.setupGrade ??
+        row.setupGrade ??
+        row.setup_grade,
+    ),
+    turboScore: finiteNumber(
+      metadata.turboScore ??
+        metadata.turbo_score ??
+        cleanEntryGuard.turboScore ??
+        row.turbo_score ??
+        checks.turboScore,
+    ),
+    votes: normalizeVotes(metadata.votes ?? cleanEntryGuard.votes ?? row.votes),
+    decisionBrain: nullableText(
+      metadata.decisionBrainDecision ??
+        metadata.decision_brain_decision ??
+        cleanEntryGuard.decisionBrain ??
+        metadata.decisionBrain ??
+        metadata.decision_brain?.decision,
+    ),
+    entryQuality: nullableText(
+      metadata.entryQualityModelRecommendation ??
+        metadata.entryQualityRecommendation ??
+        metadata.entry_quality_recommendation ??
+        cleanEntryGuard.entryQualityModelRecommendation ??
+        cleanEntryGuard.entryQualityRecommendation ??
+        metadata.entryQualityGateAction ??
+        metadata.action ??
+        metadata.entryQuality,
+    ),
+    entryQualityScore: finiteNumber(
+      metadata.entryQualityModelScore ??
+        metadata.entryQualityScore ??
+        metadata.entry_quality_score ??
+        cleanEntryGuard.entryQualityModelScore ??
+        cleanEntryGuard.entryQualityScore ??
+        checks.entryQualityScore,
+    ),
+    tailRiskScore: finiteNumber(
+      metadata.tailRiskScore ??
+        metadata.tail_risk_score ??
+        cleanEntryGuard.tailRiskScore ??
+        checks.tailRiskScore,
+    ),
+    eventRiskMode: nullableText(
+      metadata.eventRiskMode ??
+        metadata.event_risk_mode ??
+        cleanEntryGuard.eventRiskMode ??
+        (event.startsWith('EVENT_RISK') ? metadata.mode : undefined),
+    ),
+    eventRiskReason: nullableText(
+      metadata.eventRiskReason ??
+        metadata.event_risk_reason ??
+        cleanEntryGuard.eventRiskReason ??
+        (event.startsWith('EVENT_RISK') ? metadata.reason : undefined),
+    ),
+    eventRiskWouldBlock: nullableBoolean(
+      metadata.eventRiskWouldBlock ??
+        metadata.event_risk_would_block ??
+        cleanEntryGuard.eventRiskWouldBlock ??
+        metadata.wouldBlock ??
+        checks.eventRiskWouldBlock,
+    ),
+    entryPolicy:
+      Object.keys(entryPolicy).length > 0
+        ? {
             finalDecision: nullableText(entryPolicy.finalDecision),
-            finalReason: nullableText(entryPolicy.finalReason)
-        } : null,
-        regime: Object.keys(regime).length > 0 ? {
+            finalReason: nullableText(entryPolicy.finalReason),
+          }
+        : null,
+    regime:
+      Object.keys(regime).length > 0
+        ? {
             label: nullableText(regime.regime ?? regime.label),
             confidence: finiteNumber(regime.confidence),
             reason: nullableText(regime.reason),
             source: nullableText(regime.source),
-            wouldBlock: nullableBoolean(regime.wouldBlock)
-        } : null,
-        probeMode: Object.keys(probeMode).length > 0 ? {
+            wouldBlock: nullableBoolean(regime.wouldBlock),
+          }
+        : null,
+    probeMode:
+      Object.keys(probeMode).length > 0
+        ? {
             enabled: nullableBoolean(probeMode.enabled),
             allowed: nullableBoolean(probeMode.allowed),
-            reason: nullableText(probeMode.reason)
-        } : null,
-        aPlus: nullableBoolean(metadata.aPlus ?? metadata.is_a_plus ?? checks.aPlus),
-        rawWouldExecute: nullableBoolean(metadata.rawWouldExecute ?? metadata.raw_would_execute ?? row.raw_would_execute),
-        source: nullableText(metadata.source ?? event),
-        tradeId: nullableText(row.trade_id ?? metadata.tradeId ?? metadata.trade_id)
-    };
+            reason: nullableText(probeMode.reason),
+          }
+        : null,
+    aPlus: nullableBoolean(metadata.aPlus ?? metadata.is_a_plus ?? checks.aPlus),
+    rawWouldExecute: nullableBoolean(
+      metadata.rawWouldExecute ?? metadata.raw_would_execute ?? row.raw_would_execute,
+    ),
+    source: nullableText(metadata.source ?? event),
+    tradeId: nullableText(row.trade_id ?? metadata.tradeId ?? metadata.trade_id),
+  };
 }
 
-function formatBlocksReportMessages(report: AegisBlocksReportOutput, input: AegisBlocksReportInput): string[] {
-    const title = titleFor(input);
-    const lines: string[] = [`${title}\n`, `Total: ${report.totalBlocks}`];
+function formatBlocksReportMessages(
+  report: AegisBlocksReportOutput,
+  input: AegisBlocksReportInput,
+): string[] {
+  const title = titleFor(input);
+  const lines: string[] = [`${title}\n`, `Total: ${report.totalBlocks}`];
 
-    if (input.mode === 'detail') {
-        appendSideSummary(lines, report.bySide);
-        appendSection(lines, 'Razones:', report.byReason, 6);
-        lines.push('', 'Últimos relevantes:');
-        appendSamples(lines, report.samples);
-        appendWarnings(lines, report.warnings);
-        return splitTelegramMessage(lines);
-    }
-
-    if (input.mode === 'near-miss') {
-        lines.push('', 'Estas fueron las bloqueadas más cercanas a pasar.');
-        appendNearMisses(lines, report.nearMisses);
-        appendWarnings(lines, report.warnings);
-        return splitTelegramMessage(lines);
-    }
-
-    if (input.mode === 'reasons') {
-        appendSection(lines, 'Por razón:', report.byReason, 12);
-        appendWarnings(lines, report.warnings);
-        return splitTelegramMessage(lines);
-    }
-
-    if (input.mode === 'symbols') {
-        appendSection(lines, 'Por símbolo:', report.bySymbol, 12);
-        appendWarnings(lines, report.warnings);
-        return splitTelegramMessage(lines);
-    }
-
-    if (input.mode === 'top') {
-        appendTop(lines, report.topBlocks);
-        appendWarnings(lines, report.warnings);
-        return splitTelegramMessage(lines);
-    }
-
-    appendSection(lines, 'Por símbolo:', report.bySymbol, 6);
-    appendSection(lines, 'Por razón:', report.byReason, 6);
-    appendSection(lines, 'Por grade:', report.bySetupGrade, 6);
-    appendSection(lines, 'Permitidas en ventana:', report.allowedEvents, 5);
-    lines.push('', 'Usa:', '/blocks detail LINKUSDT', `/blocks near-miss ${formatWindow(input.windowMinutes)}`);
+  if (input.mode === 'detail') {
+    appendSideSummary(lines, report.bySide);
+    appendSection(lines, 'Razones:', report.byReason, 6);
+    lines.push('', 'Últimos relevantes:');
+    appendSamples(lines, report.samples);
     appendWarnings(lines, report.warnings);
     return splitTelegramMessage(lines);
+  }
+
+  if (input.mode === 'near-miss') {
+    lines.push('', 'Estas fueron las bloqueadas más cercanas a pasar.');
+    appendNearMisses(lines, report.nearMisses);
+    appendWarnings(lines, report.warnings);
+    return splitTelegramMessage(lines);
+  }
+
+  if (input.mode === 'reasons') {
+    appendSection(lines, 'Por razón:', report.byReason, 12);
+    appendWarnings(lines, report.warnings);
+    return splitTelegramMessage(lines);
+  }
+
+  if (input.mode === 'symbols') {
+    appendSection(lines, 'Por símbolo:', report.bySymbol, 12);
+    appendWarnings(lines, report.warnings);
+    return splitTelegramMessage(lines);
+  }
+
+  if (input.mode === 'top') {
+    appendTop(lines, report.topBlocks);
+    appendWarnings(lines, report.warnings);
+    return splitTelegramMessage(lines);
+  }
+
+  appendSection(lines, 'Por símbolo:', report.bySymbol, 6);
+  appendSection(lines, 'Por razón:', report.byReason, 6);
+  appendSection(lines, 'Por grade:', report.bySetupGrade, 6);
+  appendSection(lines, 'Permitidas en ventana:', report.allowedEvents, 5);
+  lines.push(
+    '',
+    'Usa:',
+    '/blocks detail LINKUSDT',
+    `/blocks near-miss ${formatWindow(input.windowMinutes)}`,
+  );
+  appendWarnings(lines, report.warnings);
+  return splitTelegramMessage(lines);
 }
 
 function titleFor(input: AegisBlocksReportInput): string {
-    const window = formatWindow(input.windowMinutes);
-    if (input.mode === 'near-miss') return `🎯 Near-miss Aegis — última ${window}`;
-    if (input.mode === 'detail') return `🛡️ Bloqueos ${input.symbol ?? 'Aegis'} — última ${window}`;
-    if (input.mode === 'reasons') return `🛡️ Bloqueos Aegis por razón — última ${window}`;
-    if (input.mode === 'symbols') return `🛡️ Bloqueos Aegis por símbolo — última ${window}`;
-    if (input.mode === 'top') return `🛡️ Top bloqueos Aegis — última ${window}`;
-    return input.symbol
-        ? `🛡️ Bloqueos ${input.symbol} — última ${window}`
-        : `🛡️ Bloqueos Aegis — última ${window}`;
+  const window = formatWindow(input.windowMinutes);
+  if (input.mode === 'near-miss') return `🎯 Near-miss Aegis — última ${window}`;
+  if (input.mode === 'detail') return `🛡️ Bloqueos ${input.symbol ?? 'Aegis'} — última ${window}`;
+  if (input.mode === 'reasons') return `🛡️ Bloqueos Aegis por razón — última ${window}`;
+  if (input.mode === 'symbols') return `🛡️ Bloqueos Aegis por símbolo — última ${window}`;
+  if (input.mode === 'top') return `🛡️ Top bloqueos Aegis — última ${window}`;
+  return input.symbol
+    ? `🛡️ Bloqueos ${input.symbol} — última ${window}`
+    : `🛡️ Bloqueos Aegis — última ${window}`;
 }
 
 function appendSideSummary(lines: string[], bySide: Record<string, number>): void {
-    lines.push(`LONG: ${bySide.LONG ?? 0} | SHORT: ${bySide.SHORT ?? 0}`);
+  lines.push(`LONG: ${bySide.LONG ?? 0} | SHORT: ${bySide.SHORT ?? 0}`);
 }
 
-function appendSection(lines: string[], title: string, counts: Record<string, number>, max: number): void {
-    lines.push('', title);
-    const rows = topEntries(counts, max);
-    if (rows.length === 0) {
-        lines.push('• N/D: 0');
-        return;
-    }
-    for (const row of rows) lines.push(`• ${row.key}: ${row.count}`);
+function appendSection(
+  lines: string[],
+  title: string,
+  counts: Record<string, number>,
+  max: number,
+): void {
+  lines.push('', title);
+  const rows = topEntries(counts, max);
+  if (rows.length === 0) {
+    lines.push('• N/D: 0');
+    return;
+  }
+  for (const row of rows) lines.push(`• ${row.key}: ${row.count}`);
 }
 
 function appendTop(lines: string[], topBlocks: Array<{ key: string; count: number }>): void {
-    lines.push('', 'Top:');
-    if (topBlocks.length === 0) {
-        lines.push('• N/D: 0');
-        return;
-    }
-    for (const row of topBlocks) lines.push(`• ${row.key}: ${row.count}`);
+  lines.push('', 'Top:');
+  if (topBlocks.length === 0) {
+    lines.push('• N/D: 0');
+    return;
+  }
+  for (const row of topBlocks) lines.push(`• ${row.key}: ${row.count}`);
 }
 
 function appendSamples(lines: string[], samples: AegisBlockSample[]): void {
-    if (samples.length === 0) {
-        lines.push('N/D');
-        return;
+  if (samples.length === 0) {
+    lines.push('N/D');
+    return;
+  }
+  samples.slice(0, 5).forEach((sample, index) => {
+    lines.push(
+      `${index + 1}) ${sample.side} | Score ${formatPct(sample.turboScore)} | Grade ${sample.setupGrade ?? 'N/D'}`,
+    );
+    lines.push(
+      `   DB: ${sample.decisionBrain ?? 'N/D'} | EQ: ${sample.entryQuality ?? 'N/D'} | Tail: ${formatPct(sample.tailRiskScore)}`,
+    );
+    if (sample.probeMode) {
+      lines.push(
+        `   Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`,
+      );
     }
-    samples.slice(0, 5).forEach((sample, index) => {
-        lines.push(`${index + 1}) ${sample.side} | Score ${formatPct(sample.turboScore)} | Grade ${sample.setupGrade ?? 'N/D'}`);
-        lines.push(`   DB: ${sample.decisionBrain ?? 'N/D'} | EQ: ${sample.entryQuality ?? 'N/D'} | Tail: ${formatPct(sample.tailRiskScore)}`);
-        if (sample.probeMode) {
-            lines.push(`   Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`);
-        }
-        if (sample.entryPolicy) {
-            lines.push(`   EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`);
-        }
-        if (sample.regime) {
-            lines.push(`   Regime: ${sample.regime.label ?? 'N/D'} ${formatPct(sample.regime.confidence)} | ${sample.regime.reason ?? 'N/D'}`);
-        }
-        lines.push(`   Motivo: ${formatReason(sample)}`);
-        if (index < Math.min(samples.length, 5) - 1) lines.push('');
-    });
+    if (sample.entryPolicy) {
+      lines.push(
+        `   EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`,
+      );
+    }
+    if (sample.regime) {
+      lines.push(
+        `   Regime: ${sample.regime.label ?? 'N/D'} ${formatPct(sample.regime.confidence)} | ${sample.regime.reason ?? 'N/D'}`,
+      );
+    }
+    lines.push(`   Motivo: ${formatReason(sample)}`);
+    if (index < Math.min(samples.length, 5) - 1) lines.push('');
+  });
 }
 
 function appendNearMisses(lines: string[], samples: AegisBlockSample[]): void {
-    if (samples.length === 0) {
-        lines.push('N/D');
-        return;
+  if (samples.length === 0) {
+    lines.push('N/D');
+    return;
+  }
+  samples.forEach((sample, index) => {
+    lines.push('', `${index + 1}) ${sample.symbol} ${sample.side}`);
+    lines.push(`Score: ${formatPct(sample.turboScore)} | Grade ${sample.setupGrade ?? 'N/D'}`);
+    lines.push(
+      `DB: ${sample.decisionBrain ?? 'N/D'} | EQ: ${sample.entryQuality ?? 'N/D'} | Tail: ${formatPct(sample.tailRiskScore)}`,
+    );
+    if (sample.probeMode) {
+      lines.push(
+        `Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`,
+      );
     }
-    samples.forEach((sample, index) => {
-        lines.push('', `${index + 1}) ${sample.symbol} ${sample.side}`);
-        lines.push(`Score: ${formatPct(sample.turboScore)} | Grade ${sample.setupGrade ?? 'N/D'}`);
-        lines.push(`DB: ${sample.decisionBrain ?? 'N/D'} | EQ: ${sample.entryQuality ?? 'N/D'} | Tail: ${formatPct(sample.tailRiskScore)}`);
-        if (sample.probeMode) {
-            lines.push(`Probe: ${sample.probeMode.allowed === true ? 'ALLOW' : 'DENY'} | ${sample.probeMode.reason ?? 'N/D'}`);
-        }
-        if (sample.entryPolicy) {
-            lines.push(`EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`);
-        }
-        if (sample.regime) {
-            lines.push(`Regime: ${sample.regime.label ?? 'N/D'} ${formatPct(sample.regime.confidence)} | ${sample.regime.reason ?? 'N/D'}`);
-        }
-        lines.push(`Bloqueo: ${formatReason(sample)}`);
-    });
+    if (sample.entryPolicy) {
+      lines.push(
+        `EntryPolicy: ${sample.entryPolicy.finalDecision ?? 'N/D'} | ${sample.entryPolicy.finalReason ?? 'N/D'}`,
+      );
+    }
+    if (sample.regime) {
+      lines.push(
+        `Regime: ${sample.regime.label ?? 'N/D'} ${formatPct(sample.regime.confidence)} | ${sample.regime.reason ?? 'N/D'}`,
+      );
+    }
+    lines.push(`Bloqueo: ${formatReason(sample)}`);
+  });
 }
 
 function appendWarnings(lines: string[], warnings: string[]): void {
-    if (warnings.length === 0) return;
-    lines.push('', 'Warnings:');
-    for (const warning of warnings.slice(0, 3)) lines.push(`• ${warning}`);
+  if (warnings.length === 0) return;
+  lines.push('', 'Warnings:');
+  for (const warning of warnings.slice(0, 3)) lines.push(`• ${warning}`);
 }
 
 function splitTelegramMessage(lines: string[]): string[] {
-    const messages: string[] = [];
-    let current = '';
-    for (const line of lines) {
-        const next = current.length > 0 ? `${current}\n${line}` : line;
-        if (next.length > MAX_TELEGRAM_MESSAGE_CHARS && current.length > 0) {
-            messages.push(current);
-            current = line;
-        } else {
-            current = next;
-        }
+  const messages: string[] = [];
+  let current = '';
+  for (const line of lines) {
+    const next = current.length > 0 ? `${current}\n${line}` : line;
+    if (next.length > MAX_TELEGRAM_MESSAGE_CHARS && current.length > 0) {
+      messages.push(current);
+      current = line;
+    } else {
+      current = next;
     }
-    if (current.length > 0) messages.push(current);
-    return messages;
+  }
+  if (current.length > 0) messages.push(current);
+  return messages;
 }
 
 function isNearMiss(sample: AegisBlockSample): boolean {
-    return (sample.turboScore ?? 0) >= 0.80
-        || sample.setupGrade === 'A'
-        || sample.setupGrade === 'A_PLUS'
-        || sample.decisionBrain === 'ENTER_NOW'
-        || sample.entryQuality === 'ALLOW'
-        || sample.entryQuality === 'ALLOW_SHADOW'
-        || ((sample.tailRiskScore ?? Number.POSITIVE_INFINITY) <= 0.50);
+  return (
+    (sample.turboScore ?? 0) >= 0.8 ||
+    sample.setupGrade === 'A' ||
+    sample.setupGrade === 'A_PLUS' ||
+    sample.decisionBrain === 'ENTER_NOW' ||
+    sample.entryQuality === 'ALLOW' ||
+    sample.entryQuality === 'ALLOW_SHADOW' ||
+    (sample.tailRiskScore ?? Number.POSITIVE_INFINITY) <= 0.5
+  );
 }
 
 function compareNearMiss(a: AegisBlockSample, b: AegisBlockSample): number {
-    const gradeDiff = gradeRank(b.setupGrade) - gradeRank(a.setupGrade);
-    if (gradeDiff !== 0) return gradeDiff;
-    const scoreDiff = (b.turboScore ?? -1) - (a.turboScore ?? -1);
-    if (scoreDiff !== 0) return scoreDiff;
-    const eqDiff = entryQualityRank(b.entryQuality) - entryQualityRank(a.entryQuality);
-    if (eqDiff !== 0) return eqDiff;
-    return (a.tailRiskScore ?? Number.POSITIVE_INFINITY) - (b.tailRiskScore ?? Number.POSITIVE_INFINITY);
+  const gradeDiff = gradeRank(b.setupGrade) - gradeRank(a.setupGrade);
+  if (gradeDiff !== 0) return gradeDiff;
+  const scoreDiff = (b.turboScore ?? -1) - (a.turboScore ?? -1);
+  if (scoreDiff !== 0) return scoreDiff;
+  const eqDiff = entryQualityRank(b.entryQuality) - entryQualityRank(a.entryQuality);
+  if (eqDiff !== 0) return eqDiff;
+  return (
+    (a.tailRiskScore ?? Number.POSITIVE_INFINITY) - (b.tailRiskScore ?? Number.POSITIVE_INFINITY)
+  );
 }
 
 function gradeRank(value: string | null): number {
-    if (value === 'A_PLUS') return 2;
-    if (value === 'A') return 1;
-    return 0;
+  if (value === 'A_PLUS') return 2;
+  if (value === 'A') return 1;
+  return 0;
 }
 
 function entryQualityRank(value: string | null): number {
-    if (value === 'ALLOW') return 2;
-    if (value === 'ALLOW_SHADOW') return 1;
-    return 0;
+  if (value === 'ALLOW') return 2;
+  if (value === 'ALLOW_SHADOW') return 1;
+  return 0;
 }
 
-function topEntries(counts: Record<string, number>, max: number): Array<{ key: string; count: number }> {
-    return Object.entries(counts)
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .slice(0, max)
-        .map(([key, count]) => ({ key, count }));
+function topEntries(
+  counts: Record<string, number>,
+  max: number,
+): Array<{ key: string; count: number }> {
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, max)
+    .map(([key, count]) => ({ key, count }));
 }
 
 function increment(counts: Record<string, number>, key: string): void {
-    const safeKey = key || 'N/D';
-    counts[safeKey] = (counts[safeKey] ?? 0) + 1;
+  const safeKey = key || 'N/D';
+  counts[safeKey] = (counts[safeKey] ?? 0) + 1;
 }
 
 function datesInRange(start: Date, end: Date): string[] {
-    const dates: string[] = [];
-    const current = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
-    const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
-    while (current.getTime() <= last.getTime()) {
-        dates.push(formatDate(current));
-        current.setUTCDate(current.getUTCDate() + 1);
-    }
-    return dates;
+  const dates: string[] = [];
+  const current = new Date(
+    Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()),
+  );
+  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+  while (current.getTime() <= last.getTime()) {
+    dates.push(formatDate(current));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return dates;
 }
 
 function formatDate(date: Date): string {
-    const pad = (value: number) => String(value).padStart(2, '0');
-    return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
 }
 
 function timestampMsFromRow(row: JsonRecord): number | undefined {
-    const value = Date.parse(String(row.timestamp ?? ''));
-    return Number.isFinite(value) ? value : undefined;
+  const value = Date.parse(String(row.timestamp ?? ''));
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function timestampText(row: JsonRecord): string {
-    const timestamp = String(row.timestamp ?? '');
-    return Number.isFinite(Date.parse(timestamp)) ? timestamp : new Date(0).toISOString();
+  const timestamp = String(row.timestamp ?? '');
+  return Number.isFinite(Date.parse(timestamp)) ? timestamp : new Date(0).toISOString();
 }
 
 function stableText(value: unknown): string {
-    const text = String(value ?? 'N/D').trim();
-    return text.length > 0 ? text : 'N/D';
+  const text = String(value ?? 'N/D').trim();
+  return text.length > 0 ? text : 'N/D';
 }
 
 function nullableText(value: unknown): string | null {
-    const text = stableText(value);
-    return text === 'N/D' ? null : text;
+  const text = stableText(value);
+  return text === 'N/D' ? null : text;
 }
 
 function finiteNumber(value: unknown): number | null {
-    const numeric = typeof value === 'number' ? value : Number(value);
-    return Number.isFinite(numeric) ? numeric : null;
+  const numeric = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function nullableBoolean(value: unknown): boolean | null {
-    if (typeof value === 'boolean') return value;
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return null;
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return null;
 }
 
 function normalizeSide(value: unknown): string {
-    const text = stableText(value).toUpperCase();
-    return text === 'LONG' || text === 'SHORT' ? text : 'N/D';
+  const text = stableText(value).toUpperCase();
+  return text === 'LONG' || text === 'SHORT' ? text : 'N/D';
 }
 
-function normalizeVotes(value: unknown): { long?: number; short?: number; neutral?: number } | null {
-    if (!value || typeof value !== 'object') return null;
-    const votes = value as Record<string, unknown>;
-    return {
-        long: finiteNumber(votes.long) ?? undefined,
-        short: finiteNumber(votes.short) ?? undefined,
-        neutral: finiteNumber(votes.neutral) ?? undefined
-    };
+function normalizeVotes(
+  value: unknown,
+): { long?: number; short?: number; neutral?: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const votes = value as Record<string, unknown>;
+  return {
+    long: finiteNumber(votes.long) ?? undefined,
+    short: finiteNumber(votes.short) ?? undefined,
+    neutral: finiteNumber(votes.neutral) ?? undefined,
+  };
 }
 
 function formatPct(value: number | null): string {
-    return value === null ? 'N/D' : `${(value * 100).toFixed(1)}%`;
+  return value === null ? 'N/D' : `${(value * 100).toFixed(1)}%`;
 }
 
 function formatReason(sample: AegisBlockSample): string {
-    if (sample.eventRiskMode && sample.eventRiskReason) return `${sample.eventRiskMode} / ${sample.eventRiskReason}`;
-    return sample.reason;
+  if (sample.eventRiskMode && sample.eventRiskReason)
+    return `${sample.eventRiskMode} / ${sample.eventRiskReason}`;
+  return sample.reason;
 }
 
 function formatWindow(windowMinutes: number): string {
-    if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
-    return `${windowMinutes}m`;
+  if (windowMinutes % 60 === 0) return `${windowMinutes / 60}h`;
+  return `${windowMinutes}m`;
 }

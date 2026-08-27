@@ -39,12 +39,14 @@ export const CONFIG = {
   API_KEY: process.env.BINANCE_API_KEY || '',
   API_SECRET: process.env.BINANCE_API_SECRET || '',
   IS_TESTNET: process.env.IS_TESTNET === '1',
-  HTTP_FUTURES: process.env.IS_TESTNET === '1'
-    ? 'https://testnet.binancefuture.com'
-    : 'https://fapi.binance.com',
-  WS_FUTURES: process.env.IS_TESTNET === '1'
-    ? 'wss://fstream.binancefuture.com/ws'
-    : 'wss://fstream.binancefuture.com/ws',
+  HTTP_FUTURES:
+    process.env.IS_TESTNET === '1'
+      ? 'https://testnet.binancefuture.com'
+      : 'https://fapi.binance.com',
+  WS_FUTURES:
+    process.env.IS_TESTNET === '1'
+      ? 'wss://fstream.binancefuture.com/ws'
+      : 'wss://fstream.binancefuture.com/ws',
 
   // --- Bot Timing (ENV) ---
   BOT_STAGGER_MS: Number(process.env.BOT_STAGGER_MS ?? 2_000),
@@ -86,9 +88,10 @@ export const CONFIG = {
 
   // --- Telegram inbound commands (ENV, disabled by default) ---
   TELEGRAM_COMMANDS_ENABLED: process.env.TELEGRAM_COMMANDS_ENABLED === '1',
-  TELEGRAM_ALLOWED_CHAT_IDS: csvEnv('TELEGRAM_ALLOWED_CHAT_IDS').length > 0
-    ? csvEnv('TELEGRAM_ALLOWED_CHAT_IDS')
-    : csvEnv('TELEGRAM_CHAT_ID'),
+  TELEGRAM_ALLOWED_CHAT_IDS:
+    csvEnv('TELEGRAM_ALLOWED_CHAT_IDS').length > 0
+      ? csvEnv('TELEGRAM_ALLOWED_CHAT_IDS')
+      : csvEnv('TELEGRAM_CHAT_ID'),
 
   // --- Re-entry Logic (YAML) ---
   REENTER_ON_TP: trading.reenter_on_tp,

@@ -182,7 +182,9 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     await startAndBridge(book, d);
     d.diffSource.emit(diff(102, 105, 99));
     expect(book.getHealth()).not.toBe('HEALTHY');
-    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() =>
+      expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
     expect(book.getState().lastUpdateId).toBe(200);
   });
 
@@ -191,7 +193,9 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     const book = new SynchronizedOrderBook(SYMBOL, d);
     await startAndBridge(book, d);
     d.diffSource.emit({ ...diff(101, 101, 100), u: Number.NaN });
-    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() =>
+      expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
     expect(book.getState().lastUpdateId).toBe(200);
   });
 

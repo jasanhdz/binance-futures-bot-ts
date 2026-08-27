@@ -99,7 +99,9 @@ describe('readAegisClosedTradeOutcomes', () => {
       [
         { ...ownership, trade_id: 'AEGIS-TURBO-1', strategy: 'AEGIS_TURBO' },
         { ...ownership, trade_id: 'MOMENTUM-RIDE-1', strategy: 'MOMENTUM_RIDE' },
-      ].map((record) => JSON.stringify(record)).join('\n'),
+      ]
+        .map((record) => JSON.stringify(record))
+        .join('\n'),
     );
 
     await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(2);

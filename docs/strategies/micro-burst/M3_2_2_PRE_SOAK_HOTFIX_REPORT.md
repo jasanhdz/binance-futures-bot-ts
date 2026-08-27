@@ -8,12 +8,12 @@ No real Binance soak was run for this hotfix.
 
 ## Audit
 
-| Finding | Status | Severity | Root cause | Fix | Test |
-| --- | --- | --- | --- | --- | --- |
-| Fresh health requested snapshots | Confirmed | P0 | Missing braces made `syncFromSnapshot()` unconditional | Stale transition is explicitly guarded | Fresh and stale health tests |
-| `resyncCount` reset after recovery | Confirmed | P1 | Success path reset cumulative diagnostic | Counter remains monotonic | Repeated desync test |
-| Production socket depended on global | Confirmed | P0 | Default factory used `globalThis.WebSocket` | Direct `ws` dependency and event adapter | Factory event tests without global |
-| Soak preflight was incomplete | Confirmed | P0 | Launcher lacked SHA/config/archive/runtime checks | Fail-closed M3.2.2 launcher | Shell helper tests |
+| Finding                              | Status    | Severity | Root cause                                             | Fix                                      | Test                               |
+| ------------------------------------ | --------- | -------- | ------------------------------------------------------ | ---------------------------------------- | ---------------------------------- |
+| Fresh health requested snapshots     | Confirmed | P0       | Missing braces made `syncFromSnapshot()` unconditional | Stale transition is explicitly guarded   | Fresh and stale health tests       |
+| `resyncCount` reset after recovery   | Confirmed | P1       | Success path reset cumulative diagnostic               | Counter remains monotonic                | Repeated desync test               |
+| Production socket depended on global | Confirmed | P0       | Default factory used `globalThis.WebSocket`            | Direct `ws` dependency and event adapter | Factory event tests without global |
+| Soak preflight was incomplete        | Confirmed | P0       | Launcher lacked SHA/config/archive/runtime checks      | Fail-closed M3.2.2 launcher              | Shell helper tests                 |
 
 ## Confirmed Fixed
 

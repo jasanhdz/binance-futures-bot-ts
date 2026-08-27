@@ -17,14 +17,13 @@ import {
   PendingOutcome,
   EntryModelOutcome,
 } from './MicroBurstOutcomeTypes';
-import {
-  MicroBurstConfig,
-  defaultMicroBurstConfig,
-} from './MicroBurstTypes';
+import { MicroBurstConfig, defaultMicroBurstConfig } from './MicroBurstTypes';
 
 // ── Constants ──────────────────────────────────────────────
 
-export const OUTCOME_HORIZONS_MS: readonly number[] = [15_000, 30_000, 60_000, 120_000, 300_000] as const;
+export const OUTCOME_HORIZONS_MS: readonly number[] = [
+  15_000, 30_000, 60_000, 120_000, 300_000,
+] as const;
 export const CONSERVATIVE_SLIPPAGE_BPS = 5;
 
 const BPS_PER_UNIT = 10_000;
@@ -32,7 +31,12 @@ const BPS_PER_UNIT = 10_000;
 // ── Side-Aware Return ──────────────────────────────────────
 
 export function sideAwareReturnBps(entryPrice: number, currentPrice: number, side: Side): number {
-  if (!Number.isFinite(entryPrice) || !Number.isFinite(currentPrice) || entryPrice <= 0 || currentPrice <= 0) {
+  if (
+    !Number.isFinite(entryPrice) ||
+    !Number.isFinite(currentPrice) ||
+    entryPrice <= 0 ||
+    currentPrice <= 0
+  ) {
     return Number.NaN;
   }
   const signedReturn =
@@ -51,12 +55,24 @@ export function computeEntryModels(
   const models: EntryPriceAssumption[] = [];
 
   // A. SIGNAL_PRICE: entry at the market/reference price frozen at T0
-  models.push({ model: 'SIGNAL_PRICE', entryPrice: signal.marketPriceAtSignal, available: true, slippageBps: 0 });
+  models.push({
+    model: 'SIGNAL_PRICE',
+    entryPrice: signal.marketPriceAtSignal,
+    available: true,
+    slippageBps: 0,
+  });
 
   // B. NEXT_TRADE: first valid trade after signalAtMs
-  const nextTrade = priceHistory.find((t) => t.eventTime > signal.signalAtMs && Number.isFinite(t.price) && t.price > 0);
+  const nextTrade = priceHistory.find(
+    (t) => t.eventTime > signal.signalAtMs && Number.isFinite(t.price) && t.price > 0,
+  );
   if (nextTrade) {
-    models.push({ model: 'NEXT_TRADE', entryPrice: nextTrade.price, available: true, slippageBps: 0 });
+    models.push({
+      model: 'NEXT_TRADE',
+      entryPrice: nextTrade.price,
+      available: true,
+      slippageBps: 0,
+    });
   } else {
     models.push({ model: 'NEXT_TRADE', entryPrice: null, available: false, slippageBps: 0 });
   }
@@ -64,8 +80,14 @@ export function computeEntryModels(
   // C. CONSERVATIVE_SLIPPAGE: signal price + adverse slippage buffer
   const slippageBufferBps = CONSERVATIVE_SLIPPAGE_BPS;
   const slippageDirection = signal.side === 'LONG' ? 1 : -1;
-  const slippagePrice = signal.marketPriceAtSignal * (1 + (slippageDirection * slippageBufferBps) / BPS_PER_UNIT);
-  models.push({ model: 'CONSERVATIVE_SLIPPAGE', entryPrice: slippagePrice, available: true, slippageBps: slippageBufferBps });
+  const slippagePrice =
+    signal.marketPriceAtSignal * (1 + (slippageDirection * slippageBufferBps) / BPS_PER_UNIT);
+  models.push({
+    model: 'CONSERVATIVE_SLIPPAGE',
+    entryPrice: slippagePrice,
+    available: true,
+    slippageBps: slippageBufferBps,
+  });
 
   return Object.freeze(models.map((model) => Object.freeze(model))) as EntryPriceAssumption[];
 }
@@ -231,7 +253,14 @@ export function computeEntryModelOutcomes(
   const outcomes = {} as Record<EntryPriceModel, EntryModelOutcome>;
   for (const assumption of models) {
     if (!assumption.available || assumption.entryPrice === null) {
-      outcomes[assumption.model] = Object.freeze({ assumption, horizons: null, barrierOutcome: null, dynamicExitOutcome: null, grossBps: null, costScenarios: null });
+      outcomes[assumption.model] = Object.freeze({
+        assumption,
+        horizons: null,
+        barrierOutcome: null,
+        dynamicExitOutcome: null,
+        grossBps: null,
+        costScenarios: null,
+      });
       continue;
     }
     const horizons = computeAllHorizons(signal, assumption.entryPrice, priceHistory);
@@ -253,9 +282,7 @@ export function computeEntryModelOutcomes(
 
 // ── Aggregate Barrier Outcome ──────────────────────────────
 
-export function aggregateBarrierOutcome(
-  horizons: Record<number, HorizonOutcome>,
-): BarrierOutcome {
+export function aggregateBarrierOutcome(horizons: Record<number, HorizonOutcome>): BarrierOutcome {
   const outcomes = Object.values(horizons);
   const targetFirst = outcomes.some((h) => h.barrierOutcome === 'TARGET_FIRST');
   const stopFirst = outcomes.some((h) => h.barrierOutcome === 'STOP_FIRST');
@@ -306,19 +333,50 @@ export function simulateDynamicExit(
     const currentPrice = trade.price;
     const timeInTradeMs = trade.eventTime - t0;
 
-    const stopTouched = side === 'LONG' ? currentPrice <= currentStopPrice : currentPrice >= currentStopPrice;
-    if (stopTouched) return priceExit(currentPrice, trade.eventTime, entryPrice, side, currentStopPrice === entryPrice ? 'BREAK_EVEN' : 'HARD_INVALIDATION');
-    if (side === 'LONG' ? currentPrice >= signal.destinationPrice : currentPrice <= signal.destinationPrice) return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'TARGET');
+    const stopTouched =
+      side === 'LONG' ? currentPrice <= currentStopPrice : currentPrice >= currentStopPrice;
+    if (stopTouched)
+      return priceExit(
+        currentPrice,
+        trade.eventTime,
+        entryPrice,
+        side,
+        currentStopPrice === entryPrice ? 'BREAK_EVEN' : 'HARD_INVALIDATION',
+      );
+    if (
+      side === 'LONG'
+        ? currentPrice >= signal.destinationPrice
+        : currentPrice <= signal.destinationPrice
+    )
+      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'TARGET');
     if (currentPrice > peakPrice) peakPrice = currentPrice;
     if (currentPrice < troughPrice) troughPrice = currentPrice;
-    const favorableBps = sideAwareReturnBps(entryPrice, side === 'LONG' ? peakPrice : troughPrice, side);
-    const adverseBps = -sideAwareReturnBps(entryPrice, side === 'LONG' ? troughPrice : peakPrice, side);
-    if (timeInTradeMs < config.exitProofWindowMs && adverseBps >= config.exitImmediateAdverseBps) return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'EARLY_FAILURE');
-    const callbackBps = side === 'LONG' ? (peakPrice - currentPrice) / peakPrice * BPS_PER_UNIT : (currentPrice - troughPrice) / troughPrice * BPS_PER_UNIT;
-    if (favorableBps >= config.exitTrailingActivationBps && callbackBps >= config.exitTrailingCallbackBps) return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'TRAILING');
+    const favorableBps = sideAwareReturnBps(
+      entryPrice,
+      side === 'LONG' ? peakPrice : troughPrice,
+      side,
+    );
+    const adverseBps = -sideAwareReturnBps(
+      entryPrice,
+      side === 'LONG' ? troughPrice : peakPrice,
+      side,
+    );
+    if (timeInTradeMs < config.exitProofWindowMs && adverseBps >= config.exitImmediateAdverseBps)
+      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'EARLY_FAILURE');
+    const callbackBps =
+      side === 'LONG'
+        ? ((peakPrice - currentPrice) / peakPrice) * BPS_PER_UNIT
+        : ((currentPrice - troughPrice) / troughPrice) * BPS_PER_UNIT;
+    if (
+      favorableBps >= config.exitTrailingActivationBps &&
+      callbackBps >= config.exitTrailingCallbackBps
+    )
+      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'TRAILING');
     if (favorableBps >= config.exitBreakEvenActivationBps) currentStopPrice = entryPrice;
-    if (timeInTradeMs >= config.exitProofWindowMs && favorableBps < config.exitMinProofExcursionBps) return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'EARLY_FAILURE');
-    if (timeInTradeMs >= config.exitMaxHoldMs) return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'MAX_HOLD');
+    if (timeInTradeMs >= config.exitProofWindowMs && favorableBps < config.exitMinProofExcursionBps)
+      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'EARLY_FAILURE');
+    if (timeInTradeMs >= config.exitMaxHoldMs)
+      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'MAX_HOLD');
   }
 
   // Still holding at end of trajectory
@@ -333,16 +391,32 @@ export function simulateDynamicExit(
   };
 }
 
-function orderedTrades<T extends { eventTime: number; price: number }>(priceHistory: T[], t0: number): T[] {
-  return priceHistory.filter((trade) => trade.eventTime > t0 && Number.isFinite(trade.price) && trade.price > 0)
+function orderedTrades<T extends { eventTime: number; price: number }>(
+  priceHistory: T[],
+  t0: number,
+): T[] {
+  return priceHistory
+    .filter((trade) => trade.eventTime > t0 && Number.isFinite(trade.price) && trade.price > 0)
     .map((trade, index) => ({ trade, index }))
     .sort((a, b) => b.trade.eventTime - a.trade.eventTime || b.index - a.index)
     .map(({ trade }) => trade);
 }
 
-function priceExit(price: number, eventTime: number, entryPrice: number, side: Side, reason: CounterfactualExitReason): DynamicExitOutcome {
+function priceExit(
+  price: number,
+  eventTime: number,
+  entryPrice: number,
+  side: Side,
+  reason: CounterfactualExitReason,
+): DynamicExitOutcome {
   const grossBps = sideAwareReturnBps(entryPrice, price, side);
-  return Object.freeze({ counterfactualExitReason: reason, counterfactualExitAtMs: eventTime, counterfactualExitPrice: price, counterfactualGrossBps: grossBps, counterfactualNetBps: grossBps });
+  return Object.freeze({
+    counterfactualExitReason: reason,
+    counterfactualExitAtMs: eventTime,
+    counterfactualExitPrice: price,
+    counterfactualGrossBps: grossBps,
+    counterfactualNetBps: grossBps,
+  });
 }
 
 // ── Snapshot from Evaluation Result ────────────────────────

@@ -27,13 +27,13 @@ All components use injected `Clock` — no `Date.now()` in domain production cod
 
 ## 2. Streams Used
 
-| Stream | Symbol | Purpose | Buffer Size |
-|--------|--------|---------|-------------|
-| `depth@100ms` | Per configured symbol | Order book diffs for synchronization | 500 events |
-| REST `depth` | Per configured symbol | Full snapshot for initial sync | N/A |
-| `kline_1m` (REST) | BTCUSDT | BTC context returns | 120 candles |
-| `aggTrade` | Per configured symbol | Taker flow / absorption / sweep | 200 events |
-| REST `markPrice` | Per configured symbol | Reference price | 1 entry |
+| Stream            | Symbol                | Purpose                              | Buffer Size |
+| ----------------- | --------------------- | ------------------------------------ | ----------- |
+| `depth@100ms`     | Per configured symbol | Order book diffs for synchronization | 500 events  |
+| REST `depth`      | Per configured symbol | Full snapshot for initial sync       | N/A         |
+| `kline_1m` (REST) | BTCUSDT               | BTC context returns                  | 120 candles |
+| `aggTrade`        | Per configured symbol | Taker flow / absorption / sweep      | 200 events  |
+| REST `markPrice`  | Per configured symbol | Reference price                      | 1 entry     |
 
 ## 3. Synchronization Algorithm
 
@@ -50,30 +50,31 @@ Follows the official Binance Futures depth synchronization:
 
 ### Health States
 
-| State | Meaning |
-|-------|---------|
-| `HEALTHY` | Book synchronized, fresh, valid |
-| `UNAVAILABLE` | No snapshot yet or snapshot failed |
-| `STALE` | No update for > 10s |
-| `UNSYNCED` | Gap detected, awaiting resync |
-| `ANOMALOUS` | Crossed, malformed, or invalid data |
+| State         | Meaning                             |
+| ------------- | ----------------------------------- |
+| `HEALTHY`     | Book synchronized, fresh, valid     |
+| `UNAVAILABLE` | No snapshot yet or snapshot failed  |
+| `STALE`       | No update for > 10s                 |
+| `UNSYNCED`    | Gap detected, awaiting resync       |
+| `ANOMALOUS`   | Crossed, malformed, or invalid data |
 
 ## 4. Bounded Buffer Sizes
 
-| Buffer | Max Size | Max Age |
-|--------|----------|---------|
-| Depth diff buffer | 500 events | N/A (processed on sync) |
-| Order book levels | 20 per side | N/A |
-| BTC candle buffer | 120 candles | 120s staleness |
-| AggTrade buffer | 200 events | 300s |
-| Duplicate signal history | 500 entries | 3600s TTL |
-| Temporal book history | Managed by caller | Bounded by context builder |
+| Buffer                   | Max Size          | Max Age                    |
+| ------------------------ | ----------------- | -------------------------- |
+| Depth diff buffer        | 500 events        | N/A (processed on sync)    |
+| Order book levels        | 20 per side       | N/A                        |
+| BTC candle buffer        | 120 candles       | 120s staleness             |
+| AggTrade buffer          | 200 events        | 300s                       |
+| Duplicate signal history | 500 entries       | 3600s TTL                  |
+| Temporal book history    | Managed by caller | Bounded by context builder |
 
 ## 5. Temporal Book History
 
 `analyzeBookPressure()` now accepts an optional `temporalHistory: TemporalBookSnapshot[]`.
 
 When history has ≥ 3 observations:
+
 - **`imbalanceSlope`**: Linear regression of top-of-book imbalance over the last `slopeWindow` observations. `null` when insufficient data.
 - **`temporalAbsorptionDetected`**: Imbalance spike + qty growth + tight spread across observations.
 - **`temporalSweepDetected`**: Sharp imbalance spike + qty collapse + wide spread across observations.
@@ -97,6 +98,7 @@ Fail-closed: insufficient candles, stale data (> 120s), future timestamps.
 ## 7. Reference Price
 
 `MicroBurstReferencePriceProvider`:
+
 - **Primary**: Best bid/ask midpoint from order book snapshot.
 - **Fallback**: Mark price from REST (5s staleness threshold).
 - **`marketPriceAtSnapshot`**: Added to `MicroBurstContext` as optional field.
@@ -128,6 +130,7 @@ MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false
 ## 10. Duplicate Signal Protection
 
 `MicroBurstDuplicateSignalGuard`:
+
 - Key: `strategy:symbol:side:structuralLevel:bucket`.
 - Bucket size: 60 seconds.
 - Same signal within same bucket => `duplicateSuppressed: true`.
@@ -154,6 +157,7 @@ micro_burst:
 ```
 
 Or via environment:
+
 ```
 MICRO_BURST_V1_ENABLED=true
 MICRO_BURST_V1_MODE=SHADOW
@@ -163,6 +167,7 @@ MICRO_BURST_V1_SYMBOLS=BTCUSDT,ETHUSDT
 ## 12. Fail-Closed Cases
 
 Context becomes invalid when:
+
 - Book missing, stale, unsynced, or anomalous.
 - BTC missing or stale.
 - Candle freshness invalid.
@@ -176,50 +181,53 @@ No fallback to fake BTC, empty book, stale data, or fabricated prices.
 ## 13. Files Changed / New
 
 ### New Files (8)
-| File | Purpose |
-|------|---------|
-| `MicroBurstMarketDataTypes.ts` | M1 type contracts |
-| `SynchronizedOrderBook.ts` | Depth synchronization engine |
-| `BtcMicroContextProvider.ts` | Real BTC 1m stream + returns |
-| `MicroBurstAggTradeBuffer.ts` | Bounded aggTrade history |
-| `MicroBurstReferencePrice.ts` | Mark price / midpoint provider |
-| `MicroBurstShadowEvaluator.ts` | Shadow orchestration + telemetry |
-| `MicroBurstDuplicateSignalGuard.ts` | Deterministic signal dedup |
-| `MicroBurstConfigLoader.ts` | YAML/env config parsing |
+
+| File                                | Purpose                          |
+| ----------------------------------- | -------------------------------- |
+| `MicroBurstMarketDataTypes.ts`      | M1 type contracts                |
+| `SynchronizedOrderBook.ts`          | Depth synchronization engine     |
+| `BtcMicroContextProvider.ts`        | Real BTC 1m stream + returns     |
+| `MicroBurstAggTradeBuffer.ts`       | Bounded aggTrade history         |
+| `MicroBurstReferencePrice.ts`       | Mark price / midpoint provider   |
+| `MicroBurstShadowEvaluator.ts`      | Shadow orchestration + telemetry |
+| `MicroBurstDuplicateSignalGuard.ts` | Deterministic signal dedup       |
+| `MicroBurstConfigLoader.ts`         | YAML/env config parsing          |
 
 ### New Test Files (8)
-| File | Tests |
-|------|-------|
-| `SynchronizedOrderBook.test.ts` | 14 tests |
-| `BtcMicroContextProvider.test.ts` | 8 tests |
-| `MicroBurstAggTradeBuffer.test.ts` | 5 tests |
-| `MicroBurstReferencePrice.test.ts` | 5 tests |
-| `MicroBurstDuplicateSignalGuard.test.ts` | 6 tests |
-| `MicroBurstConfigLoader.test.ts` | 9 tests |
-| `MicroBurstShadowEvaluator.test.ts` | 6 tests |
-| `MicroBurstM1Audit.test.ts` | 5 tests |
+
+| File                                     | Tests    |
+| ---------------------------------------- | -------- |
+| `SynchronizedOrderBook.test.ts`          | 14 tests |
+| `BtcMicroContextProvider.test.ts`        | 8 tests  |
+| `MicroBurstAggTradeBuffer.test.ts`       | 5 tests  |
+| `MicroBurstReferencePrice.test.ts`       | 5 tests  |
+| `MicroBurstDuplicateSignalGuard.test.ts` | 6 tests  |
+| `MicroBurstConfigLoader.test.ts`         | 9 tests  |
+| `MicroBurstShadowEvaluator.test.ts`      | 6 tests  |
+| `MicroBurstM1Audit.test.ts`              | 5 tests  |
 
 ### Modified Files (5)
-| File | Change |
-|------|--------|
-| `MicroBurstTypes.ts` | Added `marketPriceAtSnapshot` to context, `temporalAbsorptionDetected`/`temporalSweepDetected` to BookPressureSignal |
-| `MicroBurstContextBuilder.ts` | Added `ReferencePriceProvider` dep, `marketPriceAtSnapshot` in returned context |
-| `MicroBurstBookPressureAnalyzer.ts` | Added temporal history parameter, imbalance slope computation, temporal absorption/sweep detection |
-| `MicroBurst.test-support.ts` | Added new BookPressureSignal fields to test fixture |
-| `MicroBurstArchitecture.test.ts` | Unchanged (invariant scan continues to pass) |
+
+| File                                | Change                                                                                                               |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `MicroBurstTypes.ts`                | Added `marketPriceAtSnapshot` to context, `temporalAbsorptionDetected`/`temporalSweepDetected` to BookPressureSignal |
+| `MicroBurstContextBuilder.ts`       | Added `ReferencePriceProvider` dep, `marketPriceAtSnapshot` in returned context                                      |
+| `MicroBurstBookPressureAnalyzer.ts` | Added temporal history parameter, imbalance slope computation, temporal absorption/sweep detection                   |
+| `MicroBurst.test-support.ts`        | Added new BookPressureSignal fields to test fixture                                                                  |
+| `MicroBurstArchitecture.test.ts`    | Unchanged (invariant scan continues to pass)                                                                         |
 
 ## 14. Test Matrix
 
-| Category | Files | Tests | Status |
-|----------|-------|-------|--------|
-| M1 new components | 8 | 58 | PASS |
-| M1 audit | 1 | 5 | PASS |
-| Micro Burst total | 22 | 180+ | PASS |
-| Shared execution | 1 | 24 | PASS |
-| Aegis live | 1 | 108 | PASS |
-| Position managers | 1 | 4 | PASS |
-| Restoration | 1 | 4 | PASS |
-| **Full suite** | **91** | **935** | **PASS** |
+| Category          | Files  | Tests   | Status   |
+| ----------------- | ------ | ------- | -------- |
+| M1 new components | 8      | 58      | PASS     |
+| M1 audit          | 1      | 5       | PASS     |
+| Micro Burst total | 22     | 180+    | PASS     |
+| Shared execution  | 1      | 24      | PASS     |
+| Aegis live        | 1      | 108     | PASS     |
+| Position managers | 1      | 4       | PASS     |
+| Restoration       | 1      | 4       | PASS     |
+| **Full suite**    | **91** | **935** | **PASS** |
 
 ## 15. Known Limitations / M2 Scope
 

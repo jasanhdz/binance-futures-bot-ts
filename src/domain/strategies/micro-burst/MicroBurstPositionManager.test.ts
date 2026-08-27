@@ -13,7 +13,9 @@ function botState(overrides: Partial<BotState> = {}): BotState {
 }
 
 function lifecycle() {
-  return { manage: vi.fn().mockResolvedValue(undefined) } as unknown as StrategyPositionLifecycleCore;
+  return {
+    manage: vi.fn().mockResolvedValue(undefined),
+  } as unknown as StrategyPositionLifecycleCore;
 }
 
 function exitContext(overrides: Partial<MicroBurstExitContext> = {}): MicroBurstExitContext {

@@ -6,7 +6,9 @@ import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';
 
 const TEST_JOURNAL_DIR = path.join(__dirname, '__test_journal__');
 
-function makeResult(overrides: Partial<MicroBurstShadowEvaluationResult> = {}): MicroBurstShadowEvaluationResult {
+function makeResult(
+  overrides: Partial<MicroBurstShadowEvaluationResult> = {},
+): MicroBurstShadowEvaluationResult {
   return {
     strategyId: 'MICRO_BURST_V1',
     strategyVersion: '0.3.0-operational-shadow',
@@ -25,7 +27,14 @@ function makeResult(overrides: Partial<MicroBurstShadowEvaluationResult> = {}): 
     rewardRisk: 2.0,
     momentum: { direction: 'LONG', strength: 0.7, continuationScore: 0.6 },
     book: { status: 'HEALTHY', ageMs: 100, imbalance: 0.6, imbalanceSlope: 0.02 },
-    btc: { status: 'HEALTHY', ageMs: 50, ret1m: 0.001, ret3m: 0.002, ret5m: 0.003, conflict: false },
+    btc: {
+      status: 'HEALTHY',
+      ageMs: 50,
+      ret1m: 0.001,
+      ret3m: 0.002,
+      ret5m: 0.003,
+      conflict: false,
+    },
     microRegime: 'RANGING',
     dataQuality: { contextValid: true, invalidReasons: [] },
     wouldEnter: true,

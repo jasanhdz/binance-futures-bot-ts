@@ -561,24 +561,24 @@ LIVE_AUTHORITY: FALSE
 
 Política objetivo:
 
-| Capacidad / Política | AEGIS_TURBO | MOMENTUM_RIDE | MICRO_BURST_V1 | Core Compartido |
-|---|---:|---:|---:|---:|
-| Python/current brain | Propiedad de estrategia | No por default | No | No |
-| Aegis Entry Policy | Propiedad de estrategia | No por default | No | No |
-| Detector de Momentum | No | Propiedad de estrategia | No | No |
-| Micro régimen/SR | No | No | Propiedad de estrategia | No |
-| Micro TradeHealth | No | No | Propiedad de estrategia | No |
-| E4 tail risk | Contrato Aegis | No heredado | No heredado | Sólo si después se extrae explícitamente |
-| Daily loss stop | Usa | Usa | Usa | Sí |
-| Position ownership | Usa | Usa | Usa | Sí |
-| Filtros de símbolo | Usa | Usa | Usa | Sí |
-| Mecanismo de market order | Usa | Usa | Usa | Sí |
-| Mecanismo de hard bracket | Usa | Usa | Usa | Sí |
-| Reemplazo seguro de stop | Usa | Usa | Usa | Sí |
-| Emergency close | Usa | Usa | Usa | Sí |
-| Política ProfitGuardian | Propiedad de estrategia | Sólo si se declara | No por default | No |
-| Política Exit Eye | Propiedad de estrategia | Sólo si se declara | No | No |
-| Trade logging | Usa | Usa | Usa | Sí |
+| Capacidad / Política      |             AEGIS_TURBO |           MOMENTUM_RIDE |          MICRO_BURST_V1 |                          Core Compartido |
+| ------------------------- | ----------------------: | ----------------------: | ----------------------: | ---------------------------------------: |
+| Python/current brain      | Propiedad de estrategia |          No por default |                      No |                                       No |
+| Aegis Entry Policy        | Propiedad de estrategia |          No por default |                      No |                                       No |
+| Detector de Momentum      |                      No | Propiedad de estrategia |                      No |                                       No |
+| Micro régimen/SR          |                      No |                      No | Propiedad de estrategia |                                       No |
+| Micro TradeHealth         |                      No |                      No | Propiedad de estrategia |                                       No |
+| E4 tail risk              |          Contrato Aegis |             No heredado |             No heredado | Sólo si después se extrae explícitamente |
+| Daily loss stop           |                     Usa |                     Usa |                     Usa |                                       Sí |
+| Position ownership        |                     Usa |                     Usa |                     Usa |                                       Sí |
+| Filtros de símbolo        |                     Usa |                     Usa |                     Usa |                                       Sí |
+| Mecanismo de market order |                     Usa |                     Usa |                     Usa |                                       Sí |
+| Mecanismo de hard bracket |                     Usa |                     Usa |                     Usa |                                       Sí |
+| Reemplazo seguro de stop  |                     Usa |                     Usa |                     Usa |                                       Sí |
+| Emergency close           |                     Usa |                     Usa |                     Usa |                                       Sí |
+| Política ProfitGuardian   | Propiedad de estrategia |      Sólo si se declara |          No por default |                                       No |
+| Política Exit Eye         | Propiedad de estrategia |      Sólo si se declara |                      No |                                       No |
+| Trade logging             |                     Usa |                     Usa |                     Usa |                                       Sí |
 
 ---
 
@@ -634,11 +634,7 @@ Resultado normalizado propuesto:
 interface PositionLifecycleDecision {
   identity: StrategyIdentity;
   tradeId: string;
-  decision:
-    | 'HOLD'
-    | 'MOVE_STOP'
-    | 'CLOSE_MARKET'
-    | 'NO_ACTION';
+  decision: 'HOLD' | 'MOVE_STOP' | 'CLOSE_MARKET' | 'NO_ACTION';
   reason: string;
   requestedStopPrice?: number;
   diagnostics: Record<string, unknown>;

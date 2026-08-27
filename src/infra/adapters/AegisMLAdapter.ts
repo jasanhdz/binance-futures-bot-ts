@@ -188,7 +188,7 @@ function buildDefensivePrediction(symbol: string, error: unknown): AegisPredicti
         feature_available_at: null,
         source_feed_lag_ms: null,
         computed_at: null,
-        cache_age_ms: null
+        cache_age_ms: null,
       },
     },
     metadata: {

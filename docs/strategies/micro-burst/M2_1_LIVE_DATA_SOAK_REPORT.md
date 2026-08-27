@@ -13,6 +13,7 @@ The M2 smoke test used `binance-api-node` library's `ws.futuresPartialDepth()` w
 ### Why aggTrade events = 0 in M2 smoke test
 
 Two compounding issues:
+
 1. `binance-api-node` futures WebSocket delivers 0 events (same library issue as depth)
 2. Binance Futures combined stream (`/stream?streams=...`) does NOT deliver `@aggTrade` events — the connection opens but no messages arrive
 
@@ -21,6 +22,7 @@ Two compounding issues:
 ### Why contextValid = 0 in M2 smoke test
 
 Cascading failure from the above:
+
 - No live depth WS → book stays at initial snapshot → `bookStatus` degrades to STALE
 - No live aggTrade → no taker flow data
 - Combined: `contextValid = false` for all symbols
@@ -36,29 +38,29 @@ Cascading failure from the above:
 
 ### Per-Symbol Depth
 
-| Symbol | REST Snapshots | Raw WS Events | Accepted | Rejected | Gaps | Book Status |
-|---|---|---|---|---|---|---|
-| BTCUSDT | 1 | 564 | 564 | 0 | 0 | HEALTHY |
-| ETHUSDT | 1 | 567 | 567 | 0 | 0 | HEALTHY |
-| SOLUSDT | 1 | 551 | 551 | 0 | 0 | HEALTHY |
+| Symbol  | REST Snapshots | Raw WS Events | Accepted | Rejected | Gaps | Book Status |
+| ------- | -------------- | ------------- | -------- | -------- | ---- | ----------- |
+| BTCUSDT | 1              | 564           | 564      | 0        | 0    | HEALTHY     |
+| ETHUSDT | 1              | 567           | 567      | 0        | 0    | HEALTHY     |
+| SOLUSDT | 1              | 551           | 551      | 0        | 0    | HEALTHY     |
 
 ### Per-Symbol Trades
 
-| Symbol | Raw Events | Accepted | Rejected | Taker Buy | Taker Sell | Net Flow |
-|---|---|---|---|---|---|---|
-| BTCUSDT | 2694 | 2683 | 11 | 1124 | 1559 | -23.22 |
-| ETHUSDT | 3424 | 3404 | 20 | 1573 | 1831 | -129.71 |
-| SOLUSDT | 1678 | 1671 | 7 | 630 | 1041 | -4908.27 |
+| Symbol  | Raw Events | Accepted | Rejected | Taker Buy | Taker Sell | Net Flow |
+| ------- | ---------- | -------- | -------- | --------- | ---------- | -------- |
+| BTCUSDT | 2694       | 2683     | 11       | 1124      | 1559       | -23.22   |
+| ETHUSDT | 3424       | 3404     | 20       | 1573      | 1831       | -129.71  |
+| SOLUSDT | 1678       | 1671     | 7        | 630       | 1041       | -4908.27 |
 
 Rejected events are `malformed_price` (price field not parseable as finite number) — expected for high-frequency trade data.
 
 ### Reference Price
 
-| Symbol | Updates | Source | Last Price |
-|---|---|---|---|
-| BTCUSDT | 7 | MARK_PRICE | 79032.9 |
-| ETHUSDT | 7 | MARK_PRICE | 2497.19 |
-| SOLUSDT | 7 | MARK_PRICE | 101.75 |
+| Symbol  | Updates | Source     | Last Price |
+| ------- | ------- | ---------- | ---------- |
+| BTCUSDT | 7       | MARK_PRICE | 79032.9    |
+| ETHUSDT | 7       | MARK_PRICE | 2497.19    |
+| SOLUSDT | 7       | MARK_PRICE | 101.75     |
 
 ### BTC Context
 
@@ -70,11 +72,11 @@ Rejected events are `malformed_price` (price field not parseable as finite numbe
 
 ### Context Validity
 
-| Symbol | Evaluations | Valid | Invalid |
-|---|---|---|---|
-| BTCUSDT | 3 | 3 | 0 |
-| ETHUSDT | 3 | 3 | 0 |
-| SOLUSDT | 3 | 3 | 0 |
+| Symbol  | Evaluations | Valid | Invalid |
+| ------- | ----------- | ----- | ------- |
+| BTCUSDT | 3           | 3     | 0       |
+| ETHUSDT | 3           | 3     | 0       |
+| SOLUSDT | 3           | 3     | 0       |
 
 ### Signals
 

@@ -13,25 +13,25 @@ M2 wires the Micro Burst shadow evaluation into the live bot runtime. The strate
 
 ## 2. New Components
 
-| Component | File | Purpose |
-|---|---|---|
-| `MicroBurstRuntime` | `MicroBurstRuntime.ts` | Application-layer orchestrator: lifecycle, evaluation loop, health |
-| `MicroBurstSignalJournal` | `MicroBurstSignalJournal.ts` | Append-only JSONL persistence for unique ENTRY_INTENT signals |
+| Component                 | File                         | Purpose                                                            |
+| ------------------------- | ---------------------------- | ------------------------------------------------------------------ |
+| `MicroBurstRuntime`       | `MicroBurstRuntime.ts`       | Application-layer orchestrator: lifecycle, evaluation loop, health |
+| `MicroBurstSignalJournal` | `MicroBurstSignalJournal.ts` | Append-only JSONL persistence for unique ENTRY_INTENT signals      |
 
 ## 3. Modified Components
 
-| Component | Change |
-|---|---|
-| `Exchange` port | Added optional `subscribeToAggTrades`, `getDepthSnapshot` |
-| `BinanceAdapter` | Implemented `subscribeToAggTrades`, `getDepthSnapshot` |
-| `TradingService` | Creates/starts/stops `MicroBurstRuntime` when config enables SHADOW |
-| `MicroBurstIdentity` | Shadow authority enabled, version bumped to `0.3.0-operational-shadow` |
-| `MicroBurstContextBuilder` | Added `AggTradeFlowProvider` interface; context includes `aggTradeFlow` |
-| `MicroBurstTypes` | `MicroBurstContext` extended with optional `aggTradeFlow` |
-| `MicroBurstShadowEvaluator` | Diagnostics include aggTrade, referencePriceSource, btcAcceleration, temporal detection |
-| `MicroBurstM1Audit.test.ts` | Updated for M2: SHADOW=true, application-layer firewall tests |
-| `MicroBurstArchitecture.test.ts` | Updated for M2: SHADOW=true |
-| `original-operational-semantics.test.ts` | Updated digests for modified Exchange/BinanceAdapter/TradingService |
+| Component                                | Change                                                                                  |
+| ---------------------------------------- | --------------------------------------------------------------------------------------- |
+| `Exchange` port                          | Added optional `subscribeToAggTrades`, `getDepthSnapshot`                               |
+| `BinanceAdapter`                         | Implemented `subscribeToAggTrades`, `getDepthSnapshot`                                  |
+| `TradingService`                         | Creates/starts/stops `MicroBurstRuntime` when config enables SHADOW                     |
+| `MicroBurstIdentity`                     | Shadow authority enabled, version bumped to `0.3.0-operational-shadow`                  |
+| `MicroBurstContextBuilder`               | Added `AggTradeFlowProvider` interface; context includes `aggTradeFlow`                 |
+| `MicroBurstTypes`                        | `MicroBurstContext` extended with optional `aggTradeFlow`                               |
+| `MicroBurstShadowEvaluator`              | Diagnostics include aggTrade, referencePriceSource, btcAcceleration, temporal detection |
+| `MicroBurstM1Audit.test.ts`              | Updated for M2: SHADOW=true, application-layer firewall tests                           |
+| `MicroBurstArchitecture.test.ts`         | Updated for M2: SHADOW=true                                                             |
+| `original-operational-semantics.test.ts` | Updated digests for modified Exchange/BinanceAdapter/TradingService                     |
 
 ## 4. Architecture
 
@@ -101,6 +101,7 @@ micro_burst:
 ```
 
 Environment fallback:
+
 ```
 MICRO_BURST_V1_ENABLED=true
 MICRO_BURST_V1_MODE=SHADOW
@@ -117,6 +118,7 @@ MICRO_BURST_V1_SYMBOLS=ETHUSDT,SOLUSDT,BNBUSDT
 ## 9. Exchange Mutation Firewall
 
 Static audit confirms:
+
 - No `marketOpen`, `placeStopClose`, `placeTpClose`, `closeSideMarketSafe` in domain production code
 - No `SharedStrategyExecutionService.execute()` in MicroBurstRuntime or MicroBurstSignalJournal
 - Runtime test: 100 evaluations produce zero exchange mutations
@@ -125,6 +127,7 @@ Static audit confirms:
 ## 10. Signal Journal
 
 Append-only JSONL at `logs/micro-burst/shadow-signals/YYYY-MM-DD-{ts}.jsonl`:
+
 - Only unique `ENTRY_INTENT` signals (no duplicates, no NO_TRADE)
 - Contains: strategy metadata, symbol, side, prices, momentum, book, aggTrade, BTC, decision
 - Rotates after 10,000 entries per file
@@ -134,6 +137,7 @@ Append-only JSONL at `logs/micro-burst/shadow-signals/YYYY-MM-DD-{ts}.jsonl`:
 ## 11. Health Reporting
 
 Periodic `MICRO_BURST_SHADOW_HEALTH` log every 60s:
+
 ```
 symbols=3 healthyBooks=3 btcHealthy=true
 evaluations=... uniqueSignals=... duplicates=...

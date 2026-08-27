@@ -1,10 +1,7 @@
 import { MicroBurstConfig, MicroBurstExitContext, MicroBurstExitDecision } from './MicroBurstTypes';
 import { decimalReturnToBps } from './MicroBurstUnits';
 
-function favorableExcursionBps(
-  context: MicroBurstExitContext,
-  side: 'LONG' | 'SHORT',
-): number {
+function favorableExcursionBps(context: MicroBurstExitContext, side: 'LONG' | 'SHORT'): number {
   const priceReturn =
     side === 'LONG'
       ? (context.peakPrice - context.entryPrice) / context.entryPrice
@@ -12,10 +9,7 @@ function favorableExcursionBps(
   return Math.max(0, decimalReturnToBps(priceReturn));
 }
 
-function adverseExcursionBps(
-  context: MicroBurstExitContext,
-  side: 'LONG' | 'SHORT',
-): number {
+function adverseExcursionBps(context: MicroBurstExitContext, side: 'LONG' | 'SHORT'): number {
   const priceReturn =
     side === 'LONG'
       ? (context.entryPrice - context.troughPrice) / context.entryPrice
@@ -23,10 +17,7 @@ function adverseExcursionBps(
   return Math.max(0, decimalReturnToBps(priceReturn));
 }
 
-function currentFavorableReturnBps(
-  context: MicroBurstExitContext,
-  side: 'LONG' | 'SHORT',
-): number {
+function currentFavorableReturnBps(context: MicroBurstExitContext, side: 'LONG' | 'SHORT'): number {
   const signedReturn = (context.currentPrice - context.entryPrice) / context.entryPrice;
   return decimalReturnToBps(side === 'LONG' ? signedReturn : -signedReturn);
 }
@@ -133,7 +124,10 @@ export function evaluateMicroBurstExit(
     return {
       action: 'CLOSE_MARKET',
       reason: 'TARGET',
-      diagnostics: { currentPrice: context.currentPrice, destinationPrice: context.destinationPrice },
+      diagnostics: {
+        currentPrice: context.currentPrice,
+        destinationPrice: context.destinationPrice,
+      },
     };
   }
 

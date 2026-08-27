@@ -44,10 +44,7 @@ export class MicroBurstPositionManager
 
   private readonly config: MicroBurstConfig;
 
-  constructor(
-    _lifecycle: StrategyPositionLifecycleCore,
-    config?: Partial<MicroBurstConfig>,
-  ) {
+  constructor(_lifecycle: StrategyPositionLifecycleCore, config?: Partial<MicroBurstConfig>) {
     this.config = { ...defaultMicroBurstConfig(), ...config };
   }
 

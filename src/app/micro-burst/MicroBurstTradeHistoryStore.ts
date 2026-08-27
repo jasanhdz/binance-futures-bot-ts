@@ -29,12 +29,18 @@ export class MicroBurstTradeHistoryStore {
     this.identities.set(symbol, identities);
   }
 
-  query(symbol: string, fromExclusive: number, toInclusive: number): readonly MicroBurstTradeRecord[] {
+  query(
+    symbol: string,
+    fromExclusive: number,
+    toInclusive: number,
+  ): readonly MicroBurstTradeRecord[] {
     if (toInclusive <= fromExclusive) return Object.freeze([]);
     const history = this.histories.get(symbol) ?? [];
     const start = history.findIndex((trade) => trade.eventTime > fromExclusive);
     if (start === -1) return Object.freeze([]);
-    const end = history.findIndex((trade, index) => index >= start && trade.eventTime > toInclusive);
+    const end = history.findIndex(
+      (trade, index) => index >= start && trade.eventTime > toInclusive,
+    );
     return Object.freeze(history.slice(start, end === -1 ? undefined : end));
   }
 
@@ -54,13 +60,20 @@ export class MicroBurstTradeHistoryStore {
 }
 
 function isValidTrade(trade: MicroBurstTradeRecord): boolean {
-  return Number.isFinite(trade.eventTime)
-    && Number.isFinite(trade.receivedAtMs)
-    && Number.isFinite(trade.price) && trade.price > 0
-    && Number.isFinite(trade.quantity) && trade.quantity >= 0;
+  return (
+    Number.isFinite(trade.eventTime) &&
+    Number.isFinite(trade.receivedAtMs) &&
+    Number.isFinite(trade.price) &&
+    trade.price > 0 &&
+    Number.isFinite(trade.quantity) &&
+    trade.quantity >= 0
+  );
 }
 
-function upperBound(history: readonly MicroBurstTradeRecord[], trade: MicroBurstTradeRecord): number {
+function upperBound(
+  history: readonly MicroBurstTradeRecord[],
+  trade: MicroBurstTradeRecord,
+): number {
   let low = 0;
   let high = history.length;
   while (low < high) {
@@ -74,15 +87,18 @@ function upperBound(history: readonly MicroBurstTradeRecord[], trade: MicroBurst
 /** Binance aggregate IDs are canonical; the remaining fields provide a stable fallback. */
 export function tradeIdentity(trade: MicroBurstTradeRecord): string {
   if (Number.isFinite(trade.aggregateTradeId)) return `a:${trade.aggregateTradeId}`;
-  if (Number.isFinite(trade.firstTradeId) && Number.isFinite(trade.lastTradeId)) return `r:${trade.firstTradeId}:${trade.lastTradeId}`;
+  if (Number.isFinite(trade.firstTradeId) && Number.isFinite(trade.lastTradeId))
+    return `r:${trade.firstTradeId}:${trade.lastTradeId}`;
   return `f:${trade.eventTime}:${trade.tradeTime ?? ''}:${trade.price}:${trade.quantity}:${trade.isBuyerMaker ? 1 : 0}`;
 }
 
 export function compareTrades(a: MicroBurstTradeRecord, b: MicroBurstTradeRecord): number {
-  return a.eventTime - b.eventTime
-    || (a.aggregateTradeId ?? a.firstTradeId ?? a.lastTradeId ?? Number.MAX_SAFE_INTEGER)
-      - (b.aggregateTradeId ?? b.firstTradeId ?? b.lastTradeId ?? Number.MAX_SAFE_INTEGER)
-    || (a.firstTradeId ?? Number.MAX_SAFE_INTEGER) - (b.firstTradeId ?? Number.MAX_SAFE_INTEGER)
-    || (a.lastTradeId ?? Number.MAX_SAFE_INTEGER) - (b.lastTradeId ?? Number.MAX_SAFE_INTEGER)
-    || a.receivedAtMs - b.receivedAtMs;
+  return (
+    a.eventTime - b.eventTime ||
+    (a.aggregateTradeId ?? a.firstTradeId ?? a.lastTradeId ?? Number.MAX_SAFE_INTEGER) -
+      (b.aggregateTradeId ?? b.firstTradeId ?? b.lastTradeId ?? Number.MAX_SAFE_INTEGER) ||
+    (a.firstTradeId ?? Number.MAX_SAFE_INTEGER) - (b.firstTradeId ?? Number.MAX_SAFE_INTEGER) ||
+    (a.lastTradeId ?? Number.MAX_SAFE_INTEGER) - (b.lastTradeId ?? Number.MAX_SAFE_INTEGER) ||
+    a.receivedAtMs - b.receivedAtMs
+  );
 }

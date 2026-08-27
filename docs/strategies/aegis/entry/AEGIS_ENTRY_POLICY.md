@@ -151,7 +151,7 @@ Cada intento relevante genera metadata compacta y trace completo:
   "side": "LONG",
   "turbo": {
     "score": 0.676,
-    "votes": {"long": 2, "short": 0, "neutral": 1},
+    "votes": { "long": 2, "short": 0, "neutral": 1 },
     "setupGrade": "WEAK"
   },
   "guards": {

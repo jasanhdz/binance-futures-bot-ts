@@ -42,17 +42,18 @@ function unavailableSignal(status: BookDataStatus): BookPressureSignal {
 
 function isFiniteLevel(level: OrderBookDepthLevel): boolean {
   return (
-    Number.isFinite(level.price) &&
-    level.price > 0 &&
-    Number.isFinite(level.qty) &&
-    level.qty >= 0
+    Number.isFinite(level.price) && level.price > 0 && Number.isFinite(level.qty) && level.qty >= 0
   );
 }
 
 function hasExpectedSorting(snapshot: OrderBookSnapshot): boolean {
   return (
-    snapshot.bidDepth.every((level, index, levels) => index === 0 || levels[index - 1].price >= level.price) &&
-    snapshot.askDepth.every((level, index, levels) => index === 0 || levels[index - 1].price <= level.price)
+    snapshot.bidDepth.every(
+      (level, index, levels) => index === 0 || levels[index - 1].price >= level.price,
+    ) &&
+    snapshot.askDepth.every(
+      (level, index, levels) => index === 0 || levels[index - 1].price <= level.price,
+    )
   );
 }
 
@@ -112,7 +113,8 @@ function detectTemporalAbsorption(
   if (temporalHistory.length < 3) return false;
 
   const recent = temporalHistory.slice(-5);
-  const prevAvgImbalance = recent.slice(0, -1).reduce((s, h) => s + h.topOfBookImbalance, 0) / (recent.length - 1);
+  const prevAvgImbalance =
+    recent.slice(0, -1).reduce((s, h) => s + h.topOfBookImbalance, 0) / (recent.length - 1);
   const currentImbalance = currentSnapshot.topOfBookImbalance;
 
   const bidQtyGrowth = currentSnapshot.bestBidQty / (recent[0]?.bestBidQty || 1);
@@ -132,7 +134,8 @@ function detectTemporalSweep(
   if (temporalHistory.length < 3) return false;
 
   const recent = temporalHistory.slice(-5);
-  const prevAvgImbalance = recent.slice(0, -1).reduce((s, h) => s + h.topOfBookImbalance, 0) / (recent.length - 1);
+  const prevAvgImbalance =
+    recent.slice(0, -1).reduce((s, h) => s + h.topOfBookImbalance, 0) / (recent.length - 1);
   const currentImbalance = currentSnapshot.topOfBookImbalance;
 
   const bidQtyDrop = currentSnapshot.bestBidQty / (recent[0]?.bestBidQty || 1);
@@ -168,8 +171,7 @@ export function analyzeBookPressure(
   const totalDepth = bidTop5 + askTop5;
   const signedTopOfBookImbalance = totalDepth > 0 ? (bidTop5 - askTop5) / totalDepth : 0;
   const topOfBookImbalance = Math.abs(signedTopOfBookImbalance);
-  const status: BookDataStatus =
-    spreadBps > opts.anomalySpreadBps ? 'ANOMALOUS' : 'HEALTHY';
+  const status: BookDataStatus = spreadBps > opts.anomalySpreadBps ? 'ANOMALOUS' : 'HEALTHY';
 
   const currentTemporalSnapshot: TemporalBookSnapshot = {
     observedAtMs: snapshotAtMs,
@@ -187,10 +189,11 @@ export function analyzeBookPressure(
   let temporalSweepDetected = false;
 
   const causalHistory = (temporalHistory ?? [])
-    .filter((item) =>
-      Number.isFinite(item.observedAtMs) &&
-      item.observedAtMs < snapshot.observedAtMs &&
-      item.observedAtMs <= snapshotAtMs,
+    .filter(
+      (item) =>
+        Number.isFinite(item.observedAtMs) &&
+        item.observedAtMs < snapshot.observedAtMs &&
+        item.observedAtMs <= snapshotAtMs,
     )
     .sort((a, b) => a.observedAtMs - b.observedAtMs);
   if (causalHistory.length >= opts.minTemporalObservations) {

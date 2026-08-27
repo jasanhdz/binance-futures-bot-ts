@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { Candle, Side } from '../../types';
-import { evaluateMomentumRideEntry, MomentumRideEntryPolicyConfig } from './MomentumRideEntryPolicy';
+import {
+  evaluateMomentumRideEntry,
+  MomentumRideEntryPolicyConfig,
+} from './MomentumRideEntryPolicy';
 
 const config: MomentumRideEntryPolicyConfig = {
   longEnabled: true,

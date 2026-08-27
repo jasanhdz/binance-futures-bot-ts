@@ -3,7 +3,10 @@ import { DEFAULT_GUARDIAN_CONFIG } from '../../domain/services/ProfitGuardian';
 import { createUnfrozenStrategyIdentity } from '../../domain/strategy/StrategyIdentity';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { BotState } from '../../domain/types';
-import { StrategyPositionLifecycleCore, StrategyPositionLifecyclePorts } from '../position/StrategyPositionLifecycleCore';
+import {
+  StrategyPositionLifecycleCore,
+  StrategyPositionLifecyclePorts,
+} from '../position/StrategyPositionLifecycleCore';
 import { Exchange } from '../ports/Exchange';
 import { StateStore } from '../ports/StateStore';
 import { AegisPositionManager, MomentumRidePositionManager } from './OwnedPositionManagers';
@@ -27,7 +30,7 @@ function stateStore(tradeId: string): StateStore {
   };
   return {
     get: () => state,
-    set: patch => (state = { ...state, ...patch }),
+    set: (patch) => (state = { ...state, ...patch }),
     reset: () => undefined,
   };
 }
@@ -48,7 +51,10 @@ function lifecycleCore(): StrategyPositionLifecycleCore {
   const ports: StrategyPositionLifecyclePorts = {
     exchange,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    notifier: { sendMessage: vi.fn(async () => undefined), sendAlert: vi.fn(async () => undefined) },
+    notifier: {
+      sendMessage: vi.fn(async () => undefined),
+      sendAlert: vi.fn(async () => undefined),
+    },
     defaultLeverage: () => 2,
     requireBrackets: () => false,
     getRegimeConfig: () => undefined,
@@ -59,12 +65,16 @@ function lifecycleCore(): StrategyPositionLifecycleCore {
     calculateRoe: () => 0,
     entryMargin: () => 1,
     pnlFromRoe: () => 0,
-    roundPrice: price => price,
+    roundPrice: (price) => price,
     isBetterStop: () => false,
-    formatRoe: value => String(value),
+    formatRoe: (value) => String(value),
     notifyExit: vi.fn(async () => undefined),
     logTradeEvent: vi.fn(async () => undefined),
-    safeMoveCloseStop: vi.fn(async input => ({ moved: false, reason: 'stop_not_improved', newStopPrice: input.newStopPrice })),
+    safeMoveCloseStop: vi.fn(async (input) => ({
+      moved: false,
+      reason: 'stop_not_improved',
+      newStopPrice: input.newStopPrice,
+    })),
     ensureBrackets: vi.fn(async () => ({})),
     replaceBracketsForNewEntryPrice: vi.fn(async () => undefined),
     reconcilePositionSize: vi.fn(async () => ({ changed: false })),
@@ -81,7 +91,11 @@ describe('owned position manager composition', () => {
     );
     const symbolState = stateStore('AEGIS-TURBO-test');
 
-    await manager.manage(aegisIdentity, { symbol: 'BTCUSDT', botState: symbolState.get(), symbolState });
+    await manager.manage(aegisIdentity, {
+      symbol: 'BTCUSDT',
+      botState: symbolState.get(),
+      symbolState,
+    });
 
     expect(exitEye).toHaveBeenCalledOnce();
   });
@@ -93,7 +107,11 @@ describe('owned position manager composition', () => {
     const manager = new MomentumRidePositionManager(core);
     const symbolState = stateStore('MOMENTUM-RIDE-test');
 
-    await manager.manage(momentumIdentity, { symbol: 'BTCUSDT', botState: symbolState.get(), symbolState });
+    await manager.manage(momentumIdentity, {
+      symbol: 'BTCUSDT',
+      botState: symbolState.get(),
+      symbolState,
+    });
 
     expect(exitEye).not.toHaveBeenCalled();
   });
@@ -103,20 +121,24 @@ describe('owned position manager composition', () => {
     const manager = new MomentumRidePositionManager(core);
     const symbolState = stateStore('AEGIS-TURBO-test');
 
-    await expect(manager.manage(aegisIdentity, {
-      symbol: 'BTCUSDT',
-      botState: symbolState.get(),
-      symbolState,
-    })).rejects.toThrow('POSITION_MANAGER_OWNERSHIP_MISMATCH:MOMENTUM_RIDE:AEGIS_TURBO');
+    await expect(
+      manager.manage(aegisIdentity, {
+        symbol: 'BTCUSDT',
+        botState: symbolState.get(),
+        symbolState,
+      }),
+    ).rejects.toThrow('POSITION_MANAGER_OWNERSHIP_MISMATCH:MOMENTUM_RIDE:AEGIS_TURBO');
   });
 
   it('keeps router lifecycle execution manager-specific', async () => {
     const core = lifecycleCore();
     const exitEye = vi.fn(async () => true);
     const router = new PositionManagerRouter();
-    router.register(new AegisPositionManager(
-      core.createAegisLifecycle(strategyLifecyclePolicy('AEGIS_TURBO'), exitEye),
-    ));
+    router.register(
+      new AegisPositionManager(
+        core.createAegisLifecycle(strategyLifecyclePolicy('AEGIS_TURBO'), exitEye),
+      ),
+    );
     router.register(new MomentumRidePositionManager(core));
     const momentumState = stateStore('MOMENTUM-RIDE-test');
     const aegisState = stateStore('AEGIS-TURBO-test');
@@ -132,8 +154,12 @@ describe('owned position manager composition', () => {
       symbolState: aegisState,
     });
 
-    expect(momentum.status === 'ROUTED' && momentum.decision.reason).toBe('momentum_position_manager_completed');
-    expect(aegis.status === 'ROUTED' && aegis.decision.reason).toBe('aegis_position_manager_completed');
+    expect(momentum.status === 'ROUTED' && momentum.decision.reason).toBe(
+      'momentum_position_manager_completed',
+    );
+    expect(aegis.status === 'ROUTED' && aegis.decision.reason).toBe(
+      'aegis_position_manager_completed',
+    );
     expect(exitEye).toHaveBeenCalledOnce();
   });
 });

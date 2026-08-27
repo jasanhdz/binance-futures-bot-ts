@@ -30,22 +30,30 @@ export class WebSocketManager {
       });
   }
 
-  public connectCandles(symbol: string, interval: string, callback: (candle: Candle) => void): () => void {
-    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@kline_${interval}`, MARKET, (event) => {
-      const candle = event.k;
-      if (!candle) return;
-      callback({
-        startTime: candle.t,
-        closeTime: candle.T,
-        open: candle.o,
-        high: candle.h,
-        low: candle.l,
-        close: candle.c,
-        volume: candle.v,
-        baseAssetVolume: candle.V,
-        buyVolume: candle.V,
-      } as unknown as Candle);
-    });
+  public connectCandles(
+    symbol: string,
+    interval: string,
+    callback: (candle: Candle) => void,
+  ): () => void {
+    return this.marketDataHub.subscribe(
+      `${symbol.toLowerCase()}@kline_${interval}`,
+      MARKET,
+      (event) => {
+        const candle = event.k;
+        if (!candle) return;
+        callback({
+          startTime: candle.t,
+          closeTime: candle.T,
+          open: candle.o,
+          high: candle.h,
+          low: candle.l,
+          close: candle.c,
+          volume: candle.v,
+          baseAssetVolume: candle.V,
+          buyVolume: candle.V,
+        } as unknown as Candle);
+      },
+    );
   }
 
   public connectAggTrades(
@@ -75,9 +83,17 @@ export class WebSocketManager {
     if (![5, 10, 20].includes(levels)) {
       throw new Error(`Unsupported Binance partial-depth level: ${levels}`);
     }
-    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth${levels}@${speed}`, PUBLIC, (event) => {
-      callback({ ...event, bids: event.b ?? event.bids ?? [], asks: event.a ?? event.asks ?? [] });
-    });
+    return this.marketDataHub.subscribe(
+      `${symbol.toLowerCase()}@depth${levels}@${speed}`,
+      PUBLIC,
+      (event) => {
+        callback({
+          ...event,
+          bids: event.b ?? event.bids ?? [],
+          asks: event.a ?? event.asks ?? [],
+        });
+      },
+    );
   }
 
   public connectDepthDiff(
@@ -85,18 +101,22 @@ export class WebSocketManager {
     speed: '100ms' | '250ms' | '500ms',
     callback: (depth: BinanceDepthDiffEvent) => void,
   ): () => void {
-    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth@${speed}`, PUBLIC, (event) => {
-      callback({
-        U: event.U,
-        u: event.u,
-        pu: event.pu,
-        bids: (event.b ?? []).map((level: any) => [String(level[0]), String(level[1])]),
-        asks: (event.a ?? []).map((level: any) => [String(level[0]), String(level[1])]),
-        E: event.E,
-        T: event.T,
-        receivedAtMs: Date.now(),
-      });
-    });
+    return this.marketDataHub.subscribe(
+      `${symbol.toLowerCase()}@depth@${speed}`,
+      PUBLIC,
+      (event) => {
+        callback({
+          U: event.U,
+          u: event.u,
+          pu: event.pu,
+          bids: (event.b ?? []).map((level: any) => [String(level[0]), String(level[1])]),
+          asks: (event.a ?? []).map((level: any) => [String(level[0]), String(level[1])]),
+          E: event.E,
+          T: event.T,
+          receivedAtMs: Date.now(),
+        });
+      },
+    );
   }
 
   /** Private user data remains on binance-api-node and is intentionally not part of M3.2. */

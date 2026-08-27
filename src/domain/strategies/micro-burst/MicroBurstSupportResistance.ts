@@ -87,11 +87,7 @@ function volumeAtLevel(candles: IndexedCandle[], level: number, toleranceBps: nu
   }, 0);
 }
 
-function findLastTouchIndex(
-  candles: IndexedCandle[],
-  level: number,
-  toleranceBps: number,
-): number {
+function findLastTouchIndex(candles: IndexedCandle[], level: number, toleranceBps: number): number {
   for (let i = candles.length - 1; i >= 0; i--) {
     const { candle, sourceIndex } = candles[i];
     if (
@@ -156,9 +152,7 @@ function findNearest(
   nearLevelThresholdBps: number,
 ): NearestLevels {
   const supports = levels.filter((level) => level.type === 'support' && level.price < price);
-  const resistances = levels.filter(
-    (level) => level.type === 'resistance' && level.price > price,
-  );
+  const resistances = levels.filter((level) => level.type === 'resistance' && level.price > price);
   const support = supports.sort((a, b) => b.price - a.price)[0] ?? null;
   const resistance = resistances.sort((a, b) => a.price - b.price)[0] ?? null;
   const distanceToSupportBps = support ? priceDistanceToBps(price, support.price) : Infinity;
@@ -170,8 +164,7 @@ function findNearest(
 
   let structuralPosition: StructuralPosition = 'mid_range';
   if (distanceToSupportBps <= nearLevelThresholdBps) structuralPosition = 'near_support';
-  else if (distanceToResistanceBps <= nearLevelThresholdBps)
-    structuralPosition = 'near_resistance';
+  else if (distanceToResistanceBps <= nearLevelThresholdBps) structuralPosition = 'near_resistance';
 
   return {
     support,
@@ -201,12 +194,7 @@ export function detectSupportResistance(
     opts.pivotRightBars,
     'resistance',
   );
-  const support = findPivots(
-    availableCandles,
-    opts.pivotLeftBars,
-    opts.pivotRightBars,
-    'support',
-  );
+  const support = findPivots(availableCandles, opts.pivotLeftBars, opts.pivotRightBars, 'support');
   const levels = [
     ...clusterPivots(
       support,

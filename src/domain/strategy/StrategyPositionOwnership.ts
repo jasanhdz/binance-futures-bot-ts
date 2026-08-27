@@ -15,9 +15,9 @@ export function resolveStrategyOwnership(state: BotState): StrategyOwnershipReso
 
   const evidence = new Set<StrategyId>();
   if (
-    state.lastStrategy === 'AEGIS_TURBO'
-    || state.lastStrategy === 'MOMENTUM_RIDE'
-    || state.lastStrategy === 'MICRO_BURST_V1'
+    state.lastStrategy === 'AEGIS_TURBO' ||
+    state.lastStrategy === 'MOMENTUM_RIDE' ||
+    state.lastStrategy === 'MICRO_BURST_V1'
   ) {
     evidence.add(state.lastStrategy);
   }
@@ -28,9 +28,9 @@ export function resolveStrategyOwnership(state: BotState): StrategyOwnershipReso
   if (strategyIds.length > 1) return { status: 'AMBIGUOUS', strategyIds };
   if (strategyIds.length === 0) {
     if (
-      state.positionOwner === 'AEGIS'
-      && state.tradeOrigin === 'BOT'
-      && state.ownershipStatus === 'VERIFIED'
+      state.positionOwner === 'AEGIS' &&
+      state.tradeOrigin === 'BOT' &&
+      state.ownershipStatus === 'VERIFIED'
     ) {
       return { status: 'LEGACY_MIGRATABLE', strategyId: 'AEGIS_TURBO' };
     }
@@ -43,8 +43,8 @@ export function resolveStrategyOwnership(state: BotState): StrategyOwnershipReso
   }
 
   if (
-    strategyId !== 'MICRO_BURST_V1'
-    && (state.positionOwner === 'AEGIS' || state.tradeOrigin === 'BOT')
+    strategyId !== 'MICRO_BURST_V1' &&
+    (state.positionOwner === 'AEGIS' || state.tradeOrigin === 'BOT')
   ) {
     return { status: 'LEGACY_MIGRATABLE', strategyId };
   }

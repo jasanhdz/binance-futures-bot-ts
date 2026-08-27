@@ -37,6 +37,7 @@ No CI query was available in this environment.
 Not tested against real Binance in this milestone.
 
 ## Soak Preparation
+
 - The command starts the compiled `src/main.ts` production path through `dist/main.js`; it does not use the older stand-alone smoke or soak probes.
 
 ## Configuration

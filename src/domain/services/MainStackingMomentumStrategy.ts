@@ -1,6 +1,7 @@
 import { Candle, Side } from '../types';
 
-export const MAIN_STACKING_MOMENTUM_AUTHORITY = 'origin/main@3a6dbc330760aa8bf179be76c413623d7d50a420';
+export const MAIN_STACKING_MOMENTUM_AUTHORITY =
+  'origin/main@3a6dbc330760aa8bf179be76c413623d7d50a420';
 
 export interface MainStackingMomentumDecision {
   allowed: boolean;
@@ -41,27 +42,30 @@ export function evaluateMainStackingMomentum(
   const window = candles.slice(-MOMENTUM_CANDLES);
   const latest = candles[candles.length - 1];
   const closes = candles.map((candle) => candle.close);
-  const volumeAverage = average(candles.slice(-VOLUME_WINDOW - 1, -1).map((candle) => candle.volume));
+  const volumeAverage = average(
+    candles.slice(-VOLUME_WINDOW - 1, -1).map((candle) => candle.volume),
+  );
   const requiredVolume = VOLUME_FACTOR * volumeAverage;
   const volumes = window.map((candle) => candle.volume);
   const ema7 = last(ema(closes, 7));
   const ema25 = last(ema(closes, 25));
   const ema99 = last(ema(closes, 99));
-  const extensionFromBase = side === 'LONG'
-    ? (latest.close - ema25) / ema25
-    : (ema25 - latest.close) / ema25;
+  const extensionFromBase =
+    side === 'LONG' ? (latest.close - ema25) / ema25 : (ema25 - latest.close) / ema25;
   const atrPct = currentAtrPct(candles, ATR_PERIOD);
   const checks = {
-    color: side === 'LONG'
-      ? window.every((candle) => candle.close > candle.open)
-      : window.every((candle) => candle.close < candle.open),
+    color:
+      side === 'LONG'
+        ? window.every((candle) => candle.close > candle.open)
+        : window.every((candle) => candle.close < candle.open),
     volume: window.every((candle) => candle.volume >= requiredVolume),
     volumeAscending: nonDecreasing(volumes, VOLUME_ASCENDING_TOLERANCE),
     body: window.every((candle) => bodyPct(candle) >= MIN_BODY_PCT),
     wicks: window.every((candle) => wickiness(candle) <= MAX_WICKINESS),
-    trend: side === 'LONG'
-      ? latest.close > ema25 && ema7 > ema25 && ema25 > ema99
-      : latest.close < ema25 && ema7 < ema25 && ema25 < ema99,
+    trend:
+      side === 'LONG'
+        ? latest.close > ema25 && ema7 > ema25 && ema25 > ema99
+        : latest.close < ema25 && ema7 < ema25 && ema25 < ema99,
     extension: extensionFromBase <= MAX_EXTENSION_FROM_BASE,
     atr: atrPct >= MIN_ATR_PCT,
   };
@@ -72,7 +76,10 @@ export function evaluateMainStackingMomentum(
   return {
     allowed: failed.length === 0,
     side,
-    reason: failed.length === 0 ? 'main_stacking_momentum_confirmed' : `main_stacking_momentum_blocked:${failed.join(',')}`,
+    reason:
+      failed.length === 0
+        ? 'main_stacking_momentum_confirmed'
+        : `main_stacking_momentum_blocked:${failed.join(',')}`,
     diagnostics: {
       candleCount: candles.length,
       volumeAverage,
@@ -118,7 +125,7 @@ function currentAtrPct(candles: Candle[], period: number): number {
       Math.abs(candle.low - previousClose),
     );
   }
-  return (total / period) / Math.max(1e-9, candles[candles.length - 1].close);
+  return total / period / Math.max(1e-9, candles[candles.length - 1].close);
 }
 
 function bodyPct(candle: Candle): number {
@@ -133,7 +140,9 @@ function wickiness(candle: Candle): number {
 }
 
 function nonDecreasing(values: number[], tolerance: number): boolean {
-  return values.every((value, index) => index === 0 || value + 1e-12 >= values[index - 1] * (1 - tolerance));
+  return values.every(
+    (value, index) => index === 0 || value + 1e-12 >= values[index - 1] * (1 - tolerance),
+  );
 }
 
 function average(values: number[]): number {

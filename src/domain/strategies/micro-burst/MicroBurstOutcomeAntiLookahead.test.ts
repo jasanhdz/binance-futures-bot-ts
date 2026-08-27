@@ -27,9 +27,25 @@ function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignal
     riskToInvalidationBps: 63,
     rewardRisk: 1.0,
     momentum: { direction: 'LONG', strength: 0.7, continuationScore: 0.6 },
-    book: { status: 'HEALTHY', ageMs: 100, imbalance: 0.6, imbalanceSlope: 0.02, temporalAbsorption: false, temporalSweep: false },
+    book: {
+      status: 'HEALTHY',
+      ageMs: 100,
+      imbalance: 0.6,
+      imbalanceSlope: 0.02,
+      temporalAbsorption: false,
+      temporalSweep: false,
+    },
     tradeFlow: { buyTakerVolume: 100, sellTakerVolume: 80, netTakerFlow: 20, sampleCount: 50 },
-    btc: { status: 'HEALTHY', ageMs: 50, ret1m: 0.001, ret3m: 0.002, ret5m: 0.003, acceleration: -0.001, direction: 'LONG', conflict: false },
+    btc: {
+      status: 'HEALTHY',
+      ageMs: 50,
+      ret1m: 0.001,
+      ret3m: 0.002,
+      ret5m: 0.003,
+      acceleration: -0.001,
+      direction: 'LONG',
+      conflict: false,
+    },
     confidence: 0.8,
     leverageTier: 'HIGH_CONFIRMATION',
     leverage: 40,
@@ -91,9 +107,7 @@ describe('Anti-lookahead guarantees', () => {
     const signal = makeSignal({ destinationPrice: 79500 });
 
     // Price goes way past original target
-    const priceHistory = [
-      { eventTime: 1_001_000, price: 85000 },
-    ];
+    const priceHistory = [{ eventTime: 1_001_000, price: 85000 }];
 
     const outcome = computeHorizonOutcome(signal, 79000, priceHistory, 60_000);
     // Target should be touched (price >= 79500)

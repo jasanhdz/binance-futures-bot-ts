@@ -68,7 +68,8 @@ export function evaluateMomentumRideEntry(
   }
 
   const openPositionsCount = context.openPositionsCount ?? 0;
-  const maxTotalOpenPositions = config.maxTotalOpenPositionsWhenMomentum ?? Number.POSITIVE_INFINITY;
+  const maxTotalOpenPositions =
+    config.maxTotalOpenPositionsWhenMomentum ?? Number.POSITIVE_INFINITY;
   if (openPositionsCount >= maxTotalOpenPositions) {
     return noTrade(context, 'momentum_total_open_positions_reached', {
       pattern: pattern.diagnostics,
@@ -79,9 +80,9 @@ export function evaluateMomentumRideEntry(
 
   const disableSymbolAfterStopLossMs = config.disableSymbolAfterStopLossMs ?? 0;
   if (
-    context.symbolLastStopLossAt !== undefined
-    && disableSymbolAfterStopLossMs > 0
-    && context.timestamp - context.symbolLastStopLossAt < disableSymbolAfterStopLossMs
+    context.symbolLastStopLossAt !== undefined &&
+    disableSymbolAfterStopLossMs > 0 &&
+    context.timestamp - context.symbolLastStopLossAt < disableSymbolAfterStopLossMs
   ) {
     return noTrade(context, 'momentum_symbol_stop_loss_cooldown', {
       pattern: pattern.diagnostics,

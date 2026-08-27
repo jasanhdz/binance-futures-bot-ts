@@ -1,9 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # NINJA SYSTEM v4.0 - REGIME CONFIGURATION (EXAMPLE)
 # ═══════════════════════════════════════════════════════════════════════════
-# 
+#
 # This is the EXAMPLE configuration file. Copy to regime_config.yaml to use.
-# 
+#
 # STRUCTURE:
 #   SYSTEM          - Global bot settings
 #   REGIME_DETECTOR - Thresholds for regime classification
@@ -77,16 +77,30 @@ IMMUNE_SYSTEM:
 
 REGIMES:
   # BLOODBATH: The Berserker (Quick scalps in extreme volatility)
-  BLOODBATH: { leverage: 15, entry_threshold: 0.30, hard_stop_roe: -0.015, tp_roe: 0.005, max_hold_ms: 120000 }
-  
+  BLOODBATH:
+    {
+      leverage: 15,
+      entry_threshold: 0.30,
+      hard_stop_roe: -0.015,
+      tp_roe: 0.005,
+      max_hold_ms: 120000,
+    }
+
   # WHALE: The Trend Hunter (Ride trends with trailing stops)
-  WHALE:     { leverage: 5,  entry_threshold: 0.50, hard_stop_roe: -0.20,  tp_roe: 999.0, trailing_activation_roe: 0.03 }
-  
+  WHALE:
+    {
+      leverage: 5,
+      entry_threshold: 0.50,
+      hard_stop_roe: -0.20,
+      tp_roe: 999.0,
+      trailing_activation_roe: 0.03,
+    }
+
   # MONK: The Range Master (Precision in sideways markets)
-  MONK:      { leverage: 10, entry_threshold: 0.40, hard_stop_roe: -0.05,  tp_roe: 0.02 }
-  
+  MONK: { leverage: 10, entry_threshold: 0.40, hard_stop_roe: -0.05, tp_roe: 0.02 }
+
   # BUNKER: The Protector (No trading in uncertainty)
-  BUNKER:    { leverage: 0,  entry_threshold: 999.0, hard_stop_roe: 0.0,   tp_roe: 0.0 }
+  BUNKER: { leverage: 0, entry_threshold: 999.0, hard_stop_roe: 0.0, tp_roe: 0.0 }
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AEGIS ENTRY POLICY OVERLAYS (Safe Defaults)
@@ -247,7 +261,7 @@ SYMBOL_OVERRIDES:
   # ─────────────────────────────────────────────────────────────────────────
   BTCUSDT:
     WHALE: { leverage: 3, entry_threshold: 0.55, hard_stop_roe: -0.25 }
-    MONK:  { leverage: 5 }
+    MONK: { leverage: 5 }
 
   # ─────────────────────────────────────────────────────────────────────────
   # ETHUSDT - The Prince
@@ -268,6 +282,6 @@ SYMBOL_OVERRIDES:
   # 1000PEPEUSDT:
   #   BLOODBATH: { leverage: 5, hard_stop_roe: -0.03 }
   #   WHALE:     { leverage: 3, hard_stop_roe: -0.30 }
-  
+
   # DOGEUSDT:
   #   MONK: { leverage: 8 }

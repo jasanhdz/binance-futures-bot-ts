@@ -9,7 +9,9 @@
  */
 
 const DURATION_MS = Number(process.argv.find((_, i, a) => a[i - 1] === '--duration') ?? 45_000);
-const SYMBOLS = (process.argv.find((_, i, a) => a[i - 1] === '--symbols') ?? 'BTCUSDT,ETHUSDT,SOLUSDT')
+const SYMBOLS = (
+  process.argv.find((_, i, a) => a[i - 1] === '--symbols') ?? 'BTCUSDT,ETHUSDT,SOLUSDT'
+)
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -180,7 +182,6 @@ async function evaluateSymbol(symbol: string): Promise<EvalResult> {
     // In real runtime, StrategyRouter.evaluate() would decide.
     // For smoke test, we confirm the pipeline fed us enough data.
     // We do NOT create ENTRY_INTENT without a real strategy.
-
   } catch {
     metrics.errors++;
   }
@@ -222,7 +223,11 @@ async function main(): Promise<void> {
 
   // 5. Cleanup
   for (const clean of aggTradeCleanups) {
-    try { clean(); } catch { /* ignore */ }
+    try {
+      clean();
+    } catch {
+      /* ignore */
+    }
   }
 
   metrics.shutdownClean = true;
@@ -233,8 +238,16 @@ async function main(): Promise<void> {
   console.log(`duration:           ${durationSec}s`);
   console.log(`symbols:            ${metrics.symbols.join(', ')}`);
   console.log(`---`);
-  console.log(`depth events:       ${Array.from(metrics.depthEvents.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-  console.log(`aggTrades:          ${Array.from(metrics.aggTradeEvents.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  console.log(
+    `depth events:       ${Array.from(metrics.depthEvents.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ')}`,
+  );
+  console.log(
+    `aggTrades:          ${Array.from(metrics.aggTradeEvents.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ')}`,
+  );
   console.log(`BTC observations:   ${metrics.btcObservations}`);
   console.log(`BTC healthy:        ${metrics.btcHealthy}`);
   console.log(`---`);
@@ -249,9 +262,21 @@ async function main(): Promise<void> {
   console.log(`errors:             ${metrics.errors}`);
   console.log(`exchange mutations: ${metrics.exchangeMutations}`);
   console.log(`---`);
-  console.log(`depth healthy:      ${Array.from(metrics.depthHealthy.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-  console.log(`aggTrade active:    ${Array.from(metrics.aggTradeActive.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-  console.log(`refPrice available: ${Array.from(metrics.refPriceAvailable.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  console.log(
+    `depth healthy:      ${Array.from(metrics.depthHealthy.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ')}`,
+  );
+  console.log(
+    `aggTrade active:    ${Array.from(metrics.aggTradeActive.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ')}`,
+  );
+  console.log(
+    `refPrice available: ${Array.from(metrics.refPriceAvailable.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join(', ')}`,
+  );
   console.log(`shutdown clean:     ${metrics.shutdownClean}`);
   console.log(`---`);
 
@@ -266,10 +291,14 @@ async function main(): Promise<void> {
     if (anyAggTrade) {
       console.log(`\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED`);
     } else {
-      console.log(`\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED (aggTrade WS may need longer window)`);
+      console.log(
+        `\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED (aggTrade WS may need longer window)`,
+      );
     }
   } else if (mutationsZero) {
-    console.log(`\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_READY (partial data — verify on server)`);
+    console.log(
+      `\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_READY (partial data — verify on server)`,
+    );
   } else {
     console.log(`\nVERDICT: SMOKE_TEST_FAILED — exchange mutations detected`);
     process.exit(1);

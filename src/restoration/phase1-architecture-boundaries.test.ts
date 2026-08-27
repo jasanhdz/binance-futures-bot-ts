@@ -46,7 +46,13 @@ describe('Phase 1 architecture boundaries', () => {
       .split('\n')
       .filter((line) => line.startsWith('import '))
       .join('\n');
-    for (const forbidden of ['CurrentBrain', 'CleanEntry', 'EntryQuality', 'DecisionBrain', 'E4TailRisk']) {
+    for (const forbidden of [
+      'CurrentBrain',
+      'CleanEntry',
+      'EntryQuality',
+      'DecisionBrain',
+      'E4TailRisk',
+    ]) {
       expect(momentumImports, forbidden).not.toContain(forbidden);
     }
   });

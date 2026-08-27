@@ -77,7 +77,10 @@ export class MicroBurstSignalJournal {
     private readonly maxEntriesPerFile = MAX_JOURNAL_ENTRIES_PER_FILE,
   ) {}
 
-  append(result: MicroBurstShadowEvaluationResult, provenance?: { codeCommitSha: string; configHash: string; cohortId: string }): boolean {
+  append(
+    result: MicroBurstShadowEvaluationResult,
+    provenance?: { codeCommitSha: string; configHash: string; cohortId: string },
+  ): boolean {
     if (!result.wouldEnter || result.duplicateSuppressed) return true;
 
     const entry = this.buildEntry(result, provenance);
@@ -112,7 +115,11 @@ export class MicroBurstSignalJournal {
   }
 
   getHealth(): { healthy: boolean; storageErrors: number; lastError: string | null } {
-    return { healthy: this.storageErrors === 0, storageErrors: this.storageErrors, lastError: this.lastError };
+    return {
+      healthy: this.storageErrors === 0,
+      storageErrors: this.storageErrors,
+      lastError: this.lastError,
+    };
   }
 
   private ensureDir(): void {
@@ -128,7 +135,10 @@ export class MicroBurstSignalJournal {
     this.entryCount = 0;
   }
 
-  private buildEntry(result: MicroBurstShadowEvaluationResult, provenance?: { codeCommitSha: string; configHash: string; cohortId: string }): MicroBurstSignalJournalEntry {
+  private buildEntry(
+    result: MicroBurstShadowEvaluationResult,
+    provenance?: { codeCommitSha: string; configHash: string; cohortId: string },
+  ): MicroBurstSignalJournalEntry {
     const diag = result.diagnostics ?? {};
     return {
       schemaVersion: 1,
@@ -143,7 +153,8 @@ export class MicroBurstSignalJournal {
       snapshotAtMs: result.snapshotAtMs,
       observedAtMs: result.lastObservedAt,
       marketPrice: result.referencePrice,
-      referencePriceSource: typeof diag.referencePriceSource === 'string' ? diag.referencePriceSource : 'UNKNOWN',
+      referencePriceSource:
+        typeof diag.referencePriceSource === 'string' ? diag.referencePriceSource : 'UNKNOWN',
       support: result.supportPrice,
       resistance: result.resistancePrice,
       structuralStopPrice: result.structuralInvalidation,
@@ -157,12 +168,12 @@ export class MicroBurstSignalJournal {
         ageMs: result.book.ageMs,
         imbalance: result.book.imbalance,
         imbalanceSlope: result.book.imbalanceSlope,
-        temporalAbsorption: typeof diag.temporalAbsorptionDetected === 'boolean'
-          ? diag.temporalAbsorptionDetected
-          : false,
-        temporalSweep: typeof diag.temporalSweepDetected === 'boolean'
-          ? diag.temporalSweepDetected
-          : false,
+        temporalAbsorption:
+          typeof diag.temporalAbsorptionDetected === 'boolean'
+            ? diag.temporalAbsorptionDetected
+            : false,
+        temporalSweep:
+          typeof diag.temporalSweepDetected === 'boolean' ? diag.temporalSweepDetected : false,
       },
       aggTrade: {
         buyTakerVolume: typeof diag.takerBuyVolume === 'number' ? diag.takerBuyVolume : 0,
@@ -184,7 +195,8 @@ export class MicroBurstSignalJournal {
       confidence: result.confidence,
       leverageTier: typeof diag.leverageTier === 'string' ? diag.leverageTier : undefined,
       leverage: typeof diag.leverage === 'number' ? diag.leverage : undefined,
-      positionFraction: typeof diag.positionFraction === 'number' ? diag.positionFraction : undefined,
+      positionFraction:
+        typeof diag.positionFraction === 'number' ? diag.positionFraction : undefined,
       wouldEnter: result.wouldEnter,
       liveExecution: false as const,
       invalidReasons: result.dataQuality.invalidReasons,

@@ -22,13 +22,13 @@ symbols:
     LTCUSDT: {}
 
 TRADING:
-  capital_usage_default: 1.0        
-  min_wallet_reserve_usdt: 0         
-  fee_buffer_pct: 0.03            
-  max_risk_pct: 0.02                 
-  low_funds_threshold: 2             
-  reenter_on_tp: true               
-  post_exit_timeout_ms: 60000       
+  capital_usage_default: 1.0
+  min_wallet_reserve_usdt: 0
+  fee_buffer_pct: 0.03
+  max_risk_pct: 0.02
+  low_funds_threshold: 2
+  reenter_on_tp: true
+  post_exit_timeout_ms: 60000
 
 micro_burst:
   enabled: true
@@ -115,17 +115,17 @@ aegis:
     allow_link_entry: false
     link_avoid_only: true
     symbols:
-      LTCUSDT: {enabled: true, caution_level: normal}
-      AVAXUSDT: {enabled: true, caution_level: normal}
-      ETHUSDT: {enabled: true, caution_level: cautious}
-      SUIUSDT: {enabled: true, caution_level: normal}
-      ADAUSDT: {enabled: true, caution_level: normal}
-      DOGEUSDT: {enabled: true, caution_level: cautious}
-      BTCUSDT: {enabled: true, caution_level: very_cautious}
-      BNBUSDT: {enabled: true, caution_level: normal}
-      XRPUSDT: {enabled: true, caution_level: cautious}
-      SOLUSDT: {enabled: true, caution_level: final_repair_candidate}
-      LINKUSDT: {enabled: true, entry_enabled: false, avoid_only: true}
+      LTCUSDT: { enabled: true, caution_level: normal }
+      AVAXUSDT: { enabled: true, caution_level: normal }
+      ETHUSDT: { enabled: true, caution_level: cautious }
+      SUIUSDT: { enabled: true, caution_level: normal }
+      ADAUSDT: { enabled: true, caution_level: normal }
+      DOGEUSDT: { enabled: true, caution_level: cautious }
+      BTCUSDT: { enabled: true, caution_level: very_cautious }
+      BNBUSDT: { enabled: true, caution_level: normal }
+      XRPUSDT: { enabled: true, caution_level: cautious }
+      SOLUSDT: { enabled: true, caution_level: final_repair_candidate }
+      LINKUSDT: { enabled: true, entry_enabled: false, avoid_only: true }
   entry_policy:
     enabled: true
     # The current Python committee is the entry authority. TypeScript evaluates
@@ -615,7 +615,20 @@ aegis:
     # the bot uses this fraction instead of Aegis ML raw.position_fraction.
     position_fraction_overrides:
       - name: all_symbols_available_wallet_90pct
-        symbols: [ETHUSDT, BTCUSDT, SOLUSDT, BNBUSDT, XRPUSDT, DOGEUSDT, ADAUSDT, AVAXUSDT, LINKUSDT, SUIUSDT, LTCUSDT]
+        symbols:
+          [
+            ETHUSDT,
+            BTCUSDT,
+            SOLUSDT,
+            BNBUSDT,
+            XRPUSDT,
+            DOGEUSDT,
+            ADAUSDT,
+            AVAXUSDT,
+            LINKUSDT,
+            SUIUSDT,
+            LTCUSDT,
+          ]
         long: 0.90
         short: 0.90
     max_trades_per_day: 20

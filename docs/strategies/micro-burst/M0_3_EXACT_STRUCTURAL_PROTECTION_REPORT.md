@@ -10,11 +10,11 @@ Scope: close the execution boundary from `StrategyExecutionIntent.structuralStop
 
 The repository has three production intent producers:
 
-| Producer | Stop | Take profit / destination | Runtime status |
-| --- | --- | --- | --- |
-| `AegisExecutionIntentFactory` | `stopRoe` | `takeProfitRoe` | Existing LIVE-capable Aegis path |
-| Momentum intent in `TradingService.lookForMomentumEntry()` | `stopRoe` | `takeProfitRoe` | Existing LIVE-capable Momentum path |
-| `createMicroBurstExecutionIntent()` | `structuralStopPrice` | software `destinationPrice` | OFF; no execution call site |
+| Producer                                                   | Stop                  | Take profit / destination   | Runtime status                      |
+| ---------------------------------------------------------- | --------------------- | --------------------------- | ----------------------------------- |
+| `AegisExecutionIntentFactory`                              | `stopRoe`             | `takeProfitRoe`             | Existing LIVE-capable Aegis path    |
+| Momentum intent in `TradingService.lookForMomentumEntry()` | `stopRoe`             | `takeProfitRoe`             | Existing LIVE-capable Momentum path |
+| `createMicroBurstExecutionIntent()`                        | `structuralStopPrice` | software `destinationPrice` | OFF; no execution call site         |
 
 No producer supplies both `stopRoe` and `structuralStopPrice`. No historical compatibility case requires precedence between them. Supplying both therefore fails closed with `reasonDetail: ambiguous_stop_specification`.
 

@@ -46,7 +46,11 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     if (!Number.isFinite(intent.leverage) || intent.leverage <= 0) {
       return denied(intent, 'INVALID_LEVERAGE', baseMetadata);
     }
-    if (!Number.isFinite(intent.positionFraction) || intent.positionFraction <= 0 || intent.positionFraction > 1) {
+    if (
+      !Number.isFinite(intent.positionFraction) ||
+      intent.positionFraction <= 0 ||
+      intent.positionFraction > 1
+    ) {
       return denied(intent, 'INVALID_SIZE', baseMetadata);
     }
     const hasStopRoe = intent.stopRoe !== undefined;
@@ -54,19 +58,37 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     if (hasStopRoe && (!Number.isFinite(intent.stopRoe) || Number(intent.stopRoe) >= 0)) {
       return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_stop_roe' });
     }
-    if (hasStructuralStop && (!Number.isFinite(intent.structuralStopPrice) || Number(intent.structuralStopPrice) <= 0)) {
-      return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_structural_stop_price' });
+    if (
+      hasStructuralStop &&
+      (!Number.isFinite(intent.structuralStopPrice) || Number(intent.structuralStopPrice) <= 0)
+    ) {
+      return denied(intent, 'INVALID_SIZE', {
+        ...baseMetadata,
+        reasonDetail: 'invalid_structural_stop_price',
+      });
     }
     if (hasStopRoe && hasStructuralStop) {
-      return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'ambiguous_stop_specification' });
+      return denied(intent, 'INVALID_SIZE', {
+        ...baseMetadata,
+        reasonDetail: 'ambiguous_stop_specification',
+      });
     }
     if (intent.protection.requireStop && !hasStopRoe && !hasStructuralStop) {
-      return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'missing_stop_specification' });
+      return denied(intent, 'INVALID_SIZE', {
+        ...baseMetadata,
+        reasonDetail: 'missing_stop_specification',
+      });
     }
     const stopSource = hasStructuralStop ? 'STRUCTURAL_PRICE' : hasStopRoe ? 'ROE' : undefined;
     const useTakeProfit = intent.protection.requireTakeProfit || intent.takeProfitRoe !== undefined;
-    if (useTakeProfit && (!Number.isFinite(intent.takeProfitRoe) || Number(intent.takeProfitRoe) <= 0)) {
-      return denied(intent, 'INVALID_SIZE', { ...baseMetadata, reasonDetail: 'invalid_take_profit_roe' });
+    if (
+      useTakeProfit &&
+      (!Number.isFinite(intent.takeProfitRoe) || Number(intent.takeProfitRoe) <= 0)
+    ) {
+      return denied(intent, 'INVALID_SIZE', {
+        ...baseMetadata,
+        reasonDetail: 'invalid_take_profit_roe',
+      });
     }
 
     let opened = false;
@@ -89,9 +111,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       const markPrice = await this.exchange.getMarkPrice(intent.symbol);
       const filters = await this.exchange.getSymbolFilters(intent.symbol, intent.leverage);
       const requestedNotional = effectiveWallet * intent.positionFraction * intent.leverage;
-      const cappedNotional = finite(filters.notionalCap) && Number(filters.notionalCap) > 0
-        ? Math.min(requestedNotional, Number(filters.notionalCap))
-        : requestedNotional;
+      const cappedNotional =
+        finite(filters.notionalCap) && Number(filters.notionalCap) > 0
+          ? Math.min(requestedNotional, Number(filters.notionalCap))
+          : requestedNotional;
       let quantity = roundQuantity(cappedNotional / markPrice, filters);
 
       if (!finite(quantity) || quantity <= 0 || quantity * markPrice < filters.minNotional) {
@@ -111,29 +134,40 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           order = await this.exchange.marketOpen(intent.symbol, intent.side, quantity);
           break;
         } catch (error) {
-          if (!isRecoverableEntrySizeError(error) || marketOpenAttempt >= this.config.maxMarketOpenAttempts) {
+          if (
+            !isRecoverableEntrySizeError(error) ||
+            marketOpenAttempt >= this.config.maxMarketOpenAttempts
+          ) {
             throw error;
           }
           const refreshed = await this.readAccountSnapshot();
           const refreshedAvailable = finite(refreshed.availableBalance)
             ? Math.max(0, Number(refreshed.availableBalance))
             : undefined;
-          const balanceLimitedQuantity = refreshedAvailable === undefined
-            ? quantity
-            : roundQuantity(
-                Math.min(
-                  refreshedAvailable * (1 - clamp(this.config.feeBufferPct, 0, 0.5)) * intent.positionFraction * intent.leverage,
-                  finite(filters.notionalCap) && Number(filters.notionalCap) > 0
-                    ? Number(filters.notionalCap)
-                    : Number.POSITIVE_INFINITY,
-                ) / markPrice,
-                filters,
-              );
+          const balanceLimitedQuantity =
+            refreshedAvailable === undefined
+              ? quantity
+              : roundQuantity(
+                  Math.min(
+                    refreshedAvailable *
+                      (1 - clamp(this.config.feeBufferPct, 0, 0.5)) *
+                      intent.positionFraction *
+                      intent.leverage,
+                    finite(filters.notionalCap) && Number(filters.notionalCap) > 0
+                      ? Number(filters.notionalCap)
+                      : Number.POSITIVE_INFINITY,
+                  ) / markPrice,
+                  filters,
+                );
           const reducedQuantity = roundQuantity(quantity * 0.9, filters);
-          const nextQuantity = roundQuantity(Math.min(reducedQuantity, balanceLimitedQuantity), filters);
-          const canRetry = nextQuantity > 0
-            && nextQuantity < quantity
-            && nextQuantity * markPrice >= filters.minNotional;
+          const nextQuantity = roundQuantity(
+            Math.min(reducedQuantity, balanceLimitedQuantity),
+            filters,
+          );
+          const canRetry =
+            nextQuantity > 0 &&
+            nextQuantity < quantity &&
+            nextQuantity * markPrice >= filters.minNotional;
           this.logger.warn('shared_execution_quantity_retry', {
             ...baseMetadata,
             symbol: intent.symbol,
@@ -187,33 +221,65 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       const stopPrice = hasStructuralStop
         ? roundPrice(Number(intent.structuralStopPrice), filters)
         : hasStopRoe
-          ? roundPrice(bracketPrice(intent.side, entryPrice, Number(intent.stopRoe), intent.leverage, 'STOP'), filters)
+          ? roundPrice(
+              bracketPrice(
+                intent.side,
+                entryPrice,
+                Number(intent.stopRoe),
+                intent.leverage,
+                'STOP',
+              ),
+              filters,
+            )
           : undefined;
       const takeProfitPrice = useTakeProfit
-        ? roundPrice(bracketPrice(intent.side, entryPrice, Number(intent.takeProfitRoe), intent.leverage, 'TP'), filters)
+        ? roundPrice(
+            bracketPrice(
+              intent.side,
+              entryPrice,
+              Number(intent.takeProfitRoe),
+              intent.leverage,
+              'TP',
+            ),
+            filters,
+          )
         : undefined;
-      const stopAuditMetadata = stopSource === 'STRUCTURAL_PRICE'
-        ? { stopSource, requestedStructuralStopPrice: intent.structuralStopPrice, effectiveStopPrice: stopPrice }
-        : stopSource === 'ROE'
-          ? { stopSource, effectiveStopPrice: stopPrice }
-          : {};
+      const stopAuditMetadata =
+        stopSource === 'STRUCTURAL_PRICE'
+          ? {
+              stopSource,
+              requestedStructuralStopPrice: intent.structuralStopPrice,
+              effectiveStopPrice: stopPrice,
+            }
+          : stopSource === 'ROE'
+            ? { stopSource, effectiveStopPrice: stopPrice }
+            : {};
 
       let stopOk = false;
       let takeProfitOk = false;
       let protectionFailureDetail: string | undefined;
       try {
-        if (stopSource === 'STRUCTURAL_PRICE' && !isValidStructuralStopGeometry(intent.side, entryPrice, stopPrice)) {
+        if (
+          stopSource === 'STRUCTURAL_PRICE' &&
+          !isValidStructuralStopGeometry(intent.side, entryPrice, stopPrice)
+        ) {
           protectionFailureDetail = 'invalid_structural_stop_geometry';
           throw new Error('INVALID_STRUCTURAL_STOP_GEOMETRY');
         }
         if (stopPrice !== undefined) {
           stopOk = await this.exchange.placeStopClose(intent.symbol, intent.side, stopPrice);
         }
-        if (intent.protection.requireStop && !stopOk) throw new Error('SHARED_EXECUTION_STOP_REJECTED');
+        if (intent.protection.requireStop && !stopOk)
+          throw new Error('SHARED_EXECUTION_STOP_REJECTED');
         if (takeProfitPrice !== undefined) {
-          takeProfitOk = await this.exchange.placeTpClose(intent.symbol, intent.side, takeProfitPrice);
+          takeProfitOk = await this.exchange.placeTpClose(
+            intent.symbol,
+            intent.side,
+            takeProfitPrice,
+          );
         }
-        if (intent.protection.requireTakeProfit && !takeProfitOk) throw new Error('SHARED_EXECUTION_TP_REJECTED');
+        if (intent.protection.requireTakeProfit && !takeProfitOk)
+          throw new Error('SHARED_EXECUTION_TP_REJECTED');
       } catch (error) {
         failureStage = 'PROTECTION';
         const recovery = intent.protection.closeIfProtectionFails
@@ -254,7 +320,8 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                 intent,
                 openedQuantity,
                 openedSideMode,
-                intent.failureCloseReasons?.protection ?? 'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
+                intent.failureCloseReasons?.protection ??
+                  'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
               )
             : { quantity: openedQuantity, sideMode: openedSideMode, positionStillOpen: true };
           return failed(intent, 'BRACKETS_FAILED', {
@@ -275,12 +342,16 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           });
         }
       }
-      const hasStop = closeOrders.some((order) =>
-        order.type.includes('STOP')
-        && (stopSource !== 'STRUCTURAL_PRICE' || roundPrice(order.stopPrice, filters) === stopPrice)
+      const hasStop = closeOrders.some(
+        (order) =>
+          order.type.includes('STOP') &&
+          (stopSource !== 'STRUCTURAL_PRICE' || roundPrice(order.stopPrice, filters) === stopPrice),
       );
       const hasTakeProfit = closeOrders.some((order) => order.type.includes('TAKE_PROFIT'));
-      if ((intent.protection.requireStop && !hasStop) || (intent.protection.requireTakeProfit && !hasTakeProfit)) {
+      if (
+        (intent.protection.requireStop && !hasStop) ||
+        (intent.protection.requireTakeProfit && !hasTakeProfit)
+      ) {
         failureStage = 'PROTECTION';
         const recovery = intent.protection.closeIfProtectionFails
           ? await this.attemptEmergencyClose(
@@ -313,11 +384,9 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       }
 
       const openedAt = await this.exchange.getServerTime();
-      const marginUsed = position.isolatedMargin
-        ?? (entryPrice * openedQuantity) / intent.leverage;
-      const actualPositionFraction = effectiveWallet > 0
-        ? Math.min(intent.positionFraction, marginUsed / effectiveWallet)
-        : 0;
+      const marginUsed = position.isolatedMargin ?? (entryPrice * openedQuantity) / intent.leverage;
+      const actualPositionFraction =
+        effectiveWallet > 0 ? Math.min(intent.positionFraction, marginUsed / effectiveWallet) : 0;
 
       return {
         status: 'OPENED',
@@ -404,9 +473,15 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     try {
       const snapshot = await reader.call(this.exchange);
       return {
-        walletBalance: finite(snapshot.walletBalance) ? Number(snapshot.walletBalance) : walletFallback,
-        availableBalance: finite(snapshot.availableBalance) ? Number(snapshot.availableBalance) : undefined,
-        unrealizedPnlTotal: finite(snapshot.unrealizedPnlTotal) ? Number(snapshot.unrealizedPnlTotal) : undefined,
+        walletBalance: finite(snapshot.walletBalance)
+          ? Number(snapshot.walletBalance)
+          : walletFallback,
+        availableBalance: finite(snapshot.availableBalance)
+          ? Number(snapshot.availableBalance)
+          : undefined,
+        unrealizedPnlTotal: finite(snapshot.unrealizedPnlTotal)
+          ? Number(snapshot.unrealizedPnlTotal)
+          : undefined,
         equityTotal: finite(snapshot.equityTotal) ? Number(snapshot.equityTotal) : undefined,
       };
     } catch {
@@ -414,12 +489,16 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     }
   }
 
-  private async confirmPosition(symbol: string, side: 'LONG' | 'SHORT'): Promise<PositionInfo | null> {
+  private async confirmPosition(
+    symbol: string,
+    side: 'LONG' | 'SHORT',
+  ): Promise<PositionInfo | null> {
     const attempts = Math.max(1, this.config.confirmationAttempts);
     for (let index = 0; index < attempts; index += 1) {
-      const delay = this.config.confirmationDelaysMs[index]
-        ?? this.config.confirmationDelaysMs[this.config.confirmationDelaysMs.length - 1]
-        ?? 300;
+      const delay =
+        this.config.confirmationDelaysMs[index] ??
+        this.config.confirmationDelaysMs[this.config.confirmationDelaysMs.length - 1] ??
+        300;
       await sleep(delay);
       const position = await this.exchange.readActivePosition(symbol, side);
       if (position) return position;
@@ -515,13 +594,19 @@ function failed(
 
 function roundQuantity(quantity: number, filters: SymbolFilters): number {
   if (!finite(quantity) || quantity <= 0) return 0;
-  const step = finite(filters.stepSize) && filters.stepSize > 0 ? filters.stepSize : 10 ** -filters.qtyPrecision;
+  const step =
+    finite(filters.stepSize) && filters.stepSize > 0
+      ? filters.stepSize
+      : 10 ** -filters.qtyPrecision;
   const stepped = Math.floor(quantity / step) * step;
   return Number(stepped.toFixed(filters.qtyPrecision));
 }
 
 function roundPrice(price: number, filters: SymbolFilters): number {
-  const tick = finite(filters.tickSize) && filters.tickSize > 0 ? filters.tickSize : 10 ** -filters.pricePrecision;
+  const tick =
+    finite(filters.tickSize) && filters.tickSize > 0
+      ? filters.tickSize
+      : 10 ** -filters.pricePrecision;
   const stepped = Math.round(price / tick) * tick;
   return Number(stepped.toFixed(filters.pricePrecision));
 }
@@ -563,12 +648,17 @@ function isRecoverableEntrySizeError(error: unknown): boolean {
     candidate?.response?.data?.msg,
     candidate?.body?.msg,
     String(error),
-  ].filter(Boolean).join(' ').toLowerCase();
-  return message.includes('margin is insufficient')
-    || message.includes('insufficient margin')
-    || message.includes('insufficient balance')
-    || message.includes('quantity greater than max quantity')
-    || message.includes('maximum allowable position');
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return (
+    message.includes('margin is insufficient') ||
+    message.includes('insufficient margin') ||
+    message.includes('insufficient balance') ||
+    message.includes('quantity greater than max quantity') ||
+    message.includes('maximum allowable position')
+  );
 }
 
 function finite(value: unknown): value is number {

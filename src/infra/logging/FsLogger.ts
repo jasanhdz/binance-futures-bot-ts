@@ -90,7 +90,7 @@ function pruneOldLogs(retainDays: number) {
       if (f === 'history.log') {
         try {
           fs.rmSync(path.join(logDir, f));
-        } catch { }
+        } catch {}
         continue;
       }
       if (!/^history-\d{4}-\d{2}-\d{2}\.log(\.gz)?$/.test(f)) continue;
@@ -98,10 +98,10 @@ function pruneOldLogs(retainDays: number) {
       if (Number.isFinite(t) && t < cutoff) {
         try {
           fs.rmSync(path.join(logDir, f));
-        } catch { }
+        } catch {}
       }
     }
-  } catch { }
+  } catch {}
 }
 function append(file: string, line: string) {
   if (!LOG_TO_FILE || FILE_LOGGING_DISABLED) return;
@@ -225,7 +225,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       const tps = sample.filter((o: any) => o.type?.includes('TAKE_PROFIT'));
       const bestStop = stops.length
         ? stops.reduce((a: any, b: any) => (Number(a.stopPrice) > Number(b.stopPrice) ? a : b))
-          .stopPrice
+            .stopPrice
         : '-';
       const bestTP = tps.length ? tps[0].stopPrice : '-';
       return `${color.gray(t)} 📜 Órdenes abiertas: ${count} | ⛔ stop* ${bestStop} | 🎯 tp* ${bestTP}`;
@@ -298,7 +298,8 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
         const lp = typeof ctx?.longProb === 'number' ? ctx.longProb : undefined;
         const sp = typeof ctx?.shortProb === 'number' ? ctx.shortProb : undefined;
         const th = typeof ctx?.probThreshold === 'number' ? ctx.probThreshold : undefined;
-        if (lp === undefined && sp === undefined && th === undefined) return { text: '—', above: undefined } as const;
+        if (lp === undefined && sp === undefined && th === undefined)
+          return { text: '—', above: undefined } as const;
 
         const fmtProb = (v?: number) =>
           typeof v === 'number' && Number.isFinite(v) ? v.toFixed(2) : '—';
@@ -308,7 +309,8 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
         const sideProb = ctx?.side === 'LONG' ? lp : ctx?.side === 'SHORT' ? sp : undefined;
         const bestProb = Math.max(lp ?? Number.NEGATIVE_INFINITY, sp ?? Number.NEGATIVE_INFINITY);
         const refProb = sideProb ?? (bestProb > Number.NEGATIVE_INFINITY ? bestProb : undefined);
-        if (refProb === undefined) return { text: `${base} t=${th.toFixed(2)}`, above: undefined } as const;
+        if (refProb === undefined)
+          return { text: `${base} t=${th.toFixed(2)}`, above: undefined } as const;
 
         const above = refProb > th;
         const comparator = above ? '>' : '<';
@@ -388,8 +390,8 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
 
       const line3 =
         typeof ctx?.ema7 === 'number' &&
-          typeof ctx?.ema25 === 'number' &&
-          typeof ctx?.ema99 === 'number'
+        typeof ctx?.ema25 === 'number' &&
+        typeof ctx?.ema99 === 'number'
           ? `${color.gray('   └ ')}EMA7:${n(ctx.ema7)}  EMA25:${n(ctx.ema25)}  EMA99:${n(ctx.ema99)}`
           : '';
 
@@ -425,9 +427,10 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       if (!f.is_volatile) blockers.push('VOL');
       if (!f.is_rejection) blockers.push('REJ');
 
-      const blockerText = blockers.length > 0
-        ? `${color.error('🛑 Blocker:')} [${blockers.join('|')}]`
-        : `${color.ok('✅ READY')}`;
+      const blockerText =
+        blockers.length > 0
+          ? `${color.error('🛑 Blocker:')} [${blockers.join('|')}]`
+          : `${color.ok('✅ READY')}`;
 
       return `${color.gray(`[${t}]`)} 🔍 ${color.info(s)}: $${price} | ⚡ L:${lpColor(lp.toFixed(2))} S:${spColor(sp.toFixed(2))} ${color.gray(`(Req: ${th.toFixed(2)})`)} | ${blockerText}`;
     }
@@ -481,9 +484,9 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
       const flat =
         ctx && typeof ctx === 'object'
           ? Object.entries(ctx)
-            .filter(([_, v]) => typeof v !== 'object')
-            .map(([k, v]) => `${k}=${v}`)
-            .join(' ')
+              .filter(([_, v]) => typeof v !== 'object')
+              .map(([k, v]) => `${k}=${v}`)
+              .join(' ')
           : '';
       return `${color.gray(t)} ${L(msg)}${flat ? ' ' + color.dim(flat) : ''}`;
     }
@@ -522,8 +525,9 @@ function write(level: Level, msg: string, ctx?: any) {
   if (level === 'error') {
     if (shouldSendTelegramError(msg, ctx)) {
       const ctxStr = ctx ? `\n\`\`\`json\n${JSON.stringify(ctx, null, 2)}\n\`\`\`` : '';
-      TelegramService.sendSystemLog(`🔴 *SYSTEM ERROR* 🔴\n\n*Type:* ${msg}${ctxStr}`)
-        .catch((e: any) => console.error('[FsLogger] Failed to send Telegram error:', e));
+      TelegramService.sendSystemLog(`🔴 *SYSTEM ERROR* 🔴\n\n*Type:* ${msg}${ctxStr}`).catch(
+        (e: any) => console.error('[FsLogger] Failed to send Telegram error:', e),
+      );
     }
   } else if (level === 'warn') {
     // Optional: Uncomment to send warnings too, or filter specific ones
@@ -551,4 +555,4 @@ export class FsLogger implements Logger {
 // Limpieza al arranque: retención de logs estructurados y retiro del flat legacy.
 try {
   pruneOldLogs(LOG_RETAIN_DAYS);
-} catch { }
+} catch {}

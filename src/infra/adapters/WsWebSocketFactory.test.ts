@@ -9,7 +9,10 @@ class FakeWsSocket implements WsSocket {
     this.closed = true;
   }
 
-  public on(event: 'open' | 'message' | 'error' | 'close', listener: (...args: any[]) => void): void {
+  public on(
+    event: 'open' | 'message' | 'error' | 'close',
+    listener: (...args: any[]) => void,
+  ): void {
     this.listeners.set(event, listener);
   }
 

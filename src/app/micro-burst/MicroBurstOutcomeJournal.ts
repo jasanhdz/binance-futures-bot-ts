@@ -57,17 +57,24 @@ export class MicroBurstOutcomeJournal {
     const records: ProspectiveOutcomeRecord[] = [];
     try {
       if (!fs.existsSync(this.journalDir)) return records;
-      const files = fs.readdirSync(this.journalDir).filter((f) => f.endsWith('.jsonl')).sort();
+      const files = fs
+        .readdirSync(this.journalDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .sort();
       for (const file of files) {
         const content = fs.readFileSync(path.join(this.journalDir, file), 'utf-8');
         for (const line of content.split('\n')) {
           if (!line.trim()) continue;
           try {
             records.push(JSON.parse(line) as ProspectiveOutcomeRecord);
-          } catch { /* skip malformed lines */ }
+          } catch {
+            /* skip malformed lines */
+          }
         }
       }
-    } catch { /* directory read failure */ }
+    } catch {
+      /* directory read failure */
+    }
     return records;
   }
 
@@ -84,10 +91,14 @@ export class MicroBurstOutcomeJournal {
           try {
             const record = JSON.parse(line) as ProspectiveOutcomeRecord;
             completed.add(record.shadowSignalId);
-          } catch { /* skip */ }
+          } catch {
+            /* skip */
+          }
         }
       }
-    } catch { /* ok */ }
+    } catch {
+      /* ok */
+    }
     return completed;
   }
 

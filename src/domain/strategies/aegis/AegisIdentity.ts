@@ -10,7 +10,9 @@ import { StrategyIdentity } from '../../strategy/StrategyIdentity';
  * runtime commit has not been frozen yet. Keep that fact explicit instead of
  * fabricating FROZEN_LIVE authority during the architecture migration.
  */
-export function createAegisMigrationIdentity(runtimeCommitSha = 'UNFROZEN_TS_RUNTIME'): StrategyIdentity {
+export function createAegisMigrationIdentity(
+  runtimeCommitSha = 'UNFROZEN_TS_RUNTIME',
+): StrategyIdentity {
   return {
     strategyId: 'AEGIS_TURBO',
     strategyVersion: CURRENT_BRAIN_MODEL_ID,

@@ -4,7 +4,10 @@ import { StrategyRouter } from '../../../app/strategy/StrategyRouter';
 import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from './SynchronizedOrderBook';
 import { BtcMicroContextProvider, BtcMicroContextDeps } from './BtcMicroContextProvider';
 import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';
-import { MicroBurstReferencePriceProvider, MicroBurstReferencePriceDeps } from './MicroBurstReferencePrice';
+import {
+  MicroBurstReferencePriceProvider,
+  MicroBurstReferencePriceDeps,
+} from './MicroBurstReferencePrice';
 import { MicroBurstShadowEvaluator } from './MicroBurstShadowEvaluator';
 import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
 import {
@@ -85,9 +88,25 @@ export interface MicroBurstRuntimeDeps {
   strategyRouter: StrategyRouter<MicroBurstStrategyContext>;
   outcomeTracker?: {
     trackSignal(snapshot: ShadowSignalSnapshot): void;
-    processTradeEvent(event: { eventTime: number; receivedAtMs?: number; price: number; symbol: string; quantity?: number; isBuyerMaker?: boolean; tradeTime?: number; aggregateTradeId?: number; firstTradeId?: number; lastTradeId?: number }): void;
+    processTradeEvent(event: {
+      eventTime: number;
+      receivedAtMs?: number;
+      price: number;
+      symbol: string;
+      quantity?: number;
+      isBuyerMaker?: boolean;
+      tradeTime?: number;
+      aggregateTradeId?: number;
+      firstTradeId?: number;
+      lastTradeId?: number;
+    }): void;
     flushPending(currentTimeMs: number): void;
-    getHealth(): { signalsObserved: number; pendingOutcomes: number; completedOutcomes: number; outcomeErrors: number };
+    getHealth(): {
+      signalsObserved: number;
+      pendingOutcomes: number;
+      completedOutcomes: number;
+      outcomeErrors: number;
+    };
   };
   marketStorage?: {
     appendDepth(event: Record<string, unknown>): boolean;
@@ -105,7 +124,12 @@ export interface MicroBurstRuntimeDeps {
       draining?: boolean;
     };
   };
-  provenance?: { codeCommitSha: string; configHash: string; cohortId: string; officialCohortReady: boolean };
+  provenance?: {
+    codeCommitSha: string;
+    configHash: string;
+    cohortId: string;
+    officialCohortReady: boolean;
+  };
 }
 
 export class MicroBurstRuntime {
@@ -353,16 +377,21 @@ export class MicroBurstRuntime {
     if (this.deps.outcomeTracker) {
       this.deps.outcomeTracker.flushPending(this.deps.clock.now());
     }
-    this.stopPromise = this.drainAndCloseStorage().then(() => {
-      this.reportHealth('graceful_shutdown');
-      this.deps.logger.info('micro_burst_runtime_stopped');
-    }).finally(() => {
-      this.stopPromise = null;
-    });
+    this.stopPromise = this.drainAndCloseStorage()
+      .then(() => {
+        this.reportHealth('graceful_shutdown');
+        this.deps.logger.info('micro_burst_runtime_stopped');
+      })
+      .finally(() => {
+        this.stopPromise = null;
+      });
     return this.stopPromise;
   }
 
-  async evaluateSymbol(symbol: string, snapshotAtMs?: number): Promise<MicroBurstShadowEvaluationResult | null> {
+  async evaluateSymbol(
+    symbol: string,
+    snapshotAtMs?: number,
+  ): Promise<MicroBurstShadowEvaluationResult | null> {
     const state = this.symbolStates.get(symbol);
     if (!state || !this.shadowEvaluator) return null;
     if (state.evaluationInFlight) return null;
@@ -389,7 +418,9 @@ export class MicroBurstRuntime {
           state.uniqueSignalCount++;
           this.totalUniqueSignals++;
           if (!this.journal.append(result, this.deps.provenance)) {
-            this.deps.logger.error('micro_burst_signal_journal_write_failed', { shadowSignalId: result.shadowSignalId });
+            this.deps.logger.error('micro_burst_signal_journal_write_failed', {
+              shadowSignalId: result.shadowSignalId,
+            });
           }
 
           // M3: Track signal for prospective outcome validation
@@ -406,8 +437,10 @@ export class MicroBurstRuntime {
               side: result.side,
               signalAtMs: result.snapshotAtMs,
               marketPriceAtSignal: result.referencePrice,
-              referencePriceSource: typeof result.diagnostics?.referencePriceSource === 'string'
-                ? result.diagnostics.referencePriceSource : 'UNKNOWN',
+              referencePriceSource:
+                typeof result.diagnostics?.referencePriceSource === 'string'
+                  ? result.diagnostics.referencePriceSource
+                  : 'UNKNOWN',
               structuralStopPrice: result.structuralInvalidation ?? 0,
               destinationPrice: result.destinationPrice ?? 0,
               support: result.supportPrice,
@@ -421,20 +454,32 @@ export class MicroBurstRuntime {
                 ageMs: result.book.ageMs,
                 imbalance: result.book.imbalance,
                 imbalanceSlope: result.book.imbalanceSlope,
-                temporalAbsorption: typeof result.diagnostics?.temporalAbsorptionDetected === 'boolean'
-                  ? result.diagnostics.temporalAbsorptionDetected : false,
-                temporalSweep: typeof result.diagnostics?.temporalSweepDetected === 'boolean'
-                  ? result.diagnostics.temporalSweepDetected : false,
+                temporalAbsorption:
+                  typeof result.diagnostics?.temporalAbsorptionDetected === 'boolean'
+                    ? result.diagnostics.temporalAbsorptionDetected
+                    : false,
+                temporalSweep:
+                  typeof result.diagnostics?.temporalSweepDetected === 'boolean'
+                    ? result.diagnostics.temporalSweepDetected
+                    : false,
               },
               tradeFlow: {
-                buyTakerVolume: typeof result.diagnostics?.takerBuyVolume === 'number'
-                  ? result.diagnostics.takerBuyVolume : 0,
-                sellTakerVolume: typeof result.diagnostics?.takerSellVolume === 'number'
-                  ? result.diagnostics.takerSellVolume : 0,
-                netTakerFlow: typeof result.diagnostics?.takerNetFlow === 'number'
-                  ? result.diagnostics.takerNetFlow : 0,
-                sampleCount: typeof result.diagnostics?.takerFlowSampleCount === 'number'
-                  ? result.diagnostics.takerFlowSampleCount : 0,
+                buyTakerVolume:
+                  typeof result.diagnostics?.takerBuyVolume === 'number'
+                    ? result.diagnostics.takerBuyVolume
+                    : 0,
+                sellTakerVolume:
+                  typeof result.diagnostics?.takerSellVolume === 'number'
+                    ? result.diagnostics.takerSellVolume
+                    : 0,
+                netTakerFlow:
+                  typeof result.diagnostics?.takerNetFlow === 'number'
+                    ? result.diagnostics.takerNetFlow
+                    : 0,
+                sampleCount:
+                  typeof result.diagnostics?.takerFlowSampleCount === 'number'
+                    ? result.diagnostics.takerFlowSampleCount
+                    : 0,
               },
               btc: {
                 status: result.btc.status,
@@ -442,19 +487,27 @@ export class MicroBurstRuntime {
                 ret1m: result.btc.ret1m,
                 ret3m: result.btc.ret3m,
                 ret5m: result.btc.ret5m,
-                acceleration: typeof result.diagnostics?.btcAcceleration === 'number'
-                  ? result.diagnostics.btcAcceleration : null,
-                direction: typeof result.diagnostics?.btcDirection === 'string'
-                  ? result.diagnostics.btcDirection as any : null,
+                acceleration:
+                  typeof result.diagnostics?.btcAcceleration === 'number'
+                    ? result.diagnostics.btcAcceleration
+                    : null,
+                direction:
+                  typeof result.diagnostics?.btcDirection === 'string'
+                    ? (result.diagnostics.btcDirection as any)
+                    : null,
                 conflict: result.btc.conflict,
               },
               confidence: result.confidence,
-              leverageTier: typeof result.diagnostics?.leverageTier === 'string'
-                ? result.diagnostics.leverageTier : 'NONE',
-              leverage: typeof result.diagnostics?.leverage === 'number'
-                ? result.diagnostics.leverage : 0,
-              positionFraction: typeof result.diagnostics?.positionFraction === 'number'
-                ? result.diagnostics.positionFraction : 0,
+              leverageTier:
+                typeof result.diagnostics?.leverageTier === 'string'
+                  ? result.diagnostics.leverageTier
+                  : 'NONE',
+              leverage:
+                typeof result.diagnostics?.leverage === 'number' ? result.diagnostics.leverage : 0,
+              positionFraction:
+                typeof result.diagnostics?.positionFraction === 'number'
+                  ? result.diagnostics.positionFraction
+                  : 0,
               microRegime: result.microRegime,
             });
             this.deps.outcomeTracker.trackSignal(snapshot);
@@ -522,16 +575,27 @@ export class MicroBurstRuntime {
     const archiveHealth = archive?.getHealth();
 
     if (!this.config.enabled) blockers.push('MICRO_BURST_DISABLED');
-    if (this.config.mode !== 'SHADOW') blockers.push(this.config.mode === 'LIVE' ? 'LIVE_MODE_NOT_DISABLED' : 'SHADOW_MODE_NOT_ENABLED');
-    if (!this.config.prospectiveValidation?.enabled) blockers.push('PROSPECTIVE_VALIDATION_DISABLED');
+    if (this.config.mode !== 'SHADOW')
+      blockers.push(
+        this.config.mode === 'LIVE' ? 'LIVE_MODE_NOT_DISABLED' : 'SHADOW_MODE_NOT_ENABLED',
+      );
+    if (!this.config.prospectiveValidation?.enabled)
+      blockers.push('PROSPECTIVE_VALIDATION_DISABLED');
     if (!this.config.marketArchive?.enabled) blockers.push('MARKET_ARCHIVE_DISABLED');
     if (!archive) blockers.push('MARKET_ARCHIVE_UNAVAILABLE');
     if (archiveHealth && !archiveHealth.healthy) blockers.push('MARKET_ARCHIVE_UNHEALTHY');
-    if (archiveHealth && archiveHealth.queueCapacity !== undefined && archiveHealth.queueDepth !== undefined && archiveHealth.queueDepth >= archiveHealth.queueCapacity) {
+    if (
+      archiveHealth &&
+      archiveHealth.queueCapacity !== undefined &&
+      archiveHealth.queueDepth !== undefined &&
+      archiveHealth.queueDepth >= archiveHealth.queueCapacity
+    ) {
       blockers.push('MARKET_ARCHIVE_QUEUE_AT_CAPACITY');
     }
-    if (!provenance?.codeCommitSha || provenance.codeCommitSha === 'UNKNOWN') blockers.push('CODE_COMMIT_SHA_UNKNOWN');
-    if (!provenance?.configHash || provenance.configHash === 'UNKNOWN') blockers.push('CONFIG_HASH_UNKNOWN');
+    if (!provenance?.codeCommitSha || provenance.codeCommitSha === 'UNKNOWN')
+      blockers.push('CODE_COMMIT_SHA_UNKNOWN');
+    if (!provenance?.configHash || provenance.configHash === 'UNKNOWN')
+      blockers.push('CONFIG_HASH_UNKNOWN');
     if (!provenance?.cohortId?.startsWith('MBV1-M3_2-')) blockers.push('COHORT_NAMESPACE_INVALID');
     if (!provenance?.officialCohortReady) blockers.push('OFFICIAL_COHORT_NOT_READY');
     if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
@@ -540,7 +604,8 @@ export class MicroBurstRuntime {
       ready: blockers.length === 0,
       blockers,
       cohortId: provenance?.cohortId ?? null,
-      strategyVersion: this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion ?? null,
+      strategyVersion:
+        this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion ?? null,
       codeCommitSha: provenance?.codeCommitSha ?? null,
       configHash: provenance?.configHash ?? null,
       liveExecution: false,
@@ -639,7 +704,9 @@ export class MicroBurstRuntime {
       await storage.flush?.();
       await storage.close?.();
     } catch (error) {
-      this.deps.logger.error('micro_burst_runtime_storage_shutdown_failed', { error: String(error) });
+      this.deps.logger.error('micro_burst_runtime_storage_shutdown_failed', {
+        error: String(error),
+      });
     }
   }
 }

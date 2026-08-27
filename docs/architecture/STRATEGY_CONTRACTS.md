@@ -561,24 +561,24 @@ LIVE_AUTHORITY: FALSE
 
 Target policy:
 
-| Capability / Policy | AEGIS_TURBO | MOMENTUM_RIDE | MICRO_BURST_V1 | Shared Core |
-|---|---:|---:|---:|---:|
-| Python/current brain | Strategy-owned | No by default | No | No |
-| Aegis Entry Policy | Strategy-owned | No by default | No | No |
-| Momentum detector | No | Strategy-owned | No | No |
-| Micro regime/SR | No | No | Strategy-owned | No |
-| Micro TradeHealth | No | No | Strategy-owned | No |
-| E4 tail risk | Aegis contract | Not inherited | Not inherited | Only if later extracted explicitly |
-| Daily loss stop | Uses | Uses | Uses | Yes |
-| Position ownership | Uses | Uses | Uses | Yes |
-| Symbol filters | Uses | Uses | Uses | Yes |
-| Market order mechanism | Uses | Uses | Uses | Yes |
-| Hard bracket mechanism | Uses | Uses | Uses | Yes |
-| Safe stop replacement | Uses | Uses | Uses | Yes |
-| Emergency close | Uses | Uses | Uses | Yes |
-| ProfitGuardian policy | Strategy-owned | Only if declared | No by default | No |
-| Exit Eye policy | Strategy-owned | Only if declared | No | No |
-| Trade logging | Uses | Uses | Uses | Yes |
+| Capability / Policy    |    AEGIS_TURBO |    MOMENTUM_RIDE | MICRO_BURST_V1 |                        Shared Core |
+| ---------------------- | -------------: | ---------------: | -------------: | ---------------------------------: |
+| Python/current brain   | Strategy-owned |    No by default |             No |                                 No |
+| Aegis Entry Policy     | Strategy-owned |    No by default |             No |                                 No |
+| Momentum detector      |             No |   Strategy-owned |             No |                                 No |
+| Micro regime/SR        |             No |               No | Strategy-owned |                                 No |
+| Micro TradeHealth      |             No |               No | Strategy-owned |                                 No |
+| E4 tail risk           | Aegis contract |    Not inherited |  Not inherited | Only if later extracted explicitly |
+| Daily loss stop        |           Uses |             Uses |           Uses |                                Yes |
+| Position ownership     |           Uses |             Uses |           Uses |                                Yes |
+| Symbol filters         |           Uses |             Uses |           Uses |                                Yes |
+| Market order mechanism |           Uses |             Uses |           Uses |                                Yes |
+| Hard bracket mechanism |           Uses |             Uses |           Uses |                                Yes |
+| Safe stop replacement  |           Uses |             Uses |           Uses |                                Yes |
+| Emergency close        |           Uses |             Uses |           Uses |                                Yes |
+| ProfitGuardian policy  | Strategy-owned | Only if declared |  No by default |                                 No |
+| Exit Eye policy        | Strategy-owned | Only if declared |             No |                                 No |
+| Trade logging          |           Uses |             Uses |           Uses |                                Yes |
 
 ---
 
@@ -634,11 +634,7 @@ Proposed normalized result:
 interface PositionLifecycleDecision {
   identity: StrategyIdentity;
   tradeId: string;
-  decision:
-    | 'HOLD'
-    | 'MOVE_STOP'
-    | 'CLOSE_MARKET'
-    | 'NO_ACTION';
+  decision: 'HOLD' | 'MOVE_STOP' | 'CLOSE_MARKET' | 'NO_ACTION';
   reason: string;
   requestedStopPrice?: number;
   diagnostics: Record<string, unknown>;

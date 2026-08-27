@@ -11,20 +11,20 @@ Stabilize module boundaries and remove dead code paths before Micro Burst implem
 
 ### Module reorganization
 
-| Original location | New location | Reason |
-|---|---|---|
-| `src/brain/` | `src/tooling/research/archived/brain-contract-v1/` | Research prototype, not runtime |
-| `src/prospective/` | `src/tooling/research/archived/prospective-shadow-cohort-v1/` | Dormant prospective validation |
-| `src/challengers/` | `src/tooling/research/archived/challengers-v17/` | Historical challenger experiments |
-| `src/execution-durable/` | `src/tooling/legacy-execution/durable/` | Legacy execution path, not active |
-| `src/sentinel/` | `src/tooling/research/archived/sentinel-news-v1/` | Dormant integration |
-| `src/backtest/` | Removed | Only contained mock tests, no runner |
-| `src/app/execution/SharedStrategyExecutionService.ts` | Same (relocated from `src/app/services/`) | Clarifies execution boundary |
-| `src/app/telegram/presentation/AegisTurboEntryMessageFormatter.ts` | Same (relocated from `src/app/messages/`) | Groups presentation layer |
-| `src/domain/strategy/EntryStrategy.ts` | Same (relocated from `src/app/`) | Strategy identity belongs in domain |
-| `src/app/analysis/AegisTurboHistoryAnalyzer.ts` | Same (relocated from `src/tooling/`) | Used by Telegram command |
-| `src/tooling/aegis/` | New | Aegis CLI tools consolidated |
-| `src/tooling/audit/binance-usdm-readonly/` | Same (relocated from `src/infra/`) | Auditor scripts |
+| Original location                                                  | New location                                                  | Reason                               |
+| ------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------------------ |
+| `src/brain/`                                                       | `src/tooling/research/archived/brain-contract-v1/`            | Research prototype, not runtime      |
+| `src/prospective/`                                                 | `src/tooling/research/archived/prospective-shadow-cohort-v1/` | Dormant prospective validation       |
+| `src/challengers/`                                                 | `src/tooling/research/archived/challengers-v17/`              | Historical challenger experiments    |
+| `src/execution-durable/`                                           | `src/tooling/legacy-execution/durable/`                       | Legacy execution path, not active    |
+| `src/sentinel/`                                                    | `src/tooling/research/archived/sentinel-news-v1/`             | Dormant integration                  |
+| `src/backtest/`                                                    | Removed                                                       | Only contained mock tests, no runner |
+| `src/app/execution/SharedStrategyExecutionService.ts`              | Same (relocated from `src/app/services/`)                     | Clarifies execution boundary         |
+| `src/app/telegram/presentation/AegisTurboEntryMessageFormatter.ts` | Same (relocated from `src/app/messages/`)                     | Groups presentation layer            |
+| `src/domain/strategy/EntryStrategy.ts`                             | Same (relocated from `src/app/`)                              | Strategy identity belongs in domain  |
+| `src/app/analysis/AegisTurboHistoryAnalyzer.ts`                    | Same (relocated from `src/tooling/`)                          | Used by Telegram command             |
+| `src/tooling/aegis/`                                               | New                                                           | Aegis CLI tools consolidated         |
+| `src/tooling/audit/binance-usdm-readonly/`                         | Same (relocated from `src/infra/`)                            | Auditor scripts                      |
 
 ### Configuration
 

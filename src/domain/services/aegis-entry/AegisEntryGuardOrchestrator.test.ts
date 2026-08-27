@@ -83,7 +83,9 @@ function context(): AegisEntryContext {
       },
     },
     eventRisk: { enabled: false, mode: 'NORMAL', enforce: false, isAltSymbol: true },
-    cleanEntry: { config: { ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG, enabled: false, mode: 'SHADOW' } },
+    cleanEntry: {
+      config: { ...DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG, enabled: false, mode: 'SHADOW' },
+    },
     probe: {
       config: {
         enabled: false,
