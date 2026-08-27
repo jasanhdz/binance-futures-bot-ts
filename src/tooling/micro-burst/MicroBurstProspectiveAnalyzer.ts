@@ -15,6 +15,8 @@ import {
 export interface MicroBurstProspectiveAnalysisInput {
   signals: readonly Record<string, unknown>[];
   outcomes: readonly ProspectiveOutcomeRecord[];
+  /** Terminal rows committed by SQLite but not yet exported to the journal. */
+  unresolvedOutcomeIds?: readonly string[];
   seed?: number;
   /** Optional immutable archive reader. Controls are omitted unless raw trajectories are available. */
   archiveTrades?: (
@@ -30,6 +32,7 @@ export interface MicroBurstProspectiveAnalysis {
   readonly uniqueOutcomeCount: number;
   readonly duplicateSignalRows: number;
   readonly duplicateOutcomeRows: number;
+  readonly unresolvedOutcomeCount: number;
 }
 
 interface ModelRecord {
@@ -65,6 +68,7 @@ export function analyzeMicroBurstProspective(
   const outcomeIds = new Set(outcomes.rows.map((row) => row.shadowSignalId));
   const missingOutcomes = [...signalIds].filter((id) => !outcomeIds.has(id)).length;
   const orphanOutcomes = [...outcomeIds].filter((id) => !signalIds.has(id)).length;
+  const unresolvedOutcomeCount = new Set(input.unresolvedOutcomeIds ?? []).size;
   const episodes = new Set(outcomes.rows.map((row) => row.episodeId).filter(isPresent));
   const modelRecords = outcomes.rows.flatMap(modelRecordsFor);
   const lines: string[] = [];
@@ -83,7 +87,7 @@ export function analyzeMicroBurstProspective(
     `Episodes: ${episodes.size}; signals without completed outcome: ${missingOutcomes}; outcomes without journal signal: ${orphanOutcomes}`,
   );
   lines.push(
-    `Storage gaps: ${missingOutcomes + orphanOutcomes === 0 ? 'none observed' : `signal/outcome reconciliation gap (${missingOutcomes + orphanOutcomes})`}`,
+    `Storage gaps: ${missingOutcomes + orphanOutcomes === 0 ? 'none observed' : `signal/outcome reconciliation gap (${missingOutcomes + orphanOutcomes})`}; unresolved terminal journal exports: ${unresolvedOutcomeCount}`,
   );
 
   const bookRows = [...signals.rows, ...outcomes.rows];
@@ -206,6 +210,7 @@ export function analyzeMicroBurstProspective(
     uniqueOutcomeCount: outcomes.rows.length,
     duplicateSignalRows: signals.duplicates,
     duplicateOutcomeRows: outcomes.duplicates,
+    unresolvedOutcomeCount,
   };
 }
 

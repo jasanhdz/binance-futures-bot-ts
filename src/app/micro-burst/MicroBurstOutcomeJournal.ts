@@ -13,7 +13,9 @@ export class MicroBurstOutcomeJournal {
   constructor(
     private readonly journalDir: string = DEFAULT_OUTCOME_DIR,
     private readonly maxEntriesPerFile = MAX_ENTRIES_PER_FILE,
-  ) {}
+  ) {
+    this.loadWrittenIds();
+  }
 
   append(record: ProspectiveOutcomeRecord): boolean {
     if (this.writtenIds.has(record.shadowSignalId)) return true;
@@ -25,11 +27,19 @@ export class MicroBurstOutcomeJournal {
       if (!this.currentFilePath || this.entryCount >= this.maxEntriesPerFile) {
         this.rotateFile();
       }
-      fs.appendFileSync(this.currentFilePath!, json + '\n', 'utf-8');
+      const fd = fs.openSync(this.currentFilePath!, 'a');
+      try {
+        fs.writeSync(fd, json + '\n', undefined, 'utf8');
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
       this.writtenIds.add(record.shadowSignalId);
       this.entryCount++;
       return true;
     } catch {
+      this.loadWrittenIds();
+      if (this.writtenIds.has(record.shadowSignalId)) return true;
       // Journal write failure must not crash runtime
       return false;
     }
@@ -105,6 +115,26 @@ export class MicroBurstOutcomeJournal {
   private ensureDir(): void {
     if (!fs.existsSync(this.journalDir)) {
       fs.mkdirSync(this.journalDir, { recursive: true });
+    }
+  }
+
+  private loadWrittenIds(): void {
+    try {
+      if (!fs.existsSync(this.journalDir)) return;
+      for (const file of fs.readdirSync(this.journalDir).filter((f) => f.endsWith('.jsonl'))) {
+        const content = fs.readFileSync(path.join(this.journalDir, file), 'utf-8');
+        for (const line of content.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const record = JSON.parse(line) as ProspectiveOutcomeRecord;
+            if (record.shadowSignalId) this.writtenIds.add(record.shadowSignalId);
+          } catch {
+            /* Ignore malformed rows during restart recovery. */
+          }
+        }
+      }
+    } catch {
+      /* Append reports journal I/O failures. */
     }
   }
 

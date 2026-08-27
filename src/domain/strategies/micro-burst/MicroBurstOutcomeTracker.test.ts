@@ -210,6 +210,33 @@ describe('MicroBurstOutcomeTracker', () => {
     storage.close();
   });
 
+  it('repairs an SQLite terminal outcome into the journal during restart recovery', () => {
+    const storageRoot = path.join(TEST_DIR, 'terminal-recovery');
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(storageRoot, 'state.sqlite'),
+      archivePath: path.join(storageRoot, 'archive'),
+    });
+    storage.completeOutcome({
+      shadowSignalId: 'terminal-recovery',
+      symbol: 'BTCUSDT',
+      completedAtMs: 2_000_000,
+      result: 'NEITHER',
+    });
+    const journal = new MicroBurstOutcomeJournal(path.join(storageRoot, 'journal'));
+    const tracker = new MicroBurstOutcomeTracker({
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      clock: { now: () => 2_000_000 },
+      journal,
+      storage,
+    });
+
+    tracker.recoverPending();
+
+    expect(journal.loadAll()).toHaveLength(1);
+    expect(storage.loadOutcomeReconciliation().unresolvedOutcomeIds).toEqual([]);
+    storage.close();
+  });
+
   it('restart recovery: loads pending IDs from journal', () => {
     const journal = new MicroBurstOutcomeJournal(TEST_DIR);
     // Simulate previously completed outcomes

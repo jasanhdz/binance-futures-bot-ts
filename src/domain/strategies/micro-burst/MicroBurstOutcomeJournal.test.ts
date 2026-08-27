@@ -85,6 +85,16 @@ describe('MicroBurstOutcomeJournal', () => {
     expect(journal.getEntryCount()).toBe(1);
   });
 
+  it('does not duplicate a terminal record after journal restart', () => {
+    const record = makeRecord({ shadowSignalId: 'restart-idempotent' });
+    expect(new MicroBurstOutcomeJournal(TEST_DIR).append(record)).toBe(true);
+
+    const reopened = new MicroBurstOutcomeJournal(TEST_DIR);
+    expect(reopened.append(record)).toBe(true);
+    expect(reopened.loadAll()).toHaveLength(1);
+    expect(reopened.getWrittenIds().has('restart-idempotent')).toBe(true);
+  });
+
   it('writes valid JSONL', () => {
     const journal = new MicroBurstOutcomeJournal(TEST_DIR);
     journal.append(makeRecord({ shadowSignalId: 'test-001' }));

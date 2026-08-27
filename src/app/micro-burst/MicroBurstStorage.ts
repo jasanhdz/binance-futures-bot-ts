@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import Database from 'better-sqlite3';
 import { compareTrades, tradeIdentity } from './MicroBurstTradeHistoryStore';
+import { ProspectiveOutcomeRecord } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
 
 export interface MicroBurstStorageOptions {
   databasePath: string;
@@ -77,6 +78,11 @@ export interface StorageHealth {
   openBatchRecords: number;
   segmentsWritten: number;
   averageRecordsPerSegment: number;
+}
+
+export interface MicroBurstOutcomeReconciliation {
+  outcomes: ProspectiveOutcomeRecord[];
+  unresolvedOutcomeIds: string[];
 }
 
 interface ArchiveWrite {
@@ -294,6 +300,37 @@ export class MicroBurstStorage {
         .prepare(`UPDATE micro_burst_outcomes SET journal_status = 'WRITTEN' WHERE signal_id = ?`)
         .run(signalId);
     });
+  }
+
+  hasCompletedOutcome(signalId: string): boolean {
+    return this.safeValue(
+      () => Boolean(this.db.prepare(`SELECT 1 FROM micro_burst_outcomes WHERE signal_id = ?`).get(signalId)),
+      false,
+    );
+  }
+
+  loadOutcomeReconciliation(): MicroBurstOutcomeReconciliation {
+    return this.safeValue(
+      () => {
+        const rows = this.db
+          .prepare(
+            `SELECT signal_id, outcome_json, journal_status FROM micro_burst_outcomes ORDER BY completed_at_ms, signal_id`,
+          )
+          .all() as Array<{ signal_id: string; outcome_json: string; journal_status: string }>;
+        const outcomes: ProspectiveOutcomeRecord[] = [];
+        const unresolvedOutcomeIds: string[] = [];
+        for (const row of rows) {
+          try {
+            outcomes.push(JSON.parse(row.outcome_json) as ProspectiveOutcomeRecord);
+            if (row.journal_status !== 'WRITTEN') unresolvedOutcomeIds.push(row.signal_id);
+          } catch {
+            unresolvedOutcomeIds.push(row.signal_id);
+          }
+        }
+        return { outcomes, unresolvedOutcomeIds };
+      },
+      { outcomes: [], unresolvedOutcomeIds: [] },
+    );
   }
 
   persistCohort(cohort: { cohortId: string; [key: string]: unknown }): boolean {

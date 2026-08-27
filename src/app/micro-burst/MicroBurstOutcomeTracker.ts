@@ -89,7 +89,12 @@ export class MicroBurstOutcomeTracker {
     this.signalsObserved++;
 
     // Idempotency: skip if already tracked or completed
-    if (this.pending.has(signal.shadowSignalId) || this.completedIds.has(signal.shadowSignalId)) {
+    if (
+      this.pending.has(signal.shadowSignalId) ||
+      this.completedIds.has(signal.shadowSignalId) ||
+      this.deps.journal.getWrittenIds().has(signal.shadowSignalId) ||
+      this.deps.storage?.hasCompletedOutcome(signal.shadowSignalId)
+    ) {
       return;
     }
 
@@ -460,6 +465,13 @@ export class MicroBurstOutcomeTracker {
   /** Restore durable pending snapshots and replay only archived exchange-time trades. */
   recoverPending(): void {
     if (!this.deps.storage) return;
+    const reconciliation = this.deps.storage.loadOutcomeReconciliation();
+    const unresolved = new Set(reconciliation.unresolvedOutcomeIds);
+    for (const outcome of reconciliation.outcomes) {
+      if (!unresolved.has(outcome.shadowSignalId)) continue;
+      if (this.deps.journal.append(outcome)) this.deps.storage.markOutcomeJournaled(outcome.shadowSignalId);
+      else this.outcomeErrors++;
+    }
     for (const recovered of this.deps.storage.recoverPending()) {
       const signal = recovered.snapshot as ShadowSignalSnapshot;
       if (

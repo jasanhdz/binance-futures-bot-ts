@@ -94,4 +94,16 @@ describe('MicroBurstProspectiveAnalyzer', () => {
     expect(report.text).toContain('TIME_SHIFT (forward 300s): N=1 mean_300s=1000.0bps');
     expect(report.text).toContain('first archived trade strictly after shifted T0');
   });
+
+  it('reports unresolved terminal exports separately from missing outcomes', () => {
+    const report = analyzeMicroBurstProspective({
+      signals: [{ shadowSignalId: 'terminal' }],
+      outcomes: [],
+      unresolvedOutcomeIds: ['terminal'],
+    });
+
+    expect(report.unresolvedOutcomeCount).toBe(1);
+    expect(report.text).toContain('signals without completed outcome: 1');
+    expect(report.text).toContain('unresolved terminal journal exports: 1');
+  });
 });

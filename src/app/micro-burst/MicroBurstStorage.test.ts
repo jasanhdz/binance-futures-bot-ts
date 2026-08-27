@@ -77,6 +77,27 @@ describe('MicroBurstStorage', () => {
     reopened.close();
   });
 
+  it('identifies and repairs a terminal outcome whose journal export is unresolved', () => {
+    const { storage, databasePath, archivePath } = createStorage();
+    expect(
+      storage.completeOutcome({
+        shadowSignalId: 'terminal-1',
+        symbol: 'BTCUSDT',
+        completedAtMs: 200,
+        result: 'WIN',
+      }),
+    ).toBe(true);
+    expect(storage.loadOutcomeReconciliation().unresolvedOutcomeIds).toEqual(['terminal-1']);
+    expect(storage.markOutcomeJournaled('terminal-1')).toBe(true);
+    expect(storage.loadOutcomeReconciliation().unresolvedOutcomeIds).toEqual([]);
+    storage.close();
+
+    const reopened = new MicroBurstStorage({ databasePath, archivePath });
+    expect(reopened.loadOutcomeReconciliation().outcomes).toHaveLength(1);
+    expect(reopened.hasCompletedOutcome('terminal-1')).toBe(true);
+    reopened.close();
+  });
+
   it('rotates raw trade archives by UTC hour and preserves exchange and receive timestamps', () => {
     const { storage, archivePath } = createStorage();
     const hour = Date.UTC(2026, 0, 2, 3, 0, 0);
