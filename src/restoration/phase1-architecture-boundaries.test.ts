@@ -9,7 +9,7 @@ function source(path: string): string {
 }
 
 describe('Phase 1 architecture boundaries', () => {
-  it('keeps archived research and legacy execution outside runtime imports', () => {
+  it('keeps legacy execution outside runtime imports and removes archived research code', () => {
     const runtimeFiles = [
       'src/main.ts',
       'src/app/services/TradingService.ts',
@@ -20,9 +20,11 @@ describe('Phase 1 architecture boundaries', () => {
     ];
 
     for (const path of runtimeFiles) {
-      expect(source(path), path).not.toContain('tooling/research/archived');
+      expect(source(path), path).not.toContain('tooling/research');
       expect(source(path), path).not.toContain('tooling/legacy-execution');
     }
+
+    expect(existsSync(resolve(repoRoot, 'src/tooling/research'))).toBe(false);
   });
 
   it('removes superseded active-looking source entry points', () => {
