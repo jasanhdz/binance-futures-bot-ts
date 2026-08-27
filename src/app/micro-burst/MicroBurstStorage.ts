@@ -9,7 +9,7 @@ export interface MicroBurstStorageOptions {
   databasePath: string;
   archivePath: string;
   now?: () => number;
-  /** Maximum records accepted before archival overflow is recorded as a durable gap. */
+  /** Maximum in-memory archival work items accepted before overflow is recorded as a durable gap. */
   maxArchiveQueueRecords?: number;
   /** Maximum records in an active spool before it is finalized. */
   maxActiveSegmentRecords?: number;
@@ -112,6 +112,7 @@ interface ArchiveSegmentMetadata {
   firstEventTimeMs: number;
   lastEventTimeMs: number;
   checksum: string;
+  segmentId: string;
   file: string;
 }
 
@@ -134,7 +135,6 @@ export class MicroBurstStorage {
   private readonly maxActiveSegmentDurationMs: number;
   private readonly durabilityFlushIntervalMs: number;
   private readonly activeSegments = new Map<string, ActiveSegment>();
-  private segmentSequence = 0;
   private health: StorageHealth = {
     healthy: true,
     errorCount: 0,
@@ -442,20 +442,6 @@ export class MicroBurstStorage {
       this.markFailure(new Error('invalid archive record metadata'));
       return false;
     }
-    const totalActive = this.countActiveRecords();
-    if (totalActive >= this.maxArchiveQueueRecords) {
-      this.health.overflowRecords++;
-      this.recordGap({
-        symbol,
-        startedAtMs: eventTime,
-        endedAtMs: eventTime,
-        reason: 'archive_queue_overflow',
-        dataType: type,
-        queueCapacity: this.maxArchiveQueueRecords,
-      });
-      this.markFailure(new Error('archive queue capacity exceeded'));
-      return false;
-    }
     const hourStartMs = Math.floor(eventTime / 3_600_000) * 3_600_000;
     const key = `${type}\u0000${symbol}\u0000${hourStartMs}`;
     const write: ArchiveWrite = { type, symbol, eventTime, receivedAtMs, payload };
@@ -494,12 +480,11 @@ export class MicroBurstStorage {
     }
   }
 
-  private segmentPath(type: 'trades' | 'depth', symbol: string, hourStartMs: number): string {
+  private segmentPath(type: 'trades' | 'depth', symbol: string, hourStartMs: number, segmentId: string): string {
     const date = new Date(hourStartMs);
     const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]/g, '_');
     const hour = date.toISOString().replace(/[:.]/g, '-');
-    const unique = `${process.pid}-${this.now()}-${++this.segmentSequence}-${crypto.randomUUID()}`;
-    return path.join(this.options.archivePath, type, safeSymbol, `${hour}-${unique}.ndjson.gz`);
+    return path.join(this.options.archivePath, type, safeSymbol, `${hour}-${segmentId}.ndjson.gz`);
   }
 
   private activePath(type: 'trades' | 'depth', symbol: string, hourStartMs: number): string {
@@ -603,13 +588,14 @@ export class MicroBurstStorage {
   }
 
   private updateActiveHealth(): void {
-    this.health.queueDepth = this.countActiveRecords();
+    // Active spools have already been synchronously written to disk; they are not queued work.
+    this.health.queueDepth = 0;
     this.health.queueHighWatermark = Math.max(
       this.health.queueHighWatermark,
       this.health.queueDepth,
     );
     this.health.activeSegmentCount = this.activeSegments.size;
-    this.health.activeSegmentRecords = this.health.queueDepth;
+    this.health.activeSegmentRecords = this.countActiveRecords();
     this.health.activeSegmentBytes = [...this.activeSegments.values()].reduce((total, active) => total + active.bytes, 0);
     this.health.activeBatchCount = this.health.activeSegmentCount;
     this.health.openBatchRecords = this.health.activeSegmentRecords;
@@ -617,14 +603,19 @@ export class MicroBurstStorage {
   }
 
   private writeFinalSegment(active: ActiveSegment, text: string, records: ArchiveWrite[]): void {
-    const filePath = this.segmentPath(active.type, active.symbol, active.hourStartMs);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const checksum = crypto.createHash('sha256').update(text).digest('hex');
+    const segmentId = this.segmentId(active.type, active.symbol, active.hourStartMs, checksum);
+    const filePath = this.segmentPath(active.type, active.symbol, active.hourStartMs, segmentId);
+    const directory = path.dirname(filePath);
+    fs.mkdirSync(directory, { recursive: true });
     const eventTimes = records.map((write) => write.eventTime);
     const gzipTempPath = `${filePath}.tmp`;
-    fs.writeFileSync(gzipTempPath, zlib.gzipSync(Buffer.from(text, 'utf8')), { flag: 'wx' });
-    this.fsyncFile(gzipTempPath);
-    fs.renameSync(gzipTempPath, filePath);
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(gzipTempPath, zlib.gzipSync(Buffer.from(text, 'utf8')), { flag: 'wx' });
+      this.fsyncFile(gzipTempPath);
+      fs.renameSync(gzipTempPath, filePath);
+      this.fsyncDirectory(directory);
+    }
     const metadata: ArchiveSegmentMetadata = {
       schemaVersion: 1,
       type: active.type,
@@ -634,30 +625,17 @@ export class MicroBurstStorage {
       firstEventTimeMs: Math.min(...eventTimes),
       lastEventTimeMs: Math.max(...eventTimes),
       checksum,
+      segmentId,
       file: path.basename(filePath),
     };
     const metadataTempPath = `${filePath}.meta.json.tmp`;
-    fs.writeFileSync(metadataTempPath, JSON.stringify(metadata) + '\n', { flag: 'wx' });
-    this.fsyncFile(metadataTempPath);
-    fs.renameSync(metadataTempPath, `${filePath}.meta.json`);
-    this.db
-      .prepare(
-        `INSERT INTO market_data_segments (file_path, data_type, symbol, hour_start_ms, record_count,
-      first_event_time_ms, last_event_time_ms, checksum, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(file_path) DO UPDATE SET record_count = excluded.record_count, last_event_time_ms = excluded.last_event_time_ms,
-      checksum = excluded.checksum, updated_at_ms = excluded.updated_at_ms`,
-      )
-      .run(
-        filePath,
-        active.type,
-        active.symbol,
-        active.hourStartMs,
-        records.length,
-        metadata.firstEventTimeMs,
-        metadata.lastEventTimeMs,
-        checksum,
-        this.now(),
-      );
+    if (!fs.existsSync(`${filePath}.meta.json`)) {
+      fs.writeFileSync(metadataTempPath, JSON.stringify(metadata) + '\n', { flag: 'wx' });
+      this.fsyncFile(metadataTempPath);
+      fs.renameSync(metadataTempPath, `${filePath}.meta.json`);
+      this.fsyncDirectory(directory);
+    }
+    this.insertSegmentIndex(filePath, metadata);
     this.health.writtenRecords += records.length;
     this.health.segmentsFinalized++;
     this.health.segmentsWritten = this.health.segmentsFinalized;
@@ -670,6 +648,30 @@ export class MicroBurstStorage {
   private fsyncFile(filePath: string): void {
     const fd = fs.openSync(filePath, 'r');
     try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
+
+  private fsyncDirectory(directory: string): void {
+    let fd: number;
+    try {
+      fd = fs.openSync(directory, 'r');
+    } catch (error) {
+      if (isUnsupportedDirectorySync(error)) return;
+      throw error;
+    }
+    try {
+      fs.fsyncSync(fd);
+    } catch (error) {
+      if (!isUnsupportedDirectorySync(error)) throw error;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  private segmentId(type: 'trades' | 'depth', symbol: string, hourStartMs: number, checksum: string): string {
+    return crypto
+      .createHash('sha256')
+      .update(`${type}\u0000${symbol}\u0000${hourStartMs}\u0000${checksum}`)
+      .digest('hex');
   }
 
   private completeRecords(text: string): { text: string; records: ArchiveWrite[]; torn: boolean } {
@@ -707,6 +709,7 @@ export class MicroBurstStorage {
             const text = zlib.gunzipSync(fs.readFileSync(temporary)).toString('utf8');
             this.completeRecords(text);
             fs.renameSync(temporary, finalPath);
+            this.fsyncDirectory(dir);
             this.health.recoveryActions++;
           }
           for (const name of fs.readdirSync(dir).filter((entry) => entry.endsWith('.ndjson.gz'))) {
@@ -785,21 +788,25 @@ export class MicroBurstStorage {
     const parsed = this.completeRecords(text);
     if (parsed.torn || parsed.records.length === 0) throw new Error(`invalid finalized archive segment: ${filePath}`);
     const first = parsed.records[0];
+    const checksum = crypto.createHash('sha256').update(parsed.text).digest('hex');
+    const hourStartMs = Math.floor(first.eventTime / 3_600_000) * 3_600_000;
     const metadata: ArchiveSegmentMetadata = {
       schemaVersion: 1,
       type: first.type,
       symbol: first.symbol,
-      hourStartMs: Math.floor(first.eventTime / 3_600_000) * 3_600_000,
+      hourStartMs,
       recordCount: parsed.records.length,
       firstEventTimeMs: Math.min(...parsed.records.map((record) => record.eventTime)),
       lastEventTimeMs: Math.max(...parsed.records.map((record) => record.eventTime)),
-      checksum: crypto.createHash('sha256').update(parsed.text).digest('hex'),
+      checksum,
+      segmentId: this.segmentId(first.type, first.symbol, hourStartMs, checksum),
       file: path.basename(filePath),
     };
     const metadataPath = `${filePath}.meta.json`;
     if (!fs.existsSync(metadataPath)) {
       fs.writeFileSync(metadataPath, JSON.stringify(metadata) + '\n', { flag: 'wx' });
       this.fsyncFile(metadataPath);
+      this.fsyncDirectory(path.dirname(metadataPath));
       this.health.recoveryActions++;
     }
     const indexed = this.db.prepare(`SELECT 1 FROM market_data_segments WHERE file_path = ?`).get(filePath);
@@ -812,12 +819,14 @@ export class MicroBurstStorage {
   private insertSegmentIndex(filePath: string, metadata: ArchiveSegmentMetadata): void {
     this.db
       .prepare(
-        `INSERT INTO market_data_segments (file_path, data_type, symbol, hour_start_ms, record_count,
-        first_event_time_ms, last_event_time_ms, checksum, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(file_path) DO UPDATE SET record_count = excluded.record_count, first_event_time_ms = excluded.first_event_time_ms,
-        last_event_time_ms = excluded.last_event_time_ms, checksum = excluded.checksum, updated_at_ms = excluded.updated_at_ms`,
+        `INSERT INTO market_data_segments (file_path, segment_id, data_type, symbol, hour_start_ms, record_count,
+        first_event_time_ms, last_event_time_ms, checksum, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO NOTHING`,
       )
-      .run(filePath, metadata.type, metadata.symbol, metadata.hourStartMs, metadata.recordCount, metadata.firstEventTimeMs, metadata.lastEventTimeMs, metadata.checksum, this.now());
+      .run(filePath, metadata.segmentId, metadata.type, metadata.symbol, metadata.hourStartMs, metadata.recordCount, metadata.firstEventTimeMs, metadata.lastEventTimeMs, metadata.checksum, this.now());
+    this.db
+      .prepare(`UPDATE market_data_segments SET segment_id = ? WHERE file_path = ? AND segment_id IS NULL`)
+      .run(metadata.segmentId, filePath);
   }
 
   private readAndVerifySegmentMetadata(
@@ -836,6 +845,7 @@ export class MicroBurstStorage {
         firstEventTimeMs: 0,
         lastEventTimeMs: 0,
         checksum: '',
+        segmentId: '',
         file: path.basename(filePath),
       };
     try {
@@ -958,7 +968,7 @@ export class MicroBurstStorage {
 
   private createSchema(): void {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS market_data_segments (file_path TEXT PRIMARY KEY, data_type TEXT NOT NULL, symbol TEXT NOT NULL, hour_start_ms INTEGER NOT NULL, record_count INTEGER NOT NULL, first_event_time_ms INTEGER NOT NULL, last_event_time_ms INTEGER NOT NULL, checksum TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS market_data_segments (file_path TEXT PRIMARY KEY, segment_id TEXT, data_type TEXT NOT NULL, symbol TEXT NOT NULL, hour_start_ms INTEGER NOT NULL, record_count INTEGER NOT NULL, first_event_time_ms INTEGER NOT NULL, last_event_time_ms INTEGER NOT NULL, checksum TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS book_checkpoints (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS book_features (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, features_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS micro_burst_signals (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, signal_at_ms INTEGER NOT NULL, snapshot_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
@@ -982,9 +992,23 @@ export class MicroBurstStorage {
     } catch {
       /* already migrated */
     }
+    try {
+      this.db.exec(`ALTER TABLE market_data_segments ADD COLUMN segment_id TEXT`);
+    } catch {
+      /* already migrated */
+    }
+    this.db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_segments_segment_id ON market_data_segments(segment_id) WHERE segment_id IS NOT NULL`,
+    );
   }
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function isUnsupportedDirectorySync(error: unknown): boolean {
+  return ['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EISDIR'].includes(
+    (error as NodeJS.ErrnoException).code ?? '',
+  );
 }

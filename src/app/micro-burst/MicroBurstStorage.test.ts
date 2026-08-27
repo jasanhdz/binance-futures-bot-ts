@@ -270,7 +270,7 @@ describe('MicroBurstStorage', () => {
     storage.close();
   });
 
-  it('records an overflow gap and reports unhealthy bounded-queue health', () => {
+  it('does not count durable active spools against in-memory queue capacity', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-overflow-'));
     temporaryDirectories.push(root);
     const storage = new MicroBurstStorage({
@@ -283,13 +283,13 @@ describe('MicroBurstStorage', () => {
     ).toBe(true);
     expect(
       storage.appendTrade({ symbol: 'ETHUSDT', eventTime: 101, receivedAtMs: 101, price: 1 }),
-    ).toBe(false);
-    expect(storage.hasGap('ETHUSDT', 101, 101)).toBe(true);
+    ).toBe(true);
     expect(storage.getHealth()).toMatchObject({
-      healthy: false,
+      healthy: true,
       queueCapacity: 1,
-      overflowRecords: 1,
-      queueDepth: 1,
+      overflowRecords: 0,
+      queueDepth: 0,
+      activeSegmentRecords: 2,
     });
     storage.close();
   });
@@ -676,7 +676,7 @@ describe('MicroBurstStorage', () => {
     storage.close();
   });
 
-  it('queue overflow remains fail-closed', () => {
+  it('keeps accepting durable spools after the configured in-memory queue capacity', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-overflow-closed-'));
     temporaryDirectories.push(root);
     const storage = new MicroBurstStorage({
@@ -692,11 +692,12 @@ describe('MicroBurstStorage', () => {
     ).toBe(true);
     expect(
       storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 102, receivedAtMs: 102, price: 3 }),
-    ).toBe(false);
+    ).toBe(true);
     const health = storage.getHealth();
-    expect(health.healthy).toBe(false);
-    expect(health.overflowRecords).toBe(1);
-    expect(storage.hasGap('BTCUSDT', 102, 102)).toBe(true);
+    expect(health.healthy).toBe(true);
+    expect(health.overflowRecords).toBe(0);
+    expect(health.queueDepth).toBe(0);
+    expect(health.activeSegmentRecords).toBe(3);
     storage.close();
   });
 
@@ -827,6 +828,39 @@ describe('MicroBurstStorage', () => {
     const reopened = new MicroBurstStorage({ databasePath, archivePath });
     expect(reopened.queryArchivedTrades('BTCUSDT', 0, 200)).toHaveLength(1);
     expect(reopened.getHealth().recoveryActions).toBeGreaterThanOrEqual(1);
+    reopened.close();
+  });
+
+  it('recovers one authoritative content-addressed segment after final files precede SQLite', () => {
+    const { storage, archivePath, databasePath } = createStorage();
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
+    const active = [...(storage as any).activeSegments.values()][0];
+    const text = fs.readFileSync(active.activePath, 'utf8');
+    const parsed = (storage as any).completeRecords(text);
+    (storage as any).writeFinalSegment(active, parsed.text, parsed.records);
+
+    // Model a crash after gzip and metadata publication but before the SQLite transaction commits.
+    const db = new Database(databasePath);
+    db.prepare('DELETE FROM market_data_segments').run();
+    db.close();
+    for (const timer of [active.durabilityTimer, active.rotationTimer]) if (timer) clearTimeout(timer);
+    (storage as any).db.close();
+
+    const reopened = new MicroBurstStorage({ databasePath, archivePath });
+    const directory = path.join(archivePath, 'trades', 'BTCUSDT');
+    const files = fs.readdirSync(directory).filter((name) => name.endsWith('.ndjson.gz'));
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/-[a-f0-9]{64}\.ndjson\.gz$/);
+    expect(reopened.queryArchivedTrades('BTCUSDT', 0, 200)).toHaveLength(1);
+    const indexDb = new Database(databasePath);
+    expect(indexDb.prepare('SELECT COUNT(*) AS count FROM market_data_segments').get()).toEqual({ count: 1 });
+    indexDb.close();
     reopened.close();
   });
 
