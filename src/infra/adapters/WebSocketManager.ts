@@ -2,6 +2,7 @@ import { Binance, Candle } from 'binance-api-node';
 import { Logger } from '../../app/ports/Logger';
 import { BinanceDepthDiffEvent } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
 import { MarketDataHub } from './MarketDataHub';
+import { MARKET, PUBLIC } from './MarketDataEndpoints';
 
 export interface WebSocketConfig {
   reconnectIntervalMs?: number;
@@ -29,8 +30,8 @@ export class WebSocketManager {
       });
   }
 
-  public connectCandles(symbol: string, interval: string, callback: (candle: Candle) => void): void {
-    this.marketDataHub.subscribe(`${symbol.toLowerCase()}@kline_${interval}`, (event) => {
+  public connectCandles(symbol: string, interval: string, callback: (candle: Candle) => void): () => void {
+    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@kline_${interval}`, MARKET, (event) => {
       const candle = event.k;
       if (!candle) return;
       callback({
@@ -50,8 +51,8 @@ export class WebSocketManager {
   public connectAggTrades(
     symbol: string,
     callback: (trade: { isBuyerMaker: boolean; quantity: string; price: string }) => void,
-  ): void {
-    this.marketDataHub.subscribe(`${symbol.toLowerCase()}@aggTrade`, (event) => {
+  ): () => void {
+    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@aggTrade`, MARKET, (event) => {
       callback({
         isBuyerMaker: Boolean(event.m),
         quantity: String(event.q),
@@ -70,8 +71,8 @@ export class WebSocketManager {
     levels: number,
     speed: '100ms' | '250ms' | '500ms',
     callback: (depth: any) => void,
-  ): void {
-    this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth${levels}@${speed}`, (event) => {
+  ): () => void {
+    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth${levels}@${speed}`, PUBLIC, (event) => {
       callback({ ...event, bids: event.b ?? event.bids ?? [], asks: event.a ?? event.asks ?? [] });
     });
   }
@@ -81,7 +82,7 @@ export class WebSocketManager {
     speed: '100ms' | '250ms' | '500ms',
     callback: (depth: BinanceDepthDiffEvent) => void,
   ): () => void {
-    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth@${speed}`, (event) => {
+    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth@${speed}`, PUBLIC, (event) => {
       callback({
         U: event.U,
         u: event.u,

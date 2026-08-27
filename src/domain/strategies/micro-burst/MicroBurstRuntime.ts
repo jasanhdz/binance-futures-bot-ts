@@ -47,6 +47,17 @@ export interface MicroBurstRuntimeHealth {
   signalJournalHealthy: boolean;
   marketArchiveHealthy: boolean | null;
   storageErrors: number;
+  readiness: MicroBurstRuntimeReadiness;
+}
+
+export interface MicroBurstRuntimeReadiness {
+  ready: boolean;
+  blockers: string[];
+  cohortId: string | null;
+  strategyVersion: string | null;
+  codeCommitSha: string | null;
+  configHash: string | null;
+  liveExecution: false;
 }
 
 interface SymbolRuntimeState {
@@ -60,6 +71,7 @@ interface SymbolRuntimeState {
   duplicateSignalCount: number;
   invalidContextCount: number;
   bookResyncCount: number;
+  unsubscribeAggTrades?: () => void;
 }
 
 export interface MicroBurstRuntimeDeps {
@@ -76,8 +88,9 @@ export interface MicroBurstRuntimeDeps {
   marketStorage?: {
     appendDepth(event: Record<string, unknown>): boolean;
     persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
-    flush(): boolean;
-    getHealth(): { healthy: boolean; errorCount: number };
+    flush?(): boolean | Promise<boolean>;
+    close?(): void | Promise<void>;
+    getHealth(): { healthy: boolean; errorCount: number; queueDepth?: number; queueCapacity?: number; draining?: boolean };
   };
   provenance?: { codeCommitSha: string; configHash: string; cohortId: string; officialCohortReady: boolean };
 }
@@ -96,6 +109,7 @@ export class MicroBurstRuntime {
   private lastHealthReportAt = 0;
   private readonly evaluationIntervalMs: number;
   private readonly journal: MicroBurstSignalJournal;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(
     private readonly deps: MicroBurstRuntimeDeps,
@@ -151,11 +165,11 @@ export class MicroBurstRuntime {
     for (const symbol of enabledSymbols) {
       const bookDeps: SynchronizedOrderBookDeps = {
         snapshotSource: {
-          getSnapshot: async (sym: string) => {
+          getSnapshot: async (sym: string, levels: number) => {
             if (!exchange.getDepthSnapshot) {
               throw new Error('Exchange does not support depth snapshot');
             }
-            return exchange.getDepthSnapshot(sym);
+            return exchange.getDepthSnapshot(sym, levels);
           },
         },
         diffSource: {
@@ -213,7 +227,7 @@ export class MicroBurstRuntime {
       book.start();
 
       if (exchange.subscribeToAggTrades) {
-        exchange.subscribeToAggTrades(symbol, (trade) => {
+        state.unsubscribeAggTrades = exchange.subscribeToAggTrades(symbol, (trade) => {
           const event: AggTradeEvent = {
             eventTime: trade.eventTime,
             price: Number(trade.price),
@@ -293,8 +307,9 @@ export class MicroBurstRuntime {
     });
   }
 
-  stop(): void {
-    if (!this.running) return;
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    if (!this.running) return Promise.resolve();
     this.running = false;
 
     if (this.evaluationTimer) {
@@ -308,6 +323,7 @@ export class MicroBurstRuntime {
 
     for (const [symbol, state] of this.symbolStates) {
       state.book.stop();
+      state.unsubscribeAggTrades?.();
       state.aggTradeBuffer.clear();
       state.evaluationInFlight = false;
     }
@@ -324,9 +340,11 @@ export class MicroBurstRuntime {
     if (this.deps.outcomeTracker) {
       this.deps.outcomeTracker.flushPending(this.deps.clock.now());
     }
-    this.deps.marketStorage?.flush();
-
     this.deps.logger.info('micro_burst_runtime_stopped');
+    this.stopPromise = this.drainAndCloseStorage().finally(() => {
+      this.stopPromise = null;
+    });
+    return this.stopPromise;
   }
 
   async evaluateSymbol(symbol: string, snapshotAtMs?: number): Promise<MicroBurstShadowEvaluationResult | null> {
@@ -473,6 +491,39 @@ export class MicroBurstRuntime {
       signalJournalHealthy: this.journal.getHealth().healthy,
       marketArchiveHealthy: this.deps.marketStorage ? this.deps.marketStorage.getHealth().healthy : null,
       storageErrors: this.journal.getHealth().storageErrors + (this.deps.marketStorage?.getHealth().errorCount ?? 0),
+      readiness: this.getReadiness(),
+    };
+  }
+
+  getReadiness(): MicroBurstRuntimeReadiness {
+    const blockers: string[] = [];
+    const provenance = this.deps.provenance;
+    const archive = this.deps.marketStorage;
+    const archiveHealth = archive?.getHealth();
+
+    if (!this.config.enabled) blockers.push('MICRO_BURST_DISABLED');
+    if (this.config.mode !== 'SHADOW') blockers.push(this.config.mode === 'LIVE' ? 'LIVE_MODE_NOT_DISABLED' : 'SHADOW_MODE_NOT_ENABLED');
+    if (!this.config.prospectiveValidation?.enabled) blockers.push('PROSPECTIVE_VALIDATION_DISABLED');
+    if (!this.config.marketArchive?.enabled) blockers.push('MARKET_ARCHIVE_DISABLED');
+    if (!archive) blockers.push('MARKET_ARCHIVE_UNAVAILABLE');
+    if (archiveHealth && !archiveHealth.healthy) blockers.push('MARKET_ARCHIVE_UNHEALTHY');
+    if (archiveHealth && archiveHealth.queueCapacity !== undefined && archiveHealth.queueDepth !== undefined && archiveHealth.queueDepth >= archiveHealth.queueCapacity) {
+      blockers.push('MARKET_ARCHIVE_QUEUE_AT_CAPACITY');
+    }
+    if (!provenance?.codeCommitSha || provenance.codeCommitSha === 'UNKNOWN') blockers.push('CODE_COMMIT_SHA_UNKNOWN');
+    if (!provenance?.configHash || provenance.configHash === 'UNKNOWN') blockers.push('CONFIG_HASH_UNKNOWN');
+    if (!provenance?.cohortId?.startsWith('MBV1-M3_2-')) blockers.push('COHORT_NAMESPACE_INVALID');
+    if (!provenance?.officialCohortReady) blockers.push('OFFICIAL_COHORT_NOT_READY');
+    if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
+
+    return {
+      ready: blockers.length === 0,
+      blockers,
+      cohortId: provenance?.cohortId ?? null,
+      strategyVersion: this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion ?? null,
+      codeCommitSha: provenance?.codeCommitSha ?? null,
+      configHash: provenance?.configHash ?? null,
+      liveExecution: false,
     };
   }
 
@@ -550,5 +601,16 @@ export class MicroBurstRuntime {
       total += state.book.getState().resyncCount;
     }
     return total;
+  }
+
+  private async drainAndCloseStorage(): Promise<void> {
+    const storage = this.deps.marketStorage;
+    if (!storage) return;
+    try {
+      await storage.flush?.();
+      await storage.close?.();
+    } catch (error) {
+      this.deps.logger.error('micro_burst_runtime_storage_shutdown_failed', { error: String(error) });
+    }
   }
 }

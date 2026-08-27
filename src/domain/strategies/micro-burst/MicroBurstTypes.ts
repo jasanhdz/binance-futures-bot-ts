@@ -80,6 +80,9 @@ export interface MicroMomentumSignal {
 
 export interface BookPressureSignal {
   spreadBps: number;
+  /** Positive values indicate bid-side pressure; negative values indicate ask-side pressure. */
+  signedTopOfBookImbalance: number;
+  /** Direction-free size of the top-of-book imbalance. */
   topOfBookImbalance: number;
   /** null when temporal book data is unavailable (single snapshot only). */
   imbalanceSlope: number | null;
@@ -106,6 +109,14 @@ export interface OrderBookSnapshot {
   observedAtMs: number;
   status: BookDataStatus;
   lastUpdateId?: number;
+  /** Causal observations strictly preceding this snapshot, supplied by the synchronized book. */
+  temporalHistory?: import('./MicroBurstMarketDataTypes').TemporalBookSnapshot[];
+}
+
+export interface MicroBurstDecisionPrice {
+  readonly price: number;
+  readonly source: 'CANDLE';
+  readonly observedAtMs: number;
 }
 
 // ── BTC ──────────────────────────────────────────────────────
@@ -156,8 +167,8 @@ export interface MicroBurstContext {
   timestamp: number;
   /** Latest closed 1m candle close available at timestamp; not a live bid/ask. */
   currentPrice: number;
-  /** Live runtime reference price (mark price or midpoint) at snapshot time. Undefined when no live source is available. */
-  marketPriceAtSnapshot?: number;
+  /** Immutable, causal price used for every entry decision and reported decision metric. */
+  decisionPrice: MicroBurstDecisionPrice;
   candles: MicroBurstCandleSet;
   levels: SupportResistanceResult;
   momentum: MicroMomentumSignal;

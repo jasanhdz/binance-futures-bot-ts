@@ -217,4 +217,43 @@ describe('MicroBurstStorage', () => {
     expect(reopened.queryArchivedTrades('BTCUSDT', 150, 250).map((trade) => trade.eventTime)).toEqual([200]);
     reopened.close();
   });
+
+  it('packs bounded background work into immutable multi-record segments', () => {
+    const { storage, archivePath } = createStorage();
+    for (let index = 0; index < 5; index++) {
+      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 1_000 + index, receivedAtMs: 2_000 + index, price: 100 + index, aggregateTradeId: index });
+    }
+    storage.flush();
+
+    const files = fs.readdirSync(path.join(archivePath, 'trades', 'BTCUSDT')).filter((file) => file.endsWith('.ndjson.gz'));
+    expect(files).toHaveLength(1);
+    const metadata = JSON.parse(fs.readFileSync(path.join(archivePath, 'trades', 'BTCUSDT', `${files[0]}.meta.json`), 'utf8'));
+    expect(metadata).toMatchObject({ recordCount: 5, firstEventTimeMs: 1_000, lastEventTimeMs: 1_004 });
+    expect(storage.getHealth()).toMatchObject({ queueDepth: 0, queuedRecords: 5, writtenRecords: 5, overflowRecords: 0 });
+    storage.close();
+  });
+
+  it('records an overflow gap and reports unhealthy bounded-queue health', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-overflow-'));
+    temporaryDirectories.push(root);
+    const storage = new MicroBurstStorage({ databasePath: path.join(root, 'state.sqlite'), archivePath: path.join(root, 'archive'), maxArchiveQueueRecords: 1 });
+    expect(storage.appendTrade({ symbol: 'ETHUSDT', eventTime: 100, receivedAtMs: 100, price: 1 })).toBe(true);
+    expect(storage.appendTrade({ symbol: 'ETHUSDT', eventTime: 101, receivedAtMs: 101, price: 1 })).toBe(false);
+    expect(storage.hasGap('ETHUSDT', 101, 101)).toBe(true);
+    expect(storage.getHealth()).toMatchObject({ healthy: false, queueCapacity: 1, overflowRecords: 1, queueDepth: 1 });
+    storage.close();
+  });
+
+  it('turns a checksum-invalid replay segment into a durable data gap', () => {
+    const { storage, archivePath } = createStorage();
+    storage.appendTrade({ symbol: 'SOLUSDT', eventTime: 100, receivedAtMs: 101, price: 10, aggregateTradeId: 1 });
+    storage.flush();
+    const file = fs.readdirSync(path.join(archivePath, 'trades', 'SOLUSDT')).find((name) => name.endsWith('.ndjson.gz'))!;
+    fs.writeFileSync(path.join(archivePath, 'trades', 'SOLUSDT', `${file}.meta.json`), JSON.stringify({ schemaVersion: 1, file, recordCount: 1, checksum: 'bad' }));
+
+    expect(storage.queryArchivedTrades('SOLUSDT', 0, 200)).toEqual([]);
+    expect(storage.hasGap('SOLUSDT', 100, 100)).toBe(true);
+    expect(storage.getHealth().healthy).toBe(false);
+    storage.close();
+  });
 });

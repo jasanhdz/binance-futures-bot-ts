@@ -77,7 +77,7 @@ export class MicroBurstShadowEvaluator {
         strategyContext,
       );
 
-      const referencePrice = context.marketPriceAtSnapshot ?? context.currentPrice;
+      const referencePrice = context.decisionPrice.price;
 
       const supportPrice = context.levels.nearest.support?.price ?? null;
       const resistancePrice = context.levels.nearest.resistance?.price ?? null;

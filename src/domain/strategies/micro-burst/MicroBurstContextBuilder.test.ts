@@ -95,6 +95,18 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     expect(first).toEqual(second);
   });
 
+  it('uses an immutable closed-candle decision price with explicit provenance', async () => {
+    const context = await buildMicroBurstContext('ETHUSDT', depsWith(freshCandleSets()), {
+      snapshotAtMs: SNAPSHOT_AT_MS,
+    });
+    expect(context.decisionPrice).toEqual({
+      price: context.currentPrice,
+      source: 'CANDLE',
+      observedAtMs: SNAPSHOT_AT_MS,
+    });
+    expect(Object.isFrozen(context.decisionPrice)).toBe(true);
+  });
+
   it('fails the whole context when only the 5m timeframe is stale', async () => {
     const candleSets = freshCandleSets();
     candleSets['5m'] = candlesEndingAt(20, 300_000, SNAPSHOT_AT_MS - 700_000);

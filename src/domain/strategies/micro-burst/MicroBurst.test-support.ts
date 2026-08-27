@@ -40,6 +40,7 @@ export function makeMicroBurstContext(
     symbol: 'ETHUSDT',
     timestamp: TEST_SNAPSHOT_AT_MS,
     currentPrice: 100,
+    decisionPrice: Object.freeze({ price: 100, source: 'CANDLE' as const, observedAtMs: TEST_SNAPSHOT_AT_MS }),
     candles: { candles1m: [], candles3m: [], candles5m: [] },
     levels: {
       levels: [makeLevel('support', 99.7), makeLevel('resistance', 102)],
@@ -67,6 +68,7 @@ export function makeMicroBurstContext(
     },
     bookPressure: {
       spreadBps: 5,
+      signedTopOfBookImbalance: 0.1,
       topOfBookImbalance: 0.1,
       imbalanceSlope: null,
       temporalAbsorptionDetected: false,

@@ -6,6 +6,7 @@ import {
   MicroBurstCandleSet,
   MicroBurstConfig,
   MicroBurstContext,
+  MicroBurstDecisionPrice,
   MicroRegime,
   OrderBookSnapshot,
   defaultMicroBurstConfig,
@@ -186,6 +187,11 @@ export async function buildMicroBurstContext(
     candles5m: filterClosedCandles(rawCandles5m, snapshotAtMs),
   };
   const currentPrice = candles.candles1m[candles.candles1m.length - 1]?.close ?? 0;
+  const decisionPrice: MicroBurstDecisionPrice = Object.freeze({
+    price: currentPrice,
+    source: 'CANDLE',
+    observedAtMs: candles.candles1m[candles.candles1m.length - 1]?.closeTime ?? 0,
+  });
   const levels = detectSupportResistance(candles.candles5m, {
     lookbackBars: config.srLookbackBars,
     pivotLeftBars: config.srPivotLeftBars,
@@ -209,8 +215,7 @@ export async function buildMicroBurstContext(
     anomalySpreadBps: config.bookAnomalySpreadBps,
     minImbalance: config.bookMinImbalance,
     freshnessMaxMs: config.bookFreshnessMaxMs,
-  });
-  const refPrice = deps.referencePrice?.getReferencePrice(symbol, bookSnapshot);
+  }, bookSnapshot?.temporalHistory);
   const btcRaw = deps.btc?.getBtcContext();
   const candidateSide: Side | 'NEUTRAL' =
     levels.nearest.structuralPosition === 'near_support'
@@ -248,18 +253,13 @@ export async function buildMicroBurstContext(
     dataQuality.invalidReasons.push('invalid_reference_price');
   }
 
-  if (refPrice && (!Number.isFinite(refPrice.price) || refPrice.price <= 0)) {
-    dataQuality.contextValid = false;
-    dataQuality.invalidReasons.push('invalid_market_price');
-  }
-
   const aggTradeFlow = deps.aggTradeFlow?.getTakerFlow(symbol);
 
   return {
     symbol,
     timestamp: snapshotAtMs,
     currentPrice,
-    marketPriceAtSnapshot: refPrice?.price,
+    decisionPrice,
     candles,
     levels,
     momentum,

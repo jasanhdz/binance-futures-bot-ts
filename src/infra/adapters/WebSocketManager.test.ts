@@ -17,10 +17,12 @@ class FakeWebSocket implements RawWebSocket {
 const logger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 describe('WebSocketManager market subscriptions', () => {
-  it('maps raw agg-trade and depth-diff payloads without using binance-api-node market methods', () => {
+  it('maps market agg-trades and public depth-diffs without using binance-api-node market methods', () => {
     const sockets: FakeWebSocket[] = [];
+    const urls: string[] = [];
     const hub = new MarketDataHub(logger, {
-      webSocketFactory: () => {
+      webSocketFactory: (url) => {
+        urls.push(url);
         const socket = new FakeWebSocket();
         sockets.push(socket);
         return socket;
@@ -31,8 +33,12 @@ describe('WebSocketManager market subscriptions', () => {
     const trade = vi.fn();
     const depth = vi.fn();
 
-    manager.connectAggTrades('BTCUSDT', trade);
+    const unsubscribeTrade = manager.connectAggTrades('BTCUSDT', trade);
     const unsubscribeDepth = manager.connectDepthDiff('BTCUSDT', '100ms', depth);
+    expect(urls).toEqual([
+      'wss://fstream.binance.com/market/ws/btcusdt@aggTrade',
+      'wss://fstream.binance.com/public/ws/btcusdt@depth@100ms',
+    ]);
     sockets[0].message({ m: false, q: '2', p: '100', E: 10, T: 9, a: 8, f: 7, l: 6 });
     sockets[1].message({ U: 1, u: 2, pu: 0, b: [['99', '3']], a: [['101', '4']], E: 10, T: 9 });
 
@@ -42,6 +48,10 @@ describe('WebSocketManager market subscriptions', () => {
     expect(depth).toHaveBeenCalledWith(
       expect.objectContaining({ U: 1, u: 2, bids: [['99', '3']], asks: [['101', '4']] }),
     );
+
+    unsubscribeTrade();
+    sockets[0].message({ m: true, q: '3', p: '101' });
+    expect(trade).toHaveBeenCalledTimes(1);
 
     unsubscribeDepth();
     manager.disconnectAll();

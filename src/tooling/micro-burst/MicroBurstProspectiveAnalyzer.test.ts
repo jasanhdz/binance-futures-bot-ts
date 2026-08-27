@@ -25,4 +25,26 @@ describe('MicroBurstProspectiveAnalyzer', () => {
     expect(report.text).toContain('RANDOM_SIDE (seed=42): unavailable');
     expect(report.text).toContain('TIME_SHIFT (forward): unavailable');
   });
+
+  it('reconstructs time-shift entry from the first post-shift trade without crossing symbols', () => {
+    const signal = {
+      shadowSignalId: 'shifted', strategyId: 'MICRO_BURST_V1', strategyVersion: 'v1', codeCommitSha: 'sha', configHash: 'cfg',
+      symbol: 'BTCUSDT', side: 'LONG', signalAtMs: 100, marketPriceAtSignal: 50, referencePriceSource: 'TEST',
+      structuralStopPrice: 1, destinationPrice: 1_000, support: null, resistance: null, roomToTargetBps: 1, riskToInvalidationBps: 1,
+      rewardRisk: 1, momentum: {}, book: {}, tradeFlow: {}, btc: {}, confidence: 1, leverageTier: 'TEST', leverage: 1, positionFraction: 1, microRegime: 'TEST',
+    };
+    const report = analyzeMicroBurstProspective({
+      signals: [signal],
+      outcomes: [],
+      archiveTrades: (symbol) => symbol === 'BTCUSDT' ? [
+        { eventTime: 300_101, receivedAtMs: 300_101, price: 100, quantity: 1, isBuyerMaker: false },
+        { eventTime: 600_100, receivedAtMs: 600_100, price: 110, quantity: 1, isBuyerMaker: false },
+      ] : [
+        { eventTime: 300_101, receivedAtMs: 300_101, price: 1, quantity: 1, isBuyerMaker: false },
+      ],
+    });
+
+    expect(report.text).toContain('TIME_SHIFT (forward 300s): N=1 mean_300s=1000.0bps');
+    expect(report.text).toContain('first archived trade strictly after shifted T0');
+  });
 });

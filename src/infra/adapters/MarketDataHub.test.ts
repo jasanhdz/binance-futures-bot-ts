@@ -3,6 +3,8 @@ import { Logger } from '../../app/ports/Logger';
 import { MarketDataHub, RawWebSocket } from './MarketDataHub';
 import {
   combinedStreamWebSocketUrl,
+  MARKET,
+  PUBLIC,
   resolveMarketDataEndpoint,
   streamWebSocketUrl,
 } from './MarketDataEndpoints';
@@ -31,15 +33,18 @@ class FakeWebSocket implements RawWebSocket {
 const logger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 describe('MarketDataHub', () => {
-  it('uses the routed public endpoints for production and testnet', () => {
-    expect(streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@aggTrade')).toBe(
-      'wss://fstream.binance.com/public/ws/btcusdt@aggTrade',
+  it('uses explicit public and market routes for production and testnet', () => {
+    expect(streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@depth@100ms', PUBLIC)).toBe(
+      'wss://fstream.binance.com/public/ws/btcusdt@depth@100ms',
     );
-    expect(combinedStreamWebSocketUrl(resolveMarketDataEndpoint(false), ['btcusdt@aggTrade'])).toBe(
-      'wss://fstream.binance.com/public/stream?streams=btcusdt@aggTrade',
+    expect(streamWebSocketUrl(resolveMarketDataEndpoint(false), 'btcusdt@aggTrade', MARKET)).toBe(
+      'wss://fstream.binance.com/market/ws/btcusdt@aggTrade',
     );
-    expect(streamWebSocketUrl(resolveMarketDataEndpoint(true), 'btcusdt@aggTrade')).toBe(
-      'wss://stream.binancefuture.com/public/ws/btcusdt@aggTrade',
+    expect(combinedStreamWebSocketUrl(resolveMarketDataEndpoint(false), ['btcusdt@kline_5m'], MARKET)).toBe(
+      'wss://fstream.binance.com/market/stream?streams=btcusdt@kline_5m',
+    );
+    expect(streamWebSocketUrl(resolveMarketDataEndpoint(true), 'btcusdt@markPrice@1s', MARKET)).toBe(
+      'wss://stream.binancefuture.com/market/ws/btcusdt@markPrice@1s',
     );
   });
 
@@ -54,8 +59,8 @@ describe('MarketDataHub', () => {
     const first = vi.fn();
     const second = vi.fn();
 
-    const unsubscribeFirst = hub.subscribe('btcusdt@aggTrade', first);
-    const unsubscribeSecond = hub.subscribe('btcusdt@aggTrade', second);
+    const unsubscribeFirst = hub.subscribe('btcusdt@aggTrade', MARKET, first);
+    const unsubscribeSecond = hub.subscribe('btcusdt@aggTrade', MARKET, second);
     sockets[0].open();
     sockets[0].message(JSON.stringify({ p: '100' }));
 
@@ -86,7 +91,7 @@ describe('MarketDataHub', () => {
       },
     });
 
-    hub.subscribe('btcusdt@kline_5m', vi.fn());
+    hub.subscribe('btcusdt@kline_5m', MARKET, vi.fn());
     sockets[0].open();
     sockets[0].close();
     expect(hub.getHealth()[0]).toEqual(expect.objectContaining({ status: 'reconnecting' }));

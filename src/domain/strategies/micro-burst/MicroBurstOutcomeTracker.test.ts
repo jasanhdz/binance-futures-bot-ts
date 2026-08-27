@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { MicroBurstOutcomeTracker } from '../../../app/micro-burst/MicroBurstOutcomeTracker';
 import { MicroBurstOutcomeJournal } from '../../../app/micro-burst/MicroBurstOutcomeJournal';
+import { MicroBurstStorage } from '../../../app/micro-burst/MicroBurstStorage';
 import { ShadowSignalSnapshot } from '../micro-burst/MicroBurstOutcomeTypes';
 import { freezeSignalSnapshot } from '../micro-burst/MicroBurstOutcomeEngine';
 
@@ -164,6 +165,20 @@ describe('MicroBurstOutcomeTracker', () => {
 
     // Should only keep 3
     expect(tracker2.getPendingIds().length).toBeLessThanOrEqual(3);
+  });
+
+  it('persists capacity eviction as terminal so restart recovery cannot resurrect it', () => {
+    const storageRoot = path.join(TEST_DIR, 'capacity');
+    const storage = new MicroBurstStorage({ databasePath: path.join(storageRoot, 'state.sqlite'), archivePath: path.join(storageRoot, 'archive') });
+    const tracker = new MicroBurstOutcomeTracker({
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      clock: { now: () => 1_000_000 }, journal: new MicroBurstOutcomeJournal(path.join(storageRoot, 'journal')), storage, maxPendingOutcomes: 1,
+    });
+    tracker.trackSignal(makeSignal({ shadowSignalId: 'oldest', signalAtMs: 1_000_000 }));
+    tracker.trackSignal(makeSignal({ shadowSignalId: 'newest', signalAtMs: 1_000_001 }));
+
+    expect(storage.recoverPending().map((row) => row.signalId)).toEqual(['newest']);
+    storage.close();
   });
 
   it('restart recovery: loads pending IDs from journal', () => {

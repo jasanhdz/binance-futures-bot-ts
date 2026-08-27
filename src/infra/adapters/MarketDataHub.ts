@@ -1,6 +1,7 @@
 import { Logger } from '../../app/ports/Logger';
 import {
   MarketDataEndpointConfig,
+  MarketDataEndpointDescriptor,
   resolveMarketDataEndpoint,
   streamWebSocketUrl,
 } from './MarketDataEndpoints';
@@ -35,6 +36,7 @@ type StreamConnection = {
   lastMessageAtMs?: number;
   reconnectTimer?: NodeJS.Timeout;
   intentionallyClosed: boolean;
+  descriptor: MarketDataEndpointDescriptor;
 };
 
 const defaultWebSocketFactory = (url: string): RawWebSocket => {
@@ -44,7 +46,7 @@ const defaultWebSocketFactory = (url: string): RawWebSocket => {
   return new WebSocket(url) as unknown as RawWebSocket;
 };
 
-/** Shares one raw public stream socket among all consumers of that stream. */
+/** Shares one raw stream socket per route and stream among its consumers. */
 export class MarketDataHub {
   private readonly endpoint: MarketDataEndpointConfig;
   private readonly watchdogTimeoutMs: number;
@@ -62,26 +64,31 @@ export class MarketDataHub {
     this.watchdogTimer = setInterval(() => this.checkHealth(), 5_000);
   }
 
-  public subscribe(stream: string, consumer: (message: any) => void): () => void {
-    let connection = this.connections.get(stream);
+  public subscribe(
+    stream: string,
+    descriptor: MarketDataEndpointDescriptor,
+    consumer: (message: any) => void,
+  ): () => void {
+    const key = `${descriptor.accessMode}:${stream}`;
+    let connection = this.connections.get(key);
     if (!connection) {
-      connection = { consumers: new Set(), status: 'connecting', intentionallyClosed: false };
-      this.connections.set(stream, connection);
+      connection = { consumers: new Set(), status: 'connecting', intentionallyClosed: false, descriptor };
+      this.connections.set(key, connection);
     }
     connection.consumers.add(consumer);
-    if (!connection.socket && !connection.reconnectTimer) this.open(stream, connection);
+    if (!connection.socket && !connection.reconnectTimer) this.open(key, stream, connection);
 
     return () => {
-      const current = this.connections.get(stream);
+      const current = this.connections.get(key);
       if (!current) return;
       current.consumers.delete(consumer);
-      if (current.consumers.size === 0) this.closeConnection(stream, current);
+      if (current.consumers.size === 0) this.closeConnection(key, stream, current);
     };
   }
 
   public getHealth(): MarketDataStreamHealth[] {
-    return [...this.connections.entries()].map(([stream, connection]) => ({
-      stream,
+    return [...this.connections.entries()].map(([key, connection]) => ({
+      stream: key.slice(key.indexOf(':') + 1),
       consumers: connection.consumers.size,
       status: connection.status,
       lastMessageAtMs: connection.lastMessageAtMs,
@@ -89,46 +96,48 @@ export class MarketDataHub {
   }
 
   public reconnectAll(): void {
-    for (const [stream, connection] of this.connections) {
-      this.reconnect(stream, connection);
+    for (const [key, connection] of this.connections) {
+      this.reconnect(key, key.slice(key.indexOf(':') + 1), connection);
     }
   }
 
   public close(): void {
     this.closed = true;
     clearInterval(this.watchdogTimer);
-    for (const [stream, connection] of this.connections) this.closeConnection(stream, connection);
+    for (const [key, connection] of this.connections) {
+      this.closeConnection(key, key.slice(key.indexOf(':') + 1), connection);
+    }
   }
 
-  private open(stream: string, connection: StreamConnection): void {
+  private open(key: string, stream: string, connection: StreamConnection): void {
     if (this.closed || connection.consumers.size === 0) return;
     connection.intentionallyClosed = false;
     connection.status = 'connecting';
     try {
-      const socket = this.webSocketFactory(streamWebSocketUrl(this.endpoint, stream));
+      const socket = this.webSocketFactory(streamWebSocketUrl(this.endpoint, stream, connection.descriptor));
       connection.socket = socket;
       socket.onopen = () => {
-        if (this.connections.get(stream) !== connection) return;
+        if (this.connections.get(key) !== connection) return;
         connection.status = 'open';
         connection.lastMessageAtMs = Date.now();
         this.logger.info('market_data_ws_open', { stream });
       };
-      socket.onmessage = (event) => this.handleMessage(stream, connection, event.data);
+      socket.onmessage = (event) => this.handleMessage(key, stream, connection, event.data);
       socket.onerror = (event) => {
         this.logger.warn('market_data_ws_error', { stream, error: String(event) });
       };
       socket.onclose = () => {
-        if (this.connections.get(stream) !== connection || connection.intentionallyClosed) return;
-        this.scheduleReconnect(stream, connection);
+        if (this.connections.get(key) !== connection || connection.intentionallyClosed) return;
+        this.scheduleReconnect(key, stream, connection);
       };
     } catch (error) {
       this.logger.error('market_data_ws_connect_failed', { stream, error: String(error) });
-      this.scheduleReconnect(stream, connection);
+      this.scheduleReconnect(key, stream, connection);
     }
   }
 
-  private handleMessage(stream: string, connection: StreamConnection, raw: unknown): void {
-    if (this.connections.get(stream) !== connection) return;
+  private handleMessage(key: string, stream: string, connection: StreamConnection, raw: unknown): void {
+    if (this.connections.get(key) !== connection) return;
     try {
       const message = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(String(raw));
       connection.lastMessageAtMs = Date.now();
@@ -147,19 +156,20 @@ export class MarketDataHub {
   private checkHealth(): void {
     if (this.closed) return;
     const now = Date.now();
-    for (const [stream, connection] of this.connections) {
+    for (const [key, connection] of this.connections) {
+      const stream = key.slice(key.indexOf(':') + 1);
       if (
         connection.status === 'open' &&
         connection.lastMessageAtMs !== undefined &&
         now - connection.lastMessageAtMs > this.watchdogTimeoutMs
       ) {
         this.logger.warn('market_data_ws_stale', { stream, elapsed: now - connection.lastMessageAtMs });
-        this.reconnect(stream, connection);
+        this.reconnect(key, stream, connection);
       }
     }
   }
 
-  private reconnect(stream: string, connection: StreamConnection): void {
+  private reconnect(key: string, stream: string, connection: StreamConnection): void {
     connection.intentionallyClosed = true;
     try {
       connection.socket?.close();
@@ -168,19 +178,19 @@ export class MarketDataHub {
     }
     connection.socket = undefined;
     connection.intentionallyClosed = false;
-    this.scheduleReconnect(stream, connection);
+    this.scheduleReconnect(key, stream, connection);
   }
 
-  private scheduleReconnect(stream: string, connection: StreamConnection): void {
+  private scheduleReconnect(key: string, stream: string, connection: StreamConnection): void {
     if (this.closed || connection.consumers.size === 0 || connection.reconnectTimer) return;
     connection.status = 'reconnecting';
     connection.reconnectTimer = setTimeout(() => {
       connection.reconnectTimer = undefined;
-      this.open(stream, connection);
+      this.open(key, stream, connection);
     }, this.reconnectDelayMs);
   }
 
-  private closeConnection(stream: string, connection: StreamConnection): void {
+  private closeConnection(key: string, stream: string, connection: StreamConnection): void {
     connection.intentionallyClosed = true;
     if (connection.reconnectTimer) clearTimeout(connection.reconnectTimer);
     try {
@@ -188,6 +198,6 @@ export class MarketDataHub {
     } catch {
       // Cleanup is best-effort.
     }
-    this.connections.delete(stream);
+    this.connections.delete(key);
   }
 }

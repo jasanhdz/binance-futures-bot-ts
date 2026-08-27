@@ -64,13 +64,13 @@ export interface Exchange {
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   getLastCandle(symbol: string): Promise<Candle | null>;
   getCachedCandles?(symbol: string, interval: string, limit: number): Candle[];
-  subscribeToCandles(symbol: string): void;
+  subscribeToCandles(symbol: string): () => void;
   subscribeToPartialDepth?(
     symbol: string,
     levels: number,
     speed: '100ms' | '250ms' | '500ms',
     callback: (depth: any) => void,
-  ): void;
+  ): () => void;
   subscribeToDepthDiff?(
     symbol: string,
     speed: '100ms' | '250ms' | '500ms',
@@ -89,7 +89,7 @@ export interface Exchange {
       firstTradeId?: number;
       lastTradeId?: number;
     }) => void,
-  ): void;
+  ): () => void;
   getDepthSnapshot?(symbol: string, levels?: number): Promise<BinanceDepthSnapshot>;
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;

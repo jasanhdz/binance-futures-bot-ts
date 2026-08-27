@@ -110,10 +110,10 @@ export function analyzeMicroBurstProspective(input: MicroBurstProspectiveAnalysi
     const snapshots = signals.rows.filter(isSnapshot);
     const rng = seededRandom(input.seed ?? 1);
     const randomSide = snapshots.flatMap((signal) => controlReturn({ ...signal, side: rng() < 0.5 ? 'LONG' : 'SHORT' }, input.archiveTrades!));
-    // A fixed forward shift is deterministic and preserves the archive's actual event ordering.
-    const timeShift = snapshots.flatMap((signal) => controlReturn({ ...signal, signalAtMs: signal.signalAtMs + 300_000 }, input.archiveTrades!));
+    const timeShift = snapshots.flatMap((signal) => timeShiftReturn(signal, input.archiveTrades!));
     lines.push(`RANDOM_SIDE (seed=${input.seed ?? 1}): N=${randomSide.length} mean_300s=${randomSide.length ? format(mean(randomSide)) : 'N/A'}bps`);
     lines.push(`TIME_SHIFT (forward 300s): N=${timeShift.length} mean_300s=${timeShift.length ? format(mean(timeShift)) : 'N/A'}bps`);
+    lines.push('TIME_SHIFT is a return-only control: its entry is the first archived trade strictly after shifted T0; source entry prices and barrier levels are not copied.');
   }
 
   return {
@@ -219,6 +219,20 @@ function isSnapshot(row: Record<string, unknown>): row is Record<string, unknown
 function controlReturn(signal: ShadowSignalSnapshot, archiveTrades: NonNullable<MicroBurstProspectiveAnalysisInput['archiveTrades']>): number[] {
   const horizon = 300_000;
   const outcome = computeHorizonOutcome(signal, signal.marketPriceAtSignal, [...archiveTrades(signal.symbol, signal.signalAtMs, signal.signalAtMs + horizon)], horizon);
+  return outcome.priceAtHorizon === null ? [] : [outcome.finalReturnBps];
+}
+
+function timeShiftReturn(signal: ShadowSignalSnapshot, archiveTrades: NonNullable<MicroBurstProspectiveAnalysisInput['archiveTrades']>): number[] {
+  const horizon = 300_000;
+  const shiftedAtMs = signal.signalAtMs + horizon;
+  const trajectory = [...archiveTrades(signal.symbol, shiftedAtMs, shiftedAtMs + horizon)]
+    .filter((trade) => trade.eventTime > shiftedAtMs && Number.isFinite(trade.price) && trade.price > 0)
+    .sort((a, b) => a.eventTime - b.eventTime || a.receivedAtMs - b.receivedAtMs);
+  const entry = trajectory[0];
+  if (!entry) return [];
+  // Return-only control: reconstruct entry from post-shift market data, not the source snapshot.
+  const shiftedSignal = { ...signal, signalAtMs: shiftedAtMs, marketPriceAtSignal: entry.price };
+  const outcome = computeHorizonOutcome(shiftedSignal, entry.price, trajectory, horizon);
   return outcome.priceAtHorizon === null ? [] : [outcome.finalReturnBps];
 }
 

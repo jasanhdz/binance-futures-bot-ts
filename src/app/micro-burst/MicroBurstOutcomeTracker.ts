@@ -414,6 +414,14 @@ export class MicroBurstOutcomeTracker {
       }
       if (oldestId) {
         this.deps.logger.warn('micro_burst_outcome_evicted', { shadowSignalId: oldestId });
+        const evicted = this.pending.get(oldestId)!;
+        if (this.deps.storage && !this.deps.storage.persistPendingState(oldestId, 'EVICTED_CAPACITY', {
+          shadowSignalId: oldestId,
+          requiredUntilMs: evicted.signal.signalAtMs + 300_000,
+          recoveryStatus: 'EVICTED_CAPACITY',
+          evictedAtMs: this.deps.clock.now(),
+          reason: 'max_pending_outcomes',
+        })) this.outcomeErrors++;
         this.pending.delete(oldestId);
       } else {
         break;

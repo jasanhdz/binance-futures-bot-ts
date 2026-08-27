@@ -132,20 +132,31 @@ async function main() {
         logger.warn('telegram_commands_disabled_no_allowed_chats', {});
     }
 
-    // Handle graceful shutdown
-    process.on('SIGINT', () => {
-        console.log('\n⚠️ Received SIGINT, stopping bot...');
+    let shutdownStarted = false;
+    const shutdown = async (signal: 'SIGINT' | 'SIGTERM'): Promise<void> => {
+        if (shutdownStarted) {
+            logger.warn('shutdown_already_in_progress', { signal });
+            return;
+        }
+        shutdownStarted = true;
+        const timeoutMs = 15_000;
+        logger.info('shutdown_started', { signal, timeoutMs });
         commandListener?.stop();
-        tradingService.stop();
-        process.exit(0);
-    });
-
-    process.on('SIGTERM', () => {
-        console.log('\n⚠️ Received SIGTERM, stopping bot...');
-        commandListener?.stop();
-        tradingService.stop();
-        process.exit(0);
-    });
+        let completed = false;
+        try {
+            completed = await Promise.race([
+                tradingService.stop().then(() => true),
+                new Promise<boolean>(resolve => setTimeout(() => resolve(false), timeoutMs))
+            ]);
+        } catch (error) {
+            logger.error('shutdown_failed', { signal, error: String(error) });
+        }
+        if (!completed) logger.error('shutdown_timeout', { signal, timeoutMs });
+        else logger.info('shutdown_completed', { signal });
+        process.exit(completed ? 0 : 1);
+    };
+    process.on('SIGINT', () => { void shutdown('SIGINT'); });
+    process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 
     // Start trading
     try {

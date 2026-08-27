@@ -9,6 +9,10 @@ export interface MicroBurstStorageOptions {
   databasePath: string;
   archivePath: string;
   now?: () => number;
+  /** Maximum records accepted before archival overflow is recorded as a durable gap. */
+  maxArchiveQueueRecords?: number;
+  /** Maximum records processed by one background turn. */
+  maxArchiveBatchRecords?: number;
 }
 
 export interface ArchiveTrade {
@@ -41,6 +45,13 @@ export interface StorageHealth {
   errorCount: number;
   lastError: string | null;
   lastErrorAtMs: number | null;
+  queueDepth: number;
+  queueCapacity: number;
+  queueHighWatermark: number;
+  queuedRecords: number;
+  writtenRecords: number;
+  overflowRecords: number;
+  draining: boolean;
 }
 
 interface ArchiveWrite {
@@ -51,6 +62,21 @@ interface ArchiveWrite {
   payload: unknown;
 }
 
+interface ArchiveSegmentMetadata {
+  schemaVersion: 1;
+  type: 'trades' | 'depth';
+  symbol: string;
+  hourStartMs: number;
+  recordCount: number;
+  firstEventTimeMs: number;
+  lastEventTimeMs: number;
+  checksum: string;
+  file: string;
+}
+
+const DEFAULT_MAX_ARCHIVE_QUEUE_RECORDS = 50_000;
+const DEFAULT_MAX_ARCHIVE_BATCH_RECORDS = 500;
+
 /**
  * Durable, best-effort market-data storage. Methods deliberately return false
  * on an I/O failure so observational callers cannot be taken down by storage.
@@ -59,6 +85,8 @@ export class MicroBurstStorage {
   private db!: Database.Database;
   private readonly now: () => number;
   private readonly archiveQueue: ArchiveWrite[] = [];
+  private readonly maxArchiveQueueRecords: number;
+  private readonly maxArchiveBatchRecords: number;
   private draining = false;
   private segmentSequence = 0;
   private health: StorageHealth = {
@@ -66,10 +94,20 @@ export class MicroBurstStorage {
     errorCount: 0,
     lastError: null,
     lastErrorAtMs: null,
+    queueDepth: 0,
+    queueCapacity: 0,
+    queueHighWatermark: 0,
+    queuedRecords: 0,
+    writtenRecords: 0,
+    overflowRecords: 0,
+    draining: false,
   };
 
   constructor(private readonly options: MicroBurstStorageOptions) {
     this.now = options.now ?? Date.now;
+    this.maxArchiveQueueRecords = positiveInteger(options.maxArchiveQueueRecords, DEFAULT_MAX_ARCHIVE_QUEUE_RECORDS);
+    this.maxArchiveBatchRecords = positiveInteger(options.maxArchiveBatchRecords, DEFAULT_MAX_ARCHIVE_BATCH_RECORDS);
+    this.health.queueCapacity = this.maxArchiveQueueRecords;
     try {
       fs.mkdirSync(path.dirname(options.databasePath), { recursive: true });
       fs.mkdirSync(options.archivePath, { recursive: true });
@@ -142,7 +180,7 @@ export class MicroBurstStorage {
           `INSERT INTO micro_burst_pending_outcomes (signal_id, status, state_json, updated_at_ms)
         VALUES (?, ?, ?, ?) ON CONFLICT(signal_id) DO UPDATE SET status = excluded.status,
         state_json = excluded.state_json, updated_at_ms = excluded.updated_at_ms
-        WHERE micro_burst_pending_outcomes.status NOT IN ('COMPLETED', 'INCOMPLETE_DATA_GAP')`,
+        WHERE micro_burst_pending_outcomes.status NOT IN ('COMPLETED', 'INCOMPLETE_DATA_GAP', 'EVICTED_CAPACITY')`,
         )
         .run(signalId, status, JSON.stringify(state), this.now());
     });
@@ -226,7 +264,7 @@ export class MicroBurstStorage {
           .prepare(
             `SELECT p.signal_id, p.status, p.state_json, s.snapshot_json
       FROM micro_burst_pending_outcomes p JOIN micro_burst_signals s ON s.signal_id = p.signal_id
-      WHERE p.status != 'COMPLETED' ORDER BY s.signal_at_ms`,
+       WHERE p.status NOT IN ('COMPLETED', 'INCOMPLETE_DATA_GAP', 'EVICTED_CAPACITY') ORDER BY s.signal_at_ms`,
           )
           .all()
           .map((row: any) => ({
@@ -244,6 +282,11 @@ export class MicroBurstStorage {
     for (const file of this.listArchiveFiles('trades', symbol, fromMs, toMs)) {
       try {
         const text = zlib.gunzipSync(fs.readFileSync(file)).toString('utf8');
+        const metadata = this.readAndVerifySegmentMetadata(file, text);
+        if (!metadata) {
+          this.recordReplayGap(symbol, file, fromMs, toMs, 'archive_segment_corrupt');
+          continue;
+        }
         for (const line of text.split('\n')) {
           if (!line.trim()) continue;
           try {
@@ -259,6 +302,7 @@ export class MicroBurstStorage {
         }
       } catch (error) {
         this.markFailure(error);
+        this.recordReplayGap(symbol, file, fromMs, toMs, 'archive_segment_unreadable');
       }
     }
     const deduped = new Map<string, ArchivedTrade>();
@@ -282,7 +326,7 @@ export class MicroBurstStorage {
 
   flush(): boolean {
     return this.safe(() => {
-      this.drainArchiveQueue();
+      this.drainArchiveQueue(true);
     });
   }
 
@@ -308,9 +352,26 @@ export class MicroBurstStorage {
       this.markFailure(new Error('invalid archive record metadata'));
       return false;
     }
+    if (this.archiveQueue.length >= this.maxArchiveQueueRecords) {
+      this.health.overflowRecords++;
+      this.recordGap({
+        symbol,
+        startedAtMs: eventTime,
+        endedAtMs: eventTime,
+        reason: 'archive_queue_overflow',
+        dataType: type,
+        queueCapacity: this.maxArchiveQueueRecords,
+      });
+      this.markFailure(new Error('archive queue capacity exceeded'));
+      return false;
+    }
     this.archiveQueue.push({ type, symbol, eventTime, receivedAtMs, payload });
+    this.health.queueDepth = this.archiveQueue.length;
+    this.health.queueHighWatermark = Math.max(this.health.queueHighWatermark, this.archiveQueue.length);
+    this.health.queuedRecords++;
     if (!this.draining) {
       this.draining = true;
+      this.health.draining = true;
       setImmediate(() => this.drainArchiveQueue());
     }
     return true;
@@ -324,31 +385,50 @@ export class MicroBurstStorage {
     return path.join(this.options.archivePath, type, safeSymbol, `${hour}-${unique}.ndjson.gz`);
   }
 
-  private drainArchiveQueue(): void {
+  private drainArchiveQueue(flushAll = false): void {
     try {
-      while (this.archiveQueue.length > 0) this.writeImmutableSegment(this.archiveQueue.shift()!);
+      do {
+        const writes = this.archiveQueue.splice(0, this.maxArchiveBatchRecords);
+        this.health.queueDepth = this.archiveQueue.length;
+        for (const batch of this.partitionBatch(writes)) this.writeImmutableSegment(batch);
+      } while (flushAll && this.archiveQueue.length > 0);
     } catch (error) {
       this.markFailure(error);
     } finally {
       this.draining = false;
+      this.health.draining = false;
       if (this.archiveQueue.length > 0) {
         this.draining = true;
+        this.health.draining = true;
         setImmediate(() => this.drainArchiveQueue());
       }
     }
   }
 
-  private writeImmutableSegment(write: ArchiveWrite): void {
-    const hourStartMs = Math.floor(write.eventTime / 3_600_000) * 3_600_000;
-    const filePath = this.segmentPath(write.type, write.symbol, hourStartMs);
+  private partitionBatch(writes: ArchiveWrite[]): ArchiveWrite[][] {
+    const batches = new Map<string, ArchiveWrite[]>();
+    for (const write of writes) {
+      const hourStartMs = Math.floor(write.eventTime / 3_600_000) * 3_600_000;
+      const key = `${write.type}\u0000${write.symbol}\u0000${hourStartMs}`;
+      batches.set(key, [...(batches.get(key) ?? []), write]);
+    }
+    return [...batches.values()];
+  }
+
+  private writeImmutableSegment(writes: ArchiveWrite[]): void {
+    const first = writes[0];
+    if (!first) return;
+    const hourStartMs = Math.floor(first.eventTime / 3_600_000) * 3_600_000;
+    const filePath = this.segmentPath(first.type, first.symbol, hourStartMs);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const line = JSON.stringify({ schemaVersion: 1, type: write.type, symbol: write.symbol, eventTime: write.eventTime, receivedAtMs: write.receivedAtMs, payload: write.payload }) + '\n';
-    const checksum = crypto.createHash('sha256').update(line).digest('hex');
-    fs.writeFileSync(filePath, zlib.gzipSync(Buffer.from(line, 'utf8')), { flag: 'wx' });
-    const metadata = {
+    const text = writes.map((write) => JSON.stringify({ schemaVersion: 1, type: write.type, symbol: write.symbol, eventTime: write.eventTime, receivedAtMs: write.receivedAtMs, payload: write.payload }) + '\n').join('');
+    const checksum = crypto.createHash('sha256').update(text).digest('hex');
+    const eventTimes = writes.map((write) => write.eventTime);
+    fs.writeFileSync(filePath, zlib.gzipSync(Buffer.from(text, 'utf8')), { flag: 'wx' });
+    const metadata: ArchiveSegmentMetadata = {
       schemaVersion: 1,
-      type: write.type, symbol: write.symbol, hourStartMs, recordCount: 1,
-      firstEventTimeMs: write.eventTime, lastEventTimeMs: write.eventTime, checksum, file: path.basename(filePath),
+      type: first.type, symbol: first.symbol, hourStartMs, recordCount: writes.length,
+      firstEventTimeMs: Math.min(...eventTimes), lastEventTimeMs: Math.max(...eventTimes), checksum, file: path.basename(filePath),
     };
     fs.writeFileSync(`${filePath}.meta.json`, JSON.stringify(metadata) + '\n', 'utf8');
     this.db
@@ -359,9 +439,35 @@ export class MicroBurstStorage {
       checksum = excluded.checksum, updated_at_ms = excluded.updated_at_ms`,
       )
       .run(
-        filePath, write.type, write.symbol, hourStartMs, 1, write.eventTime, write.eventTime, checksum,
+        filePath, first.type, first.symbol, hourStartMs, writes.length, metadata.firstEventTimeMs, metadata.lastEventTimeMs, checksum,
         this.now(),
       );
+    this.health.writtenRecords += writes.length;
+  }
+
+  private readAndVerifySegmentMetadata(filePath: string, text: string): ArchiveSegmentMetadata | null {
+    const metadataPath = `${filePath}.meta.json`;
+    // Metadata was introduced with batched segments. Legacy one-record files remain readable.
+    if (!fs.existsSync(metadataPath)) return { schemaVersion: 1, type: 'trades', symbol: '', hourStartMs: 0, recordCount: 0, firstEventTimeMs: 0, lastEventTimeMs: 0, checksum: '', file: path.basename(filePath) };
+    try {
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8')) as ArchiveSegmentMetadata;
+      const count = text.split('\n').filter((line) => line.trim()).length;
+      const checksum = crypto.createHash('sha256').update(text).digest('hex');
+      const indexed = this.safeValue(() => this.db.prepare(`SELECT checksum, record_count FROM market_data_segments WHERE file_path = ?`).get(filePath) as { checksum: string; record_count: number } | undefined, undefined);
+      if (metadata.schemaVersion !== 1 || metadata.file !== path.basename(filePath) || metadata.recordCount !== count || metadata.checksum !== checksum || (indexed !== undefined && (indexed.checksum !== checksum || indexed.record_count !== count))) {
+        this.markFailure(new Error(`archive segment checksum or metadata mismatch: ${filePath}`));
+        return null;
+      }
+      return metadata;
+    } catch (error) {
+      this.markFailure(error);
+      return null;
+    }
+  }
+
+  private recordReplayGap(symbol: string, filePath: string, fallbackStartMs: number, fallbackEndMs: number, reason: string): void {
+    const row = this.safeValue(() => this.db.prepare(`SELECT first_event_time_ms, last_event_time_ms FROM market_data_segments WHERE file_path = ?`).get(filePath) as { first_event_time_ms: number; last_event_time_ms: number } | undefined, undefined);
+    this.recordGap({ symbol, startedAtMs: row?.first_event_time_ms ?? fallbackStartMs, endedAtMs: row?.last_event_time_ms ?? fallbackEndMs, reason, file: path.basename(filePath) });
   }
 
   private listArchiveFiles(type: 'trades' | 'depth', symbol: string, fromMs?: number, toMs?: number): string[] {
@@ -404,6 +510,7 @@ export class MicroBurstStorage {
 
   private markFailure(error: unknown): void {
     this.health = {
+      ...this.health,
       healthy: false,
       errorCount: this.health.errorCount + 1,
       lastError: String(error),
@@ -432,4 +539,8 @@ export class MicroBurstStorage {
     `);
     try { this.db.exec(`ALTER TABLE micro_burst_outcomes ADD COLUMN journal_status TEXT NOT NULL DEFAULT 'PENDING'`); } catch { /* already migrated */ }
   }
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }

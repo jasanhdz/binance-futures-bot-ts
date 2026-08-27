@@ -376,8 +376,8 @@ export class BinanceExchange implements Exchange {
     return merged.slice(-Math.max(0, limit));
   }
 
-  public subscribeToCandles(symbol: string) {
-    this.wsManager.connectCandles(symbol, '5m', (wsCandle) => {
+  public subscribeToCandles(symbol: string): () => void {
+    const unsubscribeCandle = this.wsManager.connectCandles(symbol, '5m', (wsCandle) => {
       // Base candle processing
       const candle: Candle = {
         openTime: wsCandle.startTime,
@@ -405,7 +405,7 @@ export class BinanceExchange implements Exchange {
 
     // Sub-candle High-Frequency AggTrade accumulation (The 10th Dimension Momentum Fix)
     // The kline update is slow (often every 2 seconds). aggTrade is instant (milisegundos).
-    this.wsManager.connectAggTrades(symbol, (trade) => {
+    const unsubscribeAggTrade = this.wsManager.connectAggTrades(symbol, (trade) => {
       const currentCandle = this.wsCandleCache[symbol];
       if (currentCandle) {
         // isBuyerMaker = false significa que el Taker fue COMPRADOR. (Agresividad de compra)
@@ -416,6 +416,10 @@ export class BinanceExchange implements Exchange {
         }
       }
     });
+    return () => {
+      unsubscribeCandle();
+      unsubscribeAggTrade();
+    };
   }
 
   public subscribeToPartialDepth(
@@ -423,8 +427,8 @@ export class BinanceExchange implements Exchange {
     levels: number,
     speed: '100ms' | '250ms' | '500ms',
     callback: (depth: any) => void,
-  ): void {
-    this.wsManager.connectPartialDepth(symbol, levels, speed, callback);
+  ): () => void {
+    return this.wsManager.connectPartialDepth(symbol, levels, speed, callback);
   }
 
   public subscribeToDepthDiff(
@@ -448,8 +452,8 @@ export class BinanceExchange implements Exchange {
       firstTradeId?: number;
       lastTradeId?: number;
     }) => void,
-  ): void {
-    this.wsManager.connectAggTrades(symbol, (trade) => {
+  ): () => void {
+    return this.wsManager.connectAggTrades(symbol, (trade) => {
       callback({
         isBuyerMaker: trade.isBuyerMaker,
         quantity: trade.quantity,

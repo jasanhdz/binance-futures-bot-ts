@@ -48,6 +48,9 @@ export interface SynchronizedOrderBookState {
   resyncCount: number;
 }
 
+export const SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH = 1000;
+export const BOOK_PRESSURE_FEATURE_DEPTH = 20;
+
 // ── BTC Context Provider ────────────────────────────────────
 
 export interface BtcCandleObservation {
@@ -94,6 +97,9 @@ export interface MicroBurstReferencePrice {
 
 export interface TemporalBookSnapshot {
   observedAtMs: number;
+  /** Positive values indicate bid-side pressure; negative values indicate ask-side pressure. */
+  signedTopOfBookImbalance: number;
+  /** Direction-free size of the top-of-book imbalance. */
   topOfBookImbalance: number;
   bestBidQty: number;
   bestAskQty: number;

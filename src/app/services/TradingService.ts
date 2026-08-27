@@ -224,6 +224,7 @@ export class TradingService {
     private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
     private readonly microBurstIdentity: StrategyIdentity;
     private microBurstRuntime: MicroBurstRuntime | null = null;
+    private stopPromise: Promise<void> | null = null;
 
     constructor(
         private deps: TradingServiceDeps,
@@ -319,8 +320,13 @@ export class TradingService {
         const configHash = createHash('sha256').update(stable(config)).digest('hex');
         const codeCommitSha = process.env.GIT_COMMIT_SHA ?? process.env.GITHUB_SHA ?? process.env.COMMIT_SHA ?? 'UNKNOWN';
         const requestedCohort = config.prospectiveValidation?.cohortId;
-        const cohortId = requestedCohort ?? `MBV1-M3_1-${codeCommitSha.slice(0, 12)}-${configHash.slice(0, 12)}`;
-        return { codeCommitSha, configHash, cohortId, officialCohortReady: codeCommitSha !== 'UNKNOWN' };
+        const cohortId = requestedCohort ?? `MBV1-M3_2-${codeCommitSha.slice(0, 12)}-${configHash.slice(0, 12)}`;
+        return {
+            codeCommitSha,
+            configHash,
+            cohortId,
+            officialCohortReady: codeCommitSha !== 'UNKNOWN' && cohortId.startsWith('MBV1-M3_2-')
+        };
     }
 
     private getAegisTurboYamlConfig(): AegisTurboYamlConfig | undefined {
@@ -1412,16 +1418,14 @@ export class TradingService {
                 );
                 outcomeTracker.recoverPending();
                 await this.microBurstRuntime.start();
-                if (provenance.officialCohortReady && storage?.getHealth().healthy !== false) {
+                const readiness = this.microBurstRuntime.getReadiness();
+                if (readiness.ready) {
                     this.deps.logger.info('MICRO_BURST_PROSPECTIVE_COHORT_READY', {
-                        cohortId: provenance.cohortId,
-                        version: this.microBurstIdentity.strategyVersion,
-                        sha: provenance.codeCommitSha,
-                        configHash: provenance.configHash,
+                        ...readiness,
                     });
                 } else {
                     this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
-                        reason: provenance.codeCommitSha === 'UNKNOWN' ? 'CODE_SHA_UNKNOWN' : 'MARKET_ARCHIVE_UNHEALTHY',
+                        ...readiness,
                     });
                 }
                 this.deps.logger.info('micro_burst_runtime_integrated', {
@@ -1444,14 +1448,19 @@ export class TradingService {
         if (startLoop) await this.runLoop();
     }
 
-    stop(): void {
+    stop(): Promise<void> {
+        if (this.stopPromise) return this.stopPromise;
         this.isRunning = false;
-        if (this.microBurstRuntime) {
-            this.microBurstRuntime.stop();
-            this.microBurstRuntime = null;
-        }
+        const microBurstRuntime = this.microBurstRuntime;
+        this.microBurstRuntime = null;
         this.deps.logger.info('Aegis bot stopped');
         if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
+        this.stopPromise = (async () => {
+            await microBurstRuntime?.stop();
+        })().finally(() => {
+            this.stopPromise = null;
+        });
+        return this.stopPromise;
     }
 
     async tick(symbol: string): Promise<void> {

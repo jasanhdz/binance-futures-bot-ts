@@ -167,6 +167,7 @@ Outcome Plane (new):
 ```
 
 **Key features:**
+
 - 5 outcome horizons: 15s, 30s, 60s, 120s, 300s
 - 3 entry price models: SIGNAL_PRICE, NEXT_TRADE, CONSERVATIVE_SLIPPAGE
 - 5 cost scenarios: cost_0 through cost_30
@@ -201,3 +202,13 @@ M3.1 wires prospective tracking into the actual SHADOW runtime, archives raw exc
 ## M3.2 Event-Time And Runtime Parity
 
 M3.2 moves public market data to routed raw WebSockets, makes archive/replay event-time aware, and supplies archive-backed prospective controls. Automated verification is complete, but the official cohort remains blocked pending a production read-only soak and proof of graceful archive-queue draining. See `M3_2_EVENT_TIME_RUNTIME_PARITY_REPORT.md`.
+
+## M3.2.1 Runtime Correctness Soak Preparation
+
+Run the actual compiled main path, not the stand-alone probes, with a local SHADOW environment file:
+
+```bash
+SOAK_ENV_FILE=/absolute/path/to/local.env SOAK_SECONDS=300 npm run micro-burst:production-soak
+```
+
+Use `config/m3_2_1_soak.env.example` as the local environment template. The command forces `AEGIS_SHADOW`, selects `config/micro-burst-m3_2_1-soak.yaml`, and writes only to the isolated `data/micro-burst/m3_2_1-soak` archive root. It prints retained `MICRO_BURST_SHADOW_HEALTH` records after graceful shutdown. No real Binance soak is claimed by this repository change; see `M3_2_1_RUNTIME_CORRECTNESS_CLOSURE_REPORT.md` for evidence and closure criteria.

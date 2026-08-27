@@ -25,7 +25,7 @@ function makeDeps(): MicroBurstRuntimeDeps {
       getServerTime: async () => Date.now(),
       getCandles: async () => [],
       getLastCandle: async () => null,
-      subscribeToCandles: () => {},
+      subscribeToCandles: () => () => {},
       getMarkPrice: async () => 0,
       getFundingRate: async () => ({ rate: 0 }),
       getBasisSnapshot: async () => ({ markPrice: 0, indexPrice: 0, basisPct: 0 }),
@@ -44,7 +44,7 @@ function makeDeps(): MicroBurstRuntimeDeps {
       listCloseOrdersForSide: async () => [],
       cancelOrderById: async () => {},
       getDepthSnapshot: async () => ({ lastUpdateId: 0, bids: [], asks: [] }),
-      subscribeToAggTrades: () => {},
+      subscribeToAggTrades: () => () => {},
     } as any,
     logger: {
       info: () => {},
@@ -68,7 +68,7 @@ describe('MicroBurstRuntime', () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig());
     await runtime.start();
     expect(runtime.getHealth().running).toBe(true);
-    runtime.stop();
+    await runtime.stop();
     expect(runtime.getHealth().running).toBe(false);
   });
 
@@ -77,15 +77,30 @@ describe('MicroBurstRuntime', () => {
     await runtime.start();
     await runtime.start();
     expect(runtime.getHealth().running).toBe(true);
-    runtime.stop();
+    await runtime.stop();
   });
 
   it('double stop is idempotent', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig());
     await runtime.start();
-    runtime.stop();
-    runtime.stop();
+    await runtime.stop();
+    await runtime.stop();
     expect(runtime.getHealth().running).toBe(false);
+  });
+
+  it('unsubscribes agg-trades on stop before a restart subscribes again', async () => {
+    const unsubscribe = vi.fn();
+    deps.exchange.subscribeToAggTrades = vi.fn(() => unsubscribe);
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+
+    await runtime.start();
+    await runtime.stop();
+    await runtime.start();
+
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
+    expect(deps.exchange.subscribeToAggTrades).toHaveBeenCalledTimes(4);
+    await runtime.stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(4);
   });
 
   it('does not start when mode is OFF', async () => {
@@ -120,7 +135,53 @@ describe('MicroBurstRuntime', () => {
     expect(health.symbolCount).toBe(2);
     expect(health.running).toBe(true);
     expect(health.liveExecution).toBe(false);
-    runtime.stop();
+    await runtime.stop();
+  });
+
+  it('reports formal readiness only for an official shadow cohort with a healthy archive queue', async () => {
+    const flush = vi.fn(async () => true);
+    const close = vi.fn(async () => {});
+    deps.marketStorage = {
+      appendDepth: () => true,
+      persistCheckpoint: () => true,
+      flush,
+      close,
+      getHealth: () => ({ healthy: true, errorCount: 0, queueDepth: 0, queueCapacity: 10 }),
+    };
+    deps.provenance = {
+      codeCommitSha: 'abc123',
+      configHash: 'def456',
+      cohortId: 'MBV1-M3_2-abc123-def456',
+      officialCohortReady: true,
+    };
+    const runtime = new MicroBurstRuntime(deps, makeConfig({
+      prospectiveValidation: { enabled: true },
+      marketArchive: { enabled: true },
+    }));
+
+    await runtime.start();
+
+    expect(runtime.getReadiness()).toMatchObject({ ready: true, blockers: [], liveExecution: false });
+    await runtime.stop();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports archive, live mode, and provenance blockers without enabling execution', async () => {
+    const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'LIVE' }));
+
+    expect(runtime.getReadiness()).toMatchObject({
+      ready: false,
+      liveExecution: false,
+      blockers: expect.arrayContaining([
+        'LIVE_MODE_NOT_DISABLED',
+        'PROSPECTIVE_VALIDATION_DISABLED',
+        'MARKET_ARCHIVE_DISABLED',
+        'MARKET_ARCHIVE_UNAVAILABLE',
+        'CODE_COMMIT_SHA_UNKNOWN',
+        'COHORT_NAMESPACE_INVALID',
+      ]),
+    });
   });
 
   it('evaluateSymbol returns null when runtime is not running', async () => {
@@ -134,7 +195,7 @@ describe('MicroBurstRuntime', () => {
     await runtime.start();
     const result = await runtime.evaluateSymbol('UNKNOWN');
     expect(result).toBeNull();
-    runtime.stop();
+    await runtime.stop();
   });
 
   it('getSymbolHealth returns null for unknown symbol', async () => {
@@ -142,7 +203,7 @@ describe('MicroBurstRuntime', () => {
     await runtime.start();
     const health = runtime.getSymbolHealth('UNKNOWN');
     expect(health).toBeNull();
-    runtime.stop();
+    await runtime.stop();
   });
 
   it('getSymbolHealth returns valid data for known symbol', async () => {
@@ -152,7 +213,7 @@ describe('MicroBurstRuntime', () => {
     expect(health).not.toBeNull();
     expect(health!.bookStatus).toBeDefined();
     expect(health!.evaluationCount).toBe(0);
-    runtime.stop();
+    await runtime.stop();
   });
 
   it('does not create subscriptions for disabled symbols', async () => {
@@ -166,13 +227,13 @@ describe('MicroBurstRuntime', () => {
     await runtime.start();
     const health = runtime.getHealth();
     expect(health.symbolCount).toBe(1);
-    runtime.stop();
+    await runtime.stop();
   });
 
   it('stops cleanup clears all resources', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig());
     await runtime.start();
-    runtime.stop();
+    await runtime.stop();
     expect(runtime.getHealth().symbolCount).toBe(0);
   });
 });
@@ -220,6 +281,6 @@ describe('MicroBurstRuntime exchange mutation firewall', () => {
     expect(closeCalls).toHaveLength(0);
     expect(executeCalls).toHaveLength(0);
 
-    runtime.stop();
+    await runtime.stop();
   });
 });

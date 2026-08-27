@@ -1,4 +1,11 @@
-export type WebSocketAccessMode = 'public' | 'market' | 'private';
+export type MarketDataAccessMode = 'public' | 'market';
+
+export interface MarketDataEndpointDescriptor {
+  readonly accessMode: MarketDataAccessMode;
+}
+
+export const PUBLIC: MarketDataEndpointDescriptor = { accessMode: 'public' };
+export const MARKET: MarketDataEndpointDescriptor = { accessMode: 'market' };
 
 export interface MarketDataEndpointConfig {
   baseUrl: string;
@@ -16,15 +23,15 @@ export function resolveMarketDataEndpoint(isTestnet: boolean): MarketDataEndpoin
 export function streamWebSocketUrl(
   endpoint: MarketDataEndpointConfig,
   stream: string,
-  accessMode: WebSocketAccessMode = 'public',
+  descriptor: MarketDataEndpointDescriptor,
 ): string {
-  return `${endpoint.baseUrl}/${accessMode}/ws/${stream}`;
+  return `${endpoint.baseUrl}/${descriptor.accessMode}/ws/${stream}`;
 }
 
 export function combinedStreamWebSocketUrl(
   endpoint: MarketDataEndpointConfig,
   streams: string[],
-  accessMode: WebSocketAccessMode = 'public',
+  descriptor: MarketDataEndpointDescriptor,
 ): string {
-  return `${endpoint.baseUrl}/${accessMode}/stream?streams=${streams.join('/')}`;
+  return `${endpoint.baseUrl}/${descriptor.accessMode}/stream?streams=${streams.join('/')}`;
 }

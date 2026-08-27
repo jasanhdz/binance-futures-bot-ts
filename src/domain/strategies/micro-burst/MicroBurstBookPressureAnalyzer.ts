@@ -28,6 +28,7 @@ const DEFAULT_OPTIONS: BookPressureOptions = {
 function unavailableSignal(status: BookDataStatus): BookPressureSignal {
   return {
     spreadBps: Infinity,
+    signedTopOfBookImbalance: 0,
     topOfBookImbalance: 0,
     imbalanceSlope: null,
     temporalAbsorptionDetected: false,
@@ -100,7 +101,7 @@ function computeImbalanceSlope(
   if (temporalHistory.length < 2) return null;
   const recent = temporalHistory.slice(-windowSize);
   if (recent.length < 2) return null;
-  const imbalances = recent.map((s) => s.topOfBookImbalance);
+  const imbalances = recent.map((s) => s.signedTopOfBookImbalance);
   return computeLinearSlope(imbalances);
 }
 
@@ -165,14 +166,14 @@ export function analyzeBookPressure(
   const bidTop5 = totalQty(snapshot.bidDepth, 5);
   const askTop5 = totalQty(snapshot.askDepth, 5);
   const totalDepth = bidTop5 + askTop5;
-  const topOfBookImbalance = totalDepth > 0 ? Math.abs(bidTop5 - askTop5) / totalDepth : 0;
+  const signedTopOfBookImbalance = totalDepth > 0 ? (bidTop5 - askTop5) / totalDepth : 0;
+  const topOfBookImbalance = Math.abs(signedTopOfBookImbalance);
   const status: BookDataStatus =
-    spreadBps > opts.anomalySpreadBps || topOfBookImbalance > opts.minImbalance
-      ? 'ANOMALOUS'
-      : 'HEALTHY';
+    spreadBps > opts.anomalySpreadBps ? 'ANOMALOUS' : 'HEALTHY';
 
   const currentTemporalSnapshot: TemporalBookSnapshot = {
     observedAtMs: snapshotAtMs,
+    signedTopOfBookImbalance,
     topOfBookImbalance,
     bestBidQty: snapshot.bidDepth[0]?.qty ?? 0,
     bestAskQty: snapshot.askDepth[0]?.qty ?? 0,
@@ -185,8 +186,15 @@ export function analyzeBookPressure(
   let temporalAbsorptionDetected = false;
   let temporalSweepDetected = false;
 
-  if (temporalHistory && temporalHistory.length >= opts.minTemporalObservations) {
-    const combined = [...temporalHistory, currentTemporalSnapshot];
+  const causalHistory = (temporalHistory ?? [])
+    .filter((item) =>
+      Number.isFinite(item.observedAtMs) &&
+      item.observedAtMs < snapshot.observedAtMs &&
+      item.observedAtMs <= snapshotAtMs,
+    )
+    .sort((a, b) => a.observedAtMs - b.observedAtMs);
+  if (causalHistory.length >= opts.minTemporalObservations) {
+    const combined = [...causalHistory, currentTemporalSnapshot];
     imbalanceSlope = computeImbalanceSlope(combined, opts.slopeWindow);
     temporalAbsorptionDetected = detectTemporalAbsorption(combined, currentTemporalSnapshot);
     temporalSweepDetected = detectTemporalSweep(combined, currentTemporalSnapshot);
@@ -194,6 +202,7 @@ export function analyzeBookPressure(
 
   return {
     spreadBps,
+    signedTopOfBookImbalance,
     topOfBookImbalance,
     imbalanceSlope,
     temporalAbsorptionDetected,

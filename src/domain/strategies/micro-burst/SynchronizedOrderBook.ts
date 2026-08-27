@@ -3,16 +3,19 @@ import { OrderBookDepthLevel } from './MicroBurstTypes';
 import {
   BinanceDepthDiffEvent,
   BinanceDepthSnapshot,
+  BOOK_PRESSURE_FEATURE_DEPTH,
   OrderBookHealth,
   SynchronizedOrderBookState,
+  SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH,
+  TemporalBookSnapshot,
 } from './MicroBurstMarketDataTypes';
 
-const MAX_DEPTH_LEVELS = 20;
+const MAX_FEATURE_DEPTH_LEVELS = BOOK_PRESSURE_FEATURE_DEPTH;
 const STALE_THRESHOLD_MS = 10_000;
 const MAX_DIFF_BUFFER_SIZE = 500;
 
 interface SnapshotSource {
-  getSnapshot(symbol: string): Promise<BinanceDepthSnapshot>;
+  getSnapshot(symbol: string, levels: number): Promise<BinanceDepthSnapshot>;
 }
 
 interface DiffSource {
@@ -68,7 +71,7 @@ function applyDiff(book: Map<number, number>, levels: [string, string][]): void 
 function sortedLevels(book: Map<number, number>, descending: boolean): OrderBookDepthLevel[] {
   return Array.from(book.entries())
     .sort((a, b) => (descending ? b[0] - a[0] : a[0] - b[0]))
-    .slice(0, MAX_DEPTH_LEVELS)
+    .slice(0, MAX_FEATURE_DEPTH_LEVELS)
     .map(([price, qty]) => ({ price, qty }));
 }
 
@@ -94,6 +97,7 @@ export class SynchronizedOrderBook {
   private resyncCount = 0;
   private isSyncing = false;
   private resyncRequested = false;
+  private temporalHistory: TemporalBookSnapshot[] = [];
   private diffUnsubscribe: (() => void) | null = null;
 
   constructor(
@@ -140,6 +144,7 @@ export class SynchronizedOrderBook {
       this.deps.clock.now() - this.observedAtMs > this.staleThresholdMs
     )
       this.health = 'STALE';
+      this.syncFromSnapshot();
     return this.health;
   }
 
@@ -150,6 +155,7 @@ export class SynchronizedOrderBook {
         observedAtMs: number;
         status: 'HEALTHY';
         lastUpdateId: number;
+        temporalHistory: TemporalBookSnapshot[];
       }
     | undefined {
     if (this.getHealth() !== 'HEALTHY') return undefined;
@@ -165,6 +171,7 @@ export class SynchronizedOrderBook {
       observedAtMs: this.observedAtMs,
       status: 'HEALTHY',
       lastUpdateId: this.lastUpdateId,
+      temporalHistory: [...this.temporalHistory],
     };
   }
 
@@ -177,7 +184,7 @@ export class SynchronizedOrderBook {
       this.buffer(event);
       return;
     }
-    if (this.health === 'UNSYNCED') {
+    if (this.health === 'UNSYNCED' || this.health === 'STALE') {
       this.buffer(event);
       this.syncFromSnapshot();
       return;
@@ -203,7 +210,10 @@ export class SynchronizedOrderBook {
     if (this.isSyncing || !this.diffUnsubscribe) return;
     this.isSyncing = true;
     try {
-      const snapshot = await this.deps.snapshotSource.getSnapshot(this.symbol);
+      const snapshot = await this.deps.snapshotSource.getSnapshot(
+        this.symbol,
+        SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH,
+      );
       if (!isUpdateId(snapshot.lastUpdateId) || !this.loadSnapshot(snapshot)) {
         this.health = 'ANOMALOUS';
         return;
@@ -212,6 +222,7 @@ export class SynchronizedOrderBook {
       this.lastSyncAtMs = snapshot.receivedAtMs ?? this.deps.clock.now();
       this.observedAtMs = this.lastSyncAtMs;
       this.lastDiffAtMs = 0;
+      this.temporalHistory = [];
 
       const buffered = this.diffBuffer.filter((event) => event.u > this.lastUpdateId);
       this.diffBuffer = [];
@@ -221,8 +232,8 @@ export class SynchronizedOrderBook {
       }
       {
         const first = buffered[0];
-        const expected = this.lastUpdateId + 1;
-        if (!(first.U <= expected && expected <= first.u)) {
+        const snapshotUpdateId = this.lastUpdateId;
+        if (!(first.U <= snapshotUpdateId && snapshotUpdateId <= first.u)) {
           this.desync('snapshot bridge missing');
           return;
         }
@@ -280,6 +291,7 @@ export class SynchronizedOrderBook {
     this.lastDiffAtMs = event.receivedAtMs;
     this.observedAtMs = event.receivedAtMs;
     this.health = this.isBookValid() ? 'HEALTHY' : 'ANOMALOUS';
+    if (this.health === 'HEALTHY') this.recordTemporalObservation();
   }
 
   private isBookValid(): boolean {
@@ -294,6 +306,7 @@ export class SynchronizedOrderBook {
     this.bidBook.clear();
     this.askBook.clear();
     this.diffBuffer = [];
+    this.temporalHistory = [];
     this.resyncCount++;
     this.deps.logger.warn('MicroBurst OrderBook desynchronized', {
       symbol: this.symbol,
@@ -302,5 +315,24 @@ export class SynchronizedOrderBook {
     });
     if (this.isSyncing) this.resyncRequested = true;
     else this.syncFromSnapshot();
+  }
+
+  private recordTemporalObservation(): void {
+    const bidDepth = sortedLevels(this.bidBook, true);
+    const askDepth = sortedLevels(this.askBook, false);
+    const bidTop5Qty = bidDepth.slice(0, 5).reduce((total, level) => total + level.qty, 0);
+    const askTop5Qty = askDepth.slice(0, 5).reduce((total, level) => total + level.qty, 0);
+    const totalQty = bidTop5Qty + askTop5Qty;
+    this.temporalHistory.push({
+      observedAtMs: this.observedAtMs,
+      signedTopOfBookImbalance: totalQty > 0 ? (bidTop5Qty - askTop5Qty) / totalQty : 0,
+      topOfBookImbalance: totalQty > 0 ? Math.abs(bidTop5Qty - askTop5Qty) / totalQty : 0,
+      bestBidQty: bidDepth[0]?.qty ?? 0,
+      bestAskQty: askDepth[0]?.qty ?? 0,
+      bidTop5Qty,
+      askTop5Qty,
+      spreadBps: ((askDepth[0].price - bidDepth[0].price) / bidDepth[0].price) * 10_000,
+    });
+    if (this.temporalHistory.length > this.maxDiffBuffer) this.temporalHistory.shift();
   }
 }

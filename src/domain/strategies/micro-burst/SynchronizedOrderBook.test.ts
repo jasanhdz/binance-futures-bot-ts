@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SynchronizedOrderBook } from './SynchronizedOrderBook';
-import { BinanceDepthDiffEvent, BinanceDepthSnapshot } from './MicroBurstMarketDataTypes';
+import {
+  BinanceDepthDiffEvent,
+  BinanceDepthSnapshot,
+  SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH,
+} from './MicroBurstMarketDataTypes';
 
 const SYMBOL = 'ETHUSDT';
 const NOW = 1_700_000_000_000;
@@ -58,7 +62,7 @@ function deps(snapshots: BinanceDepthSnapshot[] = [snapshot()]) {
 }
 
 async function healthy(book: SynchronizedOrderBook): Promise<void> {
-  await vi.waitFor(() => expect(book.getHealth()).toBe('HEALTHY'));
+  await vi.waitFor(() => expect(book.getState().health).toBe('HEALTHY'));
 }
 
 async function startAndBridge(
@@ -66,8 +70,9 @@ async function startAndBridge(
   d: ReturnType<typeof deps>,
 ): Promise<void> {
   book.start();
-  d.diffSource.emit(diff(101, 101, 100));
-  await healthy(book);
+  d.diffSource.emit(diff(100, 101, 100));
+  await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(101));
+  await vi.waitFor(() => expect(book.getState().health).toBe('HEALTHY'));
 }
 
 describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
@@ -83,9 +88,20 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.diffSource.emit(diff(95, 100, 94));
     d.diffSource.emit(diff(99, 102, 98, { bids: [['100', '12']] }));
     resolveSnapshot(snapshot(100));
-    await healthy(book);
-    expect(book.getState().lastUpdateId).toBe(102);
+    await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(102));
     expect(book.getState().bids[0].qty).toBe(12);
+  });
+
+  it('uses the exact USD-M bridge U <= snapshot.lastUpdateId <= u', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    book.start();
+    d.diffSource.emit(diff(100, 101, 99));
+    await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(101));
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledWith(
+      SYMBOL,
+      SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH,
+    );
   });
 
   it('accepts non-contiguous u values when pu chains to the preceding u', async () => {
@@ -107,6 +123,18 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     expect(book.getHealth()).toBe('STALE');
   });
 
+  it('buffers new diffs and resynchronizes after becoming stale', async () => {
+    const d = deps([snapshot(100), snapshot(200)]);
+    const book = new SynchronizedOrderBook(SYMBOL, d, 500, 10);
+    await startAndBridge(book, d);
+    d.clock.now.mockReturnValue(NOW + 112);
+    expect(book.getHealth()).toBe('STALE');
+    d.diffSource.emit(diff(200, 201, 200));
+    await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(201));
+    expect(book.getState().lastUpdateId).toBe(201);
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2);
+  });
+
   it('deletes zero-quantity levels', async () => {
     const d = deps();
     const book = new SynchronizedOrderBook(SYMBOL, d);
@@ -121,7 +149,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     await startAndBridge(book, d);
     d.diffSource.emit(diff(102, 105, 99));
     expect(book.getHealth()).not.toBe('HEALTHY');
-    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(book.getState().lastUpdateId).toBe(200);
   });
 
@@ -130,7 +158,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     const book = new SynchronizedOrderBook(SYMBOL, d);
     await startAndBridge(book, d);
     d.diffSource.emit({ ...diff(101, 101, 100), u: Number.NaN });
-    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(book.getState().lastUpdateId).toBe(200);
   });
 

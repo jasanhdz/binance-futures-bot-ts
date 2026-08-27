@@ -5,6 +5,7 @@ import {
   validateOrderBookSnapshot,
 } from './MicroBurstBookPressureAnalyzer';
 import { OrderBookSnapshot } from './MicroBurstTypes';
+import { TemporalBookSnapshot } from './MicroBurstMarketDataTypes';
 
 const SNAPSHOT_AT_MS = 1_700_000_000_000;
 
@@ -31,7 +32,7 @@ describe('MicroBurstBookPressureAnalyzer status contract', () => {
     expect(isBookHealthy(signal)).toBe(true);
   });
 
-  it('maps spread or imbalance anomaly to ANOMALOUS consistently', () => {
+  it('keeps directional imbalance separate from book anomalies', () => {
     const spread = analyzeBookPressure(
       book({ askDepth: [{ price: 101, qty: 10 }] }),
       SNAPSHOT_AT_MS,
@@ -43,7 +44,22 @@ describe('MicroBurstBookPressureAnalyzer status contract', () => {
       book({ bidDepth: [{ price: 100, qty: 100 }], askDepth: [{ price: 100.05, qty: 1 }] }),
       SNAPSHOT_AT_MS,
     );
-    expect(imbalance).toMatchObject({ status: 'ANOMALOUS', anomalyFlag: true });
+    expect(imbalance).toMatchObject({
+      status: 'HEALTHY',
+      anomalyFlag: false,
+      signedTopOfBookImbalance: expect.closeTo(0.98),
+      topOfBookImbalance: expect.closeTo(0.98),
+    });
+  });
+
+  it('uses only causal temporal observations for signed imbalance slope', () => {
+    const history: TemporalBookSnapshot[] = [
+      { observedAtMs: SNAPSHOT_AT_MS - 4_000, signedTopOfBookImbalance: 0.4, topOfBookImbalance: 0.4, bestBidQty: 1, bestAskQty: 2, bidTop5Qty: 1, askTop5Qty: 2, spreadBps: 5 },
+      { observedAtMs: SNAPSHOT_AT_MS - 3_000, signedTopOfBookImbalance: 0.2, topOfBookImbalance: 0.2, bestBidQty: 1, bestAskQty: 2, bidTop5Qty: 1, askTop5Qty: 2, spreadBps: 5 },
+      { observedAtMs: SNAPSHOT_AT_MS + 1, signedTopOfBookImbalance: -1, topOfBookImbalance: 1, bestBidQty: 1, bestAskQty: 2, bidTop5Qty: 1, askTop5Qty: 2, spreadBps: 5 },
+    ];
+    const signal = analyzeBookPressure(book(), SNAPSHOT_AT_MS, { minTemporalObservations: 2 }, history);
+    expect(signal.imbalanceSlope).toBeCloseTo(-0.2);
   });
 
   it('propagates provider UNSYNCED instead of inventing HEALTHY', () => {

@@ -1,0 +1,67 @@
+# M3.2.1 production-read-only soak configuration.
+# This file is intentionally separate from regime_config.live.yaml.
+SYSTEM:
+  tick_interval_ms: 10000
+  max_trades_per_day: 0
+  global_leverage_default: 1
+
+REGIME_DETECTOR:
+  volatility_spread_low: 0.0008
+  volatility_spread_high: 0.0015
+  bias_strength_threshold: 0.20
+  obi_confirmation_threshold: 0.10
+
+IMMUNE_SYSTEM:
+  alpha_slow_rise: 0.15
+  alpha_fast_fall: 0.70
+  panic_exit_threshold: 0.70
+
+REGIMES:
+  BUNKER: { leverage: 0, entry_threshold: 999.0, hard_stop_roe: 0.0, tp_roe: 0.0 }
+
+# Do not enable the ordinary Aegis strategy plane for this Micro Burst soak.
+SYMBOLS: {}
+symbols:
+  defaults:
+    enabled: false
+    mode: OFF
+  entries: {}
+
+TRADING:
+  capital_usage_default: 0
+  min_wallet_reserve_usdt: 0
+  fee_buffer_pct: 0
+  max_risk_pct: 0
+  low_funds_threshold: 0
+  reenter_on_tp: false
+  post_exit_timeout_ms: 60000
+  vol_factor_reenter: 1
+
+micro_burst:
+  enabled: true
+  mode: SHADOW
+  symbols:
+    BTCUSDT:
+      enabled: true
+      bookDepthLevels: 20
+      bookDepthSpeed: 100ms
+    ETHUSDT:
+      enabled: true
+      bookDepthLevels: 20
+      bookDepthSpeed: 100ms
+  prospective_validation:
+    enabled: true
+    # This is a pre-official soak label, not an official cohort identifier.
+    cohort_id: M3_2_1_RUNTIME_SOAK_PRE_OFFICIAL
+    horizons_ms: [15000, 30000, 60000, 120000, 300000]
+    conservative_entry_slippage_bps: 5
+  market_archive:
+    enabled: true
+    # Never point this command at the tracked live archive paths.
+    root_dir: data/micro-burst/m3_2_1-soak/market-data
+    sqlite_path: data/micro-burst/m3_2_1-soak/micro_burst_research.sqlite
+    trade_retention_ms: 600000
+    book_checkpoint_interval_ms: 60000
+    raw_trade_archive: true
+    raw_depth_archive: true
+    compression: gzip
