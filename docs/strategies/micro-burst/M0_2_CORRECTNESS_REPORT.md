@@ -91,10 +91,16 @@ Experimental defaults include regime avoidance, momentum thresholds, BTC thresho
 
 ## Validation
 
-- TypeScript build: pending final validation
-- Micro Burst tests: pending final validation
-- Full suite: pending final validation
+- TypeScript build: PASS
+- Micro Burst tests: 12/12 files, 97/97 tests PASS
+- Full suite from a clean worktree of commit `01824a8`: 83/83 files, 861/861 tests PASS
 - GitHub Actions: pending push
+
+The original dirty workspace produced three restoration-hash failures because unrelated pre-existing changes modified `src/main.ts` and `config/regime_config.example.yaml`. Those files are not part of M0.2. The same suite passed completely from a clean worktree containing only the M0.2 commit.
+
+## Additional Finding
+
+`SharedStrategyExecutionService` currently validates and places required stops from `stopRoe`; it does not consume `structuralStopPrice`. Micro Burst remains OFF and its intent factory has no execution call site, so M0.2 does not alter the shared executor or Aegis behavior. Exact structural-stop consumption is a separate prerequisite before any future execution authority and must not be solved by converting the structural price into an approximate leverage-dependent ROE fallback.
 
 ## M1 Market Data Plane Pending
 

@@ -165,6 +165,8 @@ Key properties:
 At the latest runtime checkpoint:
 
 - TypeScript build: PASS.
+- Micro Burst M0.2 correctness tests: 12/12 files, 97/97 PASS.
+- Full clean-worktree suite: 83/83 files, 861/861 PASS.
 - `src/app/execution/SharedStrategyExecutionService.test.ts`: 8/8 PASS.
 - `src/domain/strategies/aegis/AegisExecutionIntentFactory.test.ts`: 2/2 PASS.
 - `src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.test.ts`: 3/3 PASS.
@@ -172,10 +174,10 @@ At the latest runtime checkpoint:
 - `src/app/services/TradingService.aegis-live.test.ts`: 108/108 PASS.
 - `src/app/services/TradingService.exit-eye.test.ts`: 12/12 PASS.
 - `src/app/strategy/OwnedPositionManagers.test.ts`: 4/4 PASS.
-- MicroBurst M0.1 hardening tests: 44/44 PASS.
+- MicroBurst M0.1 hardening baseline: 44/44 PASS (superseded by M0.2 coverage).
 - Strategy router / position manager router / Momentum entry policy / shared safety / ownership / risk ledger targeted tests: PASS.
 - Restoration/fronteras: 23/23 PASS.
-- Full `npm test -- --run`: 808 passed, 0 failed.
+- Full `npm test -- --run`: 861 passed, 0 failed at M0.2.
 
 ## M0.1 Hardening (superseded by M0.2)
 
@@ -187,7 +189,7 @@ MICRO_BURST_V1 M0.1 hardening completed. All 24 items addressed:
 - `BookDataStatus` enum: HEALTHY | UNAVAILABLE | STALE | UNSYNCED | ANOMALOUS.
 - `BookPressureSignal.imbalanceSlope` is `number | null` — null when only single snapshot available.
 - Renamed `absorptionDetected`/`sweepDetected` → `staticBidConcentration`/`staticAskConcentration` (static proxies, not temporal).
-- `SupportResistanceLevel.availableAtCandleIndex` — causal timestamp for when level was confirmed.
+- `SupportResistanceLevel.availableAtCandleIndex` — internal confirmation metadata; M0.2 added real `pivotAtMs` and `availableAtMs` causal timestamps.
 
 ### Config governance
 
