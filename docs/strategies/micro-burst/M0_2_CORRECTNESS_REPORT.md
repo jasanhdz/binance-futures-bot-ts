@@ -94,7 +94,7 @@ Experimental defaults include regime avoidance, momentum thresholds, BTC thresho
 - TypeScript build: PASS
 - Micro Burst tests: 12/12 files, 97/97 tests PASS
 - Full suite from a clean worktree of commit `01824a8`: 83/83 files, 861/861 tests PASS
-- GitHub Actions: pending push
+- GitHub Actions: PASS for commit `be492dd` ([run 33039932150](https://github.com/jasanhdz/binance-futures-bot-ts/actions/runs/33039932150))
 
 The original dirty workspace produced three restoration-hash failures because unrelated pre-existing changes modified `src/main.ts` and `config/regime_config.example.yaml`. Those files are not part of M0.2. The same suite passed completely from a clean worktree containing only the M0.2 commit.
 
