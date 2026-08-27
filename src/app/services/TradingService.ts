@@ -52,7 +52,7 @@ import {
     generateTradeId,
     getPortfolioSessionId
 } from '../../infra/logging/AegisTurboHistoryLogger';
-import { formatAegisTurboEntryMessage } from './formatAegisTurboEntryMessage';
+import { formatAegisTurboEntryMessage } from '../telegram/presentation/AegisTurboEntryMessageFormatter';
 import { AegisPositionMessageInput, formatAegisStartupMessage } from '../messages/AegisMessageFormatter';
 import { AegisPortfolioRiskGuard } from '../../domain/services/AegisPortfolioRiskGuard';
 import { AegisEntryQualityGateDecision } from '../../domain/services/AegisEntryQualityGate';
@@ -107,7 +107,7 @@ import { createAegisMigrationIdentity } from '../../domain/strategies/aegis/Aegi
 import { AegisExecutionIntentFactory } from '../../domain/strategies/aegis/AegisExecutionIntentFactory';
 import { createMomentumRideLegacyIdentity } from '../../domain/strategies/momentum-ride/MomentumRideIdentity';
 import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
-import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
+import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import { StrategyRouter } from '../strategy/StrategyRouter';
 import { MomentumRideStrategy, MomentumRideStrategyContext } from '../../domain/strategies/momentum-ride/MomentumRideStrategy';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';

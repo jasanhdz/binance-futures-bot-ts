@@ -2,17 +2,8 @@ import {
   StrategyDecisionEnvelope,
   StrategyEvaluationResult,
 } from '../../domain/strategy/StrategyDecision';
-import {
-  StrategyId,
-  StrategyIdentity,
-  StrategyMode,
-} from '../../domain/strategy/StrategyIdentity';
-
-export interface EntryStrategy<TContext = unknown> {
-  readonly identity: StrategyIdentity;
-  readonly mode: StrategyMode;
-  evaluate(context: TContext): Promise<StrategyEvaluationResult> | StrategyEvaluationResult;
-}
+import { EntryStrategy } from '../../domain/strategy/EntryStrategy';
+import { StrategyId } from '../../domain/strategy/StrategyIdentity';
 
 export class StrategyRouter<TContext = unknown> {
   private readonly strategies = new Map<StrategyId, EntryStrategy<TContext>>();

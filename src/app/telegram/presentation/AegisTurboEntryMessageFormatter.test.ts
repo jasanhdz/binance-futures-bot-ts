@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatAegisTurboEntryMessage, formatAegisTurboReason } from './formatAegisTurboEntryMessage';
+import { formatAegisTurboEntryMessage, formatAegisTurboReason } from './AegisTurboEntryMessageFormatter';
 
 function message(overrides: Partial<Parameters<typeof formatAegisTurboEntryMessage>[0]> = {}): string {
     return formatAegisTurboEntryMessage({

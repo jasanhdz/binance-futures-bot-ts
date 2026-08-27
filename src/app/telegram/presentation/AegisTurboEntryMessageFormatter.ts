@@ -1,5 +1,5 @@
-import { Side } from '../../domain/types';
-import { formatAegisReason } from '../messages/AegisReasonFormatter';
+import { Side } from '../../../domain/types';
+import { formatAegisReason } from '../../messages/AegisReasonFormatter';
 
 export interface AegisTurboEntryAccountSnapshot {
     walletBalance?: number;

@@ -1,4 +1,4 @@
-import { EntryStrategy } from '../../../app/strategy/StrategyRouter';
+import { EntryStrategy } from '../../strategy/EntryStrategy';
 import { StrategyEvaluationResult } from '../../strategy/StrategyDecision';
 import { StrategyIdentity, StrategyMode } from '../../strategy/StrategyIdentity';
 import {
