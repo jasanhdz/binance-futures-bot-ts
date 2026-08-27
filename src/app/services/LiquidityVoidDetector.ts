@@ -55,7 +55,6 @@ export class LiquidityVoidDetector {
     }
 
     this.previousBidTotal = metrics.bidTotalQty;
-    this.previousBidTotal = metrics.bidTotalQty;
     this.previousAskTotal = metrics.askTotalQty;
 
     this.currentStress = Math.min(stressScore, 1.0);
