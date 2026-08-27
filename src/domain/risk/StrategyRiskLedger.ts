@@ -16,6 +16,11 @@ export interface StrategyClosedOutcome {
   pnlUsdt: number;
 }
 
+export type StrategyRiskDailyState = {
+  dayKey: number;
+  strategyTradesToday: Partial<Record<StrategyId, number>>;
+};
+
 interface MutableStrategyRiskState {
   dayKey: number;
   tradesToday: number;
@@ -103,6 +108,25 @@ export class StrategyRiskLedger {
     for (const strategyId of this.states.keys()) {
       this.state(strategyId, now);
     }
+  }
+
+  restoreDailyState(persisted: StrategyRiskDailyState, now = Date.now()): void {
+    if (!Number.isInteger(persisted.dayKey) || persisted.dayKey !== dayKey(now)) return;
+    for (const strategyId of Object.keys(persisted.strategyTradesToday) as StrategyId[]) {
+      const tradesToday = persisted.strategyTradesToday[strategyId];
+      if (typeof tradesToday !== 'number' || !Number.isInteger(tradesToday) || tradesToday < 0) {
+        throw new Error('STRATEGY_RISK_STATE_INVALID');
+      }
+      this.state(strategyId, now).tradesToday = tradesToday;
+    }
+  }
+
+  dailyState(now = Date.now()): StrategyRiskDailyState {
+    const strategyTradesToday: Partial<Record<StrategyId, number>> = {};
+    for (const strategyId of this.states.keys()) {
+      strategyTradesToday[strategyId] = this.state(strategyId, now).tradesToday;
+    }
+    return { dayKey: dayKey(now), strategyTradesToday };
   }
 
   resetDaily(now = Date.now()): void {

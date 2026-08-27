@@ -19,6 +19,11 @@ export type TradeOwnershipStatus = 'VERIFIED' | 'TAINTED' | 'UNKNOWN';
 
 export type BotState = {
   mode: BotMode;
+  dailyRisk?: {
+    dayKey: number;
+    tradesToday: number;
+    strategyTradesToday: Partial<Record<StrategyId, number>>;
+  };
   lastSide?: Side;
   lastEntryPrice?: number;
   lastLeverage?: number;

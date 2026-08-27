@@ -51,4 +51,29 @@ describe('StrategyRiskLedger', () => {
 
     expect(ledger.snapshot('MOMENTUM_RIDE', Date.parse(closedAt)).consecutiveLosses).toBe(1);
   });
+
+  it('restores daily opens without treating closed outcomes as opens', () => {
+    const now = Date.UTC(2026, 7, 26, 12);
+    const ledger = new StrategyRiskLedger();
+    ledger.recordOpen('AEGIS_TURBO', now);
+    const persisted = ledger.dailyState(now);
+
+    const restarted = new StrategyRiskLedger();
+    restarted.restoreClosedOutcomes([], now);
+    restarted.restoreDailyState(persisted, now);
+
+    expect(restarted.snapshot('AEGIS_TURBO', now).tradesToday).toBe(1);
+    expect(restarted.snapshot('MOMENTUM_RIDE', now).tradesToday).toBe(0);
+  });
+
+  it('does not restore a daily bucket from a different day', () => {
+    const now = Date.UTC(2026, 7, 26, 12);
+    const ledger = new StrategyRiskLedger();
+    ledger.restoreDailyState(
+      { dayKey: Math.floor((now - 86400000) / 86400000), strategyTradesToday: { AEGIS_TURBO: 3 } },
+      now,
+    );
+
+    expect(ledger.snapshot('AEGIS_TURBO', now).tradesToday).toBe(0);
+  });
 });

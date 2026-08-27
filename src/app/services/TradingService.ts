@@ -260,6 +260,15 @@ export class TradingService {
   private microBurstRuntime: MicroBurstRuntime | null = null;
   private stopPromise: Promise<void> | null = null;
 
+  private persistDailyRiskState(now = Date.now()): void {
+    this.deps.state.set({
+      dailyRisk: {
+        ...this.strategyRiskLedger.dailyState(now),
+        tradesToday: this.tradesToday,
+      },
+    });
+  }
+
   constructor(
     private deps: TradingServiceDeps,
     private config: TradingServiceConfig,
@@ -2311,6 +2320,7 @@ export class TradingService {
 
     this.strategyRiskLedger.recordOpen('MOMENTUM_RIDE', execution.openedAt);
     this.tradesToday += 1;
+    this.persistDailyRiskState(execution.openedAt);
     await this.historyLogger.logTradeOpen({
       ...VERIFIED_AEGIS_TRADE_OWNERSHIP,
       trade_id: tradeId,
@@ -4320,6 +4330,7 @@ export class TradingService {
 
       this.tradesToday++;
       this.strategyRiskLedger.recordOpen(finalStrategyLabel, openedAtMs);
+      this.persistDailyRiskState(openedAtMs);
       if (phaseOShortLive) this.phaseOShortTradesToday++;
       this.lastEntryBalance = wallet;
       if (wallet > this.peakBalance) this.peakBalance = wallet;
@@ -5265,6 +5276,13 @@ export class TradingService {
         ? aegisOutcomes
         : await readStrategyClosedTradeOutcomes(undefined, this.getTradingMode());
       this.strategyRiskLedger.restoreClosedOutcomes(strategyOutcomes);
+      const now = Date.now();
+      const dailyRisk = this.deps.state.get().dailyRisk;
+      this.lastTradeDayReset = Math.floor(now / 86400000);
+      if (dailyRisk?.dayKey === this.lastTradeDayReset) {
+        this.tradesToday = dailyRisk.tradesToday;
+        this.strategyRiskLedger.restoreDailyState(dailyRisk, now);
+      }
       this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
         consecutiveLosses: this.consecutiveLossTracker.value,
         processedClosedTrades: this.consecutiveLossTracker.processedCount,

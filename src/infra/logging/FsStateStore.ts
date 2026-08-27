@@ -8,8 +8,8 @@ import { BotState } from '../../domain/types';
 const dataDir = path.resolve(__dirname, '../../../data');
 const defaultState: BotState = { mode: 'IDLE' };
 
-function ensureDir() {
-  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+function ensureDir(directory: string) {
+  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
 }
 
 function sanitizeKey(key: string) {
@@ -25,23 +25,26 @@ export class FsStateStore implements StateStore {
   constructor(
     private readonly key: string = 'default',
     private readonly scope = 'prod',
+    private readonly baseDir = dataDir,
   ) {
     const scopeSuffix = this.scope ? `_${sanitizeKey(this.scope)}` : '';
     const keySuffix = key === 'default' ? '' : `_${sanitizeKey(key)}`;
-    this.statePath = path.join(dataDir, `state${scopeSuffix}${keySuffix}.json`);
+    this.statePath = path.join(baseDir, `state${scopeSuffix}${keySuffix}.json`);
 
     // Carga inicial SÍNCRONA (solo al arrancar el bot, esto está bien)
     try {
-      ensureDir();
+      ensureDir(baseDir);
       if (fs.existsSync(this.statePath)) {
         const raw = fs.readFileSync(this.statePath, 'utf8');
-        this.memoryCache = JSON.parse(raw) as BotState;
+        this.memoryCache = parseState(raw);
       } else {
         this.memoryCache = { ...defaultState };
       }
     } catch (err) {
-      console.error('State load failed, using default', err);
-      this.memoryCache = { ...defaultState };
+      console.error('State load failed', err);
+      const failure = new Error('BOT_STATE_LOAD_FAILED');
+      (failure as Error & { cause?: unknown }).cause = err;
+      throw failure;
     }
   }
 
@@ -100,4 +103,35 @@ export class FsStateStore implements StateStore {
       }
     }
   }
+}
+
+function parseState(raw: string): BotState {
+  const state = JSON.parse(raw) as Partial<BotState>;
+  if (
+    !state ||
+    typeof state !== 'object' ||
+    Array.isArray(state) ||
+    !['IDLE', 'LONG_RIDE', 'SHORT_RIDE'].includes(state.mode ?? '')
+  ) {
+    throw new Error('BOT_STATE_INVALID');
+  }
+  const dailyRisk = state.dailyRisk;
+  if (
+    dailyRisk !== undefined &&
+    (!Number.isInteger(dailyRisk.dayKey) ||
+      !Number.isInteger(dailyRisk.tradesToday) ||
+      dailyRisk.tradesToday < 0 ||
+      !dailyRisk.strategyTradesToday ||
+      typeof dailyRisk.strategyTradesToday !== 'object' ||
+      Array.isArray(dailyRisk.strategyTradesToday) ||
+      Object.entries(dailyRisk.strategyTradesToday).some(
+        ([strategyId, count]) =>
+          !['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST_V1'].includes(strategyId) ||
+          !Number.isInteger(count) ||
+          (count as number) < 0,
+      ))
+  ) {
+    throw new Error('BOT_STATE_INVALID');
+  }
+  return state as BotState;
 }
