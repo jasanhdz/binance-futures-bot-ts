@@ -106,4 +106,22 @@ describe('MicroBurstProspectiveAnalyzer', () => {
     expect(report.text).toContain('signals without completed outcome: 1');
     expect(report.text).toContain('unresolved terminal journal exports: 1');
   });
+
+  it('requires an explicit cohort when official data contains multiple cohorts', () => {
+    const row = (id: string, cohortId: string) => ({ shadowSignalId: id, cohortId });
+    expect(() => analyzeMicroBurstProspective({
+      signals: [row('a', 'cohort-a'), row('b', 'cohort-b')],
+      outcomes: [],
+      official: true,
+      availableCohorts: ['cohort-a', 'cohort-b'],
+    })).toThrow('COHORT_SELECTION_REQUIRED');
+  });
+
+  it('reports deterministic episode bootstrap and attrition', () => {
+    const report = analyzeMicroBurstProspective({
+      signals: [{ shadowSignalId: 'a', episodeId: 'MBV1-EP-a' }],
+      outcomes: [],
+    });
+    expect(report.text).toContain('Episode bootstrap/attrition: bootstrap=1; completed=0; attrition=1');
+  });
 });

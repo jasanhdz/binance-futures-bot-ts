@@ -425,6 +425,7 @@ export function freezeSignalSnapshot(params: {
   schemaVersion?: 1;
   shadowSignalId: string;
   cohortId?: string;
+  episodeId?: string;
   strategyId: string;
   strategyVersion: string;
   codeCommitSha: string;

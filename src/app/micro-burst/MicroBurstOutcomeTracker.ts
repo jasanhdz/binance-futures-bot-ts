@@ -30,6 +30,7 @@ import {
   computeEntryModelOutcomes,
   OUTCOME_HORIZONS_MS,
 } from '../../domain/strategies/micro-burst/MicroBurstOutcomeEngine';
+import { createMicroBurstEpisodeId } from '../../domain/strategies/micro-burst/MicroBurstIdentity';
 import {
   MicroBurstConfig,
   defaultMicroBurstConfig,
@@ -61,7 +62,15 @@ export class MicroBurstOutcomeTracker {
   private readonly completedIds = new Set<string>();
   private readonly episodes = new Map<
     string,
-    { signalIds: Set<string>; primarySignalId: string }
+    {
+      signalIds: Set<string>;
+      primarySignalId: string;
+      symbol: string;
+      side: string;
+      cohortId?: string | null;
+      startedAtMs: number;
+      endedAtMs: number;
+    }
   >();
 
   private signalsObserved = 0;
@@ -78,15 +87,23 @@ export class MicroBurstOutcomeTracker {
   private readonly exitConfig: MicroBurstConfig;
   private readonly tradeHistory = new MicroBurstTradeHistoryStore();
   private readonly eventWatermarks = new Map<string, number>();
+  private readonly knownSignals = new Map<string, ShadowSignalSnapshot>();
 
   constructor(private readonly deps: OutcomeTrackerDeps) {
     this.maxPending = deps.maxPendingOutcomes ?? DEFAULT_MAX_PENDING;
     this.exitConfig = deps.config ?? defaultMicroBurstConfig();
+    for (const episode of deps.storage?.loadEpisodes() ?? []) {
+      this.episodes.set(episode.episodeId, { ...episode, signalIds: new Set(episode.signalIds) });
+    }
+    for (const signal of deps.storage?.loadSignalReconciliation().signals ?? []) {
+      if (isSignalSnapshot(signal)) this.knownSignals.set(signal.shadowSignalId, signal);
+    }
   }
 
   /** Register a new signal snapshot for prospective tracking. */
   trackSignal(signal: ShadowSignalSnapshot): void {
     this.signalsObserved++;
+    this.knownSignals.set(signal.shadowSignalId, signal);
 
     // Idempotency: skip if already tracked or completed
     if (
@@ -98,27 +115,26 @@ export class MicroBurstOutcomeTracker {
       return;
     }
 
-    // Episode management
-    const episodeKey = `${signal.symbol}:${signal.side}:${Math.round(signal.structuralStopPrice * 100)}`;
-    let episode = this.episodes.get(episodeKey);
-    if (!episode) {
-      episode = { signalIds: new Set(), primarySignalId: signal.shadowSignalId };
-      this.episodes.set(episodeKey, episode);
-    }
-    episode.signalIds.add(signal.shadowSignalId);
+    // Episodes are connected components of causal signal windows, so arrival order is irrelevant.
+    this.rebuildEpisodes(signal.symbol, signal.side);
+    const episodeKey = [...this.episodes.entries()].find(([, episode]) =>
+      episode.signalIds.has(signal.shadowSignalId),
+    )?.[0];
+    if (!episodeKey) return;
 
     const pending = createPendingOutcome(signal, episodeKey);
     pending.entryModels = computeEntryModels(signal, []);
     this.pending.set(signal.shadowSignalId, pending);
     if (this.deps.storage) {
-      const signalStored = this.deps.storage.persistSignal(
-        signal as unknown as {
-          shadowSignalId: string;
-          symbol: string;
-          signalAtMs: number;
-          [key: string]: unknown;
-        },
-      );
+      const signalStored = this.deps.storage.persistSignal({
+        ...signal,
+        episodeId: episodeKey,
+      } as unknown as {
+        shadowSignalId: string;
+        symbol: string;
+        signalAtMs: number;
+        [key: string]: unknown;
+      });
       const pendingStored = this.deps.storage.persistPendingState(
         signal.shadowSignalId,
         'PENDING',
@@ -135,6 +151,65 @@ export class MicroBurstOutcomeTracker {
 
     // Memory safety: evict oldest if over limit
     this.evictIfNeeded();
+  }
+
+  private rebuildEpisodes(symbol: string, side: string): void {
+    const signals = [...this.knownSignals.values()]
+      .filter((candidate) => candidate.symbol === symbol && candidate.side === side)
+      .sort(
+        (a, b) => a.signalAtMs - b.signalAtMs || a.shadowSignalId.localeCompare(b.shadowSignalId),
+      );
+    const rebuilt = new Map<string, any>();
+    for (const cohortSignals of groupSignalsByCohort(signals).values()) {
+      let component: ShadowSignalSnapshot[] = [];
+      let componentEnd = -Infinity;
+      const flush = () => {
+        if (component.length === 0) return;
+        const startedAtMs = component[0].signalAtMs;
+        const primarySignalId = component[0].shadowSignalId;
+        const cohortId = component[0].cohortId;
+        const episodeId = createMicroBurstEpisodeId(symbol, side, startedAtMs, cohortId ?? '');
+        const episode = {
+          signalIds: new Set(component.map((candidate) => candidate.shadowSignalId)),
+          primarySignalId,
+          symbol,
+          side,
+          cohortId: cohortId ?? null,
+          startedAtMs,
+          endedAtMs: Math.max(...component.map((candidate) => candidate.signalAtMs + 300_000)),
+        };
+        rebuilt.set(episodeId, episode as any);
+        this.deps.storage?.persistEpisode({
+          episodeId,
+          ...episode,
+          cohortId: episode.cohortId ?? undefined,
+          signalIds: [...episode.signalIds],
+        });
+        component = [];
+        componentEnd = -Infinity;
+      };
+      for (const candidate of cohortSignals) {
+        if (candidate.signalAtMs > componentEnd) flush();
+        component.push(candidate);
+        componentEnd = Math.max(componentEnd, candidate.signalAtMs + 300_000);
+      }
+      flush();
+    }
+    for (const oldId of this.episodes.keys()) {
+      if (oldId.startsWith('MBV1-EP-') && !rebuilt.has(oldId)) this.episodes.delete(oldId);
+    }
+    for (const [episodeId, episode] of rebuilt) this.episodes.set(episodeId, episode as any);
+    for (const candidate of signals) {
+      const episodeId = [...rebuilt.entries()].find(([, episode]) =>
+        episode.signalIds.has(candidate.shadowSignalId),
+      )?.[0];
+      if (episodeId) {
+        this.deps.storage?.assignSignalEpisode(candidate.shadowSignalId, episodeId);
+        this.deps.storage?.assignOutcomeEpisode(candidate.shadowSignalId, episodeId);
+        const pending = this.pending.get(candidate.shadowSignalId);
+        if (pending) pending.episodeId = episodeId;
+      }
+    }
   }
 
   /** Process a trade event. Routes to the correct pending outcome by symbol. */
@@ -469,7 +544,8 @@ export class MicroBurstOutcomeTracker {
     const unresolved = new Set(reconciliation.unresolvedOutcomeIds);
     for (const outcome of reconciliation.outcomes) {
       if (!unresolved.has(outcome.shadowSignalId)) continue;
-      if (this.deps.journal.append(outcome)) this.deps.storage.markOutcomeJournaled(outcome.shadowSignalId);
+      if (this.deps.journal.append(outcome))
+        this.deps.storage.markOutcomeJournaled(outcome.shadowSignalId);
       else this.outcomeErrors++;
     }
     for (const recovered of this.deps.storage.recoverPending()) {
@@ -545,4 +621,26 @@ export class MicroBurstOutcomeTracker {
       }
     }
   }
+}
+
+function groupSignalsByCohort(
+  signals: readonly ShadowSignalSnapshot[],
+): Map<string, ShadowSignalSnapshot[]> {
+  const groups = new Map<string, ShadowSignalSnapshot[]>();
+  for (const signal of signals) {
+    const key = signal.cohortId ?? '';
+    groups.set(key, [...(groups.get(key) ?? []), signal]);
+  }
+  return groups;
+}
+
+function isSignalSnapshot(value: unknown): value is ShadowSignalSnapshot {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.shadowSignalId === 'string' &&
+    typeof candidate.symbol === 'string' &&
+    (candidate.side === 'LONG' || candidate.side === 'SHORT') &&
+    Number.isFinite(candidate.signalAtMs)
+  );
 }

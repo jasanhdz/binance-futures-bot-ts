@@ -6,6 +6,9 @@ import * as zlib from 'zlib';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MicroBurstStorage } from './MicroBurstStorage';
+import { eventAgeMs, ServerOffsetEstimator } from './MicroBurstClocks';
+import { parseAggTrade, parseDepth } from './MicroBurstMarketData';
+import { DepthStreamGapDetector } from './MicroBurstStreamGapDetector';
 
 const temporaryDirectories: string[] = [];
 
@@ -33,6 +36,65 @@ afterEach(() => {
 });
 
 describe('MicroBurstStorage', () => {
+  it('migrates legacy gap rows without relabeling them as a reliable feed gap', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-migration-'));
+    temporaryDirectories.push(root);
+    const databasePath = path.join(root, 'state.sqlite');
+    const archivePath = path.join(root, 'archive');
+    const db = new Database(databasePath);
+    db.exec(
+      `CREATE TABLE market_data_gaps (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER NOT NULL, reason TEXT NOT NULL, details_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL)`,
+    );
+    db.prepare('INSERT INTO market_data_gaps VALUES (1, ?, ?, ?, ?, ?, ?)').run(
+      'BTCUSDT',
+      10,
+      20,
+      'old_gap',
+      '{}',
+      30,
+    );
+    db.close();
+    const storage = new MicroBurstStorage({ databasePath, archivePath });
+    expect(storage.queryGaps('BTCUSDT')[0]).toMatchObject({
+      kind: 'UNKNOWN_LEGACY',
+      reason: 'old_gap',
+      feed: null,
+    });
+    storage.close();
+  });
+
+  it('uses typed feed parsing and only accepts a bridged contiguous depth stream', () => {
+    const receivedAtMs = 2_000;
+    expect(
+      parseAggTrade('BTCUSDT', { p: '10', q: '2', T: 100, m: false }, receivedAtMs),
+    ).toMatchObject({ eventTimeMs: 100, receivedAtMs });
+    expect(parseAggTrade('BTCUSDT', { p: '10', q: '2', m: false }, receivedAtMs)).toBeNull();
+    const gap: unknown[] = [];
+    const detector = new DepthStreamGapDetector((value) => gap.push(value));
+    detector.seedSnapshot(100);
+    const first = parseDepth(
+      'BTCUSDT',
+      { E: 101, U: 101, u: 103, pu: 100, b: [], a: [] },
+      receivedAtMs,
+    )!;
+    expect(detector.accept(first)).toBe('ACCEPT');
+    const skipped = parseDepth(
+      'BTCUSDT',
+      { E: 102, U: 105, u: 106, pu: 103, b: [], a: [] },
+      receivedAtMs,
+    )!;
+    expect(detector.accept(skipped)).toBe('GAP');
+    expect(gap).toHaveLength(1);
+    expect(gap[0]).toMatchObject({ details: { previousFinalUpdateId: 103 } });
+  });
+
+  it('separates server event time from receive time and clamps future corrected events', () => {
+    const estimator = new ServerOffsetEstimator(3);
+    estimator.observe(1_100, 1_000, 1_020);
+    expect(estimator.estimate()).toMatchObject({ offsetMs: 90, uncertaintyMs: 0, samples: 1 });
+    expect(eventAgeMs(1_050, 1_200, estimator.estimate())).toBe(0);
+    expect(eventAgeMs(1_200, 1_100, estimator.estimate())).toBe(190);
+  });
   it('persists pending signal state across a SQLite reopen and completes outcomes idempotently', () => {
     const { storage, databasePath, archivePath } = createStorage();
     expect(
@@ -175,7 +237,7 @@ describe('MicroBurstStorage', () => {
     });
   });
 
-  it('replays valid records when a gzip segment ends in a partial NDJSON line', () => {
+  it('rejects a gzip segment when its NDJSON contains a partial line', () => {
     const { storage, archivePath } = createStorage();
     storage.close();
     const segmentDir = path.join(archivePath, 'trades', 'SOLUSDT');
@@ -198,9 +260,10 @@ describe('MicroBurstStorage', () => {
       databasePath: path.join(path.dirname(archivePath), 'state', 'micro-burst.sqlite'),
       archivePath,
     });
-    expect(reopened.queryArchivedTrades('SOLUSDT', 0, 100)).toEqual([
-      expect.objectContaining({ eventTime: 20, receivedAtMs: 21 }),
-    ]);
+    expect(reopened.queryArchivedTrades('SOLUSDT', 0, 100)).toEqual([]);
+    expect(reopened.queryGaps('SOLUSDT')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'ARCHIVE' })]),
+    );
     reopened.close();
   });
 
@@ -782,41 +845,109 @@ describe('MicroBurstStorage', () => {
   it('keeps multiple durability checkpoints in one active segment', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-active-'));
     temporaryDirectories.push(root);
-    const storage = new MicroBurstStorage({ databasePath: path.join(root, 'state.sqlite'), archivePath: path.join(root, 'archive'), durabilityFlushIntervalMs: 20 });
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, price: 1, aggregateTradeId: 1 });
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      durabilityFlushIntervalMs: 20,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 101, receivedAtMs: 101, price: 2, aggregateTradeId: 2 });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 101,
+      receivedAtMs: 101,
+      price: 2,
+      aggregateTradeId: 2,
+    });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(storage.getHealth()).toMatchObject({ activeSegmentCount: 1, activeSegmentRecords: 2, recordsDurablyFlushed: 2, segmentsFinalized: 0 });
-    expect(fs.readdirSync(path.join(root, 'archive', 'trades', 'BTCUSDT')).filter((name) => name.endsWith('.active.ndjson'))).toHaveLength(1);
+    expect(storage.getHealth()).toMatchObject({
+      activeSegmentCount: 1,
+      activeSegmentRecords: 2,
+      recordsDurablyFlushed: 2,
+      segmentsFinalized: 0,
+    });
+    expect(
+      fs
+        .readdirSync(path.join(root, 'archive', 'trades', 'BTCUSDT'))
+        .filter((name) => name.endsWith('.active.ndjson')),
+    ).toHaveLength(1);
     storage.close();
   });
 
   it('rotates active spools at the configured record threshold', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-record-rotation-'));
     temporaryDirectories.push(root);
-    const storage = new MicroBurstStorage({ databasePath: path.join(root, 'state.sqlite'), archivePath: path.join(root, 'archive'), maxActiveSegmentRecords: 3 });
-    for (let i = 0; i < 3; i++) storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100 + i, receivedAtMs: 100 + i, price: i + 1, aggregateTradeId: i });
-    expect(storage.getHealth()).toMatchObject({ segmentsFinalized: 1, writtenRecords: 3, activeSegmentCount: 0 });
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      maxActiveSegmentRecords: 3,
+    });
+    for (let i = 0; i < 3; i++)
+      storage.appendTrade({
+        symbol: 'BTCUSDT',
+        eventTime: 100 + i,
+        receivedAtMs: 100 + i,
+        price: i + 1,
+        aggregateTradeId: i,
+      });
+    expect(storage.getHealth()).toMatchObject({
+      segmentsFinalized: 1,
+      writtenRecords: 3,
+      activeSegmentCount: 0,
+    });
     storage.close();
   });
 
   it('rotates active spools at the configured byte threshold', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-byte-rotation-'));
     temporaryDirectories.push(root);
-    const storage = new MicroBurstStorage({ databasePath: path.join(root, 'state.sqlite'), archivePath: path.join(root, 'archive'), maxActiveSegmentBytes: 1 });
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, price: 1, aggregateTradeId: 1 });
-    expect(storage.getHealth()).toMatchObject({ segmentsFinalized: 1, writtenRecords: 1, activeSegmentCount: 0 });
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      maxActiveSegmentBytes: 1,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
+    expect(storage.getHealth()).toMatchObject({
+      segmentsFinalized: 1,
+      writtenRecords: 1,
+      activeSegmentCount: 0,
+    });
     storage.close();
   });
 
   it('rotates active spools after the configured duration', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-duration-rotation-'));
     temporaryDirectories.push(root);
-    const storage = new MicroBurstStorage({ databasePath: path.join(root, 'state.sqlite'), archivePath: path.join(root, 'archive'), maxActiveSegmentDurationMs: 25 });
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, price: 1, aggregateTradeId: 1 });
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      maxActiveSegmentDurationMs: 25,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
     await new Promise((resolve) => setTimeout(resolve, 70));
-    expect(storage.getHealth()).toMatchObject({ segmentsFinalized: 1, writtenRecords: 1, activeSegmentCount: 0 });
+    expect(storage.getHealth()).toMatchObject({
+      segmentsFinalized: 1,
+      writtenRecords: 1,
+      activeSegmentCount: 0,
+    });
     storage.close();
   });
 
@@ -826,22 +957,46 @@ describe('MicroBurstStorage', () => {
     const databasePath = path.join(root, 'state.sqlite');
     const archivePath = path.join(root, 'archive');
     const storage = new MicroBurstStorage({ databasePath, archivePath });
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, price: 1, aggregateTradeId: 1 });
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 101, receivedAtMs: 101, price: 2, aggregateTradeId: 2 });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 101,
+      receivedAtMs: 101,
+      price: 2,
+      aggregateTradeId: 2,
+    });
     for (const active of (storage as any).activeSegments.values()) {
       if (active.durabilityTimer) clearTimeout(active.durabilityTimer);
       if (active.rotationTimer) clearTimeout(active.rotationTimer);
     }
     (storage as any).db.close();
     const reopened = new MicroBurstStorage({ databasePath, archivePath });
-    expect(reopened.queryArchivedTrades('BTCUSDT', 0, 200).map((trade) => trade.eventTime)).toEqual([100, 101]);
-    expect(reopened.getHealth()).toMatchObject({ recoveryActions: 1, recoveryFailures: 0, writtenRecords: 2 });
+    expect(reopened.queryArchivedTrades('BTCUSDT', 0, 200).map((trade) => trade.eventTime)).toEqual(
+      [100, 101],
+    );
+    expect(reopened.getHealth()).toMatchObject({
+      recoveryActions: 1,
+      recoveryFailures: 0,
+      writtenRecords: 2,
+    });
     reopened.close();
   });
 
   it('repairs a completed gzip segment when its SQLite index row is missing', () => {
     const { storage, archivePath, databasePath } = createStorage();
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, price: 1, aggregateTradeId: 1 });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
     storage.close();
     const db = new Database(databasePath);
     db.prepare('DELETE FROM market_data_segments').run();
@@ -870,7 +1025,8 @@ describe('MicroBurstStorage', () => {
     const db = new Database(databasePath);
     db.prepare('DELETE FROM market_data_segments').run();
     db.close();
-    for (const timer of [active.durabilityTimer, active.rotationTimer]) if (timer) clearTimeout(timer);
+    for (const timer of [active.durabilityTimer, active.rotationTimer])
+      if (timer) clearTimeout(timer);
     (storage as any).db.close();
 
     const reopened = new MicroBurstStorage({ databasePath, archivePath });
@@ -880,7 +1036,9 @@ describe('MicroBurstStorage', () => {
     expect(files[0]).toMatch(/-[a-f0-9]{64}\.ndjson\.gz$/);
     expect(reopened.queryArchivedTrades('BTCUSDT', 0, 200)).toHaveLength(1);
     const indexDb = new Database(databasePath);
-    expect(indexDb.prepare('SELECT COUNT(*) AS count FROM market_data_segments').get()).toEqual({ count: 1 });
+    expect(indexDb.prepare('SELECT COUNT(*) AS count FROM market_data_segments').get()).toEqual({
+      count: 1,
+    });
     indexDb.close();
     reopened.close();
   });
@@ -892,7 +1050,10 @@ describe('MicroBurstStorage', () => {
     const archivePath = path.join(root, 'archive');
     const activeDir = path.join(archivePath, 'trades', 'BTCUSDT');
     fs.mkdirSync(activeDir, { recursive: true });
-    fs.writeFileSync(path.join(activeDir, '1970-01-01T00-00-00-000Z.active.ndjson'), `${JSON.stringify({ schemaVersion: 1, type: 'trades', symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, payload: { price: 1, aggregateTradeId: 1 } })}\n{`);
+    fs.writeFileSync(
+      path.join(activeDir, '1970-01-01T00-00-00-000Z.active.ndjson'),
+      `${JSON.stringify({ schemaVersion: 1, type: 'trades', symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, payload: { price: 1, aggregateTradeId: 1 } })}\n{`,
+    );
     const storage = new MicroBurstStorage({ databasePath, archivePath });
     expect(storage.queryArchivedTrades('BTCUSDT', 0, 200)).toHaveLength(1);
     expect(storage.hasGap('BTCUSDT', 100, 100)).toBe(true);
@@ -902,7 +1063,13 @@ describe('MicroBurstStorage', () => {
 
   it('graceful shutdown leaves no active or temporary artifacts', () => {
     const { storage, archivePath } = createStorage();
-    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 100, price: 1, aggregateTradeId: 1 });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
     storage.close();
     const names = fs.readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'));
     expect(names.filter((name) => name.includes('.active.') || name.endsWith('.tmp'))).toEqual([]);

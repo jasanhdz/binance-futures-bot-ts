@@ -5,6 +5,7 @@ import * as zlib from 'zlib';
 import Database from 'better-sqlite3';
 import { compareTrades, tradeIdentity } from './MicroBurstTradeHistoryStore';
 import { ProspectiveOutcomeRecord } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+import { GapKind, MarketDataFeed } from './MicroBurstMarketData';
 
 export interface MicroBurstStorageOptions {
   databasePath: string;
@@ -83,6 +84,12 @@ export interface StorageHealth {
 export interface MicroBurstOutcomeReconciliation {
   outcomes: ProspectiveOutcomeRecord[];
   unresolvedOutcomeIds: string[];
+  inconsistentOutcomeIds?: string[];
+}
+
+export interface MicroBurstSignalReconciliation {
+  signals: Record<string, unknown>[];
+  inconsistentSignalIds: string[];
 }
 
 interface ArchiveWrite {
@@ -179,8 +186,14 @@ export class MicroBurstStorage {
       options.maxActiveSegmentRecords ?? options.maxArchiveBatchRecords,
       DEFAULT_MAX_ACTIVE_SEGMENT_RECORDS,
     );
-    this.maxActiveSegmentBytes = positiveInteger(options.maxActiveSegmentBytes, DEFAULT_MAX_ACTIVE_SEGMENT_BYTES);
-    this.maxActiveSegmentDurationMs = positiveInteger(options.maxActiveSegmentDurationMs, DEFAULT_MAX_ACTIVE_SEGMENT_DURATION_MS);
+    this.maxActiveSegmentBytes = positiveInteger(
+      options.maxActiveSegmentBytes,
+      DEFAULT_MAX_ACTIVE_SEGMENT_BYTES,
+    );
+    this.maxActiveSegmentDurationMs = positiveInteger(
+      options.maxActiveSegmentDurationMs,
+      DEFAULT_MAX_ACTIVE_SEGMENT_DURATION_MS,
+    );
     this.durabilityFlushIntervalMs = positiveInteger(
       options.durabilityFlushIntervalMs ?? options.maxBatchLatencyMs,
       DEFAULT_DURABILITY_FLUSH_INTERVAL_MS,
@@ -239,13 +252,16 @@ export class MicroBurstStorage {
     return this.safe(() => {
       this.db
         .prepare(
-          `INSERT INTO micro_burst_signals (signal_id, symbol, signal_at_ms, snapshot_json, created_at_ms)
-        VALUES (?, ?, ?, ?, ?) ON CONFLICT(signal_id) DO NOTHING`,
+          `INSERT INTO micro_burst_signals (signal_id, symbol, side, signal_at_ms, cohort_id, episode_id, snapshot_json, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(signal_id) DO NOTHING`,
         )
         .run(
           snapshot.shadowSignalId,
           snapshot.symbol,
+          typeof snapshot.side === 'string' ? snapshot.side : null,
           snapshot.signalAtMs,
+          typeof snapshot.cohortId === 'string' ? snapshot.cohortId : null,
+          typeof snapshot.episodeId === 'string' ? snapshot.episodeId : null,
           JSON.stringify(snapshot),
           this.now(),
         );
@@ -275,13 +291,17 @@ export class MicroBurstStorage {
       this.db.transaction(() => {
         this.db
           .prepare(
-            `INSERT INTO micro_burst_outcomes (signal_id, symbol, completed_at_ms, outcome_json, journal_status, created_at_ms)
-         VALUES (?, ?, ?, ?, 'PENDING', ?) ON CONFLICT(signal_id) DO NOTHING`,
+            `INSERT INTO micro_burst_outcomes (signal_id, symbol, side, signal_at_ms, completed_at_ms, cohort_id, episode_id, outcome_json, journal_status, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?) ON CONFLICT(signal_id) DO NOTHING`,
           )
           .run(
             outcome.shadowSignalId,
             outcome.symbol,
+            typeof outcome.side === 'string' ? outcome.side : null,
+            typeof outcome.signalAtMs === 'number' ? outcome.signalAtMs : null,
             outcome.completedAtMs,
+            typeof outcome.cohortId === 'string' ? outcome.cohortId : null,
+            typeof outcome.episodeId === 'string' ? outcome.episodeId : null,
             JSON.stringify(outcome),
             this.now(),
           );
@@ -304,32 +324,191 @@ export class MicroBurstStorage {
 
   hasCompletedOutcome(signalId: string): boolean {
     return this.safeValue(
-      () => Boolean(this.db.prepare(`SELECT 1 FROM micro_burst_outcomes WHERE signal_id = ?`).get(signalId)),
+      () =>
+        Boolean(
+          this.db.prepare(`SELECT 1 FROM micro_burst_outcomes WHERE signal_id = ?`).get(signalId),
+        ),
       false,
     );
   }
 
-  loadOutcomeReconciliation(): MicroBurstOutcomeReconciliation {
+  loadOutcomeReconciliation(cohortId?: string): MicroBurstOutcomeReconciliation {
     return this.safeValue(
       () => {
         const rows = this.db
           .prepare(
-            `SELECT signal_id, outcome_json, journal_status FROM micro_burst_outcomes ORDER BY completed_at_ms, signal_id`,
+            `SELECT signal_id, symbol, side, signal_at_ms, completed_at_ms, cohort_id, episode_id, outcome_json, journal_status FROM micro_burst_outcomes ${cohortId ? 'WHERE cohort_id = ?' : ''} ORDER BY completed_at_ms, signal_id`,
           )
-          .all() as Array<{ signal_id: string; outcome_json: string; journal_status: string }>;
+          .all(...(cohortId ? [cohortId] : [])) as Array<{
+          signal_id: string;
+          symbol: string;
+          side: string | null;
+          signal_at_ms: number | null;
+          completed_at_ms: number;
+          cohort_id: string | null;
+          episode_id: string | null;
+          outcome_json: string;
+          journal_status: string;
+        }>;
         const outcomes: ProspectiveOutcomeRecord[] = [];
         const unresolvedOutcomeIds: string[] = [];
+        const inconsistentOutcomeIds: string[] = [];
         for (const row of rows) {
           try {
-            outcomes.push(JSON.parse(row.outcome_json) as ProspectiveOutcomeRecord);
+            const outcome = JSON.parse(row.outcome_json) as ProspectiveOutcomeRecord;
+            if (
+              outcome.shadowSignalId !== row.signal_id ||
+              outcome.symbol !== row.symbol ||
+              (row.side !== null && row.side !== outcome.side) ||
+              (row.signal_at_ms !== null && row.signal_at_ms !== outcome.signalAtMs) ||
+              row.completed_at_ms !== outcome.completedAtMs ||
+              (row.cohort_id !== null && row.cohort_id !== outcome.cohortId) ||
+              (row.episode_id !== null && row.episode_id !== outcome.episodeId)
+            ) {
+              inconsistentOutcomeIds.push(row.signal_id);
+            } else outcomes.push(outcome);
             if (row.journal_status !== 'WRITTEN') unresolvedOutcomeIds.push(row.signal_id);
           } catch {
             unresolvedOutcomeIds.push(row.signal_id);
+            inconsistentOutcomeIds.push(row.signal_id);
           }
         }
-        return { outcomes, unresolvedOutcomeIds };
+        return { outcomes, unresolvedOutcomeIds, inconsistentOutcomeIds };
       },
-      { outcomes: [], unresolvedOutcomeIds: [] },
+      { outcomes: [], unresolvedOutcomeIds: [], inconsistentOutcomeIds: [] },
+    );
+  }
+
+  loadSignalReconciliation(cohortId?: string): MicroBurstSignalReconciliation {
+    return this.safeValue(
+      () => {
+        const rows = this.db
+          .prepare(
+            `SELECT signal_id, symbol, side, signal_at_ms, cohort_id, episode_id, snapshot_json FROM micro_burst_signals ${cohortId ? 'WHERE cohort_id = ?' : ''} ORDER BY signal_at_ms, signal_id`,
+          )
+          .all(...(cohortId ? [cohortId] : [])) as Array<{
+          signal_id: string;
+          symbol: string;
+          side: string | null;
+          signal_at_ms: number;
+          cohort_id: string | null;
+          episode_id: string | null;
+          snapshot_json: string;
+        }>;
+        const signals: Record<string, unknown>[] = [];
+        const inconsistentSignalIds: string[] = [];
+        for (const row of rows) {
+          try {
+            const signal = JSON.parse(row.snapshot_json) as Record<string, unknown>;
+            if (
+              signal.shadowSignalId !== row.signal_id ||
+              signal.symbol !== row.symbol ||
+              (row.side ?? undefined) !== signal.side ||
+              signal.signalAtMs !== row.signal_at_ms ||
+              (row.cohort_id ?? undefined) !== signal.cohortId ||
+              (row.episode_id ?? undefined) !== signal.episodeId
+            )
+              inconsistentSignalIds.push(row.signal_id);
+            else signals.push(signal);
+          } catch {
+            inconsistentSignalIds.push(row.signal_id);
+          }
+        }
+        return { signals, inconsistentSignalIds };
+      },
+      { signals: [], inconsistentSignalIds: [] },
+    );
+  }
+
+  listCohortIds(): string[] {
+    return this.safeValue(
+      () =>
+        this.db
+          .prepare(
+            `SELECT cohort_id FROM micro_burst_cohorts WHERE cohort_id IS NOT NULL
+       UNION SELECT DISTINCT cohort_id FROM micro_burst_signals WHERE cohort_id IS NOT NULL
+       UNION SELECT DISTINCT cohort_id FROM micro_burst_outcomes WHERE cohort_id IS NOT NULL ORDER BY cohort_id`,
+          )
+          .all()
+          .map((row: any) => row.cohort_id as string),
+      [],
+    );
+  }
+
+  persistEpisode(episode: {
+    episodeId: string;
+    symbol: string;
+    side: string;
+    cohortId?: string;
+    startedAtMs: number;
+    endedAtMs: number;
+    primarySignalId: string;
+    signalIds: readonly string[];
+  }): boolean {
+    return this.safe(() =>
+      this.db
+        .prepare(
+          `INSERT INTO micro_burst_episodes (episode_id, symbol, side, cohort_id, started_at_ms, ended_at_ms, primary_signal_id, signal_ids_json, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(episode_id) DO UPDATE SET ended_at_ms=excluded.ended_at_ms, signal_ids_json=excluded.signal_ids_json, updated_at_ms=excluded.updated_at_ms`,
+        )
+        .run(
+          episode.episodeId,
+          episode.symbol,
+          episode.side,
+          episode.cohortId ?? null,
+          episode.startedAtMs,
+          episode.endedAtMs,
+          episode.primarySignalId,
+          JSON.stringify(episode.signalIds),
+          this.now(),
+        ),
+    );
+  }
+
+  assignSignalEpisode(signalId: string, episodeId: string): boolean {
+    return this.safe(() => {
+      this.db
+        .prepare('UPDATE micro_burst_signals SET episode_id = ? WHERE signal_id = ?')
+        .run(episodeId, signalId);
+    });
+  }
+
+  assignOutcomeEpisode(signalId: string, episodeId: string): boolean {
+    return this.safe(() => {
+      this.db
+        .prepare('UPDATE micro_burst_outcomes SET episode_id = ? WHERE signal_id = ?')
+        .run(episodeId, signalId);
+    });
+  }
+
+  loadEpisodes(): Array<{
+    episodeId: string;
+    symbol: string;
+    side: string;
+    cohortId: string | null;
+    startedAtMs: number;
+    endedAtMs: number;
+    primarySignalId: string;
+    signalIds: string[];
+  }> {
+    return this.safeValue(
+      () =>
+        this.db
+          .prepare(
+            `SELECT episode_id, symbol, side, cohort_id, started_at_ms, ended_at_ms, primary_signal_id, signal_ids_json FROM micro_burst_episodes ORDER BY started_at_ms, episode_id`,
+          )
+          .all()
+          .map((row: any) => ({
+            episodeId: row.episode_id,
+            symbol: row.symbol,
+            side: row.side,
+            cohortId: row.cohort_id,
+            startedAtMs: row.started_at_ms,
+            endedAtMs: row.ended_at_ms,
+            primarySignalId: row.primary_signal_id,
+            signalIds: JSON.parse(row.signal_ids_json),
+          })),
+      [],
     );
   }
 
@@ -350,23 +529,71 @@ export class MicroBurstStorage {
     startedAtMs: number;
     endedAtMs: number;
     reason: string;
+    kind?: GapKind;
+    feed?: MarketDataFeed;
     [key: string]: unknown;
   }): boolean {
     return this.safe(() => {
       this.db
         .prepare(
-          `INSERT INTO market_data_gaps (symbol, started_at_ms, ended_at_ms, reason, details_json, created_at_ms)
-        VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO market_data_gaps (symbol, started_at_ms, ended_at_ms, reason, gap_kind, feed, details_json, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           gap.symbol,
           gap.startedAtMs,
           gap.endedAtMs,
           gap.reason,
+          gap.kind ?? gapKindForReason(gap.reason),
+          gap.feed ?? null,
           JSON.stringify(gap),
           this.now(),
         );
     });
+  }
+
+  recordSubscriptionGap(gap: {
+    symbol: string;
+    feed: MarketDataFeed;
+    startedAtMs: number;
+    endedAtMs: number;
+    details?: Readonly<Record<string, unknown>>;
+  }): boolean {
+    return this.recordGap({
+      ...gap,
+      kind: 'SUBSCRIPTION',
+      reason: 'subscription_gap',
+      ...(gap.details ?? {}),
+    });
+  }
+
+  queryGaps(symbol?: string): Array<{
+    symbol: string;
+    startedAtMs: number;
+    endedAtMs: number;
+    reason: string;
+    kind: GapKind;
+    feed: MarketDataFeed | null;
+    details: unknown;
+  }> {
+    return this.safeValue(() => {
+      const rows = (
+        symbol === undefined
+          ? this.db.prepare('SELECT * FROM market_data_gaps ORDER BY started_at_ms, id').all()
+          : this.db
+              .prepare('SELECT * FROM market_data_gaps WHERE symbol = ? ORDER BY started_at_ms, id')
+              .all(symbol)
+      ) as any[];
+      return rows.map((row) => ({
+        symbol: row.symbol,
+        startedAtMs: row.started_at_ms,
+        endedAtMs: row.ended_at_ms,
+        reason: row.reason,
+        kind: row.gap_kind as GapKind,
+        feed: row.feed as MarketDataFeed | null,
+        details: JSON.parse(row.details_json),
+      }));
+    }, []);
   }
 
   recoverPending(): Array<{ signalId: string; status: string; snapshot: unknown; state: unknown }> {
@@ -399,7 +626,13 @@ export class MicroBurstStorage {
           this.recordReplayGap(symbol, file, fromMs, toMs, 'archive_segment_corrupt');
           continue;
         }
-        for (const line of text.split('\n')) {
+        const parsed = this.completeRecords(text);
+        if (parsed.torn) {
+          this.markFailure(new Error(`malformed archive NDJSON: ${file}`));
+          this.recordReplayGap(symbol, file, fromMs, toMs, 'archive_malformed_ndjson');
+          continue;
+        }
+        for (const line of parsed.text.split('\n')) {
           if (!line.trim()) continue;
           try {
             const record = JSON.parse(line) as ArchivedTrade & { payload?: ArchiveTrade };
@@ -409,7 +642,10 @@ export class MicroBurstStorage {
               records.push(replayRecord);
             }
           } catch {
-            /* A torn NDJSON line does not invalidate earlier replay records. */
+            this.markFailure(new Error(`malformed archive NDJSON: ${file}`));
+            this.recordReplayGap(symbol, file, fromMs, toMs, 'archive_malformed_ndjson');
+            records.length = 0;
+            break;
           }
         }
       } catch (error) {
@@ -517,7 +753,12 @@ export class MicroBurstStorage {
     }
   }
 
-  private segmentPath(type: 'trades' | 'depth', symbol: string, hourStartMs: number, segmentId: string): string {
+  private segmentPath(
+    type: 'trades' | 'depth',
+    symbol: string,
+    hourStartMs: number,
+    segmentId: string,
+  ): string {
     const date = new Date(hourStartMs);
     const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]/g, '_');
     const hour = date.toISOString().replace(/[:.]/g, '-');
@@ -526,10 +767,19 @@ export class MicroBurstStorage {
 
   private activePath(type: 'trades' | 'depth', symbol: string, hourStartMs: number): string {
     const date = new Date(hourStartMs).toISOString().replace(/[:.]/g, '-');
-    return path.join(this.options.archivePath, type, symbol.replace(/[^A-Za-z0-9_-]/g, '_'), `${date}.active.ndjson`);
+    return path.join(
+      this.options.archivePath,
+      type,
+      symbol.replace(/[^A-Za-z0-9_-]/g, '_'),
+      `${date}.active.ndjson`,
+    );
   }
 
-  private openActiveSegment(type: 'trades' | 'depth', symbol: string, hourStartMs: number): ActiveSegment {
+  private openActiveSegment(
+    type: 'trades' | 'depth',
+    symbol: string,
+    hourStartMs: number,
+  ): ActiveSegment {
     const activePath = this.activePath(type, symbol, hourStartMs);
     fs.mkdirSync(path.dirname(activePath), { recursive: true });
     fs.closeSync(fs.openSync(activePath, 'a'));
@@ -548,7 +798,10 @@ export class MicroBurstStorage {
       durabilityTimer: null,
       rotationTimer: null,
     };
-    active.rotationTimer = setTimeout(() => this.finalizeActiveSegment(active), this.maxActiveSegmentDurationMs);
+    active.rotationTimer = setTimeout(
+      () => this.finalizeActiveSegment(active),
+      this.maxActiveSegmentDurationMs,
+    );
     active.rotationTimer.unref?.();
     return active;
   }
@@ -581,7 +834,13 @@ export class MicroBurstStorage {
       this.updateActiveHealth();
     } catch (error) {
       this.markFailure(error);
-      this.recordGap({ symbol: active.symbol, startedAtMs: active.firstEventTimeMs, endedAtMs: active.lastEventTimeMs, reason: 'active_archive_fsync_failure', dataType: active.type });
+      this.recordGap({
+        symbol: active.symbol,
+        startedAtMs: active.firstEventTimeMs,
+        endedAtMs: active.lastEventTimeMs,
+        reason: 'active_archive_fsync_failure',
+        dataType: active.type,
+      });
     }
   }
 
@@ -597,7 +856,13 @@ export class MicroBurstStorage {
       const text = fs.readFileSync(active.activePath, 'utf8');
       const parsed = this.completeRecords(text);
       if (parsed.torn) {
-        this.recordGap({ symbol: active.symbol, startedAtMs: active.firstEventTimeMs, endedAtMs: active.lastEventTimeMs, reason: 'active_archive_torn_line', dataType: active.type });
+        this.recordGap({
+          symbol: active.symbol,
+          startedAtMs: active.firstEventTimeMs,
+          endedAtMs: active.lastEventTimeMs,
+          reason: 'active_archive_torn_line',
+          dataType: active.type,
+        });
         this.markFailure(new Error(`torn active archive line: ${active.activePath}`));
       }
       if (parsed.records.length > 0) this.writeFinalSegment(active, parsed.text, parsed.records);
@@ -605,7 +870,13 @@ export class MicroBurstStorage {
       this.activeSegments.delete(active.key);
     } catch (error) {
       this.markFailure(error);
-      this.recordGap({ symbol: active.symbol, startedAtMs: active.firstEventTimeMs, endedAtMs: active.lastEventTimeMs, reason: 'archive_finalization_failure', dataType: active.type });
+      this.recordGap({
+        symbol: active.symbol,
+        startedAtMs: active.firstEventTimeMs,
+        endedAtMs: active.lastEventTimeMs,
+        reason: 'archive_finalization_failure',
+        dataType: active.type,
+      });
     } finally {
       this.updateActiveHealth();
     }
@@ -633,7 +904,10 @@ export class MicroBurstStorage {
     );
     this.health.activeSegmentCount = this.activeSegments.size;
     this.health.activeSegmentRecords = this.countActiveRecords();
-    this.health.activeSegmentBytes = [...this.activeSegments.values()].reduce((total, active) => total + active.bytes, 0);
+    this.health.activeSegmentBytes = [...this.activeSegments.values()].reduce(
+      (total, active) => total + active.bytes,
+      0,
+    );
     this.health.activeBatchCount = this.health.activeSegmentCount;
     this.health.openBatchRecords = this.health.activeSegmentRecords;
     this.health.draining = this.activeSegments.size > 0;
@@ -684,7 +958,11 @@ export class MicroBurstStorage {
 
   private fsyncFile(filePath: string): void {
     const fd = fs.openSync(filePath, 'r');
-    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 
   private fsyncDirectory(directory: string): void {
@@ -704,7 +982,12 @@ export class MicroBurstStorage {
     }
   }
 
-  private segmentId(type: 'trades' | 'depth', symbol: string, hourStartMs: number, checksum: string): string {
+  private segmentId(
+    type: 'trades' | 'depth',
+    symbol: string,
+    hourStartMs: number,
+    checksum: string,
+  ): string {
     return crypto
       .createHash('sha256')
       .update(`${type}\u0000${symbol}\u0000${hourStartMs}\u0000${checksum}`)
@@ -720,12 +1003,27 @@ export class MicroBurstStorage {
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const record = JSON.parse(line) as { type: 'trades' | 'depth'; symbol: string; eventTime: number; receivedAtMs: number; payload: unknown };
-        if (!record.symbol || !Number.isFinite(record.eventTime) || !Number.isFinite(record.receivedAtMs)) throw new Error('invalid active record');
+        const record = JSON.parse(line) as {
+          type: 'trades' | 'depth';
+          symbol: string;
+          eventTime: number;
+          receivedAtMs: number;
+          payload: unknown;
+        };
+        if (
+          !record.symbol ||
+          !Number.isFinite(record.eventTime) ||
+          !Number.isFinite(record.receivedAtMs)
+        )
+          throw new Error('invalid active record');
         records.push(record);
         completeLines.push(line);
       } catch {
-        return { text: completeLines.length ? `${completeLines.join('\n')}\n` : '', records, torn: true };
+        return {
+          text: completeLines.length ? `${completeLines.join('\n')}\n` : '',
+          records,
+          torn: true,
+        };
       }
     }
     return { text: completeLines.length ? `${completeLines.join('\n')}\n` : '', records, torn };
@@ -752,16 +1050,28 @@ export class MicroBurstStorage {
           for (const name of fs.readdirSync(dir).filter((entry) => entry.endsWith('.ndjson.gz'))) {
             this.repairFinalSegment(path.join(dir, name));
           }
-          for (const name of fs.readdirSync(dir).filter((entry) => entry.endsWith('.active.ndjson'))) {
+          for (const name of fs
+            .readdirSync(dir)
+            .filter((entry) => entry.endsWith('.active.ndjson'))) {
             this.recoverActiveSegment(type, symbolDir.name, path.join(dir, name));
           }
-          for (const name of fs.readdirSync(dir).filter((entry) => entry.endsWith('.meta.json.tmp'))) {
+          for (const name of fs
+            .readdirSync(dir)
+            .filter((entry) => entry.endsWith('.meta.json.tmp'))) {
             fs.unlinkSync(path.join(dir, name));
             this.health.recoveryActions++;
           }
         } catch (error) {
           this.health.recoveryFailures++;
           this.markFailure(error);
+          this.recordGap({
+            symbol: symbolDir.name,
+            startedAtMs: 0,
+            endedAtMs: 0,
+            reason: 'archive_recovery_failure',
+            kind: 'ARCHIVE',
+            dataType: type,
+          });
         }
       }
     }
@@ -781,10 +1091,16 @@ export class MicroBurstStorage {
       .filter((name) => name.endsWith('.ndjson.gz'))
       .some((name) => {
         try {
-          return crypto
-            .createHash('sha256')
-            .update(zlib.gunzipSync(fs.readFileSync(path.join(path.dirname(activePath), name))).toString('utf8'))
-            .digest('hex') === checksum;
+          return (
+            crypto
+              .createHash('sha256')
+              .update(
+                zlib
+                  .gunzipSync(fs.readFileSync(path.join(path.dirname(activePath), name)))
+                  .toString('utf8'),
+              )
+              .digest('hex') === checksum
+          );
         } catch {
           return false;
         }
@@ -797,7 +1113,13 @@ export class MicroBurstStorage {
     const first = parsed.records[0];
     const hourStartMs = Math.floor(first.eventTime / 3_600_000) * 3_600_000;
     if (parsed.torn) {
-      this.recordGap({ symbol, startedAtMs: first.eventTime, endedAtMs: parsed.records[parsed.records.length - 1].eventTime, reason: 'recovery_torn_active_line', dataType: type });
+      this.recordGap({
+        symbol,
+        startedAtMs: first.eventTime,
+        endedAtMs: parsed.records[parsed.records.length - 1].eventTime,
+        reason: 'recovery_torn_active_line',
+        dataType: type,
+      });
       this.markFailure(new Error(`torn active archive line: ${activePath}`));
     }
     const active: ActiveSegment = {
@@ -823,7 +1145,8 @@ export class MicroBurstStorage {
   private repairFinalSegment(filePath: string): void {
     const text = zlib.gunzipSync(fs.readFileSync(filePath)).toString('utf8');
     const parsed = this.completeRecords(text);
-    if (parsed.torn || parsed.records.length === 0) throw new Error(`invalid finalized archive segment: ${filePath}`);
+    if (parsed.torn || parsed.records.length === 0)
+      throw new Error(`invalid finalized archive segment: ${filePath}`);
     const first = parsed.records[0];
     const checksum = crypto.createHash('sha256').update(parsed.text).digest('hex');
     const hourStartMs = Math.floor(first.eventTime / 3_600_000) * 3_600_000;
@@ -846,7 +1169,9 @@ export class MicroBurstStorage {
       this.fsyncDirectory(path.dirname(metadataPath));
       this.health.recoveryActions++;
     }
-    const indexed = this.db.prepare(`SELECT 1 FROM market_data_segments WHERE file_path = ?`).get(filePath);
+    const indexed = this.db
+      .prepare(`SELECT 1 FROM market_data_segments WHERE file_path = ?`)
+      .get(filePath);
     if (!indexed) {
       this.insertSegmentIndex(filePath, metadata);
       this.health.recoveryActions++;
@@ -860,9 +1185,22 @@ export class MicroBurstStorage {
         first_event_time_ms, last_event_time_ms, checksum, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT DO NOTHING`,
       )
-      .run(filePath, metadata.segmentId, metadata.type, metadata.symbol, metadata.hourStartMs, metadata.recordCount, metadata.firstEventTimeMs, metadata.lastEventTimeMs, metadata.checksum, this.now());
+      .run(
+        filePath,
+        metadata.segmentId,
+        metadata.type,
+        metadata.symbol,
+        metadata.hourStartMs,
+        metadata.recordCount,
+        metadata.firstEventTimeMs,
+        metadata.lastEventTimeMs,
+        metadata.checksum,
+        this.now(),
+      );
     this.db
-      .prepare(`UPDATE market_data_segments SET segment_id = ? WHERE file_path = ? AND segment_id IS NULL`)
+      .prepare(
+        `UPDATE market_data_segments SET segment_id = ? WHERE file_path = ? AND segment_id IS NULL`,
+      )
       .run(metadata.segmentId, filePath);
   }
 
@@ -1008,11 +1346,12 @@ export class MicroBurstStorage {
       CREATE TABLE IF NOT EXISTS market_data_segments (file_path TEXT PRIMARY KEY, segment_id TEXT, data_type TEXT NOT NULL, symbol TEXT NOT NULL, hour_start_ms INTEGER NOT NULL, record_count INTEGER NOT NULL, first_event_time_ms INTEGER NOT NULL, last_event_time_ms INTEGER NOT NULL, checksum TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS book_checkpoints (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS book_features (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, features_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS micro_burst_signals (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, signal_at_ms INTEGER NOT NULL, snapshot_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS micro_burst_outcomes (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, completed_at_ms INTEGER NOT NULL, outcome_json TEXT NOT NULL, journal_status TEXT NOT NULL DEFAULT 'PENDING', created_at_ms INTEGER NOT NULL);
+       CREATE TABLE IF NOT EXISTS micro_burst_signals (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT, signal_at_ms INTEGER NOT NULL, cohort_id TEXT, episode_id TEXT, snapshot_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+       CREATE TABLE IF NOT EXISTS micro_burst_outcomes (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT, signal_at_ms INTEGER, completed_at_ms INTEGER NOT NULL, cohort_id TEXT, episode_id TEXT, outcome_json TEXT NOT NULL, journal_status TEXT NOT NULL DEFAULT 'PENDING', created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS micro_burst_pending_outcomes (signal_id TEXT PRIMARY KEY, status TEXT NOT NULL, state_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS micro_burst_cohorts (cohort_id TEXT PRIMARY KEY, cohort_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS market_data_gaps (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER NOT NULL, reason TEXT NOT NULL, details_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+       CREATE TABLE IF NOT EXISTS micro_burst_cohorts (cohort_id TEXT PRIMARY KEY, cohort_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
+       CREATE TABLE IF NOT EXISTS micro_burst_episodes (episode_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT NOT NULL, cohort_id TEXT, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER NOT NULL, primary_signal_id TEXT NOT NULL, signal_ids_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
+       CREATE TABLE IF NOT EXISTS market_data_gaps (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER NOT NULL, reason TEXT NOT NULL, gap_kind TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY', feed TEXT, details_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_segments_symbol_hour ON market_data_segments(symbol, hour_start_ms);
       CREATE INDEX IF NOT EXISTS idx_segments_range ON market_data_segments(data_type, symbol, first_event_time_ms, last_event_time_ms);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_symbol_time ON book_checkpoints(symbol, event_time_ms);
@@ -1022,12 +1361,40 @@ export class MicroBurstStorage {
       CREATE INDEX IF NOT EXISTS idx_pending_status ON micro_burst_pending_outcomes(status);
       CREATE INDEX IF NOT EXISTS idx_gaps_symbol_time ON market_data_gaps(symbol, started_at_ms);
     `);
+    // Older databases have untyped rows. Preserve them and classify them explicitly.
+    for (const statement of [
+      `ALTER TABLE market_data_gaps ADD COLUMN gap_kind TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'`,
+      `ALTER TABLE market_data_gaps ADD COLUMN feed TEXT`,
+    ]) {
+      try {
+        this.db.exec(statement);
+      } catch {
+        /* already migrated */
+      }
+    }
+    this.db.pragma('user_version = 2');
     try {
       this.db.exec(
         `ALTER TABLE micro_burst_outcomes ADD COLUMN journal_status TEXT NOT NULL DEFAULT 'PENDING'`,
       );
     } catch {
       /* already migrated */
+    }
+    for (const statement of [
+      `ALTER TABLE micro_burst_signals ADD COLUMN side TEXT`,
+      `ALTER TABLE micro_burst_signals ADD COLUMN cohort_id TEXT`,
+      `ALTER TABLE micro_burst_signals ADD COLUMN episode_id TEXT`,
+      `ALTER TABLE micro_burst_outcomes ADD COLUMN side TEXT`,
+      `ALTER TABLE micro_burst_outcomes ADD COLUMN signal_at_ms INTEGER`,
+      `ALTER TABLE micro_burst_outcomes ADD COLUMN cohort_id TEXT`,
+      `ALTER TABLE micro_burst_outcomes ADD COLUMN episode_id TEXT`,
+      `ALTER TABLE micro_burst_episodes ADD COLUMN cohort_id TEXT`,
+    ]) {
+      try {
+        this.db.exec(statement);
+      } catch {
+        /* already migrated */
+      }
     }
     try {
       this.db.exec(`ALTER TABLE market_data_segments ADD COLUMN segment_id TEXT`);
@@ -1038,6 +1405,18 @@ export class MicroBurstStorage {
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_segments_segment_id ON market_data_segments(segment_id) WHERE segment_id IS NOT NULL`,
     );
   }
+}
+
+function gapKindForReason(reason: string): GapKind {
+  if (reason.startsWith('depth_') || reason === 'sequence_gap') return 'DEPTH_SEQUENCE';
+  if (reason.startsWith('subscription_')) return 'SUBSCRIPTION';
+  if (
+    reason.startsWith('archive_') ||
+    reason.startsWith('active_archive_') ||
+    reason.startsWith('recovery_')
+  )
+    return 'ARCHIVE';
+  return 'UNKNOWN_LEGACY';
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

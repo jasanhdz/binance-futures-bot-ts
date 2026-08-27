@@ -24,6 +24,12 @@ export interface MicroBurstProspectiveAnalysisInput {
     fromMs: number,
     toMs: number,
   ) => readonly MicroBurstTradeRecord[];
+  /** Strict mode used for the official SQLite-backed report. */
+  official?: boolean;
+  cohortId?: string;
+  availableCohorts?: readonly string[];
+  sqliteInconsistencyIds?: readonly string[];
+  archiveGapCount?: number;
 }
 
 export interface MicroBurstProspectiveAnalysis {
@@ -55,9 +61,27 @@ const COST_LABELS = DEFAULT_COST_SCENARIOS.map((scenario) => scenario.label);
 export function analyzeMicroBurstProspective(
   input: MicroBurstProspectiveAnalysisInput,
 ): MicroBurstProspectiveAnalysis {
-  const signals = dedupe(input.signals, (row) => stringValue(row.shadowSignalId));
+  const cohortIds = new Set(
+    [...input.signals, ...input.outcomes].map((row) => stringValue(row.cohortId)).filter(isPresent),
+  );
+  if (input.official) {
+    const available = new Set(input.availableCohorts ?? cohortIds);
+    if (!input.cohortId && available.size > 1) throw new Error('COHORT_SELECTION_REQUIRED');
+    if (input.cohortId && available.size > 0 && !available.has(input.cohortId)) {
+      throw new Error(`COHORT_NOT_FOUND:${input.cohortId}`);
+    }
+    if ((input.sqliteInconsistencyIds?.length ?? 0) > 0) throw new Error('SQLITE_INCONSISTENCY_UNRESOLVED');
+    if ((input.archiveGapCount ?? 0) > 0) throw new Error('ARCHIVE_GAP_UNRESOLVED');
+  }
+  const selectedSignals = input.cohortId
+    ? input.signals.filter((row) => stringValue(row.cohortId) === input.cohortId)
+    : input.signals;
+  const selectedOutcomes = input.cohortId
+    ? input.outcomes.filter((row) => row.cohortId === input.cohortId)
+    : input.outcomes;
+  const signals = dedupe(selectedSignals, (row) => stringValue(row.shadowSignalId));
   const outcomes = dedupe(
-    input.outcomes,
+    selectedOutcomes,
     (row) => row.shadowSignalId,
     (current, candidate) =>
       candidate.completedAtMs >= current.completedAtMs ? candidate : current,
@@ -69,7 +93,11 @@ export function analyzeMicroBurstProspective(
   const missingOutcomes = [...signalIds].filter((id) => !outcomeIds.has(id)).length;
   const orphanOutcomes = [...outcomeIds].filter((id) => !signalIds.has(id)).length;
   const unresolvedOutcomeCount = new Set(input.unresolvedOutcomeIds ?? []).size;
-  const episodes = new Set(outcomes.rows.map((row) => row.episodeId).filter(isPresent));
+  if (input.official) {
+    if (unresolvedOutcomeCount > 0) throw new Error('UNRESOLVED_OUTCOME_EXPORTS');
+    if (missingOutcomes > 0 || orphanOutcomes > 0) throw new Error('SIGNAL_OUTCOME_RECONCILIATION_FAILED');
+  }
+  const episodes = new Set([...signals.rows, ...outcomes.rows].map((row) => stringValue(row.episodeId)).filter(isPresent));
   const modelRecords = outcomes.rows.flatMap(modelRecordsFor);
   const lines: string[] = [];
 
@@ -88,6 +116,12 @@ export function analyzeMicroBurstProspective(
   );
   lines.push(
     `Storage gaps: ${missingOutcomes + orphanOutcomes === 0 ? 'none observed' : `signal/outcome reconciliation gap (${missingOutcomes + orphanOutcomes})`}; unresolved terminal journal exports: ${unresolvedOutcomeCount}`,
+  );
+  lines.push(
+    `Episode bootstrap/attrition: bootstrap=${signals.rows.length}; completed=${outcomes.rows.length}; attrition=${signals.rows.length - outcomes.rows.length}`,
+  );
+  lines.push(
+    `Attrition counts: signals=${signals.rows.length}; outcomes=${outcomes.rows.length}; episodes=${episodes.size}; incomplete_signals=${missingOutcomes}; orphan_outcomes=${orphanOutcomes}`,
   );
 
   const bookRows = [...signals.rows, ...outcomes.rows];

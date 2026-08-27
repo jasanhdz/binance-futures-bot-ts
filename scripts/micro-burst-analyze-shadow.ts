@@ -11,20 +11,38 @@ const outcomesDir = argument('--outcomes-dir') ?? 'logs/micro-burst/shadow-outco
 const seed = Number(argument('--seed') ?? '1');
 const databasePath = argument('--database');
 const archivePath = argument('--archive-dir');
+const cohortId = argument('--cohort');
 const storage =
   databasePath && archivePath ? new MicroBurstStorage({ databasePath, archivePath }) : undefined;
-const outcomeReconciliation = storage?.loadOutcomeReconciliation();
+const signalReconciliation = storage?.loadSignalReconciliation(cohortId);
+const selectedOutcomeReconciliation = storage?.loadOutcomeReconciliation(cohortId);
+const selectedCohort = cohortId;
+const selectedSymbols = new Set(
+  [...(signalReconciliation?.signals ?? []), ...(selectedOutcomeReconciliation?.outcomes ?? [])]
+    .map((row) => row.symbol)
+    .filter((symbol): symbol is string => typeof symbol === 'string'),
+);
+const archiveGapCount =
+  storage?.queryGaps().filter((gap) => gap.kind === 'ARCHIVE' && selectedSymbols.has(gap.symbol)).length ?? 0;
 
 const report = analyzeMicroBurstProspective({
-  signals: loadJsonl(signalsDir),
+  signals: storage ? signalReconciliation!.signals : loadJsonl(signalsDir),
   outcomes: storage
-    ? outcomeReconciliation!.outcomes
+    ? selectedOutcomeReconciliation!.outcomes
     : (loadJsonl(outcomesDir) as ProspectiveOutcomeRecord[]),
   seed: Number.isFinite(seed) ? seed : 1,
   archiveTrades: storage
     ? (symbol, fromMs, toMs) => storage.queryArchivedTrades(symbol, fromMs, toMs) as any
     : undefined,
-  unresolvedOutcomeIds: outcomeReconciliation?.unresolvedOutcomeIds,
+  unresolvedOutcomeIds: selectedOutcomeReconciliation?.unresolvedOutcomeIds,
+  official: Boolean(storage),
+  cohortId: selectedCohort,
+  availableCohorts: storage?.listCohortIds(),
+  sqliteInconsistencyIds: [
+    ...(signalReconciliation?.inconsistentSignalIds ?? []),
+    ...(selectedOutcomeReconciliation?.inconsistentOutcomeIds ?? []),
+  ],
+  archiveGapCount,
 });
 console.log(report.text);
 storage?.close();
