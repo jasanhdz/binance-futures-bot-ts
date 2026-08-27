@@ -6,9 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after commit `d27f6f9`.
+Runtime architecture migration checkpoint after commit `a32ec56`.
 
-The TypeScript build passes. The required Phase 1 matrix passes 166/166, including Aegis live 108/108 and ExitEye 12/12. The full repository suite passes 819/821; both failures are the known restoration checks that require the absent root `regime_config.example.yaml` fixture.
+The TypeScript build passes. The Phase 1 matrix passes 170/170. The full `npm test -- --run` suite passes 818/818.
 
 ## Completed foundations
 
@@ -42,6 +42,37 @@ The TypeScript build passes. The required Phase 1 matrix passes 166/166, includi
 - Proven-dead runtime compatibility files were removed, including old legacy runtime factory/compatibility/coordinator/telemetry adapters and obsolete `config/regimen.config.yaml`.
 - Broken npm scripts whose target source files no longer existed were removed from `package.json`.
 
+## Phase 1 Cleanup (Archived)
+
+The following cleanup tasks were completed to stabilize architecture before Micro Burst:
+
+- **Shared execution relocated** to `src/app/execution/SharedStrategyExecutionService.ts`.
+- **EntryStrategy** moved to `src/domain/strategy/EntryStrategy.ts`.
+- **Formatter** moved to `src/app/telegram/presentation/AegisTurboEntryMessageFormatter.ts`.
+- **Legacy research modules** archived:
+  - `src/brain` → `src/tooling/research/archived/brain-contract-v1/`
+  - `src/prospective` → `src/tooling/research/archived/prospective-shadow-cohort-v1/`
+  - `src/challengers` → `src/tooling/research/archived/challengers-v17/`
+- **Legacy execution** archived:
+  - `src/execution-durable` → `src/tooling/legacy-execution/durable/`
+- **Sentinel integration** archived:
+  - `src/sentinel` → `src/tooling/research/archived/sentinel-news-v1/`
+  - `enable_sentinel` config option removed.
+- **Backtest directory** removed (contained only mock tests, no runner).
+- **Auditors** relocated to `src/tooling/audit/binance-usdm-readonly/`.
+- **Analyzer** moved to `src/app/analysis/AegisTurboHistoryAnalyzer.ts`.
+- **Aegis tools** moved to `src/tooling/aegis/`.
+- **Documentation** reorganized:
+  - `docs/README.md` added.
+  - Aegis docs under `docs/strategies/aegis/` and `docs/operations/aegis/`.
+  - Historical docs under `docs/history/`.
+  - Aegis Range archived under `docs/research/archived/aegis-range-v1/`.
+- **Vitest config** added with `testTimeout: 15000` to accommodate lifecycle tests with filesystem I/O.
+- **`package.json`** normalized: `main` now points to `dist/main.js`.
+- **Restoration tests** use real `config/regime_config.example.yaml` fixture.
+- **Phase 1 architecture boundary test** added at `src/restoration/phase1-architecture-boundaries.test.ts`.
+- **Digests** updated: `23e210a84d4f547588e899d345d13905e4084a685346794c96f2cf2429e17fc6`, `43546401954d3c79b56b29a8156411815679c63977799884cb58d7c6a78c7324`.
+
 ## Architecture currently in effect
 
 ### AEGIS_TURBO
@@ -68,28 +99,20 @@ The synthetic Momentum-inside-Aegis decision path has been retired. The orchestr
 
 Position ownership routes to `MomentumRidePositionManager`, which owns its policy composition over `StrategyPositionLifecycleCore` and has no ExitEye callback surface.
 
-## Highest-priority remaining work before Micro Burst
+## Remaining work before Micro Burst
 
 1. ~~**Migrate Aegis exchange mutation to `SharedStrategyExecutionService`.**~~ DONE
 2. ~~**Remove the synthetic Momentum-inside-Aegis decision path.**~~ DONE
-
 3. ~~**Extract position lifecycle implementation out of `TradingService`.**~~ DONE
-
 4. ~~**Make restart/recovery strategy-generic.**~~ DONE
-
 5. ~~**Finish per-strategy risk persistence/recovery.**~~ DONE WITH DOCUMENTED JOURNAL LIMITATION
-
-6. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
+6. ~~**Phase 1 Cleanup and archive reorganization.**~~ DONE
+7. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
    - Do not mark `FROZEN_LIVE` merely because code compiles.
    - Generate deterministic hashes only after architecture and behavior are stable.
-
-7. **Reduce `TradingService` responsibility.**
+8. **Reduce `TradingService` responsibility.**
    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
    - Do this incrementally; do not rewrite the bot from scratch.
-
-8. **Repair/triage repository-wide test infrastructure separately.**
-   Current `npm test -- --run` has two failures because root `regime_config.example.yaml` is absent from this checkout. Do not fabricate or copy an unauthoritative fixture merely to satisfy the frozen digest check; restore it only from its legitimate source or make the restoration test explicitly fixture-aware in a separate infrastructure change.
-
 9. **Only after all above, begin `MICRO_BURST_V1`.**
 
 ## Explicit architecture invariants
@@ -111,15 +134,16 @@ Position ownership routes to `MomentumRidePositionManager`, which owns its polic
 At the latest runtime checkpoint:
 
 - TypeScript build: PASS.
-- `src/app/services/SharedStrategyExecutionService.test.ts`: 8/8 PASS.
+- `src/app/execution/SharedStrategyExecutionService.test.ts`: 8/8 PASS.
 - `src/domain/strategies/aegis/AegisExecutionIntentFactory.test.ts`: 2/2 PASS.
 - `src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.test.ts`: 3/3 PASS.
-- Required Phase 1 targeted matrix: 166/166 PASS.
+- Required Phase 1 targeted matrix: 170/170 PASS.
 - `src/app/services/TradingService.aegis-live.test.ts`: 108/108 PASS.
 - `src/app/services/TradingService.exit-eye.test.ts`: 12/12 PASS.
 - `src/app/strategy/OwnedPositionManagers.test.ts`: 4/4 PASS.
 - Strategy router / position manager router / Momentum entry policy / shared safety / ownership / risk ledger targeted tests: PASS.
-- Full `npm test -- --run`: 819 passed, 2 failed. Both failures are caused by the absent root `regime_config.example.yaml`; no scientific artifact or replacement hash was fabricated.
+- Restoration/fronteras: 23/23 PASS.
+- Full `npm test -- --run`: 818 passed, 0 failed.
 
 ## Explicit prohibition
 
