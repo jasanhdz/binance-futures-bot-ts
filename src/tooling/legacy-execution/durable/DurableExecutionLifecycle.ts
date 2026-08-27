@@ -11,6 +11,7 @@ export type DurableExecutionState =
   | 'EXIT_PENDING'
   | 'CLOSED'
   | 'RECONCILIATION_REQUIRED'
+  | 'MARKET_OPEN_AMBIGUOUS'
   | 'FAILED_CLOSED';
 
 export type EntryOrderStatus =
@@ -104,7 +105,7 @@ export interface DurableExecutionStore {
 
 export interface DurableExecutionExchange {
   submitEntry(intent: DurableEntryIntent): Promise<void>;
-  readTruth(intent: DurableEntryIntent): Promise<ExecutionTruth>;
+  readTruth(intent: DurableEntryIntent, lookupAmbiguous?: boolean): Promise<ExecutionTruth>;
   ensureProtection(
     intent: DurableEntryIntent,
     position: PositionTruth,
@@ -228,8 +229,26 @@ export class DurableExecutionCoordinator {
   }
 
   async submit(intent: DurableEntryIntent): Promise<DurableExecutionRecord> {
+    const existing = this.store.get(intent.intentId);
+    if (
+      !existing &&
+      this.store
+        .listNonTerminal()
+        .some(
+          (candidate) =>
+            candidate.intent.symbol === intent.symbol &&
+            candidate.state === 'MARKET_OPEN_AMBIGUOUS',
+        )
+    ) {
+      throw new DurableExecutionError('MARKET_OPEN_AMBIGUOUS');
+    }
     let record = this.prepare(intent);
-    if (TERMINAL.has(record.state) || record.state === 'PROTECTED') return record;
+    if (
+      TERMINAL.has(record.state) ||
+      record.state === 'PROTECTED' ||
+      record.state === 'MARKET_OPEN_AMBIGUOUS'
+    )
+      return record;
     if (!['INTENT_CREATED', 'RECONCILIATION_REQUIRED'].includes(record.state)) {
       return this.reconcile(intent);
     }
@@ -252,13 +271,21 @@ export class DurableExecutionCoordinator {
         });
       }
       record = this.transition(record, {
-        state: 'RECONCILIATION_REQUIRED',
+        state: 'MARKET_OPEN_AMBIGUOUS',
+        retryAuthorized: false,
         lastReason:
           error instanceof AmbiguousExchangeResult
             ? 'ENTRY_ACKNOWLEDGEMENT_AMBIGUOUS'
             : 'ENTRY_TRANSPORT_RESULT_UNKNOWN',
       });
-      return this.reconcile(intent);
+      const reconciled = await this.reconcile(intent, true);
+      return reconciled.state === 'RECONCILIATION_REQUIRED'
+        ? this.transition(reconciled, {
+            state: 'MARKET_OPEN_AMBIGUOUS',
+            retryAuthorized: false,
+            lastReason: 'MARKET_OPEN_AMBIGUOUS_UNRESOLVED',
+          })
+        : reconciled;
     }
     record = this.transition(record, {
       state: 'ORDER_SUBMITTED',
@@ -267,9 +294,12 @@ export class DurableExecutionCoordinator {
     return this.reconcile(intent);
   }
 
-  async reconcile(intent: DurableEntryIntent): Promise<DurableExecutionRecord> {
+  async reconcile(
+    intent: DurableEntryIntent,
+    lookupAmbiguous = false,
+  ): Promise<DurableExecutionRecord> {
     let record = this.prepare(intent);
-    const truth = await this.exchange.readTruth(intent);
+    const truth = await this.exchange.readTruth(intent, lookupAmbiguous);
     if (!truth.conclusive) {
       return this.transition(record, {
         state: 'RECONCILIATION_REQUIRED',
@@ -309,6 +339,7 @@ export class DurableExecutionCoordinator {
           lastReason: 'FLAT_CONFIRMED_BY_EXCHANGE',
         });
       }
+      if (record.state === 'MARKET_OPEN_AMBIGUOUS') return record;
       return this.transition(record, {
         state: 'RECONCILIATION_REQUIRED',
         entryStatus: 'NOT_FOUND',

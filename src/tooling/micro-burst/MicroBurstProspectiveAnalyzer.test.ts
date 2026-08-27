@@ -91,7 +91,8 @@ describe('MicroBurstProspectiveAnalyzer', () => {
             ],
     });
 
-    expect(report.text).toContain('TIME_SHIFT (forward 300s): N=1 mean_300s=1000.0bps');
+    expect(report.text).toContain('TIME_SHIFT (forward 300s): N=1 episodes=1 mean_300s=1000.0bps');
+    expect(report.text).toContain('Dynamic exits: AggTrade-path replay only; counterfactual');
     expect(report.text).toContain('first archived trade strictly after shifted T0');
   });
 
@@ -115,6 +116,38 @@ describe('MicroBurstProspectiveAnalyzer', () => {
       official: true,
       availableCohorts: ['cohort-a', 'cohort-b'],
     })).toThrow('COHORT_SELECTION_REQUIRED');
+  });
+
+  it('rejects an unresolved malformed outcome journal for official analysis', () => {
+    expect(() => analyzeMicroBurstProspective({
+      signals: [],
+      outcomes: [],
+      official: true,
+      malformedJournal: {
+        journalHealthy: false,
+        malformedCount: 1,
+        malformedFile: 'outcomes.jsonl',
+        malformedLine: 4,
+        malformedReason: 'invalid json',
+      },
+    })).toThrow('MALFORMED_OUTCOME_JOURNAL_UNRESOLVED');
+  });
+
+  it('reports malformed outcome journal coordinates in non-official analysis', () => {
+    const report = analyzeMicroBurstProspective({
+      signals: [],
+      outcomes: [],
+      malformedJournal: {
+        journalHealthy: false,
+        malformedCount: 2,
+        malformedFile: 'outcomes.jsonl',
+        malformedLine: 4,
+        malformedReason: 'invalid json',
+      },
+    });
+    expect(report.text).toContain(
+      'Malformed outcome journal: count=2; file=outcomes.jsonl; line=4; reason=invalid json',
+    );
   });
 
   it('reports deterministic episode bootstrap and attrition', () => {

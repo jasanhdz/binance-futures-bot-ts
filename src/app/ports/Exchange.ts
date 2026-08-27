@@ -115,6 +115,12 @@ export interface Exchange {
     symbol: string,
     clientOrderId: string,
   ): Promise<{ avgPrice: number; orderId: string } | null>;
+  /** Optional exchange-specific evidence lookup used after an ambiguous submit. */
+  readMarketOpenEvidence?(
+    symbol: string,
+    clientOrderId: string,
+    since: number,
+  ): Promise<{ avgPrice: number; orderId: string } | null>;
   placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean>;
   placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean>;
   closeSideMarketSafe(

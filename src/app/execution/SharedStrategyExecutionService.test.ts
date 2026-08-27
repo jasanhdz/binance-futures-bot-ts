@@ -104,6 +104,7 @@ describe('SharedStrategyExecutionService protection policy', () => {
         confirmationAttempts: 1,
         confirmationDelaysMs: [0],
         maxMarketOpenAttempts: 2,
+        marketOpenAmbiguityDelaysMs: [0, 0, 0, 0],
       },
     );
   });
@@ -143,9 +144,33 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
     const result = await service.execute(intent());
 
-    expect(result).toMatchObject({ status: 'FAILED', reason: 'EXCHANGE_REJECTED' });
-    expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: 'FAILED', reason: 'MARKET_OPEN_AMBIGUOUS' });
+    expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledTimes(4);
     expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat -2013 during ambiguity lookup as definitive absence', async () => {
+    vi.mocked(exchange.marketOpen).mockRejectedValueOnce(new Error('transport timeout'));
+    vi.mocked(exchange.readMarketOpenByClientOrderId).mockRejectedValue({
+      code: -2013,
+      message: 'Order does not exist',
+    });
+
+    const result = await service.execute(intent());
+
+    expect(result).toMatchObject({ status: 'FAILED', reason: 'MARKET_OPEN_AMBIGUOUS' });
+    expect(exchange.marketOpen).toHaveBeenCalledOnce();
+    expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledTimes(4);
+  });
+
+  it('blocks later entries for a symbol after unresolved market ambiguity', async () => {
+    vi.mocked(exchange.marketOpen).mockRejectedValueOnce(new Error('transport timeout'));
+    const first = await service.execute(intent());
+    const second = await service.execute(intent({ tradeId: 'AEGIS-ETHUSDT-2' }));
+
+    expect(first).toMatchObject({ status: 'FAILED', reason: 'MARKET_OPEN_AMBIGUOUS' });
+    expect(second).toMatchObject({ status: 'FAILED', reason: 'MARKET_OPEN_AMBIGUOUS' });
+    expect(exchange.marketOpen).toHaveBeenCalledOnce();
   });
 
   it('reduces and safely retries only a definite size rejection after absent reconciliation', async () => {
@@ -156,7 +181,7 @@ describe('SharedStrategyExecutionService protection policy', () => {
     const result = await service.execute(intent());
 
     expect(result).toMatchObject({ status: 'OPENED', orderId: 'order-2' });
-    expect(exchange.readMarketOpenByClientOrderId).toHaveBeenCalledTimes(1);
+    expect(exchange.readMarketOpenByClientOrderId).not.toHaveBeenCalled();
     expect(exchange.marketOpen).toHaveBeenNthCalledWith(
       1,
       'ETHUSDT',
@@ -169,9 +194,9 @@ describe('SharedStrategyExecutionService protection policy', () => {
       'ETHUSDT',
       'LONG',
       1.8,
-      expect.stringMatching(/^se_[a-f0-9]{33}$/),
+      expect.stringMatching(/^se_[a-f0-9]{28}_2$/),
     );
-    expect(vi.mocked(exchange.marketOpen).mock.calls[0]?.[3]).toBe(
+    expect(vi.mocked(exchange.marketOpen).mock.calls[0]?.[3]).not.toBe(
       vi.mocked(exchange.marketOpen).mock.calls[1]?.[3],
     );
   });
@@ -265,7 +290,7 @@ describe('SharedStrategyExecutionService protection policy', () => {
     const result = await service.execute(intent());
 
     expect(result).toMatchObject({ status: 'FAILED', reason: 'EXCHANGE_REJECTED' });
-    expect(exchange.readActivePosition).toHaveBeenCalledTimes(3);
+    expect(exchange.readActivePosition).toHaveBeenCalledTimes(4);
     expect(exchange.closeSideMarketSafe).toHaveBeenCalledWith(
       'ETHUSDT',
       'LONG',
@@ -353,13 +378,16 @@ describe('SharedStrategyExecutionService protection policy', () => {
   });
 
   it('attempts confirmation emergency close only once when that close fails', async () => {
-    vi.mocked(exchange.readActivePosition).mockResolvedValueOnce(null).mockResolvedValueOnce({
-      sideMode: 'LONG',
-      qtyAbs: 2,
-      entryPrice: 100,
-      leverage: 20,
-      isolatedMargin: 10,
-    });
+    vi.mocked(exchange.readActivePosition)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        sideMode: 'LONG',
+        qtyAbs: 2,
+        entryPrice: 100,
+        leverage: 20,
+        isolatedMargin: 10,
+      });
     vi.mocked(exchange.closeSideMarketSafe).mockRejectedValue(
       new Error('confirmation close failed'),
     );

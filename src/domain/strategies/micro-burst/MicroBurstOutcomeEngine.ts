@@ -16,6 +16,7 @@ import {
   CounterfactualExitReason,
   PendingOutcome,
   EntryModelOutcome,
+  CostComponents,
 } from './MicroBurstOutcomeTypes';
 import { MicroBurstConfig, defaultMicroBurstConfig } from './MicroBurstTypes';
 
@@ -260,6 +261,7 @@ export function computeEntryModelOutcomes(
         dynamicExitOutcome: null,
         grossBps: null,
         costScenarios: null,
+        costComponents: null,
       });
       continue;
     }
@@ -268,13 +270,24 @@ export function computeEntryModelOutcomes(
     const grossBps = lastTrade
       ? sideAwareReturnBps(assumption.entryPrice, lastTrade.price, signal.side)
       : 0;
+    const costComponents = computeCostComponents(grossBps, scenarios, assumption.slippageBps ?? 0);
     outcomes[assumption.model] = Object.freeze({
       assumption,
       horizons,
       barrierOutcome: aggregateBarrierOutcome(horizons),
       dynamicExitOutcome: simulateDynamicExit(signal, assumption.entryPrice, priceHistory, config),
       grossBps,
-      costScenarios: Object.freeze(computeCostScenarios(grossBps, scenarios)),
+      // Conservative entry already includes its adverse entry adjustment. Do not charge
+      // that same adjustment again as scenario slippage.
+      costScenarios: Object.freeze(
+        Object.fromEntries(
+          Object.entries(costComponents).map(([label, components]) => [
+            label,
+            grossBps - components.totalBps,
+          ]),
+        ),
+      ),
+      costComponents: Object.freeze(costComponents),
     });
   }
   return Object.freeze(outcomes);
@@ -304,6 +317,26 @@ export function computeCostScenarios(
   const result: Record<string, number> = {};
   for (const s of scenarios) {
     result[s.label] = grossBps - s.feeBps - s.slippageBps;
+  }
+  return result;
+}
+
+export function computeCostComponents(
+  grossBps: number,
+  scenarios: CostScenario[],
+  entrySlippageBps = 0,
+): Record<string, CostComponents> {
+  const result: Record<string, CostComponents> = {};
+  for (const scenario of scenarios) {
+    const entry = Math.max(0, entrySlippageBps);
+    const additional = Math.max(0, scenario.slippageBps - entry);
+    result[scenario.label] = {
+      feeBps: scenario.feeBps,
+      entrySlippageBps: entry,
+      additionalSlippageBps: additional,
+      // Entry slippage is already present in grossBps for the conservative model.
+      totalBps: scenario.feeBps + additional,
+    };
   }
   return result;
 }

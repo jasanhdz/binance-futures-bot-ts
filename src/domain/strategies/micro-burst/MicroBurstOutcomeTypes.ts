@@ -101,6 +101,13 @@ export interface CostScenario {
   slippageBps: number;
 }
 
+export interface CostComponents {
+  feeBps: number;
+  entrySlippageBps: number;
+  additionalSlippageBps: number;
+  totalBps: number;
+}
+
 export const DEFAULT_COST_SCENARIOS: CostScenario[] = [
   { label: 'cost_0', feeBps: 0, slippageBps: 0 },
   { label: 'cost_10', feeBps: 7, slippageBps: 3 },
@@ -154,6 +161,7 @@ export interface EntryModelOutcome {
   dynamicExitOutcome: Readonly<DynamicExitOutcome> | null;
   grossBps: number | null;
   costScenarios: Readonly<Record<string, number>> | null;
+  costComponents?: Readonly<Record<string, CostComponents>> | null;
 }
 
 // ── Complete Outcome Record ────────────────────────────────
@@ -189,6 +197,7 @@ export interface ProspectiveOutcomeRecord {
   dynamicExitOutcome: DynamicExitOutcome | null;
   grossBps: number;
   costScenarios: Record<string, number>;
+  costComponents?: Record<string, CostComponents>;
   completedAtMs: number;
   strategyVersion: string;
   codeCommitSha: string;
@@ -240,4 +249,9 @@ export interface OutcomeTrackerHealth {
   ambiguous: number;
   meanMfeBps: number;
   meanMaeBps: number;
+  journalHealthy: boolean;
+  malformedJournalCount: number;
+  malformedJournalFile: string | null;
+  malformedJournalLine: number | null;
+  malformedJournalReason: string | null;
 }

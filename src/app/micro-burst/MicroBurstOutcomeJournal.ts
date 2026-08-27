@@ -5,10 +5,25 @@ import { ProspectiveOutcomeRecord } from '../../domain/strategies/micro-burst/Mi
 const DEFAULT_OUTCOME_DIR = 'logs/micro-burst/shadow-outcomes';
 const MAX_ENTRIES_PER_FILE = 10_000;
 
+export interface MalformedOutcomeJournalRow {
+  file: string;
+  line: number;
+  reason: string;
+}
+
+export interface MicroBurstOutcomeJournalHealth {
+  journalHealthy: boolean;
+  malformedCount: number;
+  malformedFile: string | null;
+  malformedLine: number | null;
+  malformedReason: string | null;
+}
+
 export class MicroBurstOutcomeJournal {
   private entryCount = 0;
   private currentFilePath: string | null = null;
   private readonly writtenIds = new Set<string>();
+  private readonly malformedRows = new Map<string, MalformedOutcomeJournalRow>();
 
   constructor(
     private readonly journalDir: string = DEFAULT_OUTCOME_DIR,
@@ -62,6 +77,17 @@ export class MicroBurstOutcomeJournal {
     return this.currentFilePath;
   }
 
+  getHealth(): MicroBurstOutcomeJournalHealth {
+    const first = [...this.malformedRows.values()][0];
+    return {
+      journalHealthy: this.malformedRows.size === 0,
+      malformedCount: this.malformedRows.size,
+      malformedFile: first?.file ?? null,
+      malformedLine: first?.line ?? null,
+      malformedReason: first?.reason ?? null,
+    };
+  }
+
   /** Load all completed outcome records from journal files (for analyzer). */
   loadAll(): ProspectiveOutcomeRecord[] {
     const records: ProspectiveOutcomeRecord[] = [];
@@ -73,12 +99,12 @@ export class MicroBurstOutcomeJournal {
         .sort();
       for (const file of files) {
         const content = fs.readFileSync(path.join(this.journalDir, file), 'utf-8');
-        for (const line of content.split('\n')) {
+        for (const [index, line] of content.split('\n').entries()) {
           if (!line.trim()) continue;
           try {
             records.push(JSON.parse(line) as ProspectiveOutcomeRecord);
-          } catch {
-            /* skip malformed lines */
+          } catch (error) {
+            this.recordMalformed(file, index + 1, error);
           }
         }
       }
@@ -96,13 +122,13 @@ export class MicroBurstOutcomeJournal {
       const files = fs.readdirSync(this.journalDir).filter((f) => f.endsWith('.jsonl'));
       for (const file of files) {
         const content = fs.readFileSync(path.join(this.journalDir, file), 'utf-8');
-        for (const line of content.split('\n')) {
+        for (const [index, line] of content.split('\n').entries()) {
           if (!line.trim()) continue;
           try {
             const record = JSON.parse(line) as ProspectiveOutcomeRecord;
             completed.add(record.shadowSignalId);
-          } catch {
-            /* skip */
+          } catch (error) {
+            this.recordMalformed(file, index + 1, error);
           }
         }
       }
@@ -123,13 +149,13 @@ export class MicroBurstOutcomeJournal {
       if (!fs.existsSync(this.journalDir)) return;
       for (const file of fs.readdirSync(this.journalDir).filter((f) => f.endsWith('.jsonl'))) {
         const content = fs.readFileSync(path.join(this.journalDir, file), 'utf-8');
-        for (const line of content.split('\n')) {
+        for (const [index, line] of content.split('\n').entries()) {
           if (!line.trim()) continue;
           try {
             const record = JSON.parse(line) as ProspectiveOutcomeRecord;
             if (record.shadowSignalId) this.writtenIds.add(record.shadowSignalId);
-          } catch {
-            /* Ignore malformed rows during restart recovery. */
+          } catch (error) {
+            this.recordMalformed(file, index + 1, error);
           }
         }
       }
@@ -143,5 +169,11 @@ export class MicroBurstOutcomeJournal {
     const ts = Date.now();
     this.currentFilePath = path.join(this.journalDir, `${date}-${ts}.jsonl`);
     this.entryCount = 0;
+  }
+
+  private recordMalformed(file: string, line: number, error: unknown): void {
+    const reason = error instanceof SyntaxError ? 'invalid_json' : error instanceof Error ? error.message : String(error);
+    const key = `${file}:${line}:${reason}`;
+    if (!this.malformedRows.has(key)) this.malformedRows.set(key, { file, line, reason });
   }
 }

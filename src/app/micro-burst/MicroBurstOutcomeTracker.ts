@@ -23,6 +23,7 @@ import {
   computeAllHorizons,
   aggregateBarrierOutcome,
   computeCostScenarios,
+  computeCostComponents,
   simulateDynamicExit,
   createPendingOutcome,
   sideAwareReturnBps,
@@ -90,6 +91,9 @@ export class MicroBurstOutcomeTracker {
   private readonly knownSignals = new Map<string, ShadowSignalSnapshot>();
 
   constructor(private readonly deps: OutcomeTrackerDeps) {
+    if (!deps.storage && !deps.journal.getHealth().journalHealthy) {
+      throw new Error('MALFORMED_OUTCOME_JOURNAL_REQUIRES_SQLITE_AUTHORITY');
+    }
     this.maxPending = deps.maxPendingOutcomes ?? DEFAULT_MAX_PENDING;
     this.exitConfig = deps.config ?? defaultMicroBurstConfig();
     for (const episode of deps.storage?.loadEpisodes() ?? []) {
@@ -355,6 +359,11 @@ export class MicroBurstOutcomeTracker {
       ambiguous: this.ambiguous,
       meanMfeBps,
       meanMaeBps,
+      journalHealthy: this.deps.journal.getHealth().journalHealthy,
+      malformedJournalCount: this.deps.journal.getHealth().malformedCount,
+      malformedJournalFile: this.deps.journal.getHealth().malformedFile,
+      malformedJournalLine: this.deps.journal.getHealth().malformedLine,
+      malformedJournalReason: this.deps.journal.getHealth().malformedReason,
     };
   }
 
@@ -477,6 +486,13 @@ export class MicroBurstOutcomeTracker {
         dynamicExitOutcome: dynamicExit,
         grossBps,
         costScenarios,
+        costComponents: computeCostComponents(grossBps, [
+          { label: 'cost_0', feeBps: 0, slippageBps: 0 },
+          { label: 'cost_10', feeBps: 7, slippageBps: 3 },
+          { label: 'cost_14', feeBps: 10, slippageBps: 4 },
+          { label: 'cost_20', feeBps: 14, slippageBps: 6 },
+          { label: 'cost_30', feeBps: 20, slippageBps: 10 },
+        ]),
         completedAtMs: this.deps.clock.now(),
         strategyVersion: pending.signal.strategyVersion,
         codeCommitSha: pending.signal.codeCommitSha,

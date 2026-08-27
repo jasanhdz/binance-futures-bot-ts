@@ -5,6 +5,7 @@ import {
   computeAllHorizons,
   aggregateBarrierOutcome,
   computeCostScenarios,
+  computeCostComponents,
   computeEntryModels,
   simulateDynamicExit,
   createPendingOutcome,
@@ -314,6 +315,18 @@ describe('MicroBurstOutcomeEngine cost scenarios', () => {
   it('handles negative gross (loss)', () => {
     const result = computeCostScenarios(-30, [{ label: 'cost_14', feeBps: 10, slippageBps: 4 }]);
     expect(result.cost_14).toBe(-44);
+  });
+
+  it('does not charge conservative entry slippage a second time', () => {
+    const result = computeCostComponents(95, [
+      { label: 'cost_14', feeBps: 10, slippageBps: 4 },
+    ], 5);
+    expect(result.cost_14).toEqual({
+      feeBps: 10,
+      entrySlippageBps: 5,
+      additionalSlippageBps: 0,
+      totalBps: 10,
+    });
   });
 });
 

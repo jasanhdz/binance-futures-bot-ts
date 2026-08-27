@@ -12,6 +12,7 @@ export interface SharedStrategyExecutionConfig {
   confirmationAttempts: number;
   confirmationDelaysMs: number[];
   maxMarketOpenAttempts: number;
+  marketOpenAmbiguityDelaysMs?: number[];
 }
 
 const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
@@ -19,6 +20,7 @@ const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
   confirmationAttempts: 3,
   confirmationDelaysMs: [300, 500, 1000],
   maxMarketOpenAttempts: 6,
+  marketOpenAmbiguityDelaysMs: [150, 300, 600, 1000],
 };
 
 /**
@@ -27,6 +29,7 @@ const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
  * already-approved intent and fails closed when mandatory protection fails.
  */
 export class SharedStrategyExecutionService implements StrategyExecutionPort {
+  private readonly ambiguousSymbols = new Set<string>();
   constructor(
     private readonly exchange: Exchange,
     private readonly logger: Logger,
@@ -43,6 +46,12 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       requestedAt: intent.requestedAt,
       ...intent.metadata,
     };
+    if (this.ambiguousSymbols.has(intent.symbol)) {
+      return failed(intent, 'MARKET_OPEN_AMBIGUOUS', {
+        ...baseMetadata,
+        reasonDetail: 'symbol_blocked_pending_market_open_reconciliation',
+      });
+    }
 
     if (!Number.isFinite(intent.leverage) || intent.leverage <= 0) {
       return denied(intent, 'INVALID_LEVERAGE', baseMetadata);
@@ -130,7 +139,8 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
 
       marketOpenAttempt = 1;
       let order: { avgPrice: number; orderId: string };
-      const clientOrderId = marketOpenClientOrderId(intent);
+      let clientOrderId = marketOpenClientOrderId(intent);
+      const positionBeforeOpen = await this.exchange.readActivePosition(intent.symbol, intent.side);
       while (true) {
         try {
           order = await this.exchange.marketOpen(
@@ -141,33 +151,28 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           );
           break;
         } catch (error) {
-          let reconciledOrder: { avgPrice: number; orderId: string } | null;
-          try {
-            reconciledOrder = await this.exchange.readMarketOpenByClientOrderId(
-              intent.symbol,
-              clientOrderId,
-            );
-          } catch (reconciliationError) {
-            this.logger.error('shared_execution_market_open_reconciliation_failed', {
-              ...baseMetadata,
-              symbol: intent.symbol,
-              side: intent.side,
-              tradeId: intent.tradeId,
-              clientOrderId,
-              error: String(reconciliationError),
-            });
-            throw reconciliationError;
-          }
-          if (reconciledOrder) {
-            order = reconciledOrder;
-            break;
-          }
-          if (
-            !isRecoverableEntrySizeError(error) ||
-            marketOpenAttempt >= this.config.maxMarketOpenAttempts
-          ) {
+          if (isDefiniteBusinessRejection(error) && !isRecoverableEntrySizeError(error)) {
             throw error;
           }
+          if (!isRecoverableEntrySizeError(error)) {
+            const reconciledOrder = await this.reconcileAmbiguousMarketOpen(
+              intent,
+              clientOrderId,
+              positionBeforeOpen,
+            );
+            if (reconciledOrder) {
+              order = reconciledOrder;
+              break;
+            }
+            this.ambiguousSymbols.add(intent.symbol);
+            return failed(intent, 'MARKET_OPEN_AMBIGUOUS', {
+              ...baseMetadata,
+              clientOrderId,
+              marketOpenAttempts: marketOpenAttempt,
+              reasonDetail: 'submission_and_exchange_reconciliation_unresolved',
+            });
+          }
+          if (marketOpenAttempt >= this.config.maxMarketOpenAttempts) throw error;
           const refreshed = await this.readAccountSnapshot();
           const refreshedAvailable = finite(refreshed.availableBalance)
             ? Math.max(0, Number(refreshed.availableBalance))
@@ -216,6 +221,8 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           });
           quantity = nextQuantity;
           marketOpenAttempt += 1;
+          // A new ID is safe only after Binance gave a coded, definite size rejection.
+          clientOrderId = marketOpenClientOrderId(intent, marketOpenAttempt);
         }
       }
 
@@ -499,6 +506,54 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     }
   }
 
+  private async reconcileAmbiguousMarketOpen(
+    intent: StrategyExecutionIntent,
+    clientOrderId: string,
+    positionBeforeOpen: PositionInfo | null,
+  ): Promise<{ avgPrice: number; orderId: string } | null> {
+    const delays = this.config.marketOpenAmbiguityDelaysMs ?? [150, 300, 600, 1000];
+    for (const delay of delays) {
+      await sleep(delay);
+      try {
+        const order = await this.exchange.readMarketOpenByClientOrderId(
+          intent.symbol,
+          clientOrderId,
+        );
+        if (order) return order;
+      } catch {
+        // A lookup error, including Binance -2013, is still ambiguous here.
+      }
+    }
+    if (this.exchange.readMarketOpenEvidence) {
+      try {
+        const order = await this.exchange.readMarketOpenEvidence(
+          intent.symbol,
+          clientOrderId,
+          intent.requestedAt,
+        );
+        if (order) return order;
+      } catch {
+        // Continue to position/fill reconciliation below.
+      }
+    }
+    try {
+      const fills = await this.exchange.getRecentFills(intent.symbol, intent.requestedAt, 100);
+      const expectedSide = intent.side === 'LONG' ? 'BUY' : 'SELL';
+      const fill = fills.find((candidate) => candidate.side === expectedSide);
+      if (fill) return { orderId: fill.orderId, avgPrice: fill.price };
+    } catch {
+      // Unsupported or unavailable history is not proof of absence.
+    }
+    try {
+      const position = await this.exchange.readActivePosition(intent.symbol, intent.side);
+      if (position && !positionBeforeOpen)
+        return { orderId: `position:${clientOrderId}`, avgPrice: position.entryPrice };
+    } catch {
+      // Position reads can be unavailable while the account is converging.
+    }
+    return null;
+  }
+
   private async readAccountSnapshot(walletFallback?: number): Promise<USDTAccountSnapshot> {
     const reader = this.exchange.getUSDTAccountSnapshot;
     if (typeof reader !== 'function') {
@@ -721,17 +776,36 @@ function exactBracket(
   return order.closePosition === true || order.reduceOnly === true;
 }
 
-function isRecoverableEntrySizeError(error: unknown): boolean {
+function errorCodes(error: unknown): number[] {
   const candidate = error as {
     code?: unknown;
     message?: unknown;
     response?: { data?: { code?: unknown; msg?: unknown } };
     body?: { code?: unknown; msg?: unknown };
   };
-  const codes = [candidate?.code, candidate?.response?.data?.code, candidate?.body?.code]
+  return [candidate?.code, candidate?.response?.data?.code, candidate?.body?.code]
     .map((value) => Number(value))
     .filter(Number.isFinite);
-  if (codes.some((code) => [-2019, -2027, -4005].includes(code))) return true;
+}
+
+function isDefiniteBusinessRejection(error: unknown): boolean {
+  const codes = errorCodes(error);
+  if (codes.length > 0) {
+    return codes.some((code) =>
+      [-1111, -2010, -2018, -2019, -2027, -4003, -4004, -4005].includes(code),
+    );
+  }
+  return false;
+}
+
+function isRecoverableEntrySizeError(error: unknown): boolean {
+  const codes = errorCodes(error);
+  if (codes.length > 0) return codes.some((code) => [-2019, -2027, -4005].includes(code));
+  const candidate = error as {
+    message?: unknown;
+    response?: { data?: { msg?: unknown } };
+    body?: { msg?: unknown };
+  };
   const message = [
     candidate?.message,
     candidate?.response?.data?.msg,
@@ -742,15 +816,16 @@ function isRecoverableEntrySizeError(error: unknown): boolean {
     .join(' ')
     .toLowerCase();
   return (
-    message.includes('margin is insufficient') ||
-    message.includes('insufficient margin') ||
-    message.includes('insufficient balance') ||
-    message.includes('quantity greater than max quantity') ||
-    message.includes('maximum allowable position')
+    codes.length === 0 &&
+    (message.includes('margin is insufficient') ||
+      message.includes('insufficient margin') ||
+      message.includes('insufficient balance') ||
+      message.includes('quantity greater than max quantity') ||
+      message.includes('maximum allowable position'))
   );
 }
 
-function marketOpenClientOrderId(intent: StrategyExecutionIntent): string {
+function marketOpenClientOrderId(intent: StrategyExecutionIntent, attempt = 0): string {
   const executionIntent = [
     intent.identity.strategyId,
     intent.identity.strategyVersion,
@@ -764,7 +839,9 @@ function marketOpenClientOrderId(intent: StrategyExecutionIntent): string {
     intent.requestedAt,
   ].join('|');
   // Binance accepts client order IDs up to 36 characters; retain a fixed prefix for auditability.
-  return `se_${createHash('sha256').update(executionIntent).digest('hex').slice(0, 33)}`;
+  const digest = createHash('sha256').update(executionIntent).digest('hex');
+  if (attempt === 0) return `se_${digest.slice(0, 33)}`;
+  return `se_${digest.slice(0, 28)}_${attempt}`;
 }
 
 function finite(value: unknown): value is number {

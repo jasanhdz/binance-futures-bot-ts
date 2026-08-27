@@ -140,4 +140,23 @@ describe('MicroBurstOutcomeJournal', () => {
     const loaded = journal.loadAll();
     expect(loaded[0].structuralStopPrice).toBe(78500);
   });
+
+  it('accounts for malformed rows deterministically during startup replay', () => {
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    fs.writeFileSync(
+      path.join(TEST_DIR, '2026-01-01.jsonl'),
+      `${JSON.stringify(makeRecord({ shadowSignalId: 'valid' }))}\nnot-json\n{broken\n`,
+    );
+
+    const journal = new MicroBurstOutcomeJournal(TEST_DIR);
+    expect(journal.getHealth()).toEqual({
+      journalHealthy: false,
+      malformedCount: 2,
+      malformedFile: '2026-01-01.jsonl',
+      malformedLine: 2,
+      malformedReason: 'invalid_json',
+    });
+    expect(journal.loadAll()).toHaveLength(1);
+    expect(journal.getHealth().malformedCount).toBe(2);
+  });
 });

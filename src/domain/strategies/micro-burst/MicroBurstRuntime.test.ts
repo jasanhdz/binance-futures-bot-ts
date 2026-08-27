@@ -183,7 +183,7 @@ describe('MicroBurstRuntime', () => {
     );
   });
 
-  it('reports formal readiness only for an official shadow cohort with a healthy archive queue', async () => {
+  it('fails closed until every official readiness evidence source is present', async () => {
     const flush = vi.fn(async () => true);
     const close = vi.fn(async () => {});
     deps.marketStorage = {
@@ -210,8 +210,10 @@ describe('MicroBurstRuntime', () => {
     await runtime.start();
 
     expect(runtime.getReadiness()).toMatchObject({
-      ready: true,
-      blockers: [],
+      ready: false,
+      blockers: expect.arrayContaining(['MANIFEST_NOT_READY', 'BOOKS_NOT_READY', 'COST_NOT_READY']),
+      official: false,
+      liveAuthority: false,
       liveExecution: false,
     });
     await runtime.stop();

@@ -21,6 +21,7 @@ import { MicroBurstContextBuilderDeps } from './MicroBurstContextBuilder';
 import { MicroBurstSignalJournal } from './MicroBurstSignalJournal';
 import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
 import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
+import { assessMicroBurstReadiness, MicroBurstReadinessResult } from './MicroBurstReadiness';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -46,6 +47,11 @@ export interface MicroBurstRuntimeHealth {
     pendingOutcomes: number;
     completedOutcomes: number;
     outcomeErrors: number;
+    journalHealthy?: boolean;
+    malformedJournalCount?: number;
+    malformedJournalFile?: string | null;
+    malformedJournalLine?: number | null;
+    malformedJournalReason?: string | null;
   } | null;
   signalJournalHealthy: boolean;
   marketArchiveHealthy: boolean | null;
@@ -63,9 +69,7 @@ export interface MicroBurstRuntimeHealth {
   readiness: MicroBurstRuntimeReadiness;
 }
 
-export interface MicroBurstRuntimeReadiness {
-  ready: boolean;
-  blockers: string[];
+export interface MicroBurstRuntimeReadiness extends MicroBurstReadinessResult {
   cohortId: string | null;
   strategyVersion: string | null;
   codeCommitSha: string | null;
@@ -112,6 +116,11 @@ export interface MicroBurstRuntimeDeps {
       pendingOutcomes: number;
       completedOutcomes: number;
       outcomeErrors: number;
+      journalHealthy?: boolean;
+      malformedJournalCount?: number;
+      malformedJournalFile?: string | null;
+      malformedJournalLine?: number | null;
+      malformedJournalReason?: string | null;
     };
   };
   marketStorage?: {
@@ -599,12 +608,49 @@ export class MicroBurstRuntime {
   }
 
   getReadiness(): MicroBurstRuntimeReadiness {
-    const blockers: string[] = [];
     const provenance = this.deps.provenance;
     const archive = this.deps.marketStorage;
     const archiveHealth = archive?.getHealth();
 
-    if (!this.config.enabled) blockers.push('MICRO_BURST_DISABLED');
+    let healthyBookCount = 0;
+    for (const state of this.symbolStates.values()) {
+      if (state.book.getHealth() === 'HEALTHY') healthyBookCount++;
+    }
+    const btcContext = this.btcProvider?.getBtcContext();
+    const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.observedAtMs < 120_000;
+    const readiness = assessMicroBurstReadiness({
+      codeSha: provenance?.codeCommitSha,
+      configHash: provenance?.configHash,
+      strategyVersion: this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion,
+      cohortId: provenance?.cohortId,
+      officialCohortReady: provenance?.officialCohortReady,
+      mode: this.config.mode,
+      enabled: this.config.enabled,
+      enabledSymbolCount: Object.values(this.config.symbols).filter((symbol) => symbol.enabled).length,
+      healthyBookCount: this.running ? healthyBookCount : undefined,
+      btcHealthy: this.running ? btcHealthy : undefined,
+      aggTradeHealthy: this.running && this.symbolStates.size > 0
+        ? [...this.symbolStates.values()].every((state) => state.aggTradeBuffer.getRecent().length > 0)
+        : undefined,
+      archiveEnabled: this.config.marketArchive?.enabled === true,
+      archiveAvailable: archive !== undefined,
+      archiveHealthy: archiveHealth?.healthy,
+      storageHealthy: archiveHealth?.healthy,
+      storageErrors: archiveHealth?.errorCount,
+      databaseValid: archive !== undefined && archiveHealth?.healthy === true,
+      preregistrationEnabled: this.config.prospectiveValidation?.enabled === true,
+      mutationAuditAvailable: undefined,
+      unresolvedTradeGaps: undefined,
+      manifestValid: undefined,
+      schemaValid: undefined,
+      episodeDefinitionValid: undefined,
+      gapSemanticsValid: undefined,
+      costSemanticsValid: undefined,
+      outcomeJournalHealthy: this.deps.outcomeTracker?.getHealth().journalHealthy ?? true,
+    });
+    /* Retain detailed legacy diagnostics while the typed checks are authoritative. */
+    const blockers = [...readiness.blockers];
+    if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
     if (this.config.mode !== 'SHADOW')
       blockers.push(
         this.config.mode === 'LIVE' ? 'LIVE_MODE_NOT_DISABLED' : 'SHADOW_MODE_NOT_ENABLED',
@@ -614,6 +660,9 @@ export class MicroBurstRuntime {
     if (!this.config.marketArchive?.enabled) blockers.push('MARKET_ARCHIVE_DISABLED');
     if (!archive) blockers.push('MARKET_ARCHIVE_UNAVAILABLE');
     if (archiveHealth && !archiveHealth.healthy) blockers.push('MARKET_ARCHIVE_UNHEALTHY');
+    const outcomeHealth = this.deps.outcomeTracker?.getHealth();
+    if (outcomeHealth && outcomeHealth.journalHealthy === false)
+      blockers.push('OUTCOME_JOURNAL_MALFORMED');
     if (
       archiveHealth &&
       archiveHealth.queueCapacity !== undefined &&
@@ -631,6 +680,7 @@ export class MicroBurstRuntime {
     if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
 
     return {
+      ...readiness,
       ready: blockers.length === 0,
       blockers,
       cohortId: provenance?.cohortId ?? null,

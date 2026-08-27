@@ -5,6 +5,7 @@ import * as path from 'path';
 import { MicroBurstStorage } from '../src/app/micro-burst/MicroBurstStorage';
 import { analyzeMicroBurstProspective } from '../src/tooling/micro-burst/MicroBurstProspectiveAnalyzer';
 import { ProspectiveOutcomeRecord } from '../src/domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+import { MicroBurstOutcomeJournal } from '../src/app/micro-burst/MicroBurstOutcomeJournal';
 
 const signalsDir = argument('--signals-dir') ?? 'logs/micro-burst/shadow-signals';
 const outcomesDir = argument('--outcomes-dir') ?? 'logs/micro-burst/shadow-outcomes';
@@ -12,6 +13,7 @@ const seed = Number(argument('--seed') ?? '1');
 const databasePath = argument('--database');
 const archivePath = argument('--archive-dir');
 const cohortId = argument('--cohort');
+const outcomeJournal = new MicroBurstOutcomeJournal(outcomesDir);
 const storage =
   databasePath && archivePath ? new MicroBurstStorage({ databasePath, archivePath }) : undefined;
 const signalReconciliation = storage?.loadSignalReconciliation(cohortId);
@@ -27,9 +29,7 @@ const archiveGapCount =
 
 const report = analyzeMicroBurstProspective({
   signals: storage ? signalReconciliation!.signals : loadJsonl(signalsDir),
-  outcomes: storage
-    ? selectedOutcomeReconciliation!.outcomes
-    : (loadJsonl(outcomesDir) as ProspectiveOutcomeRecord[]),
+  outcomes: storage ? selectedOutcomeReconciliation!.outcomes : outcomeJournal.loadAll(),
   seed: Number.isFinite(seed) ? seed : 1,
   archiveTrades: storage
     ? (symbol, fromMs, toMs) => storage.queryArchivedTrades(symbol, fromMs, toMs) as any
@@ -43,6 +43,7 @@ const report = analyzeMicroBurstProspective({
     ...(selectedOutcomeReconciliation?.inconsistentOutcomeIds ?? []),
   ],
   archiveGapCount,
+  malformedJournal: outcomeJournal.getHealth(),
 });
 console.log(report.text);
 storage?.close();

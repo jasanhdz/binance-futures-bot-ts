@@ -1653,6 +1653,10 @@ export class TradingService {
               codeCommitSha: null,
               configHash: null,
               liveExecution: false,
+              official: false,
+              liveAuthority: false,
+              checks: {} as any,
+              warnings: [],
             };
         this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
           ...this.microBurstReadiness,

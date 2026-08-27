@@ -106,6 +106,12 @@ C. **CONSERVATIVE_SLIPPAGE** — signal price + adverse buffer
 
 Models are kept separate. Results are never mixed.
 
+For `CONSERVATIVE_SLIPPAGE`, the adverse entry adjustment is already reflected in
+the entry price. Cost components therefore expose it separately and subtract it
+from scenario slippage before charging any additional slippage. The frozen
+`cost_0` through `cost_30` values remain unchanged for the primary signal-price
+accounting.
+
 ## Cost Scenarios
 
 | Label   | Fee bps | Slippage bps | Total cost |
@@ -131,6 +137,8 @@ Reuses the existing `evaluateMicroBurstExit()` from `MicroBurstExitPolicy.ts`:
 - HARD_INVALIDATION, TARGET, BREAK_EVEN, TRAILING, EARLY_FAILURE, BTC_REVERSAL, ANOMALY_EXIT, MAX_HOLD, HOLD_AT_HORIZON
 - Simulates position lifecycle against price trajectory
 - No new exit logic — purely shadow simulation
+- When replayed from AggTrade archives without a mark-price archive, exits are
+  labeled counterfactual and must not be described as executable mark fills.
 
 ## Independent Episodes
 
@@ -138,6 +146,8 @@ Reuses the existing `evaluateMicroBurstExit()` from `MicroBurstExitPolicy.ts`:
 - Two signals from the same setup belong to the same episode
 - Prevents pseudo-replication in economic analysis
 - Each outcome linked to its episode via `episodeId`
+- Bootstrap, attrition, and candidate/control superiority are reported per
+  episode, not per correlated signal row.
 
 ## Restart Recovery
 
@@ -165,9 +175,12 @@ Verified by tests:
 
 ## Negative Controls
 
-- Shuffled timestamps: does not change MFE/MAE
-- Random side (inverted): does not produce magic positive results
-- Both controls verified in test suite
+- `RANDOM_SIDE` uses a seeded side draw on the original archived trajectory.
+- `TIME_SHIFT` uses the first archived trade strictly after a forward-shifted
+  T0 and the subsequent archived trajectory; source entry and barriers are not
+  copied.
+- Controls are unavailable when raw archived trajectories are unavailable; no
+  return inversion, row reordering, or timestamp shuffling is substituted.
 
 ## Baselines (Planned for Offline Analysis)
 

@@ -241,18 +241,18 @@ describe('durable execution lifecycle', () => {
     expect(exchange.submissions).toEqual([entry.clientOrderId]);
   });
 
-  it('permits retry only after conclusive NOT_FOUND and reuses the same client order id', async () => {
+  it('persists unresolved ambiguity and never blind-retries an entry', async () => {
     const exchange = new FakeExchange();
     exchange.submitBehavior = 'AMBIGUOUS_NOT_RECEIVED';
     const entry = intent();
     const coordinator = new DurableExecutionCoordinator(new MemoryStore(), exchange);
     const first = await coordinator.submit(entry);
-    expect(first.state).toBe('RECONCILIATION_REQUIRED');
-    expect(first.retryAuthorized).toBe(true);
+    expect(first.state).toBe('MARKET_OPEN_AMBIGUOUS');
+    expect(first.retryAuthorized).toBe(false);
     exchange.submitBehavior = 'ACK';
     const second = await coordinator.submit(entry);
-    expect(second.state).toBe('PROTECTED');
-    expect(exchange.submissions).toEqual([entry.clientOrderId, entry.clientOrderId]);
+    expect(second.state).toBe('MARKET_OPEN_AMBIGUOUS');
+    expect(exchange.submissions).toEqual([entry.clientOrderId]);
   });
 
   it('recovers after a crash between fill and bracket from an fsynced journal', async () => {

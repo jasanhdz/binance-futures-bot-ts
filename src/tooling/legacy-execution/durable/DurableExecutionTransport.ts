@@ -43,6 +43,12 @@ export interface DurableExecutionPorts {
   discoverPositions(): Promise<PositionTruth[]>;
 }
 
+const AMBIGUOUS_LOOKUP_DELAYS_MS = [150, 300, 600, 1000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function status(value: string | undefined): EntryOrderStatus {
   if (value === 'NEW') return 'NEW';
   if (value === 'PARTIALLY_FILLED') return 'PARTIALLY_FILLED';
@@ -67,9 +73,22 @@ export class DurableExecutionTransport implements DurableExecutionExchange {
     }
   }
 
-  async readTruth(intent: DurableEntryIntent): Promise<ExecutionTruth> {
+  async readTruth(intent: DurableEntryIntent, lookupAmbiguous = false): Promise<ExecutionTruth> {
     try {
-      const order = await this.ports.readEntry(intent.clientOrderId, intent.symbol);
+      let order: DurableTransportOrder | null = null;
+      let lookupFailed = false;
+      const delays = lookupAmbiguous ? AMBIGUOUS_LOOKUP_DELAYS_MS : [0];
+      for (const delay of delays) {
+        if (delay) await sleep(delay);
+        try {
+          order = await this.ports.readEntry(intent.clientOrderId, intent.symbol);
+          if (order) break;
+        } catch {
+          // Includes Binance -2013: a recent submission is not proven absent.
+          lookupFailed = true;
+        }
+      }
+      if (!order && lookupFailed) throw new Error('ENTRY_LOOKUP_AMBIGUOUS');
       const exchangeOrderId = order?.orderId;
       const [fillsQuantity, position, protection, closeOrderFound] = await Promise.all([
         this.ports.readFills(exchangeOrderId, intent.symbol),

@@ -30,6 +30,13 @@ export interface MicroBurstProspectiveAnalysisInput {
   availableCohorts?: readonly string[];
   sqliteInconsistencyIds?: readonly string[];
   archiveGapCount?: number;
+  malformedJournal?: {
+    journalHealthy: boolean;
+    malformedCount: number;
+    malformedFile: string | null;
+    malformedLine: number | null;
+    malformedReason: string | null;
+  };
 }
 
 export interface MicroBurstProspectiveAnalysis {
@@ -72,6 +79,8 @@ export function analyzeMicroBurstProspective(
     }
     if ((input.sqliteInconsistencyIds?.length ?? 0) > 0) throw new Error('SQLITE_INCONSISTENCY_UNRESOLVED');
     if ((input.archiveGapCount ?? 0) > 0) throw new Error('ARCHIVE_GAP_UNRESOLVED');
+    if (input.malformedJournal && !input.malformedJournal.journalHealthy)
+      throw new Error('MALFORMED_OUTCOME_JOURNAL_UNRESOLVED');
   }
   const selectedSignals = input.cohortId
     ? input.signals.filter((row) => stringValue(row.cohortId) === input.cohortId)
@@ -98,6 +107,8 @@ export function analyzeMicroBurstProspective(
     if (missingOutcomes > 0 || orphanOutcomes > 0) throw new Error('SIGNAL_OUTCOME_RECONCILIATION_FAILED');
   }
   const episodes = new Set([...signals.rows, ...outcomes.rows].map((row) => stringValue(row.episodeId)).filter(isPresent));
+  const signalEpisodes = new Set(signals.rows.map((row) => stringValue(row.episodeId)).filter(isPresent));
+  const outcomeEpisodes = new Set(outcomes.rows.map((row) => stringValue(row.episodeId)).filter(isPresent));
   const modelRecords = outcomes.rows.flatMap(modelRecordsFor);
   const lines: string[] = [];
 
@@ -117,8 +128,15 @@ export function analyzeMicroBurstProspective(
   lines.push(
     `Storage gaps: ${missingOutcomes + orphanOutcomes === 0 ? 'none observed' : `signal/outcome reconciliation gap (${missingOutcomes + orphanOutcomes})`}; unresolved terminal journal exports: ${unresolvedOutcomeCount}`,
   );
+  if (input.malformedJournal && !input.malformedJournal.journalHealthy) {
+    lines.push(
+      `Malformed outcome journal: count=${input.malformedJournal.malformedCount}; file=${input.malformedJournal.malformedFile ?? 'unknown'}; line=${input.malformedJournal.malformedLine ?? 'unknown'}; reason=${input.malformedJournal.malformedReason ?? 'unknown'}`,
+    );
+  } else {
+    lines.push('Malformed outcome journal: none observed');
+  }
   lines.push(
-    `Episode bootstrap/attrition: bootstrap=${signals.rows.length}; completed=${outcomes.rows.length}; attrition=${signals.rows.length - outcomes.rows.length}`,
+    `Episode bootstrap/attrition: bootstrap=${signalEpisodes.size}; completed=${outcomeEpisodes.size}; attrition=${Math.max(0, signalEpisodes.size - outcomeEpisodes.size)}`,
   );
   lines.push(
     `Attrition counts: signals=${signals.rows.length}; outcomes=${outcomes.rows.length}; episodes=${episodes.size}; incomplete_signals=${missingOutcomes}; orphan_outcomes=${orphanOutcomes}`,
@@ -162,6 +180,7 @@ export function analyzeMicroBurstProspective(
   lines.push(
     `Outcome completeness: unavailable entry models=${incompleteModels}; missing horizons=${missingHorizons}; horizons without trade/price=${dataGaps}; missing usable 300s=${missing300}`,
   );
+  lines.push('Dynamic exits: AggTrade-path replay only; counterfactual because no mark-price archive is available.');
 
   lines.push('');
   lines.push(
@@ -224,14 +243,29 @@ export function analyzeMicroBurstProspective(
     const snapshots = signals.rows.filter(isSnapshot);
     const rng = seededRandom(input.seed ?? 1);
     const randomSide = snapshots.flatMap((signal) =>
-      controlReturn({ ...signal, side: rng() < 0.5 ? 'LONG' : 'SHORT' }, input.archiveTrades!),
+      controlReturn(
+        signal.episodeId,
+        { ...signal, side: rng() < 0.5 ? 'LONG' : 'SHORT' },
+        input.archiveTrades!,
+      ),
     );
-    const timeShift = snapshots.flatMap((signal) => timeShiftReturn(signal, input.archiveTrades!));
+    const timeShift = snapshots.flatMap((signal) =>
+      timeShiftReturn(signal.episodeId, signal, input.archiveTrades!),
+    );
+    const candidate = candidateEpisodeReturns(modelRecords);
+    const randomEpisode = episodeMeans(randomSide);
+    const shiftedEpisode = episodeMeans(timeShift);
     lines.push(
-      `RANDOM_SIDE (seed=${input.seed ?? 1}): N=${randomSide.length} mean_300s=${randomSide.length ? format(mean(randomSide)) : 'N/A'}bps`,
+      `RANDOM_SIDE (seed=${input.seed ?? 1}): N=${randomSide.length} episodes=${randomEpisode.length} mean_300s=${randomEpisode.length ? format(mean(randomEpisode)) : 'N/A'}bps`,
     );
     lines.push(
-      `TIME_SHIFT (forward 300s): N=${timeShift.length} mean_300s=${timeShift.length ? format(mean(timeShift)) : 'N/A'}bps`,
+      `TIME_SHIFT (forward 300s): N=${timeShift.length} episodes=${shiftedEpisode.length} mean_300s=${shiftedEpisode.length ? format(mean(shiftedEpisode)) : 'N/A'}bps`,
+    );
+    lines.push(
+      `Episode superiority (candidate net cost_14 vs controls net cost_14): candidate=${candidate.length ? format(mean(candidate)) : 'N/A'}bps; RANDOM_SIDE=${randomEpisode.length ? format(mean(randomEpisode.map((value) => value - 14))) : 'N/A'}bps; TIME_SHIFT=${shiftedEpisode.length ? format(mean(shiftedEpisode.map((value) => value - 14))) : 'N/A'}bps`,
+    );
+    lines.push(
+      `Episode bootstrap (candidate minus controls, 1000 resamples): RANDOM_SIDE=${bootstrapDelta(candidate, randomEpisode.map((value) => value - 14), 1000, input.seed ?? 1)}bps; TIME_SHIFT=${bootstrapDelta(candidate, shiftedEpisode.map((value) => value - 14), 1000, (input.seed ?? 1) + 1)}bps`,
     );
     lines.push(
       'TIME_SHIFT is a return-only control: its entry is the first archived trade strictly after shifted T0; source entry prices and barrier levels are not copied.',
@@ -364,9 +398,10 @@ function isSnapshot(
 }
 
 function controlReturn(
+  episodeId: unknown,
   signal: ShadowSignalSnapshot,
   archiveTrades: NonNullable<MicroBurstProspectiveAnalysisInput['archiveTrades']>,
-): number[] {
+): EpisodeValue[] {
   const horizon = 300_000;
   const outcome = computeHorizonOutcome(
     signal,
@@ -374,13 +409,14 @@ function controlReturn(
     [...archiveTrades(signal.symbol, signal.signalAtMs, signal.signalAtMs + horizon)],
     horizon,
   );
-  return outcome.priceAtHorizon === null ? [] : [outcome.finalReturnBps];
+  return outcome.priceAtHorizon === null ? [] : [{ episodeId: stringValue(episodeId) || signal.shadowSignalId, value: outcome.finalReturnBps }];
 }
 
 function timeShiftReturn(
+  episodeId: unknown,
   signal: ShadowSignalSnapshot,
   archiveTrades: NonNullable<MicroBurstProspectiveAnalysisInput['archiveTrades']>,
-): number[] {
+): EpisodeValue[] {
   const horizon = 300_000;
   const shiftedAtMs = signal.signalAtMs + horizon;
   const trajectory = [...archiveTrades(signal.symbol, shiftedAtMs, shiftedAtMs + horizon)]
@@ -393,7 +429,43 @@ function timeShiftReturn(
   // Return-only control: reconstruct entry from post-shift market data, not the source snapshot.
   const shiftedSignal = { ...signal, signalAtMs: shiftedAtMs, marketPriceAtSignal: entry.price };
   const outcome = computeHorizonOutcome(shiftedSignal, entry.price, trajectory, horizon);
-  return outcome.priceAtHorizon === null ? [] : [outcome.finalReturnBps];
+  return outcome.priceAtHorizon === null ? [] : [{ episodeId: stringValue(episodeId) || signal.shadowSignalId, value: outcome.finalReturnBps }];
+}
+
+interface EpisodeValue { episodeId: string; value: number }
+
+function episodeMeans(values: readonly EpisodeValue[]): number[] {
+  const grouped = groupBy(values, (value) => value.episodeId);
+  return [...grouped.values()].map((episode) => mean(episode.map((value) => value.value)));
+}
+
+function candidateEpisodeReturns(records: readonly ModelRecord[]): number[] {
+  const values: EpisodeValue[] = records
+    .filter((record) => record.model === 'SIGNAL_PRICE')
+    .flatMap((record) => {
+      const horizon = record.result.horizons?.[300_000];
+      return usableHorizon(horizon)
+        ? [{ episodeId: record.outcome.episodeId, value: horizon.finalReturnBps - 14 }]
+        : [];
+    });
+  return episodeMeans(values);
+}
+
+function bootstrapDelta(
+  candidate: readonly number[],
+  control: readonly number[],
+  repetitions: number,
+  seed: number,
+): string {
+  if (candidate.length === 0 || control.length === 0) return 'N/A';
+  const rng = seededRandom(seed);
+  const deltas: number[] = [];
+  for (let i = 0; i < repetitions; i++) {
+    const sample = (values: readonly number[]) =>
+      Array.from({ length: values.length }, () => values[Math.floor(rng() * values.length)]!);
+    deltas.push(mean(sample(candidate)) - mean(sample(control)));
+  }
+  return format(percentile(deltas, 2.5));
 }
 
 function seededRandom(seed: number): () => number {

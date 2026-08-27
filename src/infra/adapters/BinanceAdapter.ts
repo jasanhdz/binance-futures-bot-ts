@@ -808,9 +808,30 @@ export class BinanceExchange implements Exchange {
       return { avgPrice: Number(order.avgPrice || 0), orderId: String(order.orderId) };
     } catch (error) {
       noteRateLimitFromError(error);
-      if (isUnknownOrderError(error)) return null;
+      // A just-submitted order can be invisible briefly. The caller must not
+      // interpret -2013 as definitive absence during ambiguity resolution.
+      if (isUnknownOrderError(error)) throw error;
       throw error;
     }
+  }
+
+  async readMarketOpenEvidence(
+    symbol: string,
+    clientOrderId: string,
+    since: number,
+  ): Promise<{ avgPrice: number; orderId: string } | null> {
+    const allOrders = (this.cli as any).futuresAllOrders;
+    if (typeof allOrders !== 'function') return null;
+    const orders = await this.enqueue(() =>
+      allOrders.call(this.cli, { symbol, startTime: Math.max(0, since - 1000), limit: 100 }),
+    );
+    const order = (orders as any[]).find(
+      (candidate) =>
+        String(candidate.clientOrderId ?? candidate.origClientOrderId) === clientOrderId,
+    );
+    if (!order || !['NEW', 'PARTIALLY_FILLED', 'FILLED'].includes(String(order.status)))
+      return null;
+    return { avgPrice: Number(order.avgPrice || 0), orderId: String(order.orderId) };
   }
 
   async placeStopClose(
