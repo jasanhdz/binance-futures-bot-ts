@@ -6,9 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after MICRO_BURST_V1 M2 operational shadow.
+Runtime architecture migration checkpoint after MICRO_BURST_V1 M3 prospective shadow outcome validation.
 
-`MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_READY` — SHADOW authority enabled, LIVE authority disabled, runtime orchestrator wires real market data, evaluates continuously, persists unique signals to JSONL, zero exchange mutation possible.
+`MICRO_BURST_V1_M3_PROSPECTIVE_VALIDATION_READY` — SHADOW authority enabled, LIVE authority disabled, prospective outcome tracker computes MFE/MAE/barrier/cost-scenarios from frozen signal snapshots, outcome journal persists completed outcomes to JSONL, offline analyzer generates reports, zero exchange mutation possible.
 
 Validation results are recorded below. This checkpoint does not grant live authority.
 

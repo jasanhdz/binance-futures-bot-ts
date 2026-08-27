@@ -24,7 +24,8 @@
     "audit:long-risk-shadow": "ts-node scripts/aegis/audit_long_risk_shadow.ts",
     "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts",
     "micro-burst:shadow-smoke": "npx tsx scripts/micro-burst-shadow-smoke.ts",
-    "micro-burst:shadow-soak": "npx tsx scripts/micro-burst-shadow-soak.ts"
+    "micro-burst:shadow-soak": "npx tsx scripts/micro-burst-shadow-soak.ts",
+    "micro-burst:analyze-shadow": "npx tsx scripts/micro-burst-analyze-shadow.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",

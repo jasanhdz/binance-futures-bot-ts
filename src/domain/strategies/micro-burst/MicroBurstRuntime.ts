@@ -16,6 +16,8 @@ import {
 import { MicroBurstStrategyContext } from './MicroBurstStrategy';
 import { MicroBurstContextBuilderDeps } from './MicroBurstContextBuilder';
 import { MicroBurstSignalJournal } from './MicroBurstSignalJournal';
+import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
+import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -36,6 +38,12 @@ export interface MicroBurstRuntimeHealth {
   totalResyncs: number;
   liveExecution: false;
   lastHealthReportAt: number;
+  outcomeTracker: {
+    signalsObserved: number;
+    pendingOutcomes: number;
+    completedOutcomes: number;
+    outcomeErrors: number;
+  } | null;
 }
 
 interface SymbolRuntimeState {
@@ -56,6 +64,11 @@ export interface MicroBurstRuntimeDeps {
   logger: Logger;
   clock: Clock;
   strategyRouter: StrategyRouter<MicroBurstStrategyContext>;
+  outcomeTracker?: {
+    trackSignal(snapshot: ShadowSignalSnapshot): void;
+    processTradeEvent(event: { eventTime: number; price: number; symbol: string }): void;
+    flushPending(currentTimeMs: number): void;
+  };
 }
 
 export class MicroBurstRuntime {
@@ -200,6 +213,15 @@ export class MicroBurstRuntime {
             isBuyerMaker: trade.isBuyerMaker,
           };
           aggTradeBuffer.push(event);
+
+          // M3: Forward trade events to outcome tracker
+          if (this.deps.outcomeTracker) {
+            this.deps.outcomeTracker.processTradeEvent({
+              eventTime: trade.eventTime,
+              price: Number(trade.price),
+              symbol,
+            });
+          }
         });
       }
 
@@ -286,6 +308,11 @@ export class MicroBurstRuntime {
 
     this.journal.flush();
 
+    // M3: Flush pending outcomes
+    if (this.deps.outcomeTracker) {
+      this.deps.outcomeTracker.flushPending(this.deps.clock.now());
+    }
+
     this.deps.logger.info('micro_burst_runtime_stopped');
   }
 
@@ -316,6 +343,72 @@ export class MicroBurstRuntime {
           state.uniqueSignalCount++;
           this.totalUniqueSignals++;
           this.journal.append(result);
+
+          // M3: Track signal for prospective outcome validation
+          if (this.deps.outcomeTracker && result.side) {
+            const snapshot = freezeSignalSnapshot({
+              shadowSignalId: result.shadowSignalId,
+              strategyId: 'MICRO_BURST_V1',
+              strategyVersion: result.strategyVersion,
+              codeCommitSha: 'UNCOMMITTED',
+              configHash: 'default',
+              symbol: result.symbol,
+              side: result.side,
+              signalAtMs: result.snapshotAtMs,
+              marketPriceAtSignal: result.referencePrice,
+              referencePriceSource: typeof result.diagnostics?.referencePriceSource === 'string'
+                ? result.diagnostics.referencePriceSource : 'UNKNOWN',
+              structuralStopPrice: result.structuralInvalidation ?? 0,
+              destinationPrice: result.destinationPrice ?? 0,
+              support: result.supportPrice,
+              resistance: result.resistancePrice,
+              roomToTargetBps: result.roomToTargetBps ?? 0,
+              riskToInvalidationBps: result.riskToInvalidationBps ?? 0,
+              rewardRisk: result.rewardRisk ?? 0,
+              momentum: result.momentum,
+              book: {
+                status: result.book.status,
+                ageMs: result.book.ageMs,
+                imbalance: result.book.imbalance,
+                imbalanceSlope: result.book.imbalanceSlope,
+                temporalAbsorption: typeof result.diagnostics?.temporalAbsorptionDetected === 'boolean'
+                  ? result.diagnostics.temporalAbsorptionDetected : false,
+                temporalSweep: typeof result.diagnostics?.temporalSweepDetected === 'boolean'
+                  ? result.diagnostics.temporalSweepDetected : false,
+              },
+              tradeFlow: {
+                buyTakerVolume: typeof result.diagnostics?.takerBuyVolume === 'number'
+                  ? result.diagnostics.takerBuyVolume : 0,
+                sellTakerVolume: typeof result.diagnostics?.takerSellVolume === 'number'
+                  ? result.diagnostics.takerSellVolume : 0,
+                netTakerFlow: typeof result.diagnostics?.takerNetFlow === 'number'
+                  ? result.diagnostics.takerNetFlow : 0,
+                sampleCount: typeof result.diagnostics?.takerFlowSampleCount === 'number'
+                  ? result.diagnostics.takerFlowSampleCount : 0,
+              },
+              btc: {
+                status: result.btc.status,
+                ageMs: result.btc.ageMs,
+                ret1m: result.btc.ret1m,
+                ret3m: result.btc.ret3m,
+                ret5m: result.btc.ret5m,
+                acceleration: typeof result.diagnostics?.btcAcceleration === 'number'
+                  ? result.diagnostics.btcAcceleration : null,
+                direction: typeof result.diagnostics?.btcDirection === 'string'
+                  ? result.diagnostics.btcDirection as any : null,
+                conflict: result.btc.conflict,
+              },
+              confidence: result.confidence,
+              leverageTier: typeof result.diagnostics?.leverageTier === 'string'
+                ? result.diagnostics.leverageTier : 'NONE',
+              leverage: typeof result.diagnostics?.leverage === 'number'
+                ? result.diagnostics.leverage : 0,
+              positionFraction: typeof result.diagnostics?.positionFraction === 'number'
+                ? result.diagnostics.positionFraction : 0,
+              microRegime: result.microRegime,
+            });
+            this.deps.outcomeTracker.trackSignal(snapshot);
+          }
         }
       } else {
         state.invalidContextCount++;
@@ -359,6 +452,7 @@ export class MicroBurstRuntime {
       totalResyncs: this.getTotalResyncs(),
       liveExecution: false,
       lastHealthReportAt: this.lastHealthReportAt,
+      outcomeTracker: null,
     };
   }
 

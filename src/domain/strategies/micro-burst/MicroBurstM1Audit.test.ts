@@ -19,7 +19,7 @@ function getDomainProductionFiles(): string[] {
     );
 }
 
-describe('Micro Burst M2 static audit', () => {
+describe('Micro Burst M3 static audit', () => {
   it('no domain production file contains marketOpen, placeStopClose, placeTpClose, or closeSideMarketSafe', () => {
     const productionSource = getDomainProductionFiles()
       .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))

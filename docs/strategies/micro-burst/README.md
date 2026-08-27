@@ -1,6 +1,6 @@
 # MICRO_BURST_V1
 
-MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M2 wires the shadow evaluation into the live bot runtime with real market data, continuous evaluation, and structured signal journaling. The strategy cannot open, close, or modify any exchange position.
+MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M3 implements prospective shadow outcome validation — tracking what happens after each `WOULD_ENTER` signal in real-time, without executing any trades.
 
 ## Authority
 
@@ -8,6 +8,7 @@ MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M2 wires the shado
 - `MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false` — cannot execute.
 - Shadow evaluation produces `WOULD_ENTER` telemetry and persists unique signals to JSONL, but never calls `SharedStrategyExecutionService.execute()`.
 - The position manager may compute and translate an exit decision, but does not apply lifecycle or exchange mutations.
+- The outcome tracker observes post-T0 prices and computes prospective outcomes — it has no exchange mutation authority.
 
 ## Correctness Invariants
 
@@ -146,9 +147,49 @@ TradingService.start()
 - `liveExecution: false` is hardcoded in all evaluation results.
 - `MICRO_BURST_V1_LIVE_NOT_AUTHORIZED` thrown if LIVE mode attempted.
 
-## M3 Scope Pending
+## M3 Prospective Shadow Outcome Validation (Implemented)
+
+M3 tracks what happens after each `WOULD_ENTER` signal by observing post-T0 prices and computing prospective outcomes.
+
+**Architecture:**
+
+```
+Entry Plane (unchanged):
+  MicroBurstRuntime → ShadowEvaluator → StrategyRouter → ENTRY_INTENT
+
+Outcome Plane (new):
+  MicroBurstOutcomeTracker
+    ├─ freezeSignalSnapshot() — immutable T0 snapshot
+    ├─ processTradeEvent() — observe post-T0 prices
+    ├─ computeHorizonOutcome() — MFE/MAE/barrier per horizon
+    ├─ simulateDynamicExit() — reuses MicroBurstExitPolicy
+    └─ MicroBurstOutcomeJournal — JSONL append-only
+```
+
+**Key features:**
+- 5 outcome horizons: 15s, 30s, 60s, 120s, 300s
+- 3 entry price models: SIGNAL_PRICE, NEXT_TRADE, CONSERVATIVE_SLIPPAGE
+- 5 cost scenarios: cost_0 through cost_30
+- First-touch detection using trade-level temporal ordering
+- Dynamic exit counterfactual simulation (reuses exit policy)
+- Independent episode tracking
+- Restart recovery from journal
+- Memory-bounded pending outcomes (max 500)
+- Anti-lookahead guarantees (verified by tests)
+- Negative controls (shuffled timestamps, random side)
+
+**What M3 explicitly does NOT enable:**
+
+- No tuning during collection
+- No live execution
+- No exchange mutation of any kind
+- No economic edge declaration without sufficient N
+- No LIVE_READY declaration during M3
+
+## M4 Scope Pending
 
 - Tune S/R detection parameters for real market conditions.
 - Tune momentum thresholds and leverage tiers.
 - Validate temporal absorption/sweep thresholds.
 - Backtest signal quality with shadow journal data.
+- Evaluate economic edge with accumulated prospective data.
