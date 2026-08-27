@@ -99,7 +99,23 @@ The synthetic Momentum-inside-Aegis decision path has been retired. The orchestr
 
 Position ownership routes to `MomentumRidePositionManager`, which owns its policy composition over `StrategyPositionLifecycleCore` and has no ExitEye callback surface.
 
-## Remaining work before Micro Burst
+### MICRO_BURST_V1 (Scaffold)
+
+Tactical scalping strategy scaffold implemented. Mode defaults to OFF. No live authority.
+
+```
+MicroBurstContextBuilder -> MicroBurstEntryPolicy -> Shared Safety -> SharedStrategyExecutionService -> MicroBurstPositionManager
+```
+
+Key properties:
+- Deterministic entry via S/R detection + micro-momentum + BTC context + book pressure
+- Two leverage tiers: HIGH (40x, >=0.75 confirmation) and MEDIUM (20x, >=0.50)
+- Fast exit: early failure, anomaly, break-even, trailing, max hold (5min)
+- Uses `MICRO_BURST_RESERVED_POLICY`: no guardian, no break-even, no trailing in lifecycle
+- No Aegis dependencies (no Current Brain, E4, ExitEye)
+- Registered in StrategyRouter and PositionManagerRouter but mode is OFF by default
+
+## Remaining work before Micro Burst live authority
 
 1. ~~**Migrate Aegis exchange mutation to `SharedStrategyExecutionService`.**~~ DONE
 2. ~~**Remove the synthetic Momentum-inside-Aegis decision path.**~~ DONE
@@ -107,13 +123,21 @@ Position ownership routes to `MomentumRidePositionManager`, which owns its polic
 4. ~~**Make restart/recovery strategy-generic.**~~ DONE
 5. ~~**Finish per-strategy risk persistence/recovery.**~~ DONE WITH DOCUMENTED JOURNAL LIMITATION
 6. ~~**Phase 1 Cleanup and archive reorganization.**~~ DONE
-7. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
+7. ~~**MICRO_BURST_V1 scaffold implementation.**~~ DONE (mode OFF, no live authority)
+8. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
    - Do not mark `FROZEN_LIVE` merely because code compiles.
    - Generate deterministic hashes only after architecture and behavior are stable.
-8. **Reduce `TradingService` responsibility.**
+9. **Reduce `TradingService` responsibility.**
    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
    - Do this incrementally; do not rewrite the bot from scratch.
-9. **Only after all above, begin `MICRO_BURST_V1`.**
+10. **MICRO_BURST_V1 tuning and validation.**
+    - Tune S/R detection parameters for real market conditions.
+    - Tune momentum thresholds and leverage tiers based on backtesting.
+    - Add BTC context pipeline to MicroBurstContextBuilder (currently null in production).
+    - Wire order book depth to MicroBurstContextBuilder.
+    - Validate exit policy timing parameters.
+11. **MICRO_BURST_V1 live authority activation.**
+    - Only after tuning, testing, and explicit approval.
 
 ## Explicit architecture invariants
 
@@ -141,10 +165,11 @@ At the latest runtime checkpoint:
 - `src/app/services/TradingService.aegis-live.test.ts`: 108/108 PASS.
 - `src/app/services/TradingService.exit-eye.test.ts`: 12/12 PASS.
 - `src/app/strategy/OwnedPositionManagers.test.ts`: 4/4 PASS.
+- MicroBurst strategy scaffold tests: 39/39 PASS.
 - Strategy router / position manager router / Momentum entry policy / shared safety / ownership / risk ledger targeted tests: PASS.
 - Restoration/fronteras: 23/23 PASS.
-- Full `npm test -- --run`: 818 passed, 0 failed.
+- Full `npm test -- --run`: 803 passed, 0 failed.
 
 ## Explicit prohibition
 
-`MICRO_BURST_V1` remains a reserved ID only. It has no entry evaluator, no live router registration, no execution authority, and no position manager registration in this migration phase.
+`MICRO_BURST_V1` scaffold is implemented and registered but mode defaults to OFF. No live authority is enabled. Entry policy, position manager, and lifecycle are functional but await tuning and explicit activation approval.

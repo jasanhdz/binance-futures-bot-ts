@@ -101,6 +101,7 @@ import {
 } from '../../infra/state/AegisConsecutiveLossStateStore';
 import { PositionManagerRouter } from '../strategy/PositionManagerRouter';
 import { AegisPositionManager, MomentumRidePositionManager } from '../strategy/OwnedPositionManagers';
+import { MicroBurstPositionManager } from '../strategy/MicroBurstPositionManager';
 import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
 import { resolveStrategyOwnership } from '../../domain/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../domain/strategies/aegis/AegisIdentity';
@@ -110,6 +111,8 @@ import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import { StrategyRouter } from '../strategy/StrategyRouter';
 import { MomentumRideStrategy, MomentumRideStrategyContext } from '../../domain/strategies/momentum-ride/MomentumRideStrategy';
+import { MicroBurstStrategy, MicroBurstStrategyContext } from '../../domain/strategies/micro-burst/MicroBurstStrategy';
+import { createMicroBurstV1Identity } from '../../domain/strategies/micro-burst/MicroBurstIdentity';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 
@@ -212,6 +215,8 @@ export class TradingService {
     private readonly strategyRiskLedger = new StrategyRiskLedger();
     private readonly sharedStrategyExecution: SharedStrategyExecutionService;
     private readonly momentumStrategyRouter = new StrategyRouter<MomentumRideStrategyContext>();
+    private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
+    private readonly microBurstIdentity: StrategyIdentity;
 
     constructor(
         private deps: TradingServiceDeps,
@@ -220,6 +225,7 @@ export class TradingService {
         this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
         this.aegisStrategyIdentity = createAegisMigrationIdentity();
         this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
+        this.microBurstIdentity = createMicroBurstV1Identity();
         this.sharedStrategyExecution = new SharedStrategyExecutionService(
             deps.exchange,
             deps.logger,
@@ -237,6 +243,10 @@ export class TradingService {
         this.momentumStrategyRouter.register(new MomentumRideStrategy(
             this.momentumStrategyIdentity,
             momentumRuntimeMode
+        ));
+        this.microBurstStrategyRouter.register(new MicroBurstStrategy(
+            this.microBurstIdentity,
+            'OFF'
         ));
 
         this.positionLifecycleCore = new StrategyPositionLifecycleCore({
@@ -275,6 +285,7 @@ export class TradingService {
         );
         this.positionManagerRouter.register(new AegisPositionManager(aegisLifecycle));
         this.positionManagerRouter.register(new MomentumRidePositionManager(this.positionLifecycleCore));
+        this.positionManagerRouter.register(new MicroBurstPositionManager(this.positionLifecycleCore));
     }
 
     private getTradingMode(): string {
