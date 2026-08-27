@@ -4,7 +4,7 @@ import {
   evaluateWithProspectiveEvidence,
   ProspectiveEvidenceRecorder,
 } from './evidence';
-import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
+import { AegisEntryDecisionResult } from '../../../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { deriveProspectiveSignalId } from './identity';
 import {
   PROSPECTIVE_SHADOW_APPROVAL_SCOPE,

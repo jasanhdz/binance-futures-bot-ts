@@ -53,7 +53,7 @@ function serviceFixture(reconnectCount = 0): {
   sleep: ReturnType<typeof vi.fn>;
 } {
   const root = mkdtempSync(join(tmpdir(), 'aegis-shadow-service-'));
-  const typescriptRoot = resolve(__dirname, '../..');
+  const typescriptRoot = resolve(__dirname, '../../../../..');
   const repoRoot = resolve(typescriptRoot, '..');
   const activationPath = join(root, 'activation.json');
   const paths: RuntimePaths = {

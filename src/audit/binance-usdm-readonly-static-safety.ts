@@ -10,8 +10,8 @@ const AUDIT_ENTRY_FILES = [
 const FORBIDDEN_IMPORT_FRAGMENTS = [
   'BinanceAdapter',
   'TradingService',
-  '/brain/',
-  '/prospective/',
+  '/brain-contract-v1/',
+  '/prospective-shadow-cohort-v1/',
   'createOrder',
   'cancelOrder',
   'changeLeverage',

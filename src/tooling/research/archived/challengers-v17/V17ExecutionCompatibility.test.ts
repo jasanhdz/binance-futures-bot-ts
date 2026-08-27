@@ -77,7 +77,7 @@ describe('V17 execution compatibility boundary', () => {
   it('matches frozen Python outputs for every directional golden event', () => {
     const artifact = JSON.parse(
       fs.readFileSync(
-        path.resolve(__dirname, '../../../config/bundles/aegis-v17-research-artifact-v1.json'),
+        path.resolve(__dirname, '../../../../../../config/bundles/aegis-v17-research-artifact-v1.json'),
         'utf8',
       ),
     ) as { sides: Record<'LONG' | 'SHORT', V17ResearchSideArtifact> };

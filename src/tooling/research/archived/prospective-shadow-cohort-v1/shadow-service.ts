@@ -26,8 +26,8 @@ import {
 import { PROSPECTIVE_PROTOCOL_VERSION } from './identity';
 import { forEachJsonlLine } from './jsonl';
 import { assertPublicEndpoint } from './shadow-harness';
-import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
-import { Candle, DecisionRequest, MarketSnapshot } from '../brain/contract';
+import { AegisEntryDecisionResult } from '../../../../domain/services/aegis-entry/AegisEntryDecisionTypes';
+import { Candle, DecisionRequest, MarketSnapshot } from '../brain-contract-v1/contract';
 
 export const COHORT_ID = 'aegis-prospective-shadow-cohort-1' as const;
 export const MODEL_IDENTITY = 'aegis-prospective-shadow-candidate-v1' as const;
@@ -693,7 +693,7 @@ export class PersistentShadowService {
 }
 
 function defaultOptions(): ShadowServiceOptions {
-  const typescriptRoot = resolve(__dirname, '../..');
+  const typescriptRoot = resolve(__dirname, '../../../../..');
   const repoRoot = resolve(typescriptRoot, '..');
   const root =
     process.env.AEGIS_SHADOW_DATA_ROOT ?? resolve(repoRoot, 'data/prospective_shadow/cohort_1');

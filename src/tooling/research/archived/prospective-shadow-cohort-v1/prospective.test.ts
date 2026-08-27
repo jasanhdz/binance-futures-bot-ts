@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AegisEntryDecisionResult } from '../domain/services/aegis-entry/AegisEntryDecisionTypes';
-import { AegisEntryGuardOrchestrator } from '../domain/services/aegis-entry/AegisEntryGuardOrchestrator';
+import { AegisEntryDecisionResult } from '../../../../domain/services/aegis-entry/AegisEntryDecisionTypes';
+import { AegisEntryGuardOrchestrator } from '../../../../domain/services/aegis-entry/AegisEntryGuardOrchestrator';
 import { canonicalJson, sha256 } from './canonical';
 import {
   buildProspectiveEnvelope,

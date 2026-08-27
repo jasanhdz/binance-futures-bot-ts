@@ -1,5 +1,5 @@
-import { BrainManifest } from '../brain/contract';
-import { validateBrainManifest } from '../brain/manifest';
+import { BrainManifest } from '../brain-contract-v1/contract';
+import { validateBrainManifest } from '../brain-contract-v1/manifest';
 
 export const PROSPECTIVE_SHADOW_CANDIDATE_ID = 'aegis-prospective-shadow-candidate-v1' as const;
 export const PROSPECTIVE_SHADOW_APPROVAL_SCOPE = 'PROSPECTIVE_SHADOW_ONLY' as const;
