@@ -402,6 +402,41 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
     const result = simulateDynamicExit(signal, 79000, priceHistory);
     expect(result?.counterfactualExitReason).toBe('TARGET');
   });
+
+  it('closes a LONG on a later break-even touch and ignores later prices', () => {
+    const config = { ...defaultMicroBurstConfig(), exitBreakEvenActivationBps: 10, exitTrailingActivationBps: 1_000 };
+    const result = simulateDynamicExit(makeSignal(), 79000, [
+      { eventTime: 1_001_000, price: 79100 },
+      { eventTime: 1_002_000, price: 79000 },
+      { eventTime: 1_003_000, price: 80000 },
+    ], config);
+    expect(result?.counterfactualExitReason).toBe('BREAK_EVEN');
+    expect(result?.counterfactualExitPrice).toBe(79000);
+  });
+
+  it('closes a SHORT on a later break-even touch', () => {
+    const config = { ...defaultMicroBurstConfig(), exitBreakEvenActivationBps: 10, exitTrailingActivationBps: 1_000 };
+    const result = simulateDynamicExit(makeShortSignal(), 79000, [
+      { eventTime: 1_001_000, price: 78900 },
+      { eventTime: 1_002_000, price: 79000 },
+    ], config);
+    expect(result?.counterfactualExitReason).toBe('BREAK_EVEN');
+  });
+});
+
+describe('MicroBurstOutcomeEngine high-frequency horizons', () => {
+  it('preserves an early first touch across more than 10k events and freezes horizons', () => {
+    const signal = makeSignal({ structuralStopPrice: 78500, destinationPrice: 79500 });
+    const prices = Array.from({ length: 10_501 }, (_, index) => ({
+      eventTime: signal.signalAtMs + 1 + Math.floor(index * 300_000 / 10_500),
+      price: index === 1 ? 79600 : 79000,
+    })).reverse();
+    const horizons = computeAllHorizons(signal, 79000, prices);
+    expect(horizons[300_000].barrierOutcome).toBe('TARGET_FIRST');
+    expect(horizons[300_000].firstTouchAtMs).toBe(signal.signalAtMs + 1 + Math.floor(300_000 / 10_500));
+    expect(Object.isFrozen(horizons)).toBe(true);
+    expect(Object.isFrozen(horizons[300_000])).toBe(true);
+  });
 });
 
 // ── Freeze Snapshot ────────────────────────────────────────

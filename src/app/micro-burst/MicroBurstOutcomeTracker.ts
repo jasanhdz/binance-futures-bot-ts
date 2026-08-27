@@ -27,10 +27,13 @@ import {
   createPendingOutcome,
   sideAwareReturnBps,
   computeHorizonOutcome,
+  computeEntryModelOutcomes,
   OUTCOME_HORIZONS_MS,
 } from '../../domain/strategies/micro-burst/MicroBurstOutcomeEngine';
 import { MicroBurstConfig, defaultMicroBurstConfig } from '../../domain/strategies/micro-burst/MicroBurstTypes';
 import { MicroBurstOutcomeJournal } from './MicroBurstOutcomeJournal';
+import { MicroBurstTradeHistoryStore } from './MicroBurstTradeHistoryStore';
+import { MicroBurstStorage } from './MicroBurstStorage';
 
 interface Clock {
   now(): number;
@@ -43,12 +46,12 @@ interface OutcomeTrackerDeps {
   config?: MicroBurstConfig;
   /** Maximum pending outcomes in memory. Oldest completed are evicted. */
   maxPendingOutcomes?: number;
-  /** Maximum price history events retained per pending outcome. */
+  /** @deprecated History is time-retained per symbol, never count-truncated. */
   maxPriceHistoryPerSignal?: number;
+  storage?: MicroBurstStorage;
 }
 
 const DEFAULT_MAX_PENDING = 500;
-const DEFAULT_MAX_PRICE_HISTORY = 2000;
 
 export class MicroBurstOutcomeTracker {
   private readonly pending = new Map<string, PendingOutcome>();
@@ -66,12 +69,11 @@ export class MicroBurstOutcomeTracker {
   private totalMaeBps = 0;
 
   private readonly maxPending: number;
-  private readonly maxPriceHistory: number;
   private readonly exitConfig: MicroBurstConfig;
+  private readonly tradeHistory = new MicroBurstTradeHistoryStore();
 
   constructor(private readonly deps: OutcomeTrackerDeps) {
     this.maxPending = deps.maxPendingOutcomes ?? DEFAULT_MAX_PENDING;
-    this.maxPriceHistory = deps.maxPriceHistoryPerSignal ?? DEFAULT_MAX_PRICE_HISTORY;
     this.exitConfig = deps.config ?? defaultMicroBurstConfig();
   }
 
@@ -96,25 +98,50 @@ export class MicroBurstOutcomeTracker {
     const pending = createPendingOutcome(signal, episodeKey);
     pending.entryModels = computeEntryModels(signal, []);
     this.pending.set(signal.shadowSignalId, pending);
+    if (this.deps.storage) {
+      const signalStored = this.deps.storage.persistSignal(signal as unknown as { shadowSignalId: string; symbol: string; signalAtMs: number; [key: string]: unknown });
+      const pendingStored = this.deps.storage.persistPendingState(signal.shadowSignalId, 'PENDING', {
+        shadowSignalId: signal.shadowSignalId,
+        signalAtMs: signal.signalAtMs,
+        symbol: signal.symbol,
+        side: signal.side,
+        requiredUntilMs: signal.signalAtMs + 300_000,
+      });
+      if (!signalStored || !pendingStored) this.outcomeErrors++;
+    }
 
     // Memory safety: evict oldest if over limit
     this.evictIfNeeded();
   }
 
   /** Process a trade event. Routes to the correct pending outcome by symbol. */
-  processTradeEvent(event: { eventTime: number; price: number; symbol: string }): void {
+  processTradeEvent(event: {
+    eventTime: number;
+    receivedAtMs?: number;
+    price: number;
+    symbol: string;
+    quantity?: number;
+    isBuyerMaker?: boolean;
+    tradeTime?: number;
+    aggregateTradeId?: number;
+    firstTradeId?: number;
+    lastTradeId?: number;
+  }): void {
     if (!Number.isFinite(event.price) || event.price <= 0) return;
 
+    this.tradeHistory.append(event.symbol, {
+      ...event,
+      receivedAtMs: event.receivedAtMs ?? event.eventTime,
+      quantity: event.quantity ?? 0,
+      isBuyerMaker: event.isBuyerMaker ?? false,
+    });
+    if (this.deps.storage && !this.deps.storage.appendTrade({ ...event, receivedAtMs: event.receivedAtMs ?? event.eventTime })) {
+      this.outcomeErrors++;
+    }
+    this.tradeHistory.prune(this.deps.clock.now());
     for (const [id, pending] of this.pending) {
-      if (pending.signal.symbol !== event.symbol) continue;
-      if (event.eventTime <= pending.signal.signalAtMs) continue;
-
-      pending.priceHistory.push({ eventTime: event.eventTime, price: event.price });
-
-      // Ring buffer: trim if over limit
-      if (pending.priceHistory.length > this.maxPriceHistory) {
-        pending.priceHistory = pending.priceHistory.slice(-this.maxPriceHistory);
-      }
+      if (pending.signal.symbol !== event.symbol || event.eventTime <= pending.signal.signalAtMs) continue;
+      pending.priceHistory = [...this.tradeHistory.query(pending.signal.symbol, pending.signal.signalAtMs, event.eventTime)];
 
       // Update peak/trough
       if (event.price > pending.peakPrice) pending.peakPrice = event.price;
@@ -182,7 +209,7 @@ export class MicroBurstOutcomeTracker {
 
       // Compute outcome for SIGNAL_PRICE model (primary)
       const signalPriceModel = pending.entryModels.find((m) => m.model === 'SIGNAL_PRICE');
-      if (!signalPriceModel) continue;
+      if (!signalPriceModel?.available || signalPriceModel.entryPrice === null) continue;
 
       try {
         const outcome = computeHorizonOutcome(
@@ -201,17 +228,23 @@ export class MicroBurstOutcomeTracker {
 
   private completeOutcome(id: string, pending: PendingOutcome): void {
     try {
+      const history = [...this.tradeHistory.query(pending.signal.symbol, pending.signal.signalAtMs, pending.signal.signalAtMs + 300_000)];
       const signalPriceModel = pending.entryModels.find((m) => m.model === 'SIGNAL_PRICE');
       const entryPrice = signalPriceModel?.entryPrice ?? pending.signal.marketPriceAtSignal;
 
-      const horizons = computeAllHorizons(pending.signal, entryPrice, pending.priceHistory);
+      const computedHorizons = computeAllHorizons(pending.signal, entryPrice, history);
+      // A completed horizon is frozen at maturity; never replace it with a later query.
+      const horizons: Record<number, import('../../domain/strategies/micro-burst/MicroBurstOutcomeTypes').HorizonOutcome> = {
+        ...computedHorizons,
+        ...Object.fromEntries(pending.completedHorizons),
+      };
       const barrierOutcome = aggregateBarrierOutcome(horizons);
-      const dynamicExit = simulateDynamicExit(pending.signal, entryPrice, pending.priceHistory, this.exitConfig);
+      const dynamicExit = simulateDynamicExit(pending.signal, entryPrice, history, this.exitConfig);
 
       const grossBps = sideAwareReturnBps(
         entryPrice,
-        pending.priceHistory.length > 0
-          ? pending.priceHistory[pending.priceHistory.length - 1].price
+        history.length > 0
+          ? history[history.length - 1].price
           : entryPrice,
         pending.signal.side,
       );
@@ -225,12 +258,15 @@ export class MicroBurstOutcomeTracker {
       ]);
 
       const record: ProspectiveOutcomeRecord = {
+        schemaVersion: 1,
         shadowSignalId: pending.signal.shadowSignalId,
+        cohortId: pending.signal.cohortId,
         episodeId: pending.episodeId,
         symbol: pending.signal.symbol,
         side: pending.signal.side,
         signalAtMs: pending.signal.signalAtMs,
         entryPriceModels: pending.entryModels,
+        entryOutcomes: computeEntryModelOutcomes(pending.signal, history, undefined, this.exitConfig),
         structuralStopPrice: pending.signal.structuralStopPrice,
         destinationPrice: pending.signal.destinationPrice,
         support: pending.signal.support,
@@ -258,6 +294,7 @@ export class MicroBurstOutcomeTracker {
       };
 
       this.deps.journal.append(record);
+      if (this.deps.storage && !this.deps.storage.completeOutcome(record as unknown as { shadowSignalId: string; symbol: string; completedAtMs: number; [key: string]: unknown })) this.outcomeErrors++;
 
       // Update metrics
       this.completedOutcomes++;
@@ -290,6 +327,35 @@ export class MicroBurstOutcomeTracker {
       });
     } finally {
       this.pending.delete(id);
+    }
+  }
+
+  /** Restore durable pending snapshots and replay only archived exchange-time trades. */
+  recoverPending(): void {
+    if (!this.deps.storage) return;
+    for (const recovered of this.deps.storage.recoverPending()) {
+      const signal = recovered.snapshot as ShadowSignalSnapshot;
+      if (!signal || typeof signal.shadowSignalId !== 'string' || this.pending.has(signal.shadowSignalId)) continue;
+      const requiredUntilMs = signal.signalAtMs + 300_000;
+      const history = this.deps.storage.queryArchivedTrades(signal.symbol, signal.signalAtMs, Math.min(requiredUntilMs, this.deps.clock.now()));
+      if (this.deps.clock.now() >= requiredUntilMs && history.length === 0) {
+        this.deps.storage.persistPendingState(signal.shadowSignalId, 'INCOMPLETE_DATA_GAP', {
+          shadowSignalId: signal.shadowSignalId,
+          recoveredAtMs: this.deps.clock.now(),
+          requiredUntilMs,
+          recoveryStatus: 'INCOMPLETE_DATA_GAP',
+        });
+        this.outcomeErrors++;
+        continue;
+      }
+      this.trackSignal(signal);
+      for (const trade of history) this.processTradeEvent({ symbol: signal.symbol, ...(trade as any) });
+      this.deps.storage.persistPendingState(signal.shadowSignalId, 'RECOVERED', {
+        shadowSignalId: signal.shadowSignalId,
+        recoveredAtMs: this.deps.clock.now(),
+        requiredUntilMs,
+        recoveryStatus: 'RECOVERED',
+      });
     }
   }
 

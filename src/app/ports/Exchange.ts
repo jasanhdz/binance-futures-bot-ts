@@ -1,11 +1,15 @@
 /**
  * Exchange Port - Application Layer Interface
- * 
+ *
  * Defines the contract for exchange operations.
  * Implemented by BinanceAdapter in infrastructure layer.
  */
 
 import { Candle, Side } from '../../domain/types';
+import {
+  BinanceDepthDiffEvent,
+  BinanceDepthSnapshot,
+} from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
 
 export interface PositionInfo {
   sideMode: 'BOTH' | 'LONG' | 'SHORT';
@@ -61,9 +65,32 @@ export interface Exchange {
   getLastCandle(symbol: string): Promise<Candle | null>;
   getCachedCandles?(symbol: string, interval: string, limit: number): Candle[];
   subscribeToCandles(symbol: string): void;
-  subscribeToPartialDepth?(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void): void;
-  subscribeToAggTrades?(symbol: string, callback: (trade: { isBuyerMaker: boolean; quantity: string; price: string; eventTime: number }) => void): void;
-  getDepthSnapshot?(symbol: string, levels?: number): Promise<{ lastUpdateId: number; bids: [string, string][]; asks: [string, string][] }>;
+  subscribeToPartialDepth?(
+    symbol: string,
+    levels: number,
+    speed: '100ms' | '250ms' | '500ms',
+    callback: (depth: any) => void,
+  ): void;
+  subscribeToDepthDiff?(
+    symbol: string,
+    speed: '100ms' | '250ms' | '500ms',
+    callback: (depth: BinanceDepthDiffEvent) => void,
+  ): () => void;
+  subscribeToAggTrades?(
+    symbol: string,
+    callback: (trade: {
+      isBuyerMaker: boolean;
+      quantity: string;
+      price: string;
+      eventTime: number;
+      receivedAtMs?: number;
+      tradeTime?: number;
+      aggregateTradeId?: number;
+      firstTradeId?: number;
+      lastTradeId?: number;
+    }) => void,
+  ): void;
+  getDepthSnapshot?(symbol: string, levels?: number): Promise<BinanceDepthSnapshot>;
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;
   getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;

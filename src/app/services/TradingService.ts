@@ -117,6 +117,10 @@ import { MicroBurstRuntime } from '../../domain/strategies/micro-burst/MicroBurs
 import { parseMicroBurstConfig, isMicroBurstShadowMode } from '../../domain/strategies/micro-burst/MicroBurstConfigLoader';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
+import { createHash } from 'node:crypto';
+import { MicroBurstOutcomeJournal } from '../micro-burst/MicroBurstOutcomeJournal';
+import { MicroBurstOutcomeTracker } from '../micro-burst/MicroBurstOutcomeTracker';
+import { MicroBurstStorage } from '../micro-burst/MicroBurstStorage';
 
 const INITIAL_BALANCE = 20;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -315,6 +319,22 @@ export class TradingService {
             return parseMicroBurstConfig({ micro_burst: yamlConfig.micro_burst });
         }
         return parseMicroBurstConfig({});
+    }
+
+    private getMicroBurstProvenance(config: ReturnType<typeof parseMicroBurstConfig>) {
+        const stable = (value: unknown): string => {
+            if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
+            if (value && typeof value === 'object') {
+                return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+                    .map(([key, child]) => `${JSON.stringify(key)}:${stable(child)}`).join(',')}}`;
+            }
+            return JSON.stringify(value);
+        };
+        const configHash = createHash('sha256').update(stable(config)).digest('hex');
+        const codeCommitSha = process.env.GIT_COMMIT_SHA ?? process.env.GITHUB_SHA ?? process.env.COMMIT_SHA ?? 'UNKNOWN';
+        const requestedCohort = config.prospectiveValidation?.cohortId;
+        const cohortId = requestedCohort ?? `MBV1-M3_1-${codeCommitSha.slice(0, 12)}-${configHash.slice(0, 12)}`;
+        return { codeCommitSha, configHash, cohortId, officialCohortReady: codeCommitSha !== 'UNKNOWN' };
     }
 
     private getAegisTurboYamlConfig(): AegisTurboYamlConfig | undefined {
@@ -1378,16 +1398,46 @@ export class TradingService {
         const mbConfig = this.getMicroBurstConfig();
         if (mbConfig.enabled && mbConfig.mode === 'SHADOW') {
             try {
+                const provenance = this.getMicroBurstProvenance(mbConfig);
+                const archiveConfig = mbConfig.marketArchive;
+                const storage = archiveConfig?.enabled
+                    ? new MicroBurstStorage({
+                        databasePath: archiveConfig.sqlitePath ?? 'data/micro-burst/micro_burst_research.sqlite',
+                        archivePath: archiveConfig.rootDir ?? 'data/micro-burst/market-data',
+                    })
+                    : undefined;
+                const outcomeTracker = new MicroBurstOutcomeTracker({
+                    logger: this.deps.logger,
+                    clock: { now: () => Date.now() },
+                    journal: new MicroBurstOutcomeJournal(),
+                    storage,
+                });
                 this.microBurstRuntime = new MicroBurstRuntime(
                     {
                         exchange: this.deps.exchange,
                         logger: this.deps.logger,
                         clock: { now: () => Date.now() },
                         strategyRouter: this.microBurstStrategyRouter,
+                        outcomeTracker,
+                        marketStorage: storage,
+                        provenance,
                     },
                     mbConfig,
                 );
+                outcomeTracker.recoverPending();
                 await this.microBurstRuntime.start();
+                if (provenance.officialCohortReady && storage?.getHealth().healthy !== false) {
+                    this.deps.logger.info('MICRO_BURST_PROSPECTIVE_COHORT_READY', {
+                        cohortId: provenance.cohortId,
+                        version: this.microBurstIdentity.strategyVersion,
+                        sha: provenance.codeCommitSha,
+                        configHash: provenance.configHash,
+                    });
+                } else {
+                    this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
+                        reason: provenance.codeCommitSha === 'UNKNOWN' ? 'CODE_SHA_UNKNOWN' : 'MARKET_ARCHIVE_UNHEALTHY',
+                    });
+                }
                 this.deps.logger.info('micro_burst_runtime_integrated', {
                     mode: mbConfig.mode,
                     symbols: Object.keys(mbConfig.symbols).filter(s => mbConfig.symbols[s].enabled),

@@ -71,6 +71,10 @@ function isTrueish(v: unknown): boolean {
 }
 
 import { WebSocketManager } from './WebSocketManager';
+import {
+  BinanceDepthDiffEvent,
+  BinanceDepthSnapshot,
+} from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
 
 export class BinanceExchange implements Exchange {
   private cli = Binance({
@@ -208,9 +212,7 @@ export class BinanceExchange implements Exchange {
     if (cached && now - cached.ts < 60_000) {
       return cached.snapshot;
     }
-    const data = await this.enqueue(() =>
-      this.cli.futuresFundingRate({ symbol, limit: 1 }),
-    );
+    const data = await this.enqueue(() => this.cli.futuresFundingRate({ symbol, limit: 1 }));
     const entry = Array.isArray(data) && data.length ? data[0] : undefined;
     const rate = entry && entry.fundingRate !== undefined ? Number(entry.fundingRate) : NaN;
     const nextFundingTime =
@@ -369,10 +371,7 @@ export class BinanceExchange implements Exchange {
     const candles = this.candleCache.get(this.cacheKey(normalizedSymbol, interval))?.candles || [];
     const wsCandle = interval === '5m' ? this.wsCandleCache[normalizedSymbol] : undefined;
     const merged = wsCandle
-      ? [
-        ...candles.filter((candle) => candle.openTime !== wsCandle.openTime),
-        wsCandle,
-      ]
+      ? [...candles.filter((candle) => candle.openTime !== wsCandle.openTime), wsCandle]
       : candles;
     return merged.slice(-Math.max(0, limit));
   }
@@ -390,7 +389,7 @@ export class BinanceExchange implements Exchange {
         volume: Number(wsCandle.volume),
         // We initialize buyVolume from the WS candle, but the aggTrades will overlay on it
         buyVolume: Number((wsCandle as any).buyVolume || (wsCandle as any).baseAssetVolume || 0),
-        closeTime: wsCandle.closeTime
+        closeTime: wsCandle.closeTime,
       };
 
       // Preserve the accumulated buyVolume if the aggTrade stream has already started filling it
@@ -419,27 +418,60 @@ export class BinanceExchange implements Exchange {
     });
   }
 
-  public subscribeToPartialDepth(symbol: string, levels: number, speed: '100ms' | '250ms' | '500ms', callback: (depth: any) => void): void {
+  public subscribeToPartialDepth(
+    symbol: string,
+    levels: number,
+    speed: '100ms' | '250ms' | '500ms',
+    callback: (depth: any) => void,
+  ): void {
     this.wsManager.connectPartialDepth(symbol, levels, speed, callback);
   }
 
-  public subscribeToAggTrades(symbol: string, callback: (trade: { isBuyerMaker: boolean; quantity: string; price: string; eventTime: number }) => void): void {
+  public subscribeToDepthDiff(
+    symbol: string,
+    speed: '100ms' | '250ms' | '500ms',
+    callback: (depth: BinanceDepthDiffEvent) => void,
+  ): () => void {
+    return this.wsManager.connectDepthDiff(symbol, speed, callback);
+  }
+
+  public subscribeToAggTrades(
+    symbol: string,
+    callback: (trade: {
+      isBuyerMaker: boolean;
+      quantity: string;
+      price: string;
+      eventTime: number;
+      receivedAtMs?: number;
+      tradeTime?: number;
+      aggregateTradeId?: number;
+      firstTradeId?: number;
+      lastTradeId?: number;
+    }) => void,
+  ): void {
     this.wsManager.connectAggTrades(symbol, (trade) => {
       callback({
         isBuyerMaker: trade.isBuyerMaker,
         quantity: trade.quantity,
         price: trade.price,
-        eventTime: Date.now(),
+        // Prefer the exchange trade timestamp for causal outcome ordering.
+        eventTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
+        receivedAtMs: Date.now(),
+        tradeTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
+        aggregateTradeId: (trade as any).aggregateTradeId,
+        firstTradeId: (trade as any).firstTradeId,
+        lastTradeId: (trade as any).lastTradeId,
       });
     });
   }
 
-  public async getDepthSnapshot(symbol: string, levels = 20): Promise<{ lastUpdateId: number; bids: [string, string][]; asks: [string, string][] }> {
+  public async getDepthSnapshot(symbol: string, levels = 20): Promise<BinanceDepthSnapshot> {
     const book = await this.cli.futuresBook({ symbol, limit: levels });
     return {
       lastUpdateId: book.lastUpdateId,
-      bids: book.bids.map(b => [b.price, b.quantity] as [string, string]),
-      asks: book.asks.map(a => [a.price, a.quantity] as [string, string]),
+      bids: book.bids.map((b) => [b.price, b.quantity] as [string, string]),
+      asks: book.asks.map((a) => [a.price, a.quantity] as [string, string]),
+      receivedAtMs: Date.now(),
     };
   }
 
@@ -505,16 +537,18 @@ export class BinanceExchange implements Exchange {
     const usdtAsset = Array.isArray(info.assets)
       ? info.assets.find((asset: any) => asset.asset === 'USDT')
       : undefined;
-    const walletBalance = this.finiteNumber(info.totalWalletBalance)
-      ?? this.finiteNumber(usdtAsset?.walletBalance);
-    const availableBalance = this.finiteNumber(info.availableBalance)
-      ?? this.finiteNumber(usdtAsset?.availableBalance);
-    const unrealizedPnlTotal = this.finiteNumber(info.totalUnrealizedProfit)
-      ?? this.finiteNumber(usdtAsset?.unrealizedProfit);
-    const equityTotal = walletBalance !== undefined && unrealizedPnlTotal !== undefined
-      ? walletBalance + unrealizedPnlTotal
-      : this.finiteNumber(info.totalMarginBalance)
-      ?? this.finiteNumber(usdtAsset?.marginBalance);
+    const walletBalance =
+      this.finiteNumber(info.totalWalletBalance) ?? this.finiteNumber(usdtAsset?.walletBalance);
+    const availableBalance =
+      this.finiteNumber(info.availableBalance) ?? this.finiteNumber(usdtAsset?.availableBalance);
+    const unrealizedPnlTotal =
+      this.finiteNumber(info.totalUnrealizedProfit) ??
+      this.finiteNumber(usdtAsset?.unrealizedProfit);
+    const equityTotal =
+      walletBalance !== undefined && unrealizedPnlTotal !== undefined
+        ? walletBalance + unrealizedPnlTotal
+        : (this.finiteNumber(info.totalMarginBalance) ??
+          this.finiteNumber(usdtAsset?.marginBalance));
 
     return {
       walletBalance,
@@ -550,7 +584,10 @@ export class BinanceExchange implements Exchange {
     } catch (err: any) {
       noteRateLimitFromError(err);
       const msg = (err?.message || err?.msg || '').toString();
-      if (/No need to change margin type/i.test(msg) || /margin type cannot be changed/i.test(msg)) {
+      if (
+        /No need to change margin type/i.test(msg) ||
+        /margin type cannot be changed/i.test(msg)
+      ) {
         this.marginTypeCache.set(symbol, { type: marginType, ts: now });
         this.log.debug('margin_type_skip', { symbol, requested: marginType, err: msg });
         return;
@@ -625,7 +662,8 @@ export class BinanceExchange implements Exchange {
   async hasOpenPosition(symbol: string, side: 'LONG' | 'SHORT' | 'ANY') {
     const info = await this.getAccountInfo();
     const ps = info.positions || [];
-    if (side === 'ANY') return ps.some((p: any) => p.symbol === symbol && Math.abs(+p.positionAmt) > 0);
+    if (side === 'ANY')
+      return ps.some((p: any) => p.symbol === symbol && Math.abs(+p.positionAmt) > 0);
     return ps.some((p: any) => {
       if (p.symbol !== symbol) return false;
       const amt = +p.positionAmt;
@@ -648,7 +686,11 @@ export class BinanceExchange implements Exchange {
       qtyAbs: Math.abs(+pos.positionAmt),
       entryPrice: +pos.entryPrice,
       leverage: +(pos.leverage || CONFIG.LEVERAGE),
-      isolatedMargin: pos.isolatedWallet ? Number(pos.isolatedWallet) : (pos.positionInitialMargin ? Number(pos.positionInitialMargin) : undefined),
+      isolatedMargin: pos.isolatedWallet
+        ? Number(pos.isolatedWallet)
+        : pos.positionInitialMargin
+          ? Number(pos.positionInitialMargin)
+          : undefined,
       unrealizedPnl: pos.unrealizedProfit !== undefined ? Number(pos.unrealizedProfit) : undefined,
     };
   }
@@ -689,10 +731,22 @@ export class BinanceExchange implements Exchange {
     }
   }
 
-  async placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean> {
+  async placeStopClose(
+    symbol: string,
+    side: Side,
+    stopPrice: number,
+    qty?: number,
+  ): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    const standardParams = this.buildStandardCloseTriggerParams(symbol, side, 'STOP_MARKET', stopPrice, hedge, qty);
+    const standardParams = this.buildStandardCloseTriggerParams(
+      symbol,
+      side,
+      'STOP_MARKET',
+      stopPrice,
+      hedge,
+      qty,
+    );
     const algoParams: any = {
       symbol,
       side: side === 'LONG' ? 'SELL' : 'BUY',
@@ -700,7 +754,7 @@ export class BinanceExchange implements Exchange {
       algoType: 'CONDITIONAL',
       triggerPrice: this.formatPrice(symbol, stopPrice),
       workingType: 'MARK_PRICE',
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
 
     if (qty) {
@@ -715,7 +769,13 @@ export class BinanceExchange implements Exchange {
     const t0 = Date.now();
     try {
       await this.enqueue(() => this.cli.futuresOrder(standardParams));
-      this.log.debug('api_stop_upsert', { ms: Date.now() - t0, symbol, side, stopPrice, placement: 'standard_order' });
+      this.log.debug('api_stop_upsert', {
+        ms: Date.now() - t0,
+        symbol,
+        side,
+        stopPrice,
+        placement: 'standard_order',
+      });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
@@ -724,7 +784,12 @@ export class BinanceExchange implements Exchange {
         delete fallbackParams.positionSide;
         await this.enqueue(() => this.cli.futuresOrder(fallbackParams));
         this.hedgeCache = undefined;
-        this.log.warn('api_stop_upsert_fallback', { symbol, side, stopPrice, placement: 'standard_order_without_position_side' });
+        this.log.warn('api_stop_upsert_fallback', {
+          symbol,
+          side,
+          stopPrice,
+          placement: 'standard_order_without_position_side',
+        });
         return true;
       }
       return this.placeStopCloseAlgoFallback(symbol, side, stopPrice, algoParams, e, t0);
@@ -747,7 +812,12 @@ export class BinanceExchange implements Exchange {
     });
     try {
       await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
-      this.log.warn('api_stop_upsert_algo', { ms: Date.now() - startedAt, symbol, side, stopPrice });
+      this.log.warn('api_stop_upsert_algo', {
+        ms: Date.now() - startedAt,
+        symbol,
+        side,
+        stopPrice,
+      });
       return true;
     } catch (fallbackError: any) {
       noteRateLimitFromError(fallbackError);
@@ -758,7 +828,12 @@ export class BinanceExchange implements Exchange {
         this.log.warn('api_stop_upsert_algo_without_position_side', { symbol, side, stopPrice });
         return true;
       }
-      this.log.warn('api_stop_algo_failed', { symbol, side, stopPrice, error: String(fallbackError) });
+      this.log.warn('api_stop_algo_failed', {
+        symbol,
+        side,
+        stopPrice,
+        error: String(fallbackError),
+      });
       throw fallbackError;
     }
   }
@@ -781,9 +856,10 @@ export class BinanceExchange implements Exchange {
     }
 
     const timestamp = Date.now();
-    const queryString = Object.keys(params)
-      .map(key => `${key}=${encodeURIComponent(params[key])}`)
-      .join('&') + `&timestamp=${timestamp}`;
+    const queryString =
+      Object.keys(params)
+        .map((key) => `${key}=${encodeURIComponent(params[key])}`)
+        .join('&') + `&timestamp=${timestamp}`;
 
     const signature = require('crypto')
       .createHmac('sha256', CONFIG.API_SECRET)
@@ -817,10 +893,22 @@ export class BinanceExchange implements Exchange {
     this.log.info('api_stop_algo_placed', { symbol, side, stopPrice });
   }
 
-  async placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean> {
+  async placeTpClose(
+    symbol: string,
+    side: Side,
+    triggerPrice: number,
+    qty?: number,
+  ): Promise<boolean> {
     const hedge = await this.isHedgeMode();
 
-    const standardParams = this.buildStandardCloseTriggerParams(symbol, side, 'TAKE_PROFIT_MARKET', triggerPrice, hedge, qty);
+    const standardParams = this.buildStandardCloseTriggerParams(
+      symbol,
+      side,
+      'TAKE_PROFIT_MARKET',
+      triggerPrice,
+      hedge,
+      qty,
+    );
     const algoParams: any = {
       symbol,
       side: side === 'LONG' ? 'SELL' : 'BUY',
@@ -828,7 +916,7 @@ export class BinanceExchange implements Exchange {
       algoType: 'CONDITIONAL',
       triggerPrice: this.formatPrice(symbol, triggerPrice),
       workingType: 'MARK_PRICE',
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
 
     if (qty) {
@@ -843,7 +931,13 @@ export class BinanceExchange implements Exchange {
     const t0 = Date.now();
     try {
       await this.enqueue(() => this.cli.futuresOrder(standardParams));
-      this.log.debug('api_tp_upsert', { ms: Date.now() - t0, symbol, side, tp: triggerPrice, placement: 'standard_order' });
+      this.log.debug('api_tp_upsert', {
+        ms: Date.now() - t0,
+        symbol,
+        side,
+        tp: triggerPrice,
+        placement: 'standard_order',
+      });
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
@@ -852,7 +946,12 @@ export class BinanceExchange implements Exchange {
         delete fallbackParams.positionSide;
         await this.enqueue(() => this.cli.futuresOrder(fallbackParams));
         this.hedgeCache = undefined;
-        this.log.warn('api_tp_upsert_fallback', { symbol, side, tp: triggerPrice, placement: 'standard_order_without_position_side' });
+        this.log.warn('api_tp_upsert_fallback', {
+          symbol,
+          side,
+          tp: triggerPrice,
+          placement: 'standard_order_without_position_side',
+        });
         return true;
       }
       return this.placeTpCloseAlgoFallback(symbol, side, triggerPrice, algoParams, e, t0);
@@ -901,7 +1000,12 @@ export class BinanceExchange implements Exchange {
     });
     try {
       await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
-      this.log.warn('api_tp_upsert_algo', { ms: Date.now() - startedAt, symbol, side, tp: triggerPrice });
+      this.log.warn('api_tp_upsert_algo', {
+        ms: Date.now() - startedAt,
+        symbol,
+        side,
+        tp: triggerPrice,
+      });
       return true;
     } catch (fallbackError: any) {
       noteRateLimitFromError(fallbackError);
@@ -909,10 +1013,19 @@ export class BinanceExchange implements Exchange {
         delete algoParams.positionSide;
         await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
         this.hedgeCache = undefined;
-        this.log.warn('api_tp_upsert_algo_without_position_side', { symbol, side, tp: triggerPrice });
+        this.log.warn('api_tp_upsert_algo_without_position_side', {
+          symbol,
+          side,
+          tp: triggerPrice,
+        });
         return true;
       }
-      this.log.warn('api_tp_algo_failed', { symbol, side, tp: triggerPrice, error: String(fallbackError) });
+      this.log.warn('api_tp_algo_failed', {
+        symbol,
+        side,
+        tp: triggerPrice,
+        error: String(fallbackError),
+      });
       throw fallbackError;
     }
   }
@@ -921,7 +1034,7 @@ export class BinanceExchange implements Exchange {
     const timestamp = params.timestamp || Date.now();
     const qsParams = { ...params, timestamp };
     const queryString = Object.keys(qsParams)
-      .map(key => `${key}=${encodeURIComponent(qsParams[key])}`)
+      .map((key) => `${key}=${encodeURIComponent(qsParams[key])}`)
       .join('&');
 
     const signature = require('crypto')
@@ -969,9 +1082,10 @@ export class BinanceExchange implements Exchange {
     }
 
     const timestamp = Date.now();
-    const queryString = Object.keys(params)
-      .map(key => `${key}=${encodeURIComponent(params[key])}`)
-      .join('&') + `&timestamp=${timestamp}`;
+    const queryString =
+      Object.keys(params)
+        .map((key) => `${key}=${encodeURIComponent(params[key])}`)
+        .join('&') + `&timestamp=${timestamp}`;
 
     const signature = require('crypto')
       .createHmac('sha256', CONFIG.API_SECRET)
@@ -1066,7 +1180,10 @@ export class BinanceExchange implements Exchange {
       const open = await this.enqueue(() => this.cli.futuresOpenOrders({ symbol }));
       for (const o of open as any[]) {
         if (
-          (o.type === 'STOP_MARKET' || o.type === 'TAKE_PROFIT_MARKET' || o.type === 'STOP' || o.type === 'TAKE_PROFIT') &&
+          (o.type === 'STOP_MARKET' ||
+            o.type === 'TAKE_PROFIT_MARKET' ||
+            o.type === 'STOP' ||
+            o.type === 'TAKE_PROFIT') &&
           (isTrueish(o.closePosition) || isTrueish(o.reduceOnly)) &&
           (!o.positionSide || o.positionSide === side || o.positionSide === 'BOTH')
         ) {
@@ -1090,7 +1207,7 @@ export class BinanceExchange implements Exchange {
           `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
           {
             headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
-          }
+          },
         );
 
         if (response.ok) {
@@ -1114,16 +1231,27 @@ export class BinanceExchange implements Exchange {
               // Usar el endpoint específico para cancelar Algo Orders
               const cancelParams: any = { symbol, algoId: o.algoId };
               const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}`;
-              const sig = require('crypto').createHmac('sha256', CONFIG.API_SECRET).update(qs).digest('hex');
+              const sig = require('crypto')
+                .createHmac('sha256', CONFIG.API_SECRET)
+                .update(qs)
+                .digest('hex');
 
-              const delRes = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${sig}`, {
-                method: 'DELETE',
-                headers: { 'X-MBX-APIKEY': CONFIG.API_KEY }
-              });
+              const delRes = await fetch(
+                `${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${sig}`,
+                {
+                  method: 'DELETE',
+                  headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+                },
+              );
 
               if (!delRes.ok) {
                 const txt = await delRes.text();
-                this.log.warn('cancel_algo_api_fail', { symbol, algoId: o.algoId, status: delRes.status, body: txt });
+                this.log.warn('cancel_algo_api_fail', {
+                  symbol,
+                  algoId: o.algoId,
+                  status: delRes.status,
+                  body: txt,
+                });
               } else {
                 this.log.info('cancel_algo_success', { symbol, algoId: o.algoId });
               }
@@ -1169,7 +1297,7 @@ export class BinanceExchange implements Exchange {
           `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
           {
             headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
-          }
+          },
         );
 
         if (response.ok) {
@@ -1186,16 +1314,27 @@ export class BinanceExchange implements Exchange {
             // SOLO CANCELAR SI ES STOP (Ignorar TP)
             if (isStop) {
               const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}`;
-              const sig = require('crypto').createHmac('sha256', CONFIG.API_SECRET).update(qs).digest('hex');
+              const sig = require('crypto')
+                .createHmac('sha256', CONFIG.API_SECRET)
+                .update(qs)
+                .digest('hex');
 
-              const delRes = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${sig}`, {
-                method: 'DELETE',
-                headers: { 'X-MBX-APIKEY': CONFIG.API_KEY }
-              });
+              const delRes = await fetch(
+                `${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder?${qs}&signature=${sig}`,
+                {
+                  method: 'DELETE',
+                  headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+                },
+              );
 
               if (!delRes.ok) {
                 const txt = await delRes.text();
-                this.log.warn('cancel_algo_stop_fail', { symbol, algoId: o.algoId, status: delRes.status, body: txt });
+                this.log.warn('cancel_algo_stop_fail', {
+                  symbol,
+                  algoId: o.algoId,
+                  status: delRes.status,
+                  body: txt,
+                });
               } else {
                 this.log.info('cancel_algo_stop_success', { symbol, algoId: o.algoId });
               }
@@ -1226,7 +1365,7 @@ export class BinanceExchange implements Exchange {
         headers: {
           'X-MBX-APIKEY': CONFIG.API_KEY,
         },
-      }
+      },
     );
 
     if (!response.ok) {
@@ -1242,9 +1381,7 @@ export class BinanceExchange implements Exchange {
         await this.cancelAlgoOrderRaw(symbol, orderId.replace('ALGO_', ''));
         return;
       }
-      await this.enqueue(() =>
-        this.cli.futuresCancelOrder({ symbol, orderId: Number(orderId) }),
-      );
+      await this.enqueue(() => this.cli.futuresCancelOrder({ symbol, orderId: Number(orderId) }));
     } catch (err) {
       noteRateLimitFromError(err);
       throw err;
@@ -1342,7 +1479,10 @@ export class BinanceExchange implements Exchange {
         .filter((o) => {
           const t: string = o.type;
           const isType =
-            t === 'STOP_MARKET' || t === 'STOP' || t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
+            t === 'STOP_MARKET' ||
+            t === 'STOP' ||
+            t === 'TAKE_PROFIT_MARKET' ||
+            t === 'TAKE_PROFIT';
           if (!isType) return false;
           if (o.side !== wantSide) return false;
           const hedgeOk = !o.positionSide || o.positionSide === side || o.positionSide === 'BOTH';
@@ -1379,7 +1519,7 @@ export class BinanceExchange implements Exchange {
           headers: {
             'X-MBX-APIKEY': CONFIG.API_KEY,
           },
-        }
+        },
       );
 
       if (response.ok) {
@@ -1442,9 +1582,7 @@ export class BinanceExchange implements Exchange {
         if (idStr.startsWith('ALGO_')) {
           await this.cancelAlgoOrderRaw(symbol, idStr.replace('ALGO_', ''));
         } else {
-          await this.enqueue(() =>
-            this.cli.futuresCancelOrder({ symbol, orderId: Number(id) }),
-          );
+          await this.enqueue(() => this.cli.futuresCancelOrder({ symbol, orderId: Number(id) }));
         }
       } catch (e) {
         noteRateLimitFromError(e);

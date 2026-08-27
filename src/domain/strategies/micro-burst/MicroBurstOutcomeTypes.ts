@@ -9,7 +9,9 @@ import { Side } from '../../types';
 // ── Shadow Signal Snapshot ─────────────────────────────────
 
 export interface ShadowSignalSnapshot {
+  schemaVersion?: 1;
   shadowSignalId: string;
+  cohortId?: string;
   strategyId: string;
   strategyVersion: string;
   codeCommitSha: string;
@@ -71,7 +73,23 @@ export type EntryPriceModel = 'SIGNAL_PRICE' | 'NEXT_TRADE' | 'CONSERVATIVE_SLIP
 
 export interface EntryPriceAssumption {
   model: EntryPriceModel;
-  entryPrice: number;
+  entryPrice: number | null;
+  available?: boolean;
+  /** Fixed adverse entry adjustment. Always expressed in bps. */
+  slippageBps?: number;
+}
+
+/** Exchange trade data retained for prospective outcome evaluation. */
+export interface MicroBurstTradeRecord {
+  eventTime: number;
+  receivedAtMs: number;
+  price: number;
+  quantity: number;
+  isBuyerMaker: boolean;
+  tradeTime?: number;
+  aggregateTradeId?: number;
+  firstTradeId?: number;
+  lastTradeId?: number;
 }
 
 // ── Cost Scenarios ─────────────────────────────────────────
@@ -117,8 +135,6 @@ export type CounterfactualExitReason =
   | 'BREAK_EVEN'
   | 'TRAILING'
   | 'EARLY_FAILURE'
-  | 'BTC_REVERSAL'
-  | 'ANOMALY_EXIT'
   | 'MAX_HOLD'
   | 'HOLD_AT_HORIZON';
 
@@ -130,15 +146,28 @@ export interface DynamicExitOutcome {
   counterfactualNetBps: number;
 }
 
+export interface EntryModelOutcome {
+  assumption: Readonly<EntryPriceAssumption>;
+  horizons: Readonly<Record<number, Readonly<HorizonOutcome>>> | null;
+  barrierOutcome: BarrierOutcome | null;
+  dynamicExitOutcome: Readonly<DynamicExitOutcome> | null;
+  grossBps: number | null;
+  costScenarios: Readonly<Record<string, number>> | null;
+}
+
 // ── Complete Outcome Record ────────────────────────────────
 
 export interface ProspectiveOutcomeRecord {
+  schemaVersion?: 1;
   shadowSignalId: string;
+  cohortId?: string;
   episodeId: string;
   symbol: string;
   side: Side;
   signalAtMs: number;
   entryPriceModels: EntryPriceAssumption[];
+  /** Independent outcomes; unavailable NEXT_TRADE has null outcome values, never zero-filled. */
+  entryOutcomes?: Readonly<Record<EntryPriceModel, EntryModelOutcome>>;
   structuralStopPrice: number;
   destinationPrice: number;
   support: number | null;

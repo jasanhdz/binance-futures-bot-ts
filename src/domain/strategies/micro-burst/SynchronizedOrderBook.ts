@@ -10,7 +10,6 @@ import {
 const MAX_DEPTH_LEVELS = 20;
 const STALE_THRESHOLD_MS = 10_000;
 const MAX_DIFF_BUFFER_SIZE = 500;
-const MAX_RESYNC_ATTEMPTS = 3;
 
 interface SnapshotSource {
   getSnapshot(symbol: string): Promise<BinanceDepthSnapshot>;
@@ -24,49 +23,53 @@ interface Clock {
   now(): number;
 }
 
-function parsePriceQty(priceStr: string, qtyStr: string): OrderBookDepthLevel | null {
+function isUpdateId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function parseLevel(priceStr: string, qtyStr: string): OrderBookDepthLevel | null {
   const price = Number(priceStr);
   const qty = Number(qtyStr);
-  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty) || qty < 0) return null;
-  return { price, qty };
+  return Number.isFinite(price) && price > 0 && Number.isFinite(qty) && qty >= 0
+    ? { price, qty }
+    : null;
 }
 
-function applyDiffToBook(
-  book: Map<number, number>,
-  diffs: [string, string][],
-): void {
-  for (const [priceStr, qtyStr] of diffs) {
-    const price = Number(priceStr);
-    const qty = Number(qtyStr);
-    if (!Number.isFinite(price) || price <= 0) continue;
-    if (qty === 0) {
-      book.delete(price);
-    } else if (Number.isFinite(qty) && qty > 0) {
-      book.set(price, qty);
-    }
+function validateDiff(event: BinanceDepthDiffEvent): boolean {
+  return (
+    isUpdateId(event.U) &&
+    isUpdateId(event.u) &&
+    isUpdateId(event.pu) &&
+    event.U <= event.u &&
+    isTimestamp(event.E) &&
+    isTimestamp(event.T) &&
+    isTimestamp(event.receivedAtMs) &&
+    Array.isArray(event.bids) &&
+    Array.isArray(event.asks) &&
+    [...event.bids, ...event.asks].every(
+      (level) =>
+        Array.isArray(level) && level.length === 2 && parseLevel(level[0], level[1]) !== null,
+    )
+  );
+}
+
+function applyDiff(book: Map<number, number>, levels: [string, string][]): void {
+  for (const [priceStr, qtyStr] of levels) {
+    const level = parseLevel(priceStr, qtyStr)!;
+    if (level.qty === 0) book.delete(level.price);
+    else book.set(level.price, level.qty);
   }
 }
 
-function bookToSortedLevels(
-  book: Map<number, number>,
-  descending: boolean,
-): OrderBookDepthLevel[] {
-  const entries = Array.from(book.entries());
-  entries.sort((a, b) => (descending ? b[0] - a[0] : a[0] - b[0]));
-  return entries.slice(0, MAX_DEPTH_LEVELS).map(([price, qty]) => ({ price, qty }));
-}
-
-function isCrossedBook(bids: OrderBookDepthLevel[], asks: OrderBookDepthLevel[]): boolean {
-  if (bids.length === 0 || asks.length === 0) return false;
-  return bids[0].price >= asks[0].price;
-}
-
-function isSortedCorrectly(levels: OrderBookDepthLevel[], descending: boolean): boolean {
-  for (let i = 1; i < levels.length; i++) {
-    if (descending && levels[i - 1].price < levels[i].price) return false;
-    if (!descending && levels[i - 1].price > levels[i].price) return false;
-  }
-  return true;
+function sortedLevels(book: Map<number, number>, descending: boolean): OrderBookDepthLevel[] {
+  return Array.from(book.entries())
+    .sort((a, b) => (descending ? b[0] - a[0] : a[0] - b[0]))
+    .slice(0, MAX_DEPTH_LEVELS)
+    .map(([price, qty]) => ({ price, qty }));
 }
 
 export interface SynchronizedOrderBookDeps {
@@ -74,7 +77,8 @@ export interface SynchronizedOrderBookDeps {
   diffSource: DiffSource;
   logger: Logger;
   clock: Clock;
-  getServerTime(): Promise<number>;
+  /** Retained for existing runtime construction; receive-time is used instead. */
+  getServerTime?: () => Promise<number>;
 }
 
 export class SynchronizedOrderBook {
@@ -89,37 +93,27 @@ export class SynchronizedOrderBook {
   private gapCount = 0;
   private resyncCount = 0;
   private isSyncing = false;
+  private resyncRequested = false;
   private diffUnsubscribe: (() => void) | null = null;
-  private readonly symbol: string;
 
   constructor(
-    symbol: string,
+    private readonly symbol: string,
     private readonly deps: SynchronizedOrderBookDeps,
     private readonly maxDiffBuffer = MAX_DIFF_BUFFER_SIZE,
     private readonly staleThresholdMs = STALE_THRESHOLD_MS,
-  ) {
-    this.symbol = symbol;
-  }
+  ) {}
 
   start(): void {
     if (this.diffUnsubscribe) return;
-    this.diffUnsubscribe = this.deps.diffSource.onDiff(this.symbol, (event) => {
-      this.handleDiff(event);
-    });
-    this.syncFromSnapshot().catch((err) => {
-      this.deps.logger.error('MicroBurst OrderBook initial sync failed', {
-        symbol: this.symbol,
-        error: String(err),
-      });
-      this.health = 'UNAVAILABLE';
-    });
+    this.diffUnsubscribe = this.deps.diffSource.onDiff(this.symbol, (event) =>
+      this.handleDiff(event),
+    );
+    this.syncFromSnapshot();
   }
 
   stop(): void {
-    if (this.diffUnsubscribe) {
-      this.diffUnsubscribe();
-      this.diffUnsubscribe = null;
-    }
+    this.diffUnsubscribe?.();
+    this.diffUnsubscribe = null;
     this.bidBook.clear();
     this.askBook.clear();
     this.diffBuffer = [];
@@ -128,8 +122,8 @@ export class SynchronizedOrderBook {
 
   getState(): SynchronizedOrderBookState {
     return {
-      bids: bookToSortedLevels(this.bidBook, true),
-      asks: bookToSortedLevels(this.askBook, false),
+      bids: sortedLevels(this.bidBook, true),
+      asks: sortedLevels(this.askBook, false),
       lastUpdateId: this.lastUpdateId,
       health: this.health,
       observedAtMs: this.observedAtMs,
@@ -141,198 +135,172 @@ export class SynchronizedOrderBook {
   }
 
   getHealth(): OrderBookHealth {
-    this.checkStaleness();
+    if (
+      (this.health === 'HEALTHY' || this.health === 'UNSYNCED') &&
+      this.deps.clock.now() - this.observedAtMs > this.staleThresholdMs
+    )
+      this.health = 'STALE';
     return this.health;
   }
 
-  getSnapshotForPressure(): {
-    bidDepth: OrderBookDepthLevel[];
-    askDepth: OrderBookDepthLevel[];
-    observedAtMs: number;
-    status: 'HEALTHY';
-    lastUpdateId: number;
-  } | undefined {
-    this.checkStaleness();
-    if (this.health !== 'HEALTHY') return undefined;
-    const bids = bookToSortedLevels(this.bidBook, true);
-    const asks = bookToSortedLevels(this.askBook, false);
-    if (bids.length === 0 || asks.length === 0) {
+  getSnapshotForPressure():
+    | {
+        bidDepth: OrderBookDepthLevel[];
+        askDepth: OrderBookDepthLevel[];
+        observedAtMs: number;
+        status: 'HEALTHY';
+        lastUpdateId: number;
+      }
+    | undefined {
+    if (this.getHealth() !== 'HEALTHY') return undefined;
+    const bidDepth = sortedLevels(this.bidBook, true);
+    const askDepth = sortedLevels(this.askBook, false);
+    if (!bidDepth.length || !askDepth.length) {
       this.health = 'ANOMALOUS';
       return undefined;
     }
     return {
-      bidDepth: bids,
-      askDepth: asks,
+      bidDepth,
+      askDepth,
       observedAtMs: this.observedAtMs,
-      status: 'HEALTHY' as const,
+      status: 'HEALTHY',
       lastUpdateId: this.lastUpdateId,
     };
   }
 
-  private checkStaleness(): void {
-    if (this.health !== 'HEALTHY' && this.health !== 'UNSYNCED') return;
-    const now = this.deps.clock.now();
-    if (now - this.observedAtMs > this.staleThresholdMs) {
-      this.health = 'STALE';
+  private handleDiff(event: BinanceDepthDiffEvent): void {
+    if (!validateDiff(event)) {
+      this.desync('malformed diff-depth event');
+      return;
     }
+    if (this.isSyncing || this.health === 'UNAVAILABLE') {
+      this.buffer(event);
+      return;
+    }
+    if (this.health === 'UNSYNCED') {
+      this.buffer(event);
+      this.syncFromSnapshot();
+      return;
+    }
+    if (this.health !== 'HEALTHY') return;
+    if (event.u <= this.lastUpdateId) return; // stale/duplicate event
+    if (event.pu !== this.lastUpdateId) {
+      this.desync('diff-depth predecessor mismatch');
+      return;
+    }
+    this.apply(event);
   }
 
-  private handleDiff(event: BinanceDepthDiffEvent): void {
-    if (this.isSyncing) {
-      if (this.diffBuffer.length < this.maxDiffBuffer) {
-        this.diffBuffer.push(event);
-      }
+  private buffer(event: BinanceDepthDiffEvent): void {
+    if (this.diffBuffer.length >= this.maxDiffBuffer) {
+      this.desync('diff-depth buffer overflow');
       return;
     }
-
-    if (this.health === 'UNAVAILABLE') {
-      if (this.diffBuffer.length < this.maxDiffBuffer) {
-        this.diffBuffer.push(event);
-      }
-      return;
-    }
-
-    if (this.health !== 'HEALTHY' && this.health !== 'UNSYNCED') {
-      return;
-    }
-
-    if (event.lastUpdateId <= this.lastUpdateId) return;
-
-    if (event.lastUpdateId !== this.lastUpdateId + 1) {
-      this.gapCount++;
-      this.health = 'UNSYNCED';
-      this.deps.logger.warn('MicroBurst OrderBook gap detected', {
-        symbol: this.symbol,
-        expected: this.lastUpdateId + 1,
-        received: event.lastUpdateId,
-        gapCount: this.gapCount,
-      });
-      this.resyncFromSnapshot();
-      return;
-    }
-
-    applyDiffToBook(this.bidBook, event.bids);
-    applyDiffToBook(this.askBook, event.asks);
-    this.lastUpdateId = event.lastUpdateId;
-    this.lastDiffAtMs = this.deps.clock.now();
-    this.observedAtMs = event.transactionTime ?? event.eventTime ?? this.deps.clock.now();
-
-    const bids = bookToSortedLevels(this.bidBook, true);
-    const asks = bookToSortedLevels(this.askBook, false);
-    if (isCrossedBook(bids, asks)) {
-      this.health = 'ANOMALOUS';
-      this.deps.logger.warn('MicroBurst OrderBook crossed after diff', { symbol: this.symbol });
-      return;
-    }
-    if (!isSortedCorrectly(bids, true) || !isSortedCorrectly(asks, false)) {
-      this.health = 'ANOMALOUS';
-      return;
-    }
-    this.health = 'HEALTHY';
+    this.diffBuffer.push(event);
   }
 
   private async syncFromSnapshot(): Promise<void> {
-    if (this.isSyncing) return;
+    if (this.isSyncing || !this.diffUnsubscribe) return;
     this.isSyncing = true;
-    this.diffBuffer = [];
-
     try {
-      const [snapshot, serverTime] = await Promise.all([
-        this.deps.snapshotSource.getSnapshot(this.symbol),
-        this.deps.getServerTime(),
-      ]);
-
-      this.bidBook.clear();
-      this.askBook.clear();
-
-      for (const [priceStr, qtyStr] of snapshot.bids) {
-        const level = parsePriceQty(priceStr, qtyStr);
-        if (level && level.qty > 0) this.bidBook.set(level.price, level.qty);
+      const snapshot = await this.deps.snapshotSource.getSnapshot(this.symbol);
+      if (!isUpdateId(snapshot.lastUpdateId) || !this.loadSnapshot(snapshot)) {
+        this.health = 'ANOMALOUS';
+        return;
       }
-      for (const [priceStr, qtyStr] of snapshot.asks) {
-        const level = parsePriceQty(priceStr, qtyStr);
-        if (level && level.qty > 0) this.askBook.set(level.price, level.qty);
-      }
-
       this.lastUpdateId = snapshot.lastUpdateId;
-      this.lastSyncAtMs = serverTime;
-      this.observedAtMs = serverTime;
+      this.lastSyncAtMs = snapshot.receivedAtMs ?? this.deps.clock.now();
+      this.observedAtMs = this.lastSyncAtMs;
+      this.lastDiffAtMs = 0;
 
-      const validBuffered = this.diffBuffer.filter(
-        (e) => e.lastUpdateId > this.lastUpdateId,
-      );
-
-      if (validBuffered.length > 0) {
-        const firstEvent = validBuffered[0];
-        if (firstEvent.lastUpdateId !== this.lastUpdateId + 1) {
-          this.health = 'UNSYNCED';
-          this.gapCount++;
-          this.deps.logger.warn('MicroBurst OrderBook post-snapshot gap', {
-            symbol: this.symbol,
-            expected: this.lastUpdateId + 1,
-            firstBuffered: firstEvent.lastUpdateId,
-          });
-          this.isSyncing = false;
-          if (this.resyncCount < MAX_RESYNC_ATTEMPTS) {
-            this.resyncCount++;
-          }
+      const buffered = this.diffBuffer.filter((event) => event.u > this.lastUpdateId);
+      this.diffBuffer = [];
+      if (!buffered.length) {
+        this.health = 'UNSYNCED';
+        return;
+      }
+      {
+        const first = buffered[0];
+        const expected = this.lastUpdateId + 1;
+        if (!(first.U <= expected && expected <= first.u)) {
+          this.desync('snapshot bridge missing');
           return;
         }
-
-        for (const event of validBuffered) {
-          if (event.lastUpdateId !== this.lastUpdateId + 1) {
-            this.health = 'UNSYNCED';
-            this.gapCount++;
-            break;
+        this.apply(first);
+        for (let index = 1; index < buffered.length; index++) {
+          const event = buffered[index];
+          if (event.pu !== this.lastUpdateId) {
+            this.desync('buffered diff-depth predecessor mismatch');
+            return;
           }
-          applyDiffToBook(this.bidBook, event.bids);
-          applyDiffToBook(this.askBook, event.asks);
-          this.lastUpdateId = event.lastUpdateId;
-          this.lastDiffAtMs = event.transactionTime ?? event.eventTime ?? this.deps.clock.now();
-          this.observedAtMs = this.lastDiffAtMs;
+          this.apply(event);
         }
       }
-
-      const bids = bookToSortedLevels(this.bidBook, true);
-      const asks = bookToSortedLevels(this.askBook, false);
-
-      if (bids.length === 0 || asks.length === 0) {
+      if (!this.isBookValid()) {
         this.health = 'ANOMALOUS';
-      } else if (isCrossedBook(bids, asks)) {
-        this.health = 'ANOMALOUS';
-      } else if (!isSortedCorrectly(bids, true) || !isSortedCorrectly(asks, false)) {
-        this.health = 'ANOMALOUS';
-      } else if (this.health !== 'UNSYNCED') {
-        this.health = 'HEALTHY';
+        return;
       }
-
+      this.health = 'HEALTHY';
       this.resyncCount = 0;
-    } catch (err) {
+    } catch (error) {
       this.health = 'UNAVAILABLE';
       this.deps.logger.error('MicroBurst OrderBook snapshot failed', {
         symbol: this.symbol,
-        error: String(err),
+        error: String(error),
       });
     } finally {
       this.isSyncing = false;
+      if (this.resyncRequested) {
+        this.resyncRequested = false;
+        this.syncFromSnapshot();
+      }
     }
   }
 
-  private resyncFromSnapshot(): void {
-    if (this.resyncCount >= MAX_RESYNC_ATTEMPTS) {
-      this.health = 'ANOMALOUS';
-      this.deps.logger.error('MicroBurst OrderBook max resync attempts exceeded', {
-        symbol: this.symbol,
-        resyncCount: this.resyncCount,
-      });
-      return;
+  private loadSnapshot(snapshot: BinanceDepthSnapshot): boolean {
+    this.bidBook.clear();
+    this.askBook.clear();
+    for (const [price, qty] of snapshot.bids) {
+      const level = parseLevel(price, qty);
+      if (!level) return false;
+      if (level.qty) this.bidBook.set(level.price, level.qty);
     }
+    for (const [price, qty] of snapshot.asks) {
+      const level = parseLevel(price, qty);
+      if (!level) return false;
+      if (level.qty) this.askBook.set(level.price, level.qty);
+    }
+    return true;
+  }
+
+  private apply(event: BinanceDepthDiffEvent): void {
+    applyDiff(this.bidBook, event.bids);
+    applyDiff(this.askBook, event.asks);
+    this.lastUpdateId = event.u;
+    this.lastDiffAtMs = event.receivedAtMs;
+    this.observedAtMs = event.receivedAtMs;
+    this.health = this.isBookValid() ? 'HEALTHY' : 'ANOMALOUS';
+  }
+
+  private isBookValid(): boolean {
+    const bids = sortedLevels(this.bidBook, true);
+    const asks = sortedLevels(this.askBook, false);
+    return bids.length > 0 && asks.length > 0 && bids[0].price < asks[0].price;
+  }
+
+  private desync(reason: string): void {
+    this.gapCount++;
+    this.health = 'UNSYNCED';
+    this.bidBook.clear();
+    this.askBook.clear();
+    this.diffBuffer = [];
     this.resyncCount++;
-    this.syncFromSnapshot().catch((err) => {
-      this.deps.logger.error('MicroBurst OrderBook resync failed', {
-        symbol: this.symbol,
-        error: String(err),
-      });
+    this.deps.logger.warn('MicroBurst OrderBook desynchronized', {
+      symbol: this.symbol,
+      reason,
+      gapCount: this.gapCount,
     });
+    if (this.isSyncing) this.resyncRequested = true;
+    else this.syncFromSnapshot();
   }
 }

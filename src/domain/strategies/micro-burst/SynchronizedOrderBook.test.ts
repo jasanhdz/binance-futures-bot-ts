@@ -3,251 +3,172 @@ import { SynchronizedOrderBook } from './SynchronizedOrderBook';
 import { BinanceDepthDiffEvent, BinanceDepthSnapshot } from './MicroBurstMarketDataTypes';
 
 const SYMBOL = 'ETHUSDT';
-const SNAPSHOT_ID = 100;
+const NOW = 1_700_000_000_000;
 
-function makeSnapshot(lastUpdateId = SNAPSHOT_ID): BinanceDepthSnapshot {
+function snapshot(lastUpdateId = 100): BinanceDepthSnapshot {
   return {
     lastUpdateId,
     bids: [
-      ['100.00', '10'],
-      ['99.95', '5'],
-      ['99.90', '8'],
-      ['99.85', '3'],
-      ['99.80', '7'],
+      ['100', '10'],
+      ['99', '5'],
     ],
     asks: [
-      ['100.05', '10'],
-      ['100.10', '5'],
-      ['100.15', '8'],
-      ['100.20', '3'],
-      ['100.25', '7'],
+      ['101', '10'],
+      ['102', '5'],
     ],
+    receivedAtMs: NOW,
   };
 }
 
-function makeDiff(lastUpdateId: number, overrides?: { bids?: [string, string][]; asks?: [string, string][] }): BinanceDepthDiffEvent {
+function diff(
+  U: number,
+  u: number,
+  pu: number,
+  overrides: Partial<BinanceDepthDiffEvent> = {},
+): BinanceDepthDiffEvent {
   return {
-    lastUpdateId,
-    bids: overrides?.bids ?? [],
-    asks: overrides?.asks ?? [],
-    eventTime: 1_700_000_001_000 + lastUpdateId,
-    transactionTime: 1_700_000_001_000 + lastUpdateId,
+    U,
+    u,
+    pu,
+    bids: [],
+    asks: [],
+    E: NOW + u,
+    T: NOW + u,
+    receivedAtMs: NOW + u,
+    ...overrides,
   };
 }
 
-function createDeps(overrides?: {
-  snapshot?: BinanceDepthSnapshot;
-  snapshotError?: Error;
-  serverTime?: number;
-}) {
-  let diffCallback: ((event: BinanceDepthDiffEvent) => void) | null = null;
-
+function deps(snapshots: BinanceDepthSnapshot[] = [snapshot()]) {
+  let callback: ((event: BinanceDepthDiffEvent) => void) | undefined;
   return {
-    snapshotSource: {
-      getSnapshot: overrides?.snapshotError
-        ? vi.fn().mockRejectedValue(overrides.snapshotError)
-        : vi.fn().mockResolvedValue(overrides?.snapshot ?? makeSnapshot()),
-    },
+    snapshotSource: { getSnapshot: vi.fn(async () => snapshots.shift() ?? snapshot()) },
     diffSource: {
-      onDiff: vi.fn((_symbol: string, callback: (event: BinanceDepthDiffEvent) => void) => {
-        diffCallback = callback;
-        return vi.fn(() => { diffCallback = null; });
+      onDiff: vi.fn((_symbol, next) => {
+        callback = next;
+        return () => {
+          callback = undefined;
+        };
       }),
-      emit: (event: BinanceDepthDiffEvent) => diffCallback?.(event),
+      emit: (event: BinanceDepthDiffEvent) => callback?.(event),
     },
-    logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    },
-    clock: { now: vi.fn(() => 1_700_000_000_000) },
-    getServerTime: vi.fn().mockResolvedValue(overrides?.serverTime ?? 1_700_000_000_000),
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    clock: { now: vi.fn(() => NOW) },
   };
 }
 
-async function waitForHealthy(book: SynchronizedOrderBook, timeoutMs = 2000): Promise<void> {
-  const start = Date.now();
-  while (book.getHealth() !== 'HEALTHY' && Date.now() - start < timeoutMs) {
-    await new Promise((r) => setTimeout(r, 10));
-  }
+async function healthy(book: SynchronizedOrderBook): Promise<void> {
+  await vi.waitFor(() => expect(book.getHealth()).toBe('HEALTHY'));
 }
 
-describe('SynchronizedOrderBook', () => {
-  it('starts in UNAVAILABLE state', () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    expect(book.getHealth()).toBe('UNAVAILABLE');
-  });
+async function startAndBridge(
+  book: SynchronizedOrderBook,
+  d: ReturnType<typeof deps>,
+): Promise<void> {
+  book.start();
+  d.diffSource.emit(diff(101, 101, 100));
+  await healthy(book);
+}
 
-  it('syncs from snapshot and becomes HEALTHY', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    expect(book.getHealth()).toBe('HEALTHY');
-    const state = book.getState();
-    expect(state.lastUpdateId).toBe(SNAPSHOT_ID);
-    expect(state.bids.length).toBeGreaterThan(0);
-    expect(state.asks.length).toBeGreaterThan(0);
-    expect(state.bids[0].price).toBeGreaterThanOrEqual(state.bids[1].price);
-    expect(state.asks[0].price).toBeLessThanOrEqual(state.asks[1].price);
-
-    book.stop();
-  });
-
-  it('applies valid sequential diffs', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    deps.diffSource.emit(makeDiff(SNAPSHOT_ID + 1, { bids: [['100.00', '15']] }));
-
-    const state = book.getState();
-    expect(state.lastUpdateId).toBe(SNAPSHOT_ID + 1);
-    expect(state.bids[0].qty).toBe(15);
-    expect(book.getHealth()).toBe('HEALTHY');
-
-    book.stop();
-  });
-
-  it('ignores stale updates (lastUpdateId <= current)', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    deps.diffSource.emit(makeDiff(SNAPSHOT_ID - 5));
-
-    expect(book.getState().lastUpdateId).toBe(SNAPSHOT_ID);
-    book.stop();
-  });
-
-  it('qty=0 removes level', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    deps.diffSource.emit(makeDiff(SNAPSHOT_ID + 1, { bids: [['99.95', '0']] }));
-
-    const state = book.getState();
-    expect(state.bids.find((l) => l.price === 99.95)).toBeUndefined();
-    book.stop();
-  });
-
-  it('gap => UNSYNCED and triggers resync', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    deps.diffSource.emit(makeDiff(SNAPSHOT_ID + 5));
-
-    expect(book.getHealth()).toBe('UNSYNCED');
-    book.stop();
-  });
-
-  it('crossed book => ANOMALOUS', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    deps.diffSource.emit(makeDiff(SNAPSHOT_ID + 1, {
-      bids: [['100.10', '5']],
-      asks: [['100.00', '5']],
-    }));
-
-    expect(book.getHealth()).toBe('ANOMALOUS');
-    book.stop();
-  });
-
-  it('malformed price => ignored', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    deps.diffSource.emit(makeDiff(SNAPSHOT_ID + 1, {
-      bids: [['NaN', '5']],
-    }));
-
-    expect(book.getState().lastUpdateId).toBe(SNAPSHOT_ID + 1);
-    book.stop();
-  });
-
-  it('stale snapshot => STALE', async () => {
-    const deps = createDeps({ serverTime: 1_700_000_000_000 });
-    const book = new SynchronizedOrderBook(SYMBOL, deps, 500, 10_000);
-    book.start();
-    await waitForHealthy(book);
-
-    expect(book.getHealth()).toBe('HEALTHY');
-
-    deps.clock.now.mockReturnValue(1_700_000_000_000 + 15_000);
-    expect(book.getHealth()).toBe('STALE');
-    book.stop();
-  });
-
-  it('snapshot failure => UNAVAILABLE', async () => {
-    const deps = createDeps({ snapshotError: new Error('network') });
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-
-    await vi.waitFor(() => {
-      expect(deps.snapshotSource.getSnapshot).toHaveBeenCalled();
+describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
+  it('bootstraps through U <= snapshot + 1 <= u and discards stale buffered events', async () => {
+    let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
+    const source = new Promise<BinanceDepthSnapshot>((resolve) => {
+      resolveSnapshot = resolve;
     });
-
-    expect(book.getHealth()).toBe('UNAVAILABLE');
-    book.stop();
+    const d = deps();
+    d.snapshotSource.getSnapshot.mockReturnValueOnce(source);
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    book.start();
+    d.diffSource.emit(diff(95, 100, 94));
+    d.diffSource.emit(diff(99, 102, 98, { bids: [['100', '12']] }));
+    resolveSnapshot(snapshot(100));
+    await healthy(book);
+    expect(book.getState().lastUpdateId).toBe(102);
+    expect(book.getState().bids[0].qty).toBe(12);
   });
 
-  it('getSnapshotForPressure returns undefined when not HEALTHY', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    expect(book.getSnapshotForPressure()).toBeUndefined();
-    book.stop();
+  it('accepts non-contiguous u values when pu chains to the preceding u', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    await startAndBridge(book, d);
+    d.diffSource.emit(diff(102, 105, 101));
+    d.diffSource.emit(diff(106, 109, 105));
+    expect(book.getState().lastUpdateId).toBe(109);
+    expect(book.getHealth()).toBe('HEALTHY');
   });
 
-  it('getSnapshotForPressure returns valid data when HEALTHY', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    const pressure = book.getSnapshotForPressure();
-    expect(pressure).toBeDefined();
-    expect(pressure!.status).toBe('HEALTHY');
-    expect(pressure!.bidDepth.length).toBeGreaterThan(0);
-    expect(pressure!.askDepth.length).toBeGreaterThan(0);
-
-    book.stop();
+  it('uses receivedAtMs, not Binance or server timestamps, for staleness', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d, 500, 10);
+    await startAndBridge(book, d);
+    d.diffSource.emit(diff(102, 102, 101, { E: 1, T: 2, receivedAtMs: NOW + 5 }));
+    d.clock.now.mockReturnValue(NOW + 16);
+    expect(book.getHealth()).toBe('STALE');
   });
 
-  it('stop clears state', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    await waitForHealthy(book);
-
-    book.stop();
-    expect(book.getHealth()).toBe('UNAVAILABLE');
-    expect(book.getState().bids).toHaveLength(0);
-    expect(book.getState().asks).toHaveLength(0);
+  it('deletes zero-quantity levels', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    await startAndBridge(book, d);
+    d.diffSource.emit(diff(102, 102, 101, { bids: [['99', '0']] }));
+    expect(book.getState().bids.some((level) => level.price === 99)).toBe(false);
   });
 
-  it('does not duplicate subscriptions on multiple start calls', async () => {
-    const deps = createDeps();
-    const book = new SynchronizedOrderBook(SYMBOL, deps);
-    book.start();
-    book.start();
+  it('resyncs from a new REST snapshot on a pu mismatch and never reports healthy from the old book', async () => {
+    const d = deps([snapshot(100), snapshot(200)]);
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    await startAndBridge(book, d);
+    d.diffSource.emit(diff(102, 105, 99));
+    expect(book.getHealth()).not.toBe('HEALTHY');
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
+    expect(book.getState().lastUpdateId).toBe(200);
+  });
 
-    expect(deps.diffSource.onDiff).toHaveBeenCalledTimes(1);
-    await waitForHealthy(book);
+  it('rejects a malformed event and obtains a new snapshot', async () => {
+    const d = deps([snapshot(100), snapshot(200)]);
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    await startAndBridge(book, d);
+    d.diffSource.emit({ ...diff(101, 101, 100), u: Number.NaN });
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
+    expect(book.getState().lastUpdateId).toBe(200);
+  });
 
-    book.stop();
+  it('does not become healthy when the snapshot bridge is absent', async () => {
+    let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
+    const source = new Promise<BinanceDepthSnapshot>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    const d = deps([snapshot(100), snapshot(200)]);
+    d.snapshotSource.getSnapshot.mockReturnValueOnce(source);
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    book.start();
+    d.diffSource.emit(diff(103, 105, 102));
+    resolveSnapshot(snapshot(100));
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
+    expect(book.getHealth()).not.toBe('HEALTHY');
+  });
+
+  it('marks crossed books anomalous', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    await startAndBridge(book, d);
+    d.diffSource.emit(diff(102, 102, 101, { bids: [['101', '5']] }));
+    expect(book.getHealth()).toBe('ANOMALOUS');
+  });
+
+  it('bounds the bootstrap buffer and forces a new snapshot', async () => {
+    let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
+    const source = new Promise<BinanceDepthSnapshot>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    const d = deps([snapshot(100), snapshot(200)]);
+    d.snapshotSource.getSnapshot.mockReturnValueOnce(source);
+    const book = new SynchronizedOrderBook(SYMBOL, d, 1);
+    book.start();
+    d.diffSource.emit(diff(101, 101, 100));
+    d.diffSource.emit(diff(102, 102, 101));
+    resolveSnapshot(snapshot(100));
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
   });
 });

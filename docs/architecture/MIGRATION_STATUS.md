@@ -8,7 +8,7 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 Runtime architecture migration checkpoint after MICRO_BURST_V1 M3 prospective shadow outcome validation.
 
-`MICRO_BURST_V1_M3_PROSPECTIVE_VALIDATION_READY` — SHADOW authority enabled, LIVE authority disabled, prospective outcome tracker computes MFE/MAE/barrier/cost-scenarios from frozen signal snapshots, outcome journal persists completed outcomes to JSONL, offline analyzer generates reports, zero exchange mutation possible.
+`MICRO_BURST_V1_M3_1_BLOCKED` — SHADOW authority enabled, LIVE authority disabled. Runtime outcome wiring, market archive, event-time preservation, and USD-M book synchronization are implemented, but official prospective collection is blocked pending a known deployment SHA and archive-backed recomputation of mandatory negative controls.
 
 Validation results are recorded below. This checkpoint does not grant live authority.
 

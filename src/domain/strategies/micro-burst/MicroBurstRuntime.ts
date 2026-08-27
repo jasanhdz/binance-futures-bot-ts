@@ -44,6 +44,9 @@ export interface MicroBurstRuntimeHealth {
     completedOutcomes: number;
     outcomeErrors: number;
   } | null;
+  signalJournalHealthy: boolean;
+  marketArchiveHealthy: boolean | null;
+  storageErrors: number;
 }
 
 interface SymbolRuntimeState {
@@ -66,9 +69,17 @@ export interface MicroBurstRuntimeDeps {
   strategyRouter: StrategyRouter<MicroBurstStrategyContext>;
   outcomeTracker?: {
     trackSignal(snapshot: ShadowSignalSnapshot): void;
-    processTradeEvent(event: { eventTime: number; price: number; symbol: string }): void;
+    processTradeEvent(event: { eventTime: number; receivedAtMs?: number; price: number; symbol: string; quantity?: number; isBuyerMaker?: boolean; tradeTime?: number; aggregateTradeId?: number; firstTradeId?: number; lastTradeId?: number }): void;
     flushPending(currentTimeMs: number): void;
+    getHealth(): { signalsObserved: number; pendingOutcomes: number; completedOutcomes: number; outcomeErrors: number };
   };
+  marketStorage?: {
+    appendDepth(event: Record<string, unknown>): boolean;
+    persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
+    flush(): boolean;
+    getHealth(): { healthy: boolean; errorCount: number };
+  };
+  provenance?: { codeCommitSha: string; configHash: string; cohortId: string; officialCohortReady: boolean };
 }
 
 export class MicroBurstRuntime {
@@ -150,27 +161,25 @@ export class MicroBurstRuntime {
         },
         diffSource: {
           onDiff: (sym: string, callback: (event: any) => void) => {
-            if (!exchange.subscribeToPartialDepth) {
-              logger.warn('micro_burst_exchange_no_partial_depth', { symbol: sym });
+            if (!exchange.subscribeToDepthDiff) {
+              logger.warn('micro_burst_exchange_no_depth_diff', { symbol: sym });
               return () => {};
             }
-            exchange.subscribeToPartialDepth(sym, 20, '100ms', (depth: any) => {
-              if (!depth?.bids || !depth?.asks) return;
-              callback({
-                lastUpdateId: depth.lastUpdateId ?? 0,
-                bids: depth.bids.map((l: any) => [
-                  String(l.price ?? l[0]),
-                  String(l.quantity ?? l[1]),
-                ]),
-                asks: depth.asks.map((l: any) => [
-                  String(l.price ?? l[0]),
-                  String(l.quantity ?? l[1]),
-                ]),
-                eventTime: depth.eventTime,
-                transactionTime: depth.transactionTime,
+            return exchange.subscribeToDepthDiff(sym, '100ms', (depth) => {
+              this.deps.marketStorage?.appendDepth({
+                symbol: sym,
+                eventTime: depth.E,
+                receivedAtMs: depth.receivedAtMs,
+                E: depth.E,
+                T: depth.T,
+                U: depth.U,
+                u: depth.u,
+                pu: depth.pu,
+                b: depth.bids,
+                a: depth.asks,
               });
+              callback(depth);
             });
-            return () => {};
           },
         },
         logger,
@@ -218,8 +227,15 @@ export class MicroBurstRuntime {
           if (this.deps.outcomeTracker) {
             this.deps.outcomeTracker.processTradeEvent({
               eventTime: trade.eventTime,
+              receivedAtMs: trade.receivedAtMs,
               price: Number(trade.price),
               symbol,
+              quantity: Number(trade.quantity),
+              isBuyerMaker: trade.isBuyerMaker,
+              tradeTime: trade.tradeTime,
+              aggregateTradeId: trade.aggregateTradeId,
+              firstTradeId: trade.firstTradeId,
+              lastTradeId: trade.lastTradeId,
             });
           }
         });
@@ -312,6 +328,7 @@ export class MicroBurstRuntime {
     if (this.deps.outcomeTracker) {
       this.deps.outcomeTracker.flushPending(this.deps.clock.now());
     }
+    this.deps.marketStorage?.flush();
 
     this.deps.logger.info('micro_burst_runtime_stopped');
   }
@@ -342,16 +359,20 @@ export class MicroBurstRuntime {
         } else if (result.wouldEnter) {
           state.uniqueSignalCount++;
           this.totalUniqueSignals++;
-          this.journal.append(result);
+          if (!this.journal.append(result, this.deps.provenance)) {
+            this.deps.logger.error('micro_burst_signal_journal_write_failed', { shadowSignalId: result.shadowSignalId });
+          }
 
           // M3: Track signal for prospective outcome validation
           if (this.deps.outcomeTracker && result.side) {
             const snapshot = freezeSignalSnapshot({
+              schemaVersion: 1,
               shadowSignalId: result.shadowSignalId,
+              cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
               strategyId: 'MICRO_BURST_V1',
               strategyVersion: result.strategyVersion,
-              codeCommitSha: 'UNCOMMITTED',
-              configHash: 'default',
+              codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
+              configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
               symbol: result.symbol,
               side: result.side,
               signalAtMs: result.snapshotAtMs,
@@ -452,7 +473,10 @@ export class MicroBurstRuntime {
       totalResyncs: this.getTotalResyncs(),
       liveExecution: false,
       lastHealthReportAt: this.lastHealthReportAt,
-      outcomeTracker: null,
+      outcomeTracker: this.deps.outcomeTracker ? this.deps.outcomeTracker.getHealth() : null,
+      signalJournalHealthy: this.journal.getHealth().healthy,
+      marketArchiveHealthy: this.deps.marketStorage ? this.deps.marketStorage.getHealth().healthy : null,
+      storageErrors: this.journal.getHealth().storageErrors + (this.deps.marketStorage?.getHealth().errorCount ?? 0),
     };
   }
 
@@ -515,6 +539,11 @@ export class MicroBurstRuntime {
         invalidContexts: health.totalInvalidContexts,
         resyncs: health.totalResyncs,
         liveExecution: health.liveExecution,
+        signalJournalHealthy: health.signalJournalHealthy,
+        marketArchiveHealthy: health.marketArchiveHealthy,
+        pendingOutcomes: health.outcomeTracker?.pendingOutcomes ?? 0,
+        completedOutcomes: health.outcomeTracker?.completedOutcomes ?? 0,
+        storageErrors: health.storageErrors,
       });
     }, HEALTH_REPORT_INTERVAL_MS);
   }

@@ -13,6 +13,7 @@ import {
 } from './MicroBurstMarketDataTypes';
 import { priceDistanceToBps } from './MicroBurstUnits';
 import { defaultMicroBurstConfig } from './MicroBurstTypes';
+import { MICRO_BURST_V1_VERSION } from './MicroBurstIdentity';
 
 interface Clock {
   now(): number;
@@ -116,7 +117,7 @@ export class MicroBurstShadowEvaluator {
 
       const result: MicroBurstShadowEvaluationResult = {
         strategyId: 'MICRO_BURST_V1',
-        strategyVersion: '0.3.0-operational-shadow',
+        strategyVersion: MICRO_BURST_V1_VERSION,
         symbol,
         snapshotAtMs,
         decision: envelope.decision,
@@ -241,7 +242,7 @@ export class MicroBurstShadowEvaluator {
   private buildDisabledResult(symbol: string, snapshotAtMs: number): MicroBurstShadowEvaluationResult {
     return {
       strategyId: 'MICRO_BURST_V1',
-      strategyVersion: '0.3.0-operational-shadow',
+      strategyVersion: MICRO_BURST_V1_VERSION,
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',
@@ -276,7 +277,7 @@ export class MicroBurstShadowEvaluator {
   ): MicroBurstShadowEvaluationResult {
     return {
       strategyId: 'MICRO_BURST_V1',
-      strategyVersion: '0.3.0-operational-shadow',
+      strategyVersion: MICRO_BURST_V1_VERSION,
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',

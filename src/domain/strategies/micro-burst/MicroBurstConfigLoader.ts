@@ -6,6 +6,8 @@ const DEFAULT_CONFIG: MicroBurstRuntimeConfig = {
   enabled: false,
   mode: 'OFF',
   symbols: DEFAULT_SYMBOLS,
+  prospectiveValidation: { enabled: false },
+  marketArchive: { enabled: false },
 };
 
 function parseSymbolConfig(raw: unknown): MicroBurstSymbolConfig {
@@ -61,6 +63,34 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
     enabled,
     mode,
     symbols,
+    prospectiveValidation: parseProspectiveValidation(mb.prospective_validation),
+    marketArchive: parseMarketArchive(mb.market_archive),
+  };
+}
+
+function parseProspectiveValidation(raw: unknown): MicroBurstRuntimeConfig['prospectiveValidation'] {
+  const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  return {
+    enabled: value.enabled === true,
+    cohortId: typeof value.cohort_id === 'string' ? value.cohort_id : undefined,
+    horizonsMs: Array.isArray(value.horizons_ms) && value.horizons_ms.every((v) => typeof v === 'number')
+      ? value.horizons_ms as number[] : undefined,
+    conservativeEntrySlippageBps: typeof value.conservative_entry_slippage_bps === 'number'
+      ? value.conservative_entry_slippage_bps : undefined,
+  };
+}
+
+function parseMarketArchive(raw: unknown): MicroBurstRuntimeConfig['marketArchive'] {
+  const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  return {
+    enabled: value.enabled === true,
+    rootDir: typeof value.root_dir === 'string' ? value.root_dir : undefined,
+    sqlitePath: typeof value.sqlite_path === 'string' ? value.sqlite_path : undefined,
+    tradeRetentionMs: typeof value.trade_retention_ms === 'number' ? value.trade_retention_ms : undefined,
+    bookCheckpointIntervalMs: typeof value.book_checkpoint_interval_ms === 'number' ? value.book_checkpoint_interval_ms : undefined,
+    rawTradeArchive: value.raw_trade_archive !== false,
+    rawDepthArchive: value.raw_depth_archive !== false,
+    compression: value.compression === 'gzip' ? 'gzip' : 'gzip',
   };
 }
 
@@ -81,6 +111,8 @@ export function microBurstConfigFromEnv(): MicroBurstRuntimeConfig {
     enabled,
     mode,
     symbols,
+    prospectiveValidation: { enabled: process.env.MICRO_BURST_V1_PROSPECTIVE_VALIDATION === 'true' },
+    marketArchive: { enabled: process.env.MICRO_BURST_V1_MARKET_ARCHIVE === 'true' },
   };
 }
 
@@ -99,6 +131,16 @@ export function mergeMicroBurstConfigs(
     enabled: override.enabled ?? base.enabled,
     mode: override.mode ?? base.mode,
     symbols,
+    prospectiveValidation: {
+      ...base.prospectiveValidation,
+      ...override.prospectiveValidation,
+      enabled: override.prospectiveValidation?.enabled ?? base.prospectiveValidation?.enabled ?? false,
+    },
+    marketArchive: {
+      ...base.marketArchive,
+      ...override.marketArchive,
+      enabled: override.marketArchive?.enabled ?? base.marketArchive?.enabled ?? false,
+    },
   };
 }
 

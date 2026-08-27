@@ -624,6 +624,22 @@ export interface NinjaYamlConfig {
             bookDepthLevels?: number;
             bookDepthSpeed?: '100ms' | '250ms' | '500ms';
         }>;
+        prospective_validation?: {
+            enabled?: boolean;
+            cohort_id?: string;
+            horizons_ms?: number[];
+            conservative_entry_slippage_bps?: number;
+        };
+        market_archive?: {
+            enabled?: boolean;
+            root_dir?: string;
+            sqlite_path?: string;
+            trade_retention_ms?: number;
+            book_checkpoint_interval_ms?: number;
+            raw_trade_archive?: boolean;
+            raw_depth_archive?: boolean;
+            compression?: 'gzip';
+        };
     };
 }
 

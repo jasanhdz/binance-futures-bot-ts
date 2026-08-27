@@ -193,3 +193,7 @@ Outcome Plane (new):
 - Validate temporal absorption/sweep thresholds.
 - Backtest signal quality with shadow journal data.
 - Evaluate economic edge with accumulated prospective data.
+
+## M3.1 Correctness And Archive
+
+M3.1 wires prospective tracking into the actual SHADOW runtime, archives raw exchange-time trades and USD-M `U/u/pu` depth diffs, and persists research metadata in SQLite WAL. See `M3_1_PROSPECTIVE_CORRECTNESS_AND_ARCHIVE_REPORT.md` for confirmed M3 defects, recovery semantics, cohort gating, and current limitations. LIVE authority remains false.

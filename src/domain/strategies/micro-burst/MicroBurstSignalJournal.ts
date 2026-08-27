@@ -6,9 +6,12 @@ const DEFAULT_JOURNAL_DIR = 'logs/micro-burst/shadow-signals';
 const MAX_JOURNAL_ENTRIES_PER_FILE = 10_000;
 
 export interface MicroBurstSignalJournalEntry {
+  schemaVersion: 1;
+  cohortId: string;
   strategyId: string;
   strategyVersion: string;
   codeCommitSha: string;
+  configHash: string;
   shadowSignalId: string;
   symbol: string;
   side: string | undefined;
@@ -66,17 +69,18 @@ export interface MicroBurstSignalJournalEntry {
 export class MicroBurstSignalJournal {
   private entryCount = 0;
   private currentFilePath: string | null = null;
+  private storageErrors = 0;
+  private lastError: string | null = null;
 
   constructor(
     private readonly journalDir: string = DEFAULT_JOURNAL_DIR,
     private readonly maxEntriesPerFile = MAX_JOURNAL_ENTRIES_PER_FILE,
   ) {}
 
-  append(result: MicroBurstShadowEvaluationResult): void {
-    if (!result.wouldEnter) return;
-    if (result.duplicateSuppressed) return;
+  append(result: MicroBurstShadowEvaluationResult, provenance?: { codeCommitSha: string; configHash: string; cohortId: string }): boolean {
+    if (!result.wouldEnter || result.duplicateSuppressed) return true;
 
-    const entry = this.buildEntry(result);
+    const entry = this.buildEntry(result, provenance);
     const json = JSON.stringify(entry);
 
     try {
@@ -86,8 +90,11 @@ export class MicroBurstSignalJournal {
       }
       fs.appendFileSync(this.currentFilePath!, json + '\n', 'utf-8');
       this.entryCount++;
-    } catch {
-      // Journal write failure must not crash runtime
+      return true;
+    } catch (error) {
+      this.storageErrors++;
+      this.lastError = String(error);
+      return false;
     }
   }
 
@@ -104,6 +111,10 @@ export class MicroBurstSignalJournal {
     return this.entryCount;
   }
 
+  getHealth(): { healthy: boolean; storageErrors: number; lastError: string | null } {
+    return { healthy: this.storageErrors === 0, storageErrors: this.storageErrors, lastError: this.lastError };
+  }
+
   private ensureDir(): void {
     if (!fs.existsSync(this.journalDir)) {
       fs.mkdirSync(this.journalDir, { recursive: true });
@@ -117,12 +128,15 @@ export class MicroBurstSignalJournal {
     this.entryCount = 0;
   }
 
-  private buildEntry(result: MicroBurstShadowEvaluationResult): MicroBurstSignalJournalEntry {
+  private buildEntry(result: MicroBurstShadowEvaluationResult, provenance?: { codeCommitSha: string; configHash: string; cohortId: string }): MicroBurstSignalJournalEntry {
     const diag = result.diagnostics ?? {};
     return {
+      schemaVersion: 1,
+      cohortId: provenance?.cohortId ?? 'UNOFFICIAL',
       strategyId: result.strategyId,
       strategyVersion: result.strategyVersion,
-      codeCommitSha: 'UNCOMMITTED',
+      codeCommitSha: provenance?.codeCommitSha ?? 'UNKNOWN',
+      configHash: provenance?.configHash ?? 'UNKNOWN',
       shadowSignalId: result.shadowSignalId,
       symbol: result.symbol,
       side: result.side,

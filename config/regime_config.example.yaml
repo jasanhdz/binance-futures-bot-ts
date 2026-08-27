@@ -201,6 +201,20 @@ micro_burst:
   enabled: false
   mode: OFF
   symbols: {}
+  prospective_validation:
+    enabled: false
+    # cohort_id: MBV1-M3_1-YYYYMMDD-<sha>-<config>
+    horizons_ms: [15000, 30000, 60000, 120000, 300000]
+    conservative_entry_slippage_bps: 5
+  market_archive:
+    enabled: false
+    root_dir: data/micro-burst/market-data
+    sqlite_path: data/micro-burst/micro_burst_research.sqlite
+    trade_retention_ms: 600000
+    book_checkpoint_interval_ms: 60000
+    raw_trade_archive: true
+    raw_depth_archive: true
+    compression: gzip
   # symbols:
   #   BTCUSDT:
   #     enabled: true

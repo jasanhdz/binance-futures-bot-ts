@@ -13,17 +13,27 @@ import { BookDataStatus, BtcDataStatus, OrderBookDepthLevel } from './MicroBurst
 export type OrderBookHealth = 'HEALTHY' | 'UNAVAILABLE' | 'STALE' | 'UNSYNCED' | 'ANOMALOUS';
 
 export interface BinanceDepthDiffEvent {
-  lastUpdateId: number;
+  /** First update ID in this USD-M diff-depth event (Binance `U`). */
+  U: number;
+  /** Final update ID in this USD-M diff-depth event (Binance `u`). */
+  u: number;
+  /** Final update ID of the preceding event (Binance `pu`). */
+  pu: number;
   bids: [string, string][];
   asks: [string, string][];
-  eventTime?: number;
-  transactionTime?: number;
+  /** Event time (Binance `E`). */
+  E: number;
+  /** Transaction time (Binance `T`). */
+  T: number;
+  /** Local receive time. This is the only timestamp used for staleness. */
+  receivedAtMs: number;
 }
 
 export interface BinanceDepthSnapshot {
   lastUpdateId: number;
   bids: [string, string][];
   asks: [string, string][];
+  receivedAtMs?: number;
 }
 
 export interface SynchronizedOrderBookState {
@@ -205,4 +215,20 @@ export interface MicroBurstRuntimeConfig {
   enabled: boolean;
   mode: 'OFF' | 'SHADOW' | 'LIVE';
   symbols: Record<string, MicroBurstSymbolConfig>;
+  prospectiveValidation?: {
+    enabled: boolean;
+    cohortId?: string;
+    horizonsMs?: number[];
+    conservativeEntrySlippageBps?: number;
+  };
+  marketArchive?: {
+    enabled: boolean;
+    rootDir?: string;
+    sqlitePath?: string;
+    tradeRetentionMs?: number;
+    bookCheckpointIntervalMs?: number;
+    rawTradeArchive?: boolean;
+    rawDepthArchive?: boolean;
+    compression?: 'gzip';
+  };
 }
