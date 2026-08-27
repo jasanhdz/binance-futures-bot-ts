@@ -56,7 +56,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
-    '4f8b7876c91b72ba79ddfb56cfad3b256f1008ec756aedc5541e3195a36f8617',
+    '04de060b6df7ac6159dd7bc7dccb447eaf8efb0802ed5be8f01677a17b35137d',
   'src/domain/index.ts': '0678dbf15543c538cd1654333ac0a3546486e3bdfb499ae1dbd28e94204109a5',
   'src/domain/services/AegisStrategy.ts':
     '13ed0714ec4c7e00cf9814d1761e478b0dd349e4f024a81ae3277395202cc51f',
