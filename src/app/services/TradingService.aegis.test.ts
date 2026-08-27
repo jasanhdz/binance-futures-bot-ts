@@ -1,8 +1,44 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TradingService } from './TradingService';
 import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import { MicroBurstRuntimeConfig } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
+
+function microBurstConfig(mode: 'OFF' | 'SHADOW' | 'LIVE'): MicroBurstRuntimeConfig {
+    return {
+        enabled: mode !== 'OFF',
+        mode,
+        symbols: { ETHUSDT: { enabled: true } },
+        prospectiveValidation: { enabled: false },
+        marketArchive: { enabled: false }
+    };
+}
 
 describe('TradingService Aegis integration', () => {
+    it.each([
+        ['OFF', 'OFF'],
+        ['SHADOW', 'SHADOW'],
+        ['LIVE', 'OFF']
+    ] as const)('registers MicroBurst exactly once with the effective %s mode', (configuredMode, effectiveMode) => {
+        const service = new TradingService(
+            {
+                exchange: {} as any,
+                mlService: {} as any,
+                logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+                state: {} as any,
+                notifier: {} as any,
+                configManager: {
+                    trading: { fee_buffer_pct: 0.03 },
+                    getMicroBurstConfig: () => microBurstConfig(configuredMode)
+                } as any
+            },
+            { symbols: ['ETHUSDT'], tickIntervalMs: 0, maxTradesPerDay: 100, tradingMode: 'AEGIS_SHADOW' }
+        );
+
+        const router = (service as any).microBurstStrategyRouter;
+        expect(router.list()).toHaveLength(1);
+        expect(router.list()[0].mode).toBe(effectiveMode);
+    });
+
     it('logs Aegis shadow scans and returns before entry execution', async () => {
         const signal: AegisTradingSignal = {
             symbol: 'ETHUSDT',
@@ -69,7 +105,7 @@ describe('TradingService Aegis integration', () => {
                 logger,
                 state,
                 notifier: { sendMessage: vi.fn(), sendAlert: vi.fn() },
-                configManager: {} as any
+                configManager: { getMicroBurstConfig: () => microBurstConfig('OFF') } as any
             },
             {
                 symbols: ['ETHUSDT'],

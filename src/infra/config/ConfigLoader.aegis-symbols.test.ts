@@ -98,6 +98,18 @@ describe('NinjaConfigManager Aegis symbol modes', () => {
         )).toBe(true);
     });
 
+    it('returns the typed live MicroBurst SHADOW configuration', () => {
+        const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
+
+        expect(config.getMicroBurstConfig()).toMatchObject({
+            enabled: true,
+            mode: 'SHADOW',
+            symbols: { ETHUSDT: { enabled: true } },
+            prospectiveValidation: { enabled: false },
+            marketArchive: { enabled: false }
+        });
+    });
+
     it('uses 90 percent of available wallet for every live symbol and side', () => {
         const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
         for (const symbol of ['ETHUSDT', ...massShadowSymbols]) {

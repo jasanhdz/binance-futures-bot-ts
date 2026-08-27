@@ -156,4 +156,65 @@ describe('BtcMicroContextProvider', () => {
     expect(atSameTime).toHaveLength(1);
     expect(atSameTime[0].close).toBe(60010);
   });
+
+  it('polls continuously without overlapping requests and stops cleanly', async () => {
+    vi.useFakeTimers();
+    let resolveFirstPoll: ((candles: BtcCandleObservation[]) => void) | undefined;
+    const deps = {
+      getCandles: vi.fn().mockImplementation(() => new Promise<BtcCandleObservation[]>((resolve) => {
+        resolveFirstPoll = resolve;
+      })),
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    };
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS }, 120, 120_000, 1_000);
+
+    provider.start();
+    provider.start();
+    expect(deps.getCandles).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(deps.getCandles).toHaveBeenCalledTimes(1);
+
+    resolveFirstPoll!(makeCandles(6, NOW_MS - 300_000));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(deps.getCandles).toHaveBeenCalledTimes(2);
+
+    provider.stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(deps.getCandles).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('retries after polling failures', async () => {
+    vi.useFakeTimers();
+    const deps = createDeps(makeCandles(6, NOW_MS - 300_000));
+    deps.getCandles.mockRejectedValueOnce(new Error('temporary failure'));
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS }, 120, 120_000, 1_000);
+
+    provider.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(deps.getCandles).toHaveBeenCalledTimes(2);
+    expect(deps.logger.error).toHaveBeenCalledWith('BtcMicroContextProvider poll failed', expect.any(Object));
+    provider.stop();
+    vi.useRealTimers();
+  });
+
+  it('discards an in-flight result after stop', async () => {
+    let resolvePoll: ((candles: BtcCandleObservation[]) => void) | undefined;
+    const deps = {
+      getCandles: vi.fn().mockImplementation(() => new Promise<BtcCandleObservation[]>((resolve) => {
+        resolvePoll = resolve;
+      })),
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    };
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS });
+
+    provider.start();
+    provider.stop();
+    resolvePoll!(makeCandles(6, NOW_MS - 300_000));
+    await Promise.resolve();
+
+    expect(provider.getBufferedCandles()).toHaveLength(0);
+  });
 });

@@ -71,6 +71,7 @@ export class MicroBurstOutcomeTracker {
   private readonly maxPending: number;
   private readonly exitConfig: MicroBurstConfig;
   private readonly tradeHistory = new MicroBurstTradeHistoryStore();
+  private readonly eventWatermarks = new Map<string, number>();
 
   constructor(private readonly deps: OutcomeTrackerDeps) {
     this.maxPending = deps.maxPendingOutcomes ?? DEFAULT_MAX_PENDING;
@@ -127,6 +128,29 @@ export class MicroBurstOutcomeTracker {
     firstTradeId?: number;
     lastTradeId?: number;
   }): void {
+    this.ingestLiveTradeEvent(event);
+  }
+
+  /** Live WS ingestion: archive once, then evaluate only the in-memory observation. */
+  ingestLiveTradeEvent(event: {
+    eventTime: number; receivedAtMs?: number; price: number; symbol: string; quantity?: number;
+    isBuyerMaker?: boolean; tradeTime?: number; aggregateTradeId?: number; firstTradeId?: number; lastTradeId?: number;
+  }): void {
+    this.observeTradeEvent(event, true);
+  }
+
+  /** Archive replay never feeds records back into the archival queue. */
+  replayTradeEvent(event: {
+    eventTime: number; receivedAtMs?: number; price: number; symbol: string; quantity?: number;
+    isBuyerMaker?: boolean; tradeTime?: number; aggregateTradeId?: number; firstTradeId?: number; lastTradeId?: number;
+  }): void {
+    this.observeTradeEvent(event, false);
+  }
+
+  private observeTradeEvent(event: {
+    eventTime: number; receivedAtMs?: number; price: number; symbol: string; quantity?: number;
+    isBuyerMaker?: boolean; tradeTime?: number; aggregateTradeId?: number; firstTradeId?: number; lastTradeId?: number;
+  }, archive: boolean): void {
     if (!Number.isFinite(event.price) || event.price <= 0) return;
 
     this.tradeHistory.append(event.symbol, {
@@ -135,7 +159,8 @@ export class MicroBurstOutcomeTracker {
       quantity: event.quantity ?? 0,
       isBuyerMaker: event.isBuyerMaker ?? false,
     });
-    if (this.deps.storage && !this.deps.storage.appendTrade({ ...event, receivedAtMs: event.receivedAtMs ?? event.eventTime })) {
+    this.eventWatermarks.set(event.symbol, Math.max(this.eventWatermarks.get(event.symbol) ?? -Infinity, event.eventTime));
+    if (archive && this.deps.storage && !this.deps.storage.appendTrade({ ...event, receivedAtMs: event.receivedAtMs ?? event.eventTime })) {
       this.outcomeErrors++;
     }
     this.tradeHistory.prune(this.deps.clock.now());
@@ -205,7 +230,15 @@ export class MicroBurstOutcomeTracker {
 
     for (const horizonMs of pending.pendingHorizons) {
       const horizonEnd = t0 + horizonMs;
-      if (now < horizonEnd) continue;
+      const watermark = this.eventWatermarks.get(pending.signal.symbol) ?? this.deps.storage?.archiveWatermark(pending.signal.symbol) ?? -Infinity;
+      if (now < horizonEnd || watermark < horizonEnd) continue;
+      if (this.deps.storage?.hasGap(pending.signal.symbol, t0, horizonEnd)) {
+        this.deps.storage.persistPendingState(id, 'INCOMPLETE_DATA_GAP', {
+          shadowSignalId: id, requiredUntilMs: t0 + 300_000, recoveryStatus: 'INCOMPLETE_DATA_GAP',
+        });
+        this.pending.delete(id);
+        continue;
+      }
 
       // Compute outcome for SIGNAL_PRICE model (primary)
       const signalPriceModel = pending.entryModels.find((m) => m.model === 'SIGNAL_PRICE');
@@ -227,6 +260,7 @@ export class MicroBurstOutcomeTracker {
   }
 
   private completeOutcome(id: string, pending: PendingOutcome): void {
+    let completed = false;
     try {
       const history = [...this.tradeHistory.query(pending.signal.symbol, pending.signal.signalAtMs, pending.signal.signalAtMs + 300_000)];
       const signalPriceModel = pending.entryModels.find((m) => m.model === 'SIGNAL_PRICE');
@@ -293,8 +327,14 @@ export class MicroBurstOutcomeTracker {
         configHash: pending.signal.configHash,
       };
 
-      this.deps.journal.append(record);
-      if (this.deps.storage && !this.deps.storage.completeOutcome(record as unknown as { shadowSignalId: string; symbol: string; completedAtMs: number; [key: string]: unknown })) this.outcomeErrors++;
+      // SQLite is authoritative. JSONL is a derived export and a failed export is recorded explicitly.
+      if (this.deps.storage && !this.deps.storage.completeOutcome(record as unknown as { shadowSignalId: string; symbol: string; completedAtMs: number; [key: string]: unknown })) {
+        this.outcomeErrors++;
+        return;
+      }
+      const journaled = this.deps.journal.append(record);
+      if (this.deps.storage && journaled) this.deps.storage.markOutcomeJournaled(id);
+      if (!journaled) this.outcomeErrors++;
 
       // Update metrics
       this.completedOutcomes++;
@@ -310,6 +350,7 @@ export class MicroBurstOutcomeTracker {
         this.totalMfeBps += maxHorizonOutcome.mfeBps;
         this.totalMaeBps += maxHorizonOutcome.maeBps;
       }
+      completed = true;
 
       this.deps.logger.info('micro_burst_outcome_completed', {
         shadowSignalId: id,
@@ -326,7 +367,7 @@ export class MicroBurstOutcomeTracker {
         error: String(err),
       });
     } finally {
-      this.pending.delete(id);
+      if (completed) this.pending.delete(id);
     }
   }
 
@@ -338,7 +379,8 @@ export class MicroBurstOutcomeTracker {
       if (!signal || typeof signal.shadowSignalId !== 'string' || this.pending.has(signal.shadowSignalId)) continue;
       const requiredUntilMs = signal.signalAtMs + 300_000;
       const history = this.deps.storage.queryArchivedTrades(signal.symbol, signal.signalAtMs, Math.min(requiredUntilMs, this.deps.clock.now()));
-      if (this.deps.clock.now() >= requiredUntilMs && history.length === 0) {
+      const watermark = this.deps.storage.archiveWatermark(signal.symbol);
+      if (this.deps.clock.now() >= requiredUntilMs && (watermark === null || watermark < requiredUntilMs || this.deps.storage.hasGap(signal.symbol, signal.signalAtMs, requiredUntilMs))) {
         this.deps.storage.persistPendingState(signal.shadowSignalId, 'INCOMPLETE_DATA_GAP', {
           shadowSignalId: signal.shadowSignalId,
           recoveredAtMs: this.deps.clock.now(),
@@ -349,7 +391,7 @@ export class MicroBurstOutcomeTracker {
         continue;
       }
       this.trackSignal(signal);
-      for (const trade of history) this.processTradeEvent({ symbol: signal.symbol, ...(trade as any) });
+      for (const trade of history) this.replayTradeEvent({ symbol: signal.symbol, ...(trade as any) });
       this.deps.storage.persistPendingState(signal.shadowSignalId, 'RECOVERED', {
         shadowSignalId: signal.shadowSignalId,
         recoveredAtMs: this.deps.clock.now(),

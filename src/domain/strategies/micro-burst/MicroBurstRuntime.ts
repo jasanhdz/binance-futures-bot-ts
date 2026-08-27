@@ -95,7 +95,6 @@ export class MicroBurstRuntime {
   private totalInvalidContexts = 0;
   private lastHealthReportAt = 0;
   private readonly evaluationIntervalMs: number;
-  private readonly btcPollTimer: NodeJS.Timeout | null = null;
   private readonly journal: MicroBurstSignalJournal;
 
   constructor(
@@ -125,8 +124,6 @@ export class MicroBurstRuntime {
       throw new Error('MICRO_BURST_V1_LIVE_NOT_AUTHORIZED');
     }
 
-    this.running = true;
-
     const enabledSymbols = Object.entries(this.config.symbols)
       .filter(([, symConf]) => symConf.enabled)
       .map(([symbol]) => symbol);
@@ -135,6 +132,8 @@ export class MicroBurstRuntime {
       this.deps.logger.info('micro_burst_runtime_no_enabled_symbols');
       return;
     }
+
+    this.running = true;
 
     const clock = this.deps.clock;
     const logger = this.deps.logger;
@@ -300,14 +299,11 @@ export class MicroBurstRuntime {
 
     if (this.evaluationTimer) {
       clearInterval(this.evaluationTimer);
-      (this as any).evaluationTimer = null;
+      this.evaluationTimer = null;
     }
     if (this.healthTimer) {
       clearInterval(this.healthTimer);
-      (this as any).healthTimer = null;
-    }
-    if ((this as any).btcPollTimer) {
-      clearInterval((this as any).btcPollTimer);
+      this.healthTimer = null;
     }
 
     for (const [symbol, state] of this.symbolStates) {
@@ -515,7 +511,7 @@ export class MicroBurstRuntime {
   }
 
   private startEvaluationLoop(): void {
-    (this as any).evaluationTimer = setInterval(async () => {
+    this.evaluationTimer = setInterval(async () => {
       if (!this.running) return;
       for (const symbol of this.symbolStates.keys()) {
         if (!this.running) break;
@@ -525,7 +521,7 @@ export class MicroBurstRuntime {
   }
 
   private startHealthReporting(): void {
-    (this as any).healthTimer = setInterval(() => {
+    this.healthTimer = setInterval(() => {
       if (!this.running) return;
       const health = this.getHealth();
       this.lastHealthReportAt = this.deps.clock.now();

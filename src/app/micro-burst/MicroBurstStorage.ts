@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import Database from 'better-sqlite3';
+import { compareTrades, tradeIdentity } from './MicroBurstTradeHistoryStore';
 
 export interface MicroBurstStorageOptions {
   databasePath: string;
@@ -42,15 +43,12 @@ export interface StorageHealth {
   lastErrorAtMs: number | null;
 }
 
-interface SegmentState {
-  path: string;
+interface ArchiveWrite {
   type: 'trades' | 'depth';
   symbol: string;
-  hourStartMs: number;
-  recordCount: number;
-  firstEventTimeMs: number;
-  lastEventTimeMs: number;
-  checksum: string;
+  eventTime: number;
+  receivedAtMs: number;
+  payload: unknown;
 }
 
 /**
@@ -60,7 +58,9 @@ interface SegmentState {
 export class MicroBurstStorage {
   private db!: Database.Database;
   private readonly now: () => number;
-  private readonly segments = new Map<string, SegmentState>();
+  private readonly archiveQueue: ArchiveWrite[] = [];
+  private draining = false;
+  private segmentSequence = 0;
   private health: StorageHealth = {
     healthy: true,
     errorCount: 0,
@@ -141,7 +141,8 @@ export class MicroBurstStorage {
         .prepare(
           `INSERT INTO micro_burst_pending_outcomes (signal_id, status, state_json, updated_at_ms)
         VALUES (?, ?, ?, ?) ON CONFLICT(signal_id) DO UPDATE SET status = excluded.status,
-        state_json = excluded.state_json, updated_at_ms = excluded.updated_at_ms`,
+        state_json = excluded.state_json, updated_at_ms = excluded.updated_at_ms
+        WHERE micro_burst_pending_outcomes.status NOT IN ('COMPLETED', 'INCOMPLETE_DATA_GAP')`,
         )
         .run(signalId, status, JSON.stringify(state), this.now());
     });
@@ -157,8 +158,8 @@ export class MicroBurstStorage {
       this.db.transaction(() => {
         this.db
           .prepare(
-            `INSERT INTO micro_burst_outcomes (signal_id, symbol, completed_at_ms, outcome_json, created_at_ms)
-        VALUES (?, ?, ?, ?, ?) ON CONFLICT(signal_id) DO NOTHING`,
+            `INSERT INTO micro_burst_outcomes (signal_id, symbol, completed_at_ms, outcome_json, journal_status, created_at_ms)
+         VALUES (?, ?, ?, ?, 'PENDING', ?) ON CONFLICT(signal_id) DO NOTHING`,
           )
           .run(
             outcome.shadowSignalId,
@@ -174,6 +175,12 @@ export class MicroBurstStorage {
           .run(this.now(), outcome.shadowSignalId);
       })(),
     );
+  }
+
+  markOutcomeJournaled(signalId: string): boolean {
+    return this.safe(() => {
+      this.db.prepare(`UPDATE micro_burst_outcomes SET journal_status = 'WRITTEN' WHERE signal_id = ?`).run(signalId);
+    });
   }
 
   persistCohort(cohort: { cohortId: string; [key: string]: unknown }): boolean {
@@ -234,7 +241,7 @@ export class MicroBurstStorage {
 
   queryArchivedTrades(symbol: string, fromMs: number, toMs: number): ArchivedTrade[] {
     const records: ArchivedTrade[] = [];
-    for (const file of this.listArchiveFiles('trades', symbol)) {
+    for (const file of this.listArchiveFiles('trades', symbol, fromMs, toMs)) {
       try {
         const text = zlib.gunzipSync(fs.readFileSync(file)).toString('utf8');
         for (const line of text.split('\n')) {
@@ -254,12 +261,28 @@ export class MicroBurstStorage {
         this.markFailure(error);
       }
     }
-    return records.sort((a, b) => a.eventTime - b.eventTime || a.receivedAtMs - b.receivedAtMs);
+    const deduped = new Map<string, ArchivedTrade>();
+    for (const record of records) {
+      const trade = record as unknown as import('../../domain/strategies/micro-burst/MicroBurstOutcomeTypes').MicroBurstTradeRecord;
+      if (!deduped.has(tradeIdentity(trade))) deduped.set(tradeIdentity(trade), record);
+    }
+    return [...deduped.values()].sort((a, b) => compareTrades(a as any, b as any));
+  }
+
+  archiveWatermark(symbol: string): number | null {
+    return this.safeValue(() => {
+      const row = this.db.prepare(`SELECT MAX(last_event_time_ms) AS watermark FROM market_data_segments WHERE data_type = 'trades' AND symbol = ?`).get(symbol) as { watermark: number | null };
+      return row.watermark;
+    }, null);
+  }
+
+  hasGap(symbol: string, fromMs: number, toMs: number): boolean {
+    return this.safeValue(() => Boolean(this.db.prepare(`SELECT 1 FROM market_data_gaps WHERE symbol = ? AND started_at_ms <= ? AND ended_at_ms >= ? LIMIT 1`).get(symbol, toMs, fromMs)), true);
   }
 
   flush(): boolean {
     return this.safe(() => {
-      for (const state of this.segments.values()) this.writeSegmentMetadata(state);
+      this.drainArchiveQueue();
     });
   }
 
@@ -285,60 +308,49 @@ export class MicroBurstStorage {
       this.markFailure(new Error('invalid archive record metadata'));
       return false;
     }
-    return this.safe(() => {
-      const hourStartMs = Math.floor(eventTime / 3_600_000) * 3_600_000;
-      const key = `${type}:${symbol}:${hourStartMs}`;
-      let state = this.segments.get(key);
-      if (!state) {
-        const filePath = this.segmentPath(type, symbol, hourStartMs);
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        state = {
-          path: filePath,
-          type,
-          symbol,
-          hourStartMs,
-          recordCount: 0,
-          firstEventTimeMs: eventTime,
-          lastEventTimeMs: eventTime,
-          checksum: '',
-        };
-        this.segments.set(key, state);
-      }
-      const record = { schemaVersion: 1, type, symbol, eventTime, receivedAtMs, payload };
-      const line = JSON.stringify(record) + '\n';
-      // Each append is an independent gzip member, making a process crash unable to corrupt prior records.
-      fs.appendFileSync(state.path, zlib.gzipSync(Buffer.from(line, 'utf8')));
-      state.recordCount++;
-      state.lastEventTimeMs = eventTime;
-      state.checksum = crypto
-        .createHash('sha256')
-        .update(state.checksum)
-        .update(line)
-        .digest('hex');
-      this.writeSegmentMetadata(state);
-    });
+    this.archiveQueue.push({ type, symbol, eventTime, receivedAtMs, payload });
+    if (!this.draining) {
+      this.draining = true;
+      setImmediate(() => this.drainArchiveQueue());
+    }
+    return true;
   }
 
   private segmentPath(type: 'trades' | 'depth', symbol: string, hourStartMs: number): string {
     const date = new Date(hourStartMs);
     const safeSymbol = symbol.replace(/[^A-Za-z0-9_-]/g, '_');
     const hour = date.toISOString().replace(/[:.]/g, '-');
-    return path.join(this.options.archivePath, type, safeSymbol, `${hour}.ndjson.gz`);
+    const unique = `${process.pid}-${this.now()}-${++this.segmentSequence}-${crypto.randomUUID()}`;
+    return path.join(this.options.archivePath, type, safeSymbol, `${hour}-${unique}.ndjson.gz`);
   }
 
-  private writeSegmentMetadata(state: SegmentState): void {
+  private drainArchiveQueue(): void {
+    try {
+      while (this.archiveQueue.length > 0) this.writeImmutableSegment(this.archiveQueue.shift()!);
+    } catch (error) {
+      this.markFailure(error);
+    } finally {
+      this.draining = false;
+      if (this.archiveQueue.length > 0) {
+        this.draining = true;
+        setImmediate(() => this.drainArchiveQueue());
+      }
+    }
+  }
+
+  private writeImmutableSegment(write: ArchiveWrite): void {
+    const hourStartMs = Math.floor(write.eventTime / 3_600_000) * 3_600_000;
+    const filePath = this.segmentPath(write.type, write.symbol, hourStartMs);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const line = JSON.stringify({ schemaVersion: 1, type: write.type, symbol: write.symbol, eventTime: write.eventTime, receivedAtMs: write.receivedAtMs, payload: write.payload }) + '\n';
+    const checksum = crypto.createHash('sha256').update(line).digest('hex');
+    fs.writeFileSync(filePath, zlib.gzipSync(Buffer.from(line, 'utf8')), { flag: 'wx' });
     const metadata = {
       schemaVersion: 1,
-      type: state.type,
-      symbol: state.symbol,
-      hourStartMs: state.hourStartMs,
-      recordCount: state.recordCount,
-      firstEventTimeMs: state.firstEventTimeMs,
-      lastEventTimeMs: state.lastEventTimeMs,
-      checksum: state.checksum,
-      file: path.basename(state.path),
+      type: write.type, symbol: write.symbol, hourStartMs, recordCount: 1,
+      firstEventTimeMs: write.eventTime, lastEventTimeMs: write.eventTime, checksum, file: path.basename(filePath),
     };
-    fs.writeFileSync(`${state.path}.meta.json`, JSON.stringify(metadata) + '\n', 'utf8');
+    fs.writeFileSync(`${filePath}.meta.json`, JSON.stringify(metadata) + '\n', 'utf8');
     this.db
       .prepare(
         `INSERT INTO market_data_segments (file_path, data_type, symbol, hour_start_ms, record_count,
@@ -347,19 +359,16 @@ export class MicroBurstStorage {
       checksum = excluded.checksum, updated_at_ms = excluded.updated_at_ms`,
       )
       .run(
-        state.path,
-        state.type,
-        state.symbol,
-        state.hourStartMs,
-        state.recordCount,
-        state.firstEventTimeMs,
-        state.lastEventTimeMs,
-        state.checksum,
+        filePath, write.type, write.symbol, hourStartMs, 1, write.eventTime, write.eventTime, checksum,
         this.now(),
       );
   }
 
-  private listArchiveFiles(type: 'trades' | 'depth', symbol: string): string[] {
+  private listArchiveFiles(type: 'trades' | 'depth', symbol: string, fromMs?: number, toMs?: number): string[] {
+    if (fromMs !== undefined && toMs !== undefined) {
+      const indexed = this.safeValue(() => this.db.prepare(`SELECT file_path FROM market_data_segments WHERE data_type = ? AND symbol = ? AND last_event_time_ms >= ? AND first_event_time_ms <= ? ORDER BY first_event_time_ms, file_path`).all(type, symbol, fromMs, toMs).map((row: any) => row.file_path as string), []);
+      if (indexed.length > 0) return indexed;
+    }
     const dir = path.join(this.options.archivePath, type, symbol.replace(/[^A-Za-z0-9_-]/g, '_'));
     try {
       return fs.existsSync(dir)
@@ -408,11 +417,12 @@ export class MicroBurstStorage {
       CREATE TABLE IF NOT EXISTS book_checkpoints (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS book_features (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, features_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS micro_burst_signals (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, signal_at_ms INTEGER NOT NULL, snapshot_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS micro_burst_outcomes (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, completed_at_ms INTEGER NOT NULL, outcome_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS micro_burst_outcomes (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, completed_at_ms INTEGER NOT NULL, outcome_json TEXT NOT NULL, journal_status TEXT NOT NULL DEFAULT 'PENDING', created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS micro_burst_pending_outcomes (signal_id TEXT PRIMARY KEY, status TEXT NOT NULL, state_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS micro_burst_cohorts (cohort_id TEXT PRIMARY KEY, cohort_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS market_data_gaps (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER NOT NULL, reason TEXT NOT NULL, details_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_segments_symbol_hour ON market_data_segments(symbol, hour_start_ms);
+      CREATE INDEX IF NOT EXISTS idx_segments_range ON market_data_segments(data_type, symbol, first_event_time_ms, last_event_time_ms);
       CREATE INDEX IF NOT EXISTS idx_checkpoints_symbol_time ON book_checkpoints(symbol, event_time_ms);
       CREATE INDEX IF NOT EXISTS idx_features_symbol_time ON book_features(symbol, event_time_ms);
       CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON micro_burst_signals(symbol, signal_at_ms);
@@ -420,5 +430,6 @@ export class MicroBurstStorage {
       CREATE INDEX IF NOT EXISTS idx_pending_status ON micro_burst_pending_outcomes(status);
       CREATE INDEX IF NOT EXISTS idx_gaps_symbol_time ON market_data_gaps(symbol, started_at_ms);
     `);
+    try { this.db.exec(`ALTER TABLE micro_burst_outcomes ADD COLUMN journal_status TEXT NOT NULL DEFAULT 'PENDING'`); } catch { /* already migrated */ }
   }
 }

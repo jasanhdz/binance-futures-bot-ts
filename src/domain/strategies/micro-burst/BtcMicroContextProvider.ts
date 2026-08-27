@@ -6,6 +6,7 @@ import { BtcCandleObservation, BtcReturnSet } from './MicroBurstMarketDataTypes'
 const MAX_CANDLE_BUFFER = 120;
 const STALE_THRESHOLD_MS = 120_000;
 const MIN_CANDLES_FOR_RETURNS = 6;
+const POLL_INTERVAL_MS = 60_000;
 
 function computeReturn(current: number, past: number): number {
   if (!Number.isFinite(current) || !Number.isFinite(past) || past === 0) return 0;
@@ -41,6 +42,10 @@ export class BtcMicroContextProvider {
   private lastRet3m = 0;
   private lastRet5m = 0;
   private lastAcceleration = 0;
+  private running = false;
+  private pollInFlight = false;
+  private pollTimer: NodeJS.Timeout | null = null;
+  private lifecycleVersion = 0;
 
   constructor(
     private readonly btcSymbol: string,
@@ -48,24 +53,39 @@ export class BtcMicroContextProvider {
     private readonly clock: Clock,
     private readonly maxBufferSize = MAX_CANDLE_BUFFER,
     private readonly staleThresholdMs = STALE_THRESHOLD_MS,
+    private readonly pollIntervalMs = POLL_INTERVAL_MS,
   ) {}
 
   start(): void {
-    this.pollCandles().catch((err) => {
-      this.deps.logger.error('BtcMicroContextProvider initial poll failed', {
-        error: String(err),
-      });
-    });
+    if (this.running) return;
+    this.running = true;
+    const lifecycleVersion = ++this.lifecycleVersion;
+    void this.pollAndSchedule(lifecycleVersion);
   }
 
   stop(): void {
+    this.running = false;
+    this.lifecycleVersion++;
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
     this.candleBuffer.length = 0;
     this.lastObservationMs = 0;
+    this.lastDirection = 'NEUTRAL';
+    this.lastRet1m = 0;
+    this.lastRet3m = 0;
+    this.lastRet5m = 0;
+    this.lastAcceleration = 0;
   }
 
   async pollCandles(): Promise<void> {
+    if (this.pollInFlight) return;
+    this.pollInFlight = true;
+    const lifecycleVersion = this.lifecycleVersion;
     try {
       const candles = await this.deps.getCandles(this.btcSymbol, '1m', 60);
+      if (lifecycleVersion !== this.lifecycleVersion) return;
       const now = this.clock.now();
 
       for (const candle of candles) {
@@ -101,6 +121,8 @@ export class BtcMicroContextProvider {
       this.deps.logger.error('BtcMicroContextProvider poll failed', {
         error: String(err),
       });
+    } finally {
+      this.pollInFlight = false;
     }
   }
 
@@ -124,6 +146,14 @@ export class BtcMicroContextProvider {
 
   getBufferedCandles(): ReadonlyArray<BtcCandleObservation> {
     return this.candleBuffer;
+  }
+
+  private async pollAndSchedule(lifecycleVersion: number): Promise<void> {
+    await this.pollCandles();
+    if (!this.running || lifecycleVersion !== this.lifecycleVersion) return;
+    this.pollTimer = setTimeout(() => {
+      void this.pollAndSchedule(lifecycleVersion);
+    }, this.pollIntervalMs);
   }
 
   private computeReturns(nowMs: number): BtcReturnSet | null {

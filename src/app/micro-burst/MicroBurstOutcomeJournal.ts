@@ -15,8 +15,8 @@ export class MicroBurstOutcomeJournal {
     private readonly maxEntriesPerFile = MAX_ENTRIES_PER_FILE,
   ) {}
 
-  append(record: ProspectiveOutcomeRecord): void {
-    if (this.writtenIds.has(record.shadowSignalId)) return;
+  append(record: ProspectiveOutcomeRecord): boolean {
+    if (this.writtenIds.has(record.shadowSignalId)) return true;
 
     const json = JSON.stringify(record);
 
@@ -28,8 +28,10 @@ export class MicroBurstOutcomeJournal {
       fs.appendFileSync(this.currentFilePath!, json + '\n', 'utf-8');
       this.writtenIds.add(record.shadowSignalId);
       this.entryCount++;
+      return true;
     } catch {
       // Journal write failure must not crash runtime
+      return false;
     }
   }
 

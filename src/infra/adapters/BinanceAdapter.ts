@@ -112,7 +112,7 @@ export class BinanceExchange implements Exchange {
   private readonly accountInfoTtlMs = Number(process.env.BINANCE_ACCOUNTINFO_TTL_MS ?? 250);
 
   constructor(private log: Logger) {
-    this.wsManager = new WebSocketManager(this.cli, log);
+    this.wsManager = new WebSocketManager(this.cli, log, { isTestnet: CONFIG.IS_TESTNET });
     const isTestnet = process.env.IS_TESTNET === '1';
     this.cli
       .futuresPing()

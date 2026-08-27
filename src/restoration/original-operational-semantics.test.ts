@@ -32,8 +32,8 @@ function sha256(path: string): string {
 const baselineOperationalDigests: Record<string, string> = {
   'src/main.ts': '3b531c0e98916975b0e0e22cd735ce88cb786027cdb5a739362849cb0c76bf7d',
   'src/app/ports/Exchange.ts': 'a06ba0bb4f444e85f7745064459faef9ca5a4f791dff209cabccd4019f1b389f',
-  'src/infra/adapters/BinanceAdapter.ts':
-    'c08ffbd59766ff7b915ab3f2278572bd2160fa4ed82923cb8a846af6740f65c6',
+   'src/infra/adapters/BinanceAdapter.ts':
+     'f94bfe762e4fbe9598dda7c10ebf452d658553ef7074e5a0f2590f90a58fb2e2',
   'src/infra/config/environment.ts':
     '3bac013429ee9828f15aa5c9266cd92c285394ec5410c0ecf6efed4e5c7e16d8',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
@@ -49,9 +49,9 @@ const baselineOperationalDigests: Record<string, string> = {
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml': '52ec38609179d27347d0a54f35b881c348ccea2b51c3d121eaa7c7e82b66f7b2',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': '0d62db1adb7403f5e8e54ee0dcec2ffee8832c3e26b0279b9ace15e562a47b06',
+  'regime_config.live.yaml': 'c5cb4ca8cf26630a65c94bf2b7e3b6cd4504b57255237638634cdaa35ce948eb',
   'src/app/services/TradingService.ts':
-    '19055179d5673ba15d45b3a0f9370151b432f5baaac54d5b4bfb166f511822bc',
+    '9a995e5d6ce791461529fb877abe6b78b1cb69fb63351183eb5e84e70ffc89df',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b2b2eb6fca14bb0d5c99729c3770f843feb98320a280efeb2d6c24c355c1d15c',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -87,7 +87,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '041aadf526f858e70ce33d15516ba012dc3aca43f68d4ca2e88df265e054f07c',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
-    '32fb0146c5bbb429944b86e9fdc1cf7cf485cc48e6d40960470148a76c1ec1d2',
+    'e3a3e8dde17778c92c4b366987d977355384732f97b0fd7fbfa0d10437f9af68',
 };
 
 type GuardFixture = [

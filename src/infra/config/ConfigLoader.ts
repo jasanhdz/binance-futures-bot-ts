@@ -29,6 +29,8 @@ import {
     AegisRegimeSource,
     DEFAULT_AEGIS_REGIME_GUARD_CONFIG
 } from '../../domain/services/AegisRegimeGuard';
+import { MicroBurstRuntimeConfig } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
+import { parseMicroBurstConfig } from '../../domain/strategies/micro-burst/MicroBurstConfigLoader';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -743,6 +745,10 @@ export class NinjaConfigManager {
             post_exit_timeout_ms: 60000,
             vol_factor_reenter: 1.5,
         };
+    }
+
+    getMicroBurstConfig(): MicroBurstRuntimeConfig {
+        return parseMicroBurstConfig({ micro_burst: this.config.micro_burst });
     }
 
     /**

@@ -197,3 +197,7 @@ Outcome Plane (new):
 ## M3.1 Correctness And Archive
 
 M3.1 wires prospective tracking into the actual SHADOW runtime, archives raw exchange-time trades and USD-M `U/u/pu` depth diffs, and persists research metadata in SQLite WAL. See `M3_1_PROSPECTIVE_CORRECTNESS_AND_ARCHIVE_REPORT.md` for confirmed M3 defects, recovery semantics, cohort gating, and current limitations. LIVE authority remains false.
+
+## M3.2 Event-Time And Runtime Parity
+
+M3.2 moves public market data to routed raw WebSockets, makes archive/replay event-time aware, and supplies archive-backed prospective controls. Automated verification is complete, but the official cohort remains blocked pending a production read-only soak and proof of graceful archive-queue draining. See `M3_2_EVENT_TIME_RUNTIME_PARITY_REPORT.md`.

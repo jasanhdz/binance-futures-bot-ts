@@ -202,4 +202,19 @@ describe('MicroBurstStorage', () => {
     ]);
     storage.close();
   });
+
+  it('creates immutable unique archive segments across reopen and uses the range index for replay', () => {
+    const { storage, databasePath, archivePath } = createStorage();
+    storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 101, price: 1, aggregateTradeId: 1 });
+    storage.flush();
+    storage.close();
+    const reopened = new MicroBurstStorage({ databasePath, archivePath });
+    reopened.appendTrade({ symbol: 'BTCUSDT', eventTime: 200, receivedAtMs: 201, price: 2, aggregateTradeId: 2 });
+    reopened.flush();
+
+    const files = fs.readdirSync(path.join(archivePath, 'trades', 'BTCUSDT')).filter((file) => file.endsWith('.ndjson.gz'));
+    expect(files).toHaveLength(2);
+    expect(reopened.queryArchivedTrades('BTCUSDT', 150, 250).map((trade) => trade.eventTime)).toEqual([200]);
+    reopened.close();
+  });
 });

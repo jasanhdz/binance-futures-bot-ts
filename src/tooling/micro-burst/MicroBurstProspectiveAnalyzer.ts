@@ -4,13 +4,17 @@ import {
   EntryPriceModel,
   HorizonOutcome,
   ProspectiveOutcomeRecord,
+  ShadowSignalSnapshot,
+  MicroBurstTradeRecord,
 } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
-import { OUTCOME_HORIZONS_MS } from '../../domain/strategies/micro-burst/MicroBurstOutcomeEngine';
+import { computeHorizonOutcome, OUTCOME_HORIZONS_MS } from '../../domain/strategies/micro-burst/MicroBurstOutcomeEngine';
 
 export interface MicroBurstProspectiveAnalysisInput {
   signals: readonly Record<string, unknown>[];
   outcomes: readonly ProspectiveOutcomeRecord[];
   seed?: number;
+  /** Optional immutable archive reader. Controls are omitted unless raw trajectories are available. */
+  archiveTrades?: (symbol: string, fromMs: number, toMs: number) => readonly MicroBurstTradeRecord[];
 }
 
 export interface MicroBurstProspectiveAnalysis {
@@ -98,10 +102,19 @@ export function analyzeMicroBurstProspective(input: MicroBurstProspectiveAnalysi
 
   lines.push('');
   lines.push('NEGATIVE CONTROLS');
-  // The persisted ProspectiveOutcomeRecord schema contains calculated horizons, not raw trade trajectories.
-  lines.push(`RANDOM_SIDE (seed=${input.seed ?? 1}): unavailable - raw post-signal trajectory is not persisted; side-aware returns cannot be recomputed honestly.`);
-  lines.push('TIME_SHIFT (forward): unavailable - raw post-signal trajectory is not persisted; shifted windows cannot be recomputed honestly.');
-  lines.push('Controls are intentionally not simulated by row reordering, return inversion, or timestamp shuffling.');
+  if (!input.archiveTrades) {
+    lines.push(`RANDOM_SIDE (seed=${input.seed ?? 1}): unavailable - raw post-signal trajectory is not available.`);
+    lines.push('TIME_SHIFT (forward): unavailable - raw post-signal trajectory is not available.');
+    lines.push('Controls are intentionally not simulated by row reordering, return inversion, or timestamp shuffling.');
+  } else {
+    const snapshots = signals.rows.filter(isSnapshot);
+    const rng = seededRandom(input.seed ?? 1);
+    const randomSide = snapshots.flatMap((signal) => controlReturn({ ...signal, side: rng() < 0.5 ? 'LONG' : 'SHORT' }, input.archiveTrades!));
+    // A fixed forward shift is deterministic and preserves the archive's actual event ordering.
+    const timeShift = snapshots.flatMap((signal) => controlReturn({ ...signal, signalAtMs: signal.signalAtMs + 300_000 }, input.archiveTrades!));
+    lines.push(`RANDOM_SIDE (seed=${input.seed ?? 1}): N=${randomSide.length} mean_300s=${randomSide.length ? format(mean(randomSide)) : 'N/A'}bps`);
+    lines.push(`TIME_SHIFT (forward 300s): N=${timeShift.length} mean_300s=${timeShift.length ? format(mean(timeShift)) : 'N/A'}bps`);
+  }
 
   return {
     text: `${lines.join('\n')}\n`,
@@ -195,4 +208,24 @@ function isPresent(value: unknown): value is string {
 
 function isFiniteNumber(value: number | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isSnapshot(row: Record<string, unknown>): row is Record<string, unknown> & ShadowSignalSnapshot {
+  return typeof row.symbol === 'string' && (row.side === 'LONG' || row.side === 'SHORT')
+    && Number.isFinite(row.signalAtMs) && Number.isFinite(row.marketPriceAtSignal)
+    && Number.isFinite(row.structuralStopPrice) && Number.isFinite(row.destinationPrice);
+}
+
+function controlReturn(signal: ShadowSignalSnapshot, archiveTrades: NonNullable<MicroBurstProspectiveAnalysisInput['archiveTrades']>): number[] {
+  const horizon = 300_000;
+  const outcome = computeHorizonOutcome(signal, signal.marketPriceAtSignal, [...archiveTrades(signal.symbol, signal.signalAtMs, signal.signalAtMs + horizon)], horizon);
+  return outcome.priceAtHorizon === null ? [] : [outcome.finalReturnBps];
+}
+
+function seededRandom(seed: number): () => number {
+  let state = (Number.isFinite(seed) ? seed : 1) >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
 }

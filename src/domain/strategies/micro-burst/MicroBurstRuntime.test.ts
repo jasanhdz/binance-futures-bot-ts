@@ -101,6 +101,13 @@ describe('MicroBurstRuntime', () => {
     expect(runtime.getHealth().running).toBe(false);
   });
 
+  it('does not become running when no symbols are enabled', async () => {
+    const runtime = new MicroBurstRuntime(deps, makeConfig({ symbols: {} }));
+    await runtime.start();
+    expect(runtime.getHealth().running).toBe(false);
+    expect(runtime.getHealth().symbolCount).toBe(0);
+  });
+
   it('rejects LIVE mode at startup', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'LIVE' }));
     await expect(runtime.start()).rejects.toThrow('MICRO_BURST_V1_LIVE_NOT_AUTHORIZED');

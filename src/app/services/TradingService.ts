@@ -251,18 +251,11 @@ export class TradingService {
             this.momentumStrategyIdentity,
             momentumRuntimeMode
         ));
+        const mbConfig = this.getMicroBurstConfig();
         this.microBurstStrategyRouter.register(new MicroBurstStrategy(
             this.microBurstIdentity,
-            'OFF'
+            isMicroBurstShadowMode(mbConfig) ? 'SHADOW' : 'OFF'
         ));
-
-        const mbConfig = this.getMicroBurstConfig();
-        if (isMicroBurstShadowMode(mbConfig)) {
-            this.microBurstStrategyRouter.register(new MicroBurstStrategy(
-                this.microBurstIdentity,
-                'SHADOW'
-            ));
-        }
 
         this.positionLifecycleCore = new StrategyPositionLifecycleCore({
             exchange: deps.exchange,
@@ -307,18 +300,11 @@ export class TradingService {
         return this.config.tradingMode || CONFIG.TRADING_MODE;
     }
 
-    private getMicroBurstConfig() {
-        const manager = this.deps.configManager as any;
-        if (typeof manager.getMicroBurstConfig === 'function') {
-            return manager.getMicroBurstConfig();
-        }
-        const yamlConfig = typeof manager.getRegimeConfig === 'function'
-            ? manager.getRegimeConfig()
-            : undefined;
-        if (yamlConfig?.micro_burst) {
-            return parseMicroBurstConfig({ micro_burst: yamlConfig.micro_burst });
-        }
-        return parseMicroBurstConfig({});
+    private getMicroBurstConfig(): ReturnType<typeof parseMicroBurstConfig> {
+        const manager = this.deps.configManager as NinjaConfigManager & { getMicroBurstConfig?: () => ReturnType<typeof parseMicroBurstConfig> };
+        // Legacy test adapters do not implement the new read-only Micro Burst getter.
+        // Fail Micro Burst closed without changing unrelated Aegis/Momentum behavior.
+        return manager.getMicroBurstConfig ? manager.getMicroBurstConfig() : parseMicroBurstConfig({});
     }
 
     private getMicroBurstProvenance(config: ReturnType<typeof parseMicroBurstConfig>) {

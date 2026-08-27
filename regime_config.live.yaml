@@ -30,6 +30,26 @@ TRADING:
   reenter_on_tp: true               
   post_exit_timeout_ms: 60000       
 
+micro_burst:
+  enabled: true
+  mode: SHADOW
+  symbols:
+    ETHUSDT:
+      enabled: true
+  prospective_validation:
+    enabled: false
+    horizons_ms: [15000, 30000, 60000, 120000, 300000]
+    conservative_entry_slippage_bps: 5
+  market_archive:
+    enabled: false
+    root_dir: data/micro-burst/market-data
+    sqlite_path: data/micro-burst/micro_burst_research.sqlite
+    trade_retention_ms: 600000
+    book_checkpoint_interval_ms: 60000
+    raw_trade_archive: true
+    raw_depth_archive: true
+    compression: gzip
+
 SYSTEM:
   tick_interval_ms: 2000
   max_trades_per_day: 100

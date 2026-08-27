@@ -32,4 +32,13 @@ describe('MicroBurstTradeHistoryStore', () => {
     store.prune(1_900_000);
     expect(store.query('ETHUSDT', 0, 2_000_000)).toHaveLength(0);
   });
+
+  it('deduplicates canonical aggregate IDs and orders same-time trades by exchange ID', () => {
+    const store = new MicroBurstTradeHistoryStore();
+    store.append('BTCUSDT', { ...trade(20, 102), aggregateTradeId: 2 });
+    store.append('BTCUSDT', { ...trade(20, 101), aggregateTradeId: 1 });
+    store.append('BTCUSDT', { ...trade(20, 999), aggregateTradeId: 1 });
+
+    expect(store.query('BTCUSDT', 0, 20).map((item) => item.price)).toEqual([101, 102]);
+  });
 });
