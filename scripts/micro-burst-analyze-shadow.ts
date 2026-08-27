@@ -24,8 +24,8 @@ const selectedSymbols = new Set(
     .map((row) => row.symbol)
     .filter((symbol): symbol is string => typeof symbol === 'string'),
 );
-const archiveGapCount =
-  storage?.queryGaps().filter((gap) => gap.kind === 'ARCHIVE' && selectedSymbols.has(gap.symbol)).length ?? 0;
+const requiredFeedGapCount = storage?.countRequiredFeedGaps(selectedSymbols) ?? 0;
+const unknownLegacyGapCount = storage?.countUnknownLegacyGaps(selectedSymbols) ?? 0;
 
 const report = analyzeMicroBurstProspective({
   signals: storage ? signalReconciliation!.signals : loadJsonl(signalsDir),
@@ -42,7 +42,8 @@ const report = analyzeMicroBurstProspective({
     ...(signalReconciliation?.inconsistentSignalIds ?? []),
     ...(selectedOutcomeReconciliation?.inconsistentOutcomeIds ?? []),
   ],
-  archiveGapCount,
+  requiredFeedGapCount,
+  unknownLegacyGapCount,
   malformedJournal: outcomeJournal.getHealth(),
 });
 console.log(report.text);

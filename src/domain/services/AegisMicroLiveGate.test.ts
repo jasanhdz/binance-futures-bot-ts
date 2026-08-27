@@ -116,6 +116,9 @@ function baseCtx(): AegisMicroLiveGateContext {
     consecutiveLosses: 0,
     timeSinceLastExitMs: 20 * 60 * 1000,
     liquidityStress: 0.2,
+    liquidityStressStatus: 'FRESH',
+    liquidityStressAgeMs: 500,
+    liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
     dailyPnlPct: 0,
   };
 }
@@ -219,6 +222,33 @@ describe('AegisMicroLiveGate', () => {
     const decision = shouldEnterAegisTurboMicroLive(ctx, baseConfig());
 
     expect(decision.reason).toBe('liquidity_stress_block');
+  });
+
+  it.each([
+    ['STALE', 'liquidity_data_stale'],
+    ['NO_DATA', 'liquidity_data_no_data'],
+  ] as const)('fails closed for %s liquidity data', (status, reason) => {
+    const ctx = baseCtx();
+    ctx.liquidityStressStatus = status;
+    ctx.liquidityStressAgeMs = status === 'STALE' ? 30_001 : undefined;
+
+    expect(shouldEnterAegisTurboMicroLive(ctx, baseConfig())).toMatchObject({
+      allowed: false,
+      reason,
+      liquidityStressStatus: status,
+      liquidityStressAgeMs: ctx.liquidityStressAgeMs,
+      liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
+    });
+  });
+
+  it('uses scalar stress when liquidity data is fresh', () => {
+    const decision = shouldEnterAegisTurboMicroLive(baseCtx(), baseConfig());
+    expect(decision).toMatchObject({
+      allowed: true,
+      liquidityStressStatus: 'FRESH',
+      liquidityStressAgeMs: 500,
+      liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
+    });
   });
 
   it('denies if dailyPnlPct <= -dailyLossStopPct', () => {

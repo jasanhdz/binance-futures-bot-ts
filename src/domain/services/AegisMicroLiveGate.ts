@@ -2,6 +2,9 @@ import { AegisBlock } from './AegisStrategy';
 import { inspectCurrentBrainCanonicalDecision } from './CurrentBrainCanonicalDecision';
 import { evaluateSharedEntrySafety } from '../risk/SharedEntrySafetyGate';
 
+export type LiquidityStressStatus = 'NO_DATA' | 'FRESH' | 'STALE';
+export const LIQUIDITY_STRESS_INPUT_VERSION = 'DEPTH20_PARTIAL_V1' as const;
+
 export interface AegisMicroLiveGateConfig {
   tradingMode: string;
   liveEnabled: boolean;
@@ -34,6 +37,9 @@ export interface AegisMicroLiveGateContext {
   consecutiveLosses: number;
   timeSinceLastExitMs: number;
   liquidityStress: number;
+  liquidityStressStatus: LiquidityStressStatus;
+  liquidityStressAgeMs?: number;
+  liquidityStressInputVersion: typeof LIQUIDITY_STRESS_INPUT_VERSION;
   dailyPnlPct?: number;
 }
 
@@ -56,6 +62,9 @@ export interface AegisMicroLiveGateDecision {
   rawReason?: string;
   gatedReason?: string;
   gatedBlockedBy?: string | null;
+  liquidityStressStatus?: LiquidityStressStatus;
+  liquidityStressAgeMs?: number;
+  liquidityStressInputVersion?: typeof LIQUIDITY_STRESS_INPUT_VERSION;
 }
 
 const DEFAULT_LEVERAGE = 15;
@@ -120,6 +129,9 @@ function buildDecision(
     rawReason: raw?.reason,
     gatedReason: gated?.reason,
     gatedBlockedBy: gated?.blocked_by,
+    liquidityStressStatus: ctx.liquidityStressStatus,
+    liquidityStressAgeMs: ctx.liquidityStressAgeMs,
+    liquidityStressInputVersion: ctx.liquidityStressInputVersion,
   };
 }
 
@@ -127,6 +139,15 @@ function evaluateOperationalSafety(
   ctx: AegisMicroLiveGateContext,
   config: AegisMicroLiveGateConfig,
 ) {
+  if (ctx.liquidityStressStatus !== 'FRESH') {
+    return {
+      allowed: false as const,
+      reason:
+        ctx.liquidityStressStatus === 'NO_DATA'
+          ? ('liquidity_data_no_data' as const)
+          : ('liquidity_data_stale' as const),
+    };
+  }
   return evaluateSharedEntrySafety({
     hasOpenPosition: ctx.hasOpenPosition,
     tradesToday: ctx.tradesToday,

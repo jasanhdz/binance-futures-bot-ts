@@ -6,6 +6,9 @@ import {
   SharedEntrySafetyContext,
 } from '../../risk/SharedEntrySafetyGate';
 
+export type MomentumLiquidityStressStatus = 'NO_DATA' | 'FRESH' | 'STALE';
+export const MOMENTUM_LIQUIDITY_INPUT_VERSION = 'DEPTH20_PARTIAL_V1' as const;
+
 export interface MomentumRideEntryContext {
   symbol: string;
   timestamp: number;
@@ -22,6 +25,9 @@ export interface MomentumRideEntryContext {
     | 'maxLiquidityStress'
     | 'dailyLossStopPct'
   >;
+  liquidityStressStatus: MomentumLiquidityStressStatus;
+  liquidityStressAgeMs?: number;
+  liquidityStressInputVersion: typeof MOMENTUM_LIQUIDITY_INPUT_VERSION;
 }
 
 export interface MomentumRideEntryPolicyConfig {
@@ -43,10 +49,25 @@ export function evaluateMomentumRideEntry(
   context: MomentumRideEntryContext,
   config: MomentumRideEntryPolicyConfig,
 ): StrategyEvaluationResult {
+  const liquidityDiagnostics = {
+    liquidityStressStatus: context.liquidityStressStatus,
+    liquidityStressAgeMs: context.liquidityStressAgeMs,
+    liquidityStressInputVersion: context.liquidityStressInputVersion,
+  };
+  if (context.liquidityStressStatus !== 'FRESH') {
+    return noTrade(
+      context,
+      context.liquidityStressStatus === 'NO_DATA'
+        ? 'liquidity_data_no_data'
+        : 'liquidity_data_stale',
+      liquidityDiagnostics,
+    );
+  }
   const pattern = evaluateMainStackingMomentum(context.candles, context.side);
   if (!pattern.allowed) {
     return noTrade(context, pattern.reason, {
       pattern: pattern.diagnostics,
+      ...liquidityDiagnostics,
     });
   }
 
@@ -113,6 +134,7 @@ export function evaluateMomentumRideEntry(
     side: context.side,
     reason: 'main_stacking_momentum_confirmed',
     diagnostics: {
+      ...liquidityDiagnostics,
       pattern: pattern.diagnostics,
       sharedSafety: safety,
       strategyRisk: {
@@ -139,6 +161,11 @@ function noTrade(
     decision: 'NO_TRADE',
     side: context.side,
     reason,
-    diagnostics,
+    diagnostics: {
+      liquidityStressStatus: context.liquidityStressStatus,
+      liquidityStressAgeMs: context.liquidityStressAgeMs,
+      liquidityStressInputVersion: context.liquidityStressInputVersion,
+      ...diagnostics,
+    },
   };
 }

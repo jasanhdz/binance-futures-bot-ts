@@ -46,11 +46,14 @@ export interface AggTradeFlowProvider {
     sellVolume: number;
     netTakerVolume: number;
     tradeCount: number;
-    requestedWindowMs?: number;
-    observedWindowMs?: number;
-    observedSampleCount?: number;
-    eventWatermarkMs?: number | null;
-    capacityTruncated?: boolean;
+    requestedWindowMs: number;
+    observedWindowMs: number;
+    observedSampleCount: number;
+    eventWatermarkMs: number | null;
+    capacityTruncated: boolean;
+    coverageStartedAtMs: number | null;
+    windowComplete: boolean;
+    gapFree: boolean;
   };
 }
 
@@ -64,6 +67,7 @@ export interface MicroBurstContextBuilderDeps {
 
 export interface MicroBurstContextBuildOptions {
   snapshotAtMs: number;
+  localNowAtMs?: number;
   config?: Partial<MicroBurstConfig>;
 }
 
@@ -88,11 +92,11 @@ function freshnessMs(snapshotAtMs: number, candles: Candle[]): number {
 
 function btcStatusAt(
   btcContext: BtcContext | undefined,
-  snapshotAtMs: number,
+  localNowAtMs: number,
   freshnessMaxMs: number,
 ): BtcDataStatus {
   if (!btcContext) return 'UNAVAILABLE';
-  const ageMs = snapshotAtMs - btcContext.observedAtMs;
+  const ageMs = localNowAtMs - btcContext.receivedAtMs;
   if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > freshnessMaxMs) return 'STALE';
   return 'HEALTHY';
 }
@@ -106,13 +110,15 @@ function getDataQuality(
   levelsAvailableAt: number | null,
   config: MicroBurstConfig,
   bookStatus: DataQualityDiagnostics['bookStatus'],
+  aggTradeFlow: ReturnType<AggTradeFlowProvider['getTakerFlow']> | undefined,
+  localNowAtMs: number,
 ): DataQualityDiagnostics {
   const freshness1mMs = freshnessMs(snapshotAtMs, closedCandleSets.candles1m);
   const freshness3mMs = freshnessMs(snapshotAtMs, closedCandleSets.candles3m);
   const freshness5mMs = freshnessMs(snapshotAtMs, closedCandleSets.candles5m);
-  const btcStatus = btcStatusAt(btcContext, snapshotAtMs, config.btcFreshnessMaxMs);
-  const bookAgeMs = bookSnapshot ? snapshotAtMs - bookSnapshot.observedAtMs : null;
-  const btcAgeMs = btcContext ? snapshotAtMs - btcContext.observedAtMs : null;
+  const btcStatus = btcStatusAt(btcContext, localNowAtMs, config.btcFreshnessMaxMs);
+  const bookAgeMs = bookSnapshot ? localNowAtMs - bookSnapshot.observedAtMs : null;
+  const btcAgeMs = btcContext ? localNowAtMs - btcContext.receivedAtMs : null;
   const invalidReasons: string[] = [];
 
   if (!isStrictlyOrdered(rawCandleSets.candles1m)) invalidReasons.push('invalid_1m_order');
@@ -128,6 +134,10 @@ function getDataQuality(
   if (btcStatus !== 'HEALTHY') invalidReasons.push(`btc_${btcStatus.toLowerCase()}`);
   if (levelsAvailableAt !== null && levelsAvailableAt > snapshotAtMs)
     invalidReasons.push('future_support_resistance_level');
+  if (aggTradeFlow && !aggTradeFlow.windowComplete)
+    invalidReasons.push('agg_trade_window_incomplete');
+  if (aggTradeFlow?.capacityTruncated) invalidReasons.push('agg_trade_capacity_truncated');
+  if (aggTradeFlow && !aggTradeFlow.gapFree) invalidReasons.push('agg_trade_gap');
 
   const closedCandlesOnly = Object.values(closedCandleSets)
     .flat()
@@ -256,6 +266,7 @@ export async function buildMicroBurstContext(
     momentum.strength,
     isBookHealthy(bookPressure),
   );
+  const aggTradeFlow = deps.aggTradeFlow?.getTakerFlow(symbol);
   const dataQuality = getDataQuality(
     snapshotAtMs,
     rawCandleSets,
@@ -265,13 +276,13 @@ export async function buildMicroBurstContext(
     levelsAvailableAt,
     config,
     bookPressure.status,
+    aggTradeFlow,
+    options.localNowAtMs ?? snapshotAtMs,
   );
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
     dataQuality.contextValid = false;
     dataQuality.invalidReasons.push('invalid_reference_price');
   }
-
-  const aggTradeFlow = deps.aggTradeFlow?.getTakerFlow(symbol);
 
   return {
     symbol,
@@ -286,7 +297,7 @@ export async function buildMicroBurstContext(
     structuralClarity,
     microRegime,
     dataQuality,
-    ...(aggTradeFlow && aggTradeFlow.tradeCount > 0
+    ...(aggTradeFlow
       ? {
           aggTradeFlow: {
             buyTakerVolume: aggTradeFlow.buyVolume,
@@ -298,6 +309,9 @@ export async function buildMicroBurstContext(
             observedSampleCount: aggTradeFlow.observedSampleCount,
             eventWatermarkMs: aggTradeFlow.eventWatermarkMs,
             capacityTruncated: aggTradeFlow.capacityTruncated,
+            coverageStartedAtMs: aggTradeFlow.coverageStartedAtMs,
+            windowComplete: aggTradeFlow.windowComplete,
+            gapFree: aggTradeFlow.gapFree,
           },
         }
       : {}),

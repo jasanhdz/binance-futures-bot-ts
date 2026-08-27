@@ -33,6 +33,9 @@ describe('Micro Burst readiness', () => {
   it('is complete only when every requested check is evidenced', () => {
     const result = assessMicroBurstReadiness(complete);
     expect(result.ready).toBe(true);
+    expect(result.readyForSoak).toBe(true);
+    expect(result.readyForFreeze).toBe(true);
+    expect(result.officialAuthority).toBe(true);
     expect(Object.values(result.checks).every(Boolean)).toBe(true);
     expect(result.official).toBe(false);
     expect(result.liveAuthority).toBe(false);
@@ -47,8 +50,11 @@ describe('Micro Burst readiness', () => {
 
   it('does not infer official readiness from a SHA and cohort prefix', () => {
     const result = assessMicroBurstReadiness({ ...complete, officialCohortReady: undefined });
-    expect(result.checks.cohort).toBe(false);
-    expect(result.ready).toBe(false);
+    expect(result.checks.cohort).toBe(true);
+    expect(result.ready).toBe(true);
+    expect(result.readyForSoak).toBe(true);
+    expect(result.readyForFreeze).toBe(false);
+    expect(result.officialAuthority).toBe(false);
     expect(result.official).toBe(false);
   });
 });

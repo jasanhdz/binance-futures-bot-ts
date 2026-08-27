@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Candle, Side } from '../../types';
 import {
   evaluateMomentumRideEntry,
+  MomentumRideEntryContext,
   MomentumRideEntryPolicyConfig,
 } from './MomentumRideEntryPolicy';
 
@@ -37,12 +38,15 @@ function momentumCandles(side: Side): Candle[] {
   });
 }
 
-function context(side: Side) {
+function context(side: Side): MomentumRideEntryContext {
   return {
     symbol: 'SUIUSDT',
     timestamp: 123,
     candles: momentumCandles(side),
     side,
+    liquidityStressStatus: 'FRESH' as const,
+    liquidityStressAgeMs: 500,
+    liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1' as const,
     safety: {
       hasOpenPosition: false,
       tradesToday: 0,
@@ -82,6 +86,33 @@ describe('MomentumRideEntryPolicy', () => {
     ).toMatchObject({
       decision: 'NO_TRADE',
       reason: 'momentum_short_disabled',
+    });
+  });
+
+  it.each([
+    ['STALE', 'liquidity_data_stale'],
+    ['NO_DATA', 'liquidity_data_no_data'],
+  ] as const)('fails closed for %s liquidity data', (status, reason) => {
+    const ctx = context('LONG');
+    ctx.liquidityStressStatus = status;
+    ctx.liquidityStressAgeMs = status === 'STALE' ? 30_001 : undefined;
+
+    expect(evaluateMomentumRideEntry(ctx, config)).toMatchObject({
+      decision: 'NO_TRADE',
+      reason,
+      diagnostics: {
+        liquidityStressStatus: status,
+        liquidityStressAgeMs: ctx.liquidityStressAgeMs,
+        liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
+      },
+    });
+  });
+
+  it('uses scalar stress when liquidity data is fresh', () => {
+    expect(evaluateMomentumRideEntry(context('LONG'), config).diagnostics).toMatchObject({
+      liquidityStressStatus: 'FRESH',
+      liquidityStressAgeMs: 500,
+      liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
     });
   });
 });

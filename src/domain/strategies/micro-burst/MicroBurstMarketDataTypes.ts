@@ -76,9 +76,13 @@ export interface BtcReturnSet {
 
 export interface AggTradeEvent {
   eventTime: number;
+  receivedAtMs?: number;
   price: number;
   quantity: number;
   isBuyerMaker: boolean;
+  aggregateTradeId?: number;
+  firstTradeId?: number;
+  lastTradeId?: number;
 }
 
 // ── Reference Price ─────────────────────────────────────────

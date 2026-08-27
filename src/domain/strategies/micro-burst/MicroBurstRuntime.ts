@@ -125,7 +125,17 @@ export interface MicroBurstRuntimeDeps {
   };
   marketStorage?: {
     appendDepth(event: Record<string, unknown>): boolean;
+    recordGap?(gap: {
+      symbol: string;
+      startedAtMs: number;
+      endedAtMs: number;
+      reason: string;
+      kind?: string;
+      feed?: string;
+      [key: string]: unknown;
+    }): boolean;
     persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
+    countOutcomeBlockingGaps?(): number;
     flush?(): boolean | Promise<boolean>;
     close?(): void | Promise<void>;
     getHealth(): {
@@ -288,9 +298,13 @@ export class MicroBurstRuntime {
         state.unsubscribeAggTrades = exchange.subscribeToAggTrades(symbol, (trade) => {
           const event: AggTradeEvent = {
             eventTime: trade.eventTime,
+            receivedAtMs: trade.receivedAtMs,
             price: Number(trade.price),
             quantity: Number(trade.quantity),
             isBuyerMaker: trade.isBuyerMaker,
+            aggregateTradeId: trade.aggregateTradeId,
+            firstTradeId: trade.firstTradeId,
+            lastTradeId: trade.lastTradeId,
           };
           aggTradeBuffer.push(event);
 
@@ -348,6 +362,9 @@ export class MicroBurstRuntime {
               observedSampleCount: 0,
               eventWatermarkMs: null,
               capacityTruncated: false,
+              coverageStartedAtMs: null,
+              windowComplete: false,
+              gapFree: true,
             };
           }
           return state.aggTradeBuffer.getTakerFlow();
@@ -574,7 +591,7 @@ export class MicroBurstRuntime {
     }
 
     const btcContext = this.btcProvider?.getBtcContext();
-    const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.observedAtMs < 120_000;
+    const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.receivedAtMs < 120_000;
 
     const archiveHealth = this.deps.marketStorage?.getHealth();
     return {
@@ -617,7 +634,7 @@ export class MicroBurstRuntime {
       if (state.book.getHealth() === 'HEALTHY') healthyBookCount++;
     }
     const btcContext = this.btcProvider?.getBtcContext();
-    const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.observedAtMs < 120_000;
+    const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.receivedAtMs < 120_000;
     const readiness = assessMicroBurstReadiness({
       codeSha: provenance?.codeCommitSha,
       configHash: provenance?.configHash,
@@ -626,12 +643,17 @@ export class MicroBurstRuntime {
       officialCohortReady: provenance?.officialCohortReady,
       mode: this.config.mode,
       enabled: this.config.enabled,
-      enabledSymbolCount: Object.values(this.config.symbols).filter((symbol) => symbol.enabled).length,
+      enabledSymbolCount: Object.values(this.config.symbols).filter((symbol) => symbol.enabled)
+        .length,
       healthyBookCount: this.running ? healthyBookCount : undefined,
       btcHealthy: this.running ? btcHealthy : undefined,
-      aggTradeHealthy: this.running && this.symbolStates.size > 0
-        ? [...this.symbolStates.values()].every((state) => state.aggTradeBuffer.getRecent().length > 0)
-        : undefined,
+      aggTradeHealthy:
+        this.running && this.symbolStates.size > 0
+          ? [...this.symbolStates.values()].every((state) => {
+              const flow = state.aggTradeBuffer.getTakerFlow();
+              return flow.windowComplete && flow.gapFree && !flow.capacityTruncated;
+            })
+          : undefined,
       archiveEnabled: this.config.marketArchive?.enabled === true,
       archiveAvailable: archive !== undefined,
       archiveHealthy: archiveHealth?.healthy,
@@ -640,13 +662,14 @@ export class MicroBurstRuntime {
       databaseValid: archive !== undefined && archiveHealth?.healthy === true,
       preregistrationEnabled: this.config.prospectiveValidation?.enabled === true,
       mutationAuditAvailable: undefined,
-      unresolvedTradeGaps: undefined,
+      unresolvedTradeGaps: archive?.countOutcomeBlockingGaps?.(),
       manifestValid: undefined,
       schemaValid: undefined,
       episodeDefinitionValid: undefined,
-      gapSemanticsValid: undefined,
+      gapSemanticsValid: true,
       costSemanticsValid: undefined,
       outcomeJournalHealthy: this.deps.outcomeTracker?.getHealth().journalHealthy ?? true,
+      symbolBlockers: this.getSymbolReadinessBlockers(),
     });
     /* Retain detailed legacy diagnostics while the typed checks are authoritative. */
     const blockers = [...readiness.blockers];
@@ -676,12 +699,14 @@ export class MicroBurstRuntime {
     if (!provenance?.configHash || provenance.configHash === 'UNKNOWN')
       blockers.push('CONFIG_HASH_UNKNOWN');
     if (!provenance?.cohortId?.startsWith('MBV1-M3_2-')) blockers.push('COHORT_NAMESPACE_INVALID');
-    if (!provenance?.officialCohortReady) blockers.push('OFFICIAL_COHORT_NOT_READY');
     if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
 
     return {
       ...readiness,
-      ready: blockers.length === 0,
+      ready: readiness.readyForSoak && blockers.length === 0,
+      readyForSoak: readiness.readyForSoak && blockers.length === 0,
+      readyForFreeze: readiness.readyForFreeze && blockers.length === 0,
+      officialAuthority: readiness.officialAuthority && blockers.length === 0,
       blockers,
       cohortId: provenance?.cohortId ?? null,
       strategyVersion:
@@ -702,12 +727,20 @@ export class MicroBurstRuntime {
     uniqueSignals: number;
     duplicateSignals: number;
     invalidContexts: number;
+    coverageStartedAtMs: number | null;
+    eventWatermarkMs: number | null;
+    requestedWindowMs: number;
+    windowComplete: boolean;
+    capacityTruncated: boolean;
+    gapFree: boolean;
+    tradeCount: number;
   } | null {
     const state = this.symbolStates.get(symbol);
     if (!state) return null;
 
     const bookState = state.book.getState();
     const recentTrades = state.aggTradeBuffer.getRecent();
+    const flow = state.aggTradeBuffer.getTakerFlow();
 
     return {
       bookStatus: bookState.health,
@@ -719,11 +752,33 @@ export class MicroBurstRuntime {
       uniqueSignals: state.uniqueSignalCount,
       duplicateSignals: state.duplicateSignalCount,
       invalidContexts: state.invalidContextCount,
+      coverageStartedAtMs: flow.coverageStartedAtMs,
+      eventWatermarkMs: flow.eventWatermarkMs,
+      requestedWindowMs: flow.requestedWindowMs,
+      windowComplete: flow.windowComplete,
+      capacityTruncated: flow.capacityTruncated,
+      gapFree: flow.gapFree,
+      tradeCount: flow.tradeCount,
     };
   }
 
   getSymbolStates(): ReadonlyMap<string, SymbolRuntimeState> {
     return this.symbolStates;
+  }
+
+  private getSymbolReadinessBlockers(): Record<string, string[]> {
+    const blockers: Record<string, string[]> = {};
+    for (const [symbol, state] of this.symbolStates) {
+      const reasons: string[] = [];
+      const bookHealth = state.book.getHealth();
+      if (bookHealth !== 'HEALTHY') reasons.push(`BOOK_${bookHealth}`);
+      const flow = state.aggTradeBuffer.getTakerFlow();
+      if (!flow.windowComplete) reasons.push('AGG_TRADE_WINDOW_INCOMPLETE');
+      if (flow.capacityTruncated) reasons.push('AGG_TRADE_CAPACITY_TRUNCATED');
+      if (!flow.gapFree) reasons.push('AGG_TRADE_GAP');
+      blockers[symbol] = reasons;
+    }
+    return blockers;
   }
 
   private startEvaluationLoop(): void {

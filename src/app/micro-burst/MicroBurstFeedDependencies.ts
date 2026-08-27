@@ -8,6 +8,12 @@ export const MICRO_BURST_FEED_DEPENDENCIES: Readonly<Record<string, readonly Mar
     btcContext: ['CANDLE'],
   });
 
+export const MICRO_BURST_OUTCOME_FEED_DEPENDENCIES: Readonly<
+  Record<'SIGNAL_PRICE', readonly MarketDataFeed[]>
+> = Object.freeze({
+  SIGNAL_PRICE: ['AGG_TRADE'],
+});
+
 export function missingFeedDependencies(available: Iterable<MarketDataFeed>): string[] {
   const feeds = new Set(available);
   return Object.entries(MICRO_BURST_FEED_DEPENDENCIES)

@@ -534,6 +534,7 @@ export class MicroBurstStorage {
     [key: string]: unknown;
   }): boolean {
     return this.safe(() => {
+      const feed = gap.feed ?? feedForDataType(gap.dataType);
       this.db
         .prepare(
           `INSERT INTO market_data_gaps (symbol, started_at_ms, ended_at_ms, reason, gap_kind, feed, details_json, created_at_ms)
@@ -545,7 +546,7 @@ export class MicroBurstStorage {
           gap.endedAtMs,
           gap.reason,
           gap.kind ?? gapKindForReason(gap.reason),
-          gap.feed ?? null,
+          feed ?? null,
           JSON.stringify(gap),
           this.now(),
         );
@@ -685,6 +686,47 @@ export class MicroBurstStorage {
         ),
       true,
     );
+  }
+
+  hasGapForFeed(
+    symbol: string,
+    fromMs: number,
+    toMs: number,
+    feed: MarketDataFeed,
+  ): boolean {
+    return this.safeValue(
+      () =>
+        Boolean(
+          this.db
+            .prepare(
+              `SELECT 1 FROM market_data_gaps
+               WHERE symbol = ? AND started_at_ms <= ? AND ended_at_ms >= ?
+                 AND gap_kind <> 'UNKNOWN_LEGACY' AND feed = ? LIMIT 1`,
+            )
+            .get(symbol, toMs, fromMs, feed),
+        ),
+      true,
+    );
+  }
+
+  countOutcomeBlockingGaps(symbols?: ReadonlySet<string>): number {
+    return this.queryGaps().filter(
+      (gap) =>
+        (!symbols || symbols.has(gap.symbol)) &&
+        (gap.kind === 'UNKNOWN_LEGACY' || gap.feed === 'AGG_TRADE'),
+    ).length;
+  }
+
+  countRequiredFeedGaps(symbols?: ReadonlySet<string>): number {
+    return this.queryGaps().filter(
+      (gap) => (!symbols || symbols.has(gap.symbol)) && gap.kind !== 'UNKNOWN_LEGACY' && gap.feed === 'AGG_TRADE',
+    ).length;
+  }
+
+  countUnknownLegacyGaps(symbols?: ReadonlySet<string>): number {
+    return this.queryGaps().filter(
+      (gap) => (!symbols || symbols.has(gap.symbol)) && gap.kind === 'UNKNOWN_LEGACY',
+    ).length;
   }
 
   flush(): boolean {
@@ -1270,6 +1312,8 @@ export class MicroBurstStorage {
       startedAtMs: row?.first_event_time_ms ?? fallbackStartMs,
       endedAtMs: row?.last_event_time_ms ?? fallbackEndMs,
       reason,
+      kind: 'ARCHIVE',
+      feed: 'AGG_TRADE',
       file: path.basename(filePath),
     });
   }
@@ -1417,6 +1461,12 @@ function gapKindForReason(reason: string): GapKind {
   )
     return 'ARCHIVE';
   return 'UNKNOWN_LEGACY';
+}
+
+function feedForDataType(value: unknown): MarketDataFeed | undefined {
+  if (value === 'trades') return 'AGG_TRADE';
+  if (value === 'depth') return 'DEPTH';
+  return undefined;
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

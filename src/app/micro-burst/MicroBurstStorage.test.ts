@@ -63,6 +63,47 @@ describe('MicroBurstStorage', () => {
     storage.close();
   });
 
+  it('queries only the explicitly required feed and preserves unknown legacy attribution', () => {
+    const { storage } = createStorage();
+    storage.recordGap({
+      symbol: 'BTCUSDT',
+      startedAtMs: 100,
+      endedAtMs: 200,
+      reason: 'depth_sequence_gap',
+      kind: 'DEPTH_SEQUENCE',
+      feed: 'DEPTH',
+    });
+    storage.recordGap({
+      symbol: 'BTCUSDT',
+      startedAtMs: 100,
+      endedAtMs: 200,
+      reason: 'reference_price_gap',
+      kind: 'SUBSCRIPTION',
+      feed: 'MARK_PRICE',
+    });
+    storage.recordGap({
+      symbol: 'BTCUSDT',
+      startedAtMs: 100,
+      endedAtMs: 200,
+      reason: 'subscription_gap',
+      kind: 'SUBSCRIPTION',
+      feed: 'AGG_TRADE',
+    });
+    storage.recordGap({
+      symbol: 'BTCUSDT',
+      startedAtMs: 100,
+      endedAtMs: 200,
+      reason: 'old_gap',
+    });
+
+    expect(storage.hasGapForFeed('BTCUSDT', 150, 150, 'DEPTH')).toBe(true);
+    expect(storage.hasGapForFeed('BTCUSDT', 150, 150, 'MARK_PRICE')).toBe(true);
+    expect(storage.hasGapForFeed('BTCUSDT', 150, 150, 'AGG_TRADE')).toBe(true);
+    expect(storage.countRequiredFeedGaps(new Set(['BTCUSDT']))).toBe(1);
+    expect(storage.countUnknownLegacyGaps(new Set(['BTCUSDT']))).toBe(1);
+    storage.close();
+  });
+
   it('uses typed feed parsing and only accepts a bridged contiguous depth stream', () => {
     const receivedAtMs = 2_000;
     expect(

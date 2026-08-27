@@ -37,6 +37,7 @@ interface Clock {
 export class BtcMicroContextProvider {
   private readonly candleBuffer: BtcCandleObservation[] = [];
   private lastObservationMs = 0;
+  private lastReceivedAtMs = 0;
   private lastDirection: Side | 'NEUTRAL' = 'NEUTRAL';
   private lastRet1m = 0;
   private lastRet3m = 0;
@@ -72,6 +73,7 @@ export class BtcMicroContextProvider {
     }
     this.candleBuffer.length = 0;
     this.lastObservationMs = 0;
+    this.lastReceivedAtMs = 0;
     this.lastDirection = 'NEUTRAL';
     this.lastRet1m = 0;
     this.lastRet3m = 0;
@@ -111,6 +113,7 @@ export class BtcMicroContextProvider {
       const returns = this.computeReturns(now);
       if (returns) {
         this.lastObservationMs = returns.observedAtMs;
+        this.lastReceivedAtMs = now;
         this.lastDirection = returns.direction;
         this.lastRet1m = returns.ret1m;
         this.lastRet3m = returns.ret3m;
@@ -131,7 +134,7 @@ export class BtcMicroContextProvider {
     if (this.lastObservationMs === 0) return undefined;
 
     const now = this.clock.now();
-    if (now - this.lastObservationMs > this.staleThresholdMs) return undefined;
+    if (now - this.lastReceivedAtMs > this.staleThresholdMs) return undefined;
 
     return {
       ret1m: this.lastRet1m,
@@ -141,6 +144,7 @@ export class BtcMicroContextProvider {
       conflictFlag: false,
       direction: this.lastDirection,
       observedAtMs: this.lastObservationMs,
+      receivedAtMs: this.lastReceivedAtMs,
     };
   }
 

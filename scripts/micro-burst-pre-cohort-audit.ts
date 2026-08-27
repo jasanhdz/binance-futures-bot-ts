@@ -28,4 +28,4 @@ const readiness = assessMicroBurstReadiness({
   mutationAuditAvailable,
 });
 
-console.log(JSON.stringify({ ...readiness, readyForSoak: readiness.ready }, null, 2));
+console.log(JSON.stringify(readiness, null, 2));

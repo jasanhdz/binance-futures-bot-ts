@@ -42,7 +42,10 @@ import { evaluateAegisExitEyeV2Shadow } from '../../domain/services/AegisExitEye
 import { inspectCurrentBrainCanonicalDecision } from '../../domain/services/CurrentBrainCanonicalDecision';
 import { buildAegisOperationalDispositionShadow } from '../../domain/services/AegisOperationalDispositionShadow';
 import { RegimeConfig } from '../ports/RegimeStrategy';
-import { LiquidityVoidDetector } from './LiquidityVoidDetector';
+import {
+  LiquidityVoidDetector,
+  LIQUIDITY_STRESS_INPUT_VERSION,
+} from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
 import {
   AegisResearchStrategy,
@@ -139,6 +142,7 @@ import { MicroBurstOutcomeTracker } from '../micro-burst/MicroBurstOutcomeTracke
 import { MicroBurstStorage } from '../micro-burst/MicroBurstStorage';
 
 const INITIAL_BALANCE = 20;
+const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 const EXIT_EYE_SIGNAL_TTL_MS = 15000;
 const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -223,6 +227,9 @@ export interface AegisRuntimeSnapshot {
   dailyPnlPct?: number;
   lastTradeDayReset: number;
   liquidityStressBySymbol: Record<string, number>;
+  liquidityStressStatusBySymbol: Record<string, 'NO_DATA' | 'FRESH' | 'STALE'>;
+  liquidityStressAgeMsBySymbol: Record<string, number | undefined>;
+  liquidityStressInputVersionBySymbol: Record<string, typeof LIQUIDITY_STRESS_INPUT_VERSION>;
   microBurstReadiness: MicroBurstRuntimeReadiness | null;
 }
 
@@ -1321,8 +1328,22 @@ export class TradingService {
 
   getAegisRuntimeSnapshot(): AegisRuntimeSnapshot {
     const liquidityStressBySymbol: Record<string, number> = {};
+    const liquidityStressStatusBySymbol: Record<string, 'NO_DATA' | 'FRESH' | 'STALE'> = {};
+    const liquidityStressAgeMsBySymbol: Record<string, number | undefined> = {};
+    const liquidityStressInputVersionBySymbol: Record<
+      string,
+      typeof LIQUIDITY_STRESS_INPUT_VERSION
+    > = {};
     for (const symbol of Object.keys(this.detector)) {
-      liquidityStressBySymbol[symbol] = this.detector[symbol]?.getLiquidityStress() ?? 0;
+      const status = this.detector[symbol]?.getLiquidityStressStatus(
+        Date.now(),
+        LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+      );
+      liquidityStressBySymbol[symbol] = status?.stress ?? 0;
+      liquidityStressStatusBySymbol[symbol] = status?.status ?? 'NO_DATA';
+      liquidityStressAgeMsBySymbol[symbol] = status?.receiveAgeMs;
+      liquidityStressInputVersionBySymbol[symbol] =
+        status?.inputVersion ?? LIQUIDITY_STRESS_INPUT_VERSION;
     }
     return {
       tradingMode: this.getTradingMode(),
@@ -1333,6 +1354,9 @@ export class TradingService {
       dailyPnlPct: this.lastDailyPnlPct,
       lastTradeDayReset: this.lastTradeDayReset,
       liquidityStressBySymbol,
+      liquidityStressStatusBySymbol,
+      liquidityStressAgeMsBySymbol,
+      liquidityStressInputVersionBySymbol,
       microBurstReadiness: this.microBurstReadiness,
     };
   }
@@ -1653,10 +1677,14 @@ export class TradingService {
               codeCommitSha: null,
               configHash: null,
               liveExecution: false,
+              readyForSoak: false,
+              readyForFreeze: false,
               official: false,
+              officialAuthority: false,
               liveAuthority: false,
               checks: {} as any,
               warnings: [],
+              symbolBlockers: {},
             };
         this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
           ...this.microBurstReadiness,
@@ -2059,7 +2087,14 @@ export class TradingService {
     const now = Date.now();
     const aegisRisk = this.strategyRiskLedger.snapshot('AEGIS_TURBO', now);
     const timeSinceLastExitMs = this.strategyRiskLedger.timeSinceLastExitMs('AEGIS_TURBO', now);
-    const liquidityStress = this.detector[symbol]?.getLiquidityStress() || 0;
+    const liquidity = this.detector[symbol]?.getLiquidityStressStatus(
+      now,
+      LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+    ) ?? {
+      stress: 0,
+      status: 'NO_DATA' as const,
+      inputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
+    };
 
     return shouldEnterAegisTurboMicroLive(
       {
@@ -2069,7 +2104,10 @@ export class TradingService {
         tradesToday: aegisRisk.tradesToday,
         consecutiveLosses: aegisRisk.consecutiveLosses,
         timeSinceLastExitMs,
-        liquidityStress,
+        liquidityStress: liquidity.stress,
+        liquidityStressStatus: liquidity.status,
+        liquidityStressAgeMs: liquidity.receiveAgeMs,
+        liquidityStressInputVersion: liquidity.inputVersion,
         dailyPnlPct,
       },
       this.getAegisTurboGateConfig(symbol),
@@ -2204,6 +2242,14 @@ export class TradingService {
       maxTotalOpenPositionsWhenMomentum: config.safetyCaps.maxTotalOpenPositionsWhenMomentum,
       disableSymbolAfterStopLossMs: config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000,
     };
+    const liquidity = this.detector[symbol]?.getLiquidityStressStatus(
+      now,
+      LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+    ) ?? {
+      stress: 0,
+      status: 'NO_DATA' as const,
+      inputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
+    };
     const strategyContext: MomentumRideStrategyContext = {
       symbol,
       timestamp: now,
@@ -2213,12 +2259,15 @@ export class TradingService {
       openPositionsCount: portfolioExposure.openPositions,
       openMomentumPositions,
       symbolLastStopLossAt: this.stateForSymbol(symbol).get().lastStopLossAt,
+      liquidityStressStatus: liquidity.status,
+      liquidityStressAgeMs: liquidity.receiveAgeMs,
+      liquidityStressInputVersion: liquidity.inputVersion,
       safety: {
         hasOpenPosition,
         tradesToday: strategyRisk.tradesToday,
         consecutiveLosses: strategyRisk.consecutiveLosses,
         timeSinceLastExitMs: this.strategyRiskLedger.timeSinceLastLossMs('MOMENTUM_RIDE', now),
-        liquidityStress: this.detector[symbol]?.getLiquidityStress() || 0,
+        liquidityStress: liquidity.stress,
         dailyPnlPct,
       },
     };

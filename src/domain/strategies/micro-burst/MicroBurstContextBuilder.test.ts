@@ -53,6 +53,7 @@ function healthyBtc(overrides: Partial<BtcContext> = {}): BtcContext {
     conflictFlag: false,
     direction: 'NEUTRAL',
     observedAtMs: SNAPSHOT_AT_MS - 1_000,
+    receivedAtMs: SNAPSHOT_AT_MS - 1_000,
     ...overrides,
   };
 }
@@ -136,11 +137,29 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
       depsWith(
         freshCandleSets(),
         healthyBook(),
-        healthyBtc({ observedAtMs: SNAPSHOT_AT_MS - 60_001 }),
+        healthyBtc({ receivedAtMs: SNAPSHOT_AT_MS - 60_001 }),
       ),
       { snapshotAtMs: SNAPSHOT_AT_MS },
     );
     expect(stale.dataQuality).toMatchObject({ btcStatus: 'STALE', contextValid: false });
+  });
+
+  it('uses local receive time for transport freshness, not exchange observation time', async () => {
+    const context = await buildMicroBurstContext(
+      'ETHUSDT',
+      depsWith(
+        freshCandleSets(),
+        healthyBook({ observedAtMs: SNAPSHOT_AT_MS - 500_000 }),
+        healthyBtc({
+          observedAtMs: SNAPSHOT_AT_MS - 500_000,
+          receivedAtMs: SNAPSHOT_AT_MS - 1_000,
+        }),
+      ),
+      { snapshotAtMs: SNAPSHOT_AT_MS, localNowAtMs: SNAPSHOT_AT_MS },
+    );
+    expect(context.dataQuality.bookAgeMs).toBe(500_000);
+    expect(context.dataQuality.btcAgeMs).toBe(1_000);
+    expect(context.dataQuality.btcStatus).toBe('HEALTHY');
   });
 
   it('ignores all 1m/3m/5m candles after snapshotAtMs', async () => {

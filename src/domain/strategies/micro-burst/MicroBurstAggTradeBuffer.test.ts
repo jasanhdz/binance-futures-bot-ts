@@ -111,6 +111,47 @@ describe('MicroBurstAggTradeBuffer', () => {
     });
   });
 
+  it('is incomplete at startup, but sparse trades become complete causally', () => {
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    expect(buffer.getTakerFlow()).toMatchObject({
+      coverageStartedAtMs: null,
+      eventWatermarkMs: null,
+      windowComplete: false,
+      capacityTruncated: false,
+      gapFree: true,
+      tradeCount: 0,
+    });
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS }));
+    expect(buffer.getTakerFlow()).toMatchObject({
+      coverageStartedAtMs: NOW_MS - 5_000,
+      eventWatermarkMs: NOW_MS,
+      windowComplete: true,
+      gapFree: true,
+    });
+  });
+
+  it('invalidates the window when aggregate trade ids prove a gap', () => {
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, firstTradeId: 10, lastTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
+  });
+
+  it('emits the causal interval when aggregate trade ids prove a gap', () => {
+    const onGap = vi.fn();
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, firstTradeId: 10, lastTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
+
+    expect(onGap).toHaveBeenCalledWith({
+      previousTradeId: 10,
+      nextTradeId: 12,
+      previousEventTimeMs: NOW_MS - 1_000,
+      nextEventTimeMs: NOW_MS,
+    });
+  });
+
   it('getTakerFlow computes buy/sell volumes', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
     const buffer = new MicroBurstAggTradeBuffer(clock, 100, 60_000);

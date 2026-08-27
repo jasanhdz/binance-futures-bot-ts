@@ -98,8 +98,8 @@ describe('BtcMicroContextProvider', () => {
   it('returns undefined when stale', async () => {
     const candles = makeCandles(6, NOW_MS - 600_000);
     const deps = createDeps(candles);
-    const clock = { now: vi.fn(() => NOW_MS) };
-    const provider = new BtcMicroContextProvider('BTCUSDT', deps, clock, 120, 10_000);
+    const clock = vi.fn().mockReturnValueOnce(NOW_MS).mockReturnValue(NOW_MS + 10_001);
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: clock }, 120, 10_000);
 
     await provider.pollCandles();
 

@@ -238,7 +238,8 @@ export class SynchronizedOrderBook {
       this.lastDiffAtMs = 0;
       this.temporalHistory = [];
 
-      const buffered = this.diffBuffer.filter((event) => event.u > this.lastUpdateId);
+      const snapshotUpdateId = this.lastUpdateId;
+      const buffered = this.diffBuffer.filter((event) => event.u >= snapshotUpdateId);
       this.diffBuffer = [];
       if (!buffered.length) {
         this.health = 'UNSYNCED';
@@ -250,8 +251,12 @@ export class SynchronizedOrderBook {
           this.desync('snapshot bridge missing');
           return;
         }
-        this.apply(first);
-        if (this.health !== 'HEALTHY') return;
+        // A boundary event ending at the snapshot ID is retained for the bridge and chain,
+        // but its levels are already represented by the snapshot and must not be reapplied.
+        if (first.u > snapshotUpdateId) {
+          this.apply(first);
+          if (this.health !== 'HEALTHY') return;
+        }
         for (let index = 1; index < buffered.length; index++) {
           const event = buffered[index];
           if (event.u <= this.lastUpdateId) continue;

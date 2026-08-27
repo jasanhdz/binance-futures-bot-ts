@@ -13,6 +13,7 @@ import {
   CURRENT_BRAIN_MODEL_SHA256,
 } from '../../domain/services/CurrentBrainCanonicalDecision';
 import { TradingService } from './TradingService';
+import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { AegisMomentumRideRuntimeConfig } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
 import { E4TailRiskGuardAdapter } from '../../domain/services/aegis-entry/guards/E4TailRiskGuardAdapter';
 
@@ -803,6 +804,18 @@ function makeHarness(
       }),
     getCachedCandles: vi.fn().mockReturnValue(options.cachedCandles ?? []),
     subscribeToCandles: vi.fn(),
+    subscribeToPartialDepth: vi.fn(
+      (
+        _symbol: string,
+        _levels: number,
+        _speed: string,
+        onDepth: (depth: { bids: string[][]; asks: string[][] }) => void,
+      ) => {
+        const levels = Array.from({ length: 20 }, (_, index) => [String(3000 - index), '1']);
+        const asks = Array.from({ length: 20 }, (_, index) => [String(3000 + index), '1']);
+        onDepth({ bids: levels, asks });
+      },
+    ),
   };
   const logger = {
     info: vi.fn(),
@@ -1107,6 +1120,18 @@ function makeHarness(
       maxTradesPerDay: 100,
       tradingMode: 'AEGIS_TURBO_MICRO_LIVE',
     },
+  );
+  // Entry tests must provide the same explicit fresh-liquidity evidence required by production.
+  (service as any).detector = Object.fromEntries(
+    (options.symbols ?? ['ETHUSDT']).map((symbol) => {
+      const detector = new LiquidityVoidDetector(logger);
+      detector.processDepthUpdate({
+        bidDepth: Array.from({ length: 20 }, (_, index) => ({ price: 3000 - index, qty: 1 })),
+        askDepth: Array.from({ length: 20 }, (_, index) => ({ price: 3000 + index, qty: 1 })),
+        receivedAtMs: Date.now(),
+      });
+      return [symbol, detector];
+    }),
   );
 
   return {

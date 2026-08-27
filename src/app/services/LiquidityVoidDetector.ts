@@ -14,9 +14,12 @@ export interface WsDepthUpdate {
 export interface LiquidityStressStatus {
   stress: number;
   status: 'NO_DATA' | 'FRESH' | 'STALE';
+  inputVersion: 'DEPTH20_PARTIAL_V1';
   lastReceivedAtMs?: number;
   receiveAgeMs?: number;
 }
+
+export const LIQUIDITY_STRESS_INPUT_VERSION = 'DEPTH20_PARTIAL_V1' as const;
 
 export class LiquidityVoidDetector {
   private bidDepth: OrderBookLevel[] = [];
@@ -87,11 +90,16 @@ export class LiquidityVoidDetector {
     freshnessWindowMs?: number,
   ): LiquidityStressStatus {
     if (this.lastReceivedAtMs === undefined) {
-      return { stress: this.currentStress, status: 'NO_DATA' };
+      return {
+        stress: this.currentStress,
+        status: 'NO_DATA',
+        inputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
+      };
     }
     const receiveAgeMs = Math.max(0, nowMs - this.lastReceivedAtMs);
     return {
       stress: this.currentStress,
+      inputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
       status:
         freshnessWindowMs === undefined || receiveAgeMs <= freshnessWindowMs ? 'FRESH' : 'STALE',
       lastReceivedAtMs: this.lastReceivedAtMs,

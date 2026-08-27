@@ -140,7 +140,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       marketOpenAttempt = 1;
       let order: { avgPrice: number; orderId: string };
       let clientOrderId = marketOpenClientOrderId(intent);
+      // Capture the pre-submit state for auditability; it is never treated as proof
+      // that a later ambiguous submission opened this position.
       const positionBeforeOpen = await this.exchange.readActivePosition(intent.symbol, intent.side);
+      void positionBeforeOpen;
       while (true) {
         try {
           order = await this.exchange.marketOpen(
@@ -158,7 +161,6 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             const reconciledOrder = await this.reconcileAmbiguousMarketOpen(
               intent,
               clientOrderId,
-              positionBeforeOpen,
             );
             if (reconciledOrder) {
               order = reconciledOrder;
@@ -509,7 +511,6 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
   private async reconcileAmbiguousMarketOpen(
     intent: StrategyExecutionIntent,
     clientOrderId: string,
-    positionBeforeOpen: PositionInfo | null,
   ): Promise<{ avgPrice: number; orderId: string } | null> {
     const delays = this.config.marketOpenAmbiguityDelaysMs ?? [150, 300, 600, 1000];
     for (const delay of delays) {
@@ -536,21 +537,8 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         // Continue to position/fill reconciliation below.
       }
     }
-    try {
-      const fills = await this.exchange.getRecentFills(intent.symbol, intent.requestedAt, 100);
-      const expectedSide = intent.side === 'LONG' ? 'BUY' : 'SELL';
-      const fill = fills.find((candidate) => candidate.side === expectedSide);
-      if (fill) return { orderId: fill.orderId, avgPrice: fill.price };
-    } catch {
-      // Unsupported or unavailable history is not proof of absence.
-    }
-    try {
-      const position = await this.exchange.readActivePosition(intent.symbol, intent.side);
-      if (position && !positionBeforeOpen)
-        return { orderId: `position:${clientOrderId}`, avgPrice: position.entryPrice };
-    } catch {
-      // Position reads can be unavailable while the account is converging.
-    }
+    // A same-side fill or position is not attributable to this request without an
+    // exchange order/client-order linkage. Keep the submission ambiguous instead.
     return null;
   }
 

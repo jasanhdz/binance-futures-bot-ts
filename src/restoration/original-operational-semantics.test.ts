@@ -52,7 +52,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   'src/app/services/TradingService.ts':
-    'b9be80730e17683b5aa5c001b280e537b80c8c7c8c858c846927ae61fba4e6c9',
+    '9f066c409f06db9d877293ad489aae6d6bf823561bdb3b4b4ed75a64abb4c489',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -69,7 +69,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/domain/services/AegisEntryQualityGate.ts':
     'a3703fb5739eb59715ade631befa0a4ed08871b0e7c7e652effbfd003ec9f18f',
   'src/domain/services/AegisMicroLiveGate.ts':
-    '387eae41dbc56133b2927b16adc8a0f09c97e963149a677d5a49eb09669292f6',
+    'fe7ed11ac9256bf0fd659eaf486e0930bf66a6762eced7a08f24fff397dedffd',
   'src/domain/services/AegisProbeMode.ts':
     'f16c3b1f2328acaa49aa8081eb624ab96f8d16114dcc5dd89cd419dcca50926b',
   'src/domain/services/AegisRegimeGuard.ts':
@@ -182,6 +182,9 @@ const baseContext: AegisMicroLiveGateContext = {
   consecutiveLosses: 0,
   timeSinceLastExitMs: 120_000,
   liquidityStress: 0.2,
+  liquidityStressStatus: 'FRESH',
+  liquidityStressAgeMs: 500,
+  liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
   dailyPnlPct: 0,
 };
 

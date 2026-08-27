@@ -8,14 +8,30 @@ interface Clock {
   now(): number;
 }
 
+export interface MicroBurstAggTradeGap {
+  previousTradeId: number;
+  nextTradeId: number;
+  previousEventTimeMs: number | null;
+  nextEventTimeMs: number;
+}
+
 export class MicroBurstAggTradeBuffer {
   private readonly buffer: AggTradeEvent[] = [];
   private readonly maxSize: number;
   private readonly maxAgeMs: number;
   private eventWatermarkMs: number | null = null;
+  private coverageStartedAtMs: number | null = null;
   private lastCapacityEvictedEventTime: number | null = null;
+  private gapFree = true;
+  private lastTradeId: number | null = null;
+  private lastTradeEventTimeMs: number | null = null;
 
-  constructor(clock: Clock, maxSize = DEFAULT_EMERGENCY_MAX_BUFFER_SIZE, maxAgeMs = DEFAULT_MAX_AGE_MS) {
+  constructor(
+    clock: Clock,
+    maxSize = DEFAULT_EMERGENCY_MAX_BUFFER_SIZE,
+    maxAgeMs = DEFAULT_MAX_AGE_MS,
+    private readonly onGap?: (gap: MicroBurstAggTradeGap) => void,
+  ) {
     // Retain the clock argument for source compatibility. Event time is the sole retention clock.
     void clock;
     this.maxSize = maxSize;
@@ -28,6 +44,23 @@ export class MicroBurstAggTradeBuffer {
     if (!Number.isFinite(event.eventTime) || event.eventTime <= 0) return;
 
     this.eventWatermarkMs = Math.max(this.eventWatermarkMs ?? event.eventTime, event.eventTime);
+    if (this.coverageStartedAtMs === null) this.coverageStartedAtMs = event.eventTime;
+    if (
+      this.lastTradeId !== null &&
+      event.firstTradeId !== undefined &&
+      event.firstTradeId > this.lastTradeId + 1
+    ) {
+      this.gapFree = false;
+      this.onGap?.({
+        previousTradeId: this.lastTradeId,
+        nextTradeId: event.firstTradeId,
+        previousEventTimeMs: this.lastTradeEventTimeMs,
+        nextEventTimeMs: event.eventTime,
+      });
+    }
+    if (event.lastTradeId !== undefined)
+      this.lastTradeId = Math.max(this.lastTradeId ?? -1, event.lastTradeId);
+    this.lastTradeEventTimeMs = Math.max(this.lastTradeEventTimeMs ?? event.eventTime, event.eventTime);
     this.pruneExpired();
     if (event.eventTime <= this.eventWatermarkMs - this.maxAgeMs) return;
 
@@ -61,6 +94,9 @@ export class MicroBurstAggTradeBuffer {
     observedSampleCount: number;
     eventWatermarkMs: number | null;
     capacityTruncated: boolean;
+    coverageStartedAtMs: number | null;
+    windowComplete: boolean;
+    gapFree: boolean;
   } {
     const requestedWindowMs = maxAgeMs ?? this.maxAgeMs;
     const recent = this.getRecent(requestedWindowMs);
@@ -89,13 +125,28 @@ export class MicroBurstAggTradeBuffer {
         this.lastCapacityEvictedEventTime !== null &&
         this.eventWatermarkMs !== null &&
         this.lastCapacityEvictedEventTime > this.eventWatermarkMs - requestedWindowMs,
+      coverageStartedAtMs: this.coverageStartedAtMs,
+      windowComplete:
+        this.coverageStartedAtMs !== null &&
+        this.eventWatermarkMs !== null &&
+        this.eventWatermarkMs - this.coverageStartedAtMs >= requestedWindowMs &&
+        this.gapFree &&
+        !(
+          this.lastCapacityEvictedEventTime !== null &&
+          this.lastCapacityEvictedEventTime > this.eventWatermarkMs - requestedWindowMs
+        ),
+      gapFree: this.gapFree,
     };
   }
 
   clear(): void {
     this.buffer.length = 0;
     this.eventWatermarkMs = null;
+    this.coverageStartedAtMs = null;
     this.lastCapacityEvictedEventTime = null;
+    this.gapFree = true;
+    this.lastTradeId = null;
+    this.lastTradeEventTimeMs = null;
   }
 
   size(): number {

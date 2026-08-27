@@ -171,6 +171,71 @@ describe('MicroBurstOutcomeTracker', () => {
     expect(records[0].shadowSignalId).toBe(signal.shadowSignalId);
   });
 
+  it('does not invalidate SIGNAL_PRICE maturity for depth or mark-price gaps', () => {
+    const root = path.join(TEST_DIR, 'typed-gaps');
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+    });
+    const journal = new MicroBurstOutcomeJournal(path.join(root, 'journal'));
+    const tracker = new MicroBurstOutcomeTracker({
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      clock: { now: () => 2_000_000 },
+      journal,
+      storage,
+    });
+    const signal = makeSignal({ shadowSignalId: 'depth-gap', signalAtMs: 1_000_000 });
+    tracker.trackSignal(signal);
+    storage.recordGap({
+      symbol: signal.symbol,
+      startedAtMs: 1_100_000,
+      endedAtMs: 1_100_000,
+      reason: 'sequence_gap',
+      kind: 'DEPTH_SEQUENCE',
+      feed: 'DEPTH',
+    });
+    storage.recordGap({
+      symbol: signal.symbol,
+      startedAtMs: 1_200_000,
+      endedAtMs: 1_200_000,
+      reason: 'reference_price_gap',
+      kind: 'SUBSCRIPTION',
+      feed: 'MARK_PRICE',
+    });
+    tracker.processTradeEvent({ eventTime: 1_300_000, price: 79_100, symbol: signal.symbol });
+    expect(tracker.getHealth().completedOutcomes).toBe(1);
+    expect(tracker.getPendingIds()).toEqual([]);
+    storage.close();
+  });
+
+  it('invalidates SIGNAL_PRICE maturity for an aggregate-trade gap', () => {
+    const root = path.join(TEST_DIR, 'agg-trade-gap');
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+    });
+    const tracker = new MicroBurstOutcomeTracker({
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      clock: { now: () => 2_000_000 },
+      journal: new MicroBurstOutcomeJournal(path.join(root, 'journal')),
+      storage,
+    });
+    const signal = makeSignal({ shadowSignalId: 'agg-trade-gap', signalAtMs: 1_000_000 });
+    tracker.trackSignal(signal);
+    storage.recordGap({
+      symbol: signal.symbol,
+      startedAtMs: 1_100_000,
+      endedAtMs: 1_100_000,
+      reason: 'subscription_gap',
+      kind: 'SUBSCRIPTION',
+      feed: 'AGG_TRADE',
+    });
+    tracker.processTradeEvent({ eventTime: 1_300_000, price: 79_100, symbol: signal.symbol });
+    expect(tracker.getHealth().completedOutcomes).toBe(0);
+    expect(tracker.getPendingIds()).toEqual([]);
+    storage.close();
+  });
+
   it('evicts oldest pending when over limit', () => {
     const { tracker } = createTracker(TEST_DIR);
     const tracker2 = new MicroBurstOutcomeTracker({

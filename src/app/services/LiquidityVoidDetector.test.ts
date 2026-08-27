@@ -44,6 +44,7 @@ describe('LiquidityVoidDetector', () => {
     expect(detector.getLiquidityStressStatus(10_000)).toEqual({
       stress: 0,
       status: 'NO_DATA',
+      inputVersion: 'DEPTH20_PARTIAL_V1',
     });
     detector.processDepthUpdate({
       bidDepth: [{ price: 100, qty: 1 }],
@@ -54,6 +55,7 @@ describe('LiquidityVoidDetector', () => {
     expect(detector.getLiquidityStressStatus(10_000)).toMatchObject({
       stress: 1,
       status: 'FRESH',
+      inputVersion: 'DEPTH20_PARTIAL_V1',
       lastReceivedAtMs: 9_500,
       receiveAgeMs: 500,
     });

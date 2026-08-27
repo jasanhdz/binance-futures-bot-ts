@@ -39,6 +39,7 @@ import {
 import { MicroBurstOutcomeJournal } from './MicroBurstOutcomeJournal';
 import { MicroBurstTradeHistoryStore } from './MicroBurstTradeHistoryStore';
 import { MicroBurstStorage } from './MicroBurstStorage';
+import { MICRO_BURST_OUTCOME_FEED_DEPENDENCIES } from './MicroBurstFeedDependencies';
 
 interface Clock {
   now(): number;
@@ -383,7 +384,14 @@ export class MicroBurstOutcomeTracker {
         -Infinity;
       // Market-event watermark, not local wall time, proves a causal horizon is observable.
       if (watermark < horizonEnd) continue;
-      if (this.deps.storage?.hasGap(pending.signal.symbol, t0, horizonEnd)) {
+      if (
+        this.deps.storage?.hasGapForFeed(
+          pending.signal.symbol,
+          t0,
+          horizonEnd,
+          MICRO_BURST_OUTCOME_FEED_DEPENDENCIES.SIGNAL_PRICE[0],
+        )
+      ) {
         this.deps.storage.persistPendingState(id, 'INCOMPLETE_DATA_GAP', {
           shadowSignalId: id,
           requiredUntilMs: t0 + 300_000,
@@ -583,7 +591,12 @@ export class MicroBurstOutcomeTracker {
         this.deps.clock.now() >= requiredUntilMs &&
         (watermark === null ||
           watermark < requiredUntilMs ||
-          this.deps.storage.hasGap(signal.symbol, signal.signalAtMs, requiredUntilMs))
+          this.deps.storage.hasGapForFeed(
+            signal.symbol,
+            signal.signalAtMs,
+            requiredUntilMs,
+            MICRO_BURST_OUTCOME_FEED_DEPENDENCIES.SIGNAL_PRICE[0],
+          ))
       ) {
         this.deps.storage.persistPendingState(signal.shadowSignalId, 'INCOMPLETE_DATA_GAP', {
           shadowSignalId: signal.shadowSignalId,

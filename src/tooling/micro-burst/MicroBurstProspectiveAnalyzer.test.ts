@@ -133,6 +133,19 @@ describe('MicroBurstProspectiveAnalyzer', () => {
     })).toThrow('MALFORMED_OUTCOME_JOURNAL_UNRESOLVED');
   });
 
+  it('rejects required and unknown legacy gaps, but not a depth gap', () => {
+    const input = { signals: [], outcomes: [], official: true } as const;
+    expect(() => analyzeMicroBurstProspective({ ...input, requiredFeedGapCount: 1 })).toThrow(
+      'REQUIRED_FEED_GAP_UNRESOLVED',
+    );
+    expect(() => analyzeMicroBurstProspective({ ...input, unknownLegacyGapCount: 1 })).toThrow(
+      'UNKNOWN_LEGACY_GAP_UNRESOLVED',
+    );
+    expect(
+      analyzeMicroBurstProspective({ ...input, requiredFeedGapCount: 0, unknownLegacyGapCount: 0 }),
+    ).toBeTruthy();
+  });
+
   it('reports malformed outcome journal coordinates in non-official analysis', () => {
     const report = analyzeMicroBurstProspective({
       signals: [],

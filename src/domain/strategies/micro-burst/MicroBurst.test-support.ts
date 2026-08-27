@@ -11,6 +11,7 @@ export function makeBtcContext(overrides: Partial<BtcContext> = {}): BtcContext 
     conflictFlag: false,
     direction: 'NEUTRAL',
     observedAtMs: TEST_SNAPSHOT_AT_MS - 1_000,
+    receivedAtMs: TEST_SNAPSHOT_AT_MS - 1_000,
     ...overrides,
   };
 }

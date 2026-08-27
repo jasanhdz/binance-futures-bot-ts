@@ -29,7 +29,10 @@ export interface MicroBurstProspectiveAnalysisInput {
   cohortId?: string;
   availableCohorts?: readonly string[];
   sqliteInconsistencyIds?: readonly string[];
-  archiveGapCount?: number;
+  /** Gaps in feeds required by the persisted SIGNAL_PRICE outcome. */
+  requiredFeedGapCount?: number;
+  /** Legacy gap rows have no trustworthy feed attribution. */
+  unknownLegacyGapCount?: number;
   malformedJournal?: {
     journalHealthy: boolean;
     malformedCount: number;
@@ -78,7 +81,9 @@ export function analyzeMicroBurstProspective(
       throw new Error(`COHORT_NOT_FOUND:${input.cohortId}`);
     }
     if ((input.sqliteInconsistencyIds?.length ?? 0) > 0) throw new Error('SQLITE_INCONSISTENCY_UNRESOLVED');
-    if ((input.archiveGapCount ?? 0) > 0) throw new Error('ARCHIVE_GAP_UNRESOLVED');
+    if ((input.requiredFeedGapCount ?? 0) > 0)
+      throw new Error('REQUIRED_FEED_GAP_UNRESOLVED');
+    if ((input.unknownLegacyGapCount ?? 0) > 0) throw new Error('UNKNOWN_LEGACY_GAP_UNRESOLVED');
     if (input.malformedJournal && !input.malformedJournal.journalHealthy)
       throw new Error('MALFORMED_OUTCOME_JOURNAL_UNRESOLVED');
   }
@@ -127,6 +132,9 @@ export function analyzeMicroBurstProspective(
   );
   lines.push(
     `Storage gaps: ${missingOutcomes + orphanOutcomes === 0 ? 'none observed' : `signal/outcome reconciliation gap (${missingOutcomes + orphanOutcomes})`}; unresolved terminal journal exports: ${unresolvedOutcomeCount}`,
+  );
+  lines.push(
+    `Outcome feed gaps: required=${input.requiredFeedGapCount ?? 0}; unknown_legacy=${input.unknownLegacyGapCount ?? 0}`,
   );
   if (input.malformedJournal && !input.malformedJournal.journalHealthy) {
     lines.push(
@@ -191,15 +199,16 @@ export function analyzeMicroBurstProspective(
       record.outcome.strategyVersion,
       record.outcome.configHash,
       record.outcome.codeCommitSha,
+      record.outcome.cohortId,
       record.outcome.side,
       record.model,
     ].join('|'),
   );
   if (cohorts.size === 0) lines.push('No completed entry-model outcomes.');
   for (const [key, records] of [...cohorts.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const [version, config, commit, side, model] = key.split('|');
+    const [version, config, commit, cohortId, side, model] = key.split('|');
     lines.push(
-      `${side} ${model} version=${version} config=${config} commit=${commit} N=${records.length}`,
+      `${side} ${model} version=${version} config=${config} commit=${commit} N=${records.length} cohort=${cohortId ?? 'UNKNOWN'}`,
     );
     for (const horizon of OUTCOME_HORIZONS_MS) {
       const values = records

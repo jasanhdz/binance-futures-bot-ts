@@ -76,7 +76,7 @@ async function startAndBridge(
 }
 
 describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
-  it('drops buffered events with u <= snapshot lastUpdateId and bridges with U <= lastUpdateId <= u', async () => {
+  it('drops buffered events with u < snapshot lastUpdateId and bridges with U <= lastUpdateId <= u', async () => {
     let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
     const source = new Promise<BinanceDepthSnapshot>((resolve) => {
       resolveSnapshot = resolve;
@@ -87,10 +87,27 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     book.start();
     d.diffSource.emit(diff(95, 99, 94));
     d.diffSource.emit(diff(100, 100, 99, { bids: [['100', '99']] }));
-    d.diffSource.emit(diff(99, 102, 98, { bids: [['100', '12']] }));
+    d.diffSource.emit(diff(99, 102, 100, { bids: [['100', '12']] }));
     resolveSnapshot(snapshot(100));
     await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(102));
     expect(book.getState().bids[0].qty).toBe(12);
+  });
+
+  it('retains a boundary event ending at the snapshot ID without reapplying its levels', async () => {
+    let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
+    const source = new Promise<BinanceDepthSnapshot>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    const d = deps();
+    d.snapshotSource.getSnapshot.mockReturnValueOnce(source);
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    book.start();
+    d.diffSource.emit(diff(99, 100, 98, { bids: [['100', '99']] }));
+
+    resolveSnapshot(snapshot(100));
+    await vi.waitFor(() => expect(book.getState().health).toBe('HEALTHY'));
+    expect(book.getState().lastUpdateId).toBe(100);
+    expect(book.getState().bids[0].qty).toBe(10);
   });
 
   it('requires the first remaining buffered event to be the snapshot bridge', async () => {

@@ -132,6 +132,8 @@ export interface BtcContext {
   direction: Side | 'NEUTRAL';
   /** Epoch milliseconds when this BTC observation was produced. */
   observedAtMs: number;
+  /** Local receive time used only for transport freshness. */
+  receivedAtMs: number;
 }
 
 // ── Candle Set ───────────────────────────────────────────────
@@ -183,11 +185,14 @@ export interface MicroBurstContext {
     sellTakerVolume: number;
     netTakerFlow: number;
     tradeCount: number;
-    requestedWindowMs?: number;
-    observedWindowMs?: number;
-    observedSampleCount?: number;
-    eventWatermarkMs?: number | null;
-    capacityTruncated?: boolean;
+    requestedWindowMs: number;
+    observedWindowMs: number;
+    observedSampleCount: number;
+    eventWatermarkMs: number | null;
+    capacityTruncated: boolean;
+    coverageStartedAtMs: number | null;
+    windowComplete: boolean;
+    gapFree: boolean;
   };
 }
 
