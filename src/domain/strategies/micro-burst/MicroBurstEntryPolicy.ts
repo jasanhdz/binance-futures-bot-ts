@@ -1,11 +1,7 @@
 import { Side } from '../../types';
 import { MicroBurstConfig, MicroBurstContext, MicroBurstEntryDecision } from './MicroBurstTypes';
 import { selectLeverageTier } from './MicroBurstLeveragePolicy';
-
-function toBps(a: number, b: number): number {
-  if (b === 0) return Infinity;
-  return (Math.abs(a - b) / Math.min(Math.abs(a), Math.abs(b))) * 10_000;
-}
+import { bpsToDecimalReturn, priceDistanceToBps } from './MicroBurstUnits';
 
 export function evaluateMicroBurstEntry(
   ctx: MicroBurstContext,
@@ -18,6 +14,24 @@ export function evaluateMicroBurstEntry(
       reason: `CONTEXT_INVALID:${ctx.dataQuality.invalidReasons.join(',')}`,
       confirmationStrength: 0,
       diagnostics: { dataQuality: ctx.dataQuality },
+    };
+  }
+
+  if (ctx.bookPressure.status !== 'HEALTHY' || ctx.bookPressure.anomalyFlag) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'BOOK_NOT_HEALTHY',
+      confirmationStrength: 0,
+      diagnostics: { bookStatus: ctx.bookPressure.status },
+    };
+  }
+
+  if (!ctx.btcContext) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'BTC_UNAVAILABLE',
+      confirmationStrength: 0,
+      diagnostics: {},
     };
   }
 
@@ -36,7 +50,7 @@ export function evaluateMicroBurstEntry(
   }
 
   // ── BTC conflict gate ──
-  if (ctx.btcContext?.conflictFlag) {
+  if (ctx.btcContext.conflictFlag) {
     return {
       action: 'NO_TRADE',
       reason: 'BTC_CONFLICT',
@@ -56,7 +70,29 @@ export function evaluateMicroBurstEntry(
   }
 
   // ── Direction ──
-  const side: Side = ctx.levels.nearest.structuralPosition === 'near_support' ? 'LONG' : 'SHORT';
+  const structuralSide: Side | null =
+    ctx.levels.nearest.structuralPosition === 'near_support'
+      ? 'LONG'
+      : ctx.levels.nearest.structuralPosition === 'near_resistance'
+        ? 'SHORT'
+        : null;
+  if (!structuralSide) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'MID_RANGE_NO_EDGE',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: { structuralPosition: ctx.levels.nearest.structuralPosition },
+    };
+  }
+  if (ctx.momentum.direction !== structuralSide) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'MOMENTUM_DIRECTION_MISMATCH',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: { structuralSide, momentumDirection: ctx.momentum.direction },
+    };
+  }
+  const side = structuralSide;
 
   // ── Structural levels required (no fallback) ──
   // For LONG near support: target = resistance (above), stop = below support
@@ -79,20 +115,60 @@ export function evaluateMicroBurstEntry(
 
   const stopInvalidationPrice =
     side === 'LONG'
-      ? structuralLevel.price * (1 - config.structuralInvalidationBufferBps / 10_000)
-      : structuralLevel.price * (1 + config.structuralInvalidationBufferBps / 10_000);
+      ? structuralLevel.price * (1 - bpsToDecimalReturn(config.structuralInvalidationBufferBps))
+      : structuralLevel.price * (1 + bpsToDecimalReturn(config.structuralInvalidationBufferBps));
   const targetPrice = targetLevel.price;
 
   // ── Room gate ──
-  const roomToTargetBps = toBps(targetPrice, ctx.currentPrice) / 10_000;
-  const riskToInvalidationBps = toBps(stopInvalidationPrice, ctx.currentPrice) / 10_000;
+  const validGeometry =
+    side === 'LONG'
+      ? stopInvalidationPrice < ctx.currentPrice && targetPrice > ctx.currentPrice
+      : stopInvalidationPrice > ctx.currentPrice && targetPrice < ctx.currentPrice;
+  if (!validGeometry) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'INVALID_STRUCTURAL_GEOMETRY',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: { side, stopInvalidationPrice, targetPrice, currentPrice: ctx.currentPrice },
+    };
+  }
 
-  if (roomToTargetBps < config.minRoomBps / 10_000) {
+  const roomToTargetBps = priceDistanceToBps(ctx.currentPrice, targetPrice);
+  const riskToInvalidationBps = priceDistanceToBps(ctx.currentPrice, stopInvalidationPrice);
+
+  if (!Number.isFinite(roomToTargetBps) || roomToTargetBps < config.minRoomBps) {
     return {
       action: 'NO_TRADE',
       reason: 'INSUFFICIENT_ROOM',
       confirmationStrength: ctx.momentum.strength,
       diagnostics: { roomToTargetBps, minRoomBps: config.minRoomBps },
+    };
+  }
+
+  const rewardRisk = roomToTargetBps / riskToInvalidationBps;
+  if (
+    !Number.isFinite(riskToInvalidationBps) ||
+    riskToInvalidationBps <= 0 ||
+    !Number.isFinite(rewardRisk)
+  ) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'INVALID_REWARD_RISK',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: { roomToTargetBps, riskToInvalidationBps, rewardRisk },
+    };
+  }
+  if (rewardRisk < config.minRewardRisk) {
+    return {
+      action: 'NO_TRADE',
+      reason: 'INSUFFICIENT_REWARD_RISK',
+      confirmationStrength: ctx.momentum.strength,
+      diagnostics: {
+        roomToTargetBps,
+        riskToInvalidationBps,
+        rewardRisk,
+        minRewardRisk: config.minRewardRisk,
+      },
     };
   }
 
@@ -119,6 +195,7 @@ export function evaluateMicroBurstEntry(
     targetPrice,
     roomToTargetBps,
     riskToInvalidationBps,
+    rewardRisk,
     reason: 'SIGNAL_CONFIRMED',
     confirmationStrength: ctx.momentum.strength,
     diagnostics: {
@@ -128,6 +205,9 @@ export function evaluateMicroBurstEntry(
       structuralPosition: ctx.levels.nearest.structuralPosition,
       leverage: effectiveLeverage,
       positionFraction: leverageResult.positionFraction,
+      roomToTargetBps,
+      riskToInvalidationBps,
+      rewardRisk,
     },
   };
 }

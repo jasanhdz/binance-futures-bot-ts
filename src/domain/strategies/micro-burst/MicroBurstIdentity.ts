@@ -1,6 +1,9 @@
 import { StrategyIdentity } from '../../strategy/StrategyIdentity';
 
-const MICRO_BURST_V1_VERSION = '0.1.0-scaffold';
+const MICRO_BURST_V1_VERSION = '0.2.0-correctness';
+
+export const MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED = false;
+export const MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false;
 
 export function createMicroBurstV1Identity(codeCommitSha = 'UNFROZEN'): StrategyIdentity {
   return {

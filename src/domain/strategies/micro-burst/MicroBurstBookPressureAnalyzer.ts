@@ -1,102 +1,108 @@
-import { Side } from '../../types';
-import { BookDataStatus, BookPressureSignal } from './MicroBurstTypes';
-
-interface DepthLevel {
-  price: number;
-  qty: number;
-}
-
-interface DepthSnapshot {
-  bidDepth: DepthLevel[];
-  askDepth: DepthLevel[];
-}
+import {
+  BookDataStatus,
+  BookPressureSignal,
+  OrderBookDepthLevel,
+  OrderBookSnapshot,
+} from './MicroBurstTypes';
+import { priceDistanceToBps } from './MicroBurstUnits';
 
 interface BookPressureOptions {
   anomalySpreadBps: number;
   minImbalance: number;
+  freshnessMaxMs: number;
 }
 
 const DEFAULT_OPTIONS: BookPressureOptions = {
   anomalySpreadBps: 20,
   minImbalance: 0.2,
+  freshnessMaxMs: 30_000,
 };
 
-function medianPrice(levels: DepthLevel[], count: number): number {
-  const sorted = [...levels].sort((a, b) => b.qty - a.qty);
-  const top = sorted.slice(0, count);
-  if (top.length === 0) return 0;
-  return top.reduce((s, l) => s + l.price, 0) / top.length;
+function unavailableSignal(status: BookDataStatus): BookPressureSignal {
+  return {
+    spreadBps: Infinity,
+    topOfBookImbalance: 0,
+    imbalanceSlope: null,
+    staticBidConcentration: false,
+    staticAskConcentration: false,
+    anomalyFlag: status === 'ANOMALOUS',
+    status,
+  };
 }
 
-function totalQty(levels: DepthLevel[], count: number): number {
-  return [...levels]
-    .sort((a, b) => b.price - a.price)
-    .slice(0, count)
-    .reduce((s, l) => s + l.qty, 0);
+function isFiniteLevel(level: OrderBookDepthLevel): boolean {
+  return (
+    Number.isFinite(level.price) &&
+    level.price > 0 &&
+    Number.isFinite(level.qty) &&
+    level.qty >= 0
+  );
 }
 
-function toBps(a: number, b: number): number {
-  if (b === 0) return Infinity;
-  return (Math.abs(a - b) / Math.min(Math.abs(a), Math.abs(b))) * 10_000;
+function hasExpectedSorting(snapshot: OrderBookSnapshot): boolean {
+  return (
+    snapshot.bidDepth.every((level, index, levels) => index === 0 || levels[index - 1].price >= level.price) &&
+    snapshot.askDepth.every((level, index, levels) => index === 0 || levels[index - 1].price <= level.price)
+  );
+}
+
+export function validateOrderBookSnapshot(snapshot: OrderBookSnapshot): BookDataStatus {
+  if (snapshot.status !== 'HEALTHY') return snapshot.status;
+  if (
+    snapshot.bidDepth.length === 0 ||
+    snapshot.askDepth.length === 0 ||
+    !snapshot.bidDepth.every(isFiniteLevel) ||
+    !snapshot.askDepth.every(isFiniteLevel) ||
+    !hasExpectedSorting(snapshot)
+  ) {
+    return 'UNSYNCED';
+  }
+  const bestBid = snapshot.bidDepth[0].price;
+  const bestAsk = snapshot.askDepth[0].price;
+  return bestBid < bestAsk ? 'HEALTHY' : 'UNSYNCED';
+}
+
+function totalQty(levels: OrderBookDepthLevel[], count: number): number {
+  return levels.slice(0, count).reduce((sum, level) => sum + level.qty, 0);
 }
 
 export function analyzeBookPressure(
-  depth: DepthSnapshot | undefined,
-  bookStatus: BookDataStatus,
+  snapshot: OrderBookSnapshot | undefined,
+  snapshotAtMs: number,
   options?: Partial<BookPressureOptions>,
 ): BookPressureSignal {
   const opts = { ...DEFAULT_OPTIONS, ...options };
+  if (!snapshot) return unavailableSignal('UNAVAILABLE');
 
-  if (!depth || depth.bidDepth.length === 0 || depth.askDepth.length === 0) {
-    return {
-      spreadBps: Infinity,
-      topOfBookImbalance: 0,
-      imbalanceSlope: null,
-      staticBidConcentration: false,
-      staticAskConcentration: false,
-      anomalyFlag: true,
-      status: bookStatus,
-    };
-  }
+  const baseStatus = validateOrderBookSnapshot(snapshot);
+  if (baseStatus !== 'HEALTHY') return unavailableSignal(baseStatus);
+  const ageMs = snapshotAtMs - snapshot.observedAtMs;
+  if (!Number.isFinite(ageMs) || ageMs < 0) return unavailableSignal('UNSYNCED');
+  if (ageMs > opts.freshnessMaxMs) return unavailableSignal('STALE');
 
-  const bestBid = depth.bidDepth[0].price;
-  const bestAsk = depth.askDepth[0].price;
-  const mid = (bestBid + bestAsk) / 2;
-  const spreadBps = toBps(bestAsk, bestBid);
-
-  const bidTop5 = totalQty(depth.bidDepth, 5);
-  const askTop5 = totalQty(depth.askDepth, 5);
+  const bestBid = snapshot.bidDepth[0].price;
+  const bestAsk = snapshot.askDepth[0].price;
+  const spreadBps = priceDistanceToBps(bestBid, bestAsk);
+  const bidTop5 = totalQty(snapshot.bidDepth, 5);
+  const askTop5 = totalQty(snapshot.askDepth, 5);
   const totalDepth = bidTop5 + askTop5;
   const topOfBookImbalance = totalDepth > 0 ? Math.abs(bidTop5 - askTop5) / totalDepth : 0;
-
-  const anomalyFlag = spreadBps > opts.anomalySpreadBps || topOfBookImbalance > opts.minImbalance;
-
-  const bidConcentration = depth.bidDepth.length > 0 ? depth.bidDepth[0].qty / (bidTop5 || 1) : 0;
-  const askConcentration = depth.askDepth.length > 0 ? depth.askDepth[0].qty / (askTop5 || 1) : 0;
-
-  const bidDistToMid = mid > 0 ? toBps(mid, bestBid) : Infinity;
-  const askDistToMid = mid > 0 ? toBps(bestAsk, mid) : Infinity;
-  const bidDepthGap =
-    depth.bidDepth.length >= 2 ? toBps(depth.bidDepth[0].price, depth.bidDepth[1].price) : Infinity;
-  const askDepthGap =
-    depth.askDepth.length >= 2 ? toBps(depth.askDepth[0].price, depth.askDepth[1].price) : Infinity;
-
-  const staticBidConcentration = bidConcentration > 0.5 || bidDistToMid < 5;
-  const staticAskConcentration = askConcentration > 0.5 || askDistToMid < 5;
+  const status: BookDataStatus =
+    spreadBps > opts.anomalySpreadBps || topOfBookImbalance > opts.minImbalance
+      ? 'ANOMALOUS'
+      : 'HEALTHY';
 
   return {
     spreadBps,
     topOfBookImbalance,
     imbalanceSlope: null,
-    staticBidConcentration,
-    staticAskConcentration,
-    anomalyFlag,
-    status: bookStatus,
+    staticBidConcentration: snapshot.bidDepth[0].qty / (bidTop5 || 1) > 0.5,
+    staticAskConcentration: snapshot.askDepth[0].qty / (askTop5 || 1) > 0.5,
+    anomalyFlag: status === 'ANOMALOUS',
+    status,
   };
 }
 
 export function isBookHealthy(signal: BookPressureSignal): boolean {
-  if (signal.status !== 'HEALTHY') return false;
-  if (signal.anomalyFlag) return false;
-  return true;
+  return signal.status === 'HEALTHY' && !signal.anomalyFlag;
 }

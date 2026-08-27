@@ -6,9 +6,9 @@ This file tracks implementation progress. It does not grant live authority to a 
 
 ## Current checkpoint
 
-Runtime architecture migration checkpoint after M0.1 Hardening.
+Runtime architecture migration checkpoint after MICRO_BURST_V1 M0.2 correctness patch.
 
-The TypeScript build passes. The full `npm test -- --run` suite passes 808/808.
+Validation results are recorded below. This checkpoint does not grant runtime authority.
 
 ## Completed foundations
 
@@ -99,9 +99,9 @@ The synthetic Momentum-inside-Aegis decision path has been retired. The orchestr
 
 Position ownership routes to `MomentumRidePositionManager`, which owns its policy composition over `StrategyPositionLifecycleCore` and has no ExitEye callback surface.
 
-### MICRO_BURST_V1 (Scaffold)
+### MICRO_BURST_V1 (M0.2 correctness contract)
 
-Tactical scalping strategy scaffold implemented. Mode defaults to OFF. No live authority.
+Deterministic tactical strategy contract implemented. Mode remains OFF. SHADOW and LIVE authority are explicitly false.
 
 ```
 MicroBurstContextBuilder -> MicroBurstEntryPolicy -> Shared Safety -> SharedStrategyExecutionService -> MicroBurstPositionManager
@@ -109,12 +109,14 @@ MicroBurstContextBuilder -> MicroBurstEntryPolicy -> Shared Safety -> SharedStra
 
 Key properties:
 
-- Deterministic entry via S/R detection + micro-momentum + BTC context + book pressure
+- Deterministic replay via explicit snapshot time, closed-candle filtering, causal S/R, typed BTC timestamps, and typed book status
+- Direction-aligned entry via S/R + micro-momentum + required BTC and order-book context
 - Two leverage tiers: HIGH (40x, >=0.75 confirmation) and MEDIUM (20x, >=0.50)
-- Fast exit: early failure, anomaly, break-even, trailing, max hold (5min)
+- Structural-price invalidation, time-to-prove, target, software trailing, idempotent break-even, and max hold
 - Uses `MICRO_BURST_RESERVED_POLICY`: no guardian, no break-even, no trailing in lifecycle
 - No Aegis dependencies (no Current Brain, E4, ExitEye)
-- Registered in StrategyRouter and PositionManagerRouter but mode is OFF by default
+- Position manager computes/translates exits while OFF but applies no lifecycle/exchange mutation
+- Registered in StrategyRouter and PositionManagerRouter but mode remains OFF
 
 ## Remaining work before Micro Burst live authority
 
@@ -125,19 +127,23 @@ Key properties:
 5. ~~**Finish per-strategy risk persistence/recovery.**~~ DONE WITH DOCUMENTED JOURNAL LIMITATION
 6. ~~**Phase 1 Cleanup and archive reorganization.**~~ DONE
 7. ~~**MICRO_BURST_V1 scaffold implementation.**~~ DONE (mode OFF, no live authority)
-8. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
+8. ~~**MICRO_BURST_V1 M0.2 correctness patch.**~~ DONE (deterministic/fail-closed contracts, no authority)
+9. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
    - Do not mark `FROZEN_LIVE` merely because code compiles.
    - Generate deterministic hashes only after architecture and behavior are stable.
-9. **Reduce `TradingService` responsibility.**
+10. **Reduce `TradingService` responsibility.**
    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
    - Do this incrementally; do not rewrite the bot from scratch.
-10. **MICRO_BURST_V1 tuning and validation.**
+11. **MICRO_BURST_V1 M1 Market Data Plane.**
+    - Add synchronized depth snapshot/diff handling, BTC stream, ticker/reference price, aggTrade and temporal book history.
+    - Do not grant SHADOW or LIVE authority as part of data-plane construction.
+12. **MICRO_BURST_V1 tuning and validation.**
     - Tune S/R detection parameters for real market conditions.
     - Tune momentum thresholds and leverage tiers based on backtesting.
     - Add BTC context pipeline to MicroBurstContextBuilder (currently null in production).
     - Wire order book depth to MicroBurstContextBuilder.
     - Validate exit policy timing parameters.
-11. **MICRO_BURST_V1 live authority activation.**
+13. **MICRO_BURST_V1 live authority activation.**
     - Only after tuning, testing, and explicit approval.
 
 ## Explicit architecture invariants
@@ -151,7 +157,7 @@ Key properties:
 - Unknown ownership/recovery ambiguity fails closed.
 - No pyramiding/strategy flip is introduced by this migration.
 - No new live strategy authority is introduced accidentally.
-- `MICRO_BURST_V1` remains reserved only during Phase 1.
+- `MICRO_BURST_V1` remains OFF with SHADOW/LIVE authority disabled.
 - Do not change E4 frozen scientific behavior while refactoring execution architecture.
 
 ## Validation checkpoint
@@ -171,7 +177,7 @@ At the latest runtime checkpoint:
 - Restoration/fronteras: 23/23 PASS.
 - Full `npm test -- --run`: 808 passed, 0 failed.
 
-## M0.1 Hardening (current)
+## M0.1 Hardening (superseded by M0.2)
 
 MICRO_BURST_V1 M0.1 hardening completed. All 24 items addressed:
 

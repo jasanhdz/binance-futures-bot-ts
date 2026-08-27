@@ -1,32 +1,106 @@
 import { MicroBurstConfig, MicroBurstExitContext, MicroBurstExitDecision } from './MicroBurstTypes';
+import { decimalReturnToBps } from './MicroBurstUnits';
+
+function favorableExcursionBps(
+  context: MicroBurstExitContext,
+  side: 'LONG' | 'SHORT',
+): number {
+  const priceReturn =
+    side === 'LONG'
+      ? (context.peakPrice - context.entryPrice) / context.entryPrice
+      : (context.entryPrice - context.troughPrice) / context.entryPrice;
+  return Math.max(0, decimalReturnToBps(priceReturn));
+}
+
+function adverseExcursionBps(
+  context: MicroBurstExitContext,
+  side: 'LONG' | 'SHORT',
+): number {
+  const priceReturn =
+    side === 'LONG'
+      ? (context.entryPrice - context.troughPrice) / context.entryPrice
+      : (context.peakPrice - context.entryPrice) / context.entryPrice;
+  return Math.max(0, decimalReturnToBps(priceReturn));
+}
+
+function currentFavorableReturnBps(
+  context: MicroBurstExitContext,
+  side: 'LONG' | 'SHORT',
+): number {
+  const signedReturn = (context.currentPrice - context.entryPrice) / context.entryPrice;
+  return decimalReturnToBps(side === 'LONG' ? signedReturn : -signedReturn);
+}
+
+function invalidPriceContract(context: MicroBurstExitContext): boolean {
+  return [
+    context.currentPrice,
+    context.entryPrice,
+    context.peakPrice,
+    context.troughPrice,
+    context.structuralInvalidationPrice,
+    context.destinationPrice,
+  ].some((price) => !Number.isFinite(price) || price <= 0);
+}
+
+function hardInvalidated(context: MicroBurstExitContext, side: 'LONG' | 'SHORT'): boolean {
+  return side === 'LONG'
+    ? context.currentPrice <= context.structuralInvalidationPrice
+    : context.currentPrice >= context.structuralInvalidationPrice;
+}
+
+function targetReached(context: MicroBurstExitContext, side: 'LONG' | 'SHORT'): boolean {
+  return side === 'LONG'
+    ? context.currentPrice >= context.destinationPrice
+    : context.currentPrice <= context.destinationPrice;
+}
+
+function breakEvenImprovesProtection(
+  context: MicroBurstExitContext,
+  side: 'LONG' | 'SHORT',
+): boolean {
+  if (context.currentStopPrice === null) return true;
+  if (!Number.isFinite(context.currentStopPrice)) return false;
+  return side === 'LONG'
+    ? context.currentStopPrice < context.entryPrice
+    : context.currentStopPrice > context.entryPrice;
+}
 
 export function evaluateMicroBurstExit(
-  ctx: MicroBurstExitContext,
+  context: MicroBurstExitContext,
   config: MicroBurstConfig,
   side: 'LONG' | 'SHORT',
 ): MicroBurstExitDecision {
-  const dirMul = side === 'LONG' ? 1 : -1;
-
-  // ── Priority 1: HARD_INVALIDATION ──
-  if (ctx.unrealizedRoe < -config.structuralInvalidationBufferBps / 10_000) {
+  // Priority 1: the persisted structural thesis boundary is price-based, never ROE-based.
+  if (!invalidPriceContract(context) && hardInvalidated(context, side)) {
     return {
       action: 'CLOSE_MARKET',
       reason: 'HARD_INVALIDATION',
-      diagnostics: { roe: ctx.unrealizedRoe },
+      diagnostics: {
+        currentPrice: context.currentPrice,
+        structuralInvalidationPrice: context.structuralInvalidationPrice,
+      },
     };
   }
 
-  // ── Priority 2: ANOMALY ──
-  if (ctx.anomalyExitFlag) {
+  // Priority 2: corrupt or anomalous market state wins attribution over profitable exits.
+  if (
+    invalidPriceContract(context) ||
+    context.anomalyExitFlag ||
+    (context.currentBookPressure !== null && context.currentBookPressure.status !== 'HEALTHY')
+  ) {
     return {
       action: 'CLOSE_MARKET',
       reason: 'ANOMALY',
-      diagnostics: { anomalyFlag: true },
+      diagnostics: {
+        anomalyFlag: context.anomalyExitFlag,
+        bookStatus: context.currentBookPressure?.status,
+        invalidPriceContract: invalidPriceContract(context),
+      },
     };
   }
 
-  // ── Priority 3: BTC_REVERSAL ──
-  if (ctx.currentBtcContext?.conflictFlag) {
+  // Priority 3: strong BTC reversal.
+  if (context.currentBtcContext?.conflictFlag) {
     return {
       action: 'CLOSE_MARKET',
       reason: 'BTC_REVERSAL',
@@ -34,70 +108,107 @@ export function evaluateMicroBurstExit(
     };
   }
 
-  // ── Priority 4: EARLY_FAILURE ──
+  const maxFavorableExcursionBps = favorableExcursionBps(context, side);
+  const maxAdverseExcursionBps = adverseExcursionBps(context, side);
+  const favorableReturnBps = currentFavorableReturnBps(context, side);
+
+  // Priority 4: strong adverse evidence may fail immediately inside the proving window.
   if (
-    ctx.timeInTradeMs < config.exitEarlyFailureWindowMs &&
-    ctx.priceReturn * dirMul < config.exitEarlyFailureMinPriceReturn
+    context.timeInTradeMs < config.exitProofWindowMs &&
+    maxAdverseExcursionBps >= config.exitImmediateAdverseBps
   ) {
     return {
       action: 'CLOSE_MARKET',
       reason: 'EARLY_FAILURE',
-      diagnostics: { timeMs: ctx.timeInTradeMs, priceReturn: ctx.priceReturn },
+      diagnostics: {
+        phase: 'IMMEDIATE_ADVERSE',
+        maxAdverseExcursionBps,
+        thresholdBps: config.exitImmediateAdverseBps,
+      },
     };
   }
 
-  // ── Priority 6: TRAILING ──
-  // Once favorable excursion exceeds activation, close if price retraces from peak.
-  if (ctx.priceReturn * dirMul >= config.exitTrailingActivationPriceReturn) {
-    if (side === 'LONG') {
-      const drawdown = ctx.peakPrice > 0 ? (ctx.peakPrice - ctx.currentPrice) / ctx.peakPrice : 0;
-      if (drawdown >= config.exitTrailingCallbackPriceReturn) {
-        return {
-          action: 'CLOSE_MARKET',
-          reason: 'TRAILING',
-          diagnostics: { peakPrice: ctx.peakPrice, drawdown },
-        };
-      }
-    } else {
-      const drawup = ctx.peakPrice > 0 ? (ctx.currentPrice - ctx.peakPrice) / ctx.peakPrice : 0;
-      if (drawup >= config.exitTrailingCallbackPriceReturn) {
-        return {
-          action: 'CLOSE_MARKET',
-          reason: 'TRAILING',
-          diagnostics: { peakPrice: ctx.peakPrice, drawup },
-        };
-      }
-    }
+  // Priority 5: destination is the structural target persisted at entry.
+  if (targetReached(context, side)) {
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'TARGET',
+      diagnostics: { currentPrice: context.currentPrice, destinationPrice: context.destinationPrice },
+    };
   }
 
-  // ── Priority 7: BREAK_EVEN ──
-  // Once favorable excursion exceeds activation, move stop to entry if price is still favorable.
-  if (ctx.priceReturn * dirMul >= config.exitBreakEvenMinPriceReturn) {
-    const stillFavorable =
-      side === 'LONG' ? ctx.currentPrice >= ctx.entryPrice : ctx.currentPrice <= ctx.entryPrice;
-    if (stillFavorable) {
+  // Priority 6: deterministic software trailing callback closes at market.
+  if (maxFavorableExcursionBps >= config.exitTrailingActivationBps) {
+    const callbackBps =
+      side === 'LONG'
+        ? decimalReturnToBps((context.peakPrice - context.currentPrice) / context.peakPrice)
+        : decimalReturnToBps((context.currentPrice - context.troughPrice) / context.troughPrice);
+    const callbackReached =
+      side === 'LONG'
+        ? context.currentPrice < context.peakPrice
+        : context.currentPrice > context.troughPrice;
+    if (callbackReached && callbackBps >= config.exitTrailingCallbackBps) {
       return {
-        action: 'MOVE_STOP',
-        reason: 'BREAK_EVEN',
-        requestedStopPrice: ctx.entryPrice,
-        diagnostics: { currentPrice: ctx.currentPrice, entryPrice: ctx.entryPrice },
+        action: 'CLOSE_MARKET',
+        reason: 'TRAILING',
+        diagnostics: {
+          callbackBps,
+          favorableExtremePrice: side === 'LONG' ? context.peakPrice : context.troughPrice,
+        },
       };
     }
   }
 
-  // ── Priority 8: MAX_HOLD ──
-  if (ctx.timeInTradeMs >= config.exitMaxHoldMs) {
+  // Priority 7: break-even is a one-way stop improvement and is never re-requested.
+  if (
+    maxFavorableExcursionBps >= config.exitBreakEvenActivationBps &&
+    favorableReturnBps > 0 &&
+    breakEvenImprovesProtection(context, side)
+  ) {
     return {
-      action: 'CLOSE_MARKET',
-      reason: 'MAX_HOLD',
-      diagnostics: { timeMs: ctx.timeInTradeMs },
+      action: 'MOVE_STOP',
+      reason: 'BREAK_EVEN',
+      requestedStopPrice: context.entryPrice,
+      diagnostics: {
+        maxFavorableExcursionBps,
+        currentStopPrice: context.currentStopPrice,
+      },
     };
   }
 
-  // ── Default: HOLD ──
+  // Priority 8: only conclude "never proved" once the proving window is complete.
+  if (
+    context.timeInTradeMs >= config.exitProofWindowMs &&
+    maxFavorableExcursionBps < config.exitMinProofExcursionBps
+  ) {
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'EARLY_FAILURE',
+      diagnostics: {
+        phase: 'PROOF_WINDOW_EXPIRED',
+        maxFavorableExcursionBps,
+        thresholdBps: config.exitMinProofExcursionBps,
+      },
+    };
+  }
+
+  // Priority 9: break-even intentionally wins once; an already protected trade then times out.
+  if (context.timeInTradeMs >= config.exitMaxHoldMs) {
+    return {
+      action: 'CLOSE_MARKET',
+      reason: 'MAX_HOLD',
+      diagnostics: { timeMs: context.timeInTradeMs },
+    };
+  }
+
   return {
     action: 'HOLD',
     reason: 'HOLD',
-    diagnostics: { timeMs: ctx.timeInTradeMs, priceReturn: ctx.priceReturn },
+    diagnostics: {
+      timeMs: context.timeInTradeMs,
+      favorableReturnBps,
+      maxFavorableExcursionBps,
+      maxAdverseExcursionBps,
+    },
   };
 }

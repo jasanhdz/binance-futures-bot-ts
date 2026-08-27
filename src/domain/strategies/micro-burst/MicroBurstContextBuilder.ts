@@ -1,18 +1,20 @@
 import { Candle, Side } from '../../types';
 import {
   BtcContext,
-  BookDataStatus,
+  BtcDataStatus,
   DataQualityDiagnostics,
+  MicroBurstCandleSet,
   MicroBurstConfig,
   MicroBurstContext,
-  MicroBurstCandleSet,
   MicroRegime,
+  OrderBookSnapshot,
   defaultMicroBurstConfig,
 } from './MicroBurstTypes';
-import { detectSupportResistance } from './MicroBurstSupportResistance';
-import { analyzeMicroMomentum } from './MicroBurstMomentumAnalyzer';
 import { analyzeBookPressure, isBookHealthy } from './MicroBurstBookPressureAnalyzer';
+import { hasBtcConflict } from './MicroBurstBtcContext';
+import { analyzeMicroMomentum } from './MicroBurstMomentumAnalyzer';
 import { classifyMicroRegime } from './MicroBurstMicroRegime';
+import { detectSupportResistance } from './MicroBurstSupportResistance';
 
 export interface CandleSnapshotProvider {
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
@@ -23,18 +25,7 @@ export interface BtcMicroContextProvider {
 }
 
 export interface OrderBookSnapshotProvider {
-  getDepthSnapshot(symbol: string): DepthSnapshot | undefined;
-  getDepthSnapshotAgeMs(): number | null;
-}
-
-interface DepthLevel {
-  price: number;
-  qty: number;
-}
-
-interface DepthSnapshot {
-  bidDepth: DepthLevel[];
-  askDepth: DepthLevel[];
+  getDepthSnapshot(symbol: string): OrderBookSnapshot | undefined;
 }
 
 export interface MicroBurstContextBuilderDeps {
@@ -43,58 +34,98 @@ export interface MicroBurstContextBuilderDeps {
   book?: OrderBookSnapshotProvider;
 }
 
-const CLOSED_INTERVALS = ['1m', '3m', '5m'] as const;
+export interface MicroBurstContextBuildOptions {
+  snapshotAtMs: number;
+  config?: Partial<MicroBurstConfig>;
+}
 
-function filterClosedCandles(candles: Candle[], intervalMs: number): Candle[] {
-  const now = Date.now();
-  return candles.filter((c) => now - c.timestamp >= intervalMs);
+export function filterClosedCandles(candles: Candle[], snapshotAtMs: number): Candle[] {
+  return candles.filter((candle) => candle.closeTime <= snapshotAtMs);
+}
+
+function isStrictlyOrdered(candles: Candle[]): boolean {
+  return candles.every(
+    (candle, index) =>
+      Number.isFinite(candle.openTime) &&
+      Number.isFinite(candle.closeTime) &&
+      candle.closeTime >= candle.openTime &&
+      (index === 0 || candles[index - 1].closeTime < candle.closeTime),
+  );
+}
+
+function freshnessMs(snapshotAtMs: number, candles: Candle[]): number {
+  const latestCloseTime = candles[candles.length - 1]?.closeTime;
+  return latestCloseTime === undefined ? Infinity : snapshotAtMs - latestCloseTime;
+}
+
+function btcStatusAt(
+  btcContext: BtcContext | undefined,
+  snapshotAtMs: number,
+  freshnessMaxMs: number,
+): BtcDataStatus {
+  if (!btcContext) return 'UNAVAILABLE';
+  const ageMs = snapshotAtMs - btcContext.observedAtMs;
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > freshnessMaxMs) return 'STALE';
+  return 'HEALTHY';
 }
 
 function getDataQuality(
-  snapshotAt: number,
-  closedCandles1m: Candle[],
-  closedCandles3m: Candle[],
-  closedCandles5m: Candle[],
-  bookStatus: BookDataStatus,
-  bookAgeMs: number | null,
-  btcAgeMs: number | null,
+  snapshotAtMs: number,
+  rawCandleSets: MicroBurstCandleSet,
+  closedCandleSets: MicroBurstCandleSet,
+  bookSnapshot: OrderBookSnapshot | undefined,
+  btcContext: BtcContext | undefined,
   levelsAvailableAt: number | null,
+  config: MicroBurstConfig,
+  bookStatus: DataQualityDiagnostics['bookStatus'],
 ): DataQualityDiagnostics {
-  const latestClosed1m = closedCandles1m[closedCandles1m.length - 1]?.timestamp ?? 0;
-  const latestClosed3m = closedCandles3m[closedCandles3m.length - 1]?.timestamp ?? 0;
-  const latestClosed5m = closedCandles5m[closedCandles5m.length - 1]?.timestamp ?? 0;
-  const candleFreshnessMs = snapshotAt - Math.max(latestClosed1m, latestClosed3m, latestClosed5m);
-
+  const freshness1mMs = freshnessMs(snapshotAtMs, closedCandleSets.candles1m);
+  const freshness3mMs = freshnessMs(snapshotAtMs, closedCandleSets.candles3m);
+  const freshness5mMs = freshnessMs(snapshotAtMs, closedCandleSets.candles5m);
+  const btcStatus = btcStatusAt(btcContext, snapshotAtMs, config.btcFreshnessMaxMs);
+  const bookAgeMs = bookSnapshot ? snapshotAtMs - bookSnapshot.observedAtMs : null;
+  const btcAgeMs = btcContext ? snapshotAtMs - btcContext.observedAtMs : null;
   const invalidReasons: string[] = [];
-  if (closedCandles1m.length < 30) invalidReasons.push('insufficient_1m_candles');
-  if (closedCandles3m.length < 20) invalidReasons.push('insufficient_3m_candles');
-  if (closedCandles5m.length < 15) invalidReasons.push('insufficient_5m_candles');
-  if (candleFreshnessMs > 120_000) invalidReasons.push('stale_candles');
-  if (bookStatus !== 'HEALTHY') invalidReasons.push('unhealthy_book');
-  if (bookAgeMs !== null && bookAgeMs > 30_000) invalidReasons.push('stale_book');
-  if (btcAgeMs !== null && btcAgeMs > 60_000) invalidReasons.push('stale_btc');
-  if (levelsAvailableAt !== null && levelsAvailableAt > snapshotAt - 300_000)
-    invalidReasons.push('levels_not_available');
 
-  const closedCandlesOnly = closedCandles1m.every((c) => now - c.timestamp >= 60_000);
+  if (!isStrictlyOrdered(rawCandleSets.candles1m)) invalidReasons.push('invalid_1m_order');
+  if (!isStrictlyOrdered(rawCandleSets.candles3m)) invalidReasons.push('invalid_3m_order');
+  if (!isStrictlyOrdered(rawCandleSets.candles5m)) invalidReasons.push('invalid_5m_order');
+  if (closedCandleSets.candles1m.length < 30) invalidReasons.push('insufficient_1m_candles');
+  if (closedCandleSets.candles3m.length < 20) invalidReasons.push('insufficient_3m_candles');
+  if (closedCandleSets.candles5m.length < 15) invalidReasons.push('insufficient_5m_candles');
+  if (freshness1mMs > config.candleFreshness1mMaxMs) invalidReasons.push('stale_1m_candles');
+  if (freshness3mMs > config.candleFreshness3mMaxMs) invalidReasons.push('stale_3m_candles');
+  if (freshness5mMs > config.candleFreshness5mMaxMs) invalidReasons.push('stale_5m_candles');
+  if (bookStatus !== 'HEALTHY') invalidReasons.push(`book_${bookStatus.toLowerCase()}`);
+  if (btcStatus !== 'HEALTHY') invalidReasons.push(`btc_${btcStatus.toLowerCase()}`);
+  if (levelsAvailableAt !== null && levelsAvailableAt > snapshotAtMs)
+    invalidReasons.push('future_support_resistance_level');
+
+  const closedCandlesOnly = Object.values(closedCandleSets)
+    .flat()
+    .every((candle) => candle.closeTime <= snapshotAtMs);
 
   return {
-    snapshotAt,
-    latestClosed1mAt: latestClosed1m,
-    latestClosed3mAt: latestClosed3m,
-    latestClosed5mAt: latestClosed5m,
-    candleFreshnessMs,
+    snapshotAtMs,
+    latestClosed1mAt:
+      closedCandleSets.candles1m[closedCandleSets.candles1m.length - 1]?.closeTime ?? 0,
+    latestClosed3mAt:
+      closedCandleSets.candles3m[closedCandleSets.candles3m.length - 1]?.closeTime ?? 0,
+    latestClosed5mAt:
+      closedCandleSets.candles5m[closedCandleSets.candles5m.length - 1]?.closeTime ?? 0,
+    freshness1mMs,
+    freshness3mMs,
+    freshness5mMs,
     bookAgeMs,
     btcAgeMs,
     bookStatus,
+    btcStatus,
     closedCandlesOnly,
     levelsAvailableAt,
     contextValid: invalidReasons.length === 0,
     invalidReasons,
   };
 }
-
-const now = Date.now();
 
 function computeStructuralClarity(
   regime: MicroRegime,
@@ -104,115 +135,113 @@ function computeStructuralClarity(
   momentumStrength: number,
   bookHealthy: boolean,
 ): boolean {
+  // EXPERIMENTAL_DEFAULT: volatile-regime avoidance is not a correctness invariant.
   if (regime === 'VOLATILE') return false;
-  if (!nearSupport && !nearResistance) return false;
-  if (momentumDirection === 'NEUTRAL') return false;
-  if (momentumStrength < 0.3) return false;
-  if (!bookHealthy) return false;
-  return true;
+  return (
+    (nearSupport || nearResistance) &&
+    momentumDirection !== 'NEUTRAL' &&
+    momentumStrength >= 0.3 &&
+    bookHealthy
+  );
 }
 
 export async function buildMicroBurstContext(
   symbol: string,
   deps: MicroBurstContextBuilderDeps,
-  config?: Partial<MicroBurstConfig>,
+  options: MicroBurstContextBuildOptions,
 ): Promise<MicroBurstContext> {
-  const cfg = { ...defaultMicroBurstConfig(), ...config };
-  const snapshotAt = Date.now();
+  const config = { ...defaultMicroBurstConfig(), ...options.config };
+  const snapshotAtMs = options.snapshotAtMs;
+  if (!Number.isFinite(snapshotAtMs) || snapshotAtMs <= 0) {
+    throw new Error('MICRO_BURST_INVALID_SNAPSHOT_AT');
+  }
 
   const [rawCandles1m, rawCandles3m, rawCandles5m] = await Promise.all([
     deps.candles.getCandles(symbol, '1m', 100),
     deps.candles.getCandles(symbol, '3m', 80),
     deps.candles.getCandles(symbol, '5m', 60),
   ]);
-
-  const candles1m = filterClosedCandles(rawCandles1m, 60_000);
-  const candles3m = filterClosedCandles(rawCandles3m, 180_000);
-  const candles5m = filterClosedCandles(rawCandles5m, 300_000);
-
-  const currentPrice = candles1m[candles1m.length - 1]?.close ?? 0;
-
+  const rawCandleSets = {
+    candles1m: rawCandles1m,
+    candles3m: rawCandles3m,
+    candles5m: rawCandles5m,
+  };
+  const candles: MicroBurstCandleSet = {
+    candles1m: filterClosedCandles(rawCandles1m, snapshotAtMs),
+    candles3m: filterClosedCandles(rawCandles3m, snapshotAtMs),
+    candles5m: filterClosedCandles(rawCandles5m, snapshotAtMs),
+  };
+  const currentPrice = candles.candles1m[candles.candles1m.length - 1]?.close ?? 0;
+  const levels = detectSupportResistance(candles.candles5m, {
+    lookbackBars: config.srLookbackBars,
+    pivotLeftBars: config.srPivotLeftBars,
+    pivotRightBars: config.srPivotRightBars,
+    clusterToleranceBps: config.srClusterToleranceBps,
+    minStrength: config.srMinStrength,
+    nearLevelThresholdBps: config.nearLevelThresholdBps,
+    snapshotAtMs,
+  });
+  const levelsAvailableAt = levels.levels.length
+    ? Math.max(...levels.levels.map((level) => level.availableAtMs))
+    : null;
+  const momentum = analyzeMicroMomentum(
+    candles.candles1m,
+    candles.candles3m,
+    candles.candles5m,
+    config.momentumSlopePeriod,
+  );
   const bookSnapshot = deps.book?.getDepthSnapshot(symbol);
-  const bookAgeMs = deps.book?.getDepthSnapshotAgeMs() ?? null;
-  const bookStatus: BookDataStatus = bookSnapshot
-    ? bookAgeMs !== null && bookAgeMs > 30_000
-      ? 'STALE'
-      : 'HEALTHY'
-    : 'UNAVAILABLE';
-
-  const levels = detectSupportResistance(candles5m, {
-    lookbackBars: cfg.srLookbackBars,
-    pivotLeftBars: cfg.srPivotLeftBars,
-    pivotRightBars: cfg.srPivotRightBars,
-    clusterToleranceBps: cfg.srClusterToleranceBps,
-    minStrength: cfg.srMinStrength,
-    nearLevelThresholdBps: cfg.nearLevelThresholdBps,
+  const bookPressure = analyzeBookPressure(bookSnapshot, snapshotAtMs, {
+    anomalySpreadBps: config.bookAnomalySpreadBps,
+    minImbalance: config.bookMinImbalance,
+    freshnessMaxMs: config.bookFreshnessMaxMs,
   });
-
-  const levelsAvailableAt =
-    levels.levels.length > 0
-      ? Math.max(...levels.levels.map((l) => l.availableAtCandleIndex))
-      : null;
-
-  const momentum = analyzeMicroMomentum(candles1m, candles3m, candles5m, cfg.momentumSlopePeriod);
-
-  const bookPressure = analyzeBookPressure(bookSnapshot, bookStatus, {
-    anomalySpreadBps: cfg.bookAnomalySpreadBps,
-    minImbalance: cfg.bookMinImbalance,
-  });
-
   const btcRaw = deps.btc?.getBtcContext();
-  const btcAgeMs = btcRaw ? snapshotAt - (btcRaw as any).timestamp : null;
-  const btcContext: BtcContext | null = btcRaw ?? null;
-
-  const btcConflict = btcContext
-    ? (momentum.direction === 'LONG' &&
-        btcContext.direction === 'SHORT' &&
-        Math.abs(btcContext.ret3m) > cfg.btcConflictThresholdBps) ||
-      (momentum.direction === 'SHORT' &&
-        btcContext.direction === 'LONG' &&
-        Math.abs(btcContext.ret3m) > cfg.btcConflictThresholdBps)
-    : false;
-
-  const adjustedBtcContext = btcContext ? { ...btcContext, conflictFlag: btcConflict } : null;
-
-  const microRegime = classifyMicroRegime(candles5m);
-  const bookHealthy = isBookHealthy(bookPressure);
-
-  const nearSupport = levels.nearest.structuralPosition === 'near_support';
-  const nearResistance = levels.nearest.structuralPosition === 'near_resistance';
-
+  const candidateSide: Side | 'NEUTRAL' =
+    levels.nearest.structuralPosition === 'near_support'
+      ? 'LONG'
+      : levels.nearest.structuralPosition === 'near_resistance'
+        ? 'SHORT'
+        : 'NEUTRAL';
+  const btcContext = btcRaw
+    ? {
+        ...btcRaw,
+        conflictFlag: hasBtcConflict(candidateSide, btcRaw, config.btcConflictThresholdBps),
+      }
+    : null;
+  const microRegime = classifyMicroRegime(candles.candles5m);
   const structuralClarity = computeStructuralClarity(
     microRegime,
-    nearSupport,
-    nearResistance,
+    levels.nearest.structuralPosition === 'near_support',
+    levels.nearest.structuralPosition === 'near_resistance',
     momentum.direction,
     momentum.strength,
-    bookHealthy,
+    isBookHealthy(bookPressure),
   );
-
-  const candleSet: MicroBurstCandleSet = { candles1m, candles3m, candles5m };
-
   const dataQuality = getDataQuality(
-    snapshotAt,
-    candles1m,
-    candles3m,
-    candles5m,
-    bookStatus,
-    bookAgeMs,
-    btcAgeMs,
+    snapshotAtMs,
+    rawCandleSets,
+    candles,
+    bookSnapshot,
+    btcRaw,
     levelsAvailableAt,
+    config,
+    bookPressure.status,
   );
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    dataQuality.contextValid = false;
+    dataQuality.invalidReasons.push('invalid_reference_price');
+  }
 
   return {
     symbol,
-    timestamp: snapshotAt,
+    timestamp: snapshotAtMs,
     currentPrice,
-    candles: candleSet,
+    candles,
     levels,
     momentum,
     bookPressure,
-    btcContext: adjustedBtcContext,
+    btcContext,
     structuralClarity,
     microRegime,
     dataQuality,

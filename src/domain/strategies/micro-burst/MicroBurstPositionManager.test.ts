@@ -1,78 +1,99 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createMicroBurstV1Identity } from './MicroBurstIdentity';
-import { MicroBurstPositionManager } from '../../../app/strategy/MicroBurstPositionManager';
 import { StrategyPositionLifecycleCore } from '../../../app/position/StrategyPositionLifecycleCore';
+import {
+  MicroBurstPositionManagementContext,
+  MicroBurstPositionManager,
+} from '../../../app/strategy/MicroBurstPositionManager';
 import { BotState } from '../../../domain/types';
-import { defaultMicroBurstConfig } from './MicroBurstTypes';
+import { createMicroBurstV1Identity } from './MicroBurstIdentity';
+import { MicroBurstExitContext } from './MicroBurstTypes';
 
-function makeBotState(overrides: Partial<BotState> = {}): BotState {
+function botState(overrides: Partial<BotState> = {}): BotState {
+  return { mode: 'IDLE', ...overrides };
+}
+
+function lifecycle() {
+  return { manage: vi.fn().mockResolvedValue(undefined) } as unknown as StrategyPositionLifecycleCore;
+}
+
+function exitContext(overrides: Partial<MicroBurstExitContext> = {}): MicroBurstExitContext {
   return {
-    mode: 'OFF',
-    symbols: [],
-    lastTradeId: undefined,
+    unrealizedRoe: 0,
+    priceReturn: 0.02,
+    currentPrice: 102,
+    entryPrice: 100,
+    peakPrice: 102,
+    troughPrice: 100,
+    structuralInvalidationPrice: 99.8,
+    destinationPrice: 102,
+    currentStopPrice: null,
+    timeInTradeMs: 10_000,
+    momentumDecayFlag: false,
+    anomalyExitFlag: false,
+    currentBookPressure: null,
+    currentBtcContext: null,
+    leverage: 20,
     ...overrides,
-  } as unknown as BotState;
+  };
 }
 
-function makeMockLifecycle() {
+function managementContext(): MicroBurstPositionManagementContext {
   return {
-    manage: vi.fn().mockResolvedValue(undefined),
-  } as unknown as StrategyPositionLifecycleCore;
+    symbol: 'ETHUSDT',
+    botState: botState({ lastTradeId: 'MICRO-BURST-V1-123' }),
+    symbolState: {} as MicroBurstPositionManagementContext['symbolState'],
+    strategyMode: 'OFF',
+    side: 'LONG',
+    exitContext: exitContext(),
+  };
 }
 
-describe('MicroBurstPositionManager', () => {
-  it('has correct strategyId', () => {
-    const manager = new MicroBurstPositionManager(makeMockLifecycle());
-    expect(manager.strategyId).toBe('MICRO_BURST_V1');
-  });
-
-  it('throws on ownership mismatch', async () => {
-    const manager = new MicroBurstPositionManager(makeMockLifecycle());
-    const wrongIdentity = {
-      strategyId: 'AEGIS_TURBO' as const,
-      strategyVersion: '1',
-      freezeState: 'DRAFT' as const,
-      codeCommitSha: 'abc',
-    };
+describe('MicroBurstPositionManager correctness boundary', () => {
+  it('rejects ownership mismatch before lifecycle work', async () => {
+    const core = lifecycle();
+    const manager = new MicroBurstPositionManager(core);
     await expect(
-      manager.manage(wrongIdentity, {
-        symbol: 'ETHUSDT',
-        botState: makeBotState(),
-        symbolState: {} as any,
-      }),
+      manager.manage(
+        {
+          strategyId: 'AEGIS_TURBO',
+          strategyVersion: '1',
+          freezeState: 'DRAFT',
+          codeCommitSha: 'abc',
+        },
+        managementContext(),
+      ),
     ).rejects.toThrow('POSITION_MANAGER_OWNERSHIP_MISMATCH');
+    expect(core.manage).not.toHaveBeenCalled();
   });
 
-  it('delegates to lifecycle core with MICRO_BURST policy', async () => {
-    const lifecycle = makeMockLifecycle();
-    const manager = new MicroBurstPositionManager(lifecycle);
-    const identity = createMicroBurstV1Identity();
-    const context = {
+  it('evaluates and translates target exit while OFF without applying a mutation', async () => {
+    const core = lifecycle();
+    const manager = new MicroBurstPositionManager(core);
+    const result = await manager.manage(createMicroBurstV1Identity(), managementContext());
+    expect(result).toMatchObject({
+      tradeId: 'MICRO-BURST-V1-123',
+      decision: 'CLOSE_MARKET',
+      reason: 'TARGET',
+      diagnostics: {
+        lifecycleOwner: 'MICRO_BURST_V1',
+        strategyMode: 'OFF',
+        actionApplied: false,
+        authorityReason: 'MICRO_BURST_V1_OFF',
+      },
+    });
+    expect(core.manage).not.toHaveBeenCalled();
+  });
+
+  it('fails closed to NO_ACTION when exit context is unavailable', async () => {
+    const manager = new MicroBurstPositionManager(lifecycle());
+    const result = await manager.manage(createMicroBurstV1Identity(), {
       symbol: 'ETHUSDT',
-      botState: makeBotState({ lastTradeId: 'MICRO-BURST-V1-123' }),
-      symbolState: {} as any,
-    };
-
-    const result = await manager.manage(identity, context);
-
-    expect(result.tradeId).toBe('MICRO-BURST-V1-123');
-    expect(result.decision).toBe('NO_ACTION');
-    expect(result.diagnostics.lifecycleOwner).toBe('MICRO_BURST_V1');
-  });
-
-  it('generates fallback tradeId when none exists', async () => {
-    const lifecycle = makeMockLifecycle();
-    const manager = new MicroBurstPositionManager(lifecycle);
-    const identity = createMicroBurstV1Identity();
-    const context = { symbol: 'ETHUSDT', botState: makeBotState(), symbolState: {} as any };
-
-    const result = await manager.manage(identity, context);
-
-    expect(result.tradeId).toBe('MICRO-BURST-V1-ETHUSDT');
-  });
-
-  it('accepts config override', () => {
-    const manager = new MicroBurstPositionManager(makeMockLifecycle(), { maxLeverageHardCap: 30 });
-    expect(manager.strategyId).toBe('MICRO_BURST_V1');
+      botState: botState(),
+      symbolState: {} as MicroBurstPositionManagementContext['symbolState'],
+    });
+    expect(result).toMatchObject({
+      decision: 'NO_ACTION',
+      diagnostics: { actionApplied: false, authorityReason: 'EXIT_CONTEXT_UNAVAILABLE' },
+    });
   });
 });

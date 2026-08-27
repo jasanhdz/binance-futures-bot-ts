@@ -1,9 +1,5 @@
 import { Candle, Side } from '../../types';
 import { StrategyIdentity } from '../../strategy/StrategyIdentity';
-import {
-  StrategyExecutionIntent,
-  StrategyProtectionExecutionPolicy,
-} from '../../strategy/StrategyExecution';
 
 // ── Unit convention ──────────────────────────────────────────
 // price returns: decimal  (0.001 = 0.1% = 10 bps)
@@ -18,6 +14,8 @@ export type MicroRegime = 'TRENDING_UP' | 'TRENDING_DOWN' | 'RANGING' | 'VOLATIL
 export type StructuralPosition = 'near_support' | 'near_resistance' | 'mid_range';
 
 export type BookDataStatus = 'HEALTHY' | 'UNAVAILABLE' | 'STALE' | 'UNSYNCED' | 'ANOMALOUS';
+
+export type BtcDataStatus = 'HEALTHY' | 'UNAVAILABLE' | 'STALE';
 
 export type MicroBurstExitReason =
   | 'HARD_INVALIDATION'
@@ -38,8 +36,12 @@ export interface SupportResistanceLevel {
   strength: number;
   touches: number;
   lastTouchIndex: number;
-  /** Candle index where the right-confirmation bars completed and level became available. */
+  pivotCandleIndex: number;
   availableAtCandleIndex: number;
+  /** Close time of the pivot candle. */
+  pivotAtMs: number;
+  /** Close time of the final right-confirmation candle. Available inclusively at this time. */
+  availableAtMs: number;
   volumeAtLevel: number;
 }
 
@@ -89,6 +91,19 @@ export interface BookPressureSignal {
   status: BookDataStatus;
 }
 
+export interface OrderBookDepthLevel {
+  price: number;
+  qty: number;
+}
+
+export interface OrderBookSnapshot {
+  bidDepth: OrderBookDepthLevel[];
+  askDepth: OrderBookDepthLevel[];
+  observedAtMs: number;
+  status: BookDataStatus;
+  lastUpdateId?: number;
+}
+
 // ── BTC ──────────────────────────────────────────────────────
 
 export interface BtcContext {
@@ -100,6 +115,8 @@ export interface BtcContext {
   acceleration: number;
   conflictFlag: boolean;
   direction: Side | 'NEUTRAL';
+  /** Epoch milliseconds when this BTC observation was produced. */
+  observedAtMs: number;
 }
 
 // ── Candle Set ───────────────────────────────────────────────
@@ -113,14 +130,17 @@ export interface MicroBurstCandleSet {
 // ── Context ──────────────────────────────────────────────────
 
 export interface DataQualityDiagnostics {
-  snapshotAt: number;
+  snapshotAtMs: number;
   latestClosed1mAt: number;
   latestClosed3mAt: number;
   latestClosed5mAt: number;
-  candleFreshnessMs: number;
+  freshness1mMs: number;
+  freshness3mMs: number;
+  freshness5mMs: number;
   bookAgeMs: number | null;
   btcAgeMs: number | null;
   bookStatus: BookDataStatus;
+  btcStatus: BtcDataStatus;
   closedCandlesOnly: boolean;
   levelsAvailableAt: number | null;
   contextValid: boolean;
@@ -130,6 +150,7 @@ export interface DataQualityDiagnostics {
 export interface MicroBurstContext {
   symbol: string;
   timestamp: number;
+  /** Latest closed 1m candle close available at timestamp; not a live bid/ask. */
   currentPrice: number;
   candles: MicroBurstCandleSet;
   levels: SupportResistanceResult;
@@ -151,10 +172,11 @@ export interface MicroBurstEntryDecision {
   positionFraction?: number;
   stopInvalidationPrice?: number;
   targetPrice?: number;
-  /** Decimal (0.001 = 10 bps). Required when action === ENTRY_INTENT. */
+  /** True basis points: 30 = 0.3%. */
   roomToTargetBps?: number;
-  /** Decimal (0.001 = 10 bps). Required when action === ENTRY_INTENT. */
+  /** True basis points: 15 = 0.15%. */
   riskToInvalidationBps?: number;
+  rewardRisk?: number;
   reason: string;
   confirmationStrength: number;
   diagnostics: Record<string, unknown>;
@@ -171,16 +193,19 @@ export interface MicroBurstExitContext {
   currentPrice: number;
   /** Entry price (for computing absolute stop/target). */
   entryPrice: number;
-  /** Peak favorable price (high water mark). */
+  /** Highest observed price: favorable for LONG, adverse for SHORT. */
   peakPrice: number;
-  /** Trough adverse price (low water mark). */
+  /** Lowest observed price: adverse for LONG, favorable for SHORT. */
   troughPrice: number;
+  structuralInvalidationPrice: number;
+  destinationPrice: number;
+  currentStopPrice: number | null;
   timeInTradeMs: number;
   momentumDecayFlag: boolean;
   anomalyExitFlag: boolean;
   currentBookPressure: BookPressureSignal | null;
   currentBtcContext: BtcContext | null;
-  /** Leverage used at entry (needed for ROE-to-price if ever needed explicitly). */
+  /** Diagnostic only. It must not affect structural price exits. */
   leverage: number;
 }
 
@@ -211,22 +236,29 @@ export interface MicroBurstConfig {
   nearLevelThresholdBps: number;
   momentumSlopePeriod: number;
   momentumMinContinuationScore: number;
-  /** Decimal: 0.003 = 0.3% = 30 bps. */
+  /** True basis points: 30 = 0.3%. */
   btcConflictThresholdBps: number;
   bookAnomalySpreadBps: number;
   bookMinImbalance: number;
   structuralInvalidationBufferBps: number;
   minRoomBps: number;
+  minRewardRisk: number;
+  candleFreshness1mMaxMs: number;
+  candleFreshness3mMaxMs: number;
+  candleFreshness5mMaxMs: number;
+  bookFreshnessMaxMs: number;
+  btcFreshnessMaxMs: number;
   leverageTiers: {
     high: MicroBurstLeverageTierConfig;
     medium: MicroBurstLeverageTierConfig;
   };
-  exitEarlyFailureWindowMs: number;
-  exitEarlyFailureMinPriceReturn: number;
+  exitProofWindowMs: number;
+  exitMinProofExcursionBps: number;
+  exitImmediateAdverseBps: number;
   exitMaxHoldMs: number;
-  exitBreakEvenMinPriceReturn: number;
-  exitTrailingActivationPriceReturn: number;
-  exitTrailingCallbackPriceReturn: number;
+  exitBreakEvenActivationBps: number;
+  exitTrailingActivationBps: number;
+  exitTrailingCallbackBps: number;
   maxLeverageHardCap: number;
 }
 
@@ -245,16 +277,23 @@ export function defaultMicroBurstConfig(): MicroBurstConfig {
     bookMinImbalance: 0.2,
     structuralInvalidationBufferBps: 20,
     minRoomBps: 30,
+    minRewardRisk: 1.5,
+    candleFreshness1mMaxMs: 120_000,
+    candleFreshness3mMaxMs: 360_000,
+    candleFreshness5mMaxMs: 600_000,
+    bookFreshnessMaxMs: 30_000,
+    btcFreshnessMaxMs: 60_000,
     leverageTiers: {
       high: { minConfirmation: 0.75, leverage: 40, positionFraction: 0.09 },
       medium: { minConfirmation: 0.5, leverage: 20, positionFraction: 0.05 },
     },
-    exitEarlyFailureWindowMs: 60_000,
-    exitEarlyFailureMinPriceReturn: 0.0005,
+    exitProofWindowMs: 60_000,
+    exitMinProofExcursionBps: 5,
+    exitImmediateAdverseBps: 10,
     exitMaxHoldMs: 300_000,
-    exitBreakEvenMinPriceReturn: 0.001,
-    exitTrailingActivationPriceReturn: 0.0015,
-    exitTrailingCallbackPriceReturn: 0.0005,
+    exitBreakEvenActivationBps: 10,
+    exitTrailingActivationBps: 15,
+    exitTrailingCallbackBps: 5,
     maxLeverageHardCap: 50,
   };
 }
@@ -269,32 +308,7 @@ export interface MicroBurstApprovedEntry {
   positionFraction: number;
   stopInvalidationPrice: number;
   targetPrice: number;
+  requestedAt: number;
+  tradeId: string;
   signalId?: string;
-}
-
-export function createMicroBurstExecutionIntent(
-  approved: MicroBurstApprovedEntry,
-  pricePrecision: number,
-): StrategyExecutionIntent {
-  return {
-    identity: approved.identity,
-    signalId: approved.signalId,
-    tradeId: `MICRO-BURST-V1-${approved.symbol}-${Date.now()}`,
-    symbol: approved.symbol,
-    requestedAt: Date.now(),
-    side: approved.side,
-    leverage: approved.leverage,
-    positionFraction: approved.positionFraction,
-    structuralStopPrice: approved.stopInvalidationPrice,
-    destinationPrice: approved.targetPrice,
-    protection: {
-      requireStop: true,
-      requireTakeProfit: false,
-      closeIfProtectionFails: true,
-    },
-    metadata: {
-      strategy: 'MICRO_BURST_V1',
-      leverageTier: approved.leverage > 30 ? 'HIGH' : 'MEDIUM',
-    },
-  };
 }

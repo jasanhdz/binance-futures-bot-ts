@@ -1,100 +1,76 @@
-# MICRO_BURST_V1 — Tactical Scalping Strategy
+# MICRO_BURST_V1
 
-## Overview
+MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M0.2 defines correctness contracts only. It has no market-data WebSocket plane, dataset authority, SHADOW authority, LIVE authority, or operational exchange path.
 
-MICRO_BURST_V1 is a deterministic scalping strategy that captures small price movements from nearby support/resistance levels using micro-momentum confirmation and fast exit on anomaly/deterioration.
+## Authority
 
-## Architecture
+- Strategy mode remains `OFF`.
+- `MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED = false`.
+- `MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false`.
+- The position manager may compute and translate an exit decision while OFF, but does not apply lifecycle or exchange mutations.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    TradingService / StrategyRouter           │
-└─────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│               MicroBurstContextBuilder                      │
-│  Inputs: candles 1m/3m/5m, BTC context, order book          │
-└─────────────────────────────────────────────────────────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-    ┌─────────────┐ ┌──────────────┐ ┌──────────────┐
-    │ S/R Detect  │ │  Momentum    │ │  Book        │
-    │             │ │  Analyzer    │ │  Pressure    │
-    └─────────────┘ └──────────────┘ └──────────────┘
-              │              │              │
-              └──────────────┼──────────────┘
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 MicroBurstEntryPolicy                       │
-│  Decision tree: clarity → level → momentum → BTC → book     │
-└─────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 MicroBurstLeveragePolicy                    │
-│  HIGH (>=0.75) = 40x | MEDIUM (>=0.50) = 20x | LOW = skip  │
-└─────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Shared Safety Layer                      │
-│  Account risk, symbol lock, cooldown, daily limits          │
-└─────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│             SharedStrategyExecutionService                  │
-│  Leverage, isolated margin, market open, brackets           │
-└─────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│              MicroBurstPositionManager                      │
-│  Early failure, anomaly, trailing, break-even, max hold     │
-└─────────────────────────────────────────────────────────────┘
-```
+## Correctness Invariants
 
-## Decision Flow
+- Price returns are decimal: `0.003 = 0.3% = 30 bps`.
+- Variables ending in `Bps` contain true basis points: `30`, not `0.003`.
+- BTC conflict uses an inclusive bps boundary after converting `ret3m` from decimal.
+- BTC and order book observations require typed epoch-millisecond timestamps and must be fresh.
+- Missing, stale, unsynced, anomalous, crossed, malformed, or incorrectly sorted book data fails closed.
+- Candles are available only when `closeTime <= snapshotAtMs`.
+- Freshness is checked independently for 1m, 3m, and 5m using candle `closeTime`.
+- S/R levels retain pivot indices for audit, but causality uses `pivotAtMs` and `availableAtMs` from real candle close times.
+- A level is available inclusively when `availableAtMs <= snapshotAtMs`.
+- LONG requires near support plus LONG momentum; SHORT requires near resistance plus SHORT momentum.
+- Structural stop and destination must exist on the correct side of the reference price.
+- Entry requires minimum room and finite minimum reward/risk.
+- Hard invalidation uses the persisted structural price, never ROE or leverage conversion.
+- LONG trailing retraces from `peakPrice`; SHORT trailing retraces from `troughPrice`.
+- Trailing V1 is a deterministic software callback that returns `CLOSE_MARKET`.
+- Break-even is the only dynamic `MOVE_STOP` action and cannot repeat or weaken an existing stop.
+- Execution intent creation is pure: `requestedAt` and `tradeId` are supplied by the caller.
+- No domain import may depend on Aegis, CurrentBrain, E4, ExitEye, MomentumRide, or legacy ProfitGuardian.
 
-1. **Structural clarity?** — Clear S/R levels + trending/ranging regime + book healthy → continue
-2. **Near a useful level?** — near_support or near_resistance → continue
-3. **Momentum confirms?** — Direction matches level type → continue
-4. **BTC doesn't contradict?** — No conflict flag → continue
-5. **Book/tape healthy?** — No anomaly → continue
-6. **Entry** — LONG near support + upward momentum, SHORT near resistance + downward momentum
+## Reference Price
 
-## Files
+`MicroBurstContext.currentPrice` is the close of the latest closed 1m candle available at `snapshotAtMs`. It is a causal replay reference price, not a live ticker, best bid, or best ask. M1 may introduce a typed `marketPriceAtSnapshot` from a synchronized market-data source.
 
-| File | Purpose |
-|---|---|
-| `MicroBurstTypes.ts` | All shared types and default config |
-| `MicroBurstIdentity.ts` | Strategy identity factory |
-| `MicroBurstSupportResistance.ts` | Swing-point S/R detection with clustering |
-| `MicroBurstMomentumAnalyzer.ts` | Multi-timeframe micro-momentum analysis |
-| `MicroBurstMicroRegime.ts` | Micro regime classification |
-| `MicroBurstBookPressureAnalyzer.ts` | Order book pressure analysis |
-| `MicroBurstContextBuilder.ts` | Assembles full strategy context |
-| `MicroBurstLeveragePolicy.ts` | Leverage tier selection |
-| `MicroBurstEntryPolicy.ts` | Entry decision engine |
-| `MicroBurstExitPolicy.ts` | Exit decision engine |
-| `MicroBurstStrategy.ts` | Strategy class (implements EntryStrategy) |
-| `MicroBurstPositionManager.ts` | Position lifecycle management |
+## Exit Priority
 
-## Invariants
+1. `HARD_INVALIDATION`
+2. `ANOMALY`
+3. `BTC_REVERSAL`
+4. Immediate adverse `EARLY_FAILURE`
+5. `TARGET`
+6. Software callback `TRAILING`
+7. One-way `BREAK_EVEN` stop movement
+8. Proof-window `EARLY_FAILURE`
+9. `MAX_HOLD`
+10. `HOLD`
 
-- `MICRO_BURST_V1_RUNTIME_AUTHORITY = FALSE` (mode defaults to OFF)
-- No Aegis dependencies (no Current Brain, E4, ExitEye)
-- No Python dependencies
-- Fail closed on ambiguous data
-- No duplicate positions per symbol
-- Reuses SharedStrategyExecutionService and SharedEntrySafetyGate
-- No behavior changes to Aegis or Momentum paths
+Break-even wins over max hold once when it improves protection. On the next cycle, an entry-or-better stop suppresses repeated break-even and max hold can close.
+
+## Time To Prove
+
+During `exitProofWindowMs`, lack of positive progress alone does not close a position. Structural invalidation, anomaly, BTC reversal, target, and immediate adverse excursion remain active. At the inclusive end of the proof window, a trade that never reached `exitMinProofExcursionBps` returns `EARLY_FAILURE`. A trade that previously proved itself is not categorized as never-proved after a pullback.
+
+## Experimental Parameters
+
+The following are experimental defaults, not validated edge or profitability claims:
+
+- Momentum strength and continuation thresholds.
+- Volatile-regime avoidance.
+- 30 bps BTC conflict threshold.
+- S/R lookback, pivot, clustering, and near-level thresholds.
+- Proof-window duration and excursion thresholds.
+- Minimum reward/risk.
+- 40x/20x leverage tiers and position fractions.
+
+They were not tuned in M0.2.
 
 ## Lifecycle Policy
 
-Uses `MICRO_BURST_RESERVED_POLICY`:
+`MICRO_BURST_RESERVED_POLICY` remains:
+
 - `useLegacyProfitGuardian: false`
 - `useBreakEven: false`
 - `useTrailing: false`
@@ -103,19 +79,17 @@ Uses `MICRO_BURST_RESERVED_POLICY`:
 - `closeIfBracketFails: true`
 - `allowManualQuantityReconciliation: false`
 
-## Exit Reasons
+Dynamic exits belong only to `MicroBurstExitPolicy`; legacy lifecycle logic cannot supply them.
 
-- `EARLY_FAILURE` — No continuation within window, or adverse excursion beyond threshold
-- `ANOMALY` — Book anomaly, BTC reversal, or anomaly flag
-- `TARGET` — Reached target level
-- `TRAILING` — Trailing stop activated in profit
-- `MAX_HOLD` — Exceeded max hold time (default 5 minutes)
-- `BREAK_EVEN` — Stop moved to break-even after profit threshold
+## M1 Market Data Plane Pending
 
-## Leverage Tiers
+- Depth WebSocket ingestion.
+- REST snapshot plus depth-diff synchronization and update-ID gap recovery.
+- Typed observed timestamps and synchronized book provider adapter.
+- Live ticker/mark/reference price at snapshot.
+- BTC live context stream.
+- `aggTrade` ingestion.
+- Temporal book history and real `imbalanceSlope`.
+- Temporal absorption and sweep detection.
 
-| Tier | Confirmation | Leverage | Position Fraction |
-|---|---|---|---|
-| HIGH | >= 0.75 | 40x | 9% |
-| MEDIUM | >= 0.50 | 20x | 5% |
-| NO_TRADE | < 0.50 | — | — |
+These are deliberately not implemented by M0.2.

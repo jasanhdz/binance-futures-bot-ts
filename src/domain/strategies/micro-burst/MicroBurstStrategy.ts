@@ -41,6 +41,7 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
         leverageTier: decision.leverageTier,
         roomToTargetBps: decision.roomToTargetBps,
         riskToInvalidationBps: decision.riskToInvalidationBps,
+        rewardRisk: decision.rewardRisk,
       },
     };
   }
