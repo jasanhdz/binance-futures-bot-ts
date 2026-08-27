@@ -56,4 +56,30 @@ describe('WebSocketManager market subscriptions', () => {
     unsubscribeDepth();
     manager.disconnectAll();
   });
+
+  it('uses Binance-supported public partial depth levels', () => {
+    const sockets: FakeWebSocket[] = [];
+    const urls: string[] = [];
+    const hub = new MarketDataHub(logger, {
+      webSocketFactory: (url) => {
+        urls.push(url);
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const manager = new WebSocketManager({ ws: { futuresUser: vi.fn() } } as any, logger, { marketDataHub: hub });
+    const depth = vi.fn();
+
+    const unsubscribe = manager.connectPartialDepth('BTCUSDT', 20, '100ms', depth);
+    expect(urls).toEqual(['wss://fstream.binance.com/public/ws/btcusdt@depth20@100ms']);
+    sockets[0].message({ b: [['99', '3']], a: [['101', '4']] });
+    expect(depth).toHaveBeenCalledWith(expect.objectContaining({ bids: [['99', '3']], asks: [['101', '4']] }));
+    expect(() => manager.connectPartialDepth('BTCUSDT', 50, '100ms', vi.fn())).toThrow(
+      'Unsupported Binance partial-depth level: 50',
+    );
+
+    unsubscribe();
+    manager.disconnectAll();
+  });
 });

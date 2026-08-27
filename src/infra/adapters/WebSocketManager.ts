@@ -72,6 +72,9 @@ export class WebSocketManager {
     speed: '100ms' | '250ms' | '500ms',
     callback: (depth: any) => void,
   ): () => void {
+    if (![5, 10, 20].includes(levels)) {
+      throw new Error(`Unsupported Binance partial-depth level: ${levels}`);
+    }
     return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@depth${levels}@${speed}`, PUBLIC, (event) => {
       callback({ ...event, bids: event.b ?? event.bids ?? [], asks: event.a ?? event.asks ?? [] });
     });
