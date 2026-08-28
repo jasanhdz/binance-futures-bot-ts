@@ -1,4 +1,6 @@
 import { MicroBurstPaperPosition } from '../../domain/strategies/micro-burst/MicroBurstPaperTrading';
+import { DEFAULT_COST_SCENARIOS } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+import { MicroBurstPaperLifecycleEvent } from '../../domain/strategies/micro-burst/MicroBurstPaperTrading';
 
 export interface MicroBurstPaperTradeReport {
   sampleSize: number;
@@ -19,12 +21,19 @@ export interface MicroBurstPaperTradeReport {
   breakEvenUsed: number;
   trailingUsed: number;
   costBps: { fees: number; spread: number; slippage: number; other: number; total: number };
+  openCount: number;
+  dataUncertainCount: number;
+  scenarioMetrics: Record<
+    string,
+    { netWinRate: number | null; meanNetBps: number | null; medianNetBps: number | null }
+  >;
 }
 
 export function analyzeMicroBurstPaperTrades(
   positions: MicroBurstPaperPosition[],
   suppressedEntryCount = 0,
   incompleteCount = 0,
+  events: MicroBurstPaperLifecycleEvent[] = [],
 ): MicroBurstPaperTradeReport & { suppressedEntryCount: number; incompleteCount: number } {
   const closed = [
     ...new Map(
@@ -39,6 +48,33 @@ export function analyzeMicroBurstPaperTrades(
       .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const gross = values('grossPriceReturnBps');
   const net = values('netBps');
+  const derivedSuppressed = events.filter(
+    (event) => event.event === 'ENTRY_SUPPRESSED_POSITION_OPEN',
+  ).length;
+  const derivedIncomplete =
+    positions.filter((position) => position.state === 'DATA_UNCERTAIN').length +
+    events.filter(
+      (event) => event.event === 'UNFILLED_DATA_UNCERTAIN' || event.event === 'DATA_UNCERTAIN',
+    ).length;
+  const scenarioMetrics = Object.fromEntries(
+    DEFAULT_COST_SCENARIOS.map((scenario) => {
+      const scenarioValues = closed
+        .map(
+          (position) =>
+            position.costScenarios?.[scenario.label]?.netBps ??
+            position.netBpsByCostScenario?.[scenario.label],
+        )
+        .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+      return [
+        scenario.label,
+        {
+          netWinRate: scenarioValues.length ? winRate(scenarioValues) : null,
+          meanNetBps: mean(scenarioValues),
+          medianNetBps: median(scenarioValues),
+        },
+      ];
+    }),
+  );
   const durations = closed
     .map((position) => (position.closedAtMs ?? 0) - position.openedAtMs)
     .filter((value) => value >= 0);
@@ -67,8 +103,13 @@ export function analyzeMicroBurstPaperTrades(
       other: sum(closed, 'otherCostsBps'),
       total: sum(closed, 'totalCostBps'),
     },
-    suppressedEntryCount,
-    incompleteCount,
+    suppressedEntryCount: suppressedEntryCount || derivedSuppressed,
+    incompleteCount: incompleteCount || derivedIncomplete,
+    openCount: positions.filter(
+      (position) => position.state === 'OPEN_SHADOW' || position.state === 'MANAGING',
+    ).length,
+    dataUncertainCount: positions.filter((position) => position.state === 'DATA_UNCERTAIN').length,
+    scenarioMetrics,
   };
 }
 

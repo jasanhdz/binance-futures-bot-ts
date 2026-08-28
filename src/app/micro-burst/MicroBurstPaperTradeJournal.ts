@@ -20,7 +20,14 @@ export class MicroBurstPaperTradeJournal {
   }
 
   loadOpenPositions(): MicroBurstPaperPosition[] {
-    return [...this.positions.values()].map((position) => ({ ...position }));
+    const open = [...this.positions.values()].filter((position) => position.state !== 'CLOSED');
+    const symbols = new Set<string>();
+    for (const position of open) {
+      if (symbols.has(position.symbol))
+        throw new Error(`PAPER_POSITION_AMBIGUOUS:${position.symbol}`);
+      symbols.add(position.symbol);
+    }
+    return open.map((position) => ({ ...position }));
   }
 
   loadAllPositions(): MicroBurstPaperPosition[] {
@@ -41,13 +48,32 @@ export class MicroBurstPaperTradeJournal {
         }
       }
     }
-    return [...latest.values()].filter((position) => position.state === 'CLOSED');
+    return [...latest.values()];
+  }
+
+  loadAllEvents(): MicroBurstPaperLifecycleEvent[] {
+    const events: MicroBurstPaperLifecycleEvent[] = [];
+    if (!fs.existsSync(this.eventDir)) return events;
+    for (const file of fs
+      .readdirSync(this.eventDir)
+      .filter((entry) => entry.endsWith('.jsonl'))
+      .sort()) {
+      for (const line of fs.readFileSync(path.join(this.eventDir, file), 'utf8').split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          events.push(JSON.parse(line) as MicroBurstPaperLifecycleEvent);
+        } catch {
+          this.malformed.push(`${file}:event`);
+        }
+      }
+    }
+    return events;
   }
 
   appendPosition(position: MicroBurstPaperPosition): void {
+    this.append(this.tradeDir, position, position.openedAtMs);
     if (position.state === 'CLOSED') this.positions.delete(position.tradeId);
     else this.positions.set(position.tradeId, { ...position });
-    this.append(this.tradeDir, position, position.openedAtMs);
   }
 
   appendEvent(event: MicroBurstPaperLifecycleEvent): void {

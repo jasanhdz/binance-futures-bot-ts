@@ -73,6 +73,15 @@ describe('MicroBurst paper trading lifecycle', () => {
     expect(
       new MicroBurstPaperTrading(defaultMicroBurstConfig()).open(
         signal(),
+        quote(99, 101, 1_700),
+        1_000,
+        provenance,
+        2_000,
+      ).status,
+    ).toBe('OPENED');
+    expect(
+      new MicroBurstPaperTrading(defaultMicroBurstConfig()).open(
+        signal(),
         { ...quote(), status: 'STALE' },
         1_000,
         provenance,
@@ -92,6 +101,13 @@ describe('MicroBurst paper trading lifecycle', () => {
     expect(result?.position.exitPrice).toBe(109);
     expect(result?.position.grossPriceReturnBps).toBeCloseTo(792.0792, 3);
     expect(result?.position.grossRoe).toBeCloseTo(0.7920792, 6);
+    expect(result?.position.netBps).toBeUndefined();
+    expect(result?.position.canonicalNetBps).toBeNull();
+    expect(result?.position.netBpsByCostScenario?.cost_0).toBeCloseTo(792.0792, 3);
+    expect(result?.position.netBpsByCostScenario?.cost_10).toBeCloseTo(782.0792, 3);
+    expect(result?.position.netBpsByCostScenario?.cost_14).toBeCloseTo(778.0792, 3);
+    expect(result?.position.netBpsByCostScenario?.cost_20).toBeCloseTo(772.0792, 3);
+    expect(result?.position.netBpsByCostScenario?.cost_30).toBeCloseTo(762.0792, 3);
     expect(paper.getPosition('ETHUSDT')).toBeUndefined();
   });
 

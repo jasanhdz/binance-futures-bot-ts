@@ -42,6 +42,7 @@ export interface MicroBurstRuntimeHealth {
   btcHealthy: boolean;
   totalEvaluations: number;
   totalUniqueSignals: number;
+  paperSuppressedEntries: number;
   totalDuplicateSignals: number;
   totalInvalidContexts: number;
   totalResyncs: number;
@@ -201,6 +202,8 @@ export class MicroBurstRuntime {
   private readonly symbolStates = new Map<string, SymbolRuntimeState>();
   private totalEvaluations = 0;
   private totalUniqueSignals = 0;
+  private paperSuppressedEntries = 0;
+  private readonly paperSuppressionDiagnostics = new Set<string>();
   private totalDuplicateSignals = 0;
   private totalInvalidContexts = 0;
   private lastHealthReportAt = 0;
@@ -571,6 +574,7 @@ export class MicroBurstRuntime {
         snapshotAtMs,
       });
 
+      let paperSuppressed = false;
       if (
         result.wouldEnter &&
         !result.duplicateSuppressed &&
@@ -578,13 +582,33 @@ export class MicroBurstRuntime {
         !this.paperRecoveryBlocked
       ) {
         const quote = this.paperQuote(state.book.getSnapshotForPressure());
-        const opened = this.paperTrading.open(result, quote, result.snapshotAtMs, {
-          cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
-          codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
-          configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
-        });
-        if (opened.status === 'OPENED') this.persistPaper(opened.position, opened.event);
-        else this.persistPaperEvent(opened.event);
+        const decisionReceivedAtMs = this.deps.clock.now();
+        const previousPosition = this.paperTrading.getPosition(symbol);
+        const opened = this.paperTrading.open(
+          result,
+          quote,
+          decisionReceivedAtMs,
+          {
+            cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
+            codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
+            configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
+          },
+          decisionReceivedAtMs,
+        );
+        if (opened.status === 'OPENED')
+          this.persistPaper(opened.position, opened.event, previousPosition);
+        else if (opened.status === 'SUPPRESSED') {
+          paperSuppressed = true;
+          this.paperSuppressedEntries++;
+          const suppressionKey = `${symbol}:${previousPosition?.tradeId ?? 'UNKNOWN'}`;
+          if (!this.paperSuppressionDiagnostics.has(suppressionKey)) {
+            this.paperSuppressionDiagnostics.add(suppressionKey);
+            this.deps.logger.info('micro_burst_paper_entry_suppressed', {
+              symbol,
+              tradeId: previousPosition?.tradeId,
+            });
+          }
+        } else this.persistPaperEvent(opened.event);
       }
 
       state.evaluationCount++;
@@ -595,7 +619,7 @@ export class MicroBurstRuntime {
         if (result.duplicateSuppressed) {
           state.duplicateSignalCount++;
           this.totalDuplicateSignals++;
-        } else if (result.wouldEnter) {
+        } else if (result.wouldEnter && !paperSuppressed) {
           state.uniqueSignalCount++;
           this.totalUniqueSignals++;
           if (!this.journal.append(result, this.deps.provenance)) {
@@ -737,6 +761,7 @@ export class MicroBurstRuntime {
       btcHealthy,
       totalEvaluations: this.totalEvaluations,
       totalUniqueSignals: this.totalUniqueSignals,
+      paperSuppressedEntries: this.paperSuppressedEntries,
       totalDuplicateSignals: this.totalDuplicateSignals,
       totalInvalidContexts: this.totalInvalidContexts,
       totalResyncs: this.getTotalResyncs(),
@@ -774,13 +799,15 @@ export class MicroBurstRuntime {
     if (this.paperRecoveryBlocked) return;
     const state = this.symbolStates.get(symbol);
     const snapshot = state?.book.getSnapshotForPressure();
+    const previous = this.paperTrading.getPosition(symbol);
+    const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
     const result = this.paperTrading.manage(symbol, {
       currentPrice: event.price,
-      observedAtMs: event.eventTime,
+      observedAtMs: receivedAtMs,
       quote: this.paperQuote(snapshot),
       exitContext: {
         currentBookPressure: snapshot
-          ? analyzeBookPressure(snapshot, event.eventTime, undefined, snapshot.temporalHistory)
+          ? analyzeBookPressure(snapshot, receivedAtMs, undefined, snapshot.temporalHistory)
           : null,
         currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
         anomalyExitFlag: false,
@@ -790,6 +817,7 @@ export class MicroBurstRuntime {
     try {
       this.paperTradeJournal.appendPosition(result.position);
     } catch (error) {
+      if (previous) this.paperTrading.restore(previous);
       this.paperPersistenceError = String(error);
       this.paperRecoveryBlocked = true;
       this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });
@@ -803,10 +831,13 @@ export class MicroBurstRuntime {
   private persistPaper(
     position: Parameters<MicroBurstPaperTradeJournal['appendPosition']>[0],
     event: Parameters<MicroBurstPaperTradeJournal['appendEvent']>[0],
+    previous?: Parameters<MicroBurstPaperTrading['restore']>[0],
   ): void {
     try {
       this.paperTradeJournal.appendPosition(position);
     } catch (error) {
+      if (previous) this.paperTrading.restore(previous);
+      else this.paperTrading.discard(position.symbol);
       this.paperPersistenceError = String(error);
       this.paperRecoveryBlocked = true;
       this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });

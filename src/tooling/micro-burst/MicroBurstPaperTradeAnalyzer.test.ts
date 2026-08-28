@@ -61,4 +61,32 @@ describe('MicroBurst paper trade analyzer', () => {
     expect(report.suppressedEntryCount).toBe(3);
     expect(report.incompleteCount).toBe(1);
   });
+
+  it('derives suppression and incomplete metrics from lifecycle events', () => {
+    const report = analyzeMicroBurstPaperTrades(
+      [trade({ state: 'OPEN_SHADOW', tradeId: 'OPEN' })],
+      0,
+      0,
+      [
+        {
+          schemaVersion: 1,
+          event: 'ENTRY_SUPPRESSED_POSITION_OPEN',
+          eventAtMs: 1,
+          symbol: 'ETHUSDT',
+          state: 'OPEN_SHADOW',
+        },
+        {
+          schemaVersion: 1,
+          event: 'UNFILLED_DATA_UNCERTAIN',
+          eventAtMs: 2,
+          symbol: 'BTCUSDT',
+          state: 'DATA_UNCERTAIN',
+        },
+      ],
+    );
+    expect(report.suppressedEntryCount).toBe(1);
+    expect(report.incompleteCount).toBe(1);
+    expect(report.openCount).toBe(1);
+    expect(report.scenarioMetrics.cost_30.netWinRate).toBeNull();
+  });
 });

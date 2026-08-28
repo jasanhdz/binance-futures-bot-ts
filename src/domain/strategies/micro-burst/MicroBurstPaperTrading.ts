@@ -2,6 +2,7 @@ import { MicroBurstExitContext, MicroBurstExitDecision, MicroBurstConfig } from 
 import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';
 import { evaluateMicroBurstExit } from './MicroBurstExitPolicy';
 import { decimalReturnToBps } from './MicroBurstUnits';
+import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
 
 export type MicroBurstPaperState =
   | 'FLAT'
@@ -76,6 +77,20 @@ export interface MicroBurstPaperPosition {
   totalCostBps?: number;
   netBps?: number;
   netRoe?: number;
+  netBpsByCostScenario?: Record<string, number>;
+  costScenarios?: Record<
+    string,
+    {
+      feeBps: number;
+      additionalSlippageBps: number;
+      totalAdditionalCostBps: number;
+      netBps: number;
+      netRoe: number;
+    }
+  >;
+  canonicalCostScenario?: string | null;
+  canonicalNetBps?: number | null;
+  canonicalNetRoe?: number | null;
 }
 
 export type PaperLifecycleEventName =
@@ -119,9 +134,14 @@ export class MicroBurstPaperTrading {
 
   restore(position: MicroBurstPaperPosition): void {
     if (position.state === 'CLOSED') return;
-    if (this.positions.has(position.symbol))
+    const existing = this.positions.get(position.symbol);
+    if (existing && existing.tradeId !== position.tradeId)
       throw new Error(`PAPER_POSITION_AMBIGUOUS:${position.symbol}`);
     this.positions.set(position.symbol, { ...position, state: 'OPEN_SHADOW' });
+  }
+
+  discard(symbol: string): void {
+    this.positions.delete(symbol);
   }
 
   getPosition(symbol: string): MicroBurstPaperPosition | undefined {
@@ -138,6 +158,7 @@ export class MicroBurstPaperTrading {
     quote: MicroBurstPaperQuote | undefined,
     eventAtMs: number,
     provenance: { cohortId: string; codeCommitSha: string; configHash: string },
+    decisionReceivedAtMs = eventAtMs,
   ): PaperOpenResult {
     const existing = this.positions.get(signal.symbol);
     if (existing) {
@@ -152,7 +173,7 @@ export class MicroBurstPaperTrading {
         ),
       };
     }
-    const fill = executableEntry(signal, quote);
+    const fill = executableEntry(signal, quote, decisionReceivedAtMs);
     if (!fill) {
       return {
         status: 'UNFILLED_DATA_UNCERTAIN',
@@ -314,13 +335,35 @@ export class MicroBurstPaperTrading {
       position.maeBps = this.adverseBps(position);
       position.grossPriceReturnBps = decimalReturnToBps(this.signedReturn(position, exitPrice));
       position.grossRoe = (position.grossPriceReturnBps / 10_000) * position.leverage;
-      position.feesBps = 0;
-      position.spreadImpactBps = 0;
+      position.feesBps = undefined;
+      position.spreadImpactBps = undefined;
       position.slippageBps = 0;
-      position.otherCostsBps = 0;
-      position.totalCostBps = 0;
-      position.netBps = position.grossPriceReturnBps;
-      position.netRoe = position.grossRoe;
+      position.otherCostsBps = undefined;
+      position.totalCostBps = undefined;
+      position.costScenarios = Object.fromEntries(
+        DEFAULT_COST_SCENARIOS.map((scenario) => {
+          const totalAdditionalCostBps = scenario.feeBps + scenario.slippageBps;
+          const netBps = position.grossPriceReturnBps! - totalAdditionalCostBps;
+          return [
+            scenario.label,
+            {
+              feeBps: scenario.feeBps,
+              additionalSlippageBps: scenario.slippageBps,
+              totalAdditionalCostBps,
+              netBps,
+              netRoe: (netBps / 10_000) * position.leverage,
+            },
+          ];
+        }),
+      );
+      position.netBpsByCostScenario = Object.fromEntries(
+        Object.entries(position.costScenarios).map(([label, scenario]) => [label, scenario.netBps]),
+      );
+      position.canonicalCostScenario = null;
+      position.canonicalNetBps = null;
+      position.canonicalNetRoe = null;
+      position.netBps = undefined;
+      position.netRoe = undefined;
       position.state = 'CLOSED';
       this.positions.delete(symbol);
       events.push(
@@ -384,8 +427,10 @@ function numberDiagnostic(value: unknown, fallback: number): number {
 function executableEntry(
   signal: MicroBurstShadowEvaluationResult,
   quote?: MicroBurstPaperQuote,
+  decisionReceivedAtMs = signal.snapshotAtMs,
 ): { price: number; model: PaperEntryPriceModel } | null {
-  if (!quote || quote.status !== 'HEALTHY' || quote.observedAtMs > signal.snapshotAtMs) return null;
+  if (!quote || quote.status !== 'HEALTHY' || quote.observedAtMs > decisionReceivedAtMs)
+    return null;
   if (
     !Number.isFinite(quote.bestBid) ||
     !Number.isFinite(quote.bestAsk) ||
