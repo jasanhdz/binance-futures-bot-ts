@@ -35,6 +35,20 @@ describe('AegisTurboHistoryLogger', () => {
     expect(stat.isDirectory()).toBe(true);
   });
 
+  it('defaults the compatibility writer to logs/aegis', async () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(tempDir);
+    const logger = new AegisTurboHistoryLogger();
+    await logger.logSignal({
+      timestamp: '2026-05-06T10:15:00.000Z',
+      symbol: 'ETHUSDT',
+      strategy: 'AEGIS_TURBO',
+      mode: 'AEGIS_SHADOW',
+    });
+    await expect(
+      fs.stat(path.join(tempDir, 'logs', 'aegis', 'turbo_signals_2026-05-06.jsonl')),
+    ).resolves.toBeTruthy();
+  });
+
   it('writes valid JSONL', async () => {
     const logger = new AegisTurboHistoryLogger({ baseDir: tempDir });
 

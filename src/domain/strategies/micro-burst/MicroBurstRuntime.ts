@@ -23,6 +23,9 @@ import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
 import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
 import { assessMicroBurstReadiness, MicroBurstReadinessResult } from './MicroBurstReadiness';
 import { GapKind, MarketDataFeed } from '../../../app/micro-burst/MicroBurstMarketData';
+import { MicroBurstPaperQuote, MicroBurstPaperTrading } from './MicroBurstPaperTrading';
+import { MicroBurstPaperTradeJournal } from '../../../app/micro-burst/MicroBurstPaperTradeJournal';
+import { defaultMicroBurstConfig } from './MicroBurstTypes';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -74,6 +77,10 @@ export interface MicroBurstRuntimeHealth {
   mutationAttempts: number;
   forwardedMutations: number;
   readiness: MicroBurstRuntimeReadiness;
+  paperTrading: {
+    openPositions: number;
+    recoveryBlocked: boolean;
+  };
 }
 
 export interface MicroBurstRuntimeReadiness extends MicroBurstReadinessResult {
@@ -181,6 +188,7 @@ export interface MicroBurstRuntimeDeps {
     costSemanticsValid?: boolean;
   };
   mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
+  paperTradeJournal?: MicroBurstPaperTradeJournal;
 }
 
 export class MicroBurstRuntime {
@@ -198,6 +206,9 @@ export class MicroBurstRuntime {
   private readonly evaluationIntervalMs: number;
   private readonly journal: MicroBurstSignalJournal;
   private stopPromise: Promise<void> | null = null;
+  private readonly paperTrading = new MicroBurstPaperTrading(defaultMicroBurstConfig());
+  private readonly paperTradeJournal: MicroBurstPaperTradeJournal;
+  private paperRecoveryBlocked = false;
 
   constructor(
     private readonly deps: MicroBurstRuntimeDeps,
@@ -207,6 +218,16 @@ export class MicroBurstRuntime {
   ) {
     this.evaluationIntervalMs = evaluationIntervalMs;
     this.journal = new MicroBurstSignalJournal(journalDir);
+    this.paperTradeJournal = deps.paperTradeJournal ?? new MicroBurstPaperTradeJournal();
+    try {
+      if (!this.paperTradeJournal.getHealth().healthy)
+        throw new Error('PAPER_TRADE_JOURNAL_MALFORMED');
+      for (const position of this.paperTradeJournal.loadOpenPositions())
+        this.paperTrading.restore(position);
+    } catch (error) {
+      this.paperRecoveryBlocked = true;
+      this.deps.logger.error('micro_burst_paper_recovery_blocked', { error: String(error) });
+    }
   }
 
   async start(): Promise<void> {
@@ -353,6 +374,7 @@ export class MicroBurstRuntime {
               lastTradeId: trade.lastTradeId,
             };
             aggTradeBuffer.push(event);
+            this.managePaperTrade(symbol, event);
             this.deps.marketStorage?.appendTrade?.({
               symbol,
               eventTime: trade.eventTime,
@@ -497,6 +519,11 @@ export class MicroBurstRuntime {
         failures.push(`outcome tracker: ${String(error)}`);
       }
       try {
+        this.paperTradeJournal.flush();
+      } catch (error) {
+        failures.push(`paper trade journal: ${String(error)}`);
+      }
+      try {
         await this.drainAndCloseStorage();
       } catch (error) {
         failures.push(`market storage: ${String(error)}`);
@@ -530,6 +557,22 @@ export class MicroBurstRuntime {
         symbol,
         snapshotAtMs,
       });
+
+      if (
+        result.wouldEnter &&
+        !result.duplicateSuppressed &&
+        result.side &&
+        !this.paperRecoveryBlocked
+      ) {
+        const quote = this.paperQuote(state.book.getSnapshotForPressure());
+        const opened = this.paperTrading.open(result, quote, result.snapshotAtMs, {
+          cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
+          codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
+          configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
+        });
+        if (opened.status === 'OPENED') this.persistPaper(opened.position, opened.event);
+        else this.persistPaperEvent(opened.event);
+      }
 
       state.evaluationCount++;
       state.lastEvaluationAt = t0;
@@ -707,6 +750,61 @@ export class MicroBurstRuntime {
       mutationAttempts: mutationAudit.totalMutationAttempts,
       forwardedMutations: mutationAudit.forwardedMutationCalls,
       readiness: this.getReadiness(),
+      paperTrading: {
+        openPositions: this.paperTrading.getOpenPositions().length,
+        recoveryBlocked: this.paperRecoveryBlocked,
+      },
+    };
+  }
+
+  private managePaperTrade(symbol: string, event: AggTradeEvent): void {
+    if (this.paperRecoveryBlocked) return;
+    const state = this.symbolStates.get(symbol);
+    const snapshot = state?.book.getSnapshotForPressure();
+    const result = this.paperTrading.manage(symbol, {
+      currentPrice: event.price,
+      observedAtMs: event.eventTime,
+      quote: this.paperQuote(snapshot),
+      exitContext: {
+        currentBookPressure: null,
+        currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
+        anomalyExitFlag: false,
+      },
+    });
+    if (!result) return;
+    this.paperTradeJournal.appendPosition(result.position);
+    if (result.events.length > 0 || result.position.state === 'CLOSED') {
+      for (const lifecycleEvent of result.events) this.persistPaperEvent(lifecycleEvent);
+    }
+  }
+
+  private persistPaper(
+    position: Parameters<MicroBurstPaperTradeJournal['appendPosition']>[0],
+    event: Parameters<MicroBurstPaperTradeJournal['appendEvent']>[0],
+  ): void {
+    this.paperTradeJournal.appendPosition(position);
+    this.persistPaperEvent(event);
+  }
+
+  private persistPaperEvent(
+    event: Parameters<MicroBurstPaperTradeJournal['appendEvent']>[0],
+  ): void {
+    this.paperTradeJournal.appendEvent(event);
+    this.deps.logger.info(
+      `micro_burst_paper_${event.event.toLowerCase()}`,
+      event as unknown as Record<string, unknown>,
+    );
+  }
+
+  private paperQuote(
+    snapshot: ReturnType<SynchronizedOrderBook['getSnapshotForPressure']>,
+  ): MicroBurstPaperQuote | undefined {
+    if (!snapshot) return undefined;
+    return {
+      bestBid: snapshot.bidDepth[0]?.price ?? NaN,
+      bestAsk: snapshot.askDepth[0]?.price ?? NaN,
+      observedAtMs: snapshot.observedAtMs,
+      status: snapshot.status,
     };
   }
 
@@ -761,6 +859,7 @@ export class MicroBurstRuntime {
     /* Retain detailed legacy diagnostics while the typed checks are authoritative. */
     const blockers = [...readiness.blockers];
     if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
+    if (this.paperRecoveryBlocked) blockers.push('PAPER_RECOVERY_BLOCKED');
     if (this.config.mode !== 'SHADOW')
       blockers.push(
         this.config.mode === 'LIVE' ? 'LIVE_MODE_NOT_DISABLED' : 'SHADOW_MODE_NOT_ENABLED',

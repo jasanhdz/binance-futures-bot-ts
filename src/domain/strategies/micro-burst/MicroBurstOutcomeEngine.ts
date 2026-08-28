@@ -18,7 +18,12 @@ import {
   EntryModelOutcome,
   CostComponents,
 } from './MicroBurstOutcomeTypes';
-import { MicroBurstConfig, defaultMicroBurstConfig } from './MicroBurstTypes';
+import {
+  MicroBurstConfig,
+  MicroBurstExitDecision,
+  defaultMicroBurstConfig,
+} from './MicroBurstTypes';
+import { evaluateMicroBurstExit } from './MicroBurstExitPolicy';
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -360,56 +365,61 @@ export function simulateDynamicExit(
 
   let peakPrice = entryPrice;
   let troughPrice = entryPrice;
-  let currentStopPrice = signal.structuralStopPrice;
+  let currentStopPrice: number | null = signal.structuralStopPrice;
 
   for (const trade of trajectory) {
     const currentPrice = trade.price;
     const timeInTradeMs = trade.eventTime - t0;
 
-    const stopTouched =
-      side === 'LONG' ? currentPrice <= currentStopPrice : currentPrice >= currentStopPrice;
-    if (stopTouched)
+    if (currentPrice > peakPrice) peakPrice = currentPrice;
+    if (currentPrice < troughPrice) troughPrice = currentPrice;
+    const stopTouched: boolean =
+      currentStopPrice !== null &&
+      (side === 'LONG' ? currentPrice <= currentStopPrice : currentPrice >= currentStopPrice);
+    const decision: MicroBurstExitDecision = stopTouched
+      ? {
+          action: 'CLOSE_MARKET' as const,
+          reason:
+            currentStopPrice === entryPrice
+              ? ('BREAK_EVEN' as const)
+              : ('HARD_INVALIDATION' as const),
+          diagnostics: {},
+        }
+      : evaluateMicroBurstExit(
+          {
+            unrealizedRoe: sideAwareReturnBps(entryPrice, currentPrice, side) / BPS_PER_UNIT,
+            priceReturn: (currentPrice - entryPrice) / entryPrice,
+            currentPrice,
+            entryPrice,
+            peakPrice,
+            troughPrice,
+            structuralInvalidationPrice: signal.structuralStopPrice,
+            destinationPrice: signal.destinationPrice,
+            currentStopPrice,
+            timeInTradeMs,
+            momentumDecayFlag: false,
+            anomalyExitFlag: false,
+            currentBookPressure: null,
+            currentBtcContext: null,
+            leverage: signal.leverage,
+          },
+          config,
+          side,
+        );
+    if (decision.action === 'CLOSE_MARKET')
       return priceExit(
         currentPrice,
         trade.eventTime,
         entryPrice,
         side,
-        currentStopPrice === entryPrice ? 'BREAK_EVEN' : 'HARD_INVALIDATION',
+        decision.reason as CounterfactualExitReason,
       );
-    if (
-      side === 'LONG'
-        ? currentPrice >= signal.destinationPrice
-        : currentPrice <= signal.destinationPrice
-    )
-      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'TARGET');
-    if (currentPrice > peakPrice) peakPrice = currentPrice;
-    if (currentPrice < troughPrice) troughPrice = currentPrice;
-    const favorableBps = sideAwareReturnBps(
-      entryPrice,
-      side === 'LONG' ? peakPrice : troughPrice,
-      side,
-    );
-    const adverseBps = -sideAwareReturnBps(
-      entryPrice,
-      side === 'LONG' ? troughPrice : peakPrice,
-      side,
-    );
-    if (timeInTradeMs < config.exitProofWindowMs && adverseBps >= config.exitImmediateAdverseBps)
-      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'EARLY_FAILURE');
-    const callbackBps =
-      side === 'LONG'
-        ? ((peakPrice - currentPrice) / peakPrice) * BPS_PER_UNIT
-        : ((currentPrice - troughPrice) / troughPrice) * BPS_PER_UNIT;
-    if (
-      favorableBps >= config.exitTrailingActivationBps &&
-      callbackBps >= config.exitTrailingCallbackBps
-    )
-      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'TRAILING');
-    if (favorableBps >= config.exitBreakEvenActivationBps) currentStopPrice = entryPrice;
-    if (timeInTradeMs >= config.exitProofWindowMs && favorableBps < config.exitMinProofExcursionBps)
-      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'EARLY_FAILURE');
-    if (timeInTradeMs >= config.exitMaxHoldMs)
-      return priceExit(currentPrice, trade.eventTime, entryPrice, side, 'MAX_HOLD');
+    if (decision.action === 'MOVE_STOP' && decision.requestedStopPrice !== undefined) {
+      currentStopPrice =
+        side === 'LONG'
+          ? Math.max(currentStopPrice ?? decision.requestedStopPrice, decision.requestedStopPrice)
+          : Math.min(currentStopPrice ?? decision.requestedStopPrice, decision.requestedStopPrice);
+    }
   }
 
   // Still holding at end of trajectory

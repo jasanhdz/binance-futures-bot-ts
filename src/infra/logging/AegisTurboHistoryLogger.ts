@@ -12,6 +12,7 @@ import {
 } from './StrategyHistoryLogger';
 import { StrategyId } from '../../domain/strategy/StrategyIdentity';
 import { Logger } from '../../app/ports/Logger';
+import path from 'path';
 
 export type AegisTurboVotes = StrategyVotes;
 export type AegisResearchStrategy = Extract<StrategyId, 'AEGIS_TURBO' | 'MOMENTUM_RIDE'>;
@@ -50,6 +51,7 @@ export class AegisTurboHistoryLogger extends StrategyHistoryLogger {
   constructor(options: { baseDir?: string; logger?: Logger } = {}) {
     super({
       ...options,
+      baseDir: options.baseDir ?? path.join(process.cwd(), 'logs', 'aegis'),
       filePrefixes: {
         signals: 'turbo_signals',
         trades: 'turbo_trades',
