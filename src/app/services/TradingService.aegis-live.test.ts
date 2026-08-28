@@ -701,8 +701,8 @@ function makeHarness(
 ) {
   setConfig(options.liveEnabled ?? true);
   const closeOrders = options.closeOrders ?? [
-    { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 2970 },
-    { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 3050 },
+    { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 2970, owner: 'BOT' },
+    { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 3050, owner: 'BOT' },
   ];
   const normalizeCloseOrders = (orders: any[], side: 'LONG' | 'SHORT') =>
     orders.map((order) => ({
@@ -737,20 +737,22 @@ function makeHarness(
     let closeOrdersCall = 0;
     listCloseOrdersForSide.mockImplementation(async (_symbol: string, side: 'LONG' | 'SHORT') => {
       const orders =
-        options.closeOrdersSequence![Math.min(closeOrdersCall++, options.closeOrdersSequence!.length - 1)] ??
-        [];
+        options.closeOrdersSequence![
+          Math.min(closeOrdersCall++, options.closeOrdersSequence!.length - 1)
+        ] ?? [];
       return normalizeCloseOrders(orders, side);
     });
   } else {
     listCloseOrdersForSide.mockImplementation(async (_symbol: string, side: 'LONG' | 'SHORT') => {
       if (options.closeOrders === undefined) {
-        const stop = exchange.placeStopClose.mock.calls[exchange.placeStopClose.mock.calls.length - 1];
+        const stop =
+          exchange.placeStopClose.mock.calls[exchange.placeStopClose.mock.calls.length - 1];
         const takeProfit =
           exchange.placeTpClose.mock.calls[exchange.placeTpClose.mock.calls.length - 1];
         return normalizeCloseOrders(
           [
-            { orderId: 'sl', type: 'STOP_MARKET', stopPrice: stop?.[2] },
-            { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: takeProfit?.[2] },
+            { orderId: 'sl', type: 'STOP_MARKET', stopPrice: stop?.[2], owner: 'BOT' },
+            { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: takeProfit?.[2], owner: 'BOT' },
           ],
           side,
         );
@@ -1677,12 +1679,8 @@ describe('TradingService Aegis live execution', () => {
     const entryStateSetOrder = state.set.mock.invocationCallOrder.find(
       (_: unknown, index: number) => state.set.mock.calls[index][0]?.lastBracketStatus === 'OK',
     )!;
-    expect(exchange.placeStopClose.mock.invocationCallOrder[0]).toBeLessThan(
-      entryStateSetOrder,
-    );
-    expect(exchange.placeTpClose.mock.invocationCallOrder[0]).toBeLessThan(
-      entryStateSetOrder,
-    );
+    expect(exchange.placeStopClose.mock.invocationCallOrder[0]).toBeLessThan(entryStateSetOrder);
+    expect(exchange.placeTpClose.mock.invocationCallOrder[0]).toBeLessThan(entryStateSetOrder);
     expect(state.set).toHaveBeenCalledWith(
       expect.objectContaining({
         currentRegime: 'AEGIS_TURBO',
@@ -4794,15 +4792,29 @@ describe('TradingService Aegis live execution', () => {
     await service.tick('ETHUSDT');
 
     const clientOrderIds = exchange.marketOpen.mock.calls.map((call: any[]) => call[3]);
-    expect(clientOrderIds).toEqual([
-      expect.any(String),
-      expect.any(String),
-      expect.any(String),
-    ]);
+    expect(clientOrderIds).toEqual([expect.any(String), expect.any(String), expect.any(String)]);
     expect(new Set(clientOrderIds)).toHaveLength(3);
-    expect(exchange.marketOpen).toHaveBeenNthCalledWith(1, 'ETHUSDT', 'LONG', 0.085, clientOrderIds[0]);
-    expect(exchange.marketOpen).toHaveBeenNthCalledWith(2, 'ETHUSDT', 'LONG', 0.076, clientOrderIds[1]);
-    expect(exchange.marketOpen).toHaveBeenNthCalledWith(3, 'ETHUSDT', 'LONG', 0.068, clientOrderIds[2]);
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(
+      1,
+      'ETHUSDT',
+      'LONG',
+      0.085,
+      clientOrderIds[0],
+    );
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(
+      2,
+      'ETHUSDT',
+      'LONG',
+      0.076,
+      clientOrderIds[1],
+    );
+    expect(exchange.marketOpen).toHaveBeenNthCalledWith(
+      3,
+      'ETHUSDT',
+      'LONG',
+      0.068,
+      clientOrderIds[2],
+    );
     expect(logger.warn).toHaveBeenCalledWith('shared_execution_quantity_retry', expect.any(Object));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({

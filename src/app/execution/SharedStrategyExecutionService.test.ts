@@ -65,6 +65,7 @@ function exchangeMock(): Exchange {
         positionSide: 'BOTH',
         workingType: 'MARK_PRICE',
         closePosition: true,
+        owner: 'BOT',
       },
       {
         orderId: 'tp',
@@ -74,6 +75,7 @@ function exchangeMock(): Exchange {
         positionSide: 'BOTH',
         workingType: 'MARK_PRICE',
         closePosition: true,
+        owner: 'BOT',
       },
     ]),
     cancelOrderById: vi.fn(),
@@ -170,6 +172,48 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
     expect(first).toMatchObject({ status: 'FAILED', reason: 'MARKET_OPEN_AMBIGUOUS' });
     expect(second).toMatchObject({ status: 'FAILED', reason: 'MARKET_OPEN_AMBIGUOUS' });
+    expect(exchange.marketOpen).toHaveBeenCalledOnce();
+  });
+
+  it('retains an unresolved market ambiguity across a service reconstruction', async () => {
+    let ambiguous = false;
+    const config = {
+      feeBufferPct: 0,
+      confirmationAttempts: 1,
+      confirmationDelaysMs: [0],
+      maxMarketOpenAttempts: 2,
+      marketOpenAmbiguityDelaysMs: [0, 0, 0, 0],
+      isMarketOpenAmbiguous: () => ambiguous,
+      markMarketOpenAmbiguous: () => {
+        ambiguous = true;
+      },
+    };
+    vi.mocked(exchange.marketOpen).mockRejectedValueOnce(new Error('transport timeout'));
+    const first = new SharedStrategyExecutionService(
+      exchange,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+      config,
+    );
+    await first.execute(intent());
+
+    const second = new SharedStrategyExecutionService(
+      exchange,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+      config,
+    );
+    const result = await second.execute(intent({ tradeId: 'AEGIS-ETHUSDT-restart' }));
+
+    expect(result).toMatchObject({ status: 'FAILED', reason: 'MARKET_OPEN_AMBIGUOUS' });
     expect(exchange.marketOpen).toHaveBeenCalledOnce();
   });
 
@@ -323,6 +367,27 @@ describe('SharedStrategyExecutionService protection policy', () => {
     expect(result).toMatchObject({ status: 'FAILED', reason: 'BRACKETS_FAILED' });
   });
 
+  it('does not accept a correctly shaped protection order without bot ownership', async () => {
+    vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([
+      {
+        orderId: 'unowned',
+        type: 'STOP_MARKET',
+        stopPrice: 99,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+      } as any,
+    ]);
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: false },
+      }),
+    );
+    expect(result).toMatchObject({ status: 'FAILED', reason: 'BRACKETS_FAILED' });
+  });
+
   it('reports recovery data without closing when fail-close is intentionally disabled', async () => {
     vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([]);
     const result = await service.execute(
@@ -420,6 +485,7 @@ describe('SharedStrategyExecutionService protection policy', () => {
         positionSide: 'BOTH',
         workingType: 'MARK_PRICE',
         closePosition: true,
+        owner: 'BOT',
       },
     ]);
     const result = await service.execute(
@@ -457,6 +523,7 @@ describe('SharedStrategyExecutionService protection policy', () => {
         positionSide: 'BOTH',
         workingType: 'MARK_PRICE',
         closePosition: true,
+        owner: 'BOT',
       },
     ]);
     const result = await service.execute(

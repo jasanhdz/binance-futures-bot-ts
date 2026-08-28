@@ -13,6 +13,9 @@ export interface SharedStrategyExecutionConfig {
   confirmationDelaysMs: number[];
   maxMarketOpenAttempts: number;
   marketOpenAmbiguityDelaysMs?: number[];
+  isMarketOpenAmbiguous?: (symbol: string) => boolean;
+  markMarketOpenAmbiguous?: (symbol: string, clientOrderId: string) => void;
+  clearMarketOpenAmbiguity?: (symbol: string) => void;
 }
 
 const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
@@ -46,7 +49,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       requestedAt: intent.requestedAt,
       ...intent.metadata,
     };
-    if (this.ambiguousSymbols.has(intent.symbol)) {
+    if (
+      this.ambiguousSymbols.has(intent.symbol) ||
+      this.config.isMarketOpenAmbiguous?.(intent.symbol) === true
+    ) {
       return failed(intent, 'MARKET_OPEN_AMBIGUOUS', {
         ...baseMetadata,
         reasonDetail: 'symbol_blocked_pending_market_open_reconciliation',
@@ -160,10 +166,12 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           if (!isRecoverableEntrySizeError(error)) {
             const reconciledOrder = await this.reconcileAmbiguousMarketOpen(intent, clientOrderId);
             if (reconciledOrder) {
+              this.config.clearMarketOpenAmbiguity?.(intent.symbol);
               order = reconciledOrder;
               break;
             }
             this.ambiguousSymbols.add(intent.symbol);
+            this.config.markMarketOpenAmbiguous?.(intent.symbol, clientOrderId);
             return failed(intent, 'MARKET_OPEN_AMBIGUOUS', {
               ...baseMetadata,
               clientOrderId,
@@ -757,7 +765,7 @@ function exactBracket(
   if (order.side !== (intent.side === 'LONG' ? 'SELL' : 'BUY')) return false;
   if (order.positionSide !== 'BOTH' && order.positionSide !== intent.side) return false;
   if (order.workingType !== 'MARK_PRICE') return false;
-  if (order.owner !== undefined && order.owner !== 'BOT') return false;
+  if (order.owner !== 'BOT') return false;
   // Quantity alone is not proof that an order closes this position.
   return order.closePosition === true || order.reduceOnly === true;
 }

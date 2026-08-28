@@ -44,7 +44,7 @@ const baselineOperationalDigests: Record<string, string> = {
     '12008748b58eb6212068374b6964bc403cc72f7f5e7035275a578da1855b670a',
 };
 
-  // Phase 1 owner-authorized architecture checkpoint. These are operational
+// Phase 1 owner-authorized architecture checkpoint. These are operational
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
@@ -52,7 +52,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   'src/app/services/TradingService.ts':
-    '62d332a38e3904ed353ad9152db6a9fb190cac1f078cfd7f4121d7bd4bd1f049',
+    '298ee509e6fea3787773e92e5457c994179f0c11b4468ac10df52f09da733ed0',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

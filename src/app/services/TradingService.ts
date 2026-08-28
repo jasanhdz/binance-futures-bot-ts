@@ -42,10 +42,7 @@ import { evaluateAegisExitEyeV2Shadow } from '../../domain/services/AegisExitEye
 import { inspectCurrentBrainCanonicalDecision } from '../../domain/services/CurrentBrainCanonicalDecision';
 import { buildAegisOperationalDispositionShadow } from '../../domain/services/AegisOperationalDispositionShadow';
 import { RegimeConfig } from '../ports/RegimeStrategy';
-import {
-  LiquidityVoidDetector,
-  LIQUIDITY_STRESS_INPUT_VERSION,
-} from './LiquidityVoidDetector';
+import { LiquidityVoidDetector, LIQUIDITY_STRESS_INPUT_VERSION } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
 import {
   AegisResearchStrategy,
@@ -303,6 +300,18 @@ export class TradingService {
       confirmationAttempts: 3,
       confirmationDelaysMs: [300, 500, 1000],
       maxMarketOpenAttempts: 6,
+      isMarketOpenAmbiguous: (symbol) =>
+        this.stateForSymbol(symbol).get().marketOpenAmbiguous === true,
+      markMarketOpenAmbiguous: (symbol, clientOrderId) =>
+        this.stateForSymbol(symbol).set({
+          marketOpenAmbiguous: true,
+          marketOpenClientOrderId: clientOrderId,
+        }),
+      clearMarketOpenAmbiguity: (symbol) =>
+        this.stateForSymbol(symbol).set({
+          marketOpenAmbiguous: false,
+          marketOpenClientOrderId: undefined,
+        }),
     });
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
     const momentumRuntimeMode =
@@ -1120,6 +1129,23 @@ export class TradingService {
     for (const symbol of this.getLiveAegisSymbols()) {
       const symbolState = this.stateForSymbol(symbol);
       const localState = symbolState.get();
+      if (
+        localState.mode !== 'IDLE' &&
+        this.isVerifiedBotOwnedState(localState) &&
+        !localState.lastOrderId
+      ) {
+        symbolState.set({
+          positionOwner: 'UNKNOWN',
+          tradeOrigin: 'UNKNOWN',
+          ownershipStatus: 'UNKNOWN',
+          eligibleForBotMetrics: false,
+          metricsExclusionReason: 'ENTRY_ORDER_ID_MISSING_AFTER_RESTART',
+        });
+        this.deps.logger.warn('aegis_bot_position_ownership_unresolved_after_restart', {
+          symbol,
+          reason: 'ENTRY_ORDER_ID_MISSING_AFTER_RESTART',
+        });
+      }
       if (localState.mode !== 'IDLE' && !this.isVerifiedBotOwnedState(localState)) {
         if (this.isLegacyBotOwnedState(localState)) {
           symbolState.set({
@@ -1470,8 +1496,9 @@ export class TradingService {
       const approximateBalance =
         startupWalletBalance !== null ? startupWalletBalance + marginUsed + pnl : null;
       const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
-      const tpOrder = openOrders.find((order) => order.type.includes('TAKE_PROFIT'));
-      const slOrder = openOrders.find((order) => order.type.includes('STOP'));
+      const ownedOpenOrders = openOrders.filter((order) => order.owner === 'BOT');
+      const tpOrder = ownedOpenOrders.find((order) => order.type.includes('TAKE_PROFIT'));
+      const slOrder = ownedOpenOrders.find((order) => order.type.includes('STOP'));
       const stopRoe = symbolState.lastStopRoe ?? symbolRegimeConfig?.hardStopRoe ?? -0.15;
       const takeProfitRoe = symbolState.lastTakeProfitRoe ?? symbolRegimeConfig?.tpRoe ?? 0.25;
 
@@ -2414,6 +2441,7 @@ export class TradingService {
       lastRequestedLeverage: policy.leverage,
       lastEntryAt: execution.openedAt,
       lastTradeId: tradeId,
+      lastOrderId: execution.orderId,
       lastStrategy: 'MOMENTUM_RIDE',
       lastStrategyVersion: identity.strategyVersion,
       lastStrategyHash: identity.strategyHash,
@@ -4342,6 +4370,7 @@ export class TradingService {
         lastEntryPrice: entryPrice,
         lastLeverage: leverage,
         lastEntryAt: openedAtMs,
+        lastOrderId: execution.orderId,
         peakRoe: 0,
         lowestRoe: 0,
         currentRegime: 'AEGIS_TURBO',

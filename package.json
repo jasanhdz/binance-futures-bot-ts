@@ -42,7 +42,6 @@
     "dotenv": "^17.2.1",
     "js-yaml": "^4.3.2",
     "node-cron": "^4.2.1",
-    "onnxruntime-node": "^1.22.0-rev",
     "ws": "^8.21.3"
   },
   "devDependencies": {
@@ -55,7 +54,7 @@
     "prettier": "^3.6.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4",
+    "vitest": "^3.2.7",
     "yargs": "^18.0.0"
   }
 }

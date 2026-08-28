@@ -141,7 +141,7 @@ export interface MicroBurstRuntimeDeps {
     persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
     hasAggTradeGap?(symbol: string, fromMs: number, toMs: number): boolean;
     flush?(): boolean | Promise<boolean>;
-    close?(): void | Promise<void>;
+    close?(): boolean | void | Promise<boolean | void>;
     getHealth(): {
       healthy: boolean;
       errorCount: number;
@@ -203,6 +203,7 @@ export class MicroBurstRuntime {
 
   async start(): Promise<void> {
     if (this.running) return;
+    if (this.stopPromise) this.stopPromise = null;
     if (!this.config.enabled || this.config.mode === 'OFF') {
       this.deps.logger.info('micro_burst_runtime_skip_start', {
         enabled: this.config.enabled,
@@ -442,7 +443,6 @@ export class MicroBurstRuntime {
 
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    if (!this.running) return Promise.resolve();
     this.running = false;
 
     if (this.evaluationTimer) {
@@ -473,14 +473,10 @@ export class MicroBurstRuntime {
     if (this.deps.outcomeTracker) {
       this.deps.outcomeTracker.flushPending(this.deps.clock.now());
     }
-    this.stopPromise = this.drainAndCloseStorage()
-      .then(() => {
-        this.reportHealth('graceful_shutdown');
-        this.deps.logger.info('micro_burst_runtime_stopped');
-      })
-      .finally(() => {
-        this.stopPromise = null;
-      });
+    this.stopPromise = this.drainAndCloseStorage().then(() => {
+      this.reportHealth('graceful_shutdown');
+      this.deps.logger.info('micro_burst_runtime_stopped');
+    });
     return this.stopPromise;
   }
 
@@ -637,7 +633,8 @@ export class MicroBurstRuntime {
     }
 
     const btcContext = this.btcProvider?.getBtcContext();
-    const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.receivedAtMs < 120_000;
+    const btcAgeMs = btcContext ? this.deps.clock.now() - btcContext.receivedAtMs : null;
+    const btcHealthy = btcAgeMs !== null && btcAgeMs >= 0 && btcAgeMs < 120_000;
 
     const archiveHealth = this.deps.marketStorage?.getHealth();
     const mutationAudit = this.deps.mutationAudit?.() ?? {
@@ -686,7 +683,8 @@ export class MicroBurstRuntime {
       if (state.book.getHealth() === 'HEALTHY') healthyBookCount++;
     }
     const btcContext = this.btcProvider?.getBtcContext();
-    const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.receivedAtMs < 120_000;
+    const btcAgeMs = btcContext ? this.deps.clock.now() - btcContext.receivedAtMs : null;
+    const btcHealthy = btcAgeMs !== null && btcAgeMs >= 0 && btcAgeMs < 120_000;
     const readiness = assessMicroBurstReadiness({
       codeSha: provenance?.codeCommitSha,
       configHash: provenance?.configHash,
@@ -909,12 +907,16 @@ export class MicroBurstRuntime {
     const storage = this.deps.marketStorage;
     if (!storage) return;
     try {
-      await storage.flush?.();
-      await storage.close?.();
+      const flushed = await storage.flush?.();
+      if (flushed === false) throw new Error('MICRO_BURST_STORAGE_FLUSH_FAILED');
+      const result = await storage.close?.();
+      if ((result as boolean | undefined) === false)
+        throw new Error('MICRO_BURST_STORAGE_CLOSE_FAILED');
     } catch (error) {
       this.deps.logger.error('micro_burst_runtime_storage_shutdown_failed', {
         error: String(error),
       });
+      throw error;
     }
   }
 }

@@ -75,6 +75,7 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
           positionSide: 'LONG',
           workingType: 'MARK_PRICE',
           closePosition: true,
+          owner: 'BOT',
         },
       ]),
       closeSideMarketSafe: vi.fn(),

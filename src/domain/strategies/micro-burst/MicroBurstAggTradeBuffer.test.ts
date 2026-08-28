@@ -133,15 +133,45 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('invalidates the window when aggregate trade ids prove a gap', () => {
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
-    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10, firstTradeId: 100, lastTradeId: 101 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12, firstTradeId: 200, lastTradeId: 201 }));
+    buffer.push(
+      makeTrade({
+        eventTime: NOW_MS - 5_000,
+        aggregateTradeId: 10,
+        firstTradeId: 100,
+        lastTradeId: 101,
+      }),
+    );
+    buffer.push(
+      makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12, firstTradeId: 200, lastTradeId: 201 }),
+    );
+    buffer.push(makeTrade({ eventTime: NOW_MS + 1, aggregateTradeId: 14 }));
     expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
+  });
+
+  it('repairs a provisional gap when an out-of-order aggregate arrives', () => {
+    const onGap = vi.fn();
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    buffer.push(makeTrade({ aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ aggregateTradeId: 12 }));
+    expect(buffer.getTakerFlow().gapFree).toBe(false);
+    buffer.push(makeTrade({ aggregateTradeId: 11 }));
+    expect(buffer.getTakerFlow().gapFree).toBe(true);
+    expect(onGap).not.toHaveBeenCalled();
   });
 
   it('uses aggregate ids even when raw first/last ids jump normally', () => {
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
-    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10, firstTradeId: 100, lastTradeId: 105 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11, firstTradeId: 200, lastTradeId: 205 }));
+    buffer.push(
+      makeTrade({
+        eventTime: NOW_MS - 5_000,
+        aggregateTradeId: 10,
+        firstTradeId: 100,
+        lastTradeId: 105,
+      }),
+    );
+    buffer.push(
+      makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11, firstTradeId: 200, lastTradeId: 205 }),
+    );
 
     expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: true, gapFree: true });
   });
@@ -168,8 +198,18 @@ describe('MicroBurstAggTradeBuffer', () => {
   it('emits the causal interval when aggregate trade ids prove a gap', () => {
     const onGap = vi.fn();
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
-    buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, aggregateTradeId: 10, firstTradeId: 100, lastTradeId: 101 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12, firstTradeId: 200, lastTradeId: 201 }));
+    buffer.push(
+      makeTrade({
+        eventTime: NOW_MS - 1_000,
+        aggregateTradeId: 10,
+        firstTradeId: 100,
+        lastTradeId: 101,
+      }),
+    );
+    buffer.push(
+      makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12, firstTradeId: 200, lastTradeId: 201 }),
+    );
+    buffer.push(makeTrade({ eventTime: NOW_MS + 1, aggregateTradeId: 14 }));
 
     expect(onGap).toHaveBeenCalledWith({
       previousAggregateTradeId: 10,
@@ -199,7 +239,8 @@ describe('MicroBurstAggTradeBuffer', () => {
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
     buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, aggregateTradeId: 10 }));
     buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS + 1, aggregateTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS + 1, aggregateTradeId: 14 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS + 2, aggregateTradeId: 14 }));
     expect(onGap).toHaveBeenCalledTimes(1);
   });
 
@@ -212,8 +253,8 @@ describe('MicroBurstAggTradeBuffer', () => {
 
     // The first gap expires; the second remains in the active event-time window.
     buffer.push(makeTrade({ eventTime: NOW_MS + 2_001, aggregateTradeId: 16 }));
-    expect(onGap).toHaveBeenCalledTimes(3);
-    expect((buffer as any).gapKeys).toEqual(new Set(['12:14', '14:16']));
+    expect(onGap).toHaveBeenCalledTimes(2);
+    expect((buffer as any).gapKeys).toEqual(new Set(['12:14']));
   });
 
   it('uses persisted relevant gaps and fails closed when the query fails', () => {

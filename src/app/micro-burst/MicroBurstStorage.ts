@@ -750,11 +750,19 @@ export class MicroBurstStorage {
     });
   }
 
-  close(): void {
-    this.safe(() => {
-      this.flush();
+  private closed = false;
+
+  close(): boolean {
+    if (this.closed) return this.health.healthy;
+    if (!this.flush()) return false;
+    try {
       this.db?.close();
-    });
+      this.closed = true;
+      return true;
+    } catch (error) {
+      this.markFailure(error);
+      return false;
+    }
   }
 
   getHealth(): StorageHealth {

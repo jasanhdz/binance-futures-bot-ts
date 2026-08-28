@@ -146,6 +146,16 @@ describe('MicroBurstRuntime', () => {
       firstTradeId: 12,
       lastTradeId: 12,
     });
+    callback!({
+      eventTime: 2_001,
+      receivedAtMs: 2_002,
+      price: '100',
+      quantity: '1',
+      isBuyerMaker: false,
+      aggregateTradeId: 14,
+      firstTradeId: 14,
+      lastTradeId: 14,
+    });
     expect(recordGap).toHaveBeenCalledWith(
       expect.objectContaining({
         feed: 'AGG_TRADE',
@@ -177,7 +187,12 @@ describe('MicroBurstRuntime', () => {
       trackSignal: () => {},
       observeTradeEvent,
       flushPending: () => {},
-      getHealth: () => ({ signalsObserved: 0, pendingOutcomes: 0, completedOutcomes: 0, outcomeErrors: 0 }),
+      getHealth: () => ({
+        signalsObserved: 0,
+        pendingOutcomes: 0,
+        completedOutcomes: 0,
+        outcomeErrors: 0,
+      }),
     };
     const runtime = new MicroBurstRuntime(deps, makeConfig({ marketArchive: { enabled: true } }));
     await runtime.start();
@@ -224,6 +239,22 @@ describe('MicroBurstRuntime', () => {
     expect(health.symbolCount).toBe(2);
     expect(health.running).toBe(true);
     expect(health.liveExecution).toBe(false);
+    await runtime.stop();
+  });
+
+  it('does not report a future BTC receive timestamp as healthy', async () => {
+    let now = 1_000;
+    deps.clock = { now: () => now };
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    await runtime.start();
+    (runtime as any).btcProvider = {
+      getBtcContext: () => ({ receivedAtMs: 2_000 }),
+      stop: vi.fn(),
+    };
+
+    expect(runtime.getHealth().btcHealthy).toBe(false);
+    now = 2_001;
+    expect(runtime.getHealth().btcHealthy).toBe(true);
     await runtime.stop();
   });
 
