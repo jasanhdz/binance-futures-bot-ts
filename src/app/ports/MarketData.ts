@@ -45,6 +45,25 @@ export interface OrderBookDepthLevel {
 
 export type OrderBookHealth = 'HEALTHY' | 'UNAVAILABLE' | 'STALE' | 'UNSYNCED' | 'ANOMALOUS';
 
+export type QuoteHealth = OrderBookHealth;
+
+export interface QuoteSnapshot {
+  readonly symbol: string;
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly mid: number | null;
+  readonly spread: number | null;
+  readonly spreadBps: number | null;
+  readonly health: QuoteHealth;
+  /** Local receive time of the underlying synchronized order-book observation. */
+  readonly observedAtMs: number | null;
+  readonly source: 'SYNCHRONIZED_ORDER_BOOK';
+}
+
+export interface QuotePort {
+  getQuote(): QuoteSnapshot;
+}
+
 export interface TemporalOrderBookObservation {
   observedAtMs: number;
   signedTopOfBookImbalance: number;

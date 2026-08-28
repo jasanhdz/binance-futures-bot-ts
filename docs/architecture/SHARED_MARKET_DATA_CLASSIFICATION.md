@@ -16,13 +16,13 @@
 
 ## 2. Existing shared foundation
 
-| Path | Classification | Decision |
-| --- | --- | --- |
-| `src/app/ports/MarketData.ts` | GENERIC_RAW_STATE / CONTRACT | Keep as existing broad compatibility capability. Introduce granular ports rather than endlessly widening it. |
-| `src/infra/adapters/MarketDataHub.ts` | GENERIC_TRANSPORT | Keep. It already shares one raw socket per route+stream among consumers. Do not build a second hub. |
-| `src/infra/adapters/MarketDataEndpoints.ts` | GENERIC_TRANSPORT | Keep as endpoint/routing authority. |
-| `src/infra/adapters/WebSocketManager.ts` | GENERIC_TRANSPORT / COMPATIBILITY | Audit consumers. Do not refactor as collateral during order-book extraction. |
-| `src/infra/adapters/BinanceAdapter.ts` market reads | GENERIC_TRANSPORT / READ-ONLY ADAPTER | Reuse read-only market methods; do not expose mutation surface to core market-data. |
+| Path                                                | Classification                        | Decision                                                                                                     |
+| --------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `src/app/ports/MarketData.ts`                       | GENERIC_RAW_STATE / CONTRACT          | Keep as existing broad compatibility capability. Introduce granular ports rather than endlessly widening it. |
+| `src/infra/adapters/MarketDataHub.ts`               | GENERIC_TRANSPORT                     | Keep. It already shares one raw socket per route+stream among consumers. Do not build a second hub.          |
+| `src/infra/adapters/MarketDataEndpoints.ts`         | GENERIC_TRANSPORT                     | Keep as endpoint/routing authority.                                                                          |
+| `src/infra/adapters/WebSocketManager.ts`            | GENERIC_TRANSPORT / COMPATIBILITY     | Audit consumers. Do not refactor as collateral during order-book extraction.                                 |
+| `src/infra/adapters/BinanceAdapter.ts` market reads | GENERIC_TRANSPORT / READ-ONLY ADAPTER | Reuse read-only market methods; do not expose mutation surface to core market-data.                          |
 
 ## 3. Micro Burst files containing generic market mechanics
 
@@ -41,6 +41,15 @@ observations. It has no strategy dependency.
 Owns one canonical order-book instance per normalized symbol and reference-counted
 consumer leases. It exposes only the read-only `OrderBookPort` capability and owns
 start/stop lifecycle transitions.
+
+### `src/core/market-data/OrderBookQuoteProvider.ts`
+
+**Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE`.
+
+Derives an immutable bid/ask/mid/spread quote from an existing canonical
+`OrderBookPort`. It preserves the source book health and observed receive timestamp,
+fails closed for unavailable, stale, unsynchronized, empty, invalid, or crossed
+source state, and does not create a quote subscription or ownership plane.
 
 ### `src/core/market-data/RollingAggTradeBuffer.ts`
 
@@ -168,6 +177,10 @@ Generic facts such as bid/ask/mid/mark should be shared. The preference/fallback
 
 **Wave:** L.
 
+**Wave 3A decision:** leave the provider unchanged. Its midpoint-first and mark-price
+fallback ordering remains Micro Burst policy; the neutral quote capability is
+available independently for future composition.
+
 ### `MicroBurstSupportResistance.ts`
 
 **Classification:** `DEFER / POSSIBLY NEUTRAL STRUCTURE`.
@@ -231,22 +244,22 @@ Exact paths are intentionally not frozen if they conflict with repository conven
 
 ## 8. Wave 1 migration map
 
-| Current | Target concept | Compatibility expectation |
-| --- | --- | --- |
-| neutral depth types in MB files | shared depth contracts | MB re-export/adapter allowed |
-| `SynchronizedOrderBook` | shared synchronized order-book provider | old name remains reference/wrapper until parity |
-| MB order-book health/state types | shared health/state types | no semantic reinterpretation |
-| temporal raw book observations | neutral book observations if required | pressure interpretation remains MB |
-| `MicroBurstBookPressureAnalyzer` | stays Micro Burst | no move |
+| Current                          | Target concept                          | Compatibility expectation                       |
+| -------------------------------- | --------------------------------------- | ----------------------------------------------- |
+| neutral depth types in MB files  | shared depth contracts                  | MB re-export/adapter allowed                    |
+| `SynchronizedOrderBook`          | shared synchronized order-book provider | old name remains reference/wrapper until parity |
+| MB order-book health/state types | shared health/state types               | no semantic reinterpretation                    |
+| temporal raw book observations   | neutral book observations if required   | pressure interpretation remains MB              |
+| `MicroBurstBookPressureAnalyzer` | stays Micro Burst                       | no move                                         |
 
 ## 9. Wave 2 migration map
 
-| Current | Target concept | Compatibility expectation |
-| --- | --- | --- |
-| `AggTradeEvent` under MB namespace | shared normalized AggTrade event | field parity |
-| `MicroBurstAggTradeBuffer` | shared rolling AggTrade state | MB wrapper/reference until parity |
-| `getTakerFlow()` neutral summary | shared flow-window summary | exact units/coverage semantics |
-| MB-specific use of flow | stays Micro Burst | no strategy behavior change |
+| Current                            | Target concept                   | Compatibility expectation         |
+| ---------------------------------- | -------------------------------- | --------------------------------- |
+| `AggTradeEvent` under MB namespace | shared normalized AggTrade event | field parity                      |
+| `MicroBurstAggTradeBuffer`         | shared rolling AggTrade state    | MB wrapper/reference until parity |
+| `getTakerFlow()` neutral summary   | shared flow-window summary       | exact units/coverage semantics    |
+| MB-specific use of flow            | stays Micro Burst                | no strategy behavior change       |
 
 ## 10. Important historical documentation caveat
 
