@@ -149,7 +149,55 @@ describe('MicroBurstAggTradeBuffer', () => {
       nextTradeId: 12,
       previousEventTimeMs: NOW_MS - 1_000,
       nextEventTimeMs: NOW_MS,
+      dedupeKey: '10:12',
     });
+  });
+
+  it('allows a gap after it expires from the active event-time window', () => {
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, firstTradeId: 10, lastTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
+    expect(buffer.getTakerFlow().gapFree).toBe(false);
+
+    buffer.push(makeTrade({ eventTime: NOW_MS + 5_001, firstTradeId: 13, lastTradeId: 13 }));
+    expect(buffer.getTakerFlow().gapFree).toBe(true);
+  });
+
+  it('deduplicates a replayed sequence discontinuity', () => {
+    const onGap = vi.fn();
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, firstTradeId: 10, lastTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS + 1, firstTradeId: 12, lastTradeId: 12 }));
+    expect(onGap).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses persisted relevant gaps and fails closed when the query fails', () => {
+    const query = vi.fn(() => true);
+    const buffer = new MicroBurstAggTradeBuffer(
+      { now: () => NOW_MS },
+      100,
+      5_000,
+      undefined,
+      query,
+    );
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS }));
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
+    expect(query).toHaveBeenCalledWith(NOW_MS - 5_000, NOW_MS);
+
+    const failing = new MicroBurstAggTradeBuffer(
+      { now: () => NOW_MS },
+      100,
+      5_000,
+      undefined,
+      () => {
+        throw new Error('storage unavailable');
+      },
+    );
+    failing.push(makeTrade({ eventTime: NOW_MS - 5_000 }));
+    failing.push(makeTrade({ eventTime: NOW_MS }));
+    expect(failing.getTakerFlow().gapFree).toBe(false);
   });
 
   it('getTakerFlow computes buy/sell volumes', () => {

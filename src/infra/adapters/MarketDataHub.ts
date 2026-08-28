@@ -28,6 +28,7 @@ export interface MarketDataStreamHealth {
   consumers: number;
   status: 'connecting' | 'open' | 'reconnecting';
   lastMessageAtMs?: number;
+  reconnectCount: number;
 }
 
 type StreamConnection = {
@@ -35,6 +36,7 @@ type StreamConnection = {
   socket?: RawWebSocket;
   status: 'connecting' | 'open' | 'reconnecting';
   lastMessageAtMs?: number;
+  reconnectCount: number;
   reconnectTimer?: NodeJS.Timeout;
   intentionallyClosed: boolean;
   descriptor: MarketDataEndpointDescriptor;
@@ -75,6 +77,7 @@ export class MarketDataHub {
         consumers: new Set(),
         status: 'connecting',
         intentionallyClosed: false,
+        reconnectCount: 0,
         descriptor,
       };
       this.connections.set(key, connection);
@@ -96,6 +99,7 @@ export class MarketDataHub {
       consumers: connection.consumers.size,
       status: connection.status,
       lastMessageAtMs: connection.lastMessageAtMs,
+      reconnectCount: connection.reconnectCount,
     }));
   }
 
@@ -204,6 +208,7 @@ export class MarketDataHub {
   private scheduleReconnect(key: string, stream: string, connection: StreamConnection): void {
     if (this.closed || connection.consumers.size === 0 || connection.reconnectTimer) return;
     connection.status = 'reconnecting';
+    connection.reconnectCount++;
     connection.reconnectTimer = setTimeout(() => {
       connection.reconnectTimer = undefined;
       this.open(key, stream, connection);

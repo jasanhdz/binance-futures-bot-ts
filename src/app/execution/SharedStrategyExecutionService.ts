@@ -158,10 +158,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             throw error;
           }
           if (!isRecoverableEntrySizeError(error)) {
-            const reconciledOrder = await this.reconcileAmbiguousMarketOpen(
-              intent,
-              clientOrderId,
-            );
+            const reconciledOrder = await this.reconcileAmbiguousMarketOpen(intent, clientOrderId);
             if (reconciledOrder) {
               order = reconciledOrder;
               break;
@@ -760,6 +757,7 @@ function exactBracket(
   if (order.side !== (intent.side === 'LONG' ? 'SELL' : 'BUY')) return false;
   if (order.positionSide !== 'BOTH' && order.positionSide !== intent.side) return false;
   if (order.workingType !== 'MARK_PRICE') return false;
+  if (order.owner !== undefined && order.owner !== 'BOT') return false;
   // Quantity alone is not proof that an order closes this position.
   return order.closePosition === true || order.reduceOnly === true;
 }

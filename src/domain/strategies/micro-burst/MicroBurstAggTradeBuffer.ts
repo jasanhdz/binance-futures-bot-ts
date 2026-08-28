@@ -13,6 +13,15 @@ export interface MicroBurstAggTradeGap {
   nextTradeId: number;
   previousEventTimeMs: number | null;
   nextEventTimeMs: number;
+  dedupeKey: string;
+}
+
+interface AggTradeGapInterval {
+  startedAtMs: number;
+  endedAtMs: number;
+  previousTradeId: number;
+  nextTradeId: number;
+  dedupeKey: string;
 }
 
 export class MicroBurstAggTradeBuffer {
@@ -22,7 +31,8 @@ export class MicroBurstAggTradeBuffer {
   private eventWatermarkMs: number | null = null;
   private coverageStartedAtMs: number | null = null;
   private lastCapacityEvictedEventTime: number | null = null;
-  private gapFree = true;
+  private readonly gapIntervals: AggTradeGapInterval[] = [];
+  private readonly gapKeys = new Set<string>();
   private lastTradeId: number | null = null;
   private lastTradeEventTimeMs: number | null = null;
 
@@ -31,6 +41,7 @@ export class MicroBurstAggTradeBuffer {
     maxSize = DEFAULT_EMERGENCY_MAX_BUFFER_SIZE,
     maxAgeMs = DEFAULT_MAX_AGE_MS,
     private readonly onGap?: (gap: MicroBurstAggTradeGap) => void,
+    private readonly hasPersistedGap?: (fromMs: number, toMs: number) => boolean,
   ) {
     // Retain the clock argument for source compatibility. Event time is the sole retention clock.
     void clock;
@@ -50,17 +61,33 @@ export class MicroBurstAggTradeBuffer {
       event.firstTradeId !== undefined &&
       event.firstTradeId > this.lastTradeId + 1
     ) {
-      this.gapFree = false;
-      this.onGap?.({
-        previousTradeId: this.lastTradeId,
-        nextTradeId: event.firstTradeId,
-        previousEventTimeMs: this.lastTradeEventTimeMs,
-        nextEventTimeMs: event.eventTime,
-      });
+      const previousTradeId = this.lastTradeId;
+      const nextTradeId = event.firstTradeId;
+      const dedupeKey = `${previousTradeId}:${nextTradeId}`;
+      if (!this.gapKeys.has(dedupeKey)) {
+        this.gapKeys.add(dedupeKey);
+        this.gapIntervals.push({
+          startedAtMs: this.lastTradeEventTimeMs ?? event.eventTime,
+          endedAtMs: event.eventTime,
+          previousTradeId,
+          nextTradeId,
+          dedupeKey,
+        });
+        this.onGap?.({
+          previousTradeId,
+          nextTradeId,
+          previousEventTimeMs: this.lastTradeEventTimeMs,
+          nextEventTimeMs: event.eventTime,
+          dedupeKey,
+        });
+      }
     }
     if (event.lastTradeId !== undefined)
       this.lastTradeId = Math.max(this.lastTradeId ?? -1, event.lastTradeId);
-    this.lastTradeEventTimeMs = Math.max(this.lastTradeEventTimeMs ?? event.eventTime, event.eventTime);
+    this.lastTradeEventTimeMs = Math.max(
+      this.lastTradeEventTimeMs ?? event.eventTime,
+      event.eventTime,
+    );
     this.pruneExpired();
     if (event.eventTime <= this.eventWatermarkMs - this.maxAgeMs) return;
 
@@ -100,6 +127,7 @@ export class MicroBurstAggTradeBuffer {
   } {
     const requestedWindowMs = maxAgeMs ?? this.maxAgeMs;
     const recent = this.getRecent(requestedWindowMs);
+    const gapFree = this.isCurrentWindowGapFree(requestedWindowMs);
     let buyVolume = 0;
     let sellVolume = 0;
 
@@ -130,12 +158,12 @@ export class MicroBurstAggTradeBuffer {
         this.coverageStartedAtMs !== null &&
         this.eventWatermarkMs !== null &&
         this.eventWatermarkMs - this.coverageStartedAtMs >= requestedWindowMs &&
-        this.gapFree &&
+        gapFree &&
         !(
           this.lastCapacityEvictedEventTime !== null &&
           this.lastCapacityEvictedEventTime > this.eventWatermarkMs - requestedWindowMs
         ),
-      gapFree: this.gapFree,
+      gapFree,
     };
   }
 
@@ -144,7 +172,8 @@ export class MicroBurstAggTradeBuffer {
     this.eventWatermarkMs = null;
     this.coverageStartedAtMs = null;
     this.lastCapacityEvictedEventTime = null;
-    this.gapFree = true;
+    this.gapIntervals.length = 0;
+    this.gapKeys.clear();
     this.lastTradeId = null;
     this.lastTradeEventTimeMs = null;
   }
@@ -158,6 +187,23 @@ export class MicroBurstAggTradeBuffer {
     const cutoff = this.eventWatermarkMs - this.maxAgeMs;
     while (this.buffer.length > 0 && this.buffer[0].eventTime <= cutoff) {
       this.buffer.shift();
+    }
+    while (this.gapIntervals.length > 0 && this.gapIntervals[0].endedAtMs < cutoff) {
+      this.gapIntervals.shift();
+    }
+  }
+
+  private isCurrentWindowGapFree(requestedWindowMs: number): boolean {
+    if (this.eventWatermarkMs === null) return true;
+    const fromMs = this.eventWatermarkMs - requestedWindowMs;
+    const inMemoryGap = this.gapIntervals.some(
+      (gap) => gap.startedAtMs <= this.eventWatermarkMs! && gap.endedAtMs >= fromMs,
+    );
+    if (inMemoryGap) return false;
+    try {
+      return !(this.hasPersistedGap?.(fromMs, this.eventWatermarkMs) ?? false);
+    } catch {
+      return false;
     }
   }
 }

@@ -151,6 +151,10 @@ export class WebSocketManager {
     this.userCleanup = undefined;
   }
 
+  public getMarketDataHealth() {
+    return this.marketDataHub.getHealth();
+  }
+
   public simulateChaos(durationMs: number): void {
     this.logger.warn('market_data_ws_chaos', { durationMs });
     this.marketDataHub.reconnectAll();

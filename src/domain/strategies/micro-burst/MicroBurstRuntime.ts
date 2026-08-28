@@ -22,6 +22,7 @@ import { MicroBurstSignalJournal } from './MicroBurstSignalJournal';
 import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
 import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
 import { assessMicroBurstReadiness, MicroBurstReadinessResult } from './MicroBurstReadiness';
+import { GapKind, MarketDataFeed } from '../../../app/micro-burst/MicroBurstMarketData';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -124,18 +125,19 @@ export interface MicroBurstRuntimeDeps {
     };
   };
   marketStorage?: {
+    appendTrade?(event: Record<string, unknown>): boolean;
     appendDepth(event: Record<string, unknown>): boolean;
     recordGap?(gap: {
       symbol: string;
       startedAtMs: number;
       endedAtMs: number;
       reason: string;
-      kind?: string;
-      feed?: string;
+      kind?: GapKind;
+      feed?: MarketDataFeed;
       [key: string]: unknown;
     }): boolean;
     persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
-    countOutcomeBlockingGaps?(): number;
+    hasAggTradeGap?(symbol: string, fromMs: number, toMs: number): boolean;
     flush?(): boolean | Promise<boolean>;
     close?(): void | Promise<void>;
     getHealth(): {
@@ -160,6 +162,13 @@ export interface MicroBurstRuntimeDeps {
     configHash: string;
     cohortId: string;
     officialCohortReady: boolean;
+  };
+  readinessEvidence?: {
+    mutationAuditAvailable?: boolean;
+    manifestValid?: boolean;
+    schemaValid?: boolean;
+    episodeDefinitionValid?: boolean;
+    costSemanticsValid?: boolean;
   };
 }
 
@@ -223,6 +232,7 @@ export class MicroBurstRuntime {
 
     const btcDeps: BtcMicroContextDeps = {
       getCandles: (sym, interval, limit) => exchange.getCandles(sym, interval, limit),
+      getExchangeTime: () => exchange.getServerTime(),
       logger,
     };
     this.btcProvider = new BtcMicroContextProvider('BTCUSDT', btcDeps, clock);
@@ -269,7 +279,25 @@ export class MicroBurstRuntime {
       };
 
       const book = new SynchronizedOrderBook(symbol, bookDeps);
-      const aggTradeBuffer = new MicroBurstAggTradeBuffer(clock);
+      const aggTradeBuffer = new MicroBurstAggTradeBuffer(
+        clock,
+        undefined,
+        undefined,
+        (gap) => {
+          this.deps.marketStorage?.recordGap?.({
+            symbol,
+            startedAtMs: gap.previousEventTimeMs ?? gap.nextEventTimeMs,
+            endedAtMs: gap.nextEventTimeMs,
+            reason: 'AGG_TRADE_SEQUENCE_GAP',
+            kind: 'AGG_TRADE_SEQUENCE',
+            feed: 'AGG_TRADE',
+            previousTradeId: gap.previousTradeId,
+            nextTradeId: gap.nextTradeId,
+            dedupeKey: gap.dedupeKey,
+          });
+        },
+        (fromMs, toMs) => this.deps.marketStorage?.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,
+      );
 
       const refPriceDeps: MicroBurstReferencePriceDeps = {
         getMarkPrice: (sym: string) => exchange.getMarkPrice(sym),
@@ -307,6 +335,17 @@ export class MicroBurstRuntime {
             lastTradeId: trade.lastTradeId,
           };
           aggTradeBuffer.push(event);
+          this.deps.marketStorage?.appendTrade?.({
+            symbol,
+            eventTime: trade.eventTime,
+            receivedAtMs: trade.receivedAtMs ?? this.deps.clock.now(),
+            price: Number(trade.price),
+            quantity: Number(trade.quantity),
+            isBuyerMaker: trade.isBuyerMaker,
+            aggregateTradeId: trade.aggregateTradeId,
+            firstTradeId: trade.firstTradeId,
+            lastTradeId: trade.lastTradeId,
+          });
 
           // M3: Forward trade events to outcome tracker
           if (this.deps.outcomeTracker) {
@@ -661,13 +700,13 @@ export class MicroBurstRuntime {
       storageErrors: archiveHealth?.errorCount,
       databaseValid: archive !== undefined && archiveHealth?.healthy === true,
       preregistrationEnabled: this.config.prospectiveValidation?.enabled === true,
-      mutationAuditAvailable: undefined,
-      unresolvedTradeGaps: archive?.countOutcomeBlockingGaps?.(),
-      manifestValid: undefined,
-      schemaValid: undefined,
-      episodeDefinitionValid: undefined,
+      mutationAuditAvailable: this.deps.readinessEvidence?.mutationAuditAvailable,
+      unresolvedTradeGaps: this.countCurrentAggTradeGaps(),
+      manifestValid: this.deps.readinessEvidence?.manifestValid,
+      schemaValid: this.deps.readinessEvidence?.schemaValid,
+      episodeDefinitionValid: this.deps.readinessEvidence?.episodeDefinitionValid,
       gapSemanticsValid: true,
-      costSemanticsValid: undefined,
+      costSemanticsValid: this.deps.readinessEvidence?.costSemanticsValid,
       outcomeJournalHealthy: this.deps.outcomeTracker?.getHealth().journalHealthy ?? true,
       symbolBlockers: this.getSymbolReadinessBlockers(),
     });
@@ -779,6 +818,25 @@ export class MicroBurstRuntime {
       blockers[symbol] = reasons;
     }
     return blockers;
+  }
+
+  private countCurrentAggTradeGaps(): number | undefined {
+    const storage = this.deps.marketStorage;
+    if (!storage?.hasAggTradeGap) return undefined;
+    let count = 0;
+    for (const [symbol, state] of this.symbolStates) {
+      const flow = state.aggTradeBuffer.getTakerFlow();
+      if (flow.eventWatermarkMs === null) continue;
+      if (
+        storage.hasAggTradeGap(
+          symbol,
+          flow.eventWatermarkMs - flow.requestedWindowMs,
+          flow.eventWatermarkMs,
+        )
+      )
+        count++;
+    }
+    return count;
   }
 
   private startEvaluationLoop(): void {

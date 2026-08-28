@@ -517,6 +517,14 @@ export class BinanceExchange implements Exchange {
     this.wsManager.simulateChaos(durationMs);
   }
 
+  public getMarketDataHealth() {
+    return this.wsManager.getMarketDataHealth();
+  }
+
+  public disconnectMarketData(): void {
+    this.wsManager.disconnectAll();
+  }
+
   async getMarkPrice(symbol: string) {
     const cached = this.markCache.get(symbol);
     const now = Date.now();

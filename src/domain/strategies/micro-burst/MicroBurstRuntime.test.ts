@@ -109,6 +109,54 @@ describe('MicroBurstRuntime', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(4);
   });
 
+  it('persists typed AggTrade sequence gaps from the production callback', async () => {
+    let callback: ((trade: any) => void) | undefined;
+    const recordGap = vi.fn(() => true);
+    deps.exchange.subscribeToAggTrades = vi.fn((_symbol, next) => {
+      callback = next;
+      return () => {};
+    });
+    deps.marketStorage = {
+      appendDepth: () => true,
+      appendTrade: () => true,
+      recordGap,
+      hasAggTradeGap: () => false,
+      persistCheckpoint: () => true,
+      getHealth: () => ({ healthy: true, errorCount: 0, queueDepth: 0, queueCapacity: 10 }),
+    };
+    const runtime = new MicroBurstRuntime(deps, makeConfig({ marketArchive: { enabled: true } }));
+    await runtime.start();
+    callback!({
+      eventTime: 1_000,
+      receivedAtMs: 1_001,
+      price: '100',
+      quantity: '1',
+      isBuyerMaker: false,
+      firstTradeId: 10,
+      lastTradeId: 10,
+    });
+    callback!({
+      eventTime: 2_000,
+      receivedAtMs: 2_001,
+      price: '100',
+      quantity: '1',
+      isBuyerMaker: false,
+      firstTradeId: 12,
+      lastTradeId: 12,
+    });
+    expect(recordGap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        feed: 'AGG_TRADE',
+        kind: 'AGG_TRADE_SEQUENCE',
+        previousTradeId: 10,
+        nextTradeId: 12,
+        startedAtMs: 1_000,
+        endedAtMs: 2_000,
+      }),
+    );
+    await runtime.stop();
+  });
+
   it('does not start when mode is OFF', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'OFF' }));
     await runtime.start();

@@ -27,6 +27,8 @@ function computeAcceleration(ret1m: number, ret3m: number): number {
 
 export interface BtcMicroContextDeps {
   getCandles(symbol: string, interval: string, limit: number): Promise<BtcCandleObservation[]>;
+  /** Exchange/server time used only to select causally closed candles. */
+  getExchangeTime?(): Promise<number>;
   logger: Logger;
 }
 
@@ -88,7 +90,12 @@ export class BtcMicroContextProvider {
     try {
       const candles = await this.deps.getCandles(this.btcSymbol, '1m', 60);
       if (lifecycleVersion !== this.lifecycleVersion) return;
-      const now = this.clock.now();
+      const localReceivedAtMs = this.clock.now();
+      const exchangeSnapshotTimeMs = this.deps.getExchangeTime
+        ? await this.deps.getExchangeTime()
+        : Math.max(...candles.map((candle) => candle.closeTime));
+      if (lifecycleVersion !== this.lifecycleVersion) return;
+      if (!Number.isFinite(exchangeSnapshotTimeMs)) return;
 
       for (const candle of candles) {
         const obs: BtcCandleObservation = {
@@ -110,10 +117,10 @@ export class BtcMicroContextProvider {
         this.candleBuffer.shift();
       }
 
-      const returns = this.computeReturns(now);
+      const returns = this.computeReturns(exchangeSnapshotTimeMs);
       if (returns) {
         this.lastObservationMs = returns.observedAtMs;
-        this.lastReceivedAtMs = now;
+        this.lastReceivedAtMs = localReceivedAtMs;
         this.lastDirection = returns.direction;
         this.lastRet1m = returns.ret1m;
         this.lastRet3m = returns.ret3m;
@@ -134,7 +141,7 @@ export class BtcMicroContextProvider {
     if (this.lastObservationMs === 0) return undefined;
 
     const now = this.clock.now();
-    if (now - this.lastReceivedAtMs > this.staleThresholdMs) return undefined;
+    if (Math.max(0, now - this.lastReceivedAtMs) > this.staleThresholdMs) return undefined;
 
     return {
       ret1m: this.lastRet1m,

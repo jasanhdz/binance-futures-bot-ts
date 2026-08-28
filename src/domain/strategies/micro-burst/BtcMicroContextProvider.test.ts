@@ -98,7 +98,10 @@ describe('BtcMicroContextProvider', () => {
   it('returns undefined when stale', async () => {
     const candles = makeCandles(6, NOW_MS - 600_000);
     const deps = createDeps(candles);
-    const clock = vi.fn().mockReturnValueOnce(NOW_MS).mockReturnValue(NOW_MS + 10_001);
+    const clock = vi
+      .fn()
+      .mockReturnValueOnce(NOW_MS)
+      .mockReturnValue(NOW_MS + 10_001);
     const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: clock }, 120, 10_000);
 
     await provider.pollCandles();
@@ -155,6 +158,41 @@ describe('BtcMicroContextProvider', () => {
     const atSameTime = buffered.filter((c) => c.closeTime === NOW_MS - 60_000);
     expect(atSameTime).toHaveLength(1);
     expect(atSameTime[0].close).toBe(60010);
+  });
+
+  it('uses exchange snapshot time, not local clock skew, for causal candle selection', async () => {
+    const candles = makeCandles(6, NOW_MS - 300_000);
+    const exchangeTime = vi.fn().mockResolvedValue(NOW_MS);
+    const makeProvider = (localNow: number) =>
+      new BtcMicroContextProvider(
+        'BTCUSDT',
+        { ...createDeps(candles), getExchangeTime: exchangeTime },
+        { now: () => localNow },
+      );
+
+    const behind = makeProvider(NOW_MS - 5_000);
+    const ahead = makeProvider(NOW_MS + 5_000);
+    await behind.pollCandles();
+    await ahead.pollCandles();
+
+    expect(behind.getBtcContext()).toMatchObject({ observedAtMs: NOW_MS });
+    expect(ahead.getBtcContext()).toMatchObject({ observedAtMs: NOW_MS });
+    expect(behind.getBtcContext()?.ret3m).toBe(ahead.getBtcContext()?.ret3m);
+    expect(exchangeTime).toHaveBeenCalledTimes(2);
+  });
+
+  it('excludes a future exchange candle even when the local clock is ahead', async () => {
+    const candles = makeCandles(6, NOW_MS - 300_000);
+    candles[5] = makeCandle(70000, NOW_MS + 5_000);
+    const deps = {
+      ...createDeps(candles),
+      getExchangeTime: vi.fn().mockResolvedValue(NOW_MS),
+    };
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS + 5_000 });
+
+    await provider.pollCandles();
+
+    expect(provider.getBtcContext()).toBeUndefined();
   });
 
   it('polls continuously without overlapping requests and stops cleanly', async () => {

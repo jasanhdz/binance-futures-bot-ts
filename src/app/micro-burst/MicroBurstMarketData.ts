@@ -1,7 +1,12 @@
 /** Typed, lossless envelopes for the feeds used by Micro Burst. */
 
 export type MarketDataFeed = 'AGG_TRADE' | 'DEPTH' | 'MARK_PRICE' | 'CANDLE' | 'BTC_CONTEXT';
-export type GapKind = 'DEPTH_SEQUENCE' | 'SUBSCRIPTION' | 'ARCHIVE' | 'UNKNOWN_LEGACY';
+export type GapKind =
+  | 'AGG_TRADE_SEQUENCE'
+  | 'DEPTH_SEQUENCE'
+  | 'SUBSCRIPTION'
+  | 'ARCHIVE'
+  | 'UNKNOWN_LEGACY';
 
 export interface AggTradeEvent {
   feed: 'AGG_TRADE';

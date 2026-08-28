@@ -535,10 +535,16 @@ export class MicroBurstStorage {
   }): boolean {
     return this.safe(() => {
       const feed = gap.feed ?? feedForDataType(gap.dataType);
+      const detailsJson = JSON.stringify(gap);
       this.db
         .prepare(
           `INSERT INTO market_data_gaps (symbol, started_at_ms, ended_at_ms, reason, gap_kind, feed, details_json, created_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE NOT EXISTS (
+            SELECT 1 FROM market_data_gaps
+             WHERE symbol = ? AND started_at_ms = ? AND ended_at_ms = ?
+               AND reason = ? AND gap_kind = ? AND feed IS ? AND details_json = ?
+          )`,
         )
         .run(
           gap.symbol,
@@ -547,8 +553,15 @@ export class MicroBurstStorage {
           gap.reason,
           gap.kind ?? gapKindForReason(gap.reason),
           feed ?? null,
-          JSON.stringify(gap),
+          detailsJson,
           this.now(),
+          gap.symbol,
+          gap.startedAtMs,
+          gap.endedAtMs,
+          gap.reason,
+          gap.kind ?? gapKindForReason(gap.reason),
+          feed ?? null,
+          detailsJson,
         );
     });
   }
@@ -688,12 +701,7 @@ export class MicroBurstStorage {
     );
   }
 
-  hasGapForFeed(
-    symbol: string,
-    fromMs: number,
-    toMs: number,
-    feed: MarketDataFeed,
-  ): boolean {
+  hasGapForFeed(symbol: string, fromMs: number, toMs: number, feed: MarketDataFeed): boolean {
     return this.safeValue(
       () =>
         Boolean(
@@ -709,6 +717,10 @@ export class MicroBurstStorage {
     );
   }
 
+  hasAggTradeGap(symbol: string, fromMs: number, toMs: number): boolean {
+    return this.hasGapForFeed(symbol, fromMs, toMs, 'AGG_TRADE');
+  }
+
   countOutcomeBlockingGaps(symbols?: ReadonlySet<string>): number {
     return this.queryGaps().filter(
       (gap) =>
@@ -719,7 +731,10 @@ export class MicroBurstStorage {
 
   countRequiredFeedGaps(symbols?: ReadonlySet<string>): number {
     return this.queryGaps().filter(
-      (gap) => (!symbols || symbols.has(gap.symbol)) && gap.kind !== 'UNKNOWN_LEGACY' && gap.feed === 'AGG_TRADE',
+      (gap) =>
+        (!symbols || symbols.has(gap.symbol)) &&
+        gap.kind !== 'UNKNOWN_LEGACY' &&
+        gap.feed === 'AGG_TRADE',
     ).length;
   }
 
@@ -1452,6 +1467,7 @@ export class MicroBurstStorage {
 }
 
 function gapKindForReason(reason: string): GapKind {
+  if (reason === 'AGG_TRADE_SEQUENCE_GAP') return 'AGG_TRADE_SEQUENCE';
   if (reason.startsWith('depth_') || reason === 'sequence_gap') return 'DEPTH_SEQUENCE';
   if (reason.startsWith('subscription_')) return 'SUBSCRIPTION';
   if (

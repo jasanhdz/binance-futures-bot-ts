@@ -25,6 +25,8 @@
     "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts",
     "micro-burst:shadow-smoke": "npx tsx scripts/micro-burst-shadow-smoke.ts",
     "micro-burst:shadow-soak": "npx tsx scripts/micro-burst-shadow-soak.ts",
+    "micro-burst:production-path-smoke": "npx tsx scripts/micro-burst-production-path-shadow-smoke.ts",
+    "micro-burst:m3_2_6_3-soak": "npx tsx scripts/micro-burst-m3_2_6_3-soak.ts",
     "micro-burst:production-soak": "npm run build && bash scripts/run-micro-burst-m3_2_1-soak.sh",
     "micro-burst:production-soak-m3_2_2": "bash scripts/run-micro-burst-m3_2_2-soak.sh",
     "micro-burst:pre-cohort-audit": "npx tsx scripts/micro-burst-pre-cohort-audit.ts",
