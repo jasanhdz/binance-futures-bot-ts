@@ -210,6 +210,7 @@ export class MicroBurstRuntime {
   private readonly paperTrading = new MicroBurstPaperTrading(defaultMicroBurstConfig());
   private readonly paperTradeJournal: MicroBurstPaperTradeJournal;
   private paperRecoveryBlocked = false;
+  private paperPersistenceError: string | null = null;
 
   constructor(
     private readonly deps: MicroBurstRuntimeDeps,
@@ -533,6 +534,8 @@ export class MicroBurstRuntime {
       } catch (error) {
         failures.push(`paper trade journal: ${String(error)}`);
       }
+      if (this.paperPersistenceError)
+        failures.push(`paper trade persistence: ${this.paperPersistenceError}`);
       try {
         await this.drainAndCloseStorage();
       } catch (error) {
@@ -784,7 +787,14 @@ export class MicroBurstRuntime {
       },
     });
     if (!result) return;
-    this.paperTradeJournal.appendPosition(result.position);
+    try {
+      this.paperTradeJournal.appendPosition(result.position);
+    } catch (error) {
+      this.paperPersistenceError = String(error);
+      this.paperRecoveryBlocked = true;
+      this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });
+      return;
+    }
     if (result.events.length > 0 || result.position.state === 'CLOSED') {
       for (const lifecycleEvent of result.events) this.persistPaperEvent(lifecycleEvent);
     }
@@ -794,14 +804,28 @@ export class MicroBurstRuntime {
     position: Parameters<MicroBurstPaperTradeJournal['appendPosition']>[0],
     event: Parameters<MicroBurstPaperTradeJournal['appendEvent']>[0],
   ): void {
-    this.paperTradeJournal.appendPosition(position);
+    try {
+      this.paperTradeJournal.appendPosition(position);
+    } catch (error) {
+      this.paperPersistenceError = String(error);
+      this.paperRecoveryBlocked = true;
+      this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });
+      return;
+    }
     this.persistPaperEvent(event);
   }
 
   private persistPaperEvent(
     event: Parameters<MicroBurstPaperTradeJournal['appendEvent']>[0],
   ): void {
-    this.paperTradeJournal.appendEvent(event);
+    try {
+      this.paperTradeJournal.appendEvent(event);
+    } catch (error) {
+      this.paperPersistenceError = String(error);
+      this.paperRecoveryBlocked = true;
+      this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });
+      return;
+    }
     this.deps.logger.info(
       `micro_burst_paper_${event.event.toLowerCase()}`,
       event as unknown as Record<string, unknown>,
