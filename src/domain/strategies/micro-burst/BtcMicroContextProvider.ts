@@ -1,5 +1,6 @@
 import { Side } from '../../types';
 import { Logger } from '../../../app/ports/Logger';
+import type { BenchmarkMarketData } from '../../../core/market-data/BenchmarkMarketData';
 import { BtcContext } from './MicroBurstTypes';
 import { BtcCandleObservation, BtcReturnSet } from './MicroBurstMarketDataTypes';
 
@@ -26,9 +27,7 @@ function computeAcceleration(ret1m: number, ret3m: number): number {
 }
 
 export interface BtcMicroContextDeps {
-  getCandles(symbol: string, interval: string, limit: number): Promise<BtcCandleObservation[]>;
-  /** Exchange/server time used only to select causally closed candles. */
-  getExchangeTime?(): Promise<number>;
+  benchmark: BenchmarkMarketData;
   logger: Logger;
 }
 
@@ -88,16 +87,16 @@ export class BtcMicroContextProvider {
     this.pollInFlight = true;
     const lifecycleVersion = this.lifecycleVersion;
     try {
-      const candles = await this.deps.getCandles(this.btcSymbol, '1m', 60);
+      const series = await this.deps.benchmark.candles.getSeries('1m', 60);
       if (lifecycleVersion !== this.lifecycleVersion) return;
       const localReceivedAtMs = this.clock.now();
-      const exchangeSnapshotTimeMs = this.deps.getExchangeTime
-        ? await this.deps.getExchangeTime()
-        : Math.max(...candles.map((candle) => candle.closeTime));
+      if (series.health !== 'HEALTHY') return;
+      if (series.symbol !== this.btcSymbol.toUpperCase()) return;
+      const exchangeSnapshotTimeMs = series.exchangeSnapshotTimeMs;
       if (lifecycleVersion !== this.lifecycleVersion) return;
-      if (!Number.isFinite(exchangeSnapshotTimeMs)) return;
+      if (exchangeSnapshotTimeMs === null || !Number.isFinite(exchangeSnapshotTimeMs)) return;
 
-      for (const candle of candles) {
+      for (const candle of series.candles) {
         const obs: BtcCandleObservation = {
           close: candle.close,
           closeTime: candle.closeTime,

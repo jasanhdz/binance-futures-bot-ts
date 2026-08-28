@@ -17,9 +17,31 @@ function makeCandles(count: number, startMs: number, basePrice = 60000): BtcCand
   return candles;
 }
 
-function createDeps(candles: BtcCandleObservation[]) {
+function makeSeries(candles: BtcCandleObservation[], exchangeSnapshotTimeMs = NOW_MS) {
   return {
-    getCandles: vi.fn().mockResolvedValue(candles),
+    symbol: 'BTCUSDT',
+    interval: '1m',
+    candles,
+    health: 'HEALTHY' as const,
+    observedAtMs: NOW_MS,
+    exchangeSnapshotTimeMs,
+    gapCount: 0,
+    hasGaps: false,
+    gapCheck: 'CHECKED' as const,
+    source: 'REST' as const,
+  };
+}
+
+function createDeps(candles: BtcCandleObservation[]) {
+  const getCandles = vi.fn().mockResolvedValue(candles);
+  return {
+    getCandles,
+    benchmark: {
+      descriptor: Object.freeze({ id: 'PRIMARY_CRYPTO_BENCHMARK', symbol: 'BTCUSDT' }),
+      candles: {
+        getSeries: vi.fn().mockImplementation(async () => makeSeries(await getCandles())),
+      },
+    },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   };
 }
@@ -29,6 +51,19 @@ describe('BtcMicroContextProvider', () => {
     const deps = createDeps(makeCandles(3, NOW_MS - 300_000));
     const clock = { now: vi.fn(() => NOW_MS) };
     const provider = new BtcMicroContextProvider('BTCUSDT', deps, clock);
+
+    await provider.pollCandles();
+
+    expect(provider.getBtcContext()).toBeUndefined();
+  });
+
+  it('does not turn an unhealthy shared candle series into BTC context', async () => {
+    const deps = createDeps(makeCandles(6, NOW_MS - 300_000));
+    deps.benchmark.candles.getSeries.mockResolvedValue({
+      ...makeSeries(makeCandles(6, NOW_MS - 300_000)),
+      health: 'GAPPED',
+    });
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS });
 
     await provider.pollCandles();
 
@@ -94,6 +129,27 @@ describe('BtcMicroContextProvider', () => {
     expect(ctx).toBeDefined();
     expect(ctx!.direction).toBe('NEUTRAL');
   });
+
+  it.each([
+    [1.0001, 'NEUTRAL'],
+    [1.0001001, 'LONG'],
+    [0.9999, 'NEUTRAL'],
+    [0.9998999, 'SHORT'],
+  ] as const)(
+    'preserves strict BTC direction threshold for multiplier %s',
+    async (multiplier, direction) => {
+      const basePrice = 60_000;
+      const candles = Array.from({ length: 6 }, (_, i) =>
+        makeCandle(i === 5 ? basePrice * multiplier : basePrice, NOW_MS - 300_000 + i * 60_000),
+      );
+      const deps = createDeps(candles);
+      const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS });
+
+      await provider.pollCandles();
+
+      expect(provider.getBtcContext()?.direction).toBe(direction);
+    },
+  );
 
   it('returns undefined when stale', async () => {
     const candles = makeCandles(6, NOW_MS - 600_000);
@@ -162,13 +218,8 @@ describe('BtcMicroContextProvider', () => {
 
   it('uses exchange snapshot time, not local clock skew, for causal candle selection', async () => {
     const candles = makeCandles(6, NOW_MS - 300_000);
-    const exchangeTime = vi.fn().mockResolvedValue(NOW_MS);
     const makeProvider = (localNow: number) =>
-      new BtcMicroContextProvider(
-        'BTCUSDT',
-        { ...createDeps(candles), getExchangeTime: exchangeTime },
-        { now: () => localNow },
-      );
+      new BtcMicroContextProvider('BTCUSDT', createDeps(candles), { now: () => localNow });
 
     const behind = makeProvider(NOW_MS - 5_000);
     const ahead = makeProvider(NOW_MS + 5_000);
@@ -178,7 +229,6 @@ describe('BtcMicroContextProvider', () => {
     expect(behind.getBtcContext()).toMatchObject({ observedAtMs: NOW_MS });
     expect(ahead.getBtcContext()).toMatchObject({ observedAtMs: NOW_MS });
     expect(behind.getBtcContext()?.ret3m).toBe(ahead.getBtcContext()?.ret3m);
-    expect(exchangeTime).toHaveBeenCalledTimes(2);
   });
 
   it('excludes a future exchange candle even when the local clock is ahead', async () => {
@@ -186,8 +236,8 @@ describe('BtcMicroContextProvider', () => {
     candles[5] = makeCandle(70000, NOW_MS + 5_000);
     const deps = {
       ...createDeps(candles),
-      getExchangeTime: vi.fn().mockResolvedValue(NOW_MS),
     };
+    deps.benchmark.candles.getSeries.mockResolvedValue(makeSeries(candles, NOW_MS));
     const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS + 5_000 });
 
     await provider.pollCandles();
@@ -197,14 +247,20 @@ describe('BtcMicroContextProvider', () => {
 
   it('polls continuously without overlapping requests and stops cleanly', async () => {
     vi.useFakeTimers();
-    let resolveFirstPoll: ((candles: BtcCandleObservation[]) => void) | undefined;
+    let resolveFirstPoll: ((series: ReturnType<typeof makeSeries>) => void) | undefined;
     const deps = {
       getCandles: vi.fn().mockImplementation(
         () =>
           new Promise<BtcCandleObservation[]>((resolve) => {
-            resolveFirstPoll = resolve;
+            resolveFirstPoll = (series) => resolve(series.candles);
           }),
       ),
+      benchmark: {
+        descriptor: Object.freeze({ id: 'PRIMARY_CRYPTO_BENCHMARK', symbol: 'BTCUSDT' }),
+        candles: {
+          getSeries: vi.fn().mockImplementation(async () => makeSeries(await deps.getCandles())),
+        },
+      },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     };
     const provider = new BtcMicroContextProvider(
@@ -223,7 +279,7 @@ describe('BtcMicroContextProvider', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(deps.getCandles).toHaveBeenCalledTimes(1);
 
-    resolveFirstPoll!(makeCandles(6, NOW_MS - 300_000));
+    resolveFirstPoll!(makeSeries(makeCandles(6, NOW_MS - 300_000)));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(deps.getCandles).toHaveBeenCalledTimes(2);
 
@@ -267,6 +323,12 @@ describe('BtcMicroContextProvider', () => {
             resolvePoll = resolve;
           }),
       ),
+      benchmark: {
+        descriptor: Object.freeze({ id: 'PRIMARY_CRYPTO_BENCHMARK', symbol: 'BTCUSDT' }),
+        candles: {
+          getSeries: vi.fn().mockImplementation(async () => makeSeries(await deps.getCandles())),
+        },
+      },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     };
     const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS });

@@ -34,6 +34,8 @@ import { OrderBookDataPlane } from '../../../core/market-data/OrderBookDataPlane
 import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
 import { AggTradeDataPlane } from '../../../core/market-data/AggTradeDataPlane';
 import type { AggTradeLease } from '../../../core/market-data/AggTradeDataPlane';
+import { ComposedBenchmarkMarketDataPort } from '../../../core/market-data/BenchmarkMarketData';
+import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -307,9 +309,12 @@ export class MicroBurstRuntime {
     const logger = this.deps.logger;
     const exchange = this.deps.exchange;
 
+    const candleProvider = new MarketDataCandleProvider(exchange, clock);
+    const benchmarkData = new ComposedBenchmarkMarketDataPort({
+      candles: () => candleProvider,
+    }).getBenchmark({ id: 'PRIMARY_CRYPTO_BENCHMARK', symbol: 'BTCUSDT' });
     const btcDeps: BtcMicroContextDeps = {
-      getCandles: (sym, interval, limit) => exchange.getCandles(sym, interval, limit),
-      getExchangeTime: () => exchange.getServerTime(),
+      benchmark: benchmarkData,
       logger,
     };
     this.btcProvider = new BtcMicroContextProvider('BTCUSDT', btcDeps, clock);

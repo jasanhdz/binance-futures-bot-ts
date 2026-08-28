@@ -1,7 +1,7 @@
 # Shared Market Data Classification — Baseline Inventory
 
 **Status:** BASELINE AUDIT FOR MIGRATION  
-**Reviewed SHA:** `f39215fd4a2c89d3cbbf32c84ea204486fc65e21`  
+**Reviewed SHA:** `26dbf822ecfa1b2607199da393c55b8de697b844`
 **Purpose:** classify current market-data-related code before extraction so generic mechanics are moved without accidentally moving strategy meaning.
 
 ## 1. Classification vocabulary
@@ -62,9 +62,23 @@ freshness, and deterministic gap diagnostics. Fixed production intervals and
 calendar-aware `1M` continuity are checked; other intervals report
 `gapCheck: UNSUPPORTED` rather than claiming gap-free data.
 
-This provider is REST-only and is not wired into existing strategy loops. The
-existing `BinanceAdapter` candle cache and 5m WS path, including its AggTrade
-`buyVolume` overlay, remain compatibility behavior and are unchanged.
+This provider is REST-only. Wave N wires one instance into the existing Micro
+Burst BTC polling lifecycle; the existing `BinanceAdapter` candle cache and 5m
+WS path, including its AggTrade `buyVolume` overlay, remain compatibility
+behavior and are unchanged.
+
+### `src/core/market-data/BenchmarkMarketData.ts`
+
+**Classification:** `GENERIC_RAW_STATE + CONTRACT`.
+
+Defines an immutable generic benchmark descriptor and a read-only composition
+over existing symbol capabilities. It normalizes benchmark identity and reuses
+the supplied `CandlePort`, `QuotePort`, and `OrderBookPort`; it owns no feed,
+subscription, buffer, or polling lifecycle. AggTrade availability remains in
+the existing shared `AggTradeDataPlane` and is not forced into Micro Burst by
+this phase.
+
+**Wave:** N.
 
 ### `src/core/market-data/RollingAggTradeBuffer.ts`
 
@@ -182,7 +196,11 @@ Micro Burst-specific:
 - acceleration interpretation if tied to MB assumptions;
 - conflict semantics against a candidate side.
 
-**Decision:** defer until benchmark Wave N. Do not pull into Wave 1.
+**Wave N status:** `BtcMicroContextProvider` now consumes the generic benchmark
+composition and qualified `CandlePort`. Its candle buffer, return windows,
+acceleration, direction threshold, freshness behavior, and lifecycle remain
+Micro Burst-specific. `MicroBurstBtcContext` continues to own candidate-side
+conflict interpretation and thresholding.
 
 ### `MicroBurstReferencePrice.ts`
 
@@ -256,6 +274,17 @@ Momentum
 ```
 
 Exact paths are intentionally not frozen if they conflict with repository conventions. Dependency direction and ownership semantics are frozen.
+
+## 12. Wave 3C Phase N status
+
+**Status:** COMPLETE — local verification passed; exact-SHA CI remains external.
+
+Phase N provides generic benchmark identity and read-only composition over the
+existing candle, quote, and order-book capabilities. BTC is represented by
+`PRIMARY_CRYPTO_BENCHMARK -> BTCUSDT`; no BTC-specific shared provider or
+duplicate transport was added. Micro Burst remains the only consumer migrated
+to the shared candle capability, and its BTC interpretation remains strategy
+owned. Phase O neutral features and the future snapshot layer are not included.
 
 ## 8. Wave 1 migration map
 
