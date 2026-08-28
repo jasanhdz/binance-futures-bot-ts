@@ -116,6 +116,7 @@ import { AegisExecutionIntentFactory } from '../../domain/strategies/aegis/Aegis
 import { createMomentumRideLegacyIdentity } from '../../domain/strategies/momentum-ride/MomentumRideIdentity';
 import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
+import { createReadOnlyAuditedExchange } from '../../infra/adapters/ReadOnlyAuditedExchange';
 import { StrategyRouter } from '../strategy/StrategyRouter';
 import {
   MomentumRideStrategy,
@@ -132,6 +133,7 @@ import {
 } from '../../domain/strategies/micro-burst/MicroBurstRuntime';
 import {
   parseMicroBurstConfig,
+  mergeMicroBurstConfigs,
   isMicroBurstShadowMode,
 } from '../../domain/strategies/micro-burst/MicroBurstConfigLoader';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
@@ -375,7 +377,24 @@ export class TradingService {
     };
     // Legacy test adapters do not implement the new read-only Micro Burst getter.
     // Fail Micro Burst closed without changing unrelated Aegis/Momentum behavior.
-    return manager.getMicroBurstConfig ? manager.getMicroBurstConfig() : parseMicroBurstConfig({});
+    const base = manager.getMicroBurstConfig
+      ? manager.getMicroBurstConfig()
+      : parseMicroBurstConfig({});
+    const override = {
+      prospectiveValidation:
+        process.env.PHANTOM_MICRO_BURST_PROSPECTIVE_VALIDATION === undefined
+          ? undefined
+          : {
+              enabled: process.env.PHANTOM_MICRO_BURST_PROSPECTIVE_VALIDATION === 'true',
+            },
+      marketArchive:
+        process.env.PHANTOM_MICRO_BURST_MARKET_ARCHIVE === undefined
+          ? undefined
+          : {
+              enabled: process.env.PHANTOM_MICRO_BURST_MARKET_ARCHIVE === 'true',
+            },
+    };
+    return mergeMicroBurstConfigs(base, override);
   }
 
   private getMicroBurstProvenance(config: ReturnType<typeof parseMicroBurstConfig>) {
@@ -1613,6 +1632,10 @@ export class TradingService {
     if (mbConfig.enabled && mbConfig.mode !== 'OFF') {
       try {
         const provenance = this.getMicroBurstProvenance(mbConfig);
+        const microBurstExchange = createReadOnlyAuditedExchange(
+          this.deps.exchange,
+          provenance.codeCommitSha,
+        );
         const archiveConfig = mbConfig.marketArchive;
         const storage = archiveConfig?.enabled
           ? new MicroBurstStorage({
@@ -1633,13 +1656,17 @@ export class TradingService {
         });
         this.microBurstRuntime = new MicroBurstRuntime(
           {
-            exchange: this.deps.exchange,
+            exchange: microBurstExchange.exchange,
             logger: this.deps.logger,
             clock: { now: () => Date.now() },
             strategyRouter: this.microBurstStrategyRouter,
             outcomeTracker,
             marketStorage: storage,
             provenance,
+            mutationAudit: () => ({
+              totalMutationAttempts: microBurstExchange.audit.totalMutationAttempts,
+              forwardedMutationCalls: microBurstExchange.audit.forwardedMutationCalls,
+            }),
           },
           mbConfig,
         );
@@ -1659,6 +1686,10 @@ export class TradingService {
         this.deps.logger.info('micro_burst_runtime_integrated', {
           mode: mbConfig.mode,
           symbols: Object.keys(mbConfig.symbols).filter((s) => mbConfig.symbols[s].enabled),
+          liveExecution: false,
+          readOnlyExchangeBoundary: true,
+          mutationAttempts: microBurstExchange.audit.totalMutationAttempts,
+          forwardedMutations: microBurstExchange.audit.forwardedMutationCalls,
         });
       } catch (err) {
         this.deps.logger.error('micro_burst_runtime_startup_failed', { error: String(err) });

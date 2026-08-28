@@ -67,6 +67,8 @@ export interface MicroBurstRuntimeHealth {
   archiveFinalizationQueueDepth: number | null;
   archiveRecoveryFailures: number | null;
   storageErrors: number;
+  mutationAttempts: number;
+  forwardedMutations: number;
   readiness: MicroBurstRuntimeReadiness;
 }
 
@@ -170,6 +172,7 @@ export interface MicroBurstRuntimeDeps {
     episodeDefinitionValid?: boolean;
     costSemanticsValid?: boolean;
   };
+  mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
 }
 
 export class MicroBurstRuntime {
@@ -637,6 +640,10 @@ export class MicroBurstRuntime {
     const btcHealthy = !!btcContext && this.deps.clock.now() - btcContext.receivedAtMs < 120_000;
 
     const archiveHealth = this.deps.marketStorage?.getHealth();
+    const mutationAudit = this.deps.mutationAudit?.() ?? {
+      totalMutationAttempts: 0,
+      forwardedMutationCalls: 0,
+    };
     return {
       running: this.running,
       symbolCount: this.symbolStates.size,
@@ -663,6 +670,8 @@ export class MicroBurstRuntime {
       archiveFinalizationQueueDepth: archiveHealth?.finalizationQueueDepth ?? null,
       archiveRecoveryFailures: archiveHealth?.recoveryFailures ?? null,
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
+      mutationAttempts: mutationAudit.totalMutationAttempts,
+      forwardedMutations: mutationAudit.forwardedMutationCalls,
       readiness: this.getReadiness(),
     };
   }
@@ -883,6 +892,8 @@ export class MicroBurstRuntime {
       pendingOutcomes: health.outcomeTracker?.pendingOutcomes ?? 0,
       completedOutcomes: health.outcomeTracker?.completedOutcomes ?? 0,
       storageErrors: health.storageErrors,
+      mutationAttempts: health.mutationAttempts,
+      forwardedMutations: health.forwardedMutations,
     });
   }
 
