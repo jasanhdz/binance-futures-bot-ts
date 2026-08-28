@@ -91,6 +91,18 @@ strategy interpretation, lifecycle authority, or I/O is introduced.
 
 **Wave:** O.
 
+### `src/core/market-data/MarketSnapshotProvider.ts`
+
+**Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE + CONTRACT`.
+
+Composes the existing read-only quote, order-book, AggTrade, candle, and
+benchmark capabilities into an immutable `MARKET_SNAPSHOT_V1` contract. It
+preserves family-local health, source timestamps, the AggTrade event-time
+watermark, local capture boundaries, and deterministic snapshot identity. It
+does not own feeds, leases, buffers, polling, persistence, or strategy policy.
+
+**Wave:** P.
+
 ### `src/core/market-data/RollingAggTradeBuffer.ts`
 
 **Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE`.
