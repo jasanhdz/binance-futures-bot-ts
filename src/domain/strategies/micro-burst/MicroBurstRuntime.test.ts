@@ -94,6 +94,37 @@ describe('MicroBurstRuntime', () => {
     expect(runtime.getHealth().running).toBe(false);
   });
 
+  it('attempts market storage drain when an earlier durable sink fails', async () => {
+    const flush = vi.fn(async () => true);
+    const close = vi.fn(async () => {});
+    deps.outcomeTracker = {
+      trackSignal: () => {},
+      observeTradeEvent: () => {},
+      flushPending: () => {
+        throw new Error('outcome flush failed');
+      },
+      getHealth: () => ({
+        signalsObserved: 0,
+        pendingOutcomes: 0,
+        completedOutcomes: 0,
+        outcomeErrors: 0,
+      }),
+    };
+    deps.marketStorage = {
+      appendDepth: () => true,
+      persistCheckpoint: () => true,
+      flush,
+      close,
+      getHealth: () => ({ healthy: true, errorCount: 0 }),
+    };
+    const runtime = new MicroBurstRuntime(deps, makeConfig({ marketArchive: { enabled: true } }));
+
+    await runtime.start();
+    await expect(runtime.stop()).rejects.toThrow('MICRO_BURST_RUNTIME_SHUTDOWN_FAILED');
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it('unsubscribes agg-trades on stop before a restart subscribes again', async () => {
     const unsubscribe = vi.fn();
     deps.exchange.subscribeToAggTrades = vi.fn(() => unsubscribe);
@@ -289,6 +320,10 @@ describe('MicroBurstRuntime', () => {
         archiveQueuedRecords: 4,
         archiveWrittenRecords: 4,
         archiveOverflowRecords: 0,
+        archiveBytes: null,
+        archiveFileCount: null,
+        archiveRetentionAgeMs: null,
+        archiveRetentionWarning: null,
       }),
     );
   });

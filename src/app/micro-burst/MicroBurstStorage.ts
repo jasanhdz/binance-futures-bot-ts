@@ -25,6 +25,8 @@ export interface MicroBurstStorageOptions {
   maxArchiveBatchRecords?: number;
   /** @deprecated M3.2.4 compatibility alias for durabilityFlushIntervalMs. */
   maxBatchLatencyMs?: number;
+  /** Optional age at which health reports a retention warning. */
+  retentionWarningAgeMs?: number;
 }
 
 export interface ArchiveTrade {
@@ -79,6 +81,12 @@ export interface StorageHealth {
   openBatchRecords: number;
   segmentsWritten: number;
   averageRecordsPerSegment: number;
+  archiveBytes: number;
+  archiveFileCount: number;
+  oldestArchiveEventTimeMs: number | null;
+  newestArchiveEventTimeMs: number | null;
+  archiveRetentionAgeMs: number | null;
+  retentionWarning: boolean;
 }
 
 export interface MicroBurstOutcomeReconciliation {
@@ -147,6 +155,7 @@ export class MicroBurstStorage {
   private readonly maxActiveSegmentBytes: number;
   private readonly maxActiveSegmentDurationMs: number;
   private readonly durabilityFlushIntervalMs: number;
+  private readonly retentionWarningAgeMs: number | null;
   private readonly activeSegments = new Map<string, ActiveSegment>();
   private health: StorageHealth = {
     healthy: true,
@@ -174,6 +183,12 @@ export class MicroBurstStorage {
     openBatchRecords: 0,
     segmentsWritten: 0,
     averageRecordsPerSegment: 0,
+    archiveBytes: 0,
+    archiveFileCount: 0,
+    oldestArchiveEventTimeMs: null,
+    newestArchiveEventTimeMs: null,
+    archiveRetentionAgeMs: null,
+    retentionWarning: false,
   };
 
   constructor(private readonly options: MicroBurstStorageOptions) {
@@ -198,6 +213,7 @@ export class MicroBurstStorage {
       options.durabilityFlushIntervalMs ?? options.maxBatchLatencyMs,
       DEFAULT_DURABILITY_FLUSH_INTERVAL_MS,
     );
+    this.retentionWarningAgeMs = positiveInteger(options.retentionWarningAgeMs, 0) || null;
     this.health.queueCapacity = this.maxArchiveQueueRecords;
     try {
       fs.mkdirSync(path.dirname(options.databasePath), { recursive: true });
@@ -756,6 +772,7 @@ export class MicroBurstStorage {
     if (this.closed) return this.health.healthy;
     if (!this.flush()) return false;
     try {
+      this.refreshArchiveMetrics();
       this.db?.close();
       this.closed = true;
       return true;
@@ -766,7 +783,52 @@ export class MicroBurstStorage {
   }
 
   getHealth(): StorageHealth {
+    this.refreshArchiveMetrics();
     return { ...this.health };
+  }
+
+  private refreshArchiveMetrics(): void {
+    if (this.closed || !this.db) return;
+    try {
+      let bytes = 0;
+      let fileCount = 0;
+      for (const type of ['trades', 'depth'] as const) {
+        const typeDir = path.join(this.options.archivePath, type);
+        if (!fs.existsSync(typeDir)) continue;
+        for (const symbolDir of fs.readdirSync(typeDir, { withFileTypes: true })) {
+          if (!symbolDir.isDirectory()) continue;
+          const dir = path.join(typeDir, symbolDir.name);
+          for (const name of fs.readdirSync(dir)) {
+            if (!name.endsWith('.ndjson.gz') && !name.endsWith('.active.ndjson')) continue;
+            const file = path.join(dir, name);
+            bytes += fs.statSync(file).size;
+            fileCount++;
+          }
+        }
+      }
+      const range = this.db
+        .prepare(
+          `SELECT MIN(first_event_time_ms) AS oldest, MAX(last_event_time_ms) AS newest FROM market_data_segments`,
+        )
+        .get() as { oldest: number | null; newest: number | null };
+      const oldest = range.oldest ?? null;
+      const newest = range.newest ?? null;
+      const retentionAge = oldest === null ? null : Math.max(0, this.now() - oldest);
+      this.health = {
+        ...this.health,
+        archiveBytes: bytes,
+        archiveFileCount: fileCount,
+        oldestArchiveEventTimeMs: oldest,
+        newestArchiveEventTimeMs: newest,
+        archiveRetentionAgeMs: retentionAge,
+        retentionWarning:
+          retentionAge !== null &&
+          this.retentionWarningAgeMs !== null &&
+          retentionAge >= this.retentionWarningAgeMs,
+      };
+    } catch (error) {
+      this.markFailure(error);
+    }
   }
 
   private appendRaw(

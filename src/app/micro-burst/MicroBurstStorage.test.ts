@@ -1141,4 +1141,36 @@ describe('MicroBurstStorage', () => {
     expect(names.filter((name) => name.endsWith('.ndjson.gz'))).toHaveLength(1);
     expect(names.filter((name) => name.endsWith('.meta.json'))).toHaveLength(1);
   });
+
+  it('reports archive size and retention age without mutating storage', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-health-'));
+    temporaryDirectories.push(root);
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      now: () => 10_000,
+      retentionWarningAgeMs: 9_000,
+    });
+    storage.appendTrade({
+      symbol: 'BTCUSDT',
+      eventTime: 100,
+      receivedAtMs: 100,
+      price: 1,
+      aggregateTradeId: 1,
+    });
+    const healthBeforeClose = storage.getHealth();
+    expect(healthBeforeClose.archiveBytes).toBeGreaterThan(0);
+    expect(healthBeforeClose.archiveFileCount).toBe(1);
+    expect(healthBeforeClose.oldestArchiveEventTimeMs).toBeNull();
+    expect(healthBeforeClose.archiveRetentionAgeMs).toBeNull();
+    storage.close();
+
+    expect(storage.getHealth()).toMatchObject({
+      archiveFileCount: 1,
+      oldestArchiveEventTimeMs: 100,
+      newestArchiveEventTimeMs: 100,
+      archiveRetentionAgeMs: 9_900,
+      retentionWarning: true,
+    });
+  });
 });

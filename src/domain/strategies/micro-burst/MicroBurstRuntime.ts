@@ -66,6 +66,10 @@ export interface MicroBurstRuntimeHealth {
   archiveRecordsDurablyFlushed: number | null;
   archiveFinalizationQueueDepth: number | null;
   archiveRecoveryFailures: number | null;
+  archiveBytes: number | null;
+  archiveFileCount: number | null;
+  archiveRetentionAgeMs: number | null;
+  archiveRetentionWarning: boolean | null;
   storageErrors: number;
   mutationAttempts: number;
   forwardedMutations: number;
@@ -157,6 +161,10 @@ export interface MicroBurstRuntimeDeps {
       recordsDurablyFlushed?: number;
       finalizationQueueDepth?: number;
       recoveryFailures?: number;
+      archiveBytes?: number;
+      archiveFileCount?: number;
+      archiveRetentionAgeMs?: number | null;
+      retentionWarning?: boolean;
     };
   };
   provenance?: {
@@ -467,16 +475,34 @@ export class MicroBurstRuntime {
       this.btcProvider = null;
     }
 
-    this.journal.flush();
+    this.stopPromise = (async () => {
+      const failures: string[] = [];
+      try {
+        this.journal.flush();
+      } catch (error) {
+        failures.push(`signal journal: ${String(error)}`);
+      }
 
-    // M3: Flush pending outcomes
-    if (this.deps.outcomeTracker) {
-      this.deps.outcomeTracker.flushPending(this.deps.clock.now());
-    }
-    this.stopPromise = this.drainAndCloseStorage().then(() => {
+      // Attempt every durable sink even when an earlier sink fails.
+      try {
+        this.deps.outcomeTracker?.flushPending(this.deps.clock.now());
+      } catch (error) {
+        failures.push(`outcome tracker: ${String(error)}`);
+      }
+      try {
+        await this.drainAndCloseStorage();
+      } catch (error) {
+        failures.push(`market storage: ${String(error)}`);
+      }
+
+      if (failures.length > 0) {
+        const error = new Error(`MICRO_BURST_RUNTIME_SHUTDOWN_FAILED: ${failures.join('; ')}`);
+        this.deps.logger.error('micro_burst_runtime_shutdown_failed', { error: error.message });
+        throw error;
+      }
       this.reportHealth('graceful_shutdown');
       this.deps.logger.info('micro_burst_runtime_stopped');
-    });
+    })();
     return this.stopPromise;
   }
 
@@ -666,6 +692,10 @@ export class MicroBurstRuntime {
       archiveRecordsDurablyFlushed: archiveHealth?.recordsDurablyFlushed ?? null,
       archiveFinalizationQueueDepth: archiveHealth?.finalizationQueueDepth ?? null,
       archiveRecoveryFailures: archiveHealth?.recoveryFailures ?? null,
+      archiveBytes: archiveHealth?.archiveBytes ?? null,
+      archiveFileCount: archiveHealth?.archiveFileCount ?? null,
+      archiveRetentionAgeMs: archiveHealth?.archiveRetentionAgeMs ?? null,
+      archiveRetentionWarning: archiveHealth?.retentionWarning ?? null,
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       mutationAttempts: mutationAudit.totalMutationAttempts,
       forwardedMutations: mutationAudit.forwardedMutationCalls,
@@ -887,6 +917,10 @@ export class MicroBurstRuntime {
       archiveQueuedRecords: health.archiveQueuedRecords,
       archiveWrittenRecords: health.archiveWrittenRecords,
       archiveOverflowRecords: health.archiveOverflowRecords,
+      archiveBytes: health.archiveBytes,
+      archiveFileCount: health.archiveFileCount,
+      archiveRetentionAgeMs: health.archiveRetentionAgeMs,
+      archiveRetentionWarning: health.archiveRetentionWarning,
       pendingOutcomes: health.outcomeTracker?.pendingOutcomes ?? 0,
       completedOutcomes: health.outcomeTracker?.completedOutcomes ?? 0,
       storageErrors: health.storageErrors,
