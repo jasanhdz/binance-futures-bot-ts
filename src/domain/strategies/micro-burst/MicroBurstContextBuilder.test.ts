@@ -162,6 +162,18 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     expect(context.dataQuality.btcStatus).toBe('HEALTHY');
   });
 
+  it('uses local time when the server snapshot trails local book receipt time', async () => {
+    const localNowAtMs = SNAPSHOT_AT_MS + 1_000;
+    const context = await buildMicroBurstContext(
+      'ETHUSDT',
+      depsWith(freshCandleSets(), healthyBook({ observedAtMs: SNAPSHOT_AT_MS + 500 })),
+      { snapshotAtMs: SNAPSHOT_AT_MS, localNowAtMs },
+    );
+    expect(context.dataQuality.bookStatus).toBe('HEALTHY');
+    expect(context.dataQuality.bookAgeMs).toBe(500);
+    expect(context.dataQuality.invalidReasons).not.toContain('book_unsynced');
+  });
+
   it('ignores all 1m/3m/5m candles after snapshotAtMs', async () => {
     const historical = freshCandleSets();
     const withFuture = {

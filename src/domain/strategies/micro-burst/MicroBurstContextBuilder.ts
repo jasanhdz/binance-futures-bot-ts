@@ -190,6 +190,7 @@ export async function buildMicroBurstContext(
 ): Promise<MicroBurstContext> {
   const config = { ...defaultMicroBurstConfig(), ...options.config };
   const snapshotAtMs = options.snapshotAtMs;
+  const localNowAtMs = options.localNowAtMs ?? snapshotAtMs;
   if (!Number.isFinite(snapshotAtMs) || snapshotAtMs <= 0) {
     throw new Error('MICRO_BURST_INVALID_SNAPSHOT_AT');
   }
@@ -236,7 +237,7 @@ export async function buildMicroBurstContext(
   const bookSnapshot = deps.book?.getDepthSnapshot(symbol);
   const bookPressure = analyzeBookPressure(
     bookSnapshot,
-    snapshotAtMs,
+    localNowAtMs ?? snapshotAtMs,
     {
       anomalySpreadBps: config.bookAnomalySpreadBps,
       minImbalance: config.bookMinImbalance,
@@ -277,7 +278,7 @@ export async function buildMicroBurstContext(
     config,
     bookPressure.status,
     aggTradeFlow,
-    options.localNowAtMs ?? snapshotAtMs,
+    localNowAtMs,
   );
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
     dataQuality.contextValid = false;
