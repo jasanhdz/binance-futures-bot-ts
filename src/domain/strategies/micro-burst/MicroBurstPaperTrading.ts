@@ -87,6 +87,7 @@ export type PaperLifecycleEventName =
   | 'TRAILING_ACTIVATED'
   | 'TRAILING_MOVED'
   | 'DATA_UNCERTAIN'
+  | 'RECOVERED_AFTER_RESTART'
   | 'CLOSED';
 
 export interface MicroBurstPaperLifecycleEvent {

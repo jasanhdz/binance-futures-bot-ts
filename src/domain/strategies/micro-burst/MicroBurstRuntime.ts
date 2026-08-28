@@ -26,6 +26,7 @@ import { GapKind, MarketDataFeed } from '../../../app/micro-burst/MicroBurstMark
 import { MicroBurstPaperQuote, MicroBurstPaperTrading } from './MicroBurstPaperTrading';
 import { MicroBurstPaperTradeJournal } from '../../../app/micro-burst/MicroBurstPaperTradeJournal';
 import { defaultMicroBurstConfig } from './MicroBurstTypes';
+import { analyzeBookPressure } from './MicroBurstBookPressureAnalyzer';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -222,8 +223,17 @@ export class MicroBurstRuntime {
     try {
       if (!this.paperTradeJournal.getHealth().healthy)
         throw new Error('PAPER_TRADE_JOURNAL_MALFORMED');
-      for (const position of this.paperTradeJournal.loadOpenPositions())
+      for (const position of this.paperTradeJournal.loadOpenPositions()) {
         this.paperTrading.restore(position);
+        this.persistPaperEvent({
+          schemaVersion: 1,
+          event: 'RECOVERED_AFTER_RESTART',
+          eventAtMs: this.deps.clock.now(),
+          tradeId: position.tradeId,
+          symbol: position.symbol,
+          state: 'OPEN_SHADOW',
+        });
+      }
     } catch (error) {
       this.paperRecoveryBlocked = true;
       this.deps.logger.error('micro_burst_paper_recovery_blocked', { error: String(error) });
@@ -766,7 +776,9 @@ export class MicroBurstRuntime {
       observedAtMs: event.eventTime,
       quote: this.paperQuote(snapshot),
       exitContext: {
-        currentBookPressure: null,
+        currentBookPressure: snapshot
+          ? analyzeBookPressure(snapshot, event.eventTime, undefined, snapshot.temporalHistory)
+          : null,
         currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
         anomalyExitFlag: false,
       },
