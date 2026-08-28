@@ -298,6 +298,9 @@ async function main(): Promise<void> {
   } finally {
     const healthBeforeStop = runtime.getHealth();
     const readinessBeforeStop = runtime.getReadiness();
+    const symbolHealth = Object.fromEntries(
+      SYMBOLS.map((symbol) => [symbol, runtime.getSymbolHealth(symbol)]),
+    );
     await runtime.stop();
     wsManager.disconnectAll();
     const storageHealthBeforeClose = storage.getHealth();
@@ -317,9 +320,6 @@ async function main(): Promise<void> {
     const validContexts = Math.max(
       0,
       healthBeforeStop.totalEvaluations - healthBeforeStop.totalInvalidContexts,
-    );
-    const symbolHealth = Object.fromEntries(
-      SYMBOLS.map((symbol) => [symbol, runtime.getSymbolHealth(symbol)]),
     );
     const btcReady = healthBeforeStop.btcHealthy;
     const btcWindowComplete = symbolHealth.BTCUSDT?.windowComplete === true;
