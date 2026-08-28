@@ -80,6 +80,17 @@ this phase.
 
 **Wave:** N.
 
+### `src/core/market-data/SharedNeutralMarketFeatures.ts`
+
+**Classification:** `GENERIC_NEUTRAL_FEATURE`.
+
+Defines schema-versioned, immutable, pure calculators for quote spread, top-5
+and top-10 order-book facts, complete rolling AggTrade flow, and closed-candle
+returns. Source quality and causal timestamps travel with every family; no
+strategy interpretation, lifecycle authority, or I/O is introduced.
+
+**Wave:** O.
+
 ### `src/core/market-data/RollingAggTradeBuffer.ts`
 
 **Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE`.
@@ -323,3 +334,17 @@ If Codex discovers a file categorized here differently from actual runtime behav
 4. never infer “shared” merely because two strategies could theoretically use it.
 
 A component is shared because its semantics are strategy-neutral, not because reuse sounds aesthetically attractive.
+
+## 13. Wave 4A Phase O status
+
+**Status:** COMPLETE — local verification pending final commit and exact-SHA CI.
+
+`src/core/market-data/SharedNeutralMarketFeatures.ts` defines the immutable
+`SHARED_MARKET_FEATURES_V1` contract and pure calculators for quote spread,
+top-level order-book facts, complete rolling AggTrade flow, and closed-candle
+returns. It has no I/O, lifecycle authority, strategy dependency, or mutation
+authority. The durable formula and unit source of truth is
+`docs/architecture/SHARED_MARKET_FEATURES_V1.md`.
+
+Phase O does not migrate Aegis, Momentum, or Micro Burst consumers and does not
+implement `MarketSnapshotProvider`, Black Box collection, persistence, or ML.
