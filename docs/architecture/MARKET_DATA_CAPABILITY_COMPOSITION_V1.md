@@ -1,7 +1,7 @@
 # Market Data Capability Composition V1
 
 **Phase:** Q  
-**Status:** implementation candidate pending exact-SHA CI
+**Status:** COMPLETE — non-owning capability composition qualified.
 
 This layer makes two facts explicit without changing market-data ownership:
 

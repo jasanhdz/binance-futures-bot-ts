@@ -103,6 +103,19 @@ does not own feeds, leases, buffers, polling, persistence, or strategy policy.
 
 **Wave:** P.
 
+### `src/core/market-data/MarketDataCapabilityComposition.ts`
+
+**Classification:** `GENERIC_RAW_STATE + CONTRACT / NON-OWNING COMPOSITION`.
+
+Registers references to already-provisioned read capabilities and composes
+immutable consumer observation profiles into `MarketSnapshotRequest` values.
+Registration is non-owning: it never starts/stops feeds, acquires leases,
+subscribes, polls, persists, or mutates an exchange. Capability availability is
+kept separate from consumer dependency, and no concrete strategy profile is
+frozen in this phase.
+
+**Wave:** Q.
+
 ### `src/core/market-data/RollingAggTradeBuffer.ts`
 
 **Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE`.
@@ -360,3 +373,19 @@ authority. The durable formula and unit source of truth is
 
 Phase O does not migrate Aegis, Momentum, or Micro Burst consumers and does not
 implement `MarketSnapshotProvider`, Black Box collection, persistence, or ML.
+
+## 14. Wave 4C Phase Q status
+
+**Status:** COMPLETE — non-owning capability composition implemented and Gate Q qualified.
+
+`src/core/market-data/MarketDataCapabilityComposition.ts` separates registered
+availability from declarative consumer requirements. Its catalog stores only
+references to already-provisioned read capabilities; its consumer profiles and
+request composer perform no market reads and introduce no feed lifecycle. A
+quote-only consumer remains independent from registered failing book/AggTrade
+sources, while requested-but-unregistered capabilities remain explicit
+`UNAVAILABLE` evidence through the existing `MarketSnapshotProvider`.
+
+No official Aegis, Momentum, or Micro Burst observation profile is introduced
+in Phase Q. Phase R cleanup, Phase S soak, Black Box attachment, strategy
+behavior, and production remain unchanged.
