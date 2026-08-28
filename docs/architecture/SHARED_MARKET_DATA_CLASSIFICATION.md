@@ -26,6 +26,14 @@
 
 ## 3. Micro Burst files containing generic market mechanics
 
+### `src/core/market-data/SynchronizedOrderBook.ts`
+
+**Classification:** `GENERIC_RAW_STATE`.
+
+Owns the extracted synchronized USD-M order-book mechanics, including snapshot bridging,
+update-ID continuity, freshness, fail-closed health, bounded levels, and neutral temporal
+observations. It has no strategy dependency.
+
 ### `src/app/micro-burst/MicroBurstMarketData.ts`
 
 **Classification:** `MIXED_SPLIT_REQUIRED` leaning strongly `GENERIC_RAW_STATE`.
@@ -42,37 +50,15 @@ These facts do not inherently belong to Micro Burst. Extract/alias into shared c
 
 ### `src/domain/strategies/micro-burst/SynchronizedOrderBook.ts`
 
-**Classification:** `MIXED_SPLIT_REQUIRED`.
+**Classification:** `COMPATIBILITY`.
 
-Generic mechanics:
+Delegates to the shared implementation and retains only the Micro Burst
+`getSnapshotForPressure` compatibility name and legacy output types.
 
-- snapshot loading;
-- diff buffering;
-- update-ID bridge;
-- predecessor chain;
-- freshness;
-- health;
-- gap/resync;
-- canonical sorted depth.
+**Decision:** keep this wrapper until parity and runtime qualification are complete. Do not move
+the downstream Micro Burst pressure interpretation.
 
-Neutral features currently embedded:
-
-- top-5 signed imbalance observation;
-- best bid/ask quantities;
-- top-5 totals;
-- spread bps;
-- temporal history bookkeeping.
-
-Micro Burst coupling:
-
-- imports strategy types;
-- logger messages named Micro Burst;
-- feature-depth constants/types currently live in Micro Burst market-data types;
-- `getSnapshotForPressure` is named around a Micro Burst consumer.
-
-**Decision:** extract generic synchronization/state first. Preserve neutral temporal observations if needed for parity, but expose them under neutral names. Do not move the downstream Micro Burst pressure interpretation.
-
-**Wave:** F/G/H.
+**Wave:** G/H.
 
 ### `src/domain/strategies/micro-burst/MicroBurstAggTradeBuffer.ts`
 

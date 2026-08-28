@@ -6,26 +6,22 @@
 // ───────────────────────────────────────────────────────────
 
 import { Side } from '../../types';
-import { BookDataStatus, BtcDataStatus, OrderBookDepthLevel } from './MicroBurstTypes';
+import { BookDataStatus, BtcDataStatus } from './MicroBurstTypes';
+import {
+  OrderBookHealth as SharedOrderBookHealth,
+  OrderBookState,
+  TemporalOrderBookObservation,
+  ORDER_BOOK_SNAPSHOT_DEPTH,
+} from '../../../app/ports/MarketData';
 export type { BinanceDepthDiffEvent, BinanceDepthSnapshot } from '../../../app/ports/MarketData';
 
 // ── Order Book Synchronization ──────────────────────────────
 
-export type OrderBookHealth = 'HEALTHY' | 'UNAVAILABLE' | 'STALE' | 'UNSYNCED' | 'ANOMALOUS';
+export type OrderBookHealth = SharedOrderBookHealth;
 
-export interface SynchronizedOrderBookState {
-  bids: OrderBookDepthLevel[];
-  asks: OrderBookDepthLevel[];
-  lastUpdateId: number;
-  health: OrderBookHealth;
-  observedAtMs: number;
-  lastSyncAtMs: number;
-  lastDiffAtMs: number;
-  gapCount: number;
-  resyncCount: number;
-}
+export type SynchronizedOrderBookState = OrderBookState;
 
-export const SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH = 1000;
+export const SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH = ORDER_BOOK_SNAPSHOT_DEPTH;
 export const BOOK_PRESSURE_FEATURE_DEPTH = 20;
 
 // ── BTC Context Provider ────────────────────────────────────
@@ -76,18 +72,7 @@ export interface MicroBurstReferencePrice {
 
 // ── Temporal Book History ───────────────────────────────────
 
-export interface TemporalBookSnapshot {
-  observedAtMs: number;
-  /** Positive values indicate bid-side pressure; negative values indicate ask-side pressure. */
-  signedTopOfBookImbalance: number;
-  /** Direction-free size of the top-of-book imbalance. */
-  topOfBookImbalance: number;
-  bestBidQty: number;
-  bestAskQty: number;
-  bidTop5Qty: number;
-  askTop5Qty: number;
-  spreadBps: number;
-}
+export type TemporalBookSnapshot = TemporalOrderBookObservation;
 
 // ── Shadow Evaluation ───────────────────────────────────────
 

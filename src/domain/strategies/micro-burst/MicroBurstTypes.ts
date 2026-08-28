@@ -1,5 +1,7 @@
 import { Candle, Side } from '../../types';
 import { StrategyIdentity } from '../../strategy/StrategyIdentity';
+export type { OrderBookDepthLevel } from '../../../app/ports/MarketData';
+import type { OrderBookDepthLevel } from '../../../app/ports/MarketData';
 
 // ── Unit convention ──────────────────────────────────────────
 // price returns: decimal  (0.001 = 0.1% = 10 bps)
@@ -96,11 +98,6 @@ export interface BookPressureSignal {
   staticAskConcentration: boolean;
   anomalyFlag: boolean;
   status: BookDataStatus;
-}
-
-export interface OrderBookDepthLevel {
-  price: number;
-  qty: number;
 }
 
 export interface OrderBookSnapshot {

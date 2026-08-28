@@ -26,6 +26,61 @@ export interface BinanceDepthSnapshot {
   receivedAtMs?: number;
 }
 
+export interface OrderBookDepthLevel {
+  price: number;
+  qty: number;
+}
+
+export type OrderBookHealth =
+  | 'HEALTHY'
+  | 'UNAVAILABLE'
+  | 'STALE'
+  | 'UNSYNCED'
+  | 'ANOMALOUS';
+
+export interface TemporalOrderBookObservation {
+  observedAtMs: number;
+  signedTopOfBookImbalance: number;
+  topOfBookImbalance: number;
+  bestBidQty: number;
+  bestAskQty: number;
+  bidTop5Qty: number;
+  askTop5Qty: number;
+  spreadBps: number;
+}
+
+export interface OrderBookState {
+  bids: OrderBookDepthLevel[];
+  asks: OrderBookDepthLevel[];
+  lastUpdateId: number;
+  health: OrderBookHealth;
+  observedAtMs: number;
+  lastSyncAtMs: number;
+  lastDiffAtMs: number;
+  gapCount: number;
+  resyncCount: number;
+}
+
+export interface OrderBookSnapshot {
+  bidDepth: OrderBookDepthLevel[];
+  askDepth: OrderBookDepthLevel[];
+  observedAtMs: number;
+  status: 'HEALTHY';
+  lastUpdateId: number;
+  temporalHistory: TemporalOrderBookObservation[];
+}
+
+export interface OrderBookPort {
+  start(): void;
+  stop(): void;
+  getState(): OrderBookState;
+  getHealth(): OrderBookHealth;
+  getSnapshot(): OrderBookSnapshot | undefined;
+}
+
+export const ORDER_BOOK_SNAPSHOT_DEPTH = 1000;
+export const ORDER_BOOK_FEATURE_DEPTH = 20;
+
 export interface FundingSnapshot {
   rate: number;
   nextFundingTime?: number;
