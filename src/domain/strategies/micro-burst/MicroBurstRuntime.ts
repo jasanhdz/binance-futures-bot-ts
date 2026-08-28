@@ -1,5 +1,5 @@
 import { Logger } from '../../../app/ports/Logger';
-import { Exchange } from '../../../app/ports/Exchange';
+import { MarketDataPort } from '../../../app/ports/MarketData';
 import { StrategyRouter } from '../../../app/strategy/StrategyRouter';
 import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from './SynchronizedOrderBook';
 import { BtcMicroContextProvider, BtcMicroContextDeps } from './BtcMicroContextProvider';
@@ -99,7 +99,7 @@ interface SymbolRuntimeState {
 }
 
 export interface MicroBurstRuntimeDeps {
-  exchange: Exchange;
+  exchange: MarketDataPort;
   logger: Logger;
   clock: Clock;
   strategyRouter: StrategyRouter<MicroBurstStrategyContext>;

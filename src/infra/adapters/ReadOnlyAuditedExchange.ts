@@ -1,4 +1,5 @@
 import { Exchange } from '../../app/ports/Exchange';
+import { MarketDataPort } from '../../app/ports/MarketData';
 
 export interface MutationAudit {
   codeSha?: string;
@@ -37,7 +38,7 @@ const mutations = new Set([
 export function createReadOnlyAuditedExchange(
   target: Exchange,
   codeSha?: string,
-): { exchange: Exchange; audit: MutationAudit } {
+): { exchange: MarketDataPort; audit: MutationAudit } {
   const audit: MutationAudit = {
     codeSha,
     readOnlyCalls: { public: 0, authenticated: 0 },
@@ -65,6 +66,6 @@ export function createReadOnlyAuditedExchange(
         return value.apply(source, args);
       };
     },
-  }) as Exchange;
+  }) as MarketDataPort;
   return { exchange, audit };
 }

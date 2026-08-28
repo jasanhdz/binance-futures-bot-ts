@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { Exchange, PositionInfo, SymbolFilters, USDTAccountSnapshot } from '../ports/Exchange';
+import {
+  PositionInfo,
+  SymbolFilters,
+  TradingExchangePort,
+  USDTAccountSnapshot,
+} from '../ports/Exchange';
 import { Logger } from '../ports/Logger';
 import {
   StrategyExecutionIntent,
@@ -34,7 +39,7 @@ const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
 export class SharedStrategyExecutionService implements StrategyExecutionPort {
   private readonly ambiguousSymbols = new Set<string>();
   constructor(
-    private readonly exchange: Exchange,
+    private readonly exchange: TradingExchangePort,
     private readonly logger: Logger,
     private readonly config: SharedStrategyExecutionConfig = DEFAULT_CONFIG,
   ) {}
@@ -353,7 +358,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         });
       }
 
-      let closeOrders: Awaited<ReturnType<Exchange['listCloseOrdersForSide']>> = [];
+      let closeOrders: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>> = [];
       if (intent.protection.requireStop || intent.protection.requireTakeProfit) {
         try {
           closeOrders = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);

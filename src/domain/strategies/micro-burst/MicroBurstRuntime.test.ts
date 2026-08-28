@@ -4,6 +4,7 @@ import { MicroBurstRuntimeConfig } from './MicroBurstMarketDataTypes';
 import { StrategyRouter } from '../../../app/strategy/StrategyRouter';
 import { MicroBurstStrategyContext, MicroBurstStrategy } from './MicroBurstStrategy';
 import { createMicroBurstV1Identity } from './MicroBurstIdentity';
+import { Exchange } from '../../../app/ports/Exchange';
 
 function makeConfig(overrides: Partial<MicroBurstRuntimeConfig> = {}): MicroBurstRuntimeConfig {
   return {
@@ -504,20 +505,21 @@ describe('MicroBurstRuntime exchange mutation firewall', () => {
     const executeCalls: string[] = [];
 
     const deps = makeDeps();
-    const originalMarketOpen = deps.exchange.marketOpen;
-    deps.exchange.marketOpen = async (symbol: string, side: any, quantity: number) => {
+    const mutationCapableExchange = deps.exchange as Exchange;
+    const originalMarketOpen = mutationCapableExchange.marketOpen;
+    mutationCapableExchange.marketOpen = async (symbol: string, side: any, quantity: number) => {
       marketOpenCalls.push('called');
-      return originalMarketOpen.call(deps.exchange, symbol, side, quantity);
+      return originalMarketOpen.call(mutationCapableExchange, symbol, side, quantity);
     };
-    deps.exchange.placeStopClose = async () => {
+    mutationCapableExchange.placeStopClose = async () => {
       placeStopCalls.push('called');
       return true;
     };
-    deps.exchange.placeTpClose = async () => {
+    mutationCapableExchange.placeTpClose = async () => {
       placeTpCalls.push('called');
       return true;
     };
-    deps.exchange.closeSideMarketSafe = async () => {
+    mutationCapableExchange.closeSideMarketSafe = async () => {
       closeCalls.push('called');
     };
 

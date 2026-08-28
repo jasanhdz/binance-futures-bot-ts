@@ -15,12 +15,12 @@ describe('ReadOnlyAuditedExchange', () => {
     const { exchange, audit } = createReadOnlyAuditedExchange(source, 'sha');
 
     await expect(exchange.getServerTime()).resolves.toBe(1);
-    expect(() => exchange.marketOpen('BTCUSDT', 'LONG', 1)).toThrow(
+    expect(() => (exchange as any).marketOpen('BTCUSDT', 'LONG', 1)).toThrow(
       'MUTATION_FORBIDDEN_IN_SHADOW_SOAK',
     );
-    expect(() => exchange.cancelOrderById('BTCUSDT', '1')).toThrow();
-    expect(() => exchange.setLeverage('BTCUSDT', 5)).toThrow();
-    expect(() => exchange.ensureMarginType('BTCUSDT', 'ISOLATED')).toThrow();
+    expect(() => (exchange as any).cancelOrderById('BTCUSDT', '1')).toThrow();
+    expect(() => (exchange as any).setLeverage('BTCUSDT', 5)).toThrow();
+    expect(() => (exchange as any).ensureMarginType('BTCUSDT', 'ISOLATED')).toThrow();
     expect(marketOpen).not.toHaveBeenCalled();
     expect(audit.readOnlyCalls.public).toBe(1);
     expect(audit.totalMutationAttempts).toBe(4);

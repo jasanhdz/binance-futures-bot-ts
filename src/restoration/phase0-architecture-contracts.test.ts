@@ -57,8 +57,6 @@ const sharedRoots = [
 ];
 
 const sharedImportAllowlist: Record<string, string[]> = {
-  // Exchange is still the pre-Phase-2 mixed port and owns the current market-data types.
-  'src/app/ports/Exchange.ts': ['src/domain/strategies/micro-burst/MicroBurstMarketDataTypes.ts'],
   // MLService is the legacy Aegis-shaped port; Phase 1 aliases do not change its wire contract.
   'src/app/ports/MLService.ts': ['src/domain/services/AegisStrategy.ts'],
 };

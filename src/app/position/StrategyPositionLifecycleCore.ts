@@ -6,7 +6,7 @@ import {
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
 import { StrategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { BotState, Side } from '../../domain/types';
-import { Exchange, PositionInfo, SymbolFilters } from '../ports/Exchange';
+import { PositionInfo, SymbolFilters, TradingExchangePort } from '../ports/Exchange';
 import { Logger } from '../ports/Logger';
 import { Notifier } from '../ports/Notifier';
 import { RegimeConfig } from '../ports/RegimeStrategy';
@@ -88,7 +88,7 @@ export interface AegisPositionLifecycle {
 }
 
 export interface StrategyPositionLifecyclePorts {
-  exchange: Exchange;
+  exchange: TradingExchangePort;
   logger: Logger;
   notifier: Notifier;
   defaultLeverage(symbol: string): number;

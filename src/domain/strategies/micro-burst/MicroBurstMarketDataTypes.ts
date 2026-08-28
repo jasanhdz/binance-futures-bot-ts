@@ -7,34 +7,11 @@
 
 import { Side } from '../../types';
 import { BookDataStatus, BtcDataStatus, OrderBookDepthLevel } from './MicroBurstTypes';
+export type { BinanceDepthDiffEvent, BinanceDepthSnapshot } from '../../../app/ports/MarketData';
 
 // ── Order Book Synchronization ──────────────────────────────
 
 export type OrderBookHealth = 'HEALTHY' | 'UNAVAILABLE' | 'STALE' | 'UNSYNCED' | 'ANOMALOUS';
-
-export interface BinanceDepthDiffEvent {
-  /** First update ID in this USD-M diff-depth event (Binance `U`). */
-  U: number;
-  /** Final update ID in this USD-M diff-depth event (Binance `u`). */
-  u: number;
-  /** Final update ID of the preceding event (Binance `pu`). */
-  pu: number;
-  bids: [string, string][];
-  asks: [string, string][];
-  /** Event time (Binance `E`). */
-  E: number;
-  /** Transaction time (Binance `T`). */
-  T: number;
-  /** Local receive time. This is the only timestamp used for staleness. */
-  receivedAtMs: number;
-}
-
-export interface BinanceDepthSnapshot {
-  lastUpdateId: number;
-  bids: [string, string][];
-  asks: [string, string][];
-  receivedAtMs?: number;
-}
 
 export interface SynchronizedOrderBookState {
   bids: OrderBookDepthLevel[];

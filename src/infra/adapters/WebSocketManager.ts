@@ -1,6 +1,6 @@
 import { Binance, Candle } from 'binance-api-node';
 import { Logger } from '../../app/ports/Logger';
-import { BinanceDepthDiffEvent } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
+import { BinanceDepthDiffEvent } from '../../app/ports/MarketData';
 import { MarketDataHub } from './MarketDataHub';
 import { MARKET, PUBLIC } from './MarketDataEndpoints';
 import { parseAggTrade, parseDepth } from '../../app/micro-burst/MicroBurstMarketData';

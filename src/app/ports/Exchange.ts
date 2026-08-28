@@ -1,15 +1,12 @@
 /**
- * Exchange Port - Application Layer Interface
+ * Exchange capability ports.
  *
- * Defines the contract for exchange operations.
- * Implemented by BinanceAdapter in infrastructure layer.
+ * `Exchange` remains the compatibility composite. New consumers should depend
+ * on the narrowest capability they actually use.
  */
 
-import { Candle, Side } from '../../domain/types';
-import {
-  BinanceDepthDiffEvent,
-  BinanceDepthSnapshot,
-} from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
+import { Side } from '../../domain/types';
+import { MarketDataPort } from './MarketData';
 
 export interface PositionInfo {
   sideMode: 'BOTH' | 'LONG' | 'SHORT';
@@ -41,17 +38,6 @@ export interface SymbolFilters {
   notionalCap?: number;
 }
 
-export interface FundingSnapshot {
-  rate: number;
-  nextFundingTime?: number;
-}
-
-export interface BasisSnapshot {
-  markPrice: number;
-  indexPrice: number;
-  basisPct: number;
-}
-
 export interface USDTAccountSnapshot {
   walletBalance?: number;
   availableBalance?: number;
@@ -59,59 +45,13 @@ export interface USDTAccountSnapshot {
   equityTotal?: number;
 }
 
-export interface Exchange {
-  getServerTime(): Promise<number>;
-  getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
-  getLastCandle(symbol: string): Promise<Candle | null>;
-  getCachedCandles?(symbol: string, interval: string, limit: number): Candle[];
-  subscribeToCandles(symbol: string): () => void;
-  subscribeToPartialDepth?(
-    symbol: string,
-    levels: number,
-    speed: '100ms' | '250ms' | '500ms',
-    callback: (depth: any) => void,
-  ): () => void;
-  subscribeToDepthDiff?(
-    symbol: string,
-    speed: '100ms' | '250ms' | '500ms',
-    callback: (depth: BinanceDepthDiffEvent) => void,
-  ): () => void;
-  subscribeToAggTrades?(
-    symbol: string,
-    callback: (trade: {
-      isBuyerMaker: boolean;
-      quantity: string;
-      price: string;
-      eventTime: number;
-      receivedAtMs?: number;
-      tradeTime?: number;
-      aggregateTradeId?: number;
-      firstTradeId?: number;
-      lastTradeId?: number;
-    }) => void,
-    onStatus?: (status: 'connecting' | 'open' | 'reconnecting') => void,
-  ): () => void;
-  getDepthSnapshot?(symbol: string, levels?: number): Promise<BinanceDepthSnapshot>;
-  getMarkPrice(symbol: string): Promise<number>;
-  getFundingRate(symbol: string): Promise<FundingSnapshot>;
-  getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;
+export interface ExchangeAccountReadPort {
   readLiquidationPrice(symbol: string, side: Side): Promise<number | null>;
-
   getUSDTBalance(): Promise<number>;
   getUSDTAccountSnapshot?(): Promise<USDTAccountSnapshot>;
-  setLeverage(symbol: string, leverage: number): Promise<void>;
-  ensureMarginType(symbol: string, marginType?: 'ISOLATED' | 'CROSSED'): Promise<void>;
   getSymbolFilters(symbol: string, leverage: number): Promise<SymbolFilters>;
-
   hasOpenPosition(symbol: string, side: 'LONG' | 'SHORT' | 'ANY'): Promise<boolean>;
   readActivePosition(symbol: string, sideHint: Side): Promise<PositionInfo | null>;
-
-  marketOpen(
-    symbol: string,
-    side: Side,
-    quantity: number,
-    clientOrderId?: string,
-  ): Promise<{ avgPrice: number; orderId: string }>;
   readMarketOpenByClientOrderId(
     symbol: string,
     clientOrderId: string,
@@ -122,21 +62,6 @@ export interface Exchange {
     clientOrderId: string,
     since: number,
   ): Promise<{ avgPrice: number; orderId: string } | null>;
-  placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean>;
-  placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean>;
-  closeSideMarketSafe(
-    symbol: string,
-    side: Side,
-    qtyAbs: number,
-    sideMode: 'BOTH' | 'LONG' | 'SHORT',
-    reason?: string,
-  ): Promise<void>;
-
-  openStopForSide(
-    symbol: string,
-    side: Side,
-  ): Promise<{ stopPrice: number; orderId: string } | null>;
-
   listCloseOrdersForSide(
     symbol: string,
     side: Side,
@@ -154,8 +79,40 @@ export interface Exchange {
       owner?: 'BOT' | 'UNKNOWN';
     }[]
   >;
-
-  cancelOrderById(symbol: string, orderId: string): Promise<void>;
-
   getRecentFills(symbol: string, startTime?: number, limit?: number): Promise<TradeFill[]>;
 }
+
+export interface TradingExchangePort extends MarketDataPort, ExchangeAccountReadPort {
+  setLeverage(symbol: string, leverage: number): Promise<void>;
+  ensureMarginType(symbol: string, marginType?: 'ISOLATED' | 'CROSSED'): Promise<void>;
+  marketOpen(
+    symbol: string,
+    side: Side,
+    quantity: number,
+    clientOrderId?: string,
+  ): Promise<{ avgPrice: number; orderId: string }>;
+  placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean>;
+  placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean>;
+  closeSideMarketSafe(
+    symbol: string,
+    side: Side,
+    qtyAbs: number,
+    sideMode: 'BOTH' | 'LONG' | 'SHORT',
+    reason?: string,
+  ): Promise<void>;
+  openStopForSide(
+    symbol: string,
+    side: Side,
+  ): Promise<{ stopPrice: number; orderId: string } | null>;
+  cancelOrderById(symbol: string, orderId: string): Promise<void>;
+}
+
+export interface Exchange extends MarketDataPort, TradingExchangePort {}
+
+export type {
+  BasisSnapshot,
+  BinanceDepthDiffEvent,
+  BinanceDepthSnapshot,
+  FundingSnapshot,
+  MarketDataPort,
+} from './MarketData';
