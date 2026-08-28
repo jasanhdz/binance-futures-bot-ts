@@ -33,7 +33,17 @@ function markMessage(stream: string): void {
 async function main(): Promise<void> {
   const exchange = new BinanceExchange(logger);
   const startedAtMs = Date.now();
-  let streamsBeforeClose: ReturnType<BinanceExchange['getMarketDataHealth']> = [];
+  const wsManager = (exchange as any).wsManager as {
+    getMarketDataHealth(): Array<{
+      stream: string;
+      consumers: number;
+      status: string;
+      lastMessageAtMs?: number;
+      reconnectCount: number;
+    }>;
+    disconnectAll(): void;
+  };
+  let streamsBeforeClose: ReturnType<typeof wsManager.getMarketDataHealth> = [];
 
   try {
     for (const symbol of symbols) {
@@ -52,13 +62,13 @@ async function main(): Promise<void> {
     }
 
     await new Promise((resolve) => setTimeout(resolve, durationMs));
-    streamsBeforeClose = exchange.getMarketDataHealth();
+    streamsBeforeClose = wsManager.getMarketDataHealth();
   } finally {
     for (const unsubscribe of unsubscribers) unsubscribe();
-    exchange.disconnectMarketData();
+    wsManager.disconnectAll();
   }
 
-  const streams = exchange.getMarketDataHealth();
+  const streams = wsManager.getMarketDataHealth();
   const reconnects = streamsBeforeClose.reduce((sum, stream) => sum + stream.reconnectCount, 0);
   const allDepth = symbols.every((symbol) => (depth.get(symbol) ?? 0) > 0);
   const allAggTrade = symbols.every((symbol) => (aggTrade.get(symbol) ?? 0) > 0);

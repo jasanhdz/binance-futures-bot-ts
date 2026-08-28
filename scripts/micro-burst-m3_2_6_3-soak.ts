@@ -122,6 +122,7 @@ const logger: Logger = {
 
 async function main(): Promise<void> {
   const exchange = new BinanceExchange(logger);
+  const wsManager = (exchange as any).wsManager as { disconnectAll(): void };
   const storage = new MicroBurstStorage({
     databasePath: resolve(runRoot, 'research.sqlite'),
     archivePath: resolve(runRoot, 'archive'),
@@ -170,7 +171,7 @@ async function main(): Promise<void> {
     const healthBeforeStop = runtime.getHealth();
     const readinessBeforeStop = runtime.getReadiness();
     await runtime.stop();
-    exchange.disconnectMarketData();
+    wsManager.disconnectAll();
     const result = {
       runId,
       codeSha,
