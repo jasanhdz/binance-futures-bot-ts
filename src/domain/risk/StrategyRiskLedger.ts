@@ -1,4 +1,5 @@
 import { StrategyId } from '../strategy/StrategyIdentity';
+import type { RiskLedgerContract } from '../strategy/StrategyContracts';
 
 export interface StrategyRiskSnapshot {
   strategyId: StrategyId;
@@ -35,7 +36,7 @@ interface MutableStrategyRiskState {
  * Runtime risk accounting owned by strategy rather than by the whole bot.
  * Account-wide kill switches remain outside this ledger.
  */
-export class StrategyRiskLedger {
+export class StrategyRiskLedger implements RiskLedgerContract {
   private readonly states = new Map<StrategyId, MutableStrategyRiskState>();
 
   snapshot(strategyId: StrategyId, now = Date.now()): StrategyRiskSnapshot {
