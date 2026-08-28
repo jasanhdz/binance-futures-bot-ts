@@ -37,6 +37,7 @@ import { Logger } from '../src/app/ports/Logger';
 import { createReadOnlyAuditedExchange } from '../src/infra/adapters/ReadOnlyAuditedExchange';
 
 const root = resolve(__dirname, '..');
+const SYMBOLS = ['BTCUSDT', 'ETHUSDT'] as const;
 const configPath = resolve(root, 'config/micro-burst-m3_2_2-soak.yaml');
 const expectedCiSha = process.env.MICRO_BURST_EXPECTED_CI_HEAD_SHA;
 const ciRunId = process.env.MICRO_BURST_CI_RUN_ID ?? null;
