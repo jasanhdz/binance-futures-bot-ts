@@ -97,7 +97,10 @@ describe('AegisTurboHistoryLogger', () => {
         mode: 'AEGIS_SHADOW',
       }),
     ).resolves.toBeUndefined();
-    expect(console.warn).toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      'aegis_turbo_history_write_failed',
+      expect.anything(),
+    );
   });
 
   it('sanitizes NaN and Infinity', async () => {

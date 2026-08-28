@@ -1,0 +1,9 @@
+{
+  "schema_id": "aegis-consecutive-loss-state-v1",
+  "mode": "AEGIS_TURBO_MICRO_LIVE",
+  "consecutive_losses": 3,
+  "updated_at": "2026-08-02T22:45:00.000Z",
+  "last_trade_id": "AEGIS-TURBO-ETHUSDT-20260802-224500-000",
+  "reset_authority": "OWNER_AUTHORIZED_HYBRID_LIVE_EXPERIMENT_LOSS_STREAK_RESET",
+  "reset_at": "2026-08-02T22:45:00.000Z"
+}

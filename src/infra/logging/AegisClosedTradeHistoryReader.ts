@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { AegisClosedTradeOutcome } from '../../domain/services/AegisConsecutiveLossTracker';
-import { StrategyClosedOutcome } from '../../domain/risk/StrategyRiskLedger';
+import type { ClosedTradeOutcome } from '../../domain/services/ConsecutiveLossTracker';
+import type { AegisClosedTradeOutcome } from '../../domain/services/AegisConsecutiveLossTracker';
 import { isVerifiedAegisMetricRecord } from './AegisTradeOwnership';
 
 export async function readAegisClosedTradeOutcomes(
@@ -48,7 +48,7 @@ export async function readAegisClosedTradeOutcomes(
 export async function readStrategyClosedTradeOutcomes(
   baseDir = path.join(process.cwd(), 'logs', 'aegis'),
   mode = 'AEGIS_TURBO_MICRO_LIVE',
-): Promise<StrategyClosedOutcome[]> {
+): Promise<ClosedTradeOutcome[]> {
   let files: string[];
   try {
     files = (await fs.readdir(baseDir))
@@ -59,7 +59,7 @@ export async function readStrategyClosedTradeOutcomes(
     throw error;
   }
 
-  const outcomes: StrategyClosedOutcome[] = [];
+  const outcomes: ClosedTradeOutcome[] = [];
   for (const file of files) {
     const content = await fs.readFile(path.join(baseDir, file), 'utf8');
     for (const line of content.split('\n')) {
