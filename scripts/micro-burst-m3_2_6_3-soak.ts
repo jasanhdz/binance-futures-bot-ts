@@ -313,6 +313,28 @@ async function main(): Promise<void> {
       .digest('hex');
     const readinessStable = maxContinuousReadySeconds >= 300 && previousReady;
     const mutationAudit = auditedExchange.audit;
+    const validContexts = Math.max(
+      0,
+      healthBeforeStop.totalEvaluations - healthBeforeStop.totalInvalidContexts,
+    );
+    const symbolHealth = Object.fromEntries(
+      SYMBOLS.map((symbol) => [symbol, runtime.getSymbolHealth(symbol)]),
+    );
+    const btcReady = healthBeforeStop.btcHealthy;
+    const btcWindowComplete = symbolHealth.BTCUSDT?.windowComplete === true;
+    const ethWindowComplete = symbolHealth.ETHUSDT?.windowComplete === true;
+    const btcGapFree = symbolHealth.BTCUSDT?.gapFree === true;
+    const ethGapFree = symbolHealth.ETHUSDT?.gapFree === true;
+    const shortValidationPassed =
+      readinessBeforeStop.readyForSoak &&
+      storageValidation.verified === true &&
+      mutationAudit.totalMutationAttempts === 0 &&
+      validContexts > 0 &&
+      btcReady &&
+      btcWindowComplete &&
+      ethWindowComplete &&
+      btcGapFree &&
+      ethGapFree;
     const result = {
       runId,
       codeSha,
@@ -325,6 +347,20 @@ async function main(): Promise<void> {
         storageValidation.verified === true,
       readyAtUtc: readyAtMs ? new Date(readyAtMs).toISOString() : null,
       readiness: readinessBeforeStop,
+      symbolHealth,
+      evaluations: healthBeforeStop.totalEvaluations,
+      invalidContexts: healthBeforeStop.totalInvalidContexts,
+      validContexts,
+      shortValidation: {
+        btcReady,
+        btcWindowComplete,
+        ethWindowComplete,
+        btcGapFree,
+        ethGapFree,
+        storageVerified: storageValidation.verified === true,
+        mutationAttempts: mutationAudit.totalMutationAttempts,
+        passed: shortValidationPassed,
+      },
       readinessHistory,
       readinessStability: {
         firstReadyAt: readyAtMs ? new Date(readyAtMs).toISOString() : null,
@@ -343,7 +379,7 @@ async function main(): Promise<void> {
       finalManifestSha256,
       mutations: mutationAudit,
       verdict: shortValidation
-        ? readinessBeforeStop.readyForSoak && storageValidation.verified === true && mutationAudit.totalMutationAttempts === 0
+        ? shortValidationPassed
           ? 'MICRO_BURST_V1_M3_2_6_5_SHORT_VALIDATION_VERIFIED'
           : 'MICRO_BURST_V1_M3_2_6_5_SHORT_VALIDATION_BLOCKED'
         : readinessBeforeStop.readyForSoak
