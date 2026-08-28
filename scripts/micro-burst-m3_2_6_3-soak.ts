@@ -41,6 +41,7 @@ const configPath = resolve(root, 'config/micro-burst-m3_2_2-soak.yaml');
 const expectedCiSha = process.env.MICRO_BURST_EXPECTED_CI_HEAD_SHA;
 const ciRunId = process.env.MICRO_BURST_CI_RUN_ID ?? null;
 const smokeEvidencePath = process.env.MICRO_BURST_SMOKE_EVIDENCE_PATH;
+const shortValidation = process.env.MICRO_BURST_SHORT_VALIDATION === 'true';
 const durationSeconds = Number(process.env.MICRO_BURST_SOAK_DURATION_SECONDS ?? 900);
 const warmupPollMs = 5_000;
 const codeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
@@ -80,7 +81,7 @@ if (
   Object.values(smokeEvidence.aggTrade).some((count) => count <= 0)
 )
   throw new Error('M3_2_6_3_SMOKE_EVIDENCE_INVALID');
-if (!Number.isFinite(durationSeconds) || durationSeconds < 900)
+if (!Number.isFinite(durationSeconds) || durationSeconds < (shortValidation ? 300 : 900))
   throw new Error('M3_2_6_3_DURATION_TOO_SHORT');
 
 const runId = `${new Date().toISOString().replace(/[-:.TZ]/g, '')}-${codeSha.slice(0, 12)}`;
@@ -317,7 +318,11 @@ async function main(): Promise<void> {
       codeSha,
       endedAtUtc: new Date().toISOString(),
       durationSeconds: (Date.now() - startedAtMs) / 1_000,
-      readyForSoak: readinessBeforeStop.readyForSoak && readinessStable && storageValidation.verified === true,
+      validationMode: shortValidation ? 'SHORT_VALIDATION' : 'RETAINED_SOAK',
+      readyForSoak:
+        readinessBeforeStop.readyForSoak &&
+        (shortValidation || readinessStable) &&
+        storageValidation.verified === true,
       readyAtUtc: readyAtMs ? new Date(readyAtMs).toISOString() : null,
       readiness: readinessBeforeStop,
       readinessHistory,
@@ -337,7 +342,11 @@ async function main(): Promise<void> {
       manifestSha256,
       finalManifestSha256,
       mutations: mutationAudit,
-      verdict: readinessBeforeStop.readyForSoak
+      verdict: shortValidation
+        ? readinessBeforeStop.readyForSoak && storageValidation.verified === true && mutationAudit.totalMutationAttempts === 0
+          ? 'MICRO_BURST_V1_M3_2_6_5_SHORT_VALIDATION_VERIFIED'
+          : 'MICRO_BURST_V1_M3_2_6_5_SHORT_VALIDATION_BLOCKED'
+        : readinessBeforeStop.readyForSoak
         && readinessStable
         && storageValidation.verified === true
         && mutationAudit.totalMutationAttempts === 0
