@@ -337,7 +337,7 @@ A component is shared because its semantics are strategy-neutral, not because re
 
 ## 13. Wave 4A Phase O status
 
-**Status:** COMPLETE — local verification pending final commit and exact-SHA CI.
+**Status:** COMPLETE — local verification and exact-SHA CI passed.
 
 `src/core/market-data/SharedNeutralMarketFeatures.ts` defines the immutable
 `SHARED_MARKET_FEATURES_V1` contract and pure calculators for quote spread,
