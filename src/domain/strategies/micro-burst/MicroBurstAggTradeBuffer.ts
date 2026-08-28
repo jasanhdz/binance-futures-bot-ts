@@ -188,9 +188,10 @@ export class MicroBurstAggTradeBuffer {
     while (this.buffer.length > 0 && this.buffer[0].eventTime <= cutoff) {
       this.buffer.shift();
     }
-    while (this.gapIntervals.length > 0 && this.gapIntervals[0].endedAtMs < cutoff) {
-      this.gapIntervals.shift();
-    }
+    const retainedGaps = this.gapIntervals.filter((gap) => gap.endedAtMs >= cutoff);
+    this.gapIntervals.splice(0, this.gapIntervals.length, ...retainedGaps);
+    this.gapKeys.clear();
+    for (const gap of this.gapIntervals) this.gapKeys.add(gap.dedupeKey);
   }
 
   private isCurrentWindowGapFree(requestedWindowMs: number): boolean {

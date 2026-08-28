@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { MicroBurstOutcomeTracker } from '../../../app/micro-burst/MicroBurstOutcomeTracker';
 import { MicroBurstOutcomeJournal } from '../../../app/micro-burst/MicroBurstOutcomeJournal';
 import { MicroBurstStorage } from '../../../app/micro-burst/MicroBurstStorage';
@@ -115,6 +115,34 @@ describe('MicroBurstOutcomeTracker', () => {
 
     tracker.processTradeEvent({ eventTime: 1_001_000, price: 79100, symbol: 'BTCUSDT' });
     expect(tracker.getPendingIds()).toHaveLength(1);
+  });
+
+  it('keeps standalone live ingestion archival while runtime observation is not', () => {
+    const appendTrade = vi.fn(() => true);
+    const storage = {
+      appendTrade,
+      loadEpisodes: () => [],
+      loadSignalReconciliation: () => ({ signals: [], inconsistentSignalIds: [] }),
+      hasCompletedOutcome: () => false,
+      persistEpisode: () => true,
+      persistSignal: () => true,
+      persistPendingState: () => true,
+      assignSignalEpisode: () => true,
+      assignOutcomeEpisode: () => true,
+    };
+    const journal = new MicroBurstOutcomeJournal(TEST_DIR);
+    const tracker = new MicroBurstOutcomeTracker({
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      clock: { now: () => 1_000_000 },
+      journal,
+      storage: storage as any,
+    });
+    tracker.trackSignal(makeSignal({ shadowSignalId: 'archival-boundary' }));
+
+    tracker.ingestLiveTradeEvent({ eventTime: 1_001_000, price: 79_100, symbol: 'BTCUSDT' });
+    tracker.observeTradeEvent({ eventTime: 1_002_000, price: 79_100, symbol: 'BTCUSDT' });
+
+    expect(appendTrade).toHaveBeenCalledTimes(1);
   });
 
   it('ignores trade events before signal time', () => {

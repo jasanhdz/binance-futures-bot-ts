@@ -157,6 +157,35 @@ describe('MicroBurstRuntime', () => {
     await runtime.stop();
   });
 
+  it('archives each runtime trade once and observes it without tracker archival', async () => {
+    let callback: ((trade: any) => void) | undefined;
+    const appendTrade = vi.fn(() => true);
+    const observeTradeEvent = vi.fn();
+    deps.exchange.subscribeToAggTrades = vi.fn((_symbol, next) => {
+      callback = next;
+      return () => {};
+    });
+    deps.marketStorage = {
+      appendDepth: () => true,
+      appendTrade,
+      persistCheckpoint: () => true,
+      getHealth: () => ({ healthy: true, errorCount: 0 }),
+    };
+    deps.outcomeTracker = {
+      trackSignal: () => {},
+      observeTradeEvent,
+      flushPending: () => {},
+      getHealth: () => ({ signalsObserved: 0, pendingOutcomes: 0, completedOutcomes: 0, outcomeErrors: 0 }),
+    };
+    const runtime = new MicroBurstRuntime(deps, makeConfig({ marketArchive: { enabled: true } }));
+    await runtime.start();
+    callback!({ eventTime: 1_000, price: '100', quantity: '1', isBuyerMaker: false });
+
+    expect(appendTrade).toHaveBeenCalledTimes(1);
+    expect(observeTradeEvent).toHaveBeenCalledTimes(1);
+    await runtime.stop();
+  });
+
   it('does not start when mode is OFF', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'OFF' }));
     await runtime.start();

@@ -6,6 +6,10 @@
 
 import { BinanceExchange } from '../src/infra/adapters/BinanceAdapter';
 import { Logger } from '../src/app/ports/Logger';
+import { createReadOnlyAuditedExchange } from '../src/infra/adapters/ReadOnlyAuditedExchange';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const durationSeconds = Number(
   process.argv.find((_, index, args) => args[index - 1] === '--duration') ?? 90,
@@ -31,7 +35,19 @@ function markMessage(stream: string): void {
 }
 
 async function main(): Promise<void> {
-  const exchange = new BinanceExchange(logger);
+  const root = resolve(__dirname, '..');
+  const codeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  const branch = execFileSync('git', ['branch', '--show-current'], {
+    cwd: root,
+    encoding: 'utf8',
+  }).trim();
+  const workingTreeClean =
+    execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim() === '';
+  const runId = `${new Date().toISOString().replace(/[-:.TZ]/g, '')}-${codeSha.slice(0, 12)}`;
+  const evidenceRoot = resolve(root, 'data/micro-burst/smokes/m3_2_6_4', runId);
+  mkdirSync(evidenceRoot, { recursive: true });
+  const audited = createReadOnlyAuditedExchange(new BinanceExchange(logger), codeSha);
+  const exchange = audited.exchange;
   const startedAtMs = Date.now();
   const wsManager = (exchange as any).wsManager as {
     getMarketDataHealth(): Array<{
@@ -73,6 +89,12 @@ async function main(): Promise<void> {
   const allDepth = symbols.every((symbol) => (depth.get(symbol) ?? 0) > 0);
   const allAggTrade = symbols.every((symbol) => (aggTrade.get(symbol) ?? 0) > 0);
   const result = {
+    runId,
+    codeSha,
+    branch,
+    workingTreeClean,
+    startedAtUtc: new Date(startedAtMs).toISOString(),
+    endedAtUtc: new Date().toISOString(),
     durationSeconds: Number(((Date.now() - startedAtMs) / 1_000).toFixed(1)),
     streams: streamsBeforeClose,
     depth: Object.fromEntries(symbols.map((symbol) => [symbol, depth.get(symbol) ?? 0])),
@@ -81,11 +103,31 @@ async function main(): Promise<void> {
     staleLoops: 0,
     reconnects,
     cleanUnsubscribe: streams.length === 0,
-    exchangeMutations: 0,
+    mutationAudit: {
+      totalMutationAttempts: audited.audit.totalMutationAttempts,
+      blockedMutationAttempts: audited.audit.blockedMutationAttempts,
+      forwardedMutationCalls: audited.audit.forwardedMutationCalls,
+    },
   };
 
+  const verified =
+    workingTreeClean &&
+    allDepth &&
+    allAggTrade &&
+    reconnects === 0 &&
+    result.cleanUnsubscribe &&
+    audited.audit.totalMutationAttempts === 0;
+  const evidence = {
+    ...result,
+    verdict: verified
+      ? 'MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED'
+      : 'MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_BLOCKED',
+  };
+  writeFileSync(resolve(evidenceRoot, 'smoke-result.json'), JSON.stringify(evidence, null, 2) + '\n', {
+    flag: 'wx',
+  });
   console.log(JSON.stringify(result, null, 2));
-  if (allDepth && allAggTrade && reconnects === 0 && result.cleanUnsubscribe) {
+  if (verified) {
     console.log('MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED');
     return;
   }

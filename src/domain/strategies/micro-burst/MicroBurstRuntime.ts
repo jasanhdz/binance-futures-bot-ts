@@ -99,7 +99,7 @@ export interface MicroBurstRuntimeDeps {
   strategyRouter: StrategyRouter<MicroBurstStrategyContext>;
   outcomeTracker?: {
     trackSignal(snapshot: ShadowSignalSnapshot): void;
-    processTradeEvent(event: {
+    observeTradeEvent(event: {
       eventTime: number;
       receivedAtMs?: number;
       price: number;
@@ -349,7 +349,7 @@ export class MicroBurstRuntime {
 
           // M3: Forward trade events to outcome tracker
           if (this.deps.outcomeTracker) {
-            this.deps.outcomeTracker.processTradeEvent({
+            this.deps.outcomeTracker.observeTradeEvent({
               eventTime: trade.eventTime,
               receivedAtMs: trade.receivedAtMs,
               price: Number(trade.price),

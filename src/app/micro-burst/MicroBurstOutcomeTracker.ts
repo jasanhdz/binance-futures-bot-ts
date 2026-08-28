@@ -233,6 +233,22 @@ export class MicroBurstOutcomeTracker {
     this.ingestLiveTradeEvent(event);
   }
 
+  /** Observe a runtime-archived trade without appending it to storage again. */
+  observeTradeEvent(event: {
+    eventTime: number;
+    receivedAtMs?: number;
+    price: number;
+    symbol: string;
+    quantity?: number;
+    isBuyerMaker?: boolean;
+    tradeTime?: number;
+    aggregateTradeId?: number;
+    firstTradeId?: number;
+    lastTradeId?: number;
+  }): void {
+    this.observeTradeEventInternal(event, false);
+  }
+
   /** Live WS ingestion: archive once, then evaluate only the in-memory observation. */
   ingestLiveTradeEvent(event: {
     eventTime: number;
@@ -246,7 +262,7 @@ export class MicroBurstOutcomeTracker {
     firstTradeId?: number;
     lastTradeId?: number;
   }): void {
-    this.observeTradeEvent(event, true);
+    this.observeTradeEventInternal(event, true);
   }
 
   /** Archive replay never feeds records back into the archival queue. */
@@ -262,10 +278,10 @@ export class MicroBurstOutcomeTracker {
     firstTradeId?: number;
     lastTradeId?: number;
   }): void {
-    this.observeTradeEvent(event, false);
+    this.observeTradeEventInternal(event, false);
   }
 
-  private observeTradeEvent(
+  private observeTradeEventInternal(
     event: {
       eventTime: number;
       receivedAtMs?: number;

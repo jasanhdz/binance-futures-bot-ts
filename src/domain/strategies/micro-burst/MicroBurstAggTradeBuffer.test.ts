@@ -172,6 +172,19 @@ describe('MicroBurstAggTradeBuffer', () => {
     expect(onGap).toHaveBeenCalledTimes(1);
   });
 
+  it('prunes dedupe keys with expired gap intervals but retains active keys', () => {
+    const onGap = vi.fn();
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 4_000, firstTradeId: 10, lastTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 3_000, firstTradeId: 12, lastTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 2_000, firstTradeId: 14, lastTradeId: 14 }));
+
+    // The first gap expires; the second remains in the active event-time window.
+    buffer.push(makeTrade({ eventTime: NOW_MS + 2_001, firstTradeId: 16, lastTradeId: 16 }));
+    expect(onGap).toHaveBeenCalledTimes(3);
+    expect((buffer as any).gapKeys).toEqual(new Set(['12:14', '14:16']));
+  });
+
   it('uses persisted relevant gaps and fails closed when the query fails', () => {
     const query = vi.fn(() => true);
     const buffer = new MicroBurstAggTradeBuffer(
