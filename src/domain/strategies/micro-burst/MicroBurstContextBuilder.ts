@@ -68,6 +68,7 @@ export interface MicroBurstContextBuilderDeps {
 export interface MicroBurstContextBuildOptions {
   snapshotAtMs: number;
   localNowAtMs?: number;
+  getLocalNowAtMs?: () => number;
   config?: Partial<MicroBurstConfig>;
 }
 
@@ -190,7 +191,6 @@ export async function buildMicroBurstContext(
 ): Promise<MicroBurstContext> {
   const config = { ...defaultMicroBurstConfig(), ...options.config };
   const snapshotAtMs = options.snapshotAtMs;
-  const localNowAtMs = options.localNowAtMs ?? snapshotAtMs;
   if (!Number.isFinite(snapshotAtMs) || snapshotAtMs <= 0) {
     throw new Error('MICRO_BURST_INVALID_SNAPSHOT_AT');
   }
@@ -200,6 +200,7 @@ export async function buildMicroBurstContext(
     deps.candles.getCandles(symbol, '3m', 80),
     deps.candles.getCandles(symbol, '5m', 60),
   ]);
+  const localNowAtMs = options.getLocalNowAtMs?.() ?? options.localNowAtMs ?? snapshotAtMs;
   const rawCandleSets = {
     candles1m: rawCandles1m,
     candles3m: rawCandles3m,

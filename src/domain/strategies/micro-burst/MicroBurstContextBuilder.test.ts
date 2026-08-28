@@ -174,6 +174,26 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     expect(context.dataQuality.invalidReasons).not.toContain('book_unsynced');
   });
 
+  it('samples local time after async candles complete', async () => {
+    let candlesFinished = false;
+    const deps = depsWith(freshCandleSets(), healthyBook({ observedAtMs: SNAPSHOT_AT_MS + 500 }));
+    deps.candles.getCandles = async (_symbol, interval) => {
+      await Promise.resolve();
+      candlesFinished = true;
+      return freshCandleSets()[interval as keyof ReturnType<typeof freshCandleSets>];
+    };
+    const context = await buildMicroBurstContext('ETHUSDT', deps, {
+      snapshotAtMs: SNAPSHOT_AT_MS,
+      getLocalNowAtMs: () => {
+        expect(candlesFinished).toBe(true);
+        return SNAPSHOT_AT_MS + 1_000;
+      },
+    });
+    expect(context.dataQuality.bookStatus).toBe('HEALTHY');
+    expect(context.dataQuality.bookAgeMs).toBe(500);
+    expect(context.dataQuality.invalidReasons).not.toContain('book_unsynced');
+  });
+
   it('ignores all 1m/3m/5m candles after snapshotAtMs', async () => {
     const historical = freshCandleSets();
     const withFuture = {

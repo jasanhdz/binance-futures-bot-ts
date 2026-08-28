@@ -62,7 +62,7 @@ export class MicroBurstShadowEvaluator {
     try {
       const context = await buildMicroBurstContext(symbol, this.deps.contextBuilderDeps, {
         snapshotAtMs,
-        localNowAtMs: this.deps.clock.now(),
+        getLocalNowAtMs: () => this.deps.clock.now(),
         config:
           symConfig.btcConflictThresholdBps !== undefined
             ? { btcConflictThresholdBps: symConfig.btcConflictThresholdBps }
