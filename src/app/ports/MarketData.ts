@@ -64,6 +64,45 @@ export interface QuotePort {
   getQuote(): QuoteSnapshot;
 }
 
+export type CandleStatus = 'OPEN' | 'CLOSED';
+export type CandleHealth = 'HEALTHY' | 'UNAVAILABLE' | 'STALE' | 'GAPPED' | 'ANOMALOUS';
+export type CandleGapCheck = 'CHECKED' | 'UNSUPPORTED';
+
+export interface CandleObservation {
+  readonly symbol: string;
+  readonly interval: string;
+  readonly openTime: number;
+  readonly closeTime: number;
+  readonly open: number;
+  readonly high: number;
+  readonly low: number;
+  readonly close: number;
+  readonly volume: number;
+  /** Preserved from the existing source without reinterpretation. */
+  readonly buyVolume: number;
+  readonly status: CandleStatus;
+  /** Local receive time of the source response. */
+  readonly observedAtMs: number;
+  readonly source: 'REST';
+}
+
+export interface CandleSeriesSnapshot {
+  readonly symbol: string;
+  readonly interval: string;
+  readonly candles: readonly CandleObservation[];
+  readonly health: CandleHealth;
+  readonly observedAtMs: number | null;
+  readonly exchangeSnapshotTimeMs: number | null;
+  readonly gapCount: number;
+  readonly hasGaps: boolean | null;
+  readonly gapCheck: CandleGapCheck;
+  readonly source: 'REST';
+}
+
+export interface CandlePort {
+  getSeries(symbol: string, interval: string, limit: number): Promise<CandleSeriesSnapshot>;
+}
+
 export interface TemporalOrderBookObservation {
   observedAtMs: number;
   signedTopOfBookImbalance: number;

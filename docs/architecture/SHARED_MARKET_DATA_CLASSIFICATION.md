@@ -51,6 +51,21 @@ Derives an immutable bid/ask/mid/spread quote from an existing canonical
 fails closed for unavailable, stale, unsynchronized, empty, invalid, or crossed
 source state, and does not create a quote subscription or ownership plane.
 
+### `src/core/market-data/MarketDataCandleProvider.ts`
+
+**Classification:** `GENERIC_RAW_STATE + CONTRACT`.
+
+Wraps the existing REST `getCandles` and `getServerTime` capabilities into a
+read-only `CandlePort`. It adds explicit interval identity, OPEN/CLOSED status at
+the exchange-time boundary, local response observation time, OHLCV validation,
+freshness, and deterministic gap diagnostics. Fixed production intervals and
+calendar-aware `1M` continuity are checked; other intervals report
+`gapCheck: UNSUPPORTED` rather than claiming gap-free data.
+
+This provider is REST-only and is not wired into existing strategy loops. The
+existing `BinanceAdapter` candle cache and 5m WS path, including its AggTrade
+`buyVolume` overlay, remain compatibility behavior and are unchanged.
+
 ### `src/core/market-data/RollingAggTradeBuffer.ts`
 
 **Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE`.
