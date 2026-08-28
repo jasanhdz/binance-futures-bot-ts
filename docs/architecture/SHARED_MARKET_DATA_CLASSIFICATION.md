@@ -42,6 +42,21 @@ Owns one canonical order-book instance per normalized symbol and reference-count
 consumer leases. It exposes only the read-only `OrderBookPort` capability and owns
 start/stop lifecycle transitions.
 
+### `src/core/market-data/RollingAggTradeBuffer.ts`
+
+**Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE`.
+
+Owns event-time retention, aggregate-trade continuity, pending and persisted gap
+qualification, reconnect uncertainty, capacity limits, window coverage, and neutral
+taker-flow summaries without strategy interpretation.
+
+### `src/core/market-data/AggTradeDataPlane.ts`
+
+**Classification:** `GENERIC_RAW_STATE`.
+
+Owns one canonical rolling AggTrade state and one normalized subscription per symbol
+through reference-counted consumer leases. It exposes no execution or mutation authority.
+
 ### `src/app/micro-burst/MicroBurstMarketData.ts`
 
 **Classification:** `MIXED_SPLIT_REQUIRED` leaning strongly `GENERIC_RAW_STATE`.
@@ -70,29 +85,11 @@ the downstream Micro Burst pressure interpretation.
 
 ### `src/domain/strategies/micro-burst/MicroBurstAggTradeBuffer.ts`
 
-**Classification:** `GENERIC_RAW_STATE + GENERIC_NEUTRAL_FEATURE` under a strategy-specific name.
+**Classification:** `COMPATIBILITY`.
 
-Generic mechanics:
+Delegates to the shared rolling buffer while preserving the legacy constructor and class name.
 
-- rolling event-time retention;
-- aggregate identity continuity;
-- pending gap qualification;
-- out-of-order insertion;
-- missing identity;
-- persisted gap lookup;
-- reconnect uncertainty;
-- capacity truncation;
-- window completeness.
-
-Neutral summary:
-
-- buy/sell volume;
-- net taker volume;
-- trade count;
-- observed/requested window;
-- coverage/quality diagnostics.
-
-**Decision:** extract after order-book Wave 1. Maintain a Micro Burst compatibility wrapper/re-export until consumers migrate.
+**Decision:** retain this wrapper until shared AggTrade parity and runtime qualification are complete.
 
 **Wave:** I/J/K.
 

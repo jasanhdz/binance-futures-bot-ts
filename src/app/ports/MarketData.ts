@@ -26,6 +26,18 @@ export interface BinanceDepthSnapshot {
   receivedAtMs?: number;
 }
 
+export interface AggTradeEvent {
+  eventTime: number;
+  receivedAtMs?: number;
+  price: number;
+  quantity: number;
+  isBuyerMaker: boolean;
+  tradeTime?: number;
+  aggregateTradeId?: number;
+  firstTradeId?: number;
+  lastTradeId?: number;
+}
+
 export interface OrderBookDepthLevel {
   price: number;
   qty: number;

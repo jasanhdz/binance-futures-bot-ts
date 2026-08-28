@@ -8,6 +8,7 @@
 import { Side } from '../../types';
 import { BookDataStatus, BtcDataStatus } from './MicroBurstTypes';
 import {
+  AggTradeEvent as SharedAggTradeEvent,
   OrderBookHealth as SharedOrderBookHealth,
   OrderBookState,
   TemporalOrderBookObservation,
@@ -47,16 +48,7 @@ export interface BtcReturnSet {
 
 // ── AggTrade Buffer ─────────────────────────────────────────
 
-export interface AggTradeEvent {
-  eventTime: number;
-  receivedAtMs?: number;
-  price: number;
-  quantity: number;
-  isBuyerMaker: boolean;
-  aggregateTradeId?: number;
-  firstTradeId?: number;
-  lastTradeId?: number;
-}
+export type AggTradeEvent = SharedAggTradeEvent;
 
 // ── Reference Price ─────────────────────────────────────────
 

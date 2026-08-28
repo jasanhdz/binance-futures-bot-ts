@@ -32,6 +32,8 @@ import { MicroBurstShadowPolicyAdapter } from './MicroBurstShadowPolicyAdapter';
 import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
 import { OrderBookDataPlane } from '../../../core/market-data/OrderBookDataPlane';
 import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
+import { AggTradeDataPlane } from '../../../core/market-data/AggTradeDataPlane';
+import type { AggTradeLease } from '../../../core/market-data/AggTradeDataPlane';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -106,6 +108,7 @@ interface SymbolRuntimeState {
   book: SynchronizedOrderBook;
   bookLease: OrderBookLease<SynchronizedOrderBook>;
   aggTradeBuffer: MicroBurstAggTradeBuffer;
+  aggTradeLease: AggTradeLease<MicroBurstAggTradeBuffer>;
   referencePriceProvider: MicroBurstReferencePriceProvider;
   evaluationInFlight: boolean;
   lastEvaluationAt: number;
@@ -114,7 +117,6 @@ interface SymbolRuntimeState {
   duplicateSignalCount: number;
   invalidContextCount: number;
   bookResyncCount: number;
-  unsubscribeAggTrades?: () => void;
 }
 
 export interface MicroBurstRuntimeDeps {
@@ -202,6 +204,7 @@ export interface MicroBurstRuntimeDeps {
   mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
   shadowTradeJournal?: ShadowJournal;
   orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
+  aggTradeDataPlane?: AggTradeDataPlane<MicroBurstAggTradeBuffer>;
 }
 
 export class MicroBurstRuntime {
@@ -226,6 +229,7 @@ export class MicroBurstRuntime {
   private paperRecoveryBlocked = false;
   private paperPersistenceError: string | null = null;
   private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
+  private aggTradeDataPlane?: AggTradeDataPlane<MicroBurstAggTradeBuffer>;
 
   constructor(
     private readonly deps: MicroBurstRuntimeDeps,
@@ -355,32 +359,91 @@ export class MicroBurstRuntime {
         return new SynchronizedOrderBook(symbol, bookDeps);
       });
 
+    const aggTradeDataPlane =
+      this.deps.aggTradeDataPlane ??
+      new AggTradeDataPlane(
+        (symbol) =>
+          new MicroBurstAggTradeBuffer(
+            clock,
+            undefined,
+            undefined,
+            (gap) => {
+              this.deps.marketStorage?.recordGap?.({
+                symbol,
+                startedAtMs: gap.previousEventTimeMs ?? gap.nextEventTimeMs,
+                endedAtMs: gap.nextEventTimeMs,
+                reason: 'AGG_TRADE_SEQUENCE_GAP',
+                kind: 'AGG_TRADE_SEQUENCE',
+                feed: 'AGG_TRADE',
+                previousAggregateTradeId: gap.previousAggregateTradeId,
+                nextAggregateTradeId: gap.nextAggregateTradeId,
+                previousFirstTradeId: gap.previousFirstTradeId,
+                previousLastTradeId: gap.previousLastTradeId,
+                nextFirstTradeId: gap.nextFirstTradeId,
+                nextLastTradeId: gap.nextLastTradeId,
+                dedupeKey: gap.dedupeKey,
+              });
+            },
+            (fromMs, toMs) =>
+              this.deps.marketStorage?.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,
+          ),
+        {
+          subscribe: (symbol, onEvent, onStatus) => {
+            if (!exchange.subscribeToAggTrades) return () => {};
+            return exchange.subscribeToAggTrades(
+              symbol,
+              (trade) =>
+                onEvent({
+                  eventTime: trade.eventTime,
+                  receivedAtMs: trade.receivedAtMs,
+                  price: Number(trade.price),
+                  quantity: Number(trade.quantity),
+                  isBuyerMaker: trade.isBuyerMaker,
+                  tradeTime: trade.tradeTime,
+                  aggregateTradeId: trade.aggregateTradeId,
+                  firstTradeId: trade.firstTradeId,
+                  lastTradeId: trade.lastTradeId,
+                }),
+              onStatus,
+            );
+          },
+        },
+      );
+    this.aggTradeDataPlane = aggTradeDataPlane;
+
     for (const symbol of enabledSymbols) {
       const bookLease = this.orderBookDataPlane.acquire(symbol);
       const book = bookLease.book;
-      const aggTradeBuffer = new MicroBurstAggTradeBuffer(
-        clock,
-        undefined,
-        undefined,
-        (gap) => {
-          this.deps.marketStorage?.recordGap?.({
+      const aggTradeLease = aggTradeDataPlane.acquire(symbol, (event) => {
+        this.managePaperTrade(symbol, event);
+        this.deps.marketStorage?.appendTrade?.({
+          symbol,
+          eventTime: event.eventTime,
+          receivedAtMs: event.receivedAtMs ?? this.deps.clock.now(),
+          price: event.price,
+          quantity: event.quantity,
+          isBuyerMaker: event.isBuyerMaker,
+          aggregateTradeId: event.aggregateTradeId,
+          firstTradeId: event.firstTradeId,
+          lastTradeId: event.lastTradeId,
+        });
+
+        if (this.deps.outcomeTracker) {
+          this.deps.outcomeTracker.observeTradeEvent({
+            eventTime: event.eventTime,
+            receivedAtMs: event.receivedAtMs,
+            price: event.price,
             symbol,
-            startedAtMs: gap.previousEventTimeMs ?? gap.nextEventTimeMs,
-            endedAtMs: gap.nextEventTimeMs,
-            reason: 'AGG_TRADE_SEQUENCE_GAP',
-            kind: 'AGG_TRADE_SEQUENCE',
-            feed: 'AGG_TRADE',
-            previousAggregateTradeId: gap.previousAggregateTradeId,
-            nextAggregateTradeId: gap.nextAggregateTradeId,
-            previousFirstTradeId: gap.previousFirstTradeId,
-            previousLastTradeId: gap.previousLastTradeId,
-            nextFirstTradeId: gap.nextFirstTradeId,
-            nextLastTradeId: gap.nextLastTradeId,
-            dedupeKey: gap.dedupeKey,
+            quantity: event.quantity,
+            isBuyerMaker: event.isBuyerMaker,
+            tradeTime: event.tradeTime,
+            aggregateTradeId: event.aggregateTradeId,
+            firstTradeId: event.firstTradeId,
+            lastTradeId: event.lastTradeId,
           });
-        },
-        (fromMs, toMs) => this.deps.marketStorage?.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,
-      );
+        }
+      });
+      const aggTradeBuffer = aggTradeLease.state;
 
       const refPriceDeps: MicroBurstReferencePriceDeps = {
         getMarkPrice: (sym: string) => exchange.getMarkPrice(sym),
@@ -393,6 +456,7 @@ export class MicroBurstRuntime {
         book,
         bookLease,
         aggTradeBuffer,
+        aggTradeLease,
         referencePriceProvider: refPriceProvider,
         evaluationInFlight: false,
         lastEvaluationAt: 0,
@@ -403,57 +467,6 @@ export class MicroBurstRuntime {
         bookResyncCount: 0,
       };
       this.symbolStates.set(symbol, state);
-
-      if (exchange.subscribeToAggTrades) {
-        state.unsubscribeAggTrades = exchange.subscribeToAggTrades(
-          symbol,
-          (trade) => {
-            const event: AggTradeEvent = {
-              eventTime: trade.eventTime,
-              receivedAtMs: trade.receivedAtMs,
-              price: Number(trade.price),
-              quantity: Number(trade.quantity),
-              isBuyerMaker: trade.isBuyerMaker,
-              aggregateTradeId: trade.aggregateTradeId,
-              firstTradeId: trade.firstTradeId,
-              lastTradeId: trade.lastTradeId,
-            };
-            aggTradeBuffer.push(event);
-            this.managePaperTrade(symbol, event);
-            this.deps.marketStorage?.appendTrade?.({
-              symbol,
-              eventTime: trade.eventTime,
-              receivedAtMs: trade.receivedAtMs ?? this.deps.clock.now(),
-              price: Number(trade.price),
-              quantity: Number(trade.quantity),
-              isBuyerMaker: trade.isBuyerMaker,
-              aggregateTradeId: trade.aggregateTradeId,
-              firstTradeId: trade.firstTradeId,
-              lastTradeId: trade.lastTradeId,
-            });
-
-            // M3: Forward trade events to outcome tracker
-            if (this.deps.outcomeTracker) {
-              this.deps.outcomeTracker.observeTradeEvent({
-                eventTime: trade.eventTime,
-                receivedAtMs: trade.receivedAtMs,
-                price: Number(trade.price),
-                symbol,
-                quantity: Number(trade.quantity),
-                isBuyerMaker: trade.isBuyerMaker,
-                tradeTime: trade.tradeTime,
-                aggregateTradeId: trade.aggregateTradeId,
-                firstTradeId: trade.firstTradeId,
-                lastTradeId: trade.lastTradeId,
-              });
-            }
-          },
-          (status) => {
-            if (status === 'reconnecting' || status === 'connecting')
-              aggTradeBuffer.markContinuityUncertain();
-          },
-        );
-      }
 
       refPriceProvider.pollMarkPrice(symbol).catch(() => {});
     }
@@ -538,7 +551,7 @@ export class MicroBurstRuntime {
 
     for (const [symbol, state] of this.symbolStates) {
       state.bookLease.release();
-      state.unsubscribeAggTrades?.();
+      state.aggTradeLease.release();
       state.aggTradeBuffer.clear();
       state.evaluationInFlight = false;
     }
