@@ -13,6 +13,10 @@ export interface ShadowResearchReport {
   maeBps: number[];
   exitReasons: Record<string, number>;
   suppressionCount: number;
+  dataUncertainTrades: number;
+  unfilledDataUncertainCandidates: number;
+  recoveryBlockedKeys: number;
+  /** Compatibility alias for consumers that used the old aggregate field. */
   dataUncertain: number;
   recoveryBlocked: number;
 }
@@ -22,12 +26,12 @@ export function analyzeShadow(
   events: ShadowTradeEvent[],
   filter: { strategyId?: string; symbol?: string } = {},
 ): ShadowResearchReport {
-  const selected = positions.filter(
+  const latestByTradeId = new Map(positions.map((position) => [position.tradeId, position]));
+  const selected = [...latestByTradeId.values()].filter(
     (p) =>
       (!filter.strategyId || p.strategyId === filter.strategyId) &&
       (!filter.symbol || p.symbol === filter.symbol),
   );
-  const selectedKeys = new Set(selected.map((p) => p.tradeId));
   const relevantEvents = events.filter(
     (e) =>
       (!filter.strategyId || e.strategyId === filter.strategyId) &&
@@ -49,16 +53,26 @@ export function analyzeShadow(
     mfeBps: selected.map((p) => p.mfeBps),
     maeBps: selected.map((p) => p.maeBps),
     exitReasons: count(completed.map((p) => p.exitReason).filter((x): x is string => Boolean(x))),
-    suppressionCount: relevantEvents.filter(
-      (e) => e.event === 'ENTRY_SUPPRESSED' && (!e.tradeId || selectedKeys.has(e.tradeId)),
-    ).length,
-    dataUncertain:
-      selected.filter((p) => p.state === 'DATA_UNCERTAIN').length +
-      relevantEvents.filter(
-        (e) => e.event === 'DATA_UNCERTAIN' || e.event === 'UNFILLED_DATA_UNCERTAIN',
-      ).length,
+    suppressionCount: uniqueEventCount(relevantEvents, 'ENTRY_SUPPRESSED'),
+    dataUncertainTrades: selected.filter((p) => p.state === 'DATA_UNCERTAIN').length,
+    unfilledDataUncertainCandidates: uniqueEventCount(relevantEvents, 'UNFILLED_DATA_UNCERTAIN'),
+    recoveryBlockedKeys: uniqueEventCount(relevantEvents, 'RECOVERY_BLOCKED'),
+    dataUncertain: selected.filter((p) => p.state === 'DATA_UNCERTAIN').length,
     recoveryBlocked: selected.filter((p) => p.state === 'RECOVERY_BLOCKED').length,
   };
+}
+
+function uniqueEventCount(events: ShadowTradeEvent[], event: ShadowTradeEvent['event']): number {
+  return new Set(
+    events
+      .filter((candidate) => candidate.event === event)
+      .map(
+        (candidate) =>
+          candidate.tradeId ??
+          candidate.parentDecisionId ??
+          `${candidate.strategyId}:${candidate.symbol}`,
+      ),
+  ).size;
 }
 
 function count(values: string[]): Record<string, number> {

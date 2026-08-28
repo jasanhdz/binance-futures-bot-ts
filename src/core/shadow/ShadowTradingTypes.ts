@@ -37,6 +37,8 @@ export interface ShadowMarketQuote {
   readonly bestBid: number;
   readonly bestAsk: number;
   readonly observedAtMs: number;
+  /** Local receive time. Exchange event time, when available, is provenance only. */
+  readonly exchangeTimeMs?: number;
   readonly status: 'HEALTHY' | 'STALE' | 'UNSYNCED' | 'UNAVAILABLE' | 'ANOMALOUS';
 }
 
@@ -60,7 +62,7 @@ export interface ShadowCostScenario {
 }
 
 export interface ShadowPosition {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly key: ShadowPositionKey;
   readonly strategyId: StrategyId;
   readonly strategyVersion: string;
@@ -68,7 +70,10 @@ export interface ShadowPosition {
   readonly side: Side;
   readonly tradeId: string;
   readonly parentDecisionId: string;
+  readonly decisionAtMs: number;
+  readonly decisionReceivedAtMs: number;
   readonly openedAtMs: number;
+  readonly openedReceivedAtMs: number;
   readonly entryDecisionPrice: number;
   readonly entryExecutablePrice: number;
   readonly entryPrice: number;
@@ -83,6 +88,7 @@ export interface ShadowPosition {
   readonly mfeBps: number;
   readonly maeBps: number;
   readonly closedAtMs?: number;
+  readonly closedReceivedAtMs?: number;
   readonly exitExecutablePrice?: number;
   readonly exitReason?: string;
   readonly grossBps?: number;

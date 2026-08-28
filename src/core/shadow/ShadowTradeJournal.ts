@@ -27,7 +27,11 @@ export class FileShadowTradeJournal implements ShadowJournal {
   }
 
   appendPosition(position: ShadowPosition): void {
-    this.append(this.tradeDir, position, position.openedAtMs);
+    this.append(
+      this.tradeDir,
+      position,
+      position.closedReceivedAtMs ?? position.lastObservedAtMs ?? position.openedReceivedAtMs,
+    );
     this.positions.set(position.tradeId, position);
   }
 
@@ -92,10 +96,14 @@ export class FileShadowTradeJournal implements ShadowJournal {
         if (!line.trim()) continue;
         try {
           const position = JSON.parse(line) as ShadowPosition;
-          if (!position.tradeId || !position.key?.strategyId || !position.key?.symbol)
+          if (
+            position.schemaVersion !== 2 ||
+            !position.tradeId ||
+            !position.key?.strategyId ||
+            !position.key?.symbol
+          )
             throw new Error('invalid_position');
-          if (position.state === 'CLOSED') this.positions.delete(position.tradeId);
-          else this.positions.set(position.tradeId, position);
+          this.positions.set(position.tradeId, position);
         } catch {
           this.malformed.push(`${file}:${index + 1}`);
         }

@@ -12,4 +12,10 @@ describe('shadow execution pricing', () => {
     expect(executableExitPrice('SHORT', quote, 10)).toBe(101);
     expect(executableExitPrice('LONG', quote, 9)).toBeUndefined();
   });
+
+  it('rejects malformed or crossed quotes', () => {
+    expect(executableEntryPrice('LONG', { ...quote, bestBid: Number.NaN }, 10)).toBeUndefined();
+    expect(executableEntryPrice('LONG', { ...quote, bestAsk: 99 }, 10)).toBeUndefined();
+    expect(executableExitPrice('SHORT', { ...quote, bestAsk: Infinity }, 10)).toBeUndefined();
+  });
 });

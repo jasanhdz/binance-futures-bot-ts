@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { ShadowTradingEngine } from './ShadowTradingEngine';
 import { ShadowJournal } from './ShadowTradeJournal';
-import { ShadowPosition, ShadowStrategyPolicy, ShadowTradeEvent } from './ShadowTradingTypes';
+import {
+  ShadowPolicyDecision,
+  ShadowPosition,
+  ShadowStrategyPolicy,
+  ShadowTradeEvent,
+} from './ShadowTradingTypes';
 import { shadowPositionKey } from './ShadowPositionKey';
 
 class MemoryJournal implements ShadowJournal {
   positions: ShadowPosition[] = [];
   events: ShadowTradeEvent[] = [];
+  positionWrites = 0;
   appendPosition(position: ShadowPosition): void {
+    this.positionWrites += 1;
     this.positions = [...this.positions.filter((p) => p.tradeId !== position.tradeId), position];
   }
   appendEvent(event: ShadowTradeEvent): void {
@@ -26,6 +33,19 @@ class MemoryJournal implements ShadowJournal {
     return { healthy: true, malformedCount: 0 };
   }
   flush(): void {}
+}
+
+class FailingJournal extends MemoryJournal {
+  failPosition = false;
+  failEvent = false;
+  appendPosition(position: ShadowPosition): void {
+    if (this.failPosition) throw new Error('position_write_failed');
+    super.appendPosition(position);
+  }
+  appendEvent(event: ShadowTradeEvent): void {
+    if (this.failEvent) throw new Error('event_write_failed');
+    super.appendEvent(event);
+  }
 }
 
 const provenance = { strategyVersion: 'test', codeCommitSha: 'test' };
@@ -52,6 +72,10 @@ function intent(
 const holdPolicy = (strategyId: ShadowStrategyPolicy['strategyId']): ShadowStrategyPolicy => ({
   strategyId,
   evaluateLifecycle: () => ({ action: 'HOLD' }),
+});
+const policyDecision = (decision: ShadowPolicyDecision): ShadowStrategyPolicy => ({
+  strategyId: 'MOMENTUM_RIDE',
+  evaluateLifecycle: () => decision,
 });
 
 describe('ShadowTradingEngine', () => {
@@ -109,5 +133,180 @@ describe('ShadowTradingEngine', () => {
         quote,
       ).status,
     ).toBe('DATA_UNCERTAIN');
+  });
+
+  it('does not expose an in-memory position when canonical open persistence fails', () => {
+    const journal = new FailingJournal();
+    journal.failPosition = true;
+    const engine = new ShadowTradingEngine(
+      journal,
+      new Map([['MOMENTUM_RIDE', holdPolicy('MOMENTUM_RIDE')]]),
+    );
+    expect(engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote).status).toBe(
+      'RECOVERY_BLOCKED',
+    );
+    expect(engine.getOpenPositions()).toHaveLength(0);
+    expect(engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote).status).toBe(
+      'RECOVERY_BLOCKED',
+    );
+  });
+
+  it('keeps the canonical state when only auxiliary event persistence fails', () => {
+    const journal = new FailingJournal();
+    journal.failEvent = true;
+    const engine = new ShadowTradingEngine(
+      journal,
+      new Map([['MOMENTUM_RIDE', holdPolicy('MOMENTUM_RIDE')]]),
+    );
+    expect(engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote).status).toBe('OPENED');
+    expect(engine.getOpenPositions()).toHaveLength(1);
+    expect(engine.getAuxiliaryEventFailureCount()).toBe(1);
+  });
+
+  it('uses executable entry for positive MFE and adverse MAE on both sides', () => {
+    const journal = new MemoryJournal();
+    const policies = new Map([['MOMENTUM_RIDE', holdPolicy('MOMENTUM_RIDE')]] as const);
+    const engine = new ShadowTradingEngine(journal, policies);
+    engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote);
+    engine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+      { exchangeTimeMs: 2, receivedAtMs: 2_000, currentPrice: 103, marketDataQuality: 'HEALTHY' },
+    );
+    engine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+      { exchangeTimeMs: 3, receivedAtMs: 3_000, currentPrice: 98, marketDataQuality: 'HEALTHY' },
+    );
+    const long = engine.getOpenPositions()[0];
+    expect(long.entryPrice).toBe(101);
+    expect(long.mfeBps).toBeCloseTo((2 / 101) * 10_000);
+    expect(long.maeBps).toBeCloseTo((3 / 101) * 10_000);
+
+    const shortEngine = new ShadowTradingEngine(new MemoryJournal(), policies);
+    shortEngine.open(intent('MOMENTUM_RIDE', 'ETHUSDT', 'SHORT'), quote);
+    shortEngine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'ETHUSDT' },
+      { exchangeTimeMs: 2, receivedAtMs: 2_000, currentPrice: 96, marketDataQuality: 'HEALTHY' },
+    );
+    shortEngine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'ETHUSDT' },
+      { exchangeTimeMs: 3, receivedAtMs: 3_000, currentPrice: 102, marketDataQuality: 'HEALTHY' },
+    );
+    const short = shortEngine.getOpenPositions()[0];
+    expect(short.mfeBps).toBeCloseTo((3 / 99) * 10_000);
+    expect(short.maeBps).toBeCloseTo((3 / 99) * 10_000);
+    expect(short.mfeBps).toBeGreaterThanOrEqual(0);
+    expect(short.maeBps).toBeGreaterThanOrEqual(0);
+  });
+
+  it('rejects stop loosening and invalid stop requests', () => {
+    const policy = (decision: ShadowPolicyDecision): ShadowStrategyPolicy => ({
+      strategyId: 'MOMENTUM_RIDE',
+      evaluateLifecycle: () => decision,
+    });
+    const longEngine = new ShadowTradingEngine(
+      new MemoryJournal(),
+      new Map([['MOMENTUM_RIDE', policy({ action: 'MOVE_STOP', stop: 95 })]] as const),
+    );
+    longEngine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote);
+    const tightened = longEngine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+      { exchangeTimeMs: 1, receivedAtMs: 1_000, currentPrice: 101, marketDataQuality: 'HEALTHY' },
+    );
+    expect(tightened?.stop).toBe(95);
+    const looseLong = new ShadowTradingEngine(
+      new MemoryJournal(),
+      new Map([['MOMENTUM_RIDE', policy({ action: 'MOVE_STOP', stop: 94 })]] as const),
+    );
+    looseLong.open({ ...intent('MOMENTUM_RIDE', 'ETHUSDT', 'LONG'), structuralStop: 95 }, quote);
+    expect(
+      looseLong.manage(
+        { strategyId: 'MOMENTUM_RIDE', symbol: 'ETHUSDT' },
+        { exchangeTimeMs: 1, receivedAtMs: 1_000, currentPrice: 101, marketDataQuality: 'HEALTHY' },
+      )?.stop,
+    ).toBe(95);
+    const invalid = new ShadowTradingEngine(
+      new MemoryJournal(),
+      new Map([['MOMENTUM_RIDE', policy({ action: 'MOVE_STOP', stop: Number.NaN })]] as const),
+    );
+    invalid.open(intent('MOMENTUM_RIDE', 'SOLUSDT', 'LONG'), quote);
+    expect(
+      invalid.manage(
+        { strategyId: 'MOMENTUM_RIDE', symbol: 'SOLUSDT' },
+        { exchangeTimeMs: 1, receivedAtMs: 1_000, currentPrice: 101, marketDataQuality: 'HEALTHY' },
+      )?.stop,
+    ).toBe(90);
+  });
+
+  it('keeps the previous canonical state when manage persistence fails', () => {
+    const journal = new FailingJournal();
+    const engine = new ShadowTradingEngine(
+      journal,
+      new Map([['MOMENTUM_RIDE', holdPolicy('MOMENTUM_RIDE')]]),
+    );
+    engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote);
+    journal.failPosition = true;
+    const before = engine.getOpenPositions()[0];
+    const after = engine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+      { exchangeTimeMs: 2, receivedAtMs: 2_000, currentPrice: 103, marketDataQuality: 'HEALTHY' },
+    );
+    expect(after).toEqual(before);
+    expect(engine.getOpenPositions()[0]).toEqual(before);
+  });
+
+  it('fails closed when stop or close persistence fails', () => {
+    const stopJournal = new FailingJournal();
+    const stopEngine = new ShadowTradingEngine(
+      stopJournal,
+      new Map([['MOMENTUM_RIDE', policyDecision({ action: 'MOVE_STOP', stop: 95 })]] as const),
+    );
+    stopEngine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote);
+    stopJournal.failPosition = true;
+    expect(
+      stopEngine.manage(
+        { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+        { exchangeTimeMs: 2, receivedAtMs: 2_000, currentPrice: 101, marketDataQuality: 'HEALTHY' },
+      )?.stop,
+    ).toBe(90);
+
+    const closeJournal = new FailingJournal();
+    const closeEngine = new ShadowTradingEngine(
+      closeJournal,
+      new Map([['MOMENTUM_RIDE', policyDecision({ action: 'CLOSE', reason: 'TARGET' })]] as const),
+    );
+    closeEngine.open(intent('MOMENTUM_RIDE', 'ETHUSDT', 'LONG'), quote);
+    closeJournal.failPosition = true;
+    expect(
+      closeEngine.manage(
+        { strategyId: 'MOMENTUM_RIDE', symbol: 'ETHUSDT' },
+        {
+          exchangeTimeMs: 2,
+          receivedAtMs: 2_000,
+          currentPrice: 101,
+          quote,
+          marketDataQuality: 'HEALTHY',
+        },
+      )?.state,
+    ).toBe('OPEN_SHADOW');
+    expect(closeEngine.getOpenPositions()).toHaveLength(1);
+  });
+
+  it('does not flood the journal with unchanged HOLD checkpoints', () => {
+    const journal = new MemoryJournal();
+    const engine = new ShadowTradingEngine(
+      journal,
+      new Map([['MOMENTUM_RIDE', holdPolicy('MOMENTUM_RIDE')]]),
+    );
+    engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote);
+    const writesAfterOpen = journal.positionWrites;
+    engine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+      { exchangeTimeMs: 2, receivedAtMs: 2_000, currentPrice: 103, marketDataQuality: 'HEALTHY' },
+    );
+    engine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+      { exchangeTimeMs: 3, receivedAtMs: 3_000, currentPrice: 103, marketDataQuality: 'HEALTHY' },
+    );
+    expect(journal.positionWrites).toBe(writesAfterOpen + 1);
   });
 });

@@ -13,6 +13,8 @@ import {
 } from './ShadowTradingTypes';
 import { ShadowJournal } from './ShadowTradeJournal';
 
+const HOLD_CHECKPOINT_INTERVAL_MS = 60_000;
+
 export type ShadowOpenResult =
   | { status: 'OPENED'; position: ShadowPosition }
   | { status: 'SUPPRESSED'; event: ShadowTradeEvent }
@@ -21,6 +23,8 @@ export type ShadowOpenResult =
 
 export class ShadowTradingEngine {
   private readonly positions = new Map<string, ShadowPosition>();
+  private readonly pendingCheckpoints = new Map<string, ShadowPosition>();
+  private auxiliaryEventFailures = 0;
 
   constructor(
     private readonly journal: ShadowJournal,
@@ -30,8 +34,6 @@ export class ShadowTradingEngine {
       Record<string, ShadowCostScenario>
     > = new Map(),
   ) {
-    for (const key of journal.loadRecoveryBlockedKeys?.() ?? [])
-      this.recoveryBlocked.add(serializeShadowPositionKey(key));
     for (const position of journal.loadOpenPositions()) {
       const key = serializeShadowPositionKey(position.key);
       if (this.positions.has(key)) {
@@ -41,6 +43,8 @@ export class ShadowTradingEngine {
       }
       this.positions.set(key, position);
     }
+    for (const key of journal.loadRecoveryBlockedKeys?.() ?? [])
+      this.recoveryBlocked.add(serializeShadowPositionKey(key));
   }
 
   private readonly recoveryBlocked = new Set<string>();
@@ -56,8 +60,19 @@ export class ShadowTradingEngine {
         undefined,
         'RECOVERY_BLOCKED',
       );
-      this.journal.appendEvent(event);
+      this.appendEventSafe(event);
       return { status: 'RECOVERY_BLOCKED', event };
+    }
+    if (!validEntryIntent(intent)) {
+      const event = this.event(
+        'UNFILLED_DATA_UNCERTAIN',
+        intent.decisionReceivedAtMs,
+        intent,
+        undefined,
+        'DATA_UNCERTAIN',
+      );
+      this.appendEventSafe(event);
+      return { status: 'DATA_UNCERTAIN', event };
     }
     const existing = this.positions.get(serialized);
     if (existing) {
@@ -68,7 +83,7 @@ export class ShadowTradingEngine {
         existing.tradeId,
         'OPEN_SHADOW',
       );
-      this.journal.appendEvent(event);
+      this.appendEventSafe(event);
       return { status: 'SUPPRESSED', event };
     }
     const entryPrice = executableEntryPrice(intent.side, quote, intent.decisionReceivedAtMs);
@@ -80,12 +95,12 @@ export class ShadowTradingEngine {
         undefined,
         'DATA_UNCERTAIN',
       );
-      this.journal.appendEvent(event);
+      this.appendEventSafe(event);
       return { status: 'DATA_UNCERTAIN', event };
     }
-    const tradeId = `SHADOW-${intent.strategyId}-${intent.parentDecisionId}`;
+    const tradeId = `SHADOW-${intent.strategyId}-${key.symbol}-${intent.parentDecisionId}`;
     const position: ShadowPosition = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       key,
       strategyId: intent.strategyId,
       strategyVersion: intent.strategyVersion,
@@ -93,7 +108,10 @@ export class ShadowTradingEngine {
       side: intent.side,
       tradeId,
       parentDecisionId: intent.parentDecisionId,
+      decisionAtMs: intent.decisionAtMs,
+      decisionReceivedAtMs: intent.decisionReceivedAtMs,
       openedAtMs: intent.decisionAtMs,
+      openedReceivedAtMs: intent.decisionReceivedAtMs,
       entryDecisionPrice: intent.referencePrice,
       entryExecutablePrice: entryPrice,
       entryPrice,
@@ -110,9 +128,22 @@ export class ShadowTradingEngine {
       provenance: intent.provenance,
       diagnostics: intent.diagnostics,
     };
+    try {
+      this.journal.appendPosition(position);
+    } catch {
+      this.recoveryBlocked.add(serialized);
+      const event = this.event(
+        'RECOVERY_BLOCKED',
+        intent.decisionReceivedAtMs,
+        intent,
+        tradeId,
+        'RECOVERY_BLOCKED',
+      );
+      this.appendEventSafe(event);
+      return { status: 'RECOVERY_BLOCKED', event };
+    }
     this.positions.set(serialized, position);
-    this.journal.appendPosition(position);
-    this.journal.appendEvent(
+    this.appendEventSafe(
       this.event('OPENED', intent.decisionReceivedAtMs, intent, tradeId, 'OPEN_SHADOW'),
     );
     return { status: 'OPENED', position };
@@ -141,18 +172,35 @@ export class ShadowTradingEngine {
     };
     const decision: ShadowPolicyDecision = policy.evaluateLifecycle(nextBase, observation);
     if (decision.action === 'MOVE_STOP') {
+      if (!Number.isFinite(decision.stop) || decision.stop <= 0) return current;
+      const improves =
+        current.stop === undefined ||
+        (current.side === 'LONG' ? decision.stop >= current.stop : decision.stop <= current.stop);
+      if (!improves) return current;
       const next = { ...nextBase, stop: decision.stop };
+      if (!this.persistCanonical(next)) return current;
       this.positions.set(serialized, next);
-      this.journal.appendPosition(next);
-      this.journal.appendEvent(
+      this.pendingCheckpoints.delete(serialized);
+      this.appendEventSafe(
         this.eventFromPosition('STOP_MOVED', observation.receivedAtMs, next, decision.reason),
       );
       return next;
     }
     if (decision.action !== 'CLOSE') {
-      this.positions.set(serialized, nextBase);
-      this.journal.appendPosition(nextBase);
-      return nextBase;
+      this.pendingCheckpoints.set(serialized, nextBase);
+      const materialChange =
+        nextBase.peakPrice !== current.peakPrice ||
+        nextBase.troughPrice !== current.troughPrice ||
+        nextBase.mfeBps !== current.mfeBps ||
+        nextBase.maeBps !== current.maeBps ||
+        observation.receivedAtMs - current.lastObservedAtMs >= HOLD_CHECKPOINT_INTERVAL_MS;
+      if (materialChange) {
+        if (!this.persistCanonical(nextBase)) return current;
+        this.pendingCheckpoints.delete(serialized);
+        this.positions.set(serialized, nextBase);
+        return nextBase;
+      }
+      return current;
     }
     const exitPrice = executableExitPrice(
       current.side,
@@ -161,9 +209,9 @@ export class ShadowTradingEngine {
     );
     if (exitPrice === undefined) {
       const uncertain = { ...nextBase, state: 'DATA_UNCERTAIN' as const };
+      if (!this.persistCanonical(uncertain)) return current;
       this.positions.set(serialized, uncertain);
-      this.journal.appendPosition(uncertain);
-      this.journal.appendEvent(
+      this.appendEventSafe(
         this.eventFromPosition(
           'DATA_UNCERTAIN',
           observation.receivedAtMs,
@@ -177,7 +225,8 @@ export class ShadowTradingEngine {
     const closed = {
       ...nextBase,
       state: 'CLOSED' as const,
-      closedAtMs: observation.receivedAtMs,
+      closedAtMs: observation.exchangeTimeMs,
+      closedReceivedAtMs: observation.receivedAtMs,
       exitExecutablePrice: exitPrice,
       exitReason: decision.reason,
       grossBps,
@@ -186,9 +235,13 @@ export class ShadowTradingEngine {
         this.costScenarios.get(key.strategyId) ?? {},
       ),
     };
+    if (!this.persistCanonical(closed)) {
+      this.recoveryBlocked.add(serialized);
+      return current;
+    }
     this.positions.delete(serialized);
-    this.journal.appendPosition(closed);
-    this.journal.appendEvent(
+    this.pendingCheckpoints.delete(serialized);
+    this.appendEventSafe(
       this.eventFromPosition('CLOSED', observation.receivedAtMs, closed, decision.reason),
     );
     return closed;
@@ -196,6 +249,14 @@ export class ShadowTradingEngine {
 
   getOpenPositions(): ShadowPosition[] {
     return [...this.positions.values()].map((position) => ({ ...position }));
+  }
+
+  flush(): void {
+    for (const [key, position] of this.pendingCheckpoints) {
+      if (this.persistCanonical(position)) this.pendingCheckpoints.delete(key);
+      else this.recoveryBlocked.add(key);
+    }
+    this.journal.flush();
   }
 
   getHealth(): {
@@ -213,6 +274,27 @@ export class ShadowTradingEngine {
       row.recoveryBlocked++;
     }
     return { totalOpen: this.positions.size, strategies };
+  }
+
+  getAuxiliaryEventFailureCount(): number {
+    return this.auxiliaryEventFailures;
+  }
+
+  private persistCanonical(position: ShadowPosition): boolean {
+    try {
+      this.journal.appendPosition(position);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private appendEventSafe(event: ShadowTradeEvent): void {
+    try {
+      this.journal.appendEvent(event);
+    } catch {
+      this.auxiliaryEventFailures++;
+    }
   }
 
   private event(
@@ -265,12 +347,26 @@ function excursionBps(
   trough: number,
   favorable: boolean,
 ): number {
-  return Math.max(
-    0,
-    signedReturnBps(
-      side,
-      entry,
-      favorable ? (side === 'LONG' ? peak : trough) : side === 'LONG' ? trough : peak,
-    ),
+  const price = favorable ? (side === 'LONG' ? peak : trough) : side === 'LONG' ? trough : peak;
+  return Math.abs(signedReturnBps(side, entry, price));
+}
+
+function validEntryIntent(intent: ShadowEntryIntent): boolean {
+  return Boolean(
+    intent.strategyId &&
+      intent.strategyVersion &&
+      intent.symbol.trim() &&
+      (intent.side === 'LONG' || intent.side === 'SHORT') &&
+      Number.isFinite(intent.decisionAtMs) &&
+      intent.decisionAtMs >= 0 &&
+      Number.isFinite(intent.decisionReceivedAtMs) &&
+      intent.decisionReceivedAtMs >= 0 &&
+      Number.isFinite(intent.referencePrice) &&
+      intent.referencePrice > 0 &&
+      intent.parentDecisionId.trim() &&
+      (intent.structuralStop === undefined ||
+        (Number.isFinite(intent.structuralStop) && intent.structuralStop > 0)) &&
+      (intent.destination === undefined ||
+        (Number.isFinite(intent.destination) && intent.destination > 0)),
   );
 }

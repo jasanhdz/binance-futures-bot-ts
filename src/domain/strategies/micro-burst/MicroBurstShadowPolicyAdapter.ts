@@ -37,7 +37,10 @@ export class MicroBurstShadowPolicyAdapter implements ShadowStrategyPolicy {
     const decision = evaluateMicroBurstExit(
       {
         unrealizedRoe: 0,
-        priceReturn: (observation.currentPrice - position.entryPrice) / position.entryPrice,
+        priceReturn:
+          position.side === 'LONG'
+            ? (observation.currentPrice - position.entryPrice) / position.entryPrice
+            : (position.entryPrice - observation.currentPrice) / position.entryPrice,
         currentPrice: observation.currentPrice,
         entryPrice: position.entryPrice,
         peakPrice: position.peakPrice,
@@ -45,7 +48,7 @@ export class MicroBurstShadowPolicyAdapter implements ShadowStrategyPolicy {
         structuralInvalidationPrice: position.stop ?? 0,
         destinationPrice: position.destination ?? 0,
         currentStopPrice: position.stop ?? null,
-        timeInTradeMs: Math.max(0, observation.exchangeTimeMs - position.openedAtMs),
+        timeInTradeMs: Math.max(0, observation.receivedAtMs - position.openedReceivedAtMs),
         momentumDecayFlag: false,
         anomalyExitFlag: context?.anomalyExitFlag ?? false,
         currentBookPressure: context?.currentBookPressure ?? null,
