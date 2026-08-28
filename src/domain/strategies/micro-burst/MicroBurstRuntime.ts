@@ -599,7 +599,20 @@ export class MicroBurstRuntime {
           this.persistPaper(opened.position, opened.event, previousPosition);
         else if (opened.status === 'SUPPRESSED') {
           paperSuppressed = true;
-          this.paperSuppressedEntries++;
+          try {
+            this.paperTradeJournal.recordSuppressedCandidate(
+              opened.event.tradeId!,
+              symbol,
+              decisionReceivedAtMs,
+            );
+            this.paperSuppressedEntries++;
+          } catch (error) {
+            this.paperPersistenceError = String(error);
+            this.paperRecoveryBlocked = true;
+            this.deps.logger.error('micro_burst_paper_persistence_failed', {
+              error: String(error),
+            });
+          }
           const suppressionKey = `${symbol}:${previousPosition?.tradeId ?? 'UNKNOWN'}`;
           if (!this.paperSuppressionDiagnostics.has(suppressionKey)) {
             this.paperSuppressionDiagnostics.add(suppressionKey);
@@ -825,6 +838,9 @@ export class MicroBurstRuntime {
     }
     if (result.events.length > 0 || result.position.state === 'CLOSED') {
       for (const lifecycleEvent of result.events) this.persistPaperEvent(lifecycleEvent);
+      if (result.position.state === 'CLOSED') {
+        this.paperSuppressionDiagnostics.delete(`${symbol}:${result.position.tradeId}`);
+      }
     }
   }
 

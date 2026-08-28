@@ -51,4 +51,23 @@ describe('MicroBurstPaperTradeJournal recovery', () => {
     journal.appendPosition(position('P-2', 'ETHUSDT'));
     expect(() => journal.loadOpenPositions()).toThrow('PAPER_POSITION_AMBIGUOUS:ETHUSDT');
   });
+
+  it('persists aggregated suppression counts without lifecycle-event flooding', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-paper-suppression-'));
+    roots.push(root);
+    const journal = new MicroBurstPaperTradeJournal(root, path.join(root, 'events'));
+    journal.recordSuppressedCandidate('P-1', 'ETHUSDT', 1_000);
+    journal.recordSuppressedCandidate('P-1', 'ETHUSDT', 2_000);
+    const restarted = new MicroBurstPaperTradeJournal(root, path.join(root, 'events'));
+    expect(restarted.loadSuppressionAccounting()).toEqual([
+      {
+        tradeId: 'P-1',
+        symbol: 'ETHUSDT',
+        candidateCount: 2,
+        firstSuppressedAtMs: 1_000,
+        lastSuppressedAtMs: 2_000,
+      },
+    ]);
+    expect(restarted.loadAllEvents()).toHaveLength(0);
+  });
 });

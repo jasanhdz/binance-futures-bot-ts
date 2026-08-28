@@ -13,6 +13,7 @@ console.log(
       undefined,
       undefined,
       journal.loadAllEvents(),
+      journal.loadSuppressionAccounting(),
     ),
     null,
     2,

@@ -183,6 +183,8 @@ export class MicroBurstPaperTrading {
           signal.symbol,
           undefined,
           'DATA_UNCERTAIN',
+          undefined,
+          { parentSignalId: signal.shadowSignalId },
         ),
       };
     }

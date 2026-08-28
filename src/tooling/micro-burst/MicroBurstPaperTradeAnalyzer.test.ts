@@ -85,8 +85,22 @@ describe('MicroBurst paper trade analyzer', () => {
       ],
     );
     expect(report.suppressedEntryCount).toBe(1);
-    expect(report.incompleteCount).toBe(1);
+    expect(report.incompleteCount).toBe(2);
     expect(report.openCount).toBe(1);
     expect(report.scenarioMetrics.cost_30.netWinRate).toBeNull();
+  });
+
+  it('deduplicates canonical incomplete states and does not fabricate cost zeroes', () => {
+    const report = analyzeMicroBurstPaperTrades([
+      trade({
+        state: 'DATA_UNCERTAIN',
+        tradeId: 'UNCERTAIN',
+        feesBps: undefined,
+        netBps: undefined,
+      }),
+    ]);
+    expect(report.dataUncertainTradeCount).toBe(1);
+    expect(report.incompleteCanonicalTradeCount).toBe(1);
+    expect(report.costBps.total).toBeNull();
   });
 });

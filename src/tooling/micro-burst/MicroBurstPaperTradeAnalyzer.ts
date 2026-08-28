@@ -1,6 +1,7 @@
 import { MicroBurstPaperPosition } from '../../domain/strategies/micro-burst/MicroBurstPaperTrading';
 import { DEFAULT_COST_SCENARIOS } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
 import { MicroBurstPaperLifecycleEvent } from '../../domain/strategies/micro-burst/MicroBurstPaperTrading';
+import { MicroBurstSuppressionAccounting } from '../../app/micro-burst/MicroBurstPaperTradeJournal';
 
 export interface MicroBurstPaperTradeReport {
   sampleSize: number;
@@ -20,9 +21,23 @@ export interface MicroBurstPaperTradeReport {
   exitReasons: Record<string, number>;
   breakEvenUsed: number;
   trailingUsed: number;
-  costBps: { fees: number; spread: number; slippage: number; other: number; total: number };
+  costBps: {
+    fees: number | null;
+    spread: number | null;
+    slippage: number | null;
+    other: number | null;
+    total: number | null;
+  };
   openCount: number;
   dataUncertainCount: number;
+  completedTradeCount: number;
+  openTradeCount: number;
+  dataUncertainTradeCount: number;
+  unfilledDataUncertainCount: number;
+  incompleteCanonicalTradeCount: number;
+  suppressedCandidateCount: number;
+  suppressionEpisodeCount: number;
+  recoveryBlockedCount: number | null;
   scenarioMetrics: Record<
     string,
     { netWinRate: number | null; meanNetBps: number | null; medianNetBps: number | null }
@@ -34,6 +49,7 @@ export function analyzeMicroBurstPaperTrades(
   suppressedEntryCount = 0,
   incompleteCount = 0,
   events: MicroBurstPaperLifecycleEvent[] = [],
+  suppressionAccounting: MicroBurstSuppressionAccounting[] = [],
 ): MicroBurstPaperTradeReport & { suppressedEntryCount: number; incompleteCount: number } {
   const closed = [
     ...new Map(
@@ -48,14 +64,40 @@ export function analyzeMicroBurstPaperTrades(
       .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const gross = values('grossPriceReturnBps');
   const net = values('netBps');
-  const derivedSuppressed = events.filter(
+  const suppressionCandidates = suppressionAccounting.reduce(
+    (total, accounting) => total + accounting.candidateCount,
+    0,
+  );
+  const suppressionEpisodes = suppressionAccounting.length;
+  const fallbackSuppressionEvents = events.filter(
     (event) => event.event === 'ENTRY_SUPPRESSED_POSITION_OPEN',
-  ).length;
-  const derivedIncomplete =
-    positions.filter((position) => position.state === 'DATA_UNCERTAIN').length +
-    events.filter(
-      (event) => event.event === 'UNFILLED_DATA_UNCERTAIN' || event.event === 'DATA_UNCERTAIN',
-    ).length;
+  );
+  const derivedSuppressed = suppressionAccounting.length
+    ? suppressionCandidates
+    : fallbackSuppressionEvents.length;
+  const derivedEpisodes = suppressionAccounting.length
+    ? suppressionEpisodes
+    : new Set(fallbackSuppressionEvents.map((event) => event.tradeId).filter(Boolean)).size;
+  const dataUncertainTradeCount = new Set(
+    positions
+      .filter((position) => position.state === 'DATA_UNCERTAIN')
+      .map((position) => position.tradeId),
+  ).size;
+  const openTradeCount = new Set(
+    positions
+      .filter((position) => position.state === 'OPEN_SHADOW' || position.state === 'MANAGING')
+      .map((position) => position.tradeId),
+  ).size;
+  const unfilledDataUncertainCount = new Set(
+    events
+      .filter((event) => event.event === 'UNFILLED_DATA_UNCERTAIN')
+      .map((event) =>
+        String(event.metadata?.parentSignalId ?? `${event.symbol}:${event.eventAtMs}`),
+      ),
+  ).size;
+  const incompleteCanonicalTradeCount = new Set(
+    positions.filter((position) => position.state !== 'CLOSED').map((position) => position.tradeId),
+  ).size;
   const scenarioMetrics = Object.fromEntries(
     DEFAULT_COST_SCENARIOS.map((scenario) => {
       const scenarioValues = closed
@@ -104,11 +146,17 @@ export function analyzeMicroBurstPaperTrades(
       total: sum(closed, 'totalCostBps'),
     },
     suppressedEntryCount: suppressedEntryCount || derivedSuppressed,
-    incompleteCount: incompleteCount || derivedIncomplete,
-    openCount: positions.filter(
-      (position) => position.state === 'OPEN_SHADOW' || position.state === 'MANAGING',
-    ).length,
-    dataUncertainCount: positions.filter((position) => position.state === 'DATA_UNCERTAIN').length,
+    incompleteCount: incompleteCount || incompleteCanonicalTradeCount + unfilledDataUncertainCount,
+    openCount: openTradeCount,
+    dataUncertainCount: dataUncertainTradeCount,
+    completedTradeCount: closed.length,
+    openTradeCount,
+    dataUncertainTradeCount,
+    unfilledDataUncertainCount,
+    incompleteCanonicalTradeCount,
+    suppressedCandidateCount: suppressedEntryCount || derivedSuppressed,
+    suppressionEpisodeCount: derivedEpisodes,
+    recoveryBlockedCount: null,
     scenarioMetrics,
   };
 }
@@ -122,8 +170,11 @@ function counts(values: string[]): Record<string, number> {
 function sum(
   positions: MicroBurstPaperPosition[],
   key: 'feesBps' | 'spreadImpactBps' | 'slippageBps' | 'otherCostsBps' | 'totalCostBps',
-): number {
-  return positions.reduce((total, position) => total + (position[key] ?? 0), 0);
+): number | null {
+  const values = positions
+    .map((position) => position[key])
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  return values.length ? values.reduce((total, value) => total + value, 0) : null;
 }
 function mean(values: number[]): number | null {
   return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;

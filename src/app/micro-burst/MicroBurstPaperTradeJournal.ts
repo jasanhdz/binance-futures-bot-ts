@@ -8,15 +8,25 @@ import {
 const DEFAULT_TRADE_DIR = 'logs/micro-burst/shadow-trades';
 const DEFAULT_EVENT_DIR = 'logs/micro-burst/shadow-trade-events';
 
+export interface MicroBurstSuppressionAccounting {
+  tradeId: string;
+  symbol: string;
+  candidateCount: number;
+  firstSuppressedAtMs: number;
+  lastSuppressedAtMs: number;
+}
+
 export class MicroBurstPaperTradeJournal {
   private readonly positions = new Map<string, MicroBurstPaperPosition>();
   private readonly malformed: string[] = [];
+  private readonly suppressions = new Map<string, MicroBurstSuppressionAccounting>();
 
   constructor(
     private readonly tradeDir = DEFAULT_TRADE_DIR,
     private readonly eventDir = DEFAULT_EVENT_DIR,
   ) {
     this.load();
+    this.loadSuppressions();
   }
 
   loadOpenPositions(): MicroBurstPaperPosition[] {
@@ -70,6 +80,42 @@ export class MicroBurstPaperTradeJournal {
     return events;
   }
 
+  loadSuppressionAccounting(): MicroBurstSuppressionAccounting[] {
+    return [...this.suppressions.values()].map((accounting) => ({ ...accounting }));
+  }
+
+  recordSuppressedCandidate(tradeId: string, symbol: string, eventAtMs: number): void {
+    const current = this.suppressions.get(tradeId);
+    const next: MicroBurstSuppressionAccounting = current
+      ? { ...current, candidateCount: current.candidateCount + 1, lastSuppressedAtMs: eventAtMs }
+      : {
+          tradeId,
+          symbol,
+          candidateCount: 1,
+          firstSuppressedAtMs: eventAtMs,
+          lastSuppressedAtMs: eventAtMs,
+        };
+    const file = path.join(this.eventDir, 'suppression-accounting.json');
+    const temp = `${file}.tmp-${process.pid}`;
+    fs.mkdirSync(this.eventDir, { recursive: true });
+    fs.writeFileSync(
+      temp,
+      JSON.stringify([
+        ...[...this.suppressions.values()].filter((accounting) => accounting.tradeId !== tradeId),
+        next,
+      ]) + '\n',
+      'utf8',
+    );
+    const fd = fs.openSync(temp, 'r');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temp, file);
+    this.suppressions.set(tradeId, next);
+  }
+
   appendPosition(position: MicroBurstPaperPosition): void {
     this.append(this.tradeDir, position, position.openedAtMs);
     if (position.state === 'CLOSED') this.positions.delete(position.tradeId);
@@ -107,6 +153,20 @@ export class MicroBurstPaperTradeJournal {
           this.malformed.push(`${file}:${index + 1}`);
         }
       }
+    }
+  }
+
+  private loadSuppressions(): void {
+    const file = path.join(this.eventDir, 'suppression-accounting.json');
+    if (!fs.existsSync(file)) return;
+    try {
+      const rows = JSON.parse(fs.readFileSync(file, 'utf8')) as MicroBurstSuppressionAccounting[];
+      for (const row of rows) {
+        if (row.tradeId && row.symbol && row.candidateCount > 0)
+          this.suppressions.set(row.tradeId, row);
+      }
+    } catch {
+      this.malformed.push('suppression-accounting.json');
     }
   }
 
