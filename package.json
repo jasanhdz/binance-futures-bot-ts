@@ -34,12 +34,12 @@
     "micro-burst:analyze-shadow": "npx tsx scripts/micro-burst-analyze-shadow.ts"
   },
   "dependencies": {
-    "axios": "^1.11.0",
+    "axios": "^1.20.0",
     "better-sqlite3": "^9.4.3",
     "binance-api-node": "^0.12.9",
     "cli-table3": "^0.6.3",
     "dotenv": "^17.2.1",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.3.2",
     "node-cron": "^4.2.1",
     "onnxruntime-node": "^1.22.0-rev",
     "ws": "^8.21.3"
