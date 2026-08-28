@@ -132,6 +132,7 @@ describe('MicroBurstRuntime', () => {
       price: '100',
       quantity: '1',
       isBuyerMaker: false,
+      aggregateTradeId: 10,
       firstTradeId: 10,
       lastTradeId: 10,
     });
@@ -141,6 +142,7 @@ describe('MicroBurstRuntime', () => {
       price: '100',
       quantity: '1',
       isBuyerMaker: false,
+      aggregateTradeId: 12,
       firstTradeId: 12,
       lastTradeId: 12,
     });
@@ -148,8 +150,8 @@ describe('MicroBurstRuntime', () => {
       expect.objectContaining({
         feed: 'AGG_TRADE',
         kind: 'AGG_TRADE_SEQUENCE',
-        previousTradeId: 10,
-        nextTradeId: 12,
+        previousAggregateTradeId: 10,
+        nextAggregateTradeId: 12,
         startedAtMs: 1_000,
         endedAtMs: 2_000,
       }),

@@ -9,8 +9,12 @@ interface Clock {
 }
 
 export interface MicroBurstAggTradeGap {
-  previousTradeId: number;
-  nextTradeId: number;
+  previousAggregateTradeId: number;
+  nextAggregateTradeId: number;
+  previousFirstTradeId?: number;
+  previousLastTradeId?: number;
+  nextFirstTradeId?: number;
+  nextLastTradeId?: number;
   previousEventTimeMs: number | null;
   nextEventTimeMs: number;
   dedupeKey: string;
@@ -19,8 +23,12 @@ export interface MicroBurstAggTradeGap {
 interface AggTradeGapInterval {
   startedAtMs: number;
   endedAtMs: number;
-  previousTradeId: number;
-  nextTradeId: number;
+  previousAggregateTradeId: number;
+  nextAggregateTradeId: number;
+  previousFirstTradeId?: number;
+  previousLastTradeId?: number;
+  nextFirstTradeId?: number;
+  nextLastTradeId?: number;
   dedupeKey: string;
 }
 
@@ -33,7 +41,9 @@ export class MicroBurstAggTradeBuffer {
   private lastCapacityEvictedEventTime: number | null = null;
   private readonly gapIntervals: AggTradeGapInterval[] = [];
   private readonly gapKeys = new Set<string>();
-  private lastTradeId: number | null = null;
+  private lastAggregateTradeId: number | null = null;
+  private missingIdentityEventTimeMs: number | null = null;
+  private lastAggregateEvent: AggTradeEvent | null = null;
   private lastTradeEventTimeMs: number | null = null;
 
   constructor(
@@ -56,34 +66,47 @@ export class MicroBurstAggTradeBuffer {
 
     this.eventWatermarkMs = Math.max(this.eventWatermarkMs ?? event.eventTime, event.eventTime);
     if (this.coverageStartedAtMs === null) this.coverageStartedAtMs = event.eventTime;
+    const hasAggregateIdentity = Number.isSafeInteger(event.aggregateTradeId);
+    if (!hasAggregateIdentity)
+      this.missingIdentityEventTimeMs = Math.max(
+        this.missingIdentityEventTimeMs ?? event.eventTime,
+        event.eventTime,
+      );
     if (
-      this.lastTradeId !== null &&
-      event.firstTradeId !== undefined &&
-      event.firstTradeId > this.lastTradeId + 1
+      hasAggregateIdentity &&
+      this.lastAggregateTradeId !== null &&
+      event.aggregateTradeId! > this.lastAggregateTradeId + 1
     ) {
-      const previousTradeId = this.lastTradeId;
-      const nextTradeId = event.firstTradeId;
-      const dedupeKey = `${previousTradeId}:${nextTradeId}`;
+      const previousAggregateTradeId = this.lastAggregateTradeId;
+      const nextAggregateTradeId = event.aggregateTradeId!;
+      const previousEvent = this.lastAggregateEvent;
+      const dedupeKey = `${previousAggregateTradeId}:${nextAggregateTradeId}`;
       if (!this.gapKeys.has(dedupeKey)) {
         this.gapKeys.add(dedupeKey);
         this.gapIntervals.push({
           startedAtMs: this.lastTradeEventTimeMs ?? event.eventTime,
           endedAtMs: event.eventTime,
-          previousTradeId,
-          nextTradeId,
+          previousAggregateTradeId,
+          nextAggregateTradeId,
           dedupeKey,
         });
         this.onGap?.({
-          previousTradeId,
-          nextTradeId,
+          previousAggregateTradeId,
+          nextAggregateTradeId,
+          previousFirstTradeId: previousEvent?.firstTradeId,
+          previousLastTradeId: previousEvent?.lastTradeId,
+          nextFirstTradeId: event.firstTradeId,
+          nextLastTradeId: event.lastTradeId,
           previousEventTimeMs: this.lastTradeEventTimeMs,
           nextEventTimeMs: event.eventTime,
           dedupeKey,
         });
       }
     }
-    if (event.lastTradeId !== undefined)
-      this.lastTradeId = Math.max(this.lastTradeId ?? -1, event.lastTradeId);
+    if (hasAggregateIdentity) {
+      this.lastAggregateTradeId = Math.max(this.lastAggregateTradeId ?? -1, event.aggregateTradeId!);
+      if (this.lastAggregateTradeId === event.aggregateTradeId) this.lastAggregateEvent = event;
+    }
     this.lastTradeEventTimeMs = Math.max(
       this.lastTradeEventTimeMs ?? event.eventTime,
       event.eventTime,
@@ -174,7 +197,9 @@ export class MicroBurstAggTradeBuffer {
     this.lastCapacityEvictedEventTime = null;
     this.gapIntervals.length = 0;
     this.gapKeys.clear();
-    this.lastTradeId = null;
+    this.lastAggregateTradeId = null;
+    this.missingIdentityEventTimeMs = null;
+    this.lastAggregateEvent = null;
     this.lastTradeEventTimeMs = null;
   }
 
@@ -192,6 +217,8 @@ export class MicroBurstAggTradeBuffer {
     this.gapIntervals.splice(0, this.gapIntervals.length, ...retainedGaps);
     this.gapKeys.clear();
     for (const gap of this.gapIntervals) this.gapKeys.add(gap.dedupeKey);
+    if (this.missingIdentityEventTimeMs !== null && this.missingIdentityEventTimeMs < cutoff)
+      this.missingIdentityEventTimeMs = null;
   }
 
   private isCurrentWindowGapFree(requestedWindowMs: number): boolean {
@@ -201,6 +228,8 @@ export class MicroBurstAggTradeBuffer {
       (gap) => gap.startedAtMs <= this.eventWatermarkMs! && gap.endedAtMs >= fromMs,
     );
     if (inMemoryGap) return false;
+    if (this.missingIdentityEventTimeMs !== null && this.missingIdentityEventTimeMs >= fromMs)
+      return false;
     try {
       return !(this.hasPersistedGap?.(fromMs, this.eventWatermarkMs) ?? false);
     } catch {

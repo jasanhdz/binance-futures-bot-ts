@@ -121,8 +121,8 @@ describe('MicroBurstAggTradeBuffer', () => {
       gapFree: true,
       tradeCount: 0,
     });
-    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11 }));
     expect(buffer.getTakerFlow()).toMatchObject({
       coverageStartedAtMs: NOW_MS - 5_000,
       eventWatermarkMs: NOW_MS,
@@ -133,20 +133,51 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('invalidates the window when aggregate trade ids prove a gap', () => {
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10, firstTradeId: 100, lastTradeId: 101 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12, firstTradeId: 200, lastTradeId: 201 }));
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
+  });
+
+  it('uses aggregate ids even when raw first/last ids jump normally', () => {
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10, firstTradeId: 100, lastTradeId: 105 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11, firstTradeId: 200, lastTradeId: 205 }));
+
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: true, gapFree: true });
+  });
+
+  it('does not declare a gap for duplicate or out-of-order aggregate events', () => {
+    const onGap = vi.fn();
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    buffer.push(makeTrade({ aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ aggregateTradeId: 9 }));
+
+    expect(onGap).not.toHaveBeenCalled();
+    expect(buffer.getTakerFlow().gapFree).toBe(true);
+  });
+
+  it('fails closed when aggregate identity is missing', () => {
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, firstTradeId: 10, lastTradeId: 10 }));
     buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
+
     expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
   });
 
   it('emits the causal interval when aggregate trade ids prove a gap', () => {
     const onGap = vi.fn();
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
-    buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, firstTradeId: 10, lastTradeId: 10 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, aggregateTradeId: 10, firstTradeId: 100, lastTradeId: 101 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12, firstTradeId: 200, lastTradeId: 201 }));
 
     expect(onGap).toHaveBeenCalledWith({
-      previousTradeId: 10,
-      nextTradeId: 12,
+      previousAggregateTradeId: 10,
+      nextAggregateTradeId: 12,
+      previousFirstTradeId: 100,
+      previousLastTradeId: 101,
+      nextFirstTradeId: 200,
+      nextLastTradeId: 201,
       previousEventTimeMs: NOW_MS - 1_000,
       nextEventTimeMs: NOW_MS,
       dedupeKey: '10:12',
@@ -155,32 +186,32 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('allows a gap after it expires from the active event-time window', () => {
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
-    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, firstTradeId: 10, lastTradeId: 10 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12 }));
     expect(buffer.getTakerFlow().gapFree).toBe(false);
 
-    buffer.push(makeTrade({ eventTime: NOW_MS + 5_001, firstTradeId: 13, lastTradeId: 13 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS + 5_001, aggregateTradeId: 13 }));
     expect(buffer.getTakerFlow().gapFree).toBe(true);
   });
 
   it('deduplicates a replayed sequence discontinuity', () => {
     const onGap = vi.fn();
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
-    buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, firstTradeId: 10, lastTradeId: 10 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS + 1, firstTradeId: 12, lastTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS + 1, aggregateTradeId: 12 }));
     expect(onGap).toHaveBeenCalledTimes(1);
   });
 
   it('prunes dedupe keys with expired gap intervals but retains active keys', () => {
     const onGap = vi.fn();
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
-    buffer.push(makeTrade({ eventTime: NOW_MS - 4_000, firstTradeId: 10, lastTradeId: 10 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS - 3_000, firstTradeId: 12, lastTradeId: 12 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS - 2_000, firstTradeId: 14, lastTradeId: 14 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 4_000, aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 3_000, aggregateTradeId: 12 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 2_000, aggregateTradeId: 14 }));
 
     // The first gap expires; the second remains in the active event-time window.
-    buffer.push(makeTrade({ eventTime: NOW_MS + 2_001, firstTradeId: 16, lastTradeId: 16 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS + 2_001, aggregateTradeId: 16 }));
     expect(onGap).toHaveBeenCalledTimes(3);
     expect((buffer as any).gapKeys).toEqual(new Set(['12:14', '14:16']));
   });
@@ -194,8 +225,8 @@ describe('MicroBurstAggTradeBuffer', () => {
       undefined,
       query,
     );
-    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000 }));
-    buffer.push(makeTrade({ eventTime: NOW_MS }));
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11 }));
     expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
     expect(query).toHaveBeenCalledWith(NOW_MS - 5_000, NOW_MS);
 
@@ -208,8 +239,8 @@ describe('MicroBurstAggTradeBuffer', () => {
         throw new Error('storage unavailable');
       },
     );
-    failing.push(makeTrade({ eventTime: NOW_MS - 5_000 }));
-    failing.push(makeTrade({ eventTime: NOW_MS }));
+    failing.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
+    failing.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11 }));
     expect(failing.getTakerFlow().gapFree).toBe(false);
   });
 
