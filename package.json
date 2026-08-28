@@ -50,10 +50,16 @@
     "@types/node": "^24.3.1",
     "@types/ws": "^8.18.1",
     "@types/yargs": "^17.0.33",
-    "nodemon": "^3.1.10",
+    "diff": "^4.0.4",
+    "nanoid": "^3.3.18",
+    "nodemon": "^3.1.14",
+    "picomatch": "^2.3.2",
+    "postcss": "^8.5.26",
     "prettier": "^3.6.2",
+    "rollup": "^4.63.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2",
+    "vite": "^7.3.6",
     "vitest": "^3.2.7",
     "yargs": "^18.0.0"
   }
