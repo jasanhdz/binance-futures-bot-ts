@@ -260,7 +260,7 @@ export class MarketSnapshotProvider {
       ...result,
       aggTrade: {
         ...result.aggTrade,
-        requestedWindowMs: aggTradeRequested ? AGG_TRADE_SNAPSHOT_WINDOW_MS : null,
+        requestedWindowMs: requestedAggTradeWindow(request.aggTrade),
       },
       candles: {
         ...result.candles,
@@ -296,6 +296,11 @@ export class MarketSnapshotProvider {
     if (!Number.isFinite(value) || value < 0) throw new Error('INVALID_SNAPSHOT_CLOCK');
     return value;
   }
+}
+
+function requestedAggTradeWindow(request: SnapshotCapabilityRequest['aggTrade']): number | null {
+  if (request === undefined || request === false) return null;
+  return request === true ? AGG_TRADE_SNAPSHOT_WINDOW_MS : request.windowMs;
 }
 
 function capabilityFromValue<T extends SnapshotFeature>(
