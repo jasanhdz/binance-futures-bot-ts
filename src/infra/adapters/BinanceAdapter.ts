@@ -486,21 +486,26 @@ export class BinanceExchange implements Exchange {
       firstTradeId?: number;
       lastTradeId?: number;
     }) => void,
+    onStatus?: (status: 'connecting' | 'open' | 'reconnecting') => void,
   ): () => void {
-    return this.wsManager.connectAggTrades(symbol, (trade) => {
-      callback({
-        isBuyerMaker: trade.isBuyerMaker,
-        quantity: trade.quantity,
-        price: trade.price,
-        // Prefer the exchange trade timestamp for causal outcome ordering.
-        eventTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
-        receivedAtMs: trade.receivedAtMs,
-        tradeTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
-        aggregateTradeId: (trade as any).aggregateTradeId,
-        firstTradeId: (trade as any).firstTradeId,
-        lastTradeId: (trade as any).lastTradeId,
-      });
-    });
+    return this.wsManager.connectAggTrades(
+      symbol,
+      (trade) => {
+        callback({
+          isBuyerMaker: trade.isBuyerMaker,
+          quantity: trade.quantity,
+          price: trade.price,
+          // Prefer the exchange trade timestamp for causal outcome ordering.
+          eventTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
+          receivedAtMs: trade.receivedAtMs,
+          tradeTime: Number((trade as any).tradeTime ?? (trade as any).eventTime),
+          aggregateTradeId: (trade as any).aggregateTradeId,
+          firstTradeId: (trade as any).firstTradeId,
+          lastTradeId: (trade as any).lastTradeId,
+        });
+      },
+      onStatus,
+    );
   }
 
   public async getDepthSnapshot(symbol: string, levels = 20): Promise<BinanceDepthSnapshot> {

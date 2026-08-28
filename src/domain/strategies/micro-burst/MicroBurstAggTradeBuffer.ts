@@ -53,6 +53,7 @@ export class MicroBurstAggTradeBuffer {
   private lastAggregateEvent: AggTradeEvent | null = null;
   private lastTradeEventTimeMs: number | null = null;
   private readonly pendingGaps = new Map<number, PendingGap>();
+  private continuityUncertain = false;
 
   constructor(
     clock: Clock,
@@ -74,7 +75,8 @@ export class MicroBurstAggTradeBuffer {
 
     this.eventWatermarkMs = Math.max(this.eventWatermarkMs ?? event.eventTime, event.eventTime);
     if (this.coverageStartedAtMs === null) this.coverageStartedAtMs = event.eventTime;
-    const hasAggregateIdentity = Number.isSafeInteger(event.aggregateTradeId);
+    const hasAggregateIdentity =
+      Number.isSafeInteger(event.aggregateTradeId) && event.aggregateTradeId! >= 0;
     if (!hasAggregateIdentity)
       this.missingIdentityEventTimeMs = Math.max(
         this.missingIdentityEventTimeMs ?? event.eventTime,
@@ -107,7 +109,10 @@ export class MicroBurstAggTradeBuffer {
         });
     }
     if (hasAggregateIdentity) {
-      this.lastAggregateTradeId = Math.max(this.lastAggregateTradeId ?? -1, event.aggregateTradeId!);
+      this.lastAggregateTradeId = Math.max(
+        this.lastAggregateTradeId ?? -1,
+        event.aggregateTradeId!,
+      );
       if (this.lastAggregateTradeId === event.aggregateTradeId) this.lastAggregateEvent = event;
     }
     this.lastTradeEventTimeMs = Math.max(
@@ -229,6 +234,22 @@ export class MicroBurstAggTradeBuffer {
     this.lastAggregateEvent = null;
     this.lastTradeEventTimeMs = null;
     this.pendingGaps.clear();
+    this.continuityUncertain = false;
+  }
+
+  markContinuityUncertain(): void {
+    this.buffer.length = 0;
+    this.eventWatermarkMs = null;
+    this.coverageStartedAtMs = null;
+    this.lastCapacityEvictedEventTime = null;
+    this.gapIntervals.length = 0;
+    this.gapKeys.clear();
+    this.lastAggregateTradeId = null;
+    this.missingIdentityEventTimeMs = null;
+    this.lastAggregateEvent = null;
+    this.lastTradeEventTimeMs = null;
+    this.pendingGaps.clear();
+    this.continuityUncertain = true;
   }
 
   size(): number {
@@ -257,6 +278,12 @@ export class MicroBurstAggTradeBuffer {
 
   private isCurrentWindowGapFree(requestedWindowMs: number): boolean {
     if (this.eventWatermarkMs === null) return true;
+    if (
+      this.continuityUncertain &&
+      (this.coverageStartedAtMs === null ||
+        this.eventWatermarkMs - this.coverageStartedAtMs < requestedWindowMs)
+    )
+      return false;
     const fromMs = this.eventWatermarkMs - requestedWindowMs;
     const inMemoryGap = this.gapIntervals.some(
       (gap) => gap.startedAtMs <= this.eventWatermarkMs! && gap.endedAtMs >= fromMs,
@@ -264,7 +291,8 @@ export class MicroBurstAggTradeBuffer {
     if (inMemoryGap) return false;
     if (
       [...this.pendingGaps.values()].some(
-        (gap) => gap.nextEvent.eventTime >= fromMs && gap.nextEvent.eventTime <= this.eventWatermarkMs!,
+        (gap) =>
+          gap.nextEvent.eventTime >= fromMs && gap.nextEvent.eventTime <= this.eventWatermarkMs!,
       )
     )
       return false;

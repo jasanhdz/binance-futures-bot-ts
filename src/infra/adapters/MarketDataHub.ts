@@ -33,6 +33,7 @@ export interface MarketDataStreamHealth {
 
 type StreamConnection = {
   consumers: Set<(message: any) => void>;
+  statusListeners: Set<(status: StreamConnection['status']) => void>;
   socket?: RawWebSocket;
   status: 'connecting' | 'open' | 'reconnecting';
   lastMessageAtMs?: number;
@@ -69,12 +70,14 @@ export class MarketDataHub {
     stream: string,
     descriptor: MarketDataEndpointDescriptor,
     consumer: (message: any) => void,
+    onStatus?: (status: StreamConnection['status']) => void,
   ): () => void {
     const key = `${descriptor.accessMode}:${stream}`;
     let connection = this.connections.get(key);
     if (!connection) {
       connection = {
         consumers: new Set(),
+        statusListeners: new Set(),
         status: 'connecting',
         intentionallyClosed: false,
         reconnectCount: 0,
@@ -83,12 +86,14 @@ export class MarketDataHub {
       this.connections.set(key, connection);
     }
     connection.consumers.add(consumer);
+    if (onStatus) connection.statusListeners.add(onStatus);
     if (!connection.socket && !connection.reconnectTimer) this.open(key, stream, connection);
 
     return () => {
       const current = this.connections.get(key);
       if (!current) return;
       current.consumers.delete(consumer);
+      if (onStatus) current.statusListeners.delete(onStatus);
       if (current.consumers.size === 0) this.closeConnection(key, stream, current);
     };
   }
@@ -121,6 +126,7 @@ export class MarketDataHub {
     if (this.closed || connection.consumers.size === 0) return;
     connection.intentionallyClosed = false;
     connection.status = 'connecting';
+    this.notifyStatus(connection);
     try {
       const socket = this.webSocketFactory(
         streamWebSocketUrl(this.endpoint, stream, connection.descriptor),
@@ -129,6 +135,7 @@ export class MarketDataHub {
       socket.onopen = () => {
         if (this.connections.get(key) !== connection) return;
         connection.status = 'open';
+        this.notifyStatus(connection);
         connection.lastMessageAtMs = Date.now();
         this.logger.info('market_data_ws_open', { stream });
       };
@@ -208,11 +215,16 @@ export class MarketDataHub {
   private scheduleReconnect(key: string, stream: string, connection: StreamConnection): void {
     if (this.closed || connection.consumers.size === 0 || connection.reconnectTimer) return;
     connection.status = 'reconnecting';
+    this.notifyStatus(connection);
     connection.reconnectCount++;
     connection.reconnectTimer = setTimeout(() => {
       connection.reconnectTimer = undefined;
       this.open(key, stream, connection);
     }, this.reconnectDelayMs);
+  }
+
+  private notifyStatus(connection: StreamConnection): void {
+    for (const listener of connection.statusListeners) listener(connection.status);
   }
 
   private closeConnection(key: string, stream: string, connection: StreamConnection): void {

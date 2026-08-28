@@ -70,22 +70,28 @@ export class WebSocketManager {
       firstTradeId?: number;
       lastTradeId?: number;
     }) => void,
+    onStatus?: (status: 'connecting' | 'open' | 'reconnecting') => void,
   ): () => void {
-    return this.marketDataHub.subscribe(`${symbol.toLowerCase()}@aggTrade`, MARKET, (event) => {
-      const parsed = parseAggTrade(symbol, event, event.receivedAtMs);
-      if (!parsed) return;
-      callback({
-        isBuyerMaker: parsed.isBuyerMaker,
-        quantity: String(parsed.quantity),
-        price: String(parsed.price),
-        eventTime: parsed.eventTimeMs,
-        receivedAtMs: parsed.receivedAtMs,
-        tradeTime: parsed.tradeTimeMs,
-        aggregateTradeId: parsed.aggregateTradeId,
-        firstTradeId: parsed.firstTradeId,
-        lastTradeId: parsed.lastTradeId,
-      });
-    });
+    return this.marketDataHub.subscribe(
+      `${symbol.toLowerCase()}@aggTrade`,
+      MARKET,
+      (event) => {
+        const parsed = parseAggTrade(symbol, event, event.receivedAtMs);
+        if (!parsed) return;
+        callback({
+          isBuyerMaker: parsed.isBuyerMaker,
+          quantity: String(parsed.quantity),
+          price: String(parsed.price),
+          eventTime: parsed.eventTimeMs,
+          receivedAtMs: parsed.receivedAtMs,
+          tradeTime: parsed.tradeTimeMs,
+          aggregateTradeId: parsed.aggregateTradeId,
+          firstTradeId: parsed.firstTradeId,
+          lastTradeId: parsed.lastTradeId,
+        });
+      },
+      onStatus,
+    );
   }
 
   public connectPartialDepth(

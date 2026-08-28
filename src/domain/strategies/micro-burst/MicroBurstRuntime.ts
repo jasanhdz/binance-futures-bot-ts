@@ -339,46 +339,53 @@ export class MicroBurstRuntime {
       book.start();
 
       if (exchange.subscribeToAggTrades) {
-        state.unsubscribeAggTrades = exchange.subscribeToAggTrades(symbol, (trade) => {
-          const event: AggTradeEvent = {
-            eventTime: trade.eventTime,
-            receivedAtMs: trade.receivedAtMs,
-            price: Number(trade.price),
-            quantity: Number(trade.quantity),
-            isBuyerMaker: trade.isBuyerMaker,
-            aggregateTradeId: trade.aggregateTradeId,
-            firstTradeId: trade.firstTradeId,
-            lastTradeId: trade.lastTradeId,
-          };
-          aggTradeBuffer.push(event);
-          this.deps.marketStorage?.appendTrade?.({
-            symbol,
-            eventTime: trade.eventTime,
-            receivedAtMs: trade.receivedAtMs ?? this.deps.clock.now(),
-            price: Number(trade.price),
-            quantity: Number(trade.quantity),
-            isBuyerMaker: trade.isBuyerMaker,
-            aggregateTradeId: trade.aggregateTradeId,
-            firstTradeId: trade.firstTradeId,
-            lastTradeId: trade.lastTradeId,
-          });
-
-          // M3: Forward trade events to outcome tracker
-          if (this.deps.outcomeTracker) {
-            this.deps.outcomeTracker.observeTradeEvent({
+        state.unsubscribeAggTrades = exchange.subscribeToAggTrades(
+          symbol,
+          (trade) => {
+            const event: AggTradeEvent = {
               eventTime: trade.eventTime,
               receivedAtMs: trade.receivedAtMs,
               price: Number(trade.price),
-              symbol,
               quantity: Number(trade.quantity),
               isBuyerMaker: trade.isBuyerMaker,
-              tradeTime: trade.tradeTime,
+              aggregateTradeId: trade.aggregateTradeId,
+              firstTradeId: trade.firstTradeId,
+              lastTradeId: trade.lastTradeId,
+            };
+            aggTradeBuffer.push(event);
+            this.deps.marketStorage?.appendTrade?.({
+              symbol,
+              eventTime: trade.eventTime,
+              receivedAtMs: trade.receivedAtMs ?? this.deps.clock.now(),
+              price: Number(trade.price),
+              quantity: Number(trade.quantity),
+              isBuyerMaker: trade.isBuyerMaker,
               aggregateTradeId: trade.aggregateTradeId,
               firstTradeId: trade.firstTradeId,
               lastTradeId: trade.lastTradeId,
             });
-          }
-        });
+
+            // M3: Forward trade events to outcome tracker
+            if (this.deps.outcomeTracker) {
+              this.deps.outcomeTracker.observeTradeEvent({
+                eventTime: trade.eventTime,
+                receivedAtMs: trade.receivedAtMs,
+                price: Number(trade.price),
+                symbol,
+                quantity: Number(trade.quantity),
+                isBuyerMaker: trade.isBuyerMaker,
+                tradeTime: trade.tradeTime,
+                aggregateTradeId: trade.aggregateTradeId,
+                firstTradeId: trade.firstTradeId,
+                lastTradeId: trade.lastTradeId,
+              });
+            }
+          },
+          (status) => {
+            if (status === 'reconnecting' || status === 'connecting')
+              aggTradeBuffer.markContinuityUncertain();
+          },
+        );
       }
 
       refPriceProvider.pollMarkPrice(symbol).catch(() => {});

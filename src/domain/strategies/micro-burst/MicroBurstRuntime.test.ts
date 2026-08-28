@@ -140,6 +140,64 @@ describe('MicroBurstRuntime', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(4);
   });
 
+  it('keeps AggTrade qualification uncertain through reconnect warmup', async () => {
+    const start = 1_700_000_000_000;
+    const callbacks: Record<string, (trade: any) => void> = {};
+    const statuses: Record<string, (value: 'connecting' | 'open' | 'reconnecting') => void> = {};
+    deps.exchange.subscribeToAggTrades = vi.fn((symbol, next, onStatus) => {
+      callbacks[symbol] = next;
+      statuses[symbol] = onStatus!;
+      return () => {};
+    });
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    await runtime.start();
+    callbacks.ETHUSDT({
+      eventTime: start,
+      price: '100',
+      quantity: '1',
+      isBuyerMaker: false,
+      aggregateTradeId: 10,
+    });
+    callbacks.ETHUSDT({
+      eventTime: start + 300_000,
+      price: '100',
+      quantity: '1',
+      isBuyerMaker: false,
+      aggregateTradeId: 11,
+    });
+    expect(
+      runtime.getSymbolStates().get('ETHUSDT')!.aggTradeBuffer.getTakerFlow().windowComplete,
+    ).toBe(true);
+
+    statuses.ETHUSDT('reconnecting');
+    expect(
+      runtime.getSymbolStates().get('ETHUSDT')!.aggTradeBuffer.getTakerFlow().windowComplete,
+    ).toBe(false);
+    statuses.ETHUSDT('open');
+    callbacks.ETHUSDT({
+      eventTime: start + 301_000,
+      price: '100',
+      quantity: '1',
+      isBuyerMaker: false,
+      aggregateTradeId: 12,
+    });
+    expect(
+      runtime.getSymbolStates().get('ETHUSDT')!.aggTradeBuffer.getTakerFlow().windowComplete,
+    ).toBe(false);
+    callbacks.ETHUSDT({
+      eventTime: start + 601_001,
+      price: '100',
+      quantity: '1',
+      isBuyerMaker: false,
+      aggregateTradeId: 13,
+    });
+    expect(runtime.getSymbolStates().get('ETHUSDT')!.aggTradeBuffer.getTakerFlow()).toMatchObject({
+      windowComplete: true,
+      gapFree: true,
+    });
+    await runtime.stop();
+  });
+
   it('persists typed AggTrade sequence gaps from the production callback', async () => {
     let callback: ((trade: any) => void) | undefined;
     const recordGap = vi.fn(() => true);

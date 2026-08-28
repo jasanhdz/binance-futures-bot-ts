@@ -105,4 +105,29 @@ describe('MarketDataHub', () => {
     hub.close();
     vi.useRealTimers();
   });
+
+  it('notifies stream consumers when continuity becomes uncertain and when it reconnects', () => {
+    vi.useFakeTimers();
+    const sockets: FakeWebSocket[] = [];
+    const statuses: string[] = [];
+    const hub = new MarketDataHub(logger, {
+      reconnectDelayMs: 50,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn(), (status) => statuses.push(status));
+    sockets[0].open();
+    sockets[0].close();
+    expect(statuses).toEqual(['connecting', 'open', 'reconnecting']);
+    vi.advanceTimersByTime(50);
+    expect(statuses).toEqual(['connecting', 'open', 'reconnecting', 'connecting']);
+    sockets[1].open();
+    expect(statuses).toEqual(['connecting', 'open', 'reconnecting', 'connecting', 'open']);
+    hub.close();
+    vi.useRealTimers();
+  });
 });

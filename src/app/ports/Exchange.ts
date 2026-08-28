@@ -89,6 +89,7 @@ export interface Exchange {
       firstTradeId?: number;
       lastTradeId?: number;
     }) => void,
+    onStatus?: (status: 'connecting' | 'open' | 'reconnecting') => void,
   ): () => void;
   getDepthSnapshot?(symbol: string, levels?: number): Promise<BinanceDepthSnapshot>;
   getMarkPrice(symbol: string): Promise<number>;

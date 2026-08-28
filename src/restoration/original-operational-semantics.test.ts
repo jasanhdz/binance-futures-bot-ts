@@ -31,9 +31,9 @@ function sha256(path: string): string {
 
 const baselineOperationalDigests: Record<string, string> = {
   'src/main.ts': 'e289a662c2b6ac2b4da4e9f7ded993d7fb551ad908bc18f5c44ec1ab226ae119',
-  'src/app/ports/Exchange.ts': 'a66d3a5dcb38e4a57bab94b07a345e343884f5a97791da2ea0190541c86136ef',
+  'src/app/ports/Exchange.ts': '06a49f0f3cf2339000207d3f839690cbd6873154e57be48b01f4d292ade512e1',
   'src/infra/adapters/BinanceAdapter.ts':
-    'f232e18e1e86294831df786a8f72ded662105c09744248990c58049e0e763df4',
+    'fb65e620128378df5932f43e76bd1cac2983020c5bd0f474b0043fead1478592',
   'src/infra/config/environment.ts':
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
   'src/domain/services/AegisPortfolioRiskGuard.ts':

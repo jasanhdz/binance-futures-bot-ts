@@ -195,6 +195,14 @@ describe('MicroBurstAggTradeBuffer', () => {
     expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
   });
 
+  it('fails closed for an invalid aggregate identity', () => {
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: -1 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 1 }));
+
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
+  });
+
   it('emits the causal interval when aggregate trade ids prove a gap', () => {
     const onGap = vi.fn();
     const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
@@ -283,6 +291,34 @@ describe('MicroBurstAggTradeBuffer', () => {
     failing.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
     failing.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11 }));
     expect(failing.getTakerFlow().gapFree).toBe(false);
+
+    const persistedGap = { startedAtMs: NOW_MS - 1_000, endedAtMs: NOW_MS - 1_000 };
+    const restarted = new MicroBurstAggTradeBuffer(
+      { now: () => NOW_MS },
+      100,
+      5_000,
+      undefined,
+      (fromMs, toMs) => persistedGap.startedAtMs <= toMs && persistedGap.endedAtMs >= fromMs,
+    );
+    restarted.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
+    restarted.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11 }));
+    expect(restarted.getTakerFlow().gapFree).toBe(false);
+    restarted.push(makeTrade({ eventTime: NOW_MS + 5_001, aggregateTradeId: 12 }));
+    expect(restarted.getTakerFlow()).toMatchObject({ windowComplete: true, gapFree: true });
+  });
+
+  it('requires a fresh complete event-time window after feed interruption', () => {
+    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
+    buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11 }));
+    expect(buffer.getTakerFlow().windowComplete).toBe(true);
+
+    buffer.markContinuityUncertain();
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: true });
+    buffer.push(makeTrade({ eventTime: NOW_MS + 1, aggregateTradeId: 12 }));
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
+    buffer.push(makeTrade({ eventTime: NOW_MS + 5_001, aggregateTradeId: 13 }));
+    expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: true, gapFree: true });
   });
 
   it('getTakerFlow computes buy/sell volumes', () => {
