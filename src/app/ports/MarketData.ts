@@ -31,12 +31,7 @@ export interface OrderBookDepthLevel {
   qty: number;
 }
 
-export type OrderBookHealth =
-  | 'HEALTHY'
-  | 'UNAVAILABLE'
-  | 'STALE'
-  | 'UNSYNCED'
-  | 'ANOMALOUS';
+export type OrderBookHealth = 'HEALTHY' | 'UNAVAILABLE' | 'STALE' | 'UNSYNCED' | 'ANOMALOUS';
 
 export interface TemporalOrderBookObservation {
   observedAtMs: number;

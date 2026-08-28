@@ -30,6 +30,8 @@ import { ShadowTradingEngine } from '../../../core/shadow/ShadowTradingEngine';
 import { ShadowMarketQuote, ShadowPosition } from '../../../core/shadow/ShadowTradingTypes';
 import { MicroBurstShadowPolicyAdapter } from './MicroBurstShadowPolicyAdapter';
 import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
+import { OrderBookDataPlane } from '../../../core/market-data/OrderBookDataPlane';
+import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -102,6 +104,7 @@ export interface MicroBurstRuntimeReadiness extends MicroBurstReadinessResult {
 
 interface SymbolRuntimeState {
   book: SynchronizedOrderBook;
+  bookLease: OrderBookLease<SynchronizedOrderBook>;
   aggTradeBuffer: MicroBurstAggTradeBuffer;
   referencePriceProvider: MicroBurstReferencePriceProvider;
   evaluationInFlight: boolean;
@@ -198,6 +201,7 @@ export interface MicroBurstRuntimeDeps {
   };
   mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
   shadowTradeJournal?: ShadowJournal;
+  orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
 }
 
 export class MicroBurstRuntime {
@@ -221,6 +225,7 @@ export class MicroBurstRuntime {
   private readonly shadowTradeJournal: ShadowJournal;
   private paperRecoveryBlocked = false;
   private paperPersistenceError: string | null = null;
+  private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
 
   constructor(
     private readonly deps: MicroBurstRuntimeDeps,
@@ -308,45 +313,51 @@ export class MicroBurstRuntime {
 
     const duplicateGuard = new MicroBurstDuplicateSignalGuard(clock);
 
-    for (const symbol of enabledSymbols) {
-      const bookDeps: SynchronizedOrderBookDeps = {
-        snapshotSource: {
-          getSnapshot: async (sym: string, levels: number) => {
-            if (!exchange.getDepthSnapshot) {
-              throw new Error('Exchange does not support depth snapshot');
-            }
-            return exchange.getDepthSnapshot(sym, levels);
+    this.orderBookDataPlane =
+      this.deps.orderBookDataPlane ??
+      new OrderBookDataPlane((symbol) => {
+        const bookDeps: SynchronizedOrderBookDeps = {
+          snapshotSource: {
+            getSnapshot: async (sym: string, levels: number) => {
+              if (!exchange.getDepthSnapshot) {
+                throw new Error('Exchange does not support depth snapshot');
+              }
+              return exchange.getDepthSnapshot(sym, levels);
+            },
           },
-        },
-        diffSource: {
-          onDiff: (sym: string, callback: (event: any) => void) => {
-            if (!exchange.subscribeToDepthDiff) {
-              logger.warn('micro_burst_exchange_no_depth_diff', { symbol: sym });
-              return () => {};
-            }
-            return exchange.subscribeToDepthDiff(sym, '100ms', (depth) => {
-              this.deps.marketStorage?.appendDepth({
-                symbol: sym,
-                eventTime: depth.E,
-                receivedAtMs: depth.receivedAtMs,
-                E: depth.E,
-                T: depth.T,
-                U: depth.U,
-                u: depth.u,
-                pu: depth.pu,
-                b: depth.bids,
-                a: depth.asks,
+          diffSource: {
+            onDiff: (sym: string, callback: (event: any) => void) => {
+              if (!exchange.subscribeToDepthDiff) {
+                logger.warn('micro_burst_exchange_no_depth_diff', { symbol: sym });
+                return () => {};
+              }
+              return exchange.subscribeToDepthDiff(sym, '100ms', (depth) => {
+                this.deps.marketStorage?.appendDepth({
+                  symbol: sym,
+                  eventTime: depth.E,
+                  receivedAtMs: depth.receivedAtMs,
+                  E: depth.E,
+                  T: depth.T,
+                  U: depth.U,
+                  u: depth.u,
+                  pu: depth.pu,
+                  b: depth.bids,
+                  a: depth.asks,
+                });
+                callback(depth);
               });
-              callback(depth);
-            });
+            },
           },
-        },
-        logger,
-        clock,
-        getServerTime: () => exchange.getServerTime(),
-      };
+          logger,
+          clock,
+          getServerTime: () => exchange.getServerTime(),
+        };
+        return new SynchronizedOrderBook(symbol, bookDeps);
+      });
 
-      const book = new SynchronizedOrderBook(symbol, bookDeps);
+    for (const symbol of enabledSymbols) {
+      const bookLease = this.orderBookDataPlane.acquire(symbol);
+      const book = bookLease.book;
       const aggTradeBuffer = new MicroBurstAggTradeBuffer(
         clock,
         undefined,
@@ -380,6 +391,7 @@ export class MicroBurstRuntime {
 
       const state: SymbolRuntimeState = {
         book,
+        bookLease,
         aggTradeBuffer,
         referencePriceProvider: refPriceProvider,
         evaluationInFlight: false,
@@ -391,8 +403,6 @@ export class MicroBurstRuntime {
         bookResyncCount: 0,
       };
       this.symbolStates.set(symbol, state);
-
-      book.start();
 
       if (exchange.subscribeToAggTrades) {
         state.unsubscribeAggTrades = exchange.subscribeToAggTrades(
@@ -527,7 +537,7 @@ export class MicroBurstRuntime {
     }
 
     for (const [symbol, state] of this.symbolStates) {
-      state.book.stop();
+      state.bookLease.release();
       state.unsubscribeAggTrades?.();
       state.aggTradeBuffer.clear();
       state.evaluationInFlight = false;

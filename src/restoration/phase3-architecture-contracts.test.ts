@@ -62,4 +62,42 @@ describe('Phase 3 architecture contracts', () => {
       resolve(repoRoot, 'src/domain/strategies/micro-burst/MicroBurstMarketDataTypes.ts'),
     );
   });
+
+  it('keeps shared market-data core independent from strategies and mutation authority', () => {
+    const forbiddenRoots = [
+      resolve(repoRoot, 'src/domain/strategies/aegis'),
+      resolve(repoRoot, 'src/domain/strategies/momentum-ride'),
+      resolve(repoRoot, 'src/domain/strategies/micro-burst'),
+      resolve(repoRoot, 'src/app/micro-burst'),
+      resolve(repoRoot, 'src/app/execution'),
+      resolve(repoRoot, 'src/app/services/TradingService.ts'),
+      resolve(repoRoot, 'src/app/ports/Exchange.ts'),
+      resolve(repoRoot, 'src/app/position'),
+      resolve(repoRoot, 'src/domain/services'),
+      resolve(repoRoot, 'src/domain/risk'),
+    ];
+    const forbiddenNames = [
+      'TradingExchangePort',
+      'SharedStrategyExecutionService',
+      'TradingService',
+      'placeOrder',
+      'cancelOrder',
+      'closePosition',
+    ];
+    const violations: string[] = [];
+
+    for (const fileName of sourceFiles('src/core/market-data')) {
+      const source = readFileSync(fileName, 'utf8');
+      for (const target of resolvedImports(fileName)) {
+        if (forbiddenRoots.some((root) => target === root || target.startsWith(`${root}/`))) {
+          violations.push(`${fileName} -> ${target}`);
+        }
+      }
+      for (const name of forbiddenNames) {
+        if (source.includes(name)) violations.push(`${fileName} contains ${name}`);
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
 });

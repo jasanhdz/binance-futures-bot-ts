@@ -34,6 +34,14 @@ Owns the extracted synchronized USD-M order-book mechanics, including snapshot b
 update-ID continuity, freshness, fail-closed health, bounded levels, and neutral temporal
 observations. It has no strategy dependency.
 
+### `src/core/market-data/OrderBookDataPlane.ts`
+
+**Classification:** `GENERIC_RAW_STATE`.
+
+Owns one canonical order-book instance per normalized symbol and reference-counted
+consumer leases. It exposes only the read-only `OrderBookPort` capability and owns
+start/stop lifecycle transitions.
+
 ### `src/app/micro-burst/MicroBurstMarketData.ts`
 
 **Classification:** `MIXED_SPLIT_REQUIRED` leaning strongly `GENERIC_RAW_STATE`.
