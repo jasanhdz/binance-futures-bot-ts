@@ -25,6 +25,7 @@ export class ShadowTradingEngine {
   private readonly positions = new Map<string, ShadowPosition>();
   private readonly pendingCheckpoints = new Map<string, ShadowPosition>();
   private auxiliaryEventFailures = 0;
+  private canonicalPersistenceFailures = 0;
 
   constructor(
     private readonly journal: ShadowJournal,
@@ -131,6 +132,7 @@ export class ShadowTradingEngine {
     try {
       this.journal.appendPosition(position);
     } catch {
+      this.canonicalPersistenceFailures++;
       this.recoveryBlocked.add(serialized);
       const event = this.event(
         'RECOVERY_BLOCKED',
@@ -252,11 +254,17 @@ export class ShadowTradingEngine {
   }
 
   flush(): void {
+    let failed = false;
     for (const [key, position] of this.pendingCheckpoints) {
       if (this.persistCanonical(position)) this.pendingCheckpoints.delete(key);
-      else this.recoveryBlocked.add(key);
+      else {
+        failed = true;
+        this.recoveryBlocked.add(key);
+      }
     }
     this.journal.flush();
+    if (failed || this.canonicalPersistenceFailures > 0)
+      throw new Error('SHADOW_CANONICAL_PERSISTENCE_FAILED');
   }
 
   getHealth(): {
@@ -280,11 +288,16 @@ export class ShadowTradingEngine {
     return this.auxiliaryEventFailures;
   }
 
+  getCanonicalPersistenceFailureCount(): number {
+    return this.canonicalPersistenceFailures;
+  }
+
   private persistCanonical(position: ShadowPosition): boolean {
     try {
       this.journal.appendPosition(position);
       return true;
     } catch {
+      this.canonicalPersistenceFailures++;
       return false;
     }
   }

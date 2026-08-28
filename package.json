@@ -32,7 +32,8 @@
     "micro-burst:production-soak-m3_2_2": "bash scripts/run-micro-burst-m3_2_2-soak.sh",
     "micro-burst:pre-cohort-audit": "npx tsx scripts/micro-burst-pre-cohort-audit.ts",
     "test:micro-burst-soak-launcher": "bash scripts/lib/micro-burst-m3_2_2-soak.test.sh",
-    "micro-burst:analyze-shadow": "npx tsx scripts/micro-burst-analyze-shadow.ts"
+    "micro-burst:analyze-shadow": "npx tsx scripts/micro-burst-analyze-shadow.ts",
+    "micro-burst:analyze-generic-shadow": "npx tsx scripts/micro-burst-analyze-generic-shadow.ts"
   },
   "dependencies": {
     "axios": "^1.20.0",

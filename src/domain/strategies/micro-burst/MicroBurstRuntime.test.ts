@@ -5,6 +5,8 @@ import { StrategyRouter } from '../../../app/strategy/StrategyRouter';
 import { MicroBurstStrategyContext, MicroBurstStrategy } from './MicroBurstStrategy';
 import { createMicroBurstV1Identity } from './MicroBurstIdentity';
 import { Exchange } from '../../../app/ports/Exchange';
+import { ShadowJournal } from '../../../core/shadow/ShadowTradeJournal';
+import { ShadowPosition, ShadowTradeEvent } from '../../../core/shadow/ShadowTradingTypes';
 
 function makeConfig(overrides: Partial<MicroBurstRuntimeConfig> = {}): MicroBurstRuntimeConfig {
   return {
@@ -62,6 +64,33 @@ function makeDeps(): MicroBurstRuntimeDeps {
     clock: { now: () => Date.now() },
     strategyRouter: router,
   };
+}
+
+class MemoryShadowJournal implements ShadowJournal {
+  positions: ShadowPosition[] = [];
+  events: ShadowTradeEvent[] = [];
+  appendPosition(position: ShadowPosition): void {
+    this.positions = [
+      ...this.positions.filter((item) => item.tradeId !== position.tradeId),
+      position,
+    ];
+  }
+  appendEvent(event: ShadowTradeEvent): void {
+    this.events.push(event);
+  }
+  loadOpenPositions(): ShadowPosition[] {
+    return this.positions.filter((position) => position.state !== 'CLOSED');
+  }
+  loadAllPositions(): ShadowPosition[] {
+    return this.positions;
+  }
+  loadAllEvents(): ShadowTradeEvent[] {
+    return this.events;
+  }
+  getHealth(): { healthy: boolean; malformedCount: number } {
+    return { healthy: true, malformedCount: 0 };
+  }
+  flush(): void {}
 }
 
 describe('MicroBurstRuntime', () => {
@@ -329,6 +358,74 @@ describe('MicroBurstRuntime', () => {
     expect(health.symbolCount).toBe(2);
     expect(health.running).toBe(true);
     expect(health.liveExecution).toBe(false);
+    await runtime.stop();
+  });
+
+  it('uses the generic engine for one managed lifecycle without legacy paper writes', async () => {
+    const shadowJournal = new MemoryShadowJournal();
+    const callbacks: Record<string, (trade: any) => void> = {};
+    deps.shadowTradeJournal = shadowJournal;
+    deps.exchange.subscribeToAggTrades = vi.fn((symbol: string, callback: (trade: any) => void) => {
+      callbacks[symbol] = callback;
+      return () => {};
+    });
+    const runtime = new MicroBurstRuntime(
+      deps,
+      makeConfig({ symbols: { ETHUSDT: { enabled: true }, SOLUSDT: { enabled: false } } }),
+    );
+    await runtime.start();
+    (runtime as any).symbolStates.get('ETHUSDT').book.getSnapshotForPressure = () => ({
+      bidDepth: [{ price: 99, qty: 1 }],
+      askDepth: [{ price: 101, qty: 1 }],
+      observedAtMs: 1_000,
+      status: 'HEALTHY',
+      temporalHistory: [],
+    });
+    const result = {
+      strategyId: 'MICRO_BURST_V1',
+      strategyVersion: 'golden',
+      symbol: 'ETHUSDT',
+      snapshotAtMs: 1_000,
+      decision: 'ENTRY_INTENT',
+      side: 'LONG',
+      confidence: 0.9,
+      referencePrice: 100,
+      supportPrice: 99,
+      resistancePrice: 110,
+      structuralInvalidation: 90,
+      destinationPrice: 102,
+      roomToTargetBps: 200,
+      riskToInvalidationBps: 1_000,
+      rewardRisk: 2,
+      momentum: { direction: 'LONG', strength: 0.9, continuationScore: 0.9 },
+      book: { status: 'HEALTHY', ageMs: 1, imbalance: 0.3, imbalanceSlope: null },
+      btc: { status: 'HEALTHY', ageMs: 1, ret1m: 0, ret3m: 0, ret5m: 0, conflict: false },
+      microRegime: 'RANGING',
+      dataQuality: { contextValid: true, invalidReasons: [] },
+      wouldEnter: true,
+      liveExecution: false,
+      shadowSignalId: 'runtime-golden',
+      duplicateSuppressed: false,
+      firstObservedAt: 1_000,
+      lastObservedAt: 1_000,
+      diagnostics: { leverage: 20, positionFraction: 0.05 },
+    };
+    (runtime as any).shadowEvaluator = { evaluate: async () => result };
+    const evaluated = await runtime.evaluateSymbol('ETHUSDT');
+    expect(evaluated?.wouldEnter).toBe(true);
+    expect(shadowJournal.positions).toHaveLength(1);
+    expect(shadowJournal.positions[0].schemaVersion).toBe(2);
+    expect(shadowJournal.positions[0].strategyId).toBe('MICRO_BURST_V1');
+    expect(shadowJournal.events.some((event) => event.event === 'OPENED')).toBe(true);
+    expect(runtime.getHealth().paperEngine).toBe('GENERIC');
+    callbacks.ETHUSDT({
+      eventTime: 2_000,
+      receivedAtMs: 2_000,
+      price: 102,
+      quantity: 1,
+      isBuyerMaker: false,
+    });
+    expect(shadowJournal.positions[shadowJournal.positions.length - 1]?.state).toBe('CLOSED');
     await runtime.stop();
   });
 

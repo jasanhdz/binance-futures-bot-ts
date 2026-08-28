@@ -23,10 +23,13 @@ import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
 import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
 import { assessMicroBurstReadiness, MicroBurstReadinessResult } from './MicroBurstReadiness';
 import { GapKind, MarketDataFeed } from '../../../app/micro-burst/MicroBurstMarketData';
-import { MicroBurstPaperQuote, MicroBurstPaperTrading } from './MicroBurstPaperTrading';
-import { MicroBurstPaperTradeJournal } from '../../../app/micro-burst/MicroBurstPaperTradeJournal';
-import { defaultMicroBurstConfig } from './MicroBurstTypes';
+import { defaultMicroBurstConfig, MicroBurstConfig } from './MicroBurstTypes';
 import { analyzeBookPressure } from './MicroBurstBookPressureAnalyzer';
+import { FileShadowTradeJournal, ShadowJournal } from '../../../core/shadow/ShadowTradeJournal';
+import { ShadowTradingEngine } from '../../../core/shadow/ShadowTradingEngine';
+import { ShadowMarketQuote, ShadowPosition } from '../../../core/shadow/ShadowTradingTypes';
+import { MicroBurstShadowPolicyAdapter } from './MicroBurstShadowPolicyAdapter';
+import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -47,6 +50,7 @@ export interface MicroBurstRuntimeHealth {
   totalInvalidContexts: number;
   totalResyncs: number;
   liveExecution: false;
+  paperEngine: 'GENERIC';
   lastHealthReportAt: number;
   outcomeTracker: {
     signalsObserved: number;
@@ -82,6 +86,9 @@ export interface MicroBurstRuntimeHealth {
   paperTrading: {
     openPositions: number;
     recoveryBlocked: boolean;
+    journalHealthy: boolean;
+    completedManagedTrades: number;
+    persistenceErrors: number;
   };
 }
 
@@ -190,7 +197,7 @@ export interface MicroBurstRuntimeDeps {
     costSemanticsValid?: boolean;
   };
   mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
-  paperTradeJournal?: MicroBurstPaperTradeJournal;
+  shadowTradeJournal?: ShadowJournal;
 }
 
 export class MicroBurstRuntime {
@@ -210,8 +217,8 @@ export class MicroBurstRuntime {
   private readonly evaluationIntervalMs: number;
   private readonly journal: MicroBurstSignalJournal;
   private stopPromise: Promise<void> | null = null;
-  private readonly paperTrading = new MicroBurstPaperTrading(defaultMicroBurstConfig());
-  private readonly paperTradeJournal: MicroBurstPaperTradeJournal;
+  private readonly shadowEngine: ShadowTradingEngine;
+  private readonly shadowTradeJournal: ShadowJournal;
   private paperRecoveryBlocked = false;
   private paperPersistenceError: string | null = null;
 
@@ -223,21 +230,35 @@ export class MicroBurstRuntime {
   ) {
     this.evaluationIntervalMs = evaluationIntervalMs;
     this.journal = new MicroBurstSignalJournal(journalDir);
-    this.paperTradeJournal = deps.paperTradeJournal ?? new MicroBurstPaperTradeJournal();
+    this.shadowTradeJournal =
+      deps.shadowTradeJournal ??
+      new FileShadowTradeJournal(
+        'logs/micro-burst/shadow/trades',
+        'logs/micro-burst/shadow/trade-events',
+      );
+    const microBurstConfig: MicroBurstConfig = defaultMicroBurstConfig();
+    const costScenarios = new Map([
+      [
+        'MICRO_BURST_V1' as const,
+        Object.fromEntries(
+          DEFAULT_COST_SCENARIOS.map((scenario) => [
+            scenario.label,
+            { feeBps: scenario.feeBps, additionalSlippageBps: scenario.slippageBps },
+          ]),
+        ),
+      ],
+    ]);
+    this.shadowEngine = new ShadowTradingEngine(
+      this.shadowTradeJournal,
+      new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(microBurstConfig)]] as const),
+      costScenarios,
+    );
     try {
-      if (!this.paperTradeJournal.getHealth().healthy)
-        throw new Error('PAPER_TRADE_JOURNAL_MALFORMED');
-      for (const position of this.paperTradeJournal.loadOpenPositions()) {
-        this.paperTrading.restore(position);
-        this.persistPaperEvent({
-          schemaVersion: 1,
-          event: 'RECOVERED_AFTER_RESTART',
-          eventAtMs: this.deps.clock.now(),
-          tradeId: position.tradeId,
-          symbol: position.symbol,
-          state: 'OPEN_SHADOW',
-        });
-      }
+      if (!this.shadowTradeJournal.getHealth().healthy)
+        throw new Error('SHADOW_TRADE_JOURNAL_MALFORMED');
+      this.paperRecoveryBlocked = Object.values(this.shadowEngine.getHealth().strategies).some(
+        (strategy) => strategy.recoveryBlocked > 0,
+      );
     } catch (error) {
       this.paperRecoveryBlocked = true;
       this.deps.logger.error('micro_burst_paper_recovery_blocked', { error: String(error) });
@@ -533,12 +554,14 @@ export class MicroBurstRuntime {
         failures.push(`outcome tracker: ${String(error)}`);
       }
       try {
-        this.paperTradeJournal.flush();
+        this.shadowEngine.flush();
       } catch (error) {
         failures.push(`paper trade journal: ${String(error)}`);
       }
       if (this.paperPersistenceError)
         failures.push(`paper trade persistence: ${this.paperPersistenceError}`);
+      if (this.shadowEngine.getCanonicalPersistenceFailureCount() > 0)
+        failures.push('paper trade persistence: canonical write failures');
       try {
         await this.drainAndCloseStorage();
       } catch (error) {
@@ -575,53 +598,50 @@ export class MicroBurstRuntime {
       });
 
       let paperSuppressed = false;
-      if (
-        result.wouldEnter &&
-        !result.duplicateSuppressed &&
-        result.side &&
-        !this.paperRecoveryBlocked
-      ) {
+      if (result.wouldEnter && !result.duplicateSuppressed && result.side) {
         const quote = this.paperQuote(state.book.getSnapshotForPressure());
         const decisionReceivedAtMs = this.deps.clock.now();
-        const previousPosition = this.paperTrading.getPosition(symbol);
-        const opened = this.paperTrading.open(
-          result,
-          quote,
-          decisionReceivedAtMs,
+        const opened = this.shadowEngine.open(
           {
-            cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
-            codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
-            configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
+            strategyId: 'MICRO_BURST_V1',
+            strategyVersion: result.strategyVersion,
+            symbol: result.symbol,
+            side: result.side,
+            decisionAtMs: result.snapshotAtMs,
+            decisionReceivedAtMs,
+            referencePrice: result.referencePrice,
+            structuralStop: result.structuralInvalidation ?? undefined,
+            destination: result.destinationPrice ?? undefined,
+            leverage: numberDiagnostic(result.diagnostics?.leverage),
+            positionFraction: numberDiagnostic(result.diagnostics?.positionFraction),
+            parentDecisionId: result.shadowSignalId,
+            provenance: {
+              strategyVersion: result.strategyVersion,
+              cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
+              codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
+              configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
+            },
+            diagnostics: result.diagnostics,
           },
-          decisionReceivedAtMs,
+          quote,
         );
-        if (opened.status === 'OPENED')
-          this.persistPaper(opened.position, opened.event, previousPosition);
-        else if (opened.status === 'SUPPRESSED') {
+        if (opened.status === 'SUPPRESSED') {
           paperSuppressed = true;
-          try {
-            this.paperTradeJournal.recordSuppressedCandidate(
-              opened.event.tradeId!,
-              symbol,
-              decisionReceivedAtMs,
-            );
-            this.paperSuppressedEntries++;
-          } catch (error) {
-            this.paperPersistenceError = String(error);
-            this.paperRecoveryBlocked = true;
-            this.deps.logger.error('micro_burst_paper_persistence_failed', {
-              error: String(error),
-            });
-          }
-          const suppressionKey = `${symbol}:${previousPosition?.tradeId ?? 'UNKNOWN'}`;
+          this.paperSuppressedEntries++;
+          const suppressionKey = `${symbol}:${opened.event.tradeId ?? 'UNKNOWN'}`;
           if (!this.paperSuppressionDiagnostics.has(suppressionKey)) {
             this.paperSuppressionDiagnostics.add(suppressionKey);
             this.deps.logger.info('micro_burst_paper_entry_suppressed', {
               symbol,
-              tradeId: previousPosition?.tradeId,
+              tradeId: opened.event.tradeId,
             });
           }
-        } else this.persistPaperEvent(opened.event);
+        } else if (opened.status === 'DATA_UNCERTAIN' || opened.status === 'RECOVERY_BLOCKED') {
+          if (opened.status === 'RECOVERY_BLOCKED') {
+            this.paperRecoveryBlocked = true;
+            this.paperPersistenceError = 'RECOVERY_BLOCKED';
+          }
+        }
       }
 
       state.evaluationCount++;
@@ -779,6 +799,7 @@ export class MicroBurstRuntime {
       totalInvalidContexts: this.totalInvalidContexts,
       totalResyncs: this.getTotalResyncs(),
       liveExecution: false,
+      paperEngine: 'GENERIC',
       lastHealthReportAt: this.lastHealthReportAt,
       outcomeTracker: this.deps.outcomeTracker ? this.deps.outcomeTracker.getHealth() : null,
       signalJournalHealthy: this.journal.getHealth().healthy,
@@ -802,86 +823,51 @@ export class MicroBurstRuntime {
       forwardedMutations: mutationAudit.forwardedMutationCalls,
       readiness: this.getReadiness(),
       paperTrading: {
-        openPositions: this.paperTrading.getOpenPositions().length,
-        recoveryBlocked: this.paperRecoveryBlocked,
+        openPositions: this.shadowEngine.getOpenPositions().length,
+        recoveryBlocked:
+          this.paperRecoveryBlocked ||
+          Object.values(this.shadowEngine.getHealth().strategies).some(
+            (strategy) => strategy.recoveryBlocked > 0,
+          ),
+        journalHealthy: this.shadowTradeJournal.getHealth().healthy,
+        completedManagedTrades: this.shadowTradeJournal
+          .loadAllPositions()
+          .filter((position) => position.state === 'CLOSED').length,
+        persistenceErrors: this.shadowEngine.getCanonicalPersistenceFailureCount(),
       },
     };
   }
 
   private managePaperTrade(symbol: string, event: AggTradeEvent): void {
-    if (this.paperRecoveryBlocked) return;
     const state = this.symbolStates.get(symbol);
     const snapshot = state?.book.getSnapshotForPressure();
-    const previous = this.paperTrading.getPosition(symbol);
     const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
-    const result = this.paperTrading.manage(symbol, {
-      currentPrice: event.price,
-      observedAtMs: receivedAtMs,
-      quote: this.paperQuote(snapshot),
-      exitContext: {
-        currentBookPressure: snapshot
-          ? analyzeBookPressure(snapshot, receivedAtMs, undefined, snapshot.temporalHistory)
-          : null,
-        currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
-        anomalyExitFlag: false,
+    const result = this.shadowEngine.manage(
+      { strategyId: 'MICRO_BURST_V1', symbol },
+      {
+        exchangeTimeMs: event.eventTime,
+        receivedAtMs,
+        currentPrice: event.price,
+        quote: this.paperQuote(snapshot),
+        marketDataQuality: snapshot?.status ?? 'UNAVAILABLE',
+        strategyContext: {
+          currentBookPressure: snapshot
+            ? analyzeBookPressure(snapshot, receivedAtMs, undefined, snapshot.temporalHistory)
+            : null,
+          currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
+          anomalyExitFlag: false,
+        },
       },
-    });
-    if (!result) return;
-    try {
-      this.paperTradeJournal.appendPosition(result.position);
-    } catch (error) {
-      if (previous) this.paperTrading.restore(previous);
-      this.paperPersistenceError = String(error);
-      this.paperRecoveryBlocked = true;
-      this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });
-      return;
-    }
-    if (result.events.length > 0 || result.position.state === 'CLOSED') {
-      for (const lifecycleEvent of result.events) this.persistPaperEvent(lifecycleEvent);
-      if (result.position.state === 'CLOSED') {
-        this.paperSuppressionDiagnostics.delete(`${symbol}:${result.position.tradeId}`);
-      }
-    }
-  }
-
-  private persistPaper(
-    position: Parameters<MicroBurstPaperTradeJournal['appendPosition']>[0],
-    event: Parameters<MicroBurstPaperTradeJournal['appendEvent']>[0],
-    previous?: Parameters<MicroBurstPaperTrading['restore']>[0],
-  ): void {
-    try {
-      this.paperTradeJournal.appendPosition(position);
-    } catch (error) {
-      if (previous) this.paperTrading.restore(previous);
-      else this.paperTrading.discard(position.symbol);
-      this.paperPersistenceError = String(error);
-      this.paperRecoveryBlocked = true;
-      this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });
-      return;
-    }
-    this.persistPaperEvent(event);
-  }
-
-  private persistPaperEvent(
-    event: Parameters<MicroBurstPaperTradeJournal['appendEvent']>[0],
-  ): void {
-    try {
-      this.paperTradeJournal.appendEvent(event);
-    } catch (error) {
-      this.paperPersistenceError = String(error);
-      this.paperRecoveryBlocked = true;
-      this.deps.logger.error('micro_burst_paper_persistence_failed', { error: String(error) });
-      return;
-    }
-    this.deps.logger.info(
-      `micro_burst_paper_${event.event.toLowerCase()}`,
-      event as unknown as Record<string, unknown>,
     );
+    if (!result) return;
+    if (result.state === 'CLOSED') {
+      this.paperSuppressionDiagnostics.delete(`${symbol}:${result.tradeId}`);
+    }
   }
 
   private paperQuote(
     snapshot: ReturnType<SynchronizedOrderBook['getSnapshotForPressure']>,
-  ): MicroBurstPaperQuote | undefined {
+  ): ShadowMarketQuote | undefined {
     if (!snapshot) return undefined;
     return {
       bestBid: snapshot.bidDepth[0]?.price ?? NaN,
@@ -1142,4 +1128,8 @@ export class MicroBurstRuntime {
       throw error;
     }
   }
+}
+
+function numberDiagnostic(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
