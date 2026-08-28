@@ -302,6 +302,11 @@ async function main(): Promise<void> {
     storage.flush();
     storage.close();
     const storageValidation = validateArchive(runRoot);
+    writeFileSync(
+      resolve(runRoot, 'storage-validation.json'),
+      JSON.stringify(storageValidation, null, 2) + '\n',
+      { flag: 'wx' },
+    );
     const finalManifestSha256 = createHash('sha256')
       .update(readFileSync(resolve(runRoot, 'manifest.json')))
       .digest('hex');
