@@ -72,6 +72,35 @@ describe('MarketDataCandleProvider', () => {
     expect(series.candles[0].status).toBe('CLOSED');
   });
 
+  it('keeps a candle OPEN when it closes after the pre-fetch exchange boundary', async () => {
+    const source = {
+      getServerTime: vi.fn().mockResolvedValue(1_000),
+      getCandles: vi.fn().mockResolvedValue([candle(0, 2_000)]),
+    };
+    const candleProvider = new MarketDataCandleProvider(source, { now: () => 3_000 });
+
+    const series = await candleProvider.getSeries('ETHUSDT', '1m', 1);
+
+    expect(series.exchangeSnapshotTimeMs).toBe(1_000);
+    expect(series.observedAtMs).toBe(3_000);
+    expect(series.candles[0].status).toBe('OPEN');
+    expect(source.getServerTime.mock.invocationCallOrder[0]).toBeLessThan(
+      source.getCandles.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('marks a candle CLOSED when the pre-fetch exchange boundary already includes its close', async () => {
+    const source = {
+      getServerTime: vi.fn().mockResolvedValue(2_000),
+      getCandles: vi.fn().mockResolvedValue([candle(0, 2_000)]),
+    };
+    const candleProvider = new MarketDataCandleProvider(source, { now: () => 3_000 });
+
+    const series = await candleProvider.getSeries('ETHUSDT', '1m', 1);
+
+    expect(series.candles[0].status).toBe('CLOSED');
+  });
+
   it.each([
     ['1m', 60_000],
     ['3m', 180_000],
@@ -155,7 +184,10 @@ describe('MarketDataCandleProvider', () => {
   it.each([
     { name: 'out-of-order', candles: [candle(60_000, 119_999), candle(0, 59_999)] },
     { name: 'duplicate open time', candles: [candle(0, 59_999), candle(0, 59_999)] },
-    { name: 'duplicate close time', candles: [candle(0, 59_999), candle(60_000, 59_999)] },
+    {
+      name: 'duplicate close time',
+      candles: [candle(0, 119_999), candle(60_000, 119_999)],
+    },
     { name: 'future candle', candles: [candle(NOW_MS + 1, NOW_MS + 60_000)] },
     { name: 'invalid OHLC', candles: [candle(0, 59_999, { high: 80 })] },
     { name: 'negative volume', candles: [candle(0, 59_999, { volume: -1 })] },
@@ -210,16 +242,29 @@ describe('MarketDataCandleProvider', () => {
     expect(clock.now).toHaveBeenCalledOnce();
   });
 
-  it('returns unavailable when either source request fails', async () => {
+  it('returns unavailable and skips candle fetch when server time fails', async () => {
     const source = {
-      getCandles: vi.fn().mockRejectedValue(new Error('REST down')),
-      getServerTime: vi.fn(),
+      getServerTime: vi.fn().mockRejectedValue(new Error('server time down')),
+      getCandles: vi.fn(),
     };
     const candleProvider = new MarketDataCandleProvider(source, { now: () => NOW_MS });
 
     const series = await candleProvider.getSeries('ETHUSDT', '1m', 1);
 
     expect(series.health).toBe('UNAVAILABLE');
-    expect(source.getServerTime).not.toHaveBeenCalled();
+    expect(source.getCandles).not.toHaveBeenCalled();
+  });
+
+  it('returns unavailable when candle fetch fails after server time succeeds', async () => {
+    const source = {
+      getServerTime: vi.fn().mockResolvedValue(NOW_MS),
+      getCandles: vi.fn().mockRejectedValue(new Error('REST down')),
+    };
+    const candleProvider = new MarketDataCandleProvider(source, { now: () => NOW_MS });
+
+    const series = await candleProvider.getSeries('ETHUSDT', '1m', 1);
+
+    expect(series.health).toBe('UNAVAILABLE');
+    expect(source.getServerTime).toHaveBeenCalledOnce();
   });
 });

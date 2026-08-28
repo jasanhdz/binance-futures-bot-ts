@@ -56,8 +56,8 @@ export class MarketDataCandleProvider implements CandlePort {
     let sourceCandles: Candle[];
     let exchangeSnapshotTimeMs: number;
     try {
-      sourceCandles = await this.source.getCandles(normalizedSymbol, interval, limit);
       exchangeSnapshotTimeMs = await this.source.getServerTime();
+      sourceCandles = await this.source.getCandles(normalizedSymbol, interval, limit);
     } catch {
       return unavailable(normalizedSymbol, interval, definition.gapCheck);
     }
