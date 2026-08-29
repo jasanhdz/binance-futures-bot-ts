@@ -7,7 +7,9 @@ import {
 } from '../../../core/risk/SharedEntrySafetyGate';
 
 export type MomentumLiquidityStressStatus = 'NO_DATA' | 'FRESH' | 'STALE';
+export type MomentumRealtimeMarketStatus = 'NO_DATA' | 'FRESH' | 'STALE';
 export const MOMENTUM_LIQUIDITY_INPUT_VERSION = 'DEPTH20_PARTIAL_V1' as const;
+export const MOMENTUM_REALTIME_MARKET_SOURCE = 'SHARED_WEBSOCKET' as const;
 
 export interface MomentumRideEntryContext {
   symbol: string;
@@ -28,6 +30,13 @@ export interface MomentumRideEntryContext {
   liquidityStressStatus: MomentumLiquidityStressStatus;
   liquidityStressAgeMs?: number;
   liquidityStressInputVersion: typeof MOMENTUM_LIQUIDITY_INPUT_VERSION;
+  realtimeMarketSource: typeof MOMENTUM_REALTIME_MARKET_SOURCE;
+  realtimeMarketStatus: MomentumRealtimeMarketStatus;
+  realtimeMarketAgeMs?: number;
+  realtimeAggTradeAgeMs?: number;
+  realtimeAggTradeGapFree: boolean;
+  realtimeAggTradeCount: number;
+  realtimeNetTakerVolume: number;
 }
 
 export interface MomentumRideEntryPolicyConfig {
@@ -49,6 +58,25 @@ export function evaluateMomentumRideEntry(
   context: MomentumRideEntryContext,
   config: MomentumRideEntryPolicyConfig,
 ): StrategyEvaluationResult {
+  const realtimeDiagnostics = {
+    realtimeMarketSource: context.realtimeMarketSource,
+    realtimeMarketStatus: context.realtimeMarketStatus,
+    realtimeMarketAgeMs: context.realtimeMarketAgeMs,
+    realtimeAggTradeAgeMs: context.realtimeAggTradeAgeMs,
+    realtimeAggTradeGapFree: context.realtimeAggTradeGapFree,
+    realtimeAggTradeCount: context.realtimeAggTradeCount,
+    realtimeNetTakerVolume: context.realtimeNetTakerVolume,
+  };
+  if (context.realtimeMarketStatus !== 'FRESH') {
+    return noTrade(
+      context,
+      context.realtimeMarketStatus === 'NO_DATA'
+        ? 'realtime_market_no_data'
+        : 'realtime_market_stale',
+      realtimeDiagnostics,
+    );
+  }
+
   const liquidityDiagnostics = {
     liquidityStressStatus: context.liquidityStressStatus,
     liquidityStressAgeMs: context.liquidityStressAgeMs,
@@ -60,13 +88,14 @@ export function evaluateMomentumRideEntry(
       context.liquidityStressStatus === 'NO_DATA'
         ? 'liquidity_data_no_data'
         : 'liquidity_data_stale',
-      liquidityDiagnostics,
+      { ...realtimeDiagnostics, ...liquidityDiagnostics },
     );
   }
   const pattern = evaluateMainStackingMomentum(context.candles, context.side);
   if (!pattern.allowed) {
     return noTrade(context, pattern.reason, {
       pattern: pattern.diagnostics,
+      ...realtimeDiagnostics,
       ...liquidityDiagnostics,
     });
   }
@@ -134,6 +163,7 @@ export function evaluateMomentumRideEntry(
     side: context.side,
     reason: 'main_stacking_momentum_confirmed',
     diagnostics: {
+      ...realtimeDiagnostics,
       ...liquidityDiagnostics,
       pattern: pattern.diagnostics,
       sharedSafety: safety,
@@ -162,6 +192,13 @@ function noTrade(
     side: context.side,
     reason,
     diagnostics: {
+      realtimeMarketSource: context.realtimeMarketSource,
+      realtimeMarketStatus: context.realtimeMarketStatus,
+      realtimeMarketAgeMs: context.realtimeMarketAgeMs,
+      realtimeAggTradeAgeMs: context.realtimeAggTradeAgeMs,
+      realtimeAggTradeGapFree: context.realtimeAggTradeGapFree,
+      realtimeAggTradeCount: context.realtimeAggTradeCount,
+      realtimeNetTakerVolume: context.realtimeNetTakerVolume,
       liquidityStressStatus: context.liquidityStressStatus,
       liquidityStressAgeMs: context.liquidityStressAgeMs,
       liquidityStressInputVersion: context.liquidityStressInputVersion,
