@@ -1,4 +1,4 @@
-import { MarketDataFeed } from './MicroBurstMarketData';
+import type { MarketDataFeed } from '../../core/market-data/NormalizedMarketEvents';
 
 export const MICRO_BURST_FEED_DEPENDENCIES: Readonly<Record<string, readonly MarketDataFeed[]>> =
   Object.freeze({

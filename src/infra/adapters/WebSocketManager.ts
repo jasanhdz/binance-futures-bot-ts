@@ -1,9 +1,9 @@
 import { Binance, Candle } from 'binance-api-node';
 import { Logger } from '../../app/ports/Logger';
 import { BinanceDepthDiffEvent } from '../../app/ports/MarketData';
+import { parseAggTrade, parseDepth } from '../../core/market-data/NormalizedMarketEvents';
 import { MarketDataHub } from './MarketDataHub';
 import { MARKET, PUBLIC } from './MarketDataEndpoints';
-import { parseAggTrade, parseDepth } from '../../app/micro-burst/MicroBurstMarketData';
 
 export interface WebSocketConfig {
   reconnectIntervalMs?: number;
