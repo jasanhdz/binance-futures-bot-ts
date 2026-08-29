@@ -3,12 +3,11 @@ import { CONFIG } from '../../infra/config/environment';
 import { StrategyLossStateRegistry } from '../../infra/state/StrategyLossStateRegistry';
 import { AegisMLService } from '../../strategies/aegis/application/AegisMLService';
 import { TradingService, type TradingServiceConfig } from '../services/TradingService';
-import type { ReturnTypeOfApplicationInfrastructure } from './bootstrapTypes';
+import type { ApplicationInfrastructure } from './ApplicationInfrastructure';
 
-export function composeStrategyRuntime(infrastructure: ReturnTypeOfApplicationInfrastructure) {
+export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure) {
   const { exchange, logger, stateStore, notifier, configManager } = infrastructure;
 
-  // Installed strategy modules are selected here; process/bootstrap orchestration stays neutral.
   const mlService = new AegisMLService();
   const lossStates = new StrategyLossStateRegistry({
     legacyAegisFilePath: path.join(
