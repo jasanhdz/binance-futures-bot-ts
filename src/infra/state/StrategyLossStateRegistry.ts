@@ -76,9 +76,9 @@ export class StrategyLossStateRegistry {
       updated_at: now,
       last_trade_id: outcome.tradeId,
       reset_authority: isLoss
-        ? previousState?.reset_authority ?? 'STRATEGY_LOSS_TRACKER'
+        ? (previousState?.reset_authority ?? 'STRATEGY_LOSS_TRACKER')
         : 'NON_LOSS_OUTCOME_RESET',
-      reset_at: isLoss ? previousState?.reset_at ?? now : now,
+      reset_at: isLoss ? (previousState?.reset_at ?? now) : now,
     };
     await store.write(state);
     return state;
@@ -98,7 +98,9 @@ export class StrategyLossStateRegistry {
 }
 
 function normalizeStrategyId(strategyId: string): string {
-  const value = String(strategyId ?? '').trim().toUpperCase();
+  const value = String(strategyId ?? '')
+    .trim()
+    .toUpperCase();
   if (!value) throw new Error('STRATEGY_ID_REQUIRED');
   return value;
 }

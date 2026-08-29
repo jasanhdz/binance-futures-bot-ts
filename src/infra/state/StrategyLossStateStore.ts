@@ -47,7 +47,10 @@ export interface StrategyLossStateStoreOptions {
 }
 
 const safeStrategyFileName = (strategyId: string): string =>
-  strategyId.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  strategyId
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-');
 
 /** Generic durable loss state scoped by strategy identity. */
 export class StrategyLossStateStore implements StrategyLossStateStorePort {

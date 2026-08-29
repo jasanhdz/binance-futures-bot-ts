@@ -48,7 +48,10 @@ export function createTradingApplication(): TradingApplication {
 
 async function stopWithTimeout(
   stop: Promise<void>,
-  logger: { info(message: string, context?: unknown): void; error(message: string, context?: unknown): void },
+  logger: {
+    info(message: string, context?: unknown): void;
+    error(message: string, context?: unknown): void;
+  },
   signal: 'SIGINT' | 'SIGTERM',
 ): Promise<boolean> {
   const timeoutMs = 15_000;

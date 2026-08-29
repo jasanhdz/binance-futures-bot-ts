@@ -96,10 +96,10 @@ import {
   readStrategyClosedTradeOutcomes,
 } from '../../infra/logging/AegisClosedTradeHistoryReader';
 import { VERIFIED_AEGIS_TRADE_OWNERSHIP } from '../../infra/logging/AegisTradeOwnership';
-import {
-  AegisConsecutiveLossState,
-  AegisConsecutiveLossStateStorePort,
-} from '../../strategies/aegis/application/AegisConsecutiveLossStateStore';
+import type {
+  StrategyLossStateStorePort,
+  StrategyLossStateWrite,
+} from '../../infra/state/StrategyLossStateStore';
 import { PositionManagerRouter } from '../../core/strategy/PositionManagerRouter';
 import {
   AegisPositionManager,
@@ -212,7 +212,7 @@ export interface TradingServiceDeps {
   configManager: NinjaConfigManager;
   historyLogger?: AegisTurboHistoryLogger;
   closedTradeOutcomeReader?: () => Promise<AegisClosedTradeOutcome[]>;
-  consecutiveLossStateStore?: AegisConsecutiveLossStateStorePort;
+  consecutiveLossStateStore?: StrategyLossStateStorePort;
 }
 
 export interface TradingServiceConfig {
@@ -5567,8 +5567,8 @@ export class TradingService {
     if (!store) return;
     const previous = await store.read(this.getTradingMode());
     const now = new Date().toISOString();
-    const state: AegisConsecutiveLossState = {
-      schema_id: 'aegis-consecutive-loss-state-v1',
+    const state: StrategyLossStateWrite = {
+      schema_id: 'strategy-loss-state-v2',
       mode: this.getTradingMode(),
       consecutive_losses: this.consecutiveLossTracker.value,
       updated_at: now,

@@ -11,7 +11,6 @@ const genericFiles = [
 const strategyAdapters = [
   'src/infra/logging/AegisTurboHistoryLogger.ts',
   'src/strategies/aegis/domain/services/AegisConsecutiveLossTracker.ts',
-  'src/strategies/aegis/application/AegisConsecutiveLossStateStore.ts',
 ];
 
 describe('Phase 2 architecture contracts', () => {
