@@ -1,0 +1,313 @@
+name: Phase T3.5 Shared Market Data Ownership Lift
+
+on:
+  push:
+    branches:
+      - work/micro-burst-rider-v1-20260826
+
+permissions:
+  contents: write
+
+jobs:
+  lift:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/micro-burst-rider-v1-20260826
+          fetch-depth: 0
+      - name: Prepare test configuration
+        run: cp config/regime_config.example.yaml regime_config.yaml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Add app-owned shared market data runtime
+        shell: python
+        run: |
+          from pathlib import Path
+
+          shared = Path('src/app/services/SharedMarketDataRuntime.ts')
+          shared.write_text("""import type { Logger } from '../ports/Logger';
+import type { MarketDataPort } from '../ports/MarketData';
+import { AggTradeDataPlane } from '../../core/market-data/AggTradeDataPlane';
+import { OrderBookDataPlane } from '../../core/market-data/OrderBookDataPlane';
+import { RollingAggTradeBuffer, type AggTradeGap } from '../../core/market-data/RollingAggTradeBuffer';
+import {
+  SynchronizedOrderBook,
+  type SynchronizedOrderBookDeps,
+} from '../../core/market-data/SynchronizedOrderBook';
+
+export interface SharedMarketDataArchiveObserver {
+  onDepth?(symbol: string, depth: any): void;
+  onAggTradeGap?(symbol: string, gap: AggTradeGap): void;
+  hasAggTradeGap?(symbol: string, fromMs: number, toMs: number): boolean;
+}
+
+export interface SharedMarketDataRuntimeDeps {
+  exchange: MarketDataPort;
+  logger: Logger;
+  clock: { now(): number };
+}
+
+/**
+ * Application-owned canonical market-data state.
+ *
+ * Strategies acquire leases from these planes; no strategy owns the underlying
+ * Binance depth/AggTrade subscriptions. A plane opens one stream per symbol and
+ * reference-counts all consumers.
+ */
+export class SharedMarketDataRuntime {
+  readonly orderBookDataPlane: OrderBookDataPlane<SynchronizedOrderBook>;
+  readonly aggTradeDataPlane: AggTradeDataPlane<RollingAggTradeBuffer>;
+  private archiveObserver: SharedMarketDataArchiveObserver = {};
+
+  constructor(private readonly deps: SharedMarketDataRuntimeDeps) {
+    const { exchange, logger, clock } = deps;
+    this.orderBookDataPlane = new OrderBookDataPlane((symbol) => {
+      const bookDeps: SynchronizedOrderBookDeps = {
+        snapshotSource: {
+          getSnapshot: async (sym: string, levels: number) => {
+            if (!exchange.getDepthSnapshot) {
+              throw new Error('Exchange does not support depth snapshot');
+            }
+            return exchange.getDepthSnapshot(sym, levels);
+          },
+        },
+        diffSource: {
+          onDiff: (sym: string, callback: (event: any) => void) => {
+            if (!exchange.subscribeToDepthDiff) {
+              logger.warn('shared_market_data_exchange_no_depth_diff', { symbol: sym });
+              return () => {};
+            }
+            return exchange.subscribeToDepthDiff(sym, '100ms', (depth) => {
+              this.archiveObserver.onDepth?.(sym, depth);
+              callback(depth);
+            });
+          },
+        },
+        logger,
+        clock,
+        getServerTime: () => exchange.getServerTime(),
+      };
+      return new SynchronizedOrderBook(symbol, bookDeps);
+    });
+
+    this.aggTradeDataPlane = new AggTradeDataPlane(
+      (symbol) =>
+        new RollingAggTradeBuffer(
+          clock,
+          undefined,
+          undefined,
+          (gap) => this.archiveObserver.onAggTradeGap?.(symbol, gap),
+          (fromMs, toMs) => this.archiveObserver.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,
+        ),
+      {
+        subscribe: (symbol, onEvent, onStatus) => {
+          if (!exchange.subscribeToAggTrades) return () => {};
+          return exchange.subscribeToAggTrades(
+            symbol,
+            (trade) =>
+              onEvent({
+                eventTime: trade.eventTime,
+                receivedAtMs: trade.receivedAtMs,
+                price: Number(trade.price),
+                quantity: Number(trade.quantity),
+                isBuyerMaker: trade.isBuyerMaker,
+                tradeTime: trade.tradeTime,
+                aggregateTradeId: trade.aggregateTradeId,
+                firstTradeId: trade.firstTradeId,
+                lastTradeId: trade.lastTradeId,
+              }),
+            onStatus,
+          );
+        },
+      },
+    );
+  }
+
+  setArchiveObserver(observer?: SharedMarketDataArchiveObserver): void {
+    this.archiveObserver = observer ?? {};
+  }
+
+  close(): void {
+    this.orderBookDataPlane.close();
+    this.aggTradeDataPlane.close();
+    this.archiveObserver = {};
+  }
+}
+""")
+
+          test = Path('src/app/services/SharedMarketDataRuntime.test.ts')
+          test.write_text("""import { describe, expect, it, vi } from 'vitest';
+import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
+
+const logger = {
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+};
+
+describe('SharedMarketDataRuntime', () => {
+  it('owns one canonical AggTrade stream per symbol across multiple leases', () => {
+    let subscriptions = 0;
+    let unsubscriptions = 0;
+    const exchange: any = {
+      subscribeToAggTrades: (_symbol: string, _onEvent: unknown) => {
+        subscriptions += 1;
+        return () => {
+          unsubscriptions += 1;
+        };
+      },
+      getServerTime: async () => Date.now(),
+    };
+    const runtime = new SharedMarketDataRuntime({
+      exchange,
+      logger: logger as any,
+      clock: { now: () => Date.now() },
+    });
+
+    const first = runtime.aggTradeDataPlane.acquire('btcusdt');
+    const second = runtime.aggTradeDataPlane.acquire('BTCUSDT');
+
+    expect(first.state).toBe(second.state);
+    expect(runtime.aggTradeDataPlane.getReferenceCount('BTCUSDT')).toBe(2);
+    expect(subscriptions).toBe(1);
+
+    first.release();
+    expect(runtime.aggTradeDataPlane.getReferenceCount('BTCUSDT')).toBe(1);
+    expect(unsubscriptions).toBe(0);
+    second.release();
+    expect(runtime.aggTradeDataPlane.getReferenceCount('BTCUSDT')).toBe(0);
+    expect(unsubscriptions).toBe(1);
+  });
+
+  it('keeps archive observation outside strategy ownership', () => {
+    let onEvent: ((event: any) => void) | undefined;
+    const gaps: unknown[] = [];
+    const exchange: any = {
+      subscribeToAggTrades: (_symbol: string, callback: (event: any) => void) => {
+        onEvent = callback;
+        return () => {};
+      },
+      getServerTime: async () => Date.now(),
+    };
+    const runtime = new SharedMarketDataRuntime({
+      exchange,
+      logger: logger as any,
+      clock: { now: () => Date.now() },
+    });
+    runtime.setArchiveObserver({ onAggTradeGap: (_symbol, gap) => gaps.push(gap) });
+    const lease = runtime.aggTradeDataPlane.acquire('BTCUSDT');
+
+    onEvent?.({ eventTime: 1_000, price: '100', quantity: '1', aggregateTradeId: 1 });
+    onEvent?.({ eventTime: 2_000, price: '101', quantity: '1', aggregateTradeId: 4 });
+    onEvent?.({ eventTime: 3_000, price: '102', quantity: '1', aggregateTradeId: 5 });
+
+    expect(lease.state.getTakerFlow().tradeCount).toBe(3);
+    expect(gaps.length).toBeGreaterThanOrEqual(1);
+    lease.release();
+  });
+});
+""")
+
+      - name: Lift production ownership from Micro Burst to TradingService
+        shell: python
+        run: |
+          from pathlib import Path
+
+          service = Path('src/app/services/TradingService.ts')
+          text = service.read_text()
+          anchor = "import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';\n"
+          addition = anchor + "import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';\n"
+          assert anchor in text
+          text = text.replace(anchor, addition, 1)
+
+          anchor = "  private microBurstRuntime: MicroBurstRuntime | null = null;\n"
+          addition = anchor + "  private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;\n"
+          assert anchor in text
+          text = text.replace(anchor, addition, 1)
+
+          anchor = "    const mbConfig = this.getMicroBurstConfig();\n    if (mbConfig.enabled && mbConfig.mode !== 'OFF') {"
+          replacement = "    const mbConfig = this.getMicroBurstConfig();\n    this.sharedMarketDataRuntime ??= new SharedMarketDataRuntime({\n      exchange: this.deps.exchange,\n      logger: this.deps.logger,\n      clock: { now: () => Date.now() },\n    });\n    if (mbConfig.enabled && mbConfig.mode !== 'OFF') {"
+          assert anchor in text
+          text = text.replace(anchor, replacement, 1)
+
+          anchor = "        const outcomeTracker = new MicroBurstOutcomeTracker({\n"
+          observer = "        this.sharedMarketDataRuntime.setArchiveObserver({\n          onDepth: (symbol, depth) => {\n            storage?.appendDepth({\n              symbol,\n              eventTime: depth.E,\n              receivedAtMs: depth.receivedAtMs,\n              E: depth.E,\n              T: depth.T,\n              U: depth.U,\n              u: depth.u,\n              pu: depth.pu,\n              b: depth.bids,\n              a: depth.asks,\n            });\n          },\n          onAggTradeGap: (symbol, gap) => {\n            storage?.recordGap?.({\n              symbol,\n              startedAtMs: gap.previousEventTimeMs ?? gap.nextEventTimeMs,\n              endedAtMs: gap.nextEventTimeMs,\n              reason: 'AGG_TRADE_SEQUENCE_GAP',\n              kind: 'AGG_TRADE_SEQUENCE',\n              feed: 'AGG_TRADE',\n              previousAggregateTradeId: gap.previousAggregateTradeId,\n              nextAggregateTradeId: gap.nextAggregateTradeId,\n              previousFirstTradeId: gap.previousFirstTradeId,\n              previousLastTradeId: gap.previousLastTradeId,\n              nextFirstTradeId: gap.nextFirstTradeId,\n              nextLastTradeId: gap.nextLastTradeId,\n              dedupeKey: gap.dedupeKey,\n            });\n          },\n          hasAggTradeGap: (symbol, fromMs, toMs) =>\n            storage?.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,\n        });\n\n" + anchor
+          assert anchor in text
+          text = text.replace(anchor, observer, 1)
+
+          anchor = "            strategyRouter: this.microBurstStrategyRouter,\n            blackBox: {"
+          replacement = "            strategyRouter: this.microBurstStrategyRouter,\n            orderBookDataPlane: this.sharedMarketDataRuntime.orderBookDataPlane,\n            aggTradeDataPlane: this.sharedMarketDataRuntime.aggTradeDataPlane,\n            blackBox: {"
+          assert anchor in text
+          text = text.replace(anchor, replacement, 1)
+          service.write_text(text)
+
+          runtime = Path('src/strategies/micro-burst/application/MicroBurstRuntime.ts')
+          text = runtime.read_text()
+          # Keep isolated-test fallback for compatibility, but make the production contract explicit.
+          anchor = "  orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;\n  aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;\n"
+          replacement = "  /** @deprecated Isolated-test fallback only. Production injects app-owned shared planes. */\n  orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;\n  /** @deprecated Isolated-test fallback only. Production injects app-owned shared planes. */\n  aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;\n"
+          assert anchor in text
+          text = text.replace(anchor, replacement, 1)
+          runtime.write_text(text)
+
+      - name: Add ownership regression test
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/app/services/SharedMarketDataOwnership.test.ts')
+          p.write_text("""import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+describe('T3.5 production shared market-data ownership', () => {
+  it('composes the canonical planes at application level and injects them into Micro Burst', () => {
+    const service = readFileSync(resolve(__dirname, 'TradingService.ts'), 'utf8');
+    expect(service).toContain('new SharedMarketDataRuntime({');
+    expect(service).toContain('orderBookDataPlane: this.sharedMarketDataRuntime.orderBookDataPlane');
+    expect(service).toContain('aggTradeDataPlane: this.sharedMarketDataRuntime.aggTradeDataPlane');
+  });
+
+  it('does not create extra production planes in TradingService per strategy', () => {
+    const service = readFileSync(resolve(__dirname, 'TradingService.ts'), 'utf8');
+    expect(service).not.toContain('new OrderBookDataPlane(');
+    expect(service).not.toContain('new AggTradeDataPlane(');
+  });
+});
+""")
+
+      - name: Format changed files
+        run: npx prettier --write src/app/services/SharedMarketDataRuntime.ts src/app/services/SharedMarketDataRuntime.test.ts src/app/services/SharedMarketDataOwnership.test.ts src/app/services/TradingService.ts src/strategies/micro-burst/application/MicroBurstRuntime.ts
+      - name: Bind authorized observational TradingService change
+        shell: python
+        run: |
+          from hashlib import sha256
+          from pathlib import Path
+          import re
+
+          digest = sha256(Path('src/app/services/TradingService.ts').read_bytes()).hexdigest()
+          contract = Path('src/restoration/original-operational-semantics.test.ts')
+          text = contract.read_text()
+          pattern = r"('src/app/services/TradingService\.ts':\s*\n\s*')[a-f0-9]{64}(',)"
+          updated, count = re.subn(pattern, rf"\g<1>{digest}\g<2>", text, count=1)
+          assert count == 1
+          contract.write_text(updated)
+          print(f'Authorized T3.5 TradingService digest: {digest}')
+      - run: npx prettier --write src/restoration/original-operational-semantics.test.ts
+      - name: Build
+        run: npm run build
+      - name: Tests
+        run: npm test
+      - name: Commit T3.5
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          git commit -m "refactor(market-data): lift shared stream ownership to application" || exit 0
+          git push origin HEAD:work/micro-burst-rider-v1-20260826
