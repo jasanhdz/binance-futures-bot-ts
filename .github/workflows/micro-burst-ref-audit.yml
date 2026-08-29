@@ -10,7 +10,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           set -euo pipefail
-          for n in MicroBurstAggTradeBuffer MicroBurstConfigLoader MicroBurstOutcomeEngine MicroBurstOutcomeTypes MicroBurstPaperTrading MicroBurstExitPolicy MicroBurstMarketDataTypes MicroBurstTypes BtcMicroContextProvider; do
-            echo "===== $n ====="
+          echo '===== MicroBurstMarketDataTypes imports ====='
+          grep -RIn --exclude-dir=node_modules --exclude-dir=.git --include='*.ts' 'MicroBurstMarketDataTypes' src tools scripts 2>/dev/null || true
+          echo '===== Types defined there and consumers ====='
+          for n in BtcCandleObservation BtcReturnSet MicroBurstReferencePrice ReferencePriceSource MicroBurstShadowEvaluationInput MicroBurstShadowEvaluationResult MicroBurstShadowTelemetryLog MicroBurstSymbolConfig MicroBurstRuntimeConfig TemporalBookSnapshot BOOK_PRESSURE_FEATURE_DEPTH; do
+            echo "--- $n ---"
             grep -RIn --exclude-dir=node_modules --exclude-dir=.git --include='*.ts' "$n" src tools scripts 2>/dev/null || true
           done
