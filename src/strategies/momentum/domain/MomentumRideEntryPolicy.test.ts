@@ -44,6 +44,13 @@ function context(side: Side): MomentumRideEntryContext {
     timestamp: 123,
     candles: momentumCandles(side),
     side,
+    realtimeMarketSource: 'SHARED_WEBSOCKET',
+    realtimeMarketStatus: 'FRESH',
+    realtimeMarketAgeMs: 200,
+    realtimeAggTradeAgeMs: 100,
+    realtimeAggTradeGapFree: true,
+    realtimeAggTradeCount: 40,
+    realtimeNetTakerVolume: 12,
     liquidityStressStatus: 'FRESH' as const,
     liquidityStressAgeMs: 500,
     liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1' as const,
@@ -67,6 +74,28 @@ describe('MomentumRideEntryPolicy', () => {
       decision: 'ENTRY_INTENT',
       side,
       reason: 'main_stacking_momentum_confirmed',
+      diagnostics: {
+        realtimeMarketSource: 'SHARED_WEBSOCKET',
+        realtimeMarketStatus: 'FRESH',
+      },
+    });
+  });
+
+  it.each([
+    ['STALE', 'realtime_market_stale'],
+    ['NO_DATA', 'realtime_market_no_data'],
+  ] as const)('fails closed for %s realtime websocket state', (status, reason) => {
+    const ctx = context('LONG');
+    ctx.realtimeMarketStatus = status;
+    ctx.realtimeMarketAgeMs = status === 'STALE' ? 3_001 : undefined;
+
+    expect(evaluateMomentumRideEntry(ctx, config)).toMatchObject({
+      decision: 'NO_TRADE',
+      reason,
+      diagnostics: {
+        realtimeMarketSource: 'SHARED_WEBSOCKET',
+        realtimeMarketStatus: status,
+      },
     });
   });
 
@@ -110,6 +139,8 @@ describe('MomentumRideEntryPolicy', () => {
 
   it('uses scalar stress when liquidity data is fresh', () => {
     expect(evaluateMomentumRideEntry(context('LONG'), config).diagnostics).toMatchObject({
+      realtimeMarketSource: 'SHARED_WEBSOCKET',
+      realtimeMarketStatus: 'FRESH',
       liquidityStressStatus: 'FRESH',
       liquidityStressAgeMs: 500,
       liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
