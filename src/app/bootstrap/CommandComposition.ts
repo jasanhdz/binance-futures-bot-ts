@@ -6,11 +6,13 @@ import { AegisBlocksReportService } from '../telegram/AegisBlocksReportService';
 import { TelegramCommandHandlers } from '../telegram/TelegramCommandHandlers';
 import { TelegramCommandRouter } from '../telegram/TelegramCommandRouter';
 import type { ApplicationInfrastructure } from './ApplicationInfrastructure';
-import type { ReturnTypeOfStrategyRuntime } from './StrategyComposition.types';
+import type { composeStrategyRuntime } from './StrategyComposition';
+
+type StrategyRuntimeComposition = ReturnType<typeof composeStrategyRuntime>;
 
 export function createCommandListener(
   infrastructure: ApplicationInfrastructure,
-  runtime: ReturnTypeOfStrategyRuntime,
+  runtime: StrategyRuntimeComposition,
 ): TelegramBotCommandListener | null {
   if (!CONFIG.TELEGRAM_COMMANDS_ENABLED) return null;
   if (CONFIG.TELEGRAM_ALLOWED_CHAT_IDS.length === 0) {
