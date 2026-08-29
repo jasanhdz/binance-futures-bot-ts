@@ -8,8 +8,16 @@ import { StrategyId } from './StrategyIdentity';
 
 export class StrategyRouter<TContext = unknown> {
   private readonly strategies = new Map<StrategyId, EntryStrategy<TContext>>();
+  private observationHook?: StrategyDecisionObservationHook<TContext>;
 
-  constructor(private readonly observationHook?: StrategyDecisionObservationHook<TContext>) {}
+  constructor(observationHook?: StrategyDecisionObservationHook<TContext>) {
+    this.observationHook = observationHook;
+  }
+
+  /** Runtime composition hook. Observation remains side-effect-only and may be detached on shutdown. */
+  setObservationHook(observationHook?: StrategyDecisionObservationHook<TContext>): void {
+    this.observationHook = observationHook;
+  }
 
   register(strategy: EntryStrategy<TContext>): void {
     const strategyId = strategy.identity.strategyId;
