@@ -42,6 +42,7 @@ export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure
       notifier,
       configManager,
       consecutiveLossStateStore: lossStates.storeFor('AEGIS_TURBO'),
+      strategyLossStateRegistry: lossStates,
     },
     config,
   );
