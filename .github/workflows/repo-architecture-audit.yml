@@ -1,0 +1,12 @@
+name: Repository Architecture Audit
+on:
+  push:
+    branches:
+      - tmp/repo-architecture-audit-20260829
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run architecture audit
+        run: python3 scripts/repo_architecture_audit.py
