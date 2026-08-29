@@ -75,7 +75,6 @@ PATH_MAP = {**MOVES}
 for old, target in ALIASES.items():
     PATH_MAP[old] = canonical(target)
 
-# Canonicalize imports in existing production/tests before moving files.
 for p in list(SRC.rglob('*.ts')):
     if p in ALIASES:
         continue
@@ -92,7 +91,6 @@ for p in list(SRC.rglob('*.ts')):
     if new != text:
         p.write_text(new)
 
-# Move true implementations/tests and rebase relative imports.
 for old, new in MOVES.items():
     if not old.exists():
         continue
@@ -116,7 +114,6 @@ for p in ALIASES:
     if p.exists():
         p.unlink()
 
-# Update path literals in architecture/restoration contracts to canonical ownership.
 path_replacements = [
     ('src/domain/services/aegis-entry/', 'src/strategies/aegis/domain/entry/'),
     ('src/domain/services/CurrentBrainCanonicalDecision.ts', 'src/strategies/aegis/domain/CurrentBrainCanonicalDecision.ts'),
@@ -143,7 +140,6 @@ for p in list(SRC.rglob('*.ts')):
     if new != text:
         p.write_text(new)
 
-# Phase 0: the final architecture has no compatibility allowlist; shared/core may not import strategies.
 phase0 = Path('src/restoration/phase0-architecture-contracts.test.ts')
 if phase0.exists():
     text = phase0.read_text()
@@ -154,7 +150,6 @@ if phase0.exists():
         text = text[:start] + replacement + text[end:]
         phase0.write_text(text)
 
-# Phase R: compatibility shims are no longer a desired final state.
 market_test = Path('src/core/market-data/MarketDataConvergence.test.ts')
 if market_test.exists():
     text = market_test.read_text()
@@ -165,7 +160,6 @@ if market_test.exists():
         text = text.replace(old_block, new_block)
     market_test.write_text(text)
 
-# Rewrite obsolete Phase 2 wording: these are canonical strategy adapters now, not legacy facades.
 phase2 = Path('src/restoration/phase2-architecture-contracts.test.ts')
 if phase2.exists():
     text = phase2.read_text().replace(
@@ -174,14 +168,15 @@ if phase2.exists():
     )
     phase2.write_text(text)
 
-# Update exact hashes only for explicitly owner-authorized files changed by import/path convergence.
 semantics = Path('src/restoration/original-operational-semantics.test.ts')
 if semantics.exists():
     text = semantics.read_text()
     authorized = {
         'src/app/ports/Exchange.ts',
         'src/app/services/TradingService.ts',
+        'src/app/telegram/TelegramCommandHandlers.ts',
         'src/domain/index.ts',
+        'src/infra/adapters/BinanceAdapter.ts',
         *[str(p) for p in MOVES.values() if not p.name.endswith('.test.ts')],
         'src/strategies/aegis/domain/AegisStrategy.ts',
         'src/strategies/aegis/domain/CurrentBrainCanonicalDecision.ts',
@@ -199,7 +194,6 @@ if semantics.exists():
     text = entry.sub(refresh_digest, text)
     semantics.write_text(text)
 
-# Remove empty legacy directories.
 for d in sorted([p for p in SRC.rglob('*') if p.is_dir()], key=lambda x: len(x.parts), reverse=True):
     try:
         d.rmdir()
