@@ -1,20 +1,27 @@
-/** Process entry point. Strategy composition lives behind the application bootstrap boundary. */
-import { createTradingApplication } from './app/bootstrap/TradingApplicationBootstrap';
+import { CONFIG } from './infra/config/environment';
+import { createApplicationInfrastructure } from './app/bootstrap/ApplicationInfrastructure';
+import { createCommandListener } from './app/bootstrap/CommandComposition';
+import { composeStrategyRuntime } from './app/bootstrap/StrategyComposition';
 
+/** Process entry point and application composition root. */
 async function main(): Promise<void> {
   console.log('Trading System');
   console.log('==============');
 
-  const application = createTradingApplication();
-  console.log(`Runtime mode: ${application.summary.runtimeMode}`);
-  console.log(`Active symbols: ${application.summary.symbols.join(', ')}`);
-  console.log(`Tick interval: ${application.summary.tickIntervalMs}ms`);
+  const infrastructure = createApplicationInfrastructure();
+  const runtime = composeStrategyRuntime(infrastructure);
+  const commands = createCommandListener(infrastructure, runtime);
 
-  let exiting = false;
+  console.log(`Runtime mode: ${CONFIG.TRADING_MODE}`);
+  console.log(`Active symbols: ${runtime.config.symbols.join(', ')}`);
+  console.log(`Tick interval: ${runtime.config.tickIntervalMs}ms`);
+
+  let shutdownStarted = false;
   const shutdown = async (signal: 'SIGINT' | 'SIGTERM'): Promise<void> => {
-    if (exiting) return;
-    exiting = true;
-    const completed = await application.stop(signal);
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    commands?.stop();
+    const completed = await stopWithTimeout(runtime.service.stop(), infrastructure.logger, signal);
     process.exit(completed ? 0 : 1);
   };
 
@@ -22,10 +29,35 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   try {
-    await application.start();
+    commands?.start();
+    await runtime.service.start();
   } catch (error) {
     console.error('Fatal startup error:', error);
     process.exitCode = 1;
+  }
+}
+
+async function stopWithTimeout(
+  stop: Promise<void>,
+  logger: {
+    info(message: string, context?: unknown): void;
+    error(message: string, context?: unknown): void;
+  },
+  signal: 'SIGINT' | 'SIGTERM',
+): Promise<boolean> {
+  const timeoutMs = 15_000;
+  logger.info('shutdown_started', { signal, timeoutMs });
+  try {
+    const completed = await Promise.race([
+      stop.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ]);
+    if (!completed) logger.error('shutdown_timeout', { signal, timeoutMs });
+    else logger.info('shutdown_completed', { signal });
+    return completed;
+  } catch (error) {
+    logger.error('shutdown_failed', { signal, error: String(error) });
+    return false;
   }
 }
 
