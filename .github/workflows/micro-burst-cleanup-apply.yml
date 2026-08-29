@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Apply canonical import cleanup
+      - name: Split Micro Burst type ownership
         shell: bash
         run: |
           set -euo pipefail
@@ -29,92 +29,297 @@ jobs:
           from pathlib import Path
           import hashlib
 
-          files = [p for base in ('src','scripts','tools') if Path(base).exists() for p in Path(base).rglob('*.ts')]
-          legacy_path_replacements = {
-              '/domain/strategies/micro-burst/MicroBurstConfigLoader': '/strategies/micro-burst/application/MicroBurstConfigLoader',
-              '/domain/strategies/micro-burst/MicroBurstOutcomeEngine': '/strategies/micro-burst/research/MicroBurstOutcomeEngine',
-              '/domain/strategies/micro-burst/MicroBurstOutcomeTypes': '/strategies/micro-burst/research/MicroBurstOutcomeTypes',
-              '/domain/strategies/micro-burst/MicroBurstPaperTrading': '/strategies/micro-burst/research/MicroBurstPaperTrading',
+          def write(path: str, content: str):
+              p = Path(path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(content)
+
+          def replace(path: str, old: str, new: str, required: bool = True):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  if required:
+                      raise SystemExit(f'expected text not found in {path}: {old[:100]}')
+                  return
+              p.write_text(text.replace(old, new))
+
+          write('src/strategies/micro-burst/application/MicroBurstRuntimeTypes.ts', '''export interface MicroBurstSymbolConfig {
+  enabled: boolean;
+  btcConflictThresholdBps?: number;
+  bookDepthLevels?: number;
+  bookDepthSpeed?: '100ms' | '250ms' | '500ms';
+}
+
+export interface MicroBurstRuntimeConfig {
+  enabled: boolean;
+  mode: 'OFF' | 'SHADOW' | 'LIVE';
+  symbols: Record<string, MicroBurstSymbolConfig>;
+  prospectiveValidation?: {
+    enabled: boolean;
+    cohortId?: string;
+    horizonsMs?: number[];
+    conservativeEntrySlippageBps?: number;
+  };
+  marketArchive?: {
+    enabled: boolean;
+    rootDir?: string;
+    sqlitePath?: string;
+    tradeRetentionMs?: number;
+    bookCheckpointIntervalMs?: number;
+    rawTradeArchive?: boolean;
+    rawDepthArchive?: boolean;
+    compression?: 'gzip';
+    maxActiveSegmentRecords?: number;
+    maxActiveSegmentBytes?: number;
+    maxActiveSegmentDurationMs?: number;
+    durabilityFlushIntervalMs?: number;
+  };
+}
+''')
+
+          write('src/strategies/micro-burst/application/MicroBurstShadowEvaluationTypes.ts', '''import { Side } from '../../types';
+import { BookDataStatus, BtcDataStatus } from '../domain/MicroBurstTypes';
+
+export interface MicroBurstShadowEvaluationResult {
+  strategyId: string;
+  strategyVersion: string;
+  symbol: string;
+  snapshotAtMs: number;
+  decision: 'NO_TRADE' | 'ENTRY_INTENT';
+  side?: Side;
+  confidence: number;
+  referencePrice: number;
+  supportPrice: number | null;
+  resistancePrice: number | null;
+  structuralInvalidation: number | null;
+  destinationPrice: number | null;
+  roomToTargetBps: number | null;
+  riskToInvalidationBps: number | null;
+  rewardRisk: number | null;
+  momentum: {
+    direction: Side | 'NEUTRAL';
+    strength: number;
+    continuationScore: number;
+  };
+  book: {
+    status: BookDataStatus;
+    ageMs: number | null;
+    imbalance: number;
+    imbalanceSlope: number | null;
+  };
+  btc: {
+    status: BtcDataStatus;
+    ageMs: number | null;
+    ret1m: number | null;
+    ret3m: number | null;
+    ret5m: number | null;
+    conflict: boolean;
+  };
+  microRegime: string;
+  dataQuality: {
+    contextValid: boolean;
+    invalidReasons: string[];
+  };
+  wouldEnter: boolean;
+  liveExecution: false;
+  shadowSignalId: string;
+  duplicateSuppressed: boolean;
+  firstObservedAt: number;
+  lastObservedAt: number;
+  diagnostics: Record<string, unknown>;
+}
+
+export interface MicroBurstShadowTelemetryLog {
+  strategyId: string;
+  strategyVersion: string;
+  symbol: string;
+  snapshotAtMs: number;
+  decision: 'NO_TRADE' | 'ENTRY_INTENT';
+  side?: Side;
+  confidence: number;
+  referencePrice: number;
+  support: number | null;
+  resistance: number | null;
+  structuralInvalidation: number | null;
+  target: number | null;
+  roomToTargetBps: number | null;
+  riskToInvalidationBps: number | null;
+  rewardRisk: number | null;
+  momentum: {
+    direction: Side | 'NEUTRAL';
+    strength: number;
+    continuationScore: number;
+  };
+  bookStatus: BookDataStatus;
+  bookAgeMs: number | null;
+  bookImbalance: number;
+  imbalanceSlope: number | null;
+  btcStatus: BtcDataStatus;
+  btcAgeMs: number | null;
+  btcRet1m: number | null;
+  btcRet3m: number | null;
+  btcRet5m: number | null;
+  btcConflict: boolean;
+  microRegime: string;
+  dataQualityContextValid: boolean;
+  invalidReasons: string[];
+  wouldEnter: boolean;
+  liveExecution: false;
+  shadowSignalId: string;
+  duplicateSuppressed: boolean;
+  firstObservedAt: number;
+  lastObservedAt: number;
+}
+''')
+
+          write('src/strategies/micro-burst/domain/MicroBurstBtcTypes.ts', '''import { Side } from '../../types';
+
+export interface BtcCandleObservation {
+  close: number;
+  closeTime: number;
+  openTime: number;
+}
+
+export interface BtcReturnSet {
+  ret1m: number;
+  ret3m: number;
+  ret5m: number;
+  acceleration: number;
+  direction: Side | 'NEUTRAL';
+  observedAtMs: number;
+}
+''')
+
+          # Runtime/application ownership.
+          replace('src/strategies/micro-burst/application/MicroBurstConfigLoader.ts',
+                  "import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from '../domain/MicroBurstMarketDataTypes';",
+                  "import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';")
+          replace('src/strategies/micro-burst/application/MicroBurstShadowEvaluator.ts',
+                  "import {\n  MicroBurstShadowEvaluationResult,\n  MicroBurstShadowTelemetryLog,\n  MicroBurstSymbolConfig,\n  MicroBurstRuntimeConfig,\n} from '../domain/MicroBurstMarketDataTypes';",
+                  "import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';\nimport {\n  MicroBurstShadowEvaluationResult,\n  MicroBurstShadowTelemetryLog,\n} from './MicroBurstShadowEvaluationTypes';")
+          replace('src/strategies/micro-burst/domain/MicroBurstRuntime.ts',
+                  "import {\n  MicroBurstRuntimeConfig,\n  MicroBurstShadowEvaluationResult,\n  AggTradeEvent,\n  SynchronizedOrderBookState,\n} from './MicroBurstMarketDataTypes';",
+                  "import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';\nimport type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';\nimport type { AggTradeEvent, OrderBookState as SynchronizedOrderBookState } from '../../../app/ports/MarketData';")
+
+          # Research consumes application decision evidence, not a domain bag.
+          replace('src/strategies/micro-burst/research/MicroBurstSignalJournal.ts',
+                  "import { MicroBurstShadowEvaluationResult } from '../domain/MicroBurstMarketDataTypes';",
+                  "import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';")
+          replace('src/strategies/micro-burst/research/MicroBurstPaperTrading.ts',
+                  "import { MicroBurstShadowEvaluationResult } from '../domain/MicroBurstMarketDataTypes';",
+                  "import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';")
+
+          # BTC acquisition is already shared through BenchmarkMarketData; keep frozen strategy semantics local.
+          replace('src/strategies/micro-burst/domain/BtcMicroContextProvider.ts',
+                  "import { BtcCandleObservation, BtcReturnSet } from './MicroBurstMarketDataTypes';",
+                  "import type { BtcCandleObservation, BtcReturnSet } from './MicroBurstBtcTypes';")
+          replace('src/strategies/micro-burst/domain/BtcMicroContextProvider.test.ts',
+                  "import { BtcCandleObservation } from './MicroBurstMarketDataTypes';",
+                  "import type { BtcCandleObservation } from './MicroBurstBtcTypes';")
+
+          # Reference-price types belong with the strategy-specific provider.
+          ref = Path('src/strategies/micro-burst/domain/MicroBurstReferencePrice.ts')
+          text = ref.read_text()
+          text = text.replace("import { MicroBurstReferencePrice, ReferencePriceSource } from './MicroBurstMarketDataTypes';\n", '')
+          marker = "const STALE_THRESHOLD_MS = 5_000;\n"
+          declarations = """export type ReferencePriceSource = 'MARK_PRICE' | 'MIDPOINT' | 'BEST_BID_ASK';
+
+export interface MicroBurstReferencePrice {
+  price: number;
+  source: ReferencePriceSource;
+  observedAtMs: number;
+  isLiveRuntime: boolean;
+}
+
+"""
+          if marker not in text:
+              raise SystemExit('reference-price marker missing')
+          ref.write_text(text.replace(marker, declarations + marker, 1))
+          replace('src/strategies/micro-burst/domain/MicroBurstContextBuilder.ts',
+                  "import { MicroBurstReferencePrice } from './MicroBurstMarketDataTypes';",
+                  "import type { MicroBurstReferencePrice } from './MicroBurstReferencePrice';")
+
+          # Temporal book history and raw market facts are shared market-data contracts.
+          for filename in [
+              'src/strategies/micro-burst/domain/MicroBurstBookPressureAnalyzer.ts',
+              'src/strategies/micro-burst/domain/MicroBurstBookPressureAnalyzer.test.ts',
+              'src/strategies/micro-burst/domain/SynchronizedOrderBook.ts',
+          ]:
+              replace(filename,
+                      "import { TemporalBookSnapshot } from './MicroBurstMarketDataTypes';",
+                      "import type { TemporalOrderBookObservation as TemporalBookSnapshot } from '../../../app/ports/MarketData';",
+                      required=False)
+              replace(filename,
+                      "import type { TemporalBookSnapshot } from './MicroBurstMarketDataTypes';",
+                      "import type { TemporalOrderBookObservation as TemporalBookSnapshot } from '../../../app/ports/MarketData';",
+                      required=False)
+          replace('src/strategies/micro-burst/domain/MicroBurstTypes.ts',
+                  "import('./MicroBurstMarketDataTypes').TemporalBookSnapshot[]",
+                  "import('../../../app/ports/MarketData').TemporalOrderBookObservation[]")
+
+          # Generic OrderBook/AggTrade test contracts no longer route through Micro Burst.
+          sync_test = Path('src/strategies/micro-burst/domain/SynchronizedOrderBook.test.ts')
+          text = sync_test.read_text()
+          old = """import {
+  BinanceDepthDiffEvent,
+  BinanceDepthSnapshot,
+  SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH,
+} from './MicroBurstMarketDataTypes';"""
+          new = """import {
+  type BinanceDepthDiffEvent,
+  type BinanceDepthSnapshot,
+  ORDER_BOOK_SNAPSHOT_DEPTH,
+} from '../../../app/ports/MarketData';"""
+          if old not in text:
+              raise SystemExit('SynchronizedOrderBook test import block missing')
+          sync_test.write_text(text.replace(old, new).replace('SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH', 'ORDER_BOOK_SNAPSHOT_DEPTH'))
+          replace('src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.test.ts',
+                  "import { AggTradeEvent } from './MicroBurstMarketDataTypes';",
+                  "import type { AggTradeEvent } from '../../../app/ports/MarketData';")
+
+          # Tests follow canonical owners.
+          test_replacements = {
+              'src/strategies/micro-burst/domain/MicroBurstSignalJournal.test.ts': ("import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';", "import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';"),
+              'src/strategies/micro-burst/domain/MicroBurstGoldenParity.test.ts': ("import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';", "import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';"),
+              'src/strategies/micro-burst/domain/MicroBurstPaperTrading.test.ts': ("import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';", "import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';"),
+              'src/strategies/micro-burst/domain/MicroBurstRuntime.test.ts': ("import { MicroBurstRuntimeConfig } from './MicroBurstMarketDataTypes';", "import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';"),
+              'src/strategies/micro-burst/domain/MicroBurstShadowEvaluator.test.ts': ("import { MicroBurstRuntimeConfig } from './MicroBurstMarketDataTypes';", "import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';"),
           }
-          for path in files:
-              text = path.read_text()
-              new = text
-              for old, replacement in legacy_path_replacements.items():
-                  new = new.replace(old, replacement)
-              if path.as_posix().startswith('src/strategies/micro-burst/research/'):
-                  new = new.replace("from './MicroBurstExitPolicy'", "from '../domain/MicroBurstExitPolicy'")
-                  new = new.replace("from './MicroBurstTypes'", "from '../domain/MicroBurstTypes'")
-                  new = new.replace("from './MicroBurstMarketDataTypes'", "from '../domain/MicroBurstMarketDataTypes'")
-              if path.as_posix().startswith('src/strategies/micro-burst/domain/'):
-                  new = new.replace("from './MicroBurstConfigLoader'", "from '../application/MicroBurstConfigLoader'")
-                  new = new.replace("from './MicroBurstOutcomeEngine'", "from '../research/MicroBurstOutcomeEngine'")
-                  new = new.replace("from './MicroBurstOutcomeTypes'", "from '../research/MicroBurstOutcomeTypes'")
-                  new = new.replace("from './MicroBurstPaperTrading'", "from '../research/MicroBurstPaperTrading'")
-                  new = new.replace("from './MicroBurstReadiness'", "from '../application/MicroBurstReadiness'")
-                  new = new.replace("from './MicroBurstShadowEvaluator'", "from '../application/MicroBurstShadowEvaluator'")
-                  new = new.replace("from './MicroBurstSignalJournal'", "from '../research/MicroBurstSignalJournal'")
-              if new != text:
-                  path.write_text(new)
+          for filename, (old, new) in test_replacements.items():
+              replace(filename, old, new)
 
-          runtime = Path('src/strategies/micro-burst/domain/MicroBurstRuntime.ts')
-          text = runtime.read_text().replace(
-              "import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';",
-              "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';",
-          ).replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
-          runtime.write_text(text)
+          # Generic infrastructure imports generic market contracts directly.
+          replace('src/infra/adapters/BinanceAdapter.ts',
+                  "import {\n  BinanceDepthDiffEvent,\n  BinanceDepthSnapshot,\n} from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';",
+                  "import type { BinanceDepthDiffEvent, BinanceDepthSnapshot } from '../../app/ports/MarketData';")
+          replace('src/infra/config/ConfigLoader.ts',
+                  "import { MicroBurstRuntimeConfig } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';",
+                  "import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';")
+          replace('src/app/services/TradingService.aegis.test.ts',
+                  "import { MicroBurstRuntimeConfig } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';",
+                  "import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';")
 
-          agg_test = Path('src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.test.ts')
-          text = agg_test.read_text().replace(
-              "import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';",
-              "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';",
-          ).replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
-          agg_test.write_text(text)
+          # Remove the overloaded bag and its legacy facade.
+          for filename in [
+              'src/strategies/micro-burst/domain/MicroBurstMarketDataTypes.ts',
+              'src/domain/strategies/micro-burst/MicroBurstMarketDataTypes.ts',
+          ]:
+              p = Path(filename)
+              if p.exists(): p.unlink()
 
-          core_test = Path('src/core/market-data/RollingAggTradeBuffer.test.ts')
-          text = core_test.read_text().replace(
-              "import { MicroBurstAggTradeBuffer } from '../../domain/strategies/micro-burst/MicroBurstAggTradeBuffer';",
-              "import { RollingAggTradeBuffer as LegacyParityBuffer } from './RollingAggTradeBuffer';",
-          ).replace('new MicroBurstAggTradeBuffer(', 'new LegacyParityBuffer(')
-          core_test.write_text(text)
-
-          convergence = Path('src/core/market-data/MarketDataConvergence.test.ts')
-          text = convergence.read_text()
-          compatibility_block = """  it('keeps the AggTrade strategy-named class as an alias only', () => {\n    const compatibility = source(\n      'strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts',\n    );\n    expect(compatibility).toContain(\n      'RollingAggTradeBuffer as MicroBurstAggTradeBuffer',\n    );\n    expect(compatibility).not.toContain('class MicroBurstAggTradeBuffer');\n    expect(compatibility).not.toContain('constructor(');\n  });\n\n"""
-          if compatibility_block not in text:
-              raise SystemExit('expected AggTrade compatibility test block not found')
-          convergence.write_text(text.replace(compatibility_block, ''))
-
-          aliases = [
-              'src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts',
-              'src/strategies/micro-burst/domain/MicroBurstConfigLoader.ts',
-              'src/strategies/micro-burst/domain/MicroBurstOutcomeEngine.ts',
-              'src/strategies/micro-burst/domain/MicroBurstOutcomeTypes.ts',
-              'src/strategies/micro-burst/domain/MicroBurstPaperTrading.ts',
-              'src/strategies/micro-burst/research/MicroBurstExitPolicy.ts',
-              'src/strategies/micro-burst/research/MicroBurstMarketDataTypes.ts',
-              'src/strategies/micro-burst/research/MicroBurstTypes.ts',
-              'src/domain/strategies/micro-burst/MicroBurstAggTradeBuffer.ts',
-              'src/domain/strategies/micro-burst/MicroBurstConfigLoader.ts',
-              'src/domain/strategies/micro-burst/MicroBurstOutcomeEngine.ts',
-              'src/domain/strategies/micro-burst/MicroBurstOutcomeTypes.ts',
-              'src/domain/strategies/micro-burst/MicroBurstPaperTrading.ts',
-          ]
-          for filename in aliases:
-              path = Path(filename)
-              if path.exists(): path.unlink()
-
+          # Explicitly rebind byte-level operational contracts for import-only changes.
           restoration = Path('src/restoration/original-operational-semantics.test.ts')
           rtext = restoration.read_text()
           contracts = [
-              ('src/app/services/TradingService.ts', 'ca8f881587d0b28af76d1c8c5c596e25b411737dfce1a4ae603301a654a35e2f'),
-              ('src/infra/config/ConfigLoader.ts', '9191178da347b99811181cfa4181cc7bf916cc669a4bd5e37424918c44ae64a8'),
+              ('src/infra/config/ConfigLoader.ts', '070a3a6a02c80107453e8cf7189d5f1b7f5475ab79658ecf0d00b913be9f0e80'),
+              ('src/infra/adapters/BinanceAdapter.ts', 'fb65e620128378df5932f43e76bd1cac2983020c5bd0f474b0043fead1478592'),
           ]
           for filename, old_digest in contracts:
               digest = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
               if old_digest not in rtext:
-                  raise SystemExit(f'expected restoration digest not found for {filename}')
+                  raise SystemExit(f'expected restoration digest missing for {filename}')
               rtext = rtext.replace(old_digest, digest, 1)
-              print(f'{filename} canonical import digest: {digest}')
+              print(f'{filename} canonical type import digest: {digest}')
           restoration.write_text(rtext)
           PY
           git diff --check
@@ -124,22 +329,16 @@ jobs:
         run: npm run build
       - name: Tests
         run: npm test
-      - name: Verify cleanup
+      - name: Verify ownership cleanup
         shell: bash
         run: |
           set -euo pipefail
-          for f in \
-            src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts \
-            src/strategies/micro-burst/domain/MicroBurstConfigLoader.ts \
-            src/strategies/micro-burst/domain/MicroBurstOutcomeEngine.ts \
-            src/strategies/micro-burst/domain/MicroBurstOutcomeTypes.ts \
-            src/strategies/micro-burst/domain/MicroBurstPaperTrading.ts \
-            src/strategies/micro-burst/research/MicroBurstExitPolicy.ts \
-            src/strategies/micro-burst/research/MicroBurstMarketDataTypes.ts \
-            src/strategies/micro-burst/research/MicroBurstTypes.ts; do
-            test ! -e "$f"
-          done
-          ! grep -RIn --exclude-dir=node_modules --exclude-dir=.git --include='*.ts' 'domain/strategies/micro-burst/MicroBurstConfigLoader\|domain/strategies/micro-burst/MicroBurstOutcomeEngine\|domain/strategies/micro-burst/MicroBurstOutcomeTypes\|domain/strategies/micro-burst/MicroBurstPaperTrading' src scripts tools
+          test ! -e src/strategies/micro-burst/domain/MicroBurstMarketDataTypes.ts
+          test ! -e src/domain/strategies/micro-burst/MicroBurstMarketDataTypes.ts
+          ! grep -RIn --exclude-dir=node_modules --exclude-dir=.git --include='*.ts' 'MicroBurstMarketDataTypes' src scripts tools
+          test -f src/strategies/micro-burst/application/MicroBurstRuntimeTypes.ts
+          test -f src/strategies/micro-burst/application/MicroBurstShadowEvaluationTypes.ts
+          test -f src/strategies/micro-burst/domain/MicroBurstBtcTypes.ts
       - name: Commit cleanup
         shell: bash
         run: |
@@ -148,5 +347,5 @@ jobs:
           git config user.name 'Jasan Hernández'
           git config user.email '31332180+jasanhdz@users.noreply.github.com'
           git add -A
-          git commit -m 'refactor: remove micro burst compatibility facades'
+          git commit -m 'refactor: split micro burst type ownership'
           git push origin HEAD:work/micro-burst-rider-v1-20260826
