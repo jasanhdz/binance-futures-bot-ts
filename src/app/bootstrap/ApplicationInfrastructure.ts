@@ -25,3 +25,5 @@ export function createApplicationInfrastructure() {
     configManager: new NinjaConfigManager(),
   };
 }
+
+export type ApplicationInfrastructure = ReturnType<typeof createApplicationInfrastructure>;
