@@ -65,16 +65,23 @@ rtext, count = re.subn(pattern, rf"\g<1>{new_digest}\2", rtext, count=1)
 if count != 1: raise SystemExit('failed to update TradingService restoration digest')
 restoration.write_text(rtext)
 
-# Direct tick unit tests intentionally bypass start(); inject the operational WS reader contract.
 test_path = Path('src/app/services/TradingService.aegis-live.test.ts')
 t = test_path.read_text()
-fresh = """\n    (service as any).momentumRealtimeMarketState = {\n      read: () => ({\n        source: 'SHARED_WEBSOCKET', status: 'FRESH', orderBookHealth: 'HEALTHY',\n        observedAtMs: Date.now(), ageMs: 0, aggTradeAgeMs: 0, aggTradeGapFree: true,\n        aggTradeCount: 10, netTakerVolume: 1,\n      }),\n    };\n"""
-anchors = [
-    "      momentumRide: config,\n    });\n\n    await service.tick('ETHUSDT');",
-    "      closedTradeOutcomes: [loss],\n    });\n\n    await service.tick('ETHUSDT');",
-]
-for anchor in anchors:
-    if t.count(anchor) != 1: raise SystemExit(f'test anchor mismatch: {anchor[:50]}')
-    t = t.replace(anchor, anchor.replace("\n\n    await", fresh + "\n    await"), 1)
+fresh = """
+    (service as any).momentumRealtimeMarketState = {
+      read: () => ({
+        source: 'SHARED_WEBSOCKET', status: 'FRESH', orderBookHealth: 'HEALTHY',
+        observedAtMs: Date.now(), ageMs: 0, aggTradeAgeMs: 0, aggTradeGapFree: true,
+        aggTradeCount: 10, netTakerVolume: 1,
+      }),
+    };
+"""
+for title in [
+    'enters on standalone momentum when Aegis signal is abstain/do-not-enter',
+    'blocks standalone Momentum on a shared account-wide daily-loss veto',
+]:
+    pattern = rf"(it\('{re.escape(title)}'.*?)(\n\s+await service\.tick\('ETHUSDT'\);)"
+    t, count = re.subn(pattern, lambda m: m.group(1) + fresh + m.group(2), t, count=1, flags=re.S)
+    if count != 1: raise SystemExit(f'failed to inject websocket fixture for {title}')
 test_path.write_text(t)
 print('TradingService digest:', new_digest)
