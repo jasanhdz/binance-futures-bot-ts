@@ -141,6 +141,7 @@ import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/
 import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
 import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvidenceSink';
 import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
+import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -270,6 +271,7 @@ export class TradingService {
   private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
   private readonly microBurstIdentity: StrategyIdentity;
   private microBurstRuntime: MicroBurstRuntime | null = null;
+  private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;
   private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
   private stopPromise: Promise<void> | null = null;
 
@@ -1658,6 +1660,11 @@ export class TradingService {
     this.isRunning = true;
 
     const mbConfig = this.getMicroBurstConfig();
+    this.sharedMarketDataRuntime ??= new SharedMarketDataRuntime({
+      exchange: this.deps.exchange,
+      logger: this.deps.logger,
+      clock: { now: () => Date.now() },
+    });
     if (mbConfig.enabled && mbConfig.mode !== 'OFF') {
       try {
         const provenance = this.getMicroBurstProvenance(mbConfig);
@@ -1677,6 +1684,42 @@ export class TradingService {
               durabilityFlushIntervalMs: archiveConfig.durabilityFlushIntervalMs,
             })
           : undefined;
+        this.sharedMarketDataRuntime.setArchiveObserver({
+          onDepth: (symbol, depth) => {
+            storage?.appendDepth({
+              symbol,
+              eventTime: depth.E,
+              receivedAtMs: depth.receivedAtMs,
+              E: depth.E,
+              T: depth.T,
+              U: depth.U,
+              u: depth.u,
+              pu: depth.pu,
+              b: depth.bids,
+              a: depth.asks,
+            });
+          },
+          onAggTradeGap: (symbol, gap) => {
+            storage?.recordGap?.({
+              symbol,
+              startedAtMs: gap.previousEventTimeMs ?? gap.nextEventTimeMs,
+              endedAtMs: gap.nextEventTimeMs,
+              reason: 'AGG_TRADE_SEQUENCE_GAP',
+              kind: 'AGG_TRADE_SEQUENCE',
+              feed: 'AGG_TRADE',
+              previousAggregateTradeId: gap.previousAggregateTradeId,
+              nextAggregateTradeId: gap.nextAggregateTradeId,
+              previousFirstTradeId: gap.previousFirstTradeId,
+              previousLastTradeId: gap.previousLastTradeId,
+              nextFirstTradeId: gap.nextFirstTradeId,
+              nextLastTradeId: gap.nextLastTradeId,
+              dedupeKey: gap.dedupeKey,
+            });
+          },
+          hasAggTradeGap: (symbol, fromMs, toMs) =>
+            storage?.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,
+        });
+
         const outcomeTracker = new MicroBurstOutcomeTracker({
           logger: this.deps.logger,
           clock: { now: () => Date.now() },
@@ -1689,6 +1732,8 @@ export class TradingService {
             logger: this.deps.logger,
             clock: { now: () => Date.now() },
             strategyRouter: this.microBurstStrategyRouter,
+            orderBookDataPlane: this.sharedMarketDataRuntime.orderBookDataPlane,
+            aggTradeDataPlane: this.sharedMarketDataRuntime.aggTradeDataPlane,
             blackBox: {
               decisionSink: new JsonlDecisionEvidenceSink(
                 'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',

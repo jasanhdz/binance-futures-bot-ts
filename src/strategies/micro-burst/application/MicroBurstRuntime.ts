@@ -213,7 +213,9 @@ export interface MicroBurstRuntimeDeps {
   };
   mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
   shadowTradeJournal?: ShadowJournal;
+  /** @deprecated Isolated-test fallback only. Production injects app-owned shared planes. */
   orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
+  /** @deprecated Isolated-test fallback only. Production injects app-owned shared planes. */
   aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
   blackBox?: {
     decisionSink: DecisionEvidenceSink;
