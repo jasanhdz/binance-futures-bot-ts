@@ -1,0 +1,50 @@
+name: Final Architecture Convergence
+on:
+  push:
+    branches:
+      - work/architecture-convergence-final-20260829
+permissions:
+  contents: write
+jobs:
+  converge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare test configuration
+        run: cp config/regime_config.example.yaml regime_config.yaml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply convergence
+        run: python3 scripts/final_architecture_convergence.py
+      - name: Diff check
+        run: git diff --check
+      - name: Install
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npm test
+      - name: Forbidden legacy namespace audit
+        run: |
+          set -e
+          ! grep -R --line-number --include='*.ts' "src/domain/strategies\|src/strategies/strategy\|src/app/micro-burst\|src/domain/strategy" src || true
+          test ! -d src/domain/strategies
+          test ! -d src/strategies/strategy
+          test ! -d src/app/micro-burst
+          test ! -f src/strategies/types.ts
+          test ! -f src/domain/types.ts
+      - name: Commit validated convergence
+        run: |
+          git config user.name "Jasan Hernández"
+          git config user.email "31332180+jasanhdz@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No convergence changes"
+            exit 0
+          fi
+          git commit -m "refactor: finalize strategy architecture convergence"
+          git push origin HEAD:work/architecture-convergence-final-20260829
