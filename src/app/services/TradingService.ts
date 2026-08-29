@@ -100,6 +100,7 @@ import type {
   StrategyLossStateStorePort,
   StrategyLossStateWrite,
 } from '../../infra/state/StrategyLossStateStore';
+import type { StrategyLossStateRegistry } from '../../infra/state/StrategyLossStateRegistry';
 import { PositionManagerRouter } from '../../core/strategy/PositionManagerRouter';
 import {
   AegisPositionManager,
@@ -213,6 +214,7 @@ export interface TradingServiceDeps {
   historyLogger?: AegisTurboHistoryLogger;
   closedTradeOutcomeReader?: () => Promise<AegisClosedTradeOutcome[]>;
   consecutiveLossStateStore?: StrategyLossStateStorePort;
+  strategyLossStateRegistry?: StrategyLossStateRegistry;
 }
 
 export interface TradingServiceConfig {
@@ -5466,6 +5468,27 @@ export class TradingService {
     });
     if (pnl !== undefined)
       this.strategyRiskLedger.recordClose(closeStrategy, tradeId, pnl, Date.now());
+    if (pnl !== undefined && this.deps.strategyLossStateRegistry) {
+      const lossStrategyId =
+        botState.positionOwner === 'EXTERNAL' ||
+        botState.tradeOrigin === 'MANUAL_EXTERNAL' ||
+        tradeId.startsWith('MANUAL-')
+          ? 'MANUAL'
+          : closeStrategy;
+      if (lossStrategyId !== 'AEGIS_TURBO') {
+        await this.deps.strategyLossStateRegistry.record(lossStrategyId, this.getTradingMode(), {
+          tradeId,
+          closedAt: new Date().toISOString(),
+          pnlUsdt: pnl,
+        });
+        logger.info('strategy_loss_streak_updated', {
+          symbol,
+          tradeId,
+          strategyId: lossStrategyId,
+          consecutiveLosses: this.deps.strategyLossStateRegistry.trackerValue(lossStrategyId),
+        });
+      }
+    }
     if (closeStrategy === 'AEGIS_TURBO' && pnl !== undefined) {
       const streakUpdate = this.consecutiveLossTracker.record(tradeId, pnl);
       if (streakUpdate.applied) {
