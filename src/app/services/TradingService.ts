@@ -145,6 +145,7 @@ import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshot
 import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
 import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
 import { MomentumRideBlackBoxObservation } from '../../strategies/momentum/application/MomentumRideBlackBoxObservation';
+import { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -278,6 +279,7 @@ export class TradingService {
   private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;
   private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;
   private momentumBlackBoxObservation: MomentumRideBlackBoxObservation | null = null;
+  private momentumRealtimeMarketState: MomentumRealtimeMarketState | null = null;
   private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
   private stopPromise: Promise<void> | null = null;
 
@@ -1671,6 +1673,11 @@ export class TradingService {
       logger: this.deps.logger,
       clock: { now: () => Date.now() },
     });
+    this.momentumRealtimeMarketState ??= new MomentumRealtimeMarketState({
+      sharedMarketData: this.sharedMarketDataRuntime,
+      clock: { now: () => Date.now() },
+    });
+    this.momentumRealtimeMarketState.start(startupSymbols);
     this.aegisBlackBoxObservation ??= new AegisBlackBoxObservation({
       exchange: this.deps.exchange,
       sharedMarketData: this.sharedMarketDataRuntime,
@@ -1860,6 +1867,8 @@ export class TradingService {
       this.momentumStrategyRouter.setObservationHook(undefined);
       this.momentumBlackBoxObservation?.close();
       this.momentumBlackBoxObservation = null;
+      this.momentumRealtimeMarketState?.close();
+      this.momentumRealtimeMarketState = null;
       await microBurstRuntime?.stop();
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
       await Promise.all(stores.map((store) => store.flush?.()));
@@ -2400,11 +2409,20 @@ export class TradingService {
       status: 'NO_DATA' as const,
       inputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
     };
+    const realtimeMarket = this.momentumRealtimeMarketState?.read(symbol) ?? {
+      source: 'SHARED_WEBSOCKET' as const, status: 'NO_DATA' as const,
+      orderBookHealth: 'UNAVAILABLE' as const, aggTradeGapFree: false,
+      aggTradeCount: 0, netTakerVolume: 0,
+    };
     const strategyContext: MomentumRideStrategyContext = {
-      symbol,
-      timestamp: now,
-      candles: candidate.candles,
-      side,
+      symbol, timestamp: now, candles: candidate.candles, side,
+      realtimeMarketSource: realtimeMarket.source,
+      realtimeMarketStatus: realtimeMarket.status,
+      realtimeMarketAgeMs: realtimeMarket.ageMs,
+      realtimeAggTradeAgeMs: realtimeMarket.aggTradeAgeMs,
+      realtimeAggTradeGapFree: realtimeMarket.aggTradeGapFree,
+      realtimeAggTradeCount: realtimeMarket.aggTradeCount,
+      realtimeNetTakerVolume: realtimeMarket.netTakerVolume,
       policy,
       openPositionsCount: portfolioExposure.openPositions,
       openMomentumPositions,
