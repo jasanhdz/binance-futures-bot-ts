@@ -24,34 +24,35 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          p=Path('src/app/services/TradingService.ts')
-          s=p.read_text()
-          a="import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';\n"
-          r=a+"import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';\n"
-          assert a in s; s=s.replace(a,r,1)
-          a="  private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;\n"
-          r=a+"  private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;\n"
-          assert a in s; s=s.replace(a,r,1)
+          p=Path('src/app/services/TradingService.ts'); s=p.read_text()
+          a="import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';\n"; r=a+"import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';\n"; assert a in s; s=s.replace(a,r,1)
+          a="  private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;\n"; r=a+"  private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;\n"; assert a in s; s=s.replace(a,r,1)
           a="    this.sharedMarketDataRuntime ??= new SharedMarketDataRuntime({\n      exchange: this.deps.exchange,\n      logger: this.deps.logger,\n      clock: { now: () => Date.now() },\n    });\n"
-          r=a+"    this.aegisBlackBoxObservation ??= new AegisBlackBoxObservation({\n      exchange: this.deps.exchange,\n      sharedMarketData: this.sharedMarketDataRuntime,\n      identity: this.aegisStrategyIdentity,\n      clock: { now: () => Date.now() },\n      decisionSink: new JsonlDecisionEvidenceSink(\n        'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',\n      ),\n      marketSnapshotSink: new JsonlMarketSnapshotSink(\n        'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',\n      ),\n    });\n    this.aegisBlackBoxObservation.start(startupSymbols);\n"
-          assert a in s; s=s.replace(a,r,1)
-          a="      const entryDecision = await AegisEntryGuardOrchestrator.evaluate(entryContext, entryPolicy);\n"
-          r="      const aegisBlackBoxSnapshot = await this.aegisBlackBoxObservation?.capture(symbol);\n"+a
-          assert a in s; s=s.replace(a,r,1)
+          r=a+"    this.aegisBlackBoxObservation ??= new AegisBlackBoxObservation({\n      exchange: this.deps.exchange,\n      sharedMarketData: this.sharedMarketDataRuntime,\n      identity: this.aegisStrategyIdentity,\n      clock: { now: () => Date.now() },\n      decisionSink: new JsonlDecisionEvidenceSink(\n        'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',\n      ),\n      marketSnapshotSink: new JsonlMarketSnapshotSink(\n        'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',\n      ),\n    });\n    this.aegisBlackBoxObservation.start(startupSymbols);\n"; assert a in s; s=s.replace(a,r,1)
+          a="      const entryDecision = await AegisEntryGuardOrchestrator.evaluate(entryContext, entryPolicy);\n"; r="      const aegisBlackBoxSnapshot = await this.aegisBlackBoxObservation?.capture(symbol);\n"+a; assert a in s; s=s.replace(a,r,1)
           a="      const shortGateDecision = entryDecision.decisions.shortGate;\n"
-          r="      await this.aegisBlackBoxObservation?.observe(aegisBlackBoxSnapshot ?? null, {\n        symbol,\n        timestamp: entryContext.operational.timestamp,\n        side,\n        allowed: entryDecision.shouldOpen && entrySafetyConsensus.allowed,\n        reason: entrySafetyConsensus.allowed ? entryDecision.finalReason : entrySafetyConsensus.reason,\n        confidence: this.finiteNumber(signal.confidence) ? Number(signal.confidence) : undefined,\n        requestedRisk: entryDecision.adjustedPositionFraction,\n        diagnostics: {\n          signalId,\n          tradeId,\n          entryPolicy: entryDecision.metadata,\n          entryPolicyTrace: entryDecision.trace,\n          entrySafetyConsensus,\n          observationalOnly: true,\n        },\n      });\n"+a
-          assert a in s; s=s.replace(a,r,1)
-          a="      await microBurstRuntime?.stop();\n"
-          r="      this.aegisBlackBoxObservation?.close();\n      this.aegisBlackBoxObservation = null;\n"+a
-          assert a in s; s=s.replace(a,r,1)
+          r="      await this.aegisBlackBoxObservation?.observe(aegisBlackBoxSnapshot ?? null, {\n        symbol,\n        timestamp: entryContext.operational.timestamp,\n        side,\n        allowed: entryDecision.shouldOpen && entrySafetyConsensus.allowed,\n        reason: entrySafetyConsensus.allowed ? entryDecision.finalReason : entrySafetyConsensus.reason,\n        confidence: this.finiteNumber(signal.confidence) ? Number(signal.confidence) : undefined,\n        requestedRisk: entryDecision.adjustedPositionFraction,\n        diagnostics: { signalId, tradeId, entryPolicy: entryDecision.metadata, entryPolicyTrace: entryDecision.trace, entrySafetyConsensus, observationalOnly: true },\n      });\n"+a; assert a in s; s=s.replace(a,r,1)
+          a="      await microBurstRuntime?.stop();\n"; r="      this.aegisBlackBoxObservation?.close();\n      this.aegisBlackBoxObservation = null;\n"+a; assert a in s; s=s.replace(a,r,1)
           p.write_text(s)
       - run: npx prettier --write src/app/services/TradingService.ts src/strategies/aegis/application/AegisBlackBoxObservation.ts
+      - name: Bind authorized TradingService digest
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib, re
+          service=Path('src/app/services/TradingService.ts')
+          digest=hashlib.sha256(service.read_bytes()).hexdigest()
+          p=Path('src/restoration/original-operational-semantics.test.ts'); s=p.read_text()
+          s,n=re.subn(r"('src/app/services/TradingService\.ts':\s*\n\s*)'[0-9a-f]{64}'", lambda m:m.group(1)+"'"+digest+"'", s, count=1)
+          assert n==1
+          p.write_text(s)
+      - run: npx prettier --write src/restoration/original-operational-semantics.test.ts
       - run: npm run build
       - run: npm test -- --run
       - name: Commit T4
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/app/services/TradingService.ts src/strategies/aegis/application/AegisBlackBoxObservation.ts
+          git add src/app/services/TradingService.ts src/strategies/aegis/application/AegisBlackBoxObservation.ts src/restoration/original-operational-semantics.test.ts
           git commit -m 'feat(aegis): observe entry decisions in strategy black box' || exit 0
           git push
