@@ -110,7 +110,7 @@ describe('Phase R market-data convergence', () => {
 
   it('keeps the AggTrade strategy-named class as an alias only', () => {
     const compatibility = source(
-      'domain/strategies/micro-burst/MicroBurstAggTradeBuffer.ts',
+      'strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts',
     );
     expect(compatibility).toContain(
       'RollingAggTradeBuffer as MicroBurstAggTradeBuffer',
@@ -120,7 +120,7 @@ describe('Phase R market-data convergence', () => {
   });
 
   it('keeps the order-book compatibility adapter free of synchronization mechanics', () => {
-    const compatibility = source('domain/strategies/micro-burst/SynchronizedOrderBook.ts');
+    const compatibility = source('strategies/micro-burst/domain/SynchronizedOrderBook.ts');
     expect(compatibility).toContain('extends SharedSynchronizedOrderBook');
     for (const forbidden of ['diffBuffer', 'syncFromSnapshot', 'handleDiff', 'applyDiff']) {
       expect(compatibility).not.toContain(forbidden);

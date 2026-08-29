@@ -39,7 +39,7 @@ describe('Phase 3 architecture contracts', () => {
     const forbidden = new Set([resolve(repoRoot, 'src/app/ports/Exchange.ts')]);
     const violations: string[] = [];
     for (const fileName of [
-      ...sourceFiles('src/domain/strategies/micro-burst'),
+      ...sourceFiles('src/strategies/micro-burst/domain'),
       ...sourceFiles('src/app/micro-burst'),
     ]) {
       for (const target of resolvedImports(fileName)) {
@@ -49,7 +49,7 @@ describe('Phase 3 architecture contracts', () => {
     expect(violations).toEqual([]);
     expect(
       readFileSync(
-        resolve(repoRoot, 'src/domain/strategies/micro-burst/MicroBurstRuntime.ts'),
+        resolve(repoRoot, 'src/strategies/micro-burst/domain/MicroBurstRuntime.ts'),
         'utf8',
       ),
     ).toContain('exchange: MarketDataPort');
@@ -59,7 +59,7 @@ describe('Phase 3 architecture contracts', () => {
     const source = readFileSync(resolve(repoRoot, 'src/app/ports/MarketData.ts'), 'utf8');
     expect(source).not.toMatch(/micro-burst|MicroBurst/);
     expect(resolvedImports(resolve(repoRoot, 'src/app/ports/MarketData.ts'))).not.toContain(
-      resolve(repoRoot, 'src/domain/strategies/micro-burst/MicroBurstMarketDataTypes.ts'),
+      resolve(repoRoot, 'src/strategies/micro-burst/domain/MicroBurstMarketDataTypes.ts'),
     );
   });
 
@@ -68,6 +68,7 @@ describe('Phase 3 architecture contracts', () => {
       resolve(repoRoot, 'src/domain/strategies/aegis'),
       resolve(repoRoot, 'src/domain/strategies/momentum-ride'),
       resolve(repoRoot, 'src/domain/strategies/micro-burst'),
+      resolve(repoRoot, 'src/strategies/micro-burst'),
       resolve(repoRoot, 'src/app/micro-burst'),
       resolve(repoRoot, 'src/app/execution'),
       resolve(repoRoot, 'src/app/services/TradingService.ts'),
@@ -75,6 +76,7 @@ describe('Phase 3 architecture contracts', () => {
       resolve(repoRoot, 'src/app/position'),
       resolve(repoRoot, 'src/domain/services'),
       resolve(repoRoot, 'src/domain/risk'),
+      resolve(repoRoot, 'src/core/risk'),
     ];
     const forbiddenNames = [
       'TradingExchangePort',
