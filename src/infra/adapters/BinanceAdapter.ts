@@ -98,10 +98,7 @@ function isUnknownOrderError(error: unknown): boolean {
 }
 
 import { WebSocketManager } from './WebSocketManager';
-import {
-  BinanceDepthDiffEvent,
-  BinanceDepthSnapshot,
-} from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
+import type { BinanceDepthDiffEvent, BinanceDepthSnapshot } from '../../app/ports/MarketData';
 
 export class BinanceExchange implements Exchange {
   private cli = Binance({

@@ -34,7 +34,7 @@ const baselineOperationalDigests: Record<string, string> = {
   // Phase 3: capability ports split while operational method contracts remain unchanged.
   'src/app/ports/Exchange.ts': 'cc798a15787ee6ec48871265a306eb5afa86424a3bcbbd51beb53a8d9ba454eb',
   'src/infra/adapters/BinanceAdapter.ts':
-    'fb65e620128378df5932f43e76bd1cac2983020c5bd0f474b0043fead1478592',
+    '230405089cc26ad1aa7c5e7f3ba1e25238e7238f9d53b89cfe886002b324ef8d',
   'src/infra/config/environment.ts':
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
   'src/domain/services/AegisPortfolioRiskGuard.ts':
@@ -89,7 +89,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '863f1b429d43f6e527120cafa01ef0dc82bce34d72161558e9ddf7f887236a07',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
-    '070a3a6a02c80107453e8cf7189d5f1b7f5475ab79658ecf0d00b913be9f0e80',
+    '3167516d380446cf634f288a5852293765b60e64aec613deeeb6b4add29694d4',
 };
 
 type GuardFixture = [

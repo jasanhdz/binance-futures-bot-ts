@@ -12,7 +12,7 @@ import {
 } from '../research/MicroBurstPaperTrading';
 import { MicroBurstShadowPolicyAdapter } from './MicroBurstShadowPolicyAdapter';
 import { defaultMicroBurstConfig, MicroBurstConfig } from './MicroBurstTypes';
-import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';
+import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
 import { DEFAULT_COST_SCENARIOS } from '../research/MicroBurstOutcomeTypes';
 
 const provenance = {

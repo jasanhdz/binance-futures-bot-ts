@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SynchronizedOrderBook } from './SynchronizedOrderBook';
 import {
-  BinanceDepthDiffEvent,
-  BinanceDepthSnapshot,
-  SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH,
-} from './MicroBurstMarketDataTypes';
+  type BinanceDepthDiffEvent,
+  type BinanceDepthSnapshot,
+  ORDER_BOOK_SNAPSHOT_DEPTH,
+} from '../../../app/ports/MarketData';
 
 const SYMBOL = 'ETHUSDT';
 const NOW = 1_700_000_000_000;
@@ -155,7 +155,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(101));
     expect(d.snapshotSource.getSnapshot).toHaveBeenCalledWith(
       SYMBOL,
-      SYNCHRONIZED_ORDER_BOOK_SNAPSHOT_DEPTH,
+      ORDER_BOOK_SNAPSHOT_DEPTH,
     );
   });
 

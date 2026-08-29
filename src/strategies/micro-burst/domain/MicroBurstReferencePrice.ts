@@ -1,5 +1,13 @@
 import { Logger } from '../../../app/ports/Logger';
-import { MicroBurstReferencePrice, ReferencePriceSource } from './MicroBurstMarketDataTypes';
+
+export type ReferencePriceSource = 'MARK_PRICE' | 'MIDPOINT' | 'BEST_BID_ASK';
+
+export interface MicroBurstReferencePrice {
+  price: number;
+  source: ReferencePriceSource;
+  observedAtMs: number;
+  isLiveRuntime: boolean;
+}
 
 const STALE_THRESHOLD_MS = 5_000;
 

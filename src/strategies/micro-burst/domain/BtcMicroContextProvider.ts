@@ -2,7 +2,7 @@ import { Side } from '../../types';
 import { Logger } from '../../../app/ports/Logger';
 import type { BenchmarkMarketData } from '../../../core/market-data/BenchmarkMarketData';
 import { BtcContext } from './MicroBurstTypes';
-import { BtcCandleObservation, BtcReturnSet } from './MicroBurstMarketDataTypes';
+import type { BtcCandleObservation, BtcReturnSet } from './MicroBurstBtcTypes';
 
 const MAX_CANDLE_BUFFER = 120;
 const STALE_THRESHOLD_MS = 120_000;

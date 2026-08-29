@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BtcMicroContextProvider } from './BtcMicroContextProvider';
-import { BtcCandleObservation } from './MicroBurstMarketDataTypes';
+import type { BtcCandleObservation } from './MicroBurstBtcTypes';
 
 const NOW_MS = 1_700_000_000_000;
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TradingService } from './TradingService';
 import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
-import { MicroBurstRuntimeConfig } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
+import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 
 function microBurstConfig(mode: 'OFF' | 'SHADOW' | 'LIVE'): MicroBurstRuntimeConfig {
   return {

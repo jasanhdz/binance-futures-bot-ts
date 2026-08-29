@@ -11,7 +11,7 @@ import {
   OrderBookSnapshot,
   defaultMicroBurstConfig,
 } from './MicroBurstTypes';
-import { MicroBurstReferencePrice } from './MicroBurstMarketDataTypes';
+import type { MicroBurstReferencePrice } from './MicroBurstReferencePrice';
 import { analyzeBookPressure, isBookHealthy } from './MicroBurstBookPressureAnalyzer';
 import { hasBtcConflict } from './MicroBurstBtcContext';
 import { analyzeMicroMomentum } from './MicroBurstMomentumAnalyzer';

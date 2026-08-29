@@ -32,7 +32,7 @@ import {
   AegisRegimeSource,
   DEFAULT_AEGIS_REGIME_GUARD_CONFIG,
 } from '../../domain/services/AegisRegimeGuard';
-import { MicroBurstRuntimeConfig } from '../../domain/strategies/micro-burst/MicroBurstMarketDataTypes';
+import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import { parseMicroBurstConfig } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -10,12 +10,12 @@ import {
 } from './MicroBurstReferencePrice';
 import { MicroBurstShadowEvaluator } from '../application/MicroBurstShadowEvaluator';
 import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
-import {
-  MicroBurstRuntimeConfig,
-  MicroBurstShadowEvaluationResult,
+import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';
+import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
+import type {
   AggTradeEvent,
-  SynchronizedOrderBookState,
-} from './MicroBurstMarketDataTypes';
+  OrderBookState as SynchronizedOrderBookState,
+} from '../../../app/ports/MarketData';
 import { MicroBurstStrategyContext } from './MicroBurstStrategy';
 import { MicroBurstContextBuilderDeps } from './MicroBurstContextBuilder';
 import { MicroBurstSignalJournal } from '../research/MicroBurstSignalJournal';

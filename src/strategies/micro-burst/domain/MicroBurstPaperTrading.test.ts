@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { defaultMicroBurstConfig } from './MicroBurstTypes';
 import { MicroBurstPaperQuote, MicroBurstPaperTrading } from '../research/MicroBurstPaperTrading';
-import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';
+import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
 
 const provenance = { cohortId: 'C', codeCommitSha: 'S', configHash: 'H' };
 

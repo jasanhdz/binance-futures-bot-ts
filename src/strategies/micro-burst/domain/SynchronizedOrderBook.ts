@@ -1,7 +1,7 @@
 import { SynchronizedOrderBook as SharedSynchronizedOrderBook } from '../../../core/market-data/SynchronizedOrderBook';
 import type { SynchronizedOrderBookDeps } from '../../../core/market-data/SynchronizedOrderBook';
 import type { OrderBookDepthLevel } from './MicroBurstTypes';
-import type { TemporalBookSnapshot } from './MicroBurstMarketDataTypes';
+import type { TemporalOrderBookObservation as TemporalBookSnapshot } from '../../../app/ports/MarketData';
 
 export type { SynchronizedOrderBookDeps } from '../../../core/market-data/SynchronizedOrderBook';
 

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { MicroBurstShadowEvaluationResult } from '../domain/MicroBurstMarketDataTypes';
+import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
 
 const DEFAULT_JOURNAL_DIR = 'logs/micro-burst/shadow-signals';
 const MAX_JOURNAL_ENTRIES_PER_FILE = 10_000;

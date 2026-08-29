@@ -5,7 +5,7 @@ import {
   validateOrderBookSnapshot,
 } from './MicroBurstBookPressureAnalyzer';
 import { OrderBookSnapshot } from './MicroBurstTypes';
-import { TemporalBookSnapshot } from './MicroBurstMarketDataTypes';
+import type { TemporalOrderBookObservation as TemporalBookSnapshot } from '../../../app/ports/MarketData';
 
 const SNAPSHOT_AT_MS = 1_700_000_000_000;
 

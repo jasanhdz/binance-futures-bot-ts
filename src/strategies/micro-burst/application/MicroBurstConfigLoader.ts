@@ -1,4 +1,4 @@
-import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from '../domain/MicroBurstMarketDataTypes';
+import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';
 
 const DEFAULT_SYMBOLS: Record<string, MicroBurstSymbolConfig> = {};
 

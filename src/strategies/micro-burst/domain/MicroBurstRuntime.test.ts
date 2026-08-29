@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { MicroBurstRuntime, MicroBurstRuntimeDeps } from './MicroBurstRuntime';
-import { MicroBurstRuntimeConfig } from './MicroBurstMarketDataTypes';
+import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { MicroBurstStrategyContext, MicroBurstStrategy } from './MicroBurstStrategy';
 import { createMicroBurstV1Identity } from './MicroBurstIdentity';

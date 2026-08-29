@@ -4,7 +4,7 @@ import {
   OrderBookDepthLevel,
   OrderBookSnapshot,
 } from './MicroBurstTypes';
-import { TemporalBookSnapshot } from './MicroBurstMarketDataTypes';
+import type { TemporalOrderBookObservation as TemporalBookSnapshot } from '../../../app/ports/MarketData';
 import { priceDistanceToBps } from './MicroBurstUnits';
 
 interface BookPressureOptions {

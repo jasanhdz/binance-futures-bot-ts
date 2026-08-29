@@ -107,7 +107,7 @@ export interface OrderBookSnapshot {
   status: BookDataStatus;
   lastUpdateId?: number;
   /** Causal observations strictly preceding this snapshot, supplied by the synchronized book. */
-  temporalHistory?: import('./MicroBurstMarketDataTypes').TemporalBookSnapshot[];
+  temporalHistory?: import('../../../app/ports/MarketData').TemporalOrderBookObservation[];
 }
 
 export interface MicroBurstDecisionPrice {

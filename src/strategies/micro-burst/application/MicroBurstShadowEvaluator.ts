@@ -8,12 +8,11 @@ import {
   MicroBurstContextBuilderDeps,
 } from '../domain/MicroBurstContextBuilder';
 import { MicroBurstDuplicateSignalGuard } from '../domain/MicroBurstDuplicateSignalGuard';
+import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';
 import {
   MicroBurstShadowEvaluationResult,
   MicroBurstShadowTelemetryLog,
-  MicroBurstSymbolConfig,
-  MicroBurstRuntimeConfig,
-} from '../domain/MicroBurstMarketDataTypes';
+} from './MicroBurstShadowEvaluationTypes';
 import { priceDistanceToBps } from '../domain/MicroBurstUnits';
 import { defaultMicroBurstConfig } from '../domain/MicroBurstTypes';
 import { MICRO_BURST_V1_VERSION } from '../domain/MicroBurstIdentity';
