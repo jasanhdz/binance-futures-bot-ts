@@ -1,3 +1,4 @@
+import type { StrategyDecisionObservationHook } from '../blackbox/StrategyDecisionObservation';
 import {
   StrategyDecisionEnvelope,
   StrategyEvaluationResult,
@@ -7,6 +8,8 @@ import { StrategyId } from './StrategyIdentity';
 
 export class StrategyRouter<TContext = unknown> {
   private readonly strategies = new Map<StrategyId, EntryStrategy<TContext>>();
+
+  constructor(private readonly observationHook?: StrategyDecisionObservationHook<TContext>) {}
 
   register(strategy: EntryStrategy<TContext>): void {
     const strategyId = strategy.identity.strategyId;
@@ -34,8 +37,11 @@ export class StrategyRouter<TContext = unknown> {
       throw new Error(`STRATEGY_NOT_REGISTERED:${strategyId}`);
     }
 
+    const snapshot = await this.captureObservation(strategyId, context);
+
+    let envelope: StrategyDecisionEnvelope;
     if (strategy.mode === 'OFF') {
-      return {
+      envelope = {
         identity: strategy.identity,
         mode: strategy.mode,
         symbol: extractSymbol(context),
@@ -44,16 +50,42 @@ export class StrategyRouter<TContext = unknown> {
         reason: 'strategy_off',
         diagnostics: { routerBlocked: true },
       };
+    } else {
+      const decision = await strategy.evaluate(context);
+      validateDecision(decision);
+      envelope = {
+        identity: strategy.identity,
+        mode: strategy.mode,
+        ...decision,
+      };
     }
 
-    const decision = await strategy.evaluate(context);
-    validateDecision(decision);
+    await this.persistObservation(snapshot, envelope);
+    return envelope;
+  }
 
-    return {
-      identity: strategy.identity,
-      mode: strategy.mode,
-      ...decision,
-    };
+  private async captureObservation(
+    strategyId: StrategyId,
+    context: TContext,
+  ): Promise<Awaited<ReturnType<StrategyDecisionObservationHook<TContext>['beforeEvaluation']>>> {
+    if (!this.observationHook) return null;
+    try {
+      return await this.observationHook.beforeEvaluation(strategyId, context);
+    } catch {
+      return null;
+    }
+  }
+
+  private async persistObservation(
+    snapshot: Awaited<ReturnType<StrategyDecisionObservationHook<TContext>['beforeEvaluation']>>,
+    envelope: StrategyDecisionEnvelope,
+  ): Promise<void> {
+    if (!this.observationHook || !snapshot) return;
+    try {
+      await this.observationHook.afterEvaluation(snapshot, envelope);
+    } catch {
+      // Phase T is observational. Evidence failures must not alter trading semantics.
+    }
   }
 }
 
