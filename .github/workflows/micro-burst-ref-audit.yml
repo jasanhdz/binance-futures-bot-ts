@@ -1,0 +1,16 @@
+name: Micro Burst Ref Audit
+on:
+  push:
+    branches: [work/micro-burst-rider-v1-20260826]
+    paths: ['.github/workflows/micro-burst-ref-audit.yml']
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          for n in MicroBurstAggTradeBuffer MicroBurstConfigLoader MicroBurstOutcomeEngine MicroBurstOutcomeTypes MicroBurstPaperTrading MicroBurstExitPolicy MicroBurstMarketDataTypes MicroBurstTypes BtcMicroContextProvider; do
+            echo "===== $n ====="
+            grep -RIn --exclude-dir=node_modules --exclude-dir=.git --include='*.ts' "$n" src tools scripts 2>/dev/null || true
+          done
