@@ -2,10 +2,17 @@ import type { MarketDataPort } from '../../../app/ports/MarketData';
 import type { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import type { StrategyDecisionEnvelope } from '../../../core/strategy/StrategyDecision';
 import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
-import { MarketSnapshotProvider, type MarketSnapshotV1 } from '../../../core/market-data/MarketSnapshotProvider';
+import {
+  MarketSnapshotProvider,
+  type MarketSnapshotV1,
+} from '../../../core/market-data/MarketSnapshotProvider';
 import { OrderBookQuoteProvider } from '../../../core/market-data/OrderBookQuoteProvider';
 import { ComposedBenchmarkMarketDataPort } from '../../../core/market-data/BenchmarkMarketData';
-import { StrategyDecisionBlackBox, type DecisionEvidenceSink, type MarketSnapshotEvidenceSink } from '../../../core/blackbox/StrategyDecisionBlackBox';
+import {
+  StrategyDecisionBlackBox,
+  type DecisionEvidenceSink,
+  type MarketSnapshotEvidenceSink,
+} from '../../../core/blackbox/StrategyDecisionBlackBox';
 import type { SharedMarketDataRuntime } from '../../../app/services/SharedMarketDataRuntime';
 import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
 import type { AggTradeLease } from '../../../core/market-data/AggTradeDataPlane';
@@ -62,7 +69,10 @@ export class AegisBlackBoxObservation {
         this.bookLeases.set(symbol, this.deps.sharedMarketData.orderBookDataPlane.acquire(symbol));
       }
       if (!this.aggTradeLeases.has(symbol)) {
-        this.aggTradeLeases.set(symbol, this.deps.sharedMarketData.aggTradeDataPlane.acquire(symbol));
+        this.aggTradeLeases.set(
+          symbol,
+          this.deps.sharedMarketData.aggTradeDataPlane.acquire(symbol),
+        );
       }
     }
   }

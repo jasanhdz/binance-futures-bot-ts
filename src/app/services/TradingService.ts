@@ -142,6 +142,7 @@ import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBu
 import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvidenceSink';
 import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
 import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
+import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -272,6 +273,7 @@ export class TradingService {
   private readonly microBurstIdentity: StrategyIdentity;
   private microBurstRuntime: MicroBurstRuntime | null = null;
   private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;
+  private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;
   private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
   private stopPromise: Promise<void> | null = null;
 
@@ -1665,6 +1667,19 @@ export class TradingService {
       logger: this.deps.logger,
       clock: { now: () => Date.now() },
     });
+    this.aegisBlackBoxObservation ??= new AegisBlackBoxObservation({
+      exchange: this.deps.exchange,
+      sharedMarketData: this.sharedMarketDataRuntime,
+      identity: this.aegisStrategyIdentity,
+      clock: { now: () => Date.now() },
+      decisionSink: new JsonlDecisionEvidenceSink(
+        'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',
+      ),
+      marketSnapshotSink: new JsonlMarketSnapshotSink(
+        'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
+      ),
+    });
+    this.aegisBlackBoxObservation.start(startupSymbols);
     if (mbConfig.enabled && mbConfig.mode !== 'OFF') {
       try {
         const provenance = this.getMicroBurstProvenance(mbConfig);
@@ -1823,6 +1838,8 @@ export class TradingService {
     this.deps.logger.info('Aegis bot stopped');
     if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
     this.stopPromise = (async () => {
+      this.aegisBlackBoxObservation?.close();
+      this.aegisBlackBoxObservation = null;
       await microBurstRuntime?.stop();
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
       await Promise.all(stores.map((store) => store.flush?.()));
@@ -3676,6 +3693,7 @@ export class TradingService {
           metadata: phaseOGuardMetadata,
         });
       }
+      const aegisBlackBoxSnapshot = await this.aegisBlackBoxObservation?.capture(symbol);
       const entryDecision = await AegisEntryGuardOrchestrator.evaluate(entryContext, entryPolicy);
       const consensusConfig = this.getAegisTurboYamlConfig()?.entry_safety_consensus;
       const entrySafetyConsensus = evaluateAegisEntrySafetyConsensus({
@@ -3691,6 +3709,25 @@ export class TradingService {
                 consensusConfig.require_valid_regime_for_critical_long,
             }
           : undefined,
+      });
+      await this.aegisBlackBoxObservation?.observe(aegisBlackBoxSnapshot ?? null, {
+        symbol,
+        timestamp: entryContext.operational.timestamp,
+        side,
+        allowed: entryDecision.shouldOpen && entrySafetyConsensus.allowed,
+        reason: entrySafetyConsensus.allowed
+          ? entryDecision.finalReason
+          : entrySafetyConsensus.reason,
+        confidence: this.finiteNumber(signal.confidence) ? Number(signal.confidence) : undefined,
+        requestedRisk: entryDecision.adjustedPositionFraction,
+        diagnostics: {
+          signalId,
+          tradeId,
+          entryPolicy: entryDecision.metadata,
+          entryPolicyTrace: entryDecision.trace,
+          entrySafetyConsensus,
+          observationalOnly: true,
+        },
       });
       const shortGateDecision = entryDecision.decisions.shortGate;
       const entryQualityDecision = entryDecision.decisions.entryQuality;
