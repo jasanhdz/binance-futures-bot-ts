@@ -68,3 +68,5 @@ jobs:
           fi
           git commit -m "refactor: finalize strategy architecture convergence"
           git push origin HEAD:work/architecture-convergence-final-20260829
+
+# Validation trigger: current architecture convergence HEAD
