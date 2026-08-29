@@ -2,8 +2,8 @@ import {
   CURRENT_BRAIN_BUNDLE_SHA256,
   CURRENT_BRAIN_CONFIGURATION_SHA256,
   CURRENT_BRAIN_MODEL_ID,
-} from '../../services/CurrentBrainCanonicalDecision';
-import { StrategyIdentity } from '../../strategy/StrategyIdentity';
+} from './CurrentBrainCanonicalDecision';
+import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 
 /**
  * Current Aegis scientific artifacts are hash-bound, but the migrated TS

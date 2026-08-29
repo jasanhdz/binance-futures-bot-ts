@@ -1,5 +1,5 @@
-import { StrategyIdentity } from '../../strategy/StrategyIdentity';
-import { MAIN_STACKING_MOMENTUM_AUTHORITY } from '../../services/MainStackingMomentumStrategy';
+import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
+import { MAIN_STACKING_MOMENTUM_AUTHORITY } from './MainStackingMomentumStrategy';
 
 const AUTHORITY_PREFIX = 'origin/main@';
 

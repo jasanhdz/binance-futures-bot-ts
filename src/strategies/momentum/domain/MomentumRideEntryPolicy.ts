@@ -1,10 +1,10 @@
-import { Candle, Side } from '../../types';
-import { StrategyEvaluationResult } from '../../strategy/StrategyDecision';
-import { evaluateMainStackingMomentum } from '../../services/MainStackingMomentumStrategy';
+import { Candle, Side } from '../../../core/types';
+import { StrategyEvaluationResult } from '../../../core/strategy/StrategyDecision';
+import { evaluateMainStackingMomentum } from './MainStackingMomentumStrategy';
 import {
   evaluateSharedEntrySafety,
   SharedEntrySafetyContext,
-} from '../../risk/SharedEntrySafetyGate';
+} from '../../../core/risk/SharedEntrySafetyGate';
 
 export type MomentumLiquidityStressStatus = 'NO_DATA' | 'FRESH' | 'STALE';
 export const MOMENTUM_LIQUIDITY_INPUT_VERSION = 'DEPTH20_PARTIAL_V1' as const;
