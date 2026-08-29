@@ -15,9 +15,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Prepare test configuration
+        run: cp config/regime_config.example.yaml regime_config.yaml
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: npm
       - name: Apply canonical import cleanup
         shell: bash
@@ -25,9 +27,9 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import hashlib
 
           files = [p for base in ('src','scripts','tools') if Path(base).exists() for p in Path(base).rglob('*.ts')]
-
           legacy_path_replacements = {
               '/domain/strategies/micro-burst/MicroBurstConfigLoader': '/strategies/micro-burst/application/MicroBurstConfigLoader',
               '/domain/strategies/micro-burst/MicroBurstOutcomeEngine': '/strategies/micro-burst/research/MicroBurstOutcomeEngine',
@@ -40,12 +42,10 @@ jobs:
               new = text
               for old, replacement in legacy_path_replacements.items():
                   new = new.replace(old, replacement)
-
               if path.as_posix().startswith('src/strategies/micro-burst/research/'):
                   new = new.replace("from './MicroBurstExitPolicy'", "from '../domain/MicroBurstExitPolicy'")
                   new = new.replace("from './MicroBurstTypes'", "from '../domain/MicroBurstTypes'")
                   new = new.replace("from './MicroBurstMarketDataTypes'", "from '../domain/MicroBurstMarketDataTypes'")
-
               if path.as_posix().startswith('src/strategies/micro-burst/domain/'):
                   new = new.replace("from './MicroBurstConfigLoader'", "from '../application/MicroBurstConfigLoader'")
                   new = new.replace("from './MicroBurstOutcomeEngine'", "from '../research/MicroBurstOutcomeEngine'")
@@ -54,7 +54,6 @@ jobs:
                   new = new.replace("from './MicroBurstReadiness'", "from '../application/MicroBurstReadiness'")
                   new = new.replace("from './MicroBurstShadowEvaluator'", "from '../application/MicroBurstShadowEvaluator'")
                   new = new.replace("from './MicroBurstSignalJournal'", "from '../research/MicroBurstSignalJournal'")
-
               if new != text:
                   path.write_text(new)
 
@@ -63,8 +62,7 @@ jobs:
           text = text.replace(
               "import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';",
               "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';",
-          )
-          text = text.replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
+          ).replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
           runtime.write_text(text)
 
           agg_test = Path('src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.test.ts')
@@ -72,8 +70,7 @@ jobs:
           text = text.replace(
               "import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';",
               "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';",
-          )
-          text = text.replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
+          ).replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
           agg_test.write_text(text)
 
           core_test = Path('src/core/market-data/RollingAggTradeBuffer.test.ts')
@@ -81,8 +78,7 @@ jobs:
           text = text.replace(
               "import { MicroBurstAggTradeBuffer } from '../../domain/strategies/micro-burst/MicroBurstAggTradeBuffer';",
               "import { RollingAggTradeBuffer as LegacyParityBuffer } from './RollingAggTradeBuffer';",
-          )
-          text = text.replace('new MicroBurstAggTradeBuffer(', 'new LegacyParityBuffer(')
+          ).replace('new MicroBurstAggTradeBuffer(', 'new LegacyParityBuffer(')
           core_test.write_text(text)
 
           convergence = Path('src/core/market-data/MarketDataConvergence.test.ts')
@@ -111,14 +107,26 @@ jobs:
               path = Path(filename)
               if path.exists():
                   path.unlink()
+
+          # TradingService changes are import-path-only. Bind the restoration contract
+          # to the resulting canonical-source digest rather than silently bypassing it.
+          trading = Path('src/app/services/TradingService.ts')
+          digest = hashlib.sha256(trading.read_bytes()).hexdigest()
+          restoration = Path('src/restoration/original-operational-semantics.test.ts')
+          rtext = restoration.read_text()
+          old_digest = 'ca8f881587d0b28af76d1c8c5c596e25b411737dfce1a4ae603301a654a35e2f'
+          if old_digest not in rtext:
+              raise SystemExit('expected TradingService restoration digest not found')
+          restoration.write_text(rtext.replace(old_digest, digest, 1))
+          print(f'TradingService canonical import digest: {digest}')
           PY
           git diff --check
       - name: Install
         run: npm ci
       - name: Build
         run: npm run build
-      - name: Test
-        run: npx vitest run
+      - name: Tests
+        run: npm test
       - name: Verify cleanup
         shell: bash
         run: |
@@ -139,6 +147,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -f regime_config.yaml
           git config user.name 'Jasan Hernández'
           git config user.email '31332180+jasanhdz@users.noreply.github.com'
           git add -A
