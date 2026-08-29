@@ -74,10 +74,11 @@ export function createMicroBurstBlackBoxObservation(
         orderBookFeatures: true,
         aggTrade: true,
         candles: { interval: '1m', limit: 30 },
+        // The Micro Burst runtime always owns benchmark candles, but it only owns a BTC
+        // order-book lease when BTCUSDT itself is enabled. Do not create a hidden feed merely
+        // for evidence collection; optional benchmark depth can be added by shared composition later.
         benchmark: {
           descriptor: { id: 'PRIMARY_CRYPTO_BENCHMARK', symbol: 'BTCUSDT' },
-          quote: true,
-          orderBookFeatures: true,
           candles: { interval: '1m', limit: 30 },
         },
       };
