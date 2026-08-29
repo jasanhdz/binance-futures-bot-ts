@@ -7,7 +7,7 @@ import {
   AegisRegimeGuardConfig,
   AegisRegimeLabel,
   DEFAULT_AEGIS_REGIME_GUARD_CONFIG,
-} from '../../domain/services/AegisRegimeGuard';
+} from '../../strategies/aegis/domain/services/AegisRegimeGuard';
 import {
   AegisTurboSignalHistoryInput,
   AegisTurboTradeCloseInput,
@@ -15,7 +15,7 @@ import {
   AegisTurboTradeOpenInput,
   AegisTurboVotes,
 } from '../../infra/logging/AegisTurboHistoryLogger';
-import { Side } from '../../domain/types';
+import { Side } from '../../core/types';
 
 export const DEFAULT_REGIME_AUDIT_SYMBOLS = [
   'ETHUSDT',

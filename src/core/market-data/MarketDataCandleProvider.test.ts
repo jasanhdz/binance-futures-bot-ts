@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MarketDataCandleProvider } from './MarketDataCandleProvider';
-import type { Candle } from '../../domain/types';
+import type { Candle } from '../types';
 
 const NOW_MS = 1_700_000_000_000;
 

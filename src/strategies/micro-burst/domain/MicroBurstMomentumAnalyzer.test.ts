@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Candle } from '../../types';
+import { Candle } from '../../../core/types';
 import { analyzeMicroMomentum } from './MicroBurstMomentumAnalyzer';
 
 function makeCandle(overrides: Partial<Candle> & { index?: number }): Candle {

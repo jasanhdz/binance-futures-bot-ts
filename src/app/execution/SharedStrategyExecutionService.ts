@@ -10,7 +10,7 @@ import {
   StrategyExecutionIntent,
   StrategyExecutionPort,
   StrategyExecutionResult,
-} from '../../domain/strategy/StrategyExecution';
+} from '../../core/strategy/StrategyExecution';
 
 export interface SharedStrategyExecutionConfig {
   feeBufferPct: number;

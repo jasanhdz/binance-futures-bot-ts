@@ -4,7 +4,7 @@
 //   bps:           10 = 0.1%
 // ───────────────────────────────────────────────────────────
 
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 
 // ── Shadow Signal Snapshot ─────────────────────────────────
 

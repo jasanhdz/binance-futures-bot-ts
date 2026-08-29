@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AegisMLService } from './AegisMLService';
-import { AegisPredictionResponse } from '../../domain/services/AegisStrategy';
+import { AegisPredictionResponse } from '../../strategies/aegis/domain/AegisStrategy';
 
 describe('AegisMLService', () => {
   it('returns a PASS Aegis signal and preserves Aegis metadata', async () => {

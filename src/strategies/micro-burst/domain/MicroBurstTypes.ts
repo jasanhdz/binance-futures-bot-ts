@@ -1,5 +1,5 @@
-import { Candle, Side } from '../../types';
-import { StrategyIdentity } from '../../strategy/StrategyIdentity';
+import { Candle, Side } from '../../../core/types';
+import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 export type { OrderBookDepthLevel } from '../../../app/ports/MarketData';
 import type { OrderBookDepthLevel } from '../../../app/ports/MarketData';
 

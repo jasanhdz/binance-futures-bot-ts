@@ -1,4 +1,4 @@
-import { Candle, Side } from '../../types';
+import { Candle, Side } from '../../../core/types';
 import { MicroMomentumSignal } from './MicroBurstTypes';
 
 function linearRegressionSlope(values: number[]): number {

@@ -1,7 +1,7 @@
 import { MicroBurstPaperPosition } from '../../strategies/micro-burst/research/MicroBurstPaperTrading';
 import { DEFAULT_COST_SCENARIOS } from '../../strategies/micro-burst/research/MicroBurstOutcomeTypes';
 import { MicroBurstPaperLifecycleEvent } from '../../strategies/micro-burst/research/MicroBurstPaperTrading';
-import { MicroBurstSuppressionAccounting } from '../../app/micro-burst/MicroBurstPaperTradeJournal';
+import { MicroBurstSuppressionAccounting } from '../../strategies/micro-burst/research/MicroBurstPaperTradeJournal';
 
 export interface MicroBurstPaperTradeReport {
   sampleSize: number;

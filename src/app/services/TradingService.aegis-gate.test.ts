@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../../infra/config/environment';
-import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import { TradingService } from './TradingService';
 
 const originalConfig = {

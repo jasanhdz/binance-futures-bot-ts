@@ -10,7 +10,7 @@ const genericFiles = [
 ];
 const legacyAdapters = [
   'src/infra/logging/AegisTurboHistoryLogger.ts',
-  'src/domain/services/AegisConsecutiveLossTracker.ts',
+  'src/strategies/aegis/domain/services/AegisConsecutiveLossTracker.ts',
   'src/infra/state/AegisConsecutiveLossStateStore.ts',
 ];
 
@@ -22,7 +22,7 @@ describe('Phase 2 architecture contracts', () => {
     }
   });
 
-  it('keeps legacy compatibility adapters dependent on generic cores', () => {
+  it('keeps canonical strategy adapters dependent on generic cores', () => {
     for (const relativePath of legacyAdapters) {
       const source = readFileSync(resolve(repoRoot, relativePath), 'utf8');
       expect(source, relativePath).toMatch(

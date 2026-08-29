@@ -1,4 +1,4 @@
-import { StrategyId } from '../../domain/strategy/StrategyIdentity';
+import { StrategyId } from '../strategy/StrategyIdentity';
 
 export interface ShadowPositionKey {
   readonly strategyId: StrategyId;

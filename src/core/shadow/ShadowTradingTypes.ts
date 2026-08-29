@@ -1,5 +1,5 @@
-import { Side } from '../../domain/types';
-import { StrategyId } from '../../domain/strategy/StrategyIdentity';
+import { Side } from '../types';
+import { StrategyId } from '../strategy/StrategyIdentity';
 import { ShadowPositionKey } from './ShadowPositionKey';
 
 export type ShadowPositionState =

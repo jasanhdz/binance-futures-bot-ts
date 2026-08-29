@@ -1,7 +1,7 @@
 import path from 'path';
 import { promises as fs } from 'fs';
 import { Logger } from '../../app/ports/Logger';
-import { StrategyId } from '../../domain/strategy/StrategyIdentity';
+import { StrategyId } from '../../core/strategy/StrategyIdentity';
 
 export type HistoryStrategy = StrategyId;
 

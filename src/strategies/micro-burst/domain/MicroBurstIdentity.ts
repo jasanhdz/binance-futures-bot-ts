@@ -1,4 +1,4 @@
-import { StrategyIdentity } from '../../strategy/StrategyIdentity';
+import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import * as crypto from 'crypto';
 
 export const MICRO_BURST_V1_VERSION = '0.6.0-precohort-correctness';

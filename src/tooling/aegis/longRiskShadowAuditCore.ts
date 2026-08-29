@@ -4,7 +4,7 @@ import { isVerifiedAegisMetricRecord } from '../../infra/logging/AegisTradeOwner
 import {
   AegisLongRiskShadowAssessment,
   evaluateAegisLongRiskShadow,
-} from '../../domain/services/aegis-entry/guards/AegisLongRiskShadowGuardAdapter';
+} from '../../strategies/aegis/domain/entry/guards/AegisLongRiskShadowGuardAdapter';
 
 type JsonRecord = Record<string, any>;
 

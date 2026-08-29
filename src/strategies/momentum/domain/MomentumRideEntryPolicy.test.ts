@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Candle, Side } from '../../types';
+import { Candle, Side } from '../../../core/types';
 import {
   evaluateMomentumRideEntry,
   MomentumRideEntryContext,

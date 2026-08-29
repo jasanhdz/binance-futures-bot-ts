@@ -1,7 +1,7 @@
 import { MicroBurstExitContext, MicroBurstExitDecision, MicroBurstConfig } from '../domain/MicroBurstTypes';
 import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
 import { evaluateMicroBurstExit } from '../domain/MicroBurstExitPolicy';
-import { decimalReturnToBps } from './MicroBurstUnits';
+import { decimalReturnToBps } from '../domain/MicroBurstUnits';
 import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
 
 export type MicroBurstPaperState =

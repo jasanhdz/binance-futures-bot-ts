@@ -5,7 +5,7 @@ import {
   MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
   MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED,
 } from './MicroBurstIdentity';
-import { strategyLifecyclePolicy } from '../../strategy/StrategyLifecyclePolicy';
+import { strategyLifecyclePolicy } from '../../../core/strategy/StrategyLifecyclePolicy';
 
 const strategyDir = resolve(__dirname);
 

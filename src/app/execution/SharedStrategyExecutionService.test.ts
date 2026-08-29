@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Exchange } from '../ports/Exchange';
-import { StrategyExecutionIntent } from '../../domain/strategy/StrategyExecution';
+import { StrategyExecutionIntent } from '../../core/strategy/StrategyExecution';
 import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
 
 const identity = {

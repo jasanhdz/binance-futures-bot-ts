@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { deflateSync } from 'zlib';
 import Database from 'better-sqlite3';
-import { Side } from '../../domain/types';
+import { Side } from '../../core/types';
 import { RegimeEngineV2 } from '../../domain/services/regime-v2/RegimeEngineV2';
 import {
   RegimeEngineV2Decision,
@@ -12,7 +12,7 @@ import {
 import {
   AegisLongRiskShadowAssessment,
   evaluateAegisLongRiskShadow,
-} from '../../domain/services/aegis-entry/guards/AegisLongRiskShadowGuardAdapter';
+} from '../../strategies/aegis/domain/entry/guards/AegisLongRiskShadowGuardAdapter';
 import { isVerifiedAegisMetricRecord } from '../../infra/logging/AegisTradeOwnership';
 
 type JsonRecord = Record<string, any>;

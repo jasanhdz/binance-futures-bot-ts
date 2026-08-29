@@ -1,4 +1,4 @@
-import { Side } from '../../domain/types';
+import { Side } from '../../core/types';
 import { formatAegisReason } from './AegisReasonFormatter';
 
 type Votes = {

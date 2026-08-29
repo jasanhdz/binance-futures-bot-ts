@@ -1,4 +1,4 @@
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 import { BtcContext } from './MicroBurstTypes';
 import { decimalReturnToBps } from './MicroBurstUnits';
 

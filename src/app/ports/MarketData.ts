@@ -1,6 +1,6 @@
 /** Neutral exchange market-data payloads and capability shared by consumers. */
 
-import { Candle } from '../../domain/types';
+import { Candle } from '../../core/types';
 
 export interface BinanceDepthDiffEvent {
   /** First update ID in this USD-M diff-depth event (Binance `U`). */

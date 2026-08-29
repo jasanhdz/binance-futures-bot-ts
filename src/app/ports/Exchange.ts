@@ -5,7 +5,7 @@
  * on the narrowest capability they actually use.
  */
 
-import { Side } from '../../domain/types';
+import { Side } from '../../core/types';
 import { MarketDataPort } from './MarketData';
 
 export interface PositionInfo {

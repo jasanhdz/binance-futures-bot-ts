@@ -1,4 +1,4 @@
-import { StrategyExecutionIntent } from '../../strategy/StrategyExecution';
+import { StrategyExecutionIntent } from '../../../core/strategy/StrategyExecution';
 import { MicroBurstApprovedEntry } from './MicroBurstTypes';
 
 export function createMicroBurstExecutionIntent(

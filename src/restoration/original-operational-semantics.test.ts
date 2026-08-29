@@ -7,8 +7,8 @@ import {
   AegisMicroLiveGateConfig,
   AegisMicroLiveGateContext,
   shouldEnterAegisTurboMicroLive,
-} from '../domain/services/AegisMicroLiveGate';
-import { AegisPortfolioRiskGuard } from '../domain/services/AegisPortfolioRiskGuard';
+} from '../strategies/aegis/domain/services/AegisMicroLiveGate';
+import { AegisPortfolioRiskGuard } from '../strategies/aegis/domain/services/AegisPortfolioRiskGuard';
 import {
   CURRENT_BRAIN_AUTHORITY,
   CURRENT_BRAIN_BUNDLE_SHA256,
@@ -18,7 +18,7 @@ import {
   CURRENT_BRAIN_FEATURE_SCHEMA,
   CURRENT_BRAIN_MODEL_ID,
   CURRENT_BRAIN_MODEL_SHA256,
-} from '../domain/services/CurrentBrainCanonicalDecision';
+} from '../strategies/aegis/domain/CurrentBrainCanonicalDecision';
 
 const BASELINE = '7f47abd216e7ac419e3d54006ce945bafcc83d90';
 const repoRoot = resolve(__dirname, '../..');
@@ -32,17 +32,17 @@ function sha256(path: string): string {
 const baselineOperationalDigests: Record<string, string> = {
   'src/main.ts': 'e289a662c2b6ac2b4da4e9f7ded993d7fb551ad908bc18f5c44ec1ab226ae119',
   // Phase 3: capability ports split while operational method contracts remain unchanged.
-  'src/app/ports/Exchange.ts': 'cc798a15787ee6ec48871265a306eb5afa86424a3bcbbd51beb53a8d9ba454eb',
+  'src/app/ports/Exchange.ts': 'a90246d4ac1c015c6a6d6ba5f8d00fa09bda601360227928fc77c6e6f65d84f5',
   'src/infra/adapters/BinanceAdapter.ts':
-    '230405089cc26ad1aa7c5e7f3ba1e25238e7238f9d53b89cfe886002b324ef8d',
+    'd0a73dad2dcbb48511772a6e3764de4f07b17e52e4758f4fa5a7ce56f6b3e69f',
   'src/infra/config/environment.ts':
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
-  'src/domain/services/AegisPortfolioRiskGuard.ts':
-    '3715eded7eed195a8757df99813cccfb020ad14f5ee041764f998c122d93c535',
+  'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
+    'acf0dcf1583c9b72bef06ffaeb932abe04a3f9ea803220f725cec97d733b8b2d',
   'src/domain/services/ProfitGuardian.ts':
     'f95512ac4ecd82449dff30a1f63441f7297e57adf8b58ca32d8cca5409aa62fd',
   'src/infra/logging/FsStateStore.ts':
-    '12008748b58eb6212068374b6964bc403cc72f7f5e7035275a578da1855b670a',
+    'fed954908b5b5fb6c80079a8aadc6d01651cdab509abea7e2466984803c6ee07',
 };
 
 // Phase 1 owner-authorized architecture checkpoint. These are operational
@@ -53,43 +53,43 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   'src/app/services/TradingService.ts':
-    'c06282d72b2f85382e4fb31d1c4992e072333db2bd8d8ea5fe8048904e3a0dd7',
+    '876fe5b45caa88abeaa19084c4fc94ccc396042cdddc73623bc9c3ed8c652052',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
-    '04de060b6df7ac6159dd7bc7dccb447eaf8efb0802ed5be8f01677a17b35137d',
-  'src/domain/index.ts': '0678dbf15543c538cd1654333ac0a3546486e3bdfb499ae1dbd28e94204109a5',
-  'src/domain/services/AegisStrategy.ts':
+    '50f7637f38a66b07cd8a9d2e9d423c89fb7c13fdec4b7a045b476abf93fec31c',
+  'src/domain/index.ts': 'f101e9903e71c0a84118c09a9a0a0809dbe55fb72513c3785fa108a777443f63',
+  'src/strategies/aegis/domain/AegisStrategy.ts':
     '13ed0714ec4c7e00cf9814d1761e478b0dd349e4f024a81ae3277395202cc51f',
-  'src/domain/services/AegisOperationalDispositionShadow.ts':
-    '57c414c834890fec401ddf0cff66dbc9ee66767cf473aee2cf93f65e5d2c176c',
-  'src/domain/services/AegisExitEyeV2Shadow.ts':
+  'src/strategies/aegis/domain/services/AegisOperationalDispositionShadow.ts':
+    '56a91f34c47d934259b27a5d4acaa1f06811c2eeef0191f0bcb3801d948b1756',
+  'src/strategies/aegis/domain/services/AegisExitEyeV2Shadow.ts':
     'c42df7df36033370442b24d0c49ccbfaf40745cbbe25380c508536f34f084172',
-  'src/domain/services/AegisCleanEntryGuard.ts':
+  'src/strategies/aegis/domain/services/AegisCleanEntryGuard.ts':
     '87c20efe19e2a36816be9ffa2951be5ed5c023b112d5865531f1296e5c144e8c',
-  'src/domain/services/AegisEntryQualityGate.ts':
+  'src/strategies/aegis/domain/services/AegisEntryQualityGate.ts':
     'a3703fb5739eb59715ade631befa0a4ed08871b0e7c7e652effbfd003ec9f18f',
-  'src/domain/services/AegisMicroLiveGate.ts':
-    'fe7ed11ac9256bf0fd659eaf486e0930bf66a6762eced7a08f24fff397dedffd',
-  'src/domain/services/AegisProbeMode.ts':
+  'src/strategies/aegis/domain/services/AegisMicroLiveGate.ts':
+    '7ea25e0988fd311a9e8241323ccdfdcc0962828b0ee4dfe152722abdd66d3a14',
+  'src/strategies/aegis/domain/services/AegisProbeMode.ts':
     'f16c3b1f2328acaa49aa8081eb624ab96f8d16114dcc5dd89cd419dcca50926b',
-  'src/domain/services/AegisRegimeGuard.ts':
-    '077915c9c8d42b9c7d959ef58d92d251f08c68534268cf15b8b3083c65dbc790',
-  'src/domain/services/AegisShortGate.ts':
-    '2faeb8de4776ae93402d20a2868def42fca31aeffa3a92df415f056216ed5009',
-  'src/domain/services/CurrentBrainCanonicalDecision.ts':
+  'src/strategies/aegis/domain/services/AegisRegimeGuard.ts':
+    '45275cf077d32ec12535b428f1534181ed10cfaa1e702ddfb2045b66e320437a',
+  'src/strategies/aegis/domain/services/AegisShortGate.ts':
+    '5e2ad3ffd093575c60e1efcb500135d9e4fa5812b0b7747a86a359a76345f9b6',
+  'src/strategies/aegis/domain/CurrentBrainCanonicalDecision.ts':
     'a32681b0c93eb9990ec942013196c213cb0487922e4045baa9ab13d2979b2bca',
-  'src/domain/services/aegis-entry/AegisEntryDecisionTypes.ts':
-    'd2da5d012103cd6aaf55168766c735733f980bc8a0f09a073ae70ef5e5a36acb',
-  'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts':
+  'src/strategies/aegis/domain/entry/AegisEntryDecisionTypes.ts':
+    '00910364266e2f25a98822b51720e24b63408a0776aa5e1abc38bdb8c78eda3b',
+  'src/strategies/aegis/domain/entry/AegisEntryGuardOrchestrator.ts':
     '208dd77c73729451e41abbdb5c072baac1181b369f34ed72e80b89a9b4afe59a',
-  'src/domain/services/aegis-entry/guards/ProbeModeGuardAdapter.ts':
-    'fb3932297e23fa7f86441080d0975135b13d1ceab348544ac0201ad8ee9c270a',
-  'src/domain/services/aegis-entry/guards/ShortGateGuardAdapter.ts':
-    '863f1b429d43f6e527120cafa01ef0dc82bce34d72161558e9ddf7f887236a07',
+  'src/strategies/aegis/domain/entry/guards/ProbeModeGuardAdapter.ts':
+    '79003b07caf40b6d63f9c47d1193bbc026c236ccc46566073ae2a9fe934d5642',
+  'src/strategies/aegis/domain/entry/guards/ShortGateGuardAdapter.ts':
+    '9cc230e70c42162798356bda4dd3db971d5c9d2bab457799aabf92bb453ce370',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
-    '3167516d380446cf634f288a5852293765b60e64aec613deeeb6b4add29694d4',
+    '9dd24581a9964bba54aed2a124a2e56f8e497bc1ae59af463e27103cb21f1d53',
 };
 
 type GuardFixture = [

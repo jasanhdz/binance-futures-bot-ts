@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { MLService } from '../../app/ports/MLService';
-import { AegisPredictionResponse } from '../../domain/services/AegisStrategy';
+import { AegisPredictionResponse } from '../../strategies/aegis/domain/AegisStrategy';
 import { CONFIG } from '../config/environment';
 
 export class AegisMLServiceClient {

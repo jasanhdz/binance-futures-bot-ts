@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../../infra/config/environment';
-import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
-import { DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG } from '../../domain/services/AegisCleanEntryGuard';
+import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
+import { DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG } from '../../strategies/aegis/domain/services/AegisCleanEntryGuard';
 import {
   CURRENT_BRAIN_AUTHORITY,
   CURRENT_BRAIN_BUNDLE_SHA256,
@@ -11,11 +11,11 @@ import {
   CURRENT_BRAIN_FEATURE_SCHEMA,
   CURRENT_BRAIN_MODEL_ID,
   CURRENT_BRAIN_MODEL_SHA256,
-} from '../../domain/services/CurrentBrainCanonicalDecision';
+} from '../../strategies/aegis/domain/CurrentBrainCanonicalDecision';
 import { TradingService } from './TradingService';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
-import { AegisMomentumRideRuntimeConfig } from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
-import { E4TailRiskGuardAdapter } from '../../domain/services/aegis-entry/guards/E4TailRiskGuardAdapter';
+import { AegisMomentumRideRuntimeConfig } from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
+import { E4TailRiskGuardAdapter } from '../../strategies/aegis/domain/entry/guards/E4TailRiskGuardAdapter';
 
 const originalConfig = { ...CONFIG };
 

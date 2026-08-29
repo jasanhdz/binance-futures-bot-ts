@@ -1,4 +1,4 @@
-import type { Candle } from '../../domain/types';
+import type { Candle } from '../types';
 import type {
   CandleGapCheck,
   CandleHealth,

@@ -4,8 +4,8 @@ import {
   GuardianConfig,
 } from '../../domain/services/ProfitGuardian';
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
-import { StrategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
-import { BotState, Side } from '../../domain/types';
+import { StrategyLifecyclePolicy } from '../../core/strategy/StrategyLifecyclePolicy';
+import { BotState, Side } from '../../core/types';
 import { PositionInfo, SymbolFilters, TradingExchangePort } from '../ports/Exchange';
 import { Logger } from '../ports/Logger';
 import { Notifier } from '../ports/Notifier';

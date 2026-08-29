@@ -8,7 +8,7 @@ import {
   FundingSnapshot,
   BasisSnapshot,
 } from '../../app/ports/Exchange';
-import { Candle, Side } from '../../domain/types';
+import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config/environment';
 import { Logger } from '../../app/ports/Logger';
 import { noteRateLimitFromError } from './rate-limit';

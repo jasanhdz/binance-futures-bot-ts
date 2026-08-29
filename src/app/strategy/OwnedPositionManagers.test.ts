@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_GUARDIAN_CONFIG } from '../../domain/services/ProfitGuardian';
-import { createUnfrozenStrategyIdentity } from '../../domain/strategy/StrategyIdentity';
-import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
-import { BotState } from '../../domain/types';
+import { createUnfrozenStrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import { strategyLifecyclePolicy } from '../../core/strategy/StrategyLifecyclePolicy';
+import { BotState } from '../../core/types';
 import {
   StrategyPositionLifecycleCore,
   StrategyPositionLifecyclePorts,

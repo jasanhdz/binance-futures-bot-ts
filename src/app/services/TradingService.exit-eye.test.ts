@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../../infra/config/environment';
-import { BotState, Side } from '../../domain/types';
-import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import { BotState, Side } from '../../core/types';
+import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import { TradingService } from './TradingService';
 
 function oppositeSignal(action: 'LONG' | 'SHORT'): AegisTradingSignal {

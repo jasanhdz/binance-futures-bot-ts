@@ -1,4 +1,4 @@
-import { BotState } from '../../domain/types';
+import { BotState } from '../../core/types';
 export interface StateStore {
   get(): BotState;
   set(patch: Partial<BotState>): BotState;

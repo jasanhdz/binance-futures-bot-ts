@@ -1,4 +1,4 @@
-import { Candle } from '../types';
+import { Candle } from '../../core/types';
 
 /**
  * Calculates the Average True Range (ATR) over a given period.

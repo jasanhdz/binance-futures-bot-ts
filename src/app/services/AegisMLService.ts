@@ -1,5 +1,5 @@
 import { MLService } from '../ports/MLService';
-import { AegisPredictionResponse, AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import { AegisPredictionResponse, AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import { AegisMLServiceClient } from '../../infra/adapters/AegisMLAdapter';
 
 export class AegisMLService implements MLService {

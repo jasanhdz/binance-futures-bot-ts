@@ -9,8 +9,8 @@ import { isVerifiedAegisMetricRecord } from '../../infra/logging/AegisTradeOwner
 import {
   RegimeAvoidShadowEvaluator,
   RegimeAvoidShadowEvaluation,
-} from '../../domain/services/aegis-entry/guards/RegimeAvoidShadowEvaluator';
-import { Side } from '../../domain/types';
+} from '../../strategies/aegis/domain/entry/guards/RegimeAvoidShadowEvaluator';
+import { Side } from '../../core/types';
 
 export type RegimeAvoidShadowAuditOptions = {
   date?: string;

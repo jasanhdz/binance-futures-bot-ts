@@ -1,5 +1,5 @@
-import { Side } from '../../domain/types';
-import { AegisPredictionResponse, AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import { Side } from '../../core/types';
+import { AegisPredictionResponse, AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import {
   AegisAccountMessageInput,
   AegisPositionMessageInput,

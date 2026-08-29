@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { ClosedTradeOutcome } from '../../domain/services/ConsecutiveLossTracker';
-import type { AegisClosedTradeOutcome } from '../../domain/services/AegisConsecutiveLossTracker';
+import type { AegisClosedTradeOutcome } from '../../strategies/aegis/domain/services/AegisConsecutiveLossTracker';
 import { isVerifiedAegisMetricRecord } from './AegisTradeOwnership';
 
 export async function readAegisClosedTradeOutcomes(

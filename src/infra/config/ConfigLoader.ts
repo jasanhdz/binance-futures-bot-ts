@@ -10,12 +10,12 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 
 import { RegimeType, RegimeConfig } from '../../app/ports/RegimeStrategy';
-import { EventRiskMode } from '../../domain/services/AegisEventRiskOverlay';
-import { AegisDecisionEnforcementMode } from '../../domain/services/AegisDecisionEnforcement';
+import { EventRiskMode } from '../../strategies/aegis/domain/services/AegisEventRiskOverlay';
+import { AegisDecisionEnforcementMode } from '../../strategies/aegis/domain/services/AegisDecisionEnforcement';
 import {
   AegisProbeModeMode,
   AegisProbeModeRuntimeConfig,
-} from '../../domain/services/AegisProbeMode';
+} from '../../strategies/aegis/domain/services/AegisProbeMode';
 import {
   AegisEntryGuardName,
   AegisEntryGuardPolicy,
@@ -24,14 +24,14 @@ import {
   AegisMomentumRideRuntimeConfig,
   AegisMomentumRideSideRuntimeConfig,
   AegisRegimeContextRuntimeConfig,
-} from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
+} from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
 import {
   AegisRegimeGuardConfig,
   AegisRegimeGuardMode,
   AegisRegimeLabel,
   AegisRegimeSource,
   DEFAULT_AEGIS_REGIME_GUARD_CONFIG,
-} from '../../domain/services/AegisRegimeGuard';
+} from '../../strategies/aegis/domain/services/AegisRegimeGuard';
 import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import { parseMicroBurstConfig } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 

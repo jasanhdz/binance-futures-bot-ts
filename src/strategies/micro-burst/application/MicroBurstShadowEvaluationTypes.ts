@@ -1,4 +1,4 @@
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 import { BookDataStatus, BtcDataStatus } from '../domain/MicroBurstTypes';
 
 export interface MicroBurstShadowEvaluationResult {

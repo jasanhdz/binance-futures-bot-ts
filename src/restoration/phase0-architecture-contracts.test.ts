@@ -40,26 +40,19 @@ function importsOf(fileName: string): Array<{ source: string; target: string }> 
 }
 
 const concreteStrategyPrefixes = [
-  'src/domain/services/Aegis',
-  'src/domain/services/aegis-entry/',
-  'src/domain/strategies/aegis/',
-  'src/domain/strategies/momentum-ride/',
-  'src/domain/strategies/micro-burst/',
-  'src/app/micro-burst/',
+  'src/strategies/aegis/',
+  'src/strategies/momentum/',
+  'src/strategies/micro-burst/',
 ];
 
 const sharedRoots = [
-  'src/domain/strategy/',
-  'src/domain/risk/',
+  'src/core/',
   'src/app/execution/',
   'src/app/position/',
   'src/app/ports/',
 ];
 
-const sharedImportAllowlist: Record<string, string[]> = {
-  // MLService is the legacy Aegis-shaped port; Phase 1 aliases do not change its wire contract.
-  'src/app/ports/MLService.ts': ['src/domain/services/AegisStrategy.ts'],
-};
+const sharedImportAllowlist: Record<string, string[]> = {};
 
 const mutationMethods = new Set([
   'setLeverage',

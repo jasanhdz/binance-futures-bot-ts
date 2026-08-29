@@ -1,4 +1,4 @@
-import { StrategyId } from '../../domain/strategy/StrategyIdentity';
+import { StrategyId } from '../strategy/StrategyIdentity';
 import { shadowPositionKey, serializeShadowPositionKey } from './ShadowPositionKey';
 import { executableEntryPrice, executableExitPrice } from './ShadowExecutionPricing';
 import { netBpsByScenario } from './ShadowCostAccounting';

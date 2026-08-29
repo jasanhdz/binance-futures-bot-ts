@@ -1,9 +1,9 @@
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 import {
   StrategyExecutionIntent,
   StrategyProtectionExecutionPolicy,
-} from '../../strategy/StrategyExecution';
-import { StrategyIdentity } from '../../strategy/StrategyIdentity';
+} from '../../../core/strategy/StrategyExecution';
+import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 
 export interface ApprovedAegisExecution {
   identity: StrategyIdentity;

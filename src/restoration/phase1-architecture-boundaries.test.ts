@@ -15,8 +15,8 @@ describe('Phase 1 architecture boundaries', () => {
       'src/app/services/TradingService.ts',
       'src/app/execution/SharedStrategyExecutionService.ts',
       'src/app/strategy/OwnedPositionManagers.ts',
-      'src/domain/services/aegis-entry/AegisEntryGuardOrchestrator.ts',
-      'src/domain/strategies/momentum-ride/MomentumRideStrategy.ts',
+      'src/strategies/aegis/domain/entry/AegisEntryGuardOrchestrator.ts',
+      'src/strategies/momentum/domain/MomentumRideStrategy.ts',
     ];
 
     for (const path of runtimeFiles) {
@@ -42,7 +42,7 @@ describe('Phase 1 architecture boundaries', () => {
   });
 
   it('keeps Momentum independent from Aegis scientific authority', () => {
-    const momentumImports = source('src/domain/strategies/momentum-ride/MomentumRideStrategy.ts')
+    const momentumImports = source('src/strategies/momentum/domain/MomentumRideStrategy.ts')
       .split('\n')
       .filter((line) => line.startsWith('import '))
       .join('\n');

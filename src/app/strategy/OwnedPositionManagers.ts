@@ -1,6 +1,6 @@
-import { PositionManagementResult } from '../../domain/strategy/StrategyDecision';
-import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
-import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
+import { PositionManagementResult } from '../../core/strategy/StrategyDecision';
+import { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import { strategyLifecyclePolicy } from '../../core/strategy/StrategyLifecyclePolicy';
 import {
   AegisPositionLifecycle,
   StrategyPositionLifecycleContext,

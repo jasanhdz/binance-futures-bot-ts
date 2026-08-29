@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Candle } from '../../types';
+import { Candle } from '../../../core/types';
 import { detectSupportResistance } from './MicroBurstSupportResistance';
 
 const START_MS = 1_700_000_000_000;

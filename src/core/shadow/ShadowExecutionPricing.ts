@@ -1,4 +1,4 @@
-import { Side } from '../../domain/types';
+import { Side } from '../types';
 import { ShadowMarketQuote } from './ShadowTradingTypes';
 
 export function executableEntryPrice(

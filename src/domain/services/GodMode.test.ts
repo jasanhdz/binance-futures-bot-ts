@@ -1,4 +1,4 @@
-import { isForbiddenTime } from './AegisStrategy';
+import { isForbiddenTime } from '../../strategies/aegis/domain/AegisStrategy';
 import { evaluateGuardianAction, GuardianConfig, GuardianContext } from './ProfitGuardian';
 import { describe, it, expect } from 'vitest';
 

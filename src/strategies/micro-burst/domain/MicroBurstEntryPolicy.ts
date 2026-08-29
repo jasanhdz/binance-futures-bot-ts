@@ -1,4 +1,4 @@
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 import { MicroBurstConfig, MicroBurstContext, MicroBurstEntryDecision } from './MicroBurstTypes';
 import { selectLeverageTier } from './MicroBurstLeveragePolicy';
 import { bpsToDecimalReturn, priceDistanceToBps } from './MicroBurstUnits';

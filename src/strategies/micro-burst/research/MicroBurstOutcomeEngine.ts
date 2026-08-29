@@ -3,7 +3,7 @@
 // All computations receive injected clock or explicit timestamps.
 // ───────────────────────────────────────────────────────────
 
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 import {
   ShadowSignalSnapshot,
   EntryPriceModel,

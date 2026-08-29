@@ -10,7 +10,7 @@ import {
   StrategyVotes,
   sanitizeJsonValue,
 } from './StrategyHistoryLogger';
-import { StrategyId } from '../../domain/strategy/StrategyIdentity';
+import { StrategyId } from '../../core/strategy/StrategyIdentity';
 import { Logger } from '../../app/ports/Logger';
 import path from 'path';
 

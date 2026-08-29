@@ -1,4 +1,4 @@
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 
 export type RegimeEngineV2Timeframe = '5m';
 

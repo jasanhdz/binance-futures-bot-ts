@@ -3,20 +3,20 @@ import { MLService } from '../ports/MLService';
 import { Logger } from '../ports/Logger';
 import { StateStore } from '../ports/StateStore';
 import { Notifier } from '../ports/Notifier';
-import { BotState, Candle, Side } from '../../domain/types';
+import { BotState, Candle, Side } from '../../core/types';
 import { DEFAULT_GUARDIAN_CONFIG, GuardianConfig } from '../../domain/services/ProfitGuardian';
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
-import { AegisTradingSignal } from '../../domain/services/AegisStrategy';
+import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import {
   AegisMicroLiveGateDecision,
   buildAegisMicroLiveGateConfigFromEnv,
   shouldEnterAegisTurboMicroLive,
-} from '../../domain/services/AegisMicroLiveGate';
+} from '../../strategies/aegis/domain/services/AegisMicroLiveGate';
 import {
   evaluateMainStackingMomentum,
   MainStackingMomentumDecision,
   MAIN_STACKING_MOMENTUM_AUTHORITY,
-} from '../../domain/services/MainStackingMomentumStrategy';
+} from '../../strategies/momentum/domain/MainStackingMomentumStrategy';
 import {
   AegisExitEyeYamlConfig,
   AegisEntryQualityGateRuntimeConfig,
@@ -37,10 +37,10 @@ import {
   AegisExitEyeDecision,
   AegisExitEyeVotes,
   evaluateAegisExitEye,
-} from '../../domain/services/AegisExitEye';
-import { evaluateAegisExitEyeV2Shadow } from '../../domain/services/AegisExitEyeV2Shadow';
-import { inspectCurrentBrainCanonicalDecision } from '../../domain/services/CurrentBrainCanonicalDecision';
-import { buildAegisOperationalDispositionShadow } from '../../domain/services/AegisOperationalDispositionShadow';
+} from '../../strategies/aegis/domain/services/AegisExitEye';
+import { evaluateAegisExitEyeV2Shadow } from '../../strategies/aegis/domain/services/AegisExitEyeV2Shadow';
+import { inspectCurrentBrainCanonicalDecision } from '../../strategies/aegis/domain/CurrentBrainCanonicalDecision';
+import { buildAegisOperationalDispositionShadow } from '../../strategies/aegis/domain/services/AegisOperationalDispositionShadow';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector, LIQUIDITY_STRESS_INPUT_VERSION } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
@@ -57,10 +57,10 @@ import {
   AegisPositionMessageInput,
   formatAegisStartupMessage,
 } from '../messages/AegisMessageFormatter';
-import { AegisPortfolioRiskGuard } from '../../domain/services/AegisPortfolioRiskGuard';
-import { AegisEntryQualityGateDecision } from '../../domain/services/AegisEntryQualityGate';
-import { AegisEventRiskOverlayDecision } from '../../domain/services/AegisEventRiskOverlay';
-import { AegisDecisionEnforcementDecision } from '../../domain/services/AegisDecisionEnforcement';
+import { AegisPortfolioRiskGuard } from '../../strategies/aegis/domain/services/AegisPortfolioRiskGuard';
+import { AegisEntryQualityGateDecision } from '../../strategies/aegis/domain/services/AegisEntryQualityGate';
+import { AegisEventRiskOverlayDecision } from '../../strategies/aegis/domain/services/AegisEventRiskOverlay';
+import { AegisDecisionEnforcementDecision } from '../../strategies/aegis/domain/services/AegisDecisionEnforcement';
 import {
   AegisTelegramBlockNotifier,
   DEFAULT_AEGIS_BLOCK_NOTIFICATION_CONFIG,
@@ -68,15 +68,15 @@ import {
 import {
   DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG,
   AegisCleanEntryGuardOutput,
-} from '../../domain/services/AegisCleanEntryGuard';
+} from '../../strategies/aegis/domain/services/AegisCleanEntryGuard';
 import {
   AegisProbeModeDecision,
   AegisProbeModeRuntimeConfig,
-} from '../../domain/services/AegisProbeMode';
+} from '../../strategies/aegis/domain/services/AegisProbeMode';
 import {
   AegisRegimeGuardConfig,
   DEFAULT_AEGIS_REGIME_GUARD_CONFIG,
-} from '../../domain/services/AegisRegimeGuard';
+} from '../../strategies/aegis/domain/services/AegisRegimeGuard';
 import {
   AegisEntryContext,
   AegisEntryDecisionResult,
@@ -84,13 +84,13 @@ import {
   AegisEntryPolicyRuntimeConfig,
   AegisMomentumRideRuntimeConfig,
   AegisRegimeContextRuntimeConfig,
-} from '../../domain/services/aegis-entry/AegisEntryDecisionTypes';
-import { AegisEntryGuardOrchestrator } from '../../domain/services/aegis-entry/AegisEntryGuardOrchestrator';
-import { evaluateAegisEntrySafetyConsensus } from '../../domain/services/AegisEntrySafetyConsensus';
+} from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
+import { AegisEntryGuardOrchestrator } from '../../strategies/aegis/domain/entry/AegisEntryGuardOrchestrator';
+import { evaluateAegisEntrySafetyConsensus } from '../../strategies/aegis/domain/services/AegisEntrySafetyConsensus';
 import {
   AegisClosedTradeOutcome,
   AegisConsecutiveLossTracker,
-} from '../../domain/services/AegisConsecutiveLossTracker';
+} from '../../strategies/aegis/domain/services/AegisConsecutiveLossTracker';
 import {
   readAegisClosedTradeOutcomes,
   readStrategyClosedTradeOutcomes,
@@ -105,40 +105,40 @@ import {
   AegisPositionManager,
   MomentumRidePositionManager,
 } from '../strategy/OwnedPositionManagers';
-import { MicroBurstPositionManager } from '../strategy/MicroBurstPositionManager';
-import { StrategyIdentity } from '../../domain/strategy/StrategyIdentity';
-import { resolveStrategyOwnership } from '../../domain/strategy/StrategyPositionOwnership';
-import { createAegisMigrationIdentity } from '../../domain/strategies/aegis/AegisIdentity';
-import { AegisExecutionIntentFactory } from '../../domain/strategies/aegis/AegisExecutionIntentFactory';
-import { createMomentumRideLegacyIdentity } from '../../domain/strategies/momentum-ride/MomentumRideIdentity';
-import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
+import { MicroBurstPositionManager } from '../../strategies/micro-burst/application/MicroBurstPositionManager';
+import { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOwnership';
+import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/AegisIdentity';
+import { AegisExecutionIntentFactory } from '../../strategies/aegis/domain/AegisExecutionIntentFactory';
+import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
+import { StrategyRiskLedger } from '../../core/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import { createReadOnlyAuditedExchange } from '../../infra/adapters/ReadOnlyAuditedExchange';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import {
   MomentumRideStrategy,
   MomentumRideStrategyContext,
-} from '../../domain/strategies/momentum-ride/MomentumRideStrategy';
+} from '../../strategies/momentum/domain/MomentumRideStrategy';
 import {
   MicroBurstStrategy,
   MicroBurstStrategyContext,
-} from '../../domain/strategies/micro-burst/MicroBurstStrategy';
-import { createMicroBurstV1Identity } from '../../domain/strategies/micro-burst/MicroBurstIdentity';
+} from '../../strategies/micro-burst/domain/MicroBurstStrategy';
+import { createMicroBurstV1Identity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 import {
   MicroBurstRuntime,
   MicroBurstRuntimeReadiness,
-} from '../../domain/strategies/micro-burst/MicroBurstRuntime';
+} from '../../strategies/micro-burst/application/MicroBurstRuntime';
 import {
   parseMicroBurstConfig,
   mergeMicroBurstConfigs,
   isMicroBurstShadowMode,
 } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
-import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
+import { strategyLifecyclePolicy } from '../../core/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 import { createHash } from 'node:crypto';
 import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
-import { MicroBurstOutcomeTracker } from '../micro-burst/MicroBurstOutcomeTracker';
-import { MicroBurstStorage } from '../micro-burst/MicroBurstStorage';
+import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/MicroBurstOutcomeTracker';
+import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;

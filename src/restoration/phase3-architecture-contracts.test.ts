@@ -49,7 +49,7 @@ describe('Phase 3 architecture contracts', () => {
     expect(violations).toEqual([]);
     expect(
       readFileSync(
-        resolve(repoRoot, 'src/strategies/micro-burst/domain/MicroBurstRuntime.ts'),
+        resolve(repoRoot, 'src/strategies/micro-burst/application/MicroBurstRuntime.ts'),
         'utf8',
       ),
     ).toContain('exchange: MarketDataPort');

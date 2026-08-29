@@ -3,7 +3,7 @@ import fs from 'fs';
 import fsPromises, { FileHandle } from 'fs/promises';
 import path from 'path';
 import { StateStore } from '../../app/ports/StateStore';
-import { BotState } from '../../domain/types';
+import { BotState } from '../../core/types';
 
 const dataDir = path.resolve(__dirname, '../../../data');
 const defaultState: BotState = { mode: 'IDLE' };

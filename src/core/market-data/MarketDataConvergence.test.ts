@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DepthStreamGapDetector } from './DepthStreamGapDetector';
@@ -88,16 +88,14 @@ describe('Phase R market-data convergence', () => {
     expect(gaps).toHaveLength(1);
   });
 
-  it('turns app-level generic Micro Burst files into re-export-only compatibility shims', () => {
-    expect(source('app/micro-burst/MicroBurstClocks.ts').trim()).toBe(
-      "/** @deprecated Generic clock mechanics live in core/market-data. */\nexport * from '../../core/market-data/MarketDataClocks';",
-    );
-    expect(source('app/micro-burst/MicroBurstMarketData.ts').trim()).toBe(
-      "/** @deprecated Generic normalized market events live in core/market-data. */\nexport * from '../../core/market-data/NormalizedMarketEvents';",
-    );
-    expect(source('app/micro-burst/MicroBurstStreamGapDetector.ts').trim()).toBe(
-      "/** @deprecated Generic depth continuity mechanics live in core/market-data. */\nexport * from '../../core/market-data/DepthStreamGapDetector';",
-    );
+  it('removes obsolete app-level Micro Burst market-data compatibility shims', () => {
+    for (const legacyPath of [
+      'app/micro-burst/MicroBurstClocks.ts',
+      'app/micro-burst/MicroBurstMarketData.ts',
+      'app/micro-burst/MicroBurstStreamGapDetector.ts',
+    ]) {
+      expect(existsSync(resolve(srcRoot, legacyPath)), legacyPath).toBe(false);
+    }
   });
 
   it('keeps generic transport independent from Micro Burst application files', () => {

@@ -1,4 +1,4 @@
-import { Side } from '../../types';
+import { Side } from '../../../core/types';
 import { Logger } from '../../../app/ports/Logger';
 import type { BenchmarkMarketData } from '../../../core/market-data/BenchmarkMarketData';
 import { BtcContext } from './MicroBurstTypes';

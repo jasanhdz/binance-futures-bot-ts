@@ -1,4 +1,4 @@
-import { Candle } from '../../types';
+import { Candle } from '../../../core/types';
 import { MicroRegime } from './MicroBurstTypes';
 
 function averageTrueRange(candles: Candle[], period: number): number {
