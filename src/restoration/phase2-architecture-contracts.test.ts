@@ -8,10 +8,10 @@ const genericFiles = [
   'src/domain/services/ConsecutiveLossTracker.ts',
   'src/infra/state/StrategyLossStateStore.ts',
 ];
-const legacyAdapters = [
+const strategyAdapters = [
   'src/infra/logging/AegisTurboHistoryLogger.ts',
   'src/strategies/aegis/domain/services/AegisConsecutiveLossTracker.ts',
-  'src/infra/state/AegisConsecutiveLossStateStore.ts',
+  'src/strategies/aegis/application/AegisConsecutiveLossStateStore.ts',
 ];
 
 describe('Phase 2 architecture contracts', () => {
@@ -23,7 +23,7 @@ describe('Phase 2 architecture contracts', () => {
   });
 
   it('keeps canonical strategy adapters dependent on generic cores', () => {
-    for (const relativePath of legacyAdapters) {
+    for (const relativePath of strategyAdapters) {
       const source = readFileSync(resolve(repoRoot, relativePath), 'utf8');
       expect(source, relativePath).toMatch(
         /StrategyHistoryLogger|ConsecutiveLossTracker|StrategyLossStateStore/,
