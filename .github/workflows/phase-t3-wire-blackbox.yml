@@ -44,8 +44,8 @@ jobs:
           assert anchor in text
           text = text.replace(anchor, addition, 1)
 
-          anchor = "  async stop(): Promise<void> {\n"
-          addition = "  async stop(): Promise<void> {\n    this.deps.strategyRouter.setObservationHook(undefined);\n"
+          anchor = "  stop(): Promise<void> {\n"
+          addition = "  stop(): Promise<void> {\n    this.deps.strategyRouter.setObservationHook(undefined);\n"
           assert anchor in text
           text = text.replace(anchor, addition, 1)
           runtime.write_text(text)
