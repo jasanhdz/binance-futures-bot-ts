@@ -100,7 +100,7 @@ import {
   AegisConsecutiveLossState,
   AegisConsecutiveLossStateStorePort,
 } from '../../infra/state/AegisConsecutiveLossStateStore';
-import { PositionManagerRouter } from '../strategy/PositionManagerRouter';
+import { PositionManagerRouter } from '../../core/strategy/PositionManagerRouter';
 import {
   AegisPositionManager,
   MomentumRidePositionManager,
@@ -114,7 +114,7 @@ import { createMomentumRideLegacyIdentity } from '../../domain/strategies/moment
 import { StrategyRiskLedger } from '../../domain/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import { createReadOnlyAuditedExchange } from '../../infra/adapters/ReadOnlyAuditedExchange';
-import { StrategyRouter } from '../strategy/StrategyRouter';
+import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import {
   MomentumRideStrategy,
   MomentumRideStrategyContext,
@@ -136,7 +136,7 @@ import {
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 import { createHash } from 'node:crypto';
-import { MicroBurstOutcomeJournal } from '../micro-burst/MicroBurstOutcomeJournal';
+import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
 import { MicroBurstOutcomeTracker } from '../micro-burst/MicroBurstOutcomeTracker';
 import { MicroBurstStorage } from '../micro-burst/MicroBurstStorage';
 

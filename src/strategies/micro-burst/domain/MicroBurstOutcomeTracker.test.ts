@@ -2,10 +2,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { MicroBurstOutcomeTracker } from '../../../app/micro-burst/MicroBurstOutcomeTracker';
-import { MicroBurstOutcomeJournal } from '../../../app/micro-burst/MicroBurstOutcomeJournal';
+import { MicroBurstOutcomeJournal } from '../research/MicroBurstOutcomeJournal';
 import { MicroBurstStorage } from '../../../app/micro-burst/MicroBurstStorage';
-import { ShadowSignalSnapshot } from '../micro-burst/MicroBurstOutcomeTypes';
-import { freezeSignalSnapshot } from '../micro-burst/MicroBurstOutcomeEngine';
+import { ShadowSignalSnapshot } from '../research/MicroBurstOutcomeTypes';
+import { freezeSignalSnapshot } from '../research/MicroBurstOutcomeEngine';
 
 const TEST_DIR = path.join(__dirname, '__test_outcome_tracker__');
 

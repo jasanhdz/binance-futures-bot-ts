@@ -1,6 +1,6 @@
 import { Logger } from '../../../app/ports/Logger';
 import { MarketDataPort } from '../../../app/ports/MarketData';
-import { StrategyRouter } from '../../../app/strategy/StrategyRouter';
+import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from './SynchronizedOrderBook';
 import { BtcMicroContextProvider, BtcMicroContextDeps } from './BtcMicroContextProvider';
 import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';

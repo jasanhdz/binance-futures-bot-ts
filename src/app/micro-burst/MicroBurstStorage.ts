@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import Database from 'better-sqlite3';
 import { compareTrades, tradeIdentity } from './MicroBurstTradeHistoryStore';
-import { ProspectiveOutcomeRecord } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+import { ProspectiveOutcomeRecord } from '../../strategies/micro-burst/research/MicroBurstOutcomeTypes';
 import { GapKind, MarketDataFeed } from './MicroBurstMarketData';
 
 export interface MicroBurstStorageOptions {
@@ -686,7 +686,7 @@ export class MicroBurstStorage {
     const deduped = new Map<string, ArchivedTrade>();
     for (const record of records) {
       const trade =
-        record as unknown as import('../../domain/strategies/micro-burst/MicroBurstOutcomeTypes').MicroBurstTradeRecord;
+        record as unknown as import('../../strategies/micro-burst/research/MicroBurstOutcomeTypes').MicroBurstTradeRecord;
       if (!deduped.has(tradeIdentity(trade))) deduped.set(tradeIdentity(trade), record);
     }
     return [...deduped.values()].sort((a, b) => compareTrades(a as any, b as any));

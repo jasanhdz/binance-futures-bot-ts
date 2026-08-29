@@ -6,7 +6,7 @@ import {
   StrategyPositionLifecycleContext,
   StrategyPositionLifecycleCore,
 } from '../position/StrategyPositionLifecycleCore';
-import { StrategyPositionManager } from './PositionManagerRouter';
+import { StrategyPositionManager } from '../../core/strategy/PositionManagerRouter';
 
 function assertOwnership(
   expected: 'AEGIS_TURBO' | 'MOMENTUM_RIDE',

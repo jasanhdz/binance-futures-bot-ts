@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
-import { ProspectiveOutcomeRecord } from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+import { ProspectiveOutcomeRecord } from '../../strategies/micro-burst/research/MicroBurstOutcomeTypes';
 import { analyzeMicroBurstProspective } from './MicroBurstProspectiveAnalyzer';
 
 const fixture = (name: string): Record<string, unknown>[] =>

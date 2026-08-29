@@ -17,7 +17,7 @@ import {
   PendingOutcome,
   ProspectiveOutcomeRecord,
   OutcomeTrackerHealth,
-} from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+} from '../../strategies/micro-burst/research/MicroBurstOutcomeTypes';
 import {
   computeEntryModels,
   computeAllHorizons,
@@ -30,13 +30,13 @@ import {
   computeHorizonOutcome,
   computeEntryModelOutcomes,
   OUTCOME_HORIZONS_MS,
-} from '../../domain/strategies/micro-burst/MicroBurstOutcomeEngine';
-import { createMicroBurstEpisodeId } from '../../domain/strategies/micro-burst/MicroBurstIdentity';
+} from '../../strategies/micro-burst/research/MicroBurstOutcomeEngine';
+import { createMicroBurstEpisodeId } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 import {
   MicroBurstConfig,
   defaultMicroBurstConfig,
-} from '../../domain/strategies/micro-burst/MicroBurstTypes';
-import { MicroBurstOutcomeJournal } from './MicroBurstOutcomeJournal';
+} from '../../strategies/micro-burst/domain/MicroBurstTypes';
+import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
 import { MicroBurstTradeHistoryStore } from './MicroBurstTradeHistoryStore';
 import { MicroBurstStorage } from './MicroBurstStorage';
 import { MICRO_BURST_OUTCOME_FEED_DEPENDENCIES } from './MicroBurstFeedDependencies';
@@ -453,7 +453,7 @@ export class MicroBurstOutcomeTracker {
       // A completed horizon is frozen at maturity; never replace it with a later query.
       const horizons: Record<
         number,
-        import('../../domain/strategies/micro-burst/MicroBurstOutcomeTypes').HorizonOutcome
+        import('../../strategies/micro-burst/research/MicroBurstOutcomeTypes').HorizonOutcome
       > = {
         ...computedHorizons,
         ...Object.fromEntries(pending.completedHorizons),

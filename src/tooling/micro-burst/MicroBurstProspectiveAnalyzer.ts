@@ -6,11 +6,11 @@ import {
   ProspectiveOutcomeRecord,
   ShadowSignalSnapshot,
   MicroBurstTradeRecord,
-} from '../../domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+} from '../../strategies/micro-burst/research/MicroBurstOutcomeTypes';
 import {
   computeHorizonOutcome,
   OUTCOME_HORIZONS_MS,
-} from '../../domain/strategies/micro-burst/MicroBurstOutcomeEngine';
+} from '../../strategies/micro-burst/research/MicroBurstOutcomeEngine';
 
 export interface MicroBurstProspectiveAnalysisInput {
   signals: readonly Record<string, unknown>[];

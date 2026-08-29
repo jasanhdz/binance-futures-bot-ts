@@ -10,7 +10,7 @@ import {
 import { Exchange } from '../ports/Exchange';
 import { StateStore } from '../ports/StateStore';
 import { AegisPositionManager, MomentumRidePositionManager } from './OwnedPositionManagers';
-import { PositionManagerRouter } from './PositionManagerRouter';
+import { PositionManagerRouter } from '../../core/strategy/PositionManagerRouter';
 
 const aegisIdentity = createUnfrozenStrategyIdentity('AEGIS_TURBO', 'test', 'test-sha');
 const momentumIdentity = createUnfrozenStrategyIdentity('MOMENTUM_RIDE', 'test', 'test-sha');

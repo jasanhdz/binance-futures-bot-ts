@@ -1,8 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { MicroBurstOutcomeJournal } from '../../../app/micro-burst/MicroBurstOutcomeJournal';
-import { ProspectiveOutcomeRecord } from '../micro-burst/MicroBurstOutcomeTypes';
+import { MicroBurstOutcomeJournal } from '../research/MicroBurstOutcomeJournal';
+import { ProspectiveOutcomeRecord } from '../research/MicroBurstOutcomeTypes';
 
 const TEST_DIR = path.join(__dirname, '__test_outcome_journal__');
 

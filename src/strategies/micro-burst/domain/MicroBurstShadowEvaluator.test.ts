@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MicroBurstShadowEvaluator } from './MicroBurstShadowEvaluator';
 import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
 import { MicroBurstRuntimeConfig } from './MicroBurstMarketDataTypes';
-import { StrategyRouter } from '../../../app/strategy/StrategyRouter';
+import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { MicroBurstStrategy, MicroBurstStrategyContext } from './MicroBurstStrategy';
 import { createMicroBurstV1Identity } from './MicroBurstIdentity';
 

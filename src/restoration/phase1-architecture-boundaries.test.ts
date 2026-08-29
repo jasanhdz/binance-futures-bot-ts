@@ -61,8 +61,8 @@ describe('Phase 1 architecture boundaries', () => {
     const authoritySurfaces = [
       'src/main.ts',
       'src/app/services/TradingService.ts',
-      'src/app/strategy/StrategyRouter.ts',
-      'src/app/strategy/PositionManagerRouter.ts',
+      'src/core/strategy/StrategyRouter.ts',
+      'src/core/strategy/PositionManagerRouter.ts',
       'src/infra/config/ConfigLoader.ts',
     ];
 
