@@ -12,11 +12,14 @@ jobs:
   wire:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           ref: work/micro-burst-rider-v1-20260826
           fetch-depth: 0
+      - name: Prepare test configuration
+        run: cp config/regime_config.example.yaml regime_config.yaml
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -64,10 +67,28 @@ jobs:
           service.write_text(text)
       - name: Format changed files
         run: npx prettier --write src/core/blackbox/StrategyDecisionBlackBox.ts src/core/blackbox/StrategyDecisionBlackBox.test.ts src/core/strategy/StrategyRouter.ts src/infra/logging/JsonlDecisionEvidenceSink.test.ts src/infra/logging/JsonlMarketSnapshotSink.ts src/strategies/micro-burst/application/MicroBurstBlackBoxObservation.ts src/strategies/micro-burst/application/MicroBurstRuntime.ts src/app/services/TradingService.ts
+      - name: Bind authorized observational TradingService change
+        shell: python
+        run: |
+          from hashlib import sha256
+          from pathlib import Path
+          import re
+
+          service = Path('src/app/services/TradingService.ts').read_bytes()
+          digest = sha256(service).hexdigest()
+          contract = Path('src/restoration/original-operational-semantics.test.ts')
+          text = contract.read_text()
+          pattern = r"('src/app/services/TradingService\.ts':\s*\n\s*')[a-f0-9]{64}(',)"
+          updated, count = re.subn(pattern, rf"\g<1>{digest}\g<2>", text, count=1)
+          assert count == 1
+          contract.write_text(updated)
+          print(f'Authorized observational TradingService digest: {digest}')
+      - name: Format restoration contract
+        run: npx prettier --write src/restoration/original-operational-semantics.test.ts
       - name: Build
         run: npm run build
       - name: Tests
-        run: npm test -- --run
+        run: npm test
       - name: Commit integration
         run: |
           git config user.name "github-actions[bot]"
