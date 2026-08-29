@@ -108,17 +108,6 @@ describe('Phase R market-data convergence', () => {
     expect(websocketManager).not.toContain('app/micro-burst/MicroBurstMarketData');
   });
 
-  it('keeps the AggTrade strategy-named class as an alias only', () => {
-    const compatibility = source(
-      'strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts',
-    );
-    expect(compatibility).toContain(
-      'RollingAggTradeBuffer as MicroBurstAggTradeBuffer',
-    );
-    expect(compatibility).not.toContain('class MicroBurstAggTradeBuffer');
-    expect(compatibility).not.toContain('constructor(');
-  });
-
   it('keeps the order-book compatibility adapter free of synchronization mechanics', () => {
     const compatibility = source('strategies/micro-burst/domain/SynchronizedOrderBook.ts');
     expect(compatibility).toContain('extends SharedSynchronizedOrderBook');

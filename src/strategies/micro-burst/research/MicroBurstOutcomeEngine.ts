@@ -22,8 +22,8 @@ import {
   MicroBurstConfig,
   MicroBurstExitDecision,
   defaultMicroBurstConfig,
-} from './MicroBurstTypes';
-import { evaluateMicroBurstExit } from './MicroBurstExitPolicy';
+} from '../domain/MicroBurstTypes';
+import { evaluateMicroBurstExit } from '../domain/MicroBurstExitPolicy';
 
 // ── Constants ──────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MicroBurstShadowEvaluator } from './MicroBurstShadowEvaluator';
+import { MicroBurstShadowEvaluator } from '../application/MicroBurstShadowEvaluator';
 import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
 import { MicroBurstRuntimeConfig } from './MicroBurstMarketDataTypes';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';

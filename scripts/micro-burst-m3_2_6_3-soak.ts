@@ -25,7 +25,7 @@ import { StrategyRouter } from '../src/app/strategy/StrategyRouter';
 import { MicroBurstOutcomeJournal } from '../src/app/micro-burst/MicroBurstOutcomeJournal';
 import { MicroBurstOutcomeTracker } from '../src/app/micro-burst/MicroBurstOutcomeTracker';
 import { MicroBurstStorage } from '../src/app/micro-burst/MicroBurstStorage';
-import { parseMicroBurstConfig } from '../src/domain/strategies/micro-burst/MicroBurstConfigLoader';
+import { parseMicroBurstConfig } from '../src/strategies/micro-burst/application/MicroBurstConfigLoader';
 import { createMicroBurstV1Identity } from '../src/domain/strategies/micro-burst/MicroBurstIdentity';
 import { MicroBurstRuntime } from '../src/domain/strategies/micro-burst/MicroBurstRuntime';
 import {

@@ -9,11 +9,11 @@ import {
   MicroBurstPaperPosition,
   MicroBurstPaperTrading,
   MicroBurstPaperQuote,
-} from './MicroBurstPaperTrading';
+} from '../research/MicroBurstPaperTrading';
 import { MicroBurstShadowPolicyAdapter } from './MicroBurstShadowPolicyAdapter';
 import { defaultMicroBurstConfig, MicroBurstConfig } from './MicroBurstTypes';
 import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';
-import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
+import { DEFAULT_COST_SCENARIOS } from '../research/MicroBurstOutcomeTypes';
 
 const provenance = {
   strategyVersion: 'golden',

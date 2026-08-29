@@ -53,7 +53,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   'src/app/services/TradingService.ts':
-    'ca8f881587d0b28af76d1c8c5c596e25b411737dfce1a4ae603301a654a35e2f',
+    'c06282d72b2f85382e4fb31d1c4992e072333db2bd8d8ea5fe8048904e3a0dd7',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -89,7 +89,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     '863f1b429d43f6e527120cafa01ef0dc82bce34d72161558e9ddf7f887236a07',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
-    '9191178da347b99811181cfa4181cc7bf916cc669a4bd5e37424918c44ae64a8',
+    '070a3a6a02c80107453e8cf7189d5f1b7f5475ab79658ecf0d00b913be9f0e80',
 };
 
 type GuardFixture = [

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RollingAggTradeBuffer } from './RollingAggTradeBuffer';
-import { MicroBurstAggTradeBuffer } from '../../domain/strategies/micro-burst/MicroBurstAggTradeBuffer';
+import { RollingAggTradeBuffer as LegacyParityBuffer } from './RollingAggTradeBuffer';
 import type { AggTradeEvent } from '../../app/ports/MarketData';
 
 const START = 1_700_000_000_000;
@@ -18,7 +18,7 @@ function event(overrides: Partial<AggTradeEvent> = {}): AggTradeEvent {
 
 describe('RollingAggTradeBuffer compatibility', () => {
   it('matches Micro Burst output for representative causal streams', () => {
-    const legacy = new MicroBurstAggTradeBuffer({ now: () => START }, 4, 5_000);
+    const legacy = new LegacyParityBuffer({ now: () => START }, 4, 5_000);
     const shared = new RollingAggTradeBuffer({ now: () => START }, 4, 5_000);
     const stream = [
       event({

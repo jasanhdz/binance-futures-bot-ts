@@ -4,8 +4,8 @@ import {
   computeHorizonOutcome,
   computeEntryModels,
   sideAwareReturnBps,
-} from './MicroBurstOutcomeEngine';
-import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
+} from '../research/MicroBurstOutcomeEngine';
+import { ShadowSignalSnapshot } from '../research/MicroBurstOutcomeTypes';
 
 function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignalSnapshot {
   return freezeSignalSnapshot({

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeMicroBurstPaperTrades } from './MicroBurstPaperTradeAnalyzer';
-import { MicroBurstPaperPosition } from '../../domain/strategies/micro-burst/MicroBurstPaperTrading';
+import { MicroBurstPaperPosition } from '../../strategies/micro-burst/research/MicroBurstPaperTrading';
 
 function trade(overrides: Partial<MicroBurstPaperPosition> = {}): MicroBurstPaperPosition {
   return {

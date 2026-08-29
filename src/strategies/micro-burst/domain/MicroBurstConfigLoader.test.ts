@@ -4,7 +4,7 @@ import {
   mergeMicroBurstConfigs,
   isMicroBurstShadowMode,
   isMicroBurstLiveMode,
-} from './MicroBurstConfigLoader';
+} from '../application/MicroBurstConfigLoader';
 
 describe('MicroBurstConfigLoader', () => {
   it('returns disabled config for empty input', () => {

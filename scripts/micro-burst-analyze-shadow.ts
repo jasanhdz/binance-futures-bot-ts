@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MicroBurstStorage } from '../src/app/micro-burst/MicroBurstStorage';
 import { analyzeMicroBurstProspective } from '../src/tooling/micro-burst/MicroBurstProspectiveAnalyzer';
-import { ProspectiveOutcomeRecord } from '../src/domain/strategies/micro-burst/MicroBurstOutcomeTypes';
+import { ProspectiveOutcomeRecord } from '../src/strategies/micro-burst/research/MicroBurstOutcomeTypes';
 import { MicroBurstOutcomeJournal } from '../src/app/micro-burst/MicroBurstOutcomeJournal';
 
 const signalsDir = argument('--signals-dir') ?? 'logs/micro-burst/shadow-signals';

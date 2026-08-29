@@ -1,6 +1,6 @@
-import { MicroBurstExitContext, MicroBurstExitDecision, MicroBurstConfig } from './MicroBurstTypes';
-import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';
-import { evaluateMicroBurstExit } from './MicroBurstExitPolicy';
+import { MicroBurstExitContext, MicroBurstExitDecision, MicroBurstConfig } from '../domain/MicroBurstTypes';
+import { MicroBurstShadowEvaluationResult } from '../domain/MicroBurstMarketDataTypes';
+import { evaluateMicroBurstExit } from '../domain/MicroBurstExitPolicy';
 import { decimalReturnToBps } from './MicroBurstUnits';
 import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
 

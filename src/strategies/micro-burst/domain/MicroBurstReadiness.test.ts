@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assessMicroBurstReadiness, MicroBurstReadinessInput } from './MicroBurstReadiness';
+import { assessMicroBurstReadiness, MicroBurstReadinessInput } from '../application/MicroBurstReadiness';
 
 const complete: MicroBurstReadinessInput = {
   codeSha: 'abc123',

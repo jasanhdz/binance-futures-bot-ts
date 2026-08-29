@@ -3,12 +3,12 @@ import { MarketDataPort } from '../../../app/ports/MarketData';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from './SynchronizedOrderBook';
 import { BtcMicroContextProvider, BtcMicroContextDeps } from './BtcMicroContextProvider';
-import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';
+import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
 import {
   MicroBurstReferencePriceProvider,
   MicroBurstReferencePriceDeps,
 } from './MicroBurstReferencePrice';
-import { MicroBurstShadowEvaluator } from './MicroBurstShadowEvaluator';
+import { MicroBurstShadowEvaluator } from '../application/MicroBurstShadowEvaluator';
 import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
 import {
   MicroBurstRuntimeConfig,
@@ -18,10 +18,10 @@ import {
 } from './MicroBurstMarketDataTypes';
 import { MicroBurstStrategyContext } from './MicroBurstStrategy';
 import { MicroBurstContextBuilderDeps } from './MicroBurstContextBuilder';
-import { MicroBurstSignalJournal } from './MicroBurstSignalJournal';
-import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
-import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
-import { assessMicroBurstReadiness, MicroBurstReadinessResult } from './MicroBurstReadiness';
+import { MicroBurstSignalJournal } from '../research/MicroBurstSignalJournal';
+import { ShadowSignalSnapshot } from '../research/MicroBurstOutcomeTypes';
+import { freezeSignalSnapshot } from '../research/MicroBurstOutcomeEngine';
+import { assessMicroBurstReadiness, MicroBurstReadinessResult } from '../application/MicroBurstReadiness';
 import { GapKind, MarketDataFeed } from '../../../app/micro-burst/MicroBurstMarketData';
 import { defaultMicroBurstConfig, MicroBurstConfig } from './MicroBurstTypes';
 import { analyzeBookPressure } from './MicroBurstBookPressureAnalyzer';
@@ -29,7 +29,7 @@ import { FileShadowTradeJournal, ShadowJournal } from '../../../core/shadow/Shad
 import { ShadowTradingEngine } from '../../../core/shadow/ShadowTradingEngine';
 import { ShadowMarketQuote, ShadowPosition } from '../../../core/shadow/ShadowTradingTypes';
 import { MicroBurstShadowPolicyAdapter } from './MicroBurstShadowPolicyAdapter';
-import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
+import { DEFAULT_COST_SCENARIOS } from '../research/MicroBurstOutcomeTypes';
 import { OrderBookDataPlane } from '../../../core/market-data/OrderBookDataPlane';
 import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
 import { AggTradeDataPlane } from '../../../core/market-data/AggTradeDataPlane';
@@ -109,8 +109,8 @@ export interface MicroBurstRuntimeReadiness extends MicroBurstReadinessResult {
 interface SymbolRuntimeState {
   book: SynchronizedOrderBook;
   bookLease: OrderBookLease<SynchronizedOrderBook>;
-  aggTradeBuffer: MicroBurstAggTradeBuffer;
-  aggTradeLease: AggTradeLease<MicroBurstAggTradeBuffer>;
+  aggTradeBuffer: RollingAggTradeBuffer;
+  aggTradeLease: AggTradeLease<RollingAggTradeBuffer>;
   referencePriceProvider: MicroBurstReferencePriceProvider;
   evaluationInFlight: boolean;
   lastEvaluationAt: number;
@@ -206,7 +206,7 @@ export interface MicroBurstRuntimeDeps {
   mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
   shadowTradeJournal?: ShadowJournal;
   orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
-  aggTradeDataPlane?: AggTradeDataPlane<MicroBurstAggTradeBuffer>;
+  aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
 }
 
 export class MicroBurstRuntime {
@@ -231,7 +231,7 @@ export class MicroBurstRuntime {
   private paperRecoveryBlocked = false;
   private paperPersistenceError: string | null = null;
   private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
-  private aggTradeDataPlane?: AggTradeDataPlane<MicroBurstAggTradeBuffer>;
+  private aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
 
   constructor(
     private readonly deps: MicroBurstRuntimeDeps,
@@ -368,7 +368,7 @@ export class MicroBurstRuntime {
       this.deps.aggTradeDataPlane ??
       new AggTradeDataPlane(
         (symbol) =>
-          new MicroBurstAggTradeBuffer(
+          new RollingAggTradeBuffer(
             clock,
             undefined,
             undefined,

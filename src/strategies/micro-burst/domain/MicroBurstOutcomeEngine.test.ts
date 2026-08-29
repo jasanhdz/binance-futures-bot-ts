@@ -11,8 +11,8 @@ import {
   createPendingOutcome,
   freezeSignalSnapshot,
   OUTCOME_HORIZONS_MS,
-} from './MicroBurstOutcomeEngine';
-import { ShadowSignalSnapshot, CostScenario } from './MicroBurstOutcomeTypes';
+} from '../research/MicroBurstOutcomeEngine';
+import { ShadowSignalSnapshot, CostScenario } from '../research/MicroBurstOutcomeTypes';
 import { defaultMicroBurstConfig } from './MicroBurstTypes';
 
 // ── Fixtures ───────────────────────────────────────────────

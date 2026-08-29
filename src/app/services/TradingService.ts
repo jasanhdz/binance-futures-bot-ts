@@ -132,7 +132,7 @@ import {
   parseMicroBurstConfig,
   mergeMicroBurstConfigs,
   isMicroBurstShadowMode,
-} from '../../domain/strategies/micro-burst/MicroBurstConfigLoader';
+} from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 import { strategyLifecyclePolicy } from '../../domain/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 import { createHash } from 'node:crypto';

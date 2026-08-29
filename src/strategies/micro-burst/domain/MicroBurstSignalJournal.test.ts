@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { MicroBurstSignalJournal } from './MicroBurstSignalJournal';
+import { MicroBurstSignalJournal } from '../research/MicroBurstSignalJournal';
 import { MicroBurstShadowEvaluationResult } from './MicroBurstMarketDataTypes';
 
 const TEST_JOURNAL_DIR = path.join(__dirname, '__test_journal__');

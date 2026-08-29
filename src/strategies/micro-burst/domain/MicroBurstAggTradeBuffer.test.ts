@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';
+import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
 import { AggTradeEvent } from './MicroBurstMarketDataTypes';
 
 const NOW_MS = 1_700_000_000_000;
@@ -14,10 +14,10 @@ function makeTrade(overrides: Partial<AggTradeEvent> = {}): AggTradeEvent {
   };
 }
 
-describe('MicroBurstAggTradeBuffer', () => {
+describe('RollingAggTradeBuffer', () => {
   it('uses the configured size only as an emergency capacity cap', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
-    const buffer = new MicroBurstAggTradeBuffer(clock, 5);
+    const buffer = new RollingAggTradeBuffer(clock, 5);
 
     for (let i = 0; i < 10; i++) {
       buffer.push(makeTrade({ eventTime: NOW_MS + i }));
@@ -28,7 +28,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('ignores invalid trades', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
-    const buffer = new MicroBurstAggTradeBuffer(clock);
+    const buffer = new RollingAggTradeBuffer(clock);
 
     buffer.push(makeTrade({ price: NaN }));
     buffer.push(makeTrade({ price: -1 }));
@@ -40,7 +40,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('getRecent filters by age', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
-    const buffer = new MicroBurstAggTradeBuffer(clock, 100, 5000);
+    const buffer = new RollingAggTradeBuffer(clock, 100, 5000);
 
     buffer.push(makeTrade({ eventTime: NOW_MS - 10_000 }));
     buffer.push(makeTrade({ eventTime: NOW_MS - 3000 }));
@@ -52,7 +52,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('retains a full event-time window at low rates without consulting the local clock', () => {
     const clock = { now: vi.fn(() => NOW_MS + 9_999_999) };
-    const buffer = new MicroBurstAggTradeBuffer(clock, 50_000, 5_000);
+    const buffer = new RollingAggTradeBuffer(clock, 50_000, 5_000);
 
     buffer.push(makeTrade({ eventTime: NOW_MS - 4_000 }));
     buffer.push(makeTrade({ eventTime: NOW_MS }));
@@ -63,7 +63,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('retains a full event-time window at high rates', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
-    const buffer = new MicroBurstAggTradeBuffer(clock, 50_000, 5_000);
+    const buffer = new RollingAggTradeBuffer(clock, 50_000, 5_000);
 
     for (let i = 0; i < 1_000; i++) {
       buffer.push(makeTrade({ eventTime: NOW_MS - 4_999 + i }));
@@ -79,7 +79,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('uses the maximum exchange event time as the watermark for out-of-order trades', () => {
     const clock = { now: vi.fn(() => NOW_MS + 1_000_000) };
-    const buffer = new MicroBurstAggTradeBuffer(clock, 50_000, 5_000);
+    const buffer = new RollingAggTradeBuffer(clock, 50_000, 5_000);
 
     buffer.push(makeTrade({ eventTime: NOW_MS }));
     buffer.push(makeTrade({ eventTime: NOW_MS - 4_000, quantity: 2 }));
@@ -96,7 +96,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('reports when the emergency cap truncates the requested flow window', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
-    const buffer = new MicroBurstAggTradeBuffer(clock, 3, 5_000);
+    const buffer = new RollingAggTradeBuffer(clock, 3, 5_000);
 
     for (let i = 0; i < 4; i++) {
       buffer.push(makeTrade({ eventTime: NOW_MS + i }));
@@ -112,7 +112,7 @@ describe('MicroBurstAggTradeBuffer', () => {
   });
 
   it('is incomplete at startup, but sparse trades become complete causally', () => {
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     expect(buffer.getTakerFlow()).toMatchObject({
       coverageStartedAtMs: null,
       eventWatermarkMs: null,
@@ -132,7 +132,7 @@ describe('MicroBurstAggTradeBuffer', () => {
   });
 
   it('invalidates the window when aggregate trade ids prove a gap', () => {
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     buffer.push(
       makeTrade({
         eventTime: NOW_MS - 5_000,
@@ -150,7 +150,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('repairs a provisional gap when an out-of-order aggregate arrives', () => {
     const onGap = vi.fn();
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
     buffer.push(makeTrade({ aggregateTradeId: 10 }));
     buffer.push(makeTrade({ aggregateTradeId: 12 }));
     expect(buffer.getTakerFlow().gapFree).toBe(false);
@@ -160,7 +160,7 @@ describe('MicroBurstAggTradeBuffer', () => {
   });
 
   it('uses aggregate ids even when raw first/last ids jump normally', () => {
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     buffer.push(
       makeTrade({
         eventTime: NOW_MS - 5_000,
@@ -178,7 +178,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('does not declare a gap for duplicate or out-of-order aggregate events', () => {
     const onGap = vi.fn();
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
     buffer.push(makeTrade({ aggregateTradeId: 10 }));
     buffer.push(makeTrade({ aggregateTradeId: 10 }));
     buffer.push(makeTrade({ aggregateTradeId: 9 }));
@@ -188,7 +188,7 @@ describe('MicroBurstAggTradeBuffer', () => {
   });
 
   it('fails closed when aggregate identity is missing', () => {
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, firstTradeId: 10, lastTradeId: 10 }));
     buffer.push(makeTrade({ eventTime: NOW_MS, firstTradeId: 12, lastTradeId: 12 }));
 
@@ -196,7 +196,7 @@ describe('MicroBurstAggTradeBuffer', () => {
   });
 
   it('fails closed for an invalid aggregate identity', () => {
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: -1 }));
     buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 1 }));
 
@@ -205,7 +205,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('emits the causal interval when aggregate trade ids prove a gap', () => {
     const onGap = vi.fn();
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
     buffer.push(
       makeTrade({
         eventTime: NOW_MS - 1_000,
@@ -233,7 +233,7 @@ describe('MicroBurstAggTradeBuffer', () => {
   });
 
   it('allows a gap after it expires from the active event-time window', () => {
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
     buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12 }));
     expect(buffer.getTakerFlow().gapFree).toBe(false);
@@ -244,7 +244,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('deduplicates a replayed sequence discontinuity', () => {
     const onGap = vi.fn();
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
     buffer.push(makeTrade({ eventTime: NOW_MS - 1_000, aggregateTradeId: 10 }));
     buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 12 }));
     buffer.push(makeTrade({ eventTime: NOW_MS + 1, aggregateTradeId: 14 }));
@@ -254,7 +254,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('prunes dedupe keys with expired gap intervals but retains active keys', () => {
     const onGap = vi.fn();
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000, onGap);
     buffer.push(makeTrade({ eventTime: NOW_MS - 4_000, aggregateTradeId: 10 }));
     buffer.push(makeTrade({ eventTime: NOW_MS - 3_000, aggregateTradeId: 12 }));
     buffer.push(makeTrade({ eventTime: NOW_MS - 2_000, aggregateTradeId: 14 }));
@@ -267,7 +267,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('uses persisted relevant gaps and fails closed when the query fails', () => {
     const query = vi.fn(() => true);
-    const buffer = new MicroBurstAggTradeBuffer(
+    const buffer = new RollingAggTradeBuffer(
       { now: () => NOW_MS },
       100,
       5_000,
@@ -279,7 +279,7 @@ describe('MicroBurstAggTradeBuffer', () => {
     expect(buffer.getTakerFlow()).toMatchObject({ windowComplete: false, gapFree: false });
     expect(query).toHaveBeenCalledWith(NOW_MS - 5_000, NOW_MS);
 
-    const failing = new MicroBurstAggTradeBuffer(
+    const failing = new RollingAggTradeBuffer(
       { now: () => NOW_MS },
       100,
       5_000,
@@ -293,7 +293,7 @@ describe('MicroBurstAggTradeBuffer', () => {
     expect(failing.getTakerFlow().gapFree).toBe(false);
 
     const persistedGap = { startedAtMs: NOW_MS - 1_000, endedAtMs: NOW_MS - 1_000 };
-    const restarted = new MicroBurstAggTradeBuffer(
+    const restarted = new RollingAggTradeBuffer(
       { now: () => NOW_MS },
       100,
       5_000,
@@ -308,7 +308,7 @@ describe('MicroBurstAggTradeBuffer', () => {
   });
 
   it('requires a fresh complete event-time window after feed interruption', () => {
-    const buffer = new MicroBurstAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
+    const buffer = new RollingAggTradeBuffer({ now: () => NOW_MS }, 100, 5_000);
     buffer.push(makeTrade({ eventTime: NOW_MS - 5_000, aggregateTradeId: 10 }));
     buffer.push(makeTrade({ eventTime: NOW_MS, aggregateTradeId: 11 }));
     expect(buffer.getTakerFlow().windowComplete).toBe(true);
@@ -323,7 +323,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('getTakerFlow computes buy/sell volumes', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
-    const buffer = new MicroBurstAggTradeBuffer(clock, 100, 60_000);
+    const buffer = new RollingAggTradeBuffer(clock, 100, 60_000);
 
     buffer.push(makeTrade({ isBuyerMaker: false, quantity: 2 }));
     buffer.push(makeTrade({ isBuyerMaker: true, quantity: 3 }));
@@ -338,7 +338,7 @@ describe('MicroBurstAggTradeBuffer', () => {
 
   it('clear empties buffer', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
-    const buffer = new MicroBurstAggTradeBuffer(clock);
+    const buffer = new RollingAggTradeBuffer(clock);
 
     buffer.push(makeTrade());
     buffer.push(makeTrade());
