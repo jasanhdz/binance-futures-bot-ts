@@ -1,8 +1,5 @@
 import type { MLService } from '../../../app/ports/MLService';
-import type {
-  AegisPredictionResponse,
-  AegisTradingSignal,
-} from '../domain/AegisStrategy';
+import type { AegisPredictionResponse, AegisTradingSignal } from '../domain/AegisStrategy';
 import { AegisMLServiceClient } from '../../../infra/adapters/AegisMLAdapter';
 
 /** Aegis-specific ML application service. Not part of the generic bot bootstrap contract. */

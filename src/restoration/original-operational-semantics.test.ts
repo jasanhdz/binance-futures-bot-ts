@@ -30,7 +30,6 @@ function sha256(path: string): string {
 }
 
 const baselineOperationalDigests: Record<string, string> = {
-  'src/main.ts': 'e289a662c2b6ac2b4da4e9f7ded993d7fb551ad908bc18f5c44ec1ab226ae119',
   // Phase 3: capability ports split while operational method contracts remain unchanged.
   'src/app/ports/Exchange.ts': 'a90246d4ac1c015c6a6d6ba5f8d00fa09bda601360227928fc77c6e6f65d84f5',
   'src/infra/adapters/BinanceAdapter.ts':
@@ -48,12 +47,14 @@ const baselineOperationalDigests: Record<string, string> = {
 // Phase 1 owner-authorized architecture checkpoint. These are operational
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
+  // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
+  'src/main.ts': 'dce3a41c94f95f8d107608fe19ac829c2a0aab3121b8293bd20e5ffa348c2683',
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   'src/app/services/TradingService.ts':
-    '97bf242f292b799904f992bbdde6ab79dac8cb094361c586178812ebfd974263',
+    '962c4b9bafb35daa7ccf12188e71117ac5b75ea0cecff3c610b18b1acb4b3575',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

@@ -99,7 +99,7 @@ import { VERIFIED_AEGIS_TRADE_OWNERSHIP } from '../../infra/logging/AegisTradeOw
 import {
   AegisConsecutiveLossState,
   AegisConsecutiveLossStateStorePort,
-} from '../../infra/state/AegisConsecutiveLossStateStore';
+} from '../../strategies/aegis/application/AegisConsecutiveLossStateStore';
 import { PositionManagerRouter } from '../../core/strategy/PositionManagerRouter';
 import {
   AegisPositionManager,
