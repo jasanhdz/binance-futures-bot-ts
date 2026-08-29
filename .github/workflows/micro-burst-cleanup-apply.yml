@@ -36,7 +36,6 @@ jobs:
               '/domain/strategies/micro-burst/MicroBurstOutcomeTypes': '/strategies/micro-burst/research/MicroBurstOutcomeTypes',
               '/domain/strategies/micro-burst/MicroBurstPaperTrading': '/strategies/micro-burst/research/MicroBurstPaperTrading',
           }
-
           for path in files:
               text = path.read_text()
               new = text
@@ -58,24 +57,21 @@ jobs:
                   path.write_text(new)
 
           runtime = Path('src/strategies/micro-burst/domain/MicroBurstRuntime.ts')
-          text = runtime.read_text()
-          text = text.replace(
+          text = runtime.read_text().replace(
               "import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';",
               "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';",
           ).replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
           runtime.write_text(text)
 
           agg_test = Path('src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.test.ts')
-          text = agg_test.read_text()
-          text = text.replace(
+          text = agg_test.read_text().replace(
               "import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';",
               "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';",
           ).replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
           agg_test.write_text(text)
 
           core_test = Path('src/core/market-data/RollingAggTradeBuffer.test.ts')
-          text = core_test.read_text()
-          text = text.replace(
+          text = core_test.read_text().replace(
               "import { MicroBurstAggTradeBuffer } from '../../domain/strategies/micro-burst/MicroBurstAggTradeBuffer';",
               "import { RollingAggTradeBuffer as LegacyParityBuffer } from './RollingAggTradeBuffer';",
           ).replace('new MicroBurstAggTradeBuffer(', 'new LegacyParityBuffer(')
@@ -105,20 +101,21 @@ jobs:
           ]
           for filename in aliases:
               path = Path(filename)
-              if path.exists():
-                  path.unlink()
+              if path.exists(): path.unlink()
 
-          # TradingService changes are import-path-only. Bind the restoration contract
-          # to the resulting canonical-source digest rather than silently bypassing it.
-          trading = Path('src/app/services/TradingService.ts')
-          digest = hashlib.sha256(trading.read_bytes()).hexdigest()
           restoration = Path('src/restoration/original-operational-semantics.test.ts')
           rtext = restoration.read_text()
-          old_digest = 'ca8f881587d0b28af76d1c8c5c596e25b411737dfce1a4ae603301a654a35e2f'
-          if old_digest not in rtext:
-              raise SystemExit('expected TradingService restoration digest not found')
-          restoration.write_text(rtext.replace(old_digest, digest, 1))
-          print(f'TradingService canonical import digest: {digest}')
+          contracts = [
+              ('src/app/services/TradingService.ts', 'ca8f881587d0b28af76d1c8c5c596e25b411737dfce1a4ae603301a654a35e2f'),
+              ('src/infra/config/ConfigLoader.ts', '9191178da347b99811181cfa4181cc7bf916cc669a4bd5e37424918c44ae64a8'),
+          ]
+          for filename, old_digest in contracts:
+              digest = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
+              if old_digest not in rtext:
+                  raise SystemExit(f'expected restoration digest not found for {filename}')
+              rtext = rtext.replace(old_digest, digest, 1)
+              print(f'{filename} canonical import digest: {digest}')
+          restoration.write_text(rtext)
           PY
           git diff --check
       - name: Install
