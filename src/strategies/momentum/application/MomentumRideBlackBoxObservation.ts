@@ -1,14 +1,13 @@
 import type { MarketDataPort } from '../../../app/ports/MarketData';
 import type { SharedMarketDataRuntime } from '../../../app/services/SharedMarketDataRuntime';
-import type {
-  StrategyDecisionObservationHook,
-} from '../../../core/blackbox/StrategyDecisionObservation';
+import type { StrategyDecisionObservationHook } from '../../../core/blackbox/StrategyDecisionObservation';
 import {
   StrategyDecisionBlackBox,
   type DecisionEvidenceSink,
   type MarketSnapshotEvidenceSink,
 } from '../../../core/blackbox/StrategyDecisionBlackBox';
 import { ComposedBenchmarkMarketDataPort } from '../../../core/market-data/BenchmarkMarketData';
+import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
 import {
   MarketSnapshotProvider,
   type MarketSnapshotV1,
@@ -69,25 +68,14 @@ export class MomentumRideBlackBoxObservation
   private readonly blackBox: StrategyDecisionBlackBox;
 
   constructor(private readonly deps: MomentumRideBlackBoxObservationDeps) {
+    const candles = new MarketDataCandleProvider(deps.exchange, deps.clock);
     const quoteFor = (symbol: string) => {
-      const book = deps.sharedMarketData.orderBookDataPlane.get(symbol.toUpperCase());
-      return book ? new OrderBookQuoteProvider(symbol.toUpperCase(), book) : undefined;
+      const normalized = symbol.toUpperCase();
+      const book = deps.sharedMarketData.orderBookDataPlane.get(normalized);
+      return book ? new OrderBookQuoteProvider(normalized, book) : undefined;
     };
     const benchmark = new ComposedBenchmarkMarketDataPort({
-      candles: () => ({
-        getSeries: async () => ({
-          symbol: PRIMARY_BENCHMARK_SYMBOL,
-          interval: '5m',
-          candles: [],
-          health: 'UNAVAILABLE' as const,
-          observedAtMs: null,
-          exchangeSnapshotTimeMs: null,
-          gapCount: 0,
-          hasGaps: null,
-          gapCheck: 'CHECKED' as const,
-          source: 'REST' as const,
-        }),
-      }),
+      candles: () => candles,
       quote: quoteFor,
       orderBook: (symbol) => deps.sharedMarketData.orderBookDataPlane.get(symbol.toUpperCase()),
     });
@@ -97,6 +85,7 @@ export class MomentumRideBlackBoxObservation
         quoteFor,
         orderBookFor: (symbol) => deps.sharedMarketData.orderBookDataPlane.get(symbol.toUpperCase()),
         aggTradeFor: (symbol) => deps.sharedMarketData.aggTradeDataPlane.get(symbol.toUpperCase()),
+        candles,
         benchmark,
       },
       deps.clock,
