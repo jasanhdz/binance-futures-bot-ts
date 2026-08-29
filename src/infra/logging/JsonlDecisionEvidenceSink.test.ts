@@ -16,7 +16,8 @@ describe('JsonlDecisionEvidenceSink', () => {
         decisionId: 'd1',
         marketSnapshotId: 's1',
         symbol: 'BTCUSDT',
-        evaluatedAtMs: 1,
+        evaluatedAtReceivedMs: 1,
+        strategyTimestampMs: 1,
         recordedAtMs: 2,
         strategy: {
           strategyId: 'AEGIS_TURBO',
@@ -33,6 +34,7 @@ describe('JsonlDecisionEvidenceSink', () => {
           schema: 'STRATEGY_DECISION_BLACKBOX_V1',
           schemaVersion: 1,
           marketSnapshotSchemaVersion: 1,
+          causalClock: 'LOCAL_RECEIVE_TIME',
         },
       } satisfies StrategyDecisionEvidenceV1;
 
