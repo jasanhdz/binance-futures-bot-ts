@@ -1,0 +1,1163 @@
+import { Logger } from '../../../app/ports/Logger';
+import { MarketDataPort } from '../../../app/ports/MarketData';
+import { StrategyRouter } from '../../../app/strategy/StrategyRouter';
+import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from './SynchronizedOrderBook';
+import { BtcMicroContextProvider, BtcMicroContextDeps } from './BtcMicroContextProvider';
+import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';
+import {
+  MicroBurstReferencePriceProvider,
+  MicroBurstReferencePriceDeps,
+} from './MicroBurstReferencePrice';
+import { MicroBurstShadowEvaluator } from './MicroBurstShadowEvaluator';
+import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
+import {
+  MicroBurstRuntimeConfig,
+  MicroBurstShadowEvaluationResult,
+  AggTradeEvent,
+  SynchronizedOrderBookState,
+} from './MicroBurstMarketDataTypes';
+import { MicroBurstStrategyContext } from './MicroBurstStrategy';
+import { MicroBurstContextBuilderDeps } from './MicroBurstContextBuilder';
+import { MicroBurstSignalJournal } from './MicroBurstSignalJournal';
+import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
+import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
+import { assessMicroBurstReadiness, MicroBurstReadinessResult } from './MicroBurstReadiness';
+import { GapKind, MarketDataFeed } from '../../../app/micro-burst/MicroBurstMarketData';
+import { defaultMicroBurstConfig, MicroBurstConfig } from './MicroBurstTypes';
+import { analyzeBookPressure } from './MicroBurstBookPressureAnalyzer';
+import { FileShadowTradeJournal, ShadowJournal } from '../../../core/shadow/ShadowTradeJournal';
+import { ShadowTradingEngine } from '../../../core/shadow/ShadowTradingEngine';
+import { ShadowMarketQuote, ShadowPosition } from '../../../core/shadow/ShadowTradingTypes';
+import { MicroBurstShadowPolicyAdapter } from './MicroBurstShadowPolicyAdapter';
+import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
+import { OrderBookDataPlane } from '../../../core/market-data/OrderBookDataPlane';
+import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
+import { AggTradeDataPlane } from '../../../core/market-data/AggTradeDataPlane';
+import type { AggTradeLease } from '../../../core/market-data/AggTradeDataPlane';
+import { ComposedBenchmarkMarketDataPort } from '../../../core/market-data/BenchmarkMarketData';
+import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
+
+const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
+const HEALTH_REPORT_INTERVAL_MS = 60_000;
+
+interface Clock {
+  now(): number;
+}
+
+export interface MicroBurstRuntimeHealth {
+  running: boolean;
+  symbolCount: number;
+  healthyBooks: number;
+  btcHealthy: boolean;
+  totalEvaluations: number;
+  totalUniqueSignals: number;
+  paperSuppressedEntries: number;
+  totalDuplicateSignals: number;
+  totalInvalidContexts: number;
+  totalResyncs: number;
+  liveExecution: false;
+  paperEngine: 'GENERIC';
+  lastHealthReportAt: number;
+  outcomeTracker: {
+    signalsObserved: number;
+    pendingOutcomes: number;
+    completedOutcomes: number;
+    outcomeErrors: number;
+    journalHealthy?: boolean;
+    malformedJournalCount?: number;
+    malformedJournalFile?: string | null;
+    malformedJournalLine?: number | null;
+    malformedJournalReason?: string | null;
+  } | null;
+  signalJournalHealthy: boolean;
+  marketArchiveHealthy: boolean | null;
+  archiveQueueDepth: number | null;
+  archiveQueuedRecords: number | null;
+  archiveWrittenRecords: number | null;
+  archiveOverflowRecords: number | null;
+  archiveActiveSegmentCount: number | null;
+  archiveActiveSegmentRecords: number | null;
+  archiveSegmentsFinalized: number | null;
+  archiveRecordsDurablyFlushed: number | null;
+  archiveFinalizationQueueDepth: number | null;
+  archiveRecoveryFailures: number | null;
+  archiveBytes: number | null;
+  archiveFileCount: number | null;
+  archiveRetentionAgeMs: number | null;
+  archiveRetentionWarning: boolean | null;
+  storageErrors: number;
+  mutationAttempts: number;
+  forwardedMutations: number;
+  readiness: MicroBurstRuntimeReadiness;
+  paperTrading: {
+    openPositions: number;
+    recoveryBlocked: boolean;
+    journalHealthy: boolean;
+    completedManagedTrades: number;
+    persistenceErrors: number;
+  };
+}
+
+export interface MicroBurstRuntimeReadiness extends MicroBurstReadinessResult {
+  cohortId: string | null;
+  strategyVersion: string | null;
+  codeCommitSha: string | null;
+  configHash: string | null;
+  liveExecution: false;
+}
+
+interface SymbolRuntimeState {
+  book: SynchronizedOrderBook;
+  bookLease: OrderBookLease<SynchronizedOrderBook>;
+  aggTradeBuffer: MicroBurstAggTradeBuffer;
+  aggTradeLease: AggTradeLease<MicroBurstAggTradeBuffer>;
+  referencePriceProvider: MicroBurstReferencePriceProvider;
+  evaluationInFlight: boolean;
+  lastEvaluationAt: number;
+  evaluationCount: number;
+  uniqueSignalCount: number;
+  duplicateSignalCount: number;
+  invalidContextCount: number;
+  bookResyncCount: number;
+}
+
+export interface MicroBurstRuntimeDeps {
+  exchange: MarketDataPort;
+  logger: Logger;
+  clock: Clock;
+  strategyRouter: StrategyRouter<MicroBurstStrategyContext>;
+  outcomeTracker?: {
+    trackSignal(snapshot: ShadowSignalSnapshot): void;
+    observeTradeEvent(event: {
+      eventTime: number;
+      receivedAtMs?: number;
+      price: number;
+      symbol: string;
+      quantity?: number;
+      isBuyerMaker?: boolean;
+      tradeTime?: number;
+      aggregateTradeId?: number;
+      firstTradeId?: number;
+      lastTradeId?: number;
+    }): void;
+    flushPending(currentTimeMs: number): void;
+    getHealth(): {
+      signalsObserved: number;
+      pendingOutcomes: number;
+      completedOutcomes: number;
+      outcomeErrors: number;
+      journalHealthy?: boolean;
+      malformedJournalCount?: number;
+      malformedJournalFile?: string | null;
+      malformedJournalLine?: number | null;
+      malformedJournalReason?: string | null;
+    };
+  };
+  marketStorage?: {
+    appendTrade?(event: Record<string, unknown>): boolean;
+    appendDepth(event: Record<string, unknown>): boolean;
+    recordGap?(gap: {
+      symbol: string;
+      startedAtMs: number;
+      endedAtMs: number;
+      reason: string;
+      kind?: GapKind;
+      feed?: MarketDataFeed;
+      [key: string]: unknown;
+    }): boolean;
+    persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
+    hasAggTradeGap?(symbol: string, fromMs: number, toMs: number): boolean;
+    flush?(): boolean | Promise<boolean>;
+    close?(): boolean | void | Promise<boolean | void>;
+    getHealth(): {
+      healthy: boolean;
+      errorCount: number;
+      queueDepth?: number;
+      queueCapacity?: number;
+      queuedRecords?: number;
+      writtenRecords?: number;
+      overflowRecords?: number;
+      draining?: boolean;
+      activeSegmentCount?: number;
+      activeSegmentRecords?: number;
+      segmentsFinalized?: number;
+      recordsDurablyFlushed?: number;
+      finalizationQueueDepth?: number;
+      recoveryFailures?: number;
+      archiveBytes?: number;
+      archiveFileCount?: number;
+      archiveRetentionAgeMs?: number | null;
+      retentionWarning?: boolean;
+    };
+  };
+  provenance?: {
+    codeCommitSha: string;
+    configHash: string;
+    cohortId: string;
+    officialCohortReady: boolean;
+  };
+  readinessEvidence?: {
+    mutationAuditAvailable?: boolean;
+    manifestValid?: boolean;
+    schemaValid?: boolean;
+    episodeDefinitionValid?: boolean;
+    costSemanticsValid?: boolean;
+  };
+  mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
+  shadowTradeJournal?: ShadowJournal;
+  orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
+  aggTradeDataPlane?: AggTradeDataPlane<MicroBurstAggTradeBuffer>;
+}
+
+export class MicroBurstRuntime {
+  private running = false;
+  private evaluationTimer: NodeJS.Timeout | null = null;
+  private healthTimer: NodeJS.Timeout | null = null;
+  private btcProvider: BtcMicroContextProvider | null = null;
+  private shadowEvaluator: MicroBurstShadowEvaluator | null = null;
+  private readonly symbolStates = new Map<string, SymbolRuntimeState>();
+  private totalEvaluations = 0;
+  private totalUniqueSignals = 0;
+  private paperSuppressedEntries = 0;
+  private readonly paperSuppressionDiagnostics = new Set<string>();
+  private totalDuplicateSignals = 0;
+  private totalInvalidContexts = 0;
+  private lastHealthReportAt = 0;
+  private readonly evaluationIntervalMs: number;
+  private readonly journal: MicroBurstSignalJournal;
+  private stopPromise: Promise<void> | null = null;
+  private readonly shadowEngine: ShadowTradingEngine;
+  private readonly shadowTradeJournal: ShadowJournal;
+  private paperRecoveryBlocked = false;
+  private paperPersistenceError: string | null = null;
+  private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
+  private aggTradeDataPlane?: AggTradeDataPlane<MicroBurstAggTradeBuffer>;
+
+  constructor(
+    private readonly deps: MicroBurstRuntimeDeps,
+    private readonly config: MicroBurstRuntimeConfig,
+    evaluationIntervalMs = DEFAULT_EVALUATION_INTERVAL_MS,
+    journalDir?: string,
+  ) {
+    this.evaluationIntervalMs = evaluationIntervalMs;
+    this.journal = new MicroBurstSignalJournal(journalDir);
+    this.shadowTradeJournal =
+      deps.shadowTradeJournal ??
+      new FileShadowTradeJournal(
+        'logs/micro-burst/shadow/trades',
+        'logs/micro-burst/shadow/trade-events',
+      );
+    const microBurstConfig: MicroBurstConfig = defaultMicroBurstConfig();
+    const costScenarios = new Map([
+      [
+        'MICRO_BURST_V1' as const,
+        Object.fromEntries(
+          DEFAULT_COST_SCENARIOS.map((scenario) => [
+            scenario.label,
+            { feeBps: scenario.feeBps, additionalSlippageBps: scenario.slippageBps },
+          ]),
+        ),
+      ],
+    ]);
+    this.shadowEngine = new ShadowTradingEngine(
+      this.shadowTradeJournal,
+      new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(microBurstConfig)]] as const),
+      costScenarios,
+    );
+    try {
+      if (!this.shadowTradeJournal.getHealth().healthy)
+        throw new Error('SHADOW_TRADE_JOURNAL_MALFORMED');
+      this.paperRecoveryBlocked = Object.values(this.shadowEngine.getHealth().strategies).some(
+        (strategy) => strategy.recoveryBlocked > 0,
+      );
+    } catch (error) {
+      this.paperRecoveryBlocked = true;
+      this.deps.logger.error('micro_burst_paper_recovery_blocked', { error: String(error) });
+    }
+  }
+
+  async start(): Promise<void> {
+    if (this.running) return;
+    if (this.stopPromise) this.stopPromise = null;
+    if (!this.config.enabled || this.config.mode === 'OFF') {
+      this.deps.logger.info('micro_burst_runtime_skip_start', {
+        enabled: this.config.enabled,
+        mode: this.config.mode,
+      });
+      return;
+    }
+
+    if (this.config.mode === 'LIVE') {
+      this.deps.logger.error('micro_burst_runtime_live_rejected', {
+        message: 'MICRO_BURST_V1 LIVE mode not authorized. Failing closed.',
+      });
+      throw new Error('MICRO_BURST_V1_LIVE_NOT_AUTHORIZED');
+    }
+
+    const enabledSymbols = Object.entries(this.config.symbols)
+      .filter(([, symConf]) => symConf.enabled)
+      .map(([symbol]) => symbol);
+
+    if (enabledSymbols.length === 0) {
+      this.deps.logger.info('micro_burst_runtime_no_enabled_symbols');
+      return;
+    }
+
+    this.running = true;
+
+    const clock = this.deps.clock;
+    const logger = this.deps.logger;
+    const exchange = this.deps.exchange;
+
+    const candleProvider = new MarketDataCandleProvider(exchange, clock);
+    const benchmarkData = new ComposedBenchmarkMarketDataPort({
+      candles: () => candleProvider,
+    }).getBenchmark({ id: 'PRIMARY_CRYPTO_BENCHMARK', symbol: 'BTCUSDT' });
+    const btcDeps: BtcMicroContextDeps = {
+      benchmark: benchmarkData,
+      logger,
+    };
+    this.btcProvider = new BtcMicroContextProvider('BTCUSDT', btcDeps, clock);
+    this.btcProvider.start();
+
+    const duplicateGuard = new MicroBurstDuplicateSignalGuard(clock);
+
+    this.orderBookDataPlane =
+      this.deps.orderBookDataPlane ??
+      new OrderBookDataPlane((symbol) => {
+        const bookDeps: SynchronizedOrderBookDeps = {
+          snapshotSource: {
+            getSnapshot: async (sym: string, levels: number) => {
+              if (!exchange.getDepthSnapshot) {
+                throw new Error('Exchange does not support depth snapshot');
+              }
+              return exchange.getDepthSnapshot(sym, levels);
+            },
+          },
+          diffSource: {
+            onDiff: (sym: string, callback: (event: any) => void) => {
+              if (!exchange.subscribeToDepthDiff) {
+                logger.warn('micro_burst_exchange_no_depth_diff', { symbol: sym });
+                return () => {};
+              }
+              return exchange.subscribeToDepthDiff(sym, '100ms', (depth) => {
+                this.deps.marketStorage?.appendDepth({
+                  symbol: sym,
+                  eventTime: depth.E,
+                  receivedAtMs: depth.receivedAtMs,
+                  E: depth.E,
+                  T: depth.T,
+                  U: depth.U,
+                  u: depth.u,
+                  pu: depth.pu,
+                  b: depth.bids,
+                  a: depth.asks,
+                });
+                callback(depth);
+              });
+            },
+          },
+          logger,
+          clock,
+          getServerTime: () => exchange.getServerTime(),
+        };
+        return new SynchronizedOrderBook(symbol, bookDeps);
+      });
+
+    const aggTradeDataPlane =
+      this.deps.aggTradeDataPlane ??
+      new AggTradeDataPlane(
+        (symbol) =>
+          new MicroBurstAggTradeBuffer(
+            clock,
+            undefined,
+            undefined,
+            (gap) => {
+              this.deps.marketStorage?.recordGap?.({
+                symbol,
+                startedAtMs: gap.previousEventTimeMs ?? gap.nextEventTimeMs,
+                endedAtMs: gap.nextEventTimeMs,
+                reason: 'AGG_TRADE_SEQUENCE_GAP',
+                kind: 'AGG_TRADE_SEQUENCE',
+                feed: 'AGG_TRADE',
+                previousAggregateTradeId: gap.previousAggregateTradeId,
+                nextAggregateTradeId: gap.nextAggregateTradeId,
+                previousFirstTradeId: gap.previousFirstTradeId,
+                previousLastTradeId: gap.previousLastTradeId,
+                nextFirstTradeId: gap.nextFirstTradeId,
+                nextLastTradeId: gap.nextLastTradeId,
+                dedupeKey: gap.dedupeKey,
+              });
+            },
+            (fromMs, toMs) =>
+              this.deps.marketStorage?.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,
+          ),
+        {
+          subscribe: (symbol, onEvent, onStatus) => {
+            if (!exchange.subscribeToAggTrades) return () => {};
+            return exchange.subscribeToAggTrades(
+              symbol,
+              (trade) =>
+                onEvent({
+                  eventTime: trade.eventTime,
+                  receivedAtMs: trade.receivedAtMs,
+                  price: Number(trade.price),
+                  quantity: Number(trade.quantity),
+                  isBuyerMaker: trade.isBuyerMaker,
+                  tradeTime: trade.tradeTime,
+                  aggregateTradeId: trade.aggregateTradeId,
+                  firstTradeId: trade.firstTradeId,
+                  lastTradeId: trade.lastTradeId,
+                }),
+              onStatus,
+            );
+          },
+        },
+      );
+    this.aggTradeDataPlane = aggTradeDataPlane;
+
+    for (const symbol of enabledSymbols) {
+      const bookLease = this.orderBookDataPlane.acquire(symbol);
+      const book = bookLease.book;
+      const aggTradeLease = aggTradeDataPlane.acquire(symbol, (event) => {
+        this.managePaperTrade(symbol, event);
+        this.deps.marketStorage?.appendTrade?.({
+          symbol,
+          eventTime: event.eventTime,
+          receivedAtMs: event.receivedAtMs ?? this.deps.clock.now(),
+          price: event.price,
+          quantity: event.quantity,
+          isBuyerMaker: event.isBuyerMaker,
+          aggregateTradeId: event.aggregateTradeId,
+          firstTradeId: event.firstTradeId,
+          lastTradeId: event.lastTradeId,
+        });
+
+        if (this.deps.outcomeTracker) {
+          this.deps.outcomeTracker.observeTradeEvent({
+            eventTime: event.eventTime,
+            receivedAtMs: event.receivedAtMs,
+            price: event.price,
+            symbol,
+            quantity: event.quantity,
+            isBuyerMaker: event.isBuyerMaker,
+            tradeTime: event.tradeTime,
+            aggregateTradeId: event.aggregateTradeId,
+            firstTradeId: event.firstTradeId,
+            lastTradeId: event.lastTradeId,
+          });
+        }
+      });
+      const aggTradeBuffer = aggTradeLease.state;
+
+      const refPriceDeps: MicroBurstReferencePriceDeps = {
+        getMarkPrice: (sym: string) => exchange.getMarkPrice(sym),
+        getDepthSnapshot: book.getSnapshotForPressure.bind(book) as any,
+        logger,
+      };
+      const refPriceProvider = new MicroBurstReferencePriceProvider(refPriceDeps, clock);
+
+      const state: SymbolRuntimeState = {
+        book,
+        bookLease,
+        aggTradeBuffer,
+        aggTradeLease,
+        referencePriceProvider: refPriceProvider,
+        evaluationInFlight: false,
+        lastEvaluationAt: 0,
+        evaluationCount: 0,
+        uniqueSignalCount: 0,
+        duplicateSignalCount: 0,
+        invalidContextCount: 0,
+        bookResyncCount: 0,
+      };
+      this.symbolStates.set(symbol, state);
+
+      refPriceProvider.pollMarkPrice(symbol).catch(() => {});
+    }
+
+    const contextBuilderDeps: MicroBurstContextBuilderDeps = {
+      candles: {
+        getCandles: (sym, interval, limit) => exchange.getCandles(sym, interval, limit),
+      },
+      btc: this.btcProvider,
+      book: {
+        getDepthSnapshot: (sym: string) => {
+          const state = this.symbolStates.get(sym);
+          if (!state) return undefined;
+          return state.book.getSnapshotForPressure() as any;
+        },
+      },
+      referencePrice: {
+        getReferencePrice: (sym: string, bookSnapshot?: any) => {
+          const state = this.symbolStates.get(sym);
+          if (!state) return undefined;
+          return state.referencePriceProvider.getReferencePrice(sym, bookSnapshot);
+        },
+      },
+      aggTradeFlow: {
+        getTakerFlow: (sym: string) => {
+          const state = this.symbolStates.get(sym);
+          if (!state) {
+            return {
+              buyVolume: 0,
+              sellVolume: 0,
+              netTakerVolume: 0,
+              tradeCount: 0,
+              requestedWindowMs: 300_000,
+              observedWindowMs: 0,
+              observedSampleCount: 0,
+              eventWatermarkMs: null,
+              capacityTruncated: false,
+              coverageStartedAtMs: null,
+              windowComplete: false,
+              gapFree: true,
+            };
+          }
+          return state.aggTradeBuffer.getTakerFlow();
+        },
+      },
+    };
+
+    this.shadowEvaluator = new MicroBurstShadowEvaluator(
+      {
+        contextBuilderDeps,
+        strategyRouter: this.deps.strategyRouter,
+        duplicateGuard,
+        logger,
+        clock,
+        getServerTime: () => exchange.getServerTime(),
+      },
+      this.config,
+    );
+
+    this.startEvaluationLoop();
+    this.startHealthReporting();
+
+    logger.info('micro_burst_runtime_started', {
+      mode: this.config.mode,
+      symbols: enabledSymbols,
+      evaluationIntervalMs: this.evaluationIntervalMs,
+    });
+  }
+
+  stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.running = false;
+
+    if (this.evaluationTimer) {
+      clearInterval(this.evaluationTimer);
+      this.evaluationTimer = null;
+    }
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
+    }
+
+    for (const [symbol, state] of this.symbolStates) {
+      state.bookLease.release();
+      state.aggTradeLease.release();
+      state.aggTradeBuffer.clear();
+      state.evaluationInFlight = false;
+    }
+    this.symbolStates.clear();
+
+    if (this.btcProvider) {
+      this.btcProvider.stop();
+      this.btcProvider = null;
+    }
+
+    this.stopPromise = (async () => {
+      const failures: string[] = [];
+      try {
+        this.journal.flush();
+      } catch (error) {
+        failures.push(`signal journal: ${String(error)}`);
+      }
+
+      // Attempt every durable sink even when an earlier sink fails.
+      try {
+        this.deps.outcomeTracker?.flushPending(this.deps.clock.now());
+      } catch (error) {
+        failures.push(`outcome tracker: ${String(error)}`);
+      }
+      try {
+        this.shadowEngine.flush();
+      } catch (error) {
+        failures.push(`paper trade journal: ${String(error)}`);
+      }
+      if (this.paperPersistenceError)
+        failures.push(`paper trade persistence: ${this.paperPersistenceError}`);
+      if (this.shadowEngine.getCanonicalPersistenceFailureCount() > 0)
+        failures.push('paper trade persistence: canonical write failures');
+      try {
+        await this.drainAndCloseStorage();
+      } catch (error) {
+        failures.push(`market storage: ${String(error)}`);
+      }
+
+      if (failures.length > 0) {
+        const error = new Error(`MICRO_BURST_RUNTIME_SHUTDOWN_FAILED: ${failures.join('; ')}`);
+        this.deps.logger.error('micro_burst_runtime_shutdown_failed', { error: error.message });
+        throw error;
+      }
+      this.reportHealth('graceful_shutdown');
+      this.deps.logger.info('micro_burst_runtime_stopped');
+    })();
+    return this.stopPromise;
+  }
+
+  async evaluateSymbol(
+    symbol: string,
+    snapshotAtMs?: number,
+  ): Promise<MicroBurstShadowEvaluationResult | null> {
+    const state = this.symbolStates.get(symbol);
+    if (!state || !this.shadowEvaluator) return null;
+    if (state.evaluationInFlight) return null;
+    if (!this.running) return null;
+
+    state.evaluationInFlight = true;
+    const t0 = this.deps.clock.now();
+
+    try {
+      const result = await this.shadowEvaluator.evaluate({
+        symbol,
+        snapshotAtMs,
+      });
+
+      let paperSuppressed = false;
+      if (result.wouldEnter && !result.duplicateSuppressed && result.side) {
+        const quote = this.paperQuote(state.book.getSnapshotForPressure());
+        const decisionReceivedAtMs = this.deps.clock.now();
+        const opened = this.shadowEngine.open(
+          {
+            strategyId: 'MICRO_BURST_V1',
+            strategyVersion: result.strategyVersion,
+            symbol: result.symbol,
+            side: result.side,
+            decisionAtMs: result.snapshotAtMs,
+            decisionReceivedAtMs,
+            referencePrice: result.referencePrice,
+            structuralStop: result.structuralInvalidation ?? undefined,
+            destination: result.destinationPrice ?? undefined,
+            leverage: numberDiagnostic(result.diagnostics?.leverage),
+            positionFraction: numberDiagnostic(result.diagnostics?.positionFraction),
+            parentDecisionId: result.shadowSignalId,
+            provenance: {
+              strategyVersion: result.strategyVersion,
+              cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
+              codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
+              configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
+            },
+            diagnostics: result.diagnostics,
+          },
+          quote,
+        );
+        if (opened.status === 'SUPPRESSED') {
+          paperSuppressed = true;
+          this.paperSuppressedEntries++;
+          const suppressionKey = `${symbol}:${opened.event.tradeId ?? 'UNKNOWN'}`;
+          if (!this.paperSuppressionDiagnostics.has(suppressionKey)) {
+            this.paperSuppressionDiagnostics.add(suppressionKey);
+            this.deps.logger.info('micro_burst_paper_entry_suppressed', {
+              symbol,
+              tradeId: opened.event.tradeId,
+            });
+          }
+        } else if (opened.status === 'DATA_UNCERTAIN' || opened.status === 'RECOVERY_BLOCKED') {
+          if (opened.status === 'RECOVERY_BLOCKED') {
+            this.paperRecoveryBlocked = true;
+            this.paperPersistenceError = 'RECOVERY_BLOCKED';
+          }
+        }
+      }
+
+      state.evaluationCount++;
+      state.lastEvaluationAt = t0;
+      this.totalEvaluations++;
+
+      if (result.dataQuality.contextValid) {
+        if (result.duplicateSuppressed) {
+          state.duplicateSignalCount++;
+          this.totalDuplicateSignals++;
+        } else if (result.wouldEnter && !paperSuppressed) {
+          state.uniqueSignalCount++;
+          this.totalUniqueSignals++;
+          if (!this.journal.append(result, this.deps.provenance)) {
+            this.deps.logger.error('micro_burst_signal_journal_write_failed', {
+              shadowSignalId: result.shadowSignalId,
+            });
+          }
+
+          // M3: Track signal for prospective outcome validation
+          if (this.deps.outcomeTracker && result.side) {
+            const snapshot = freezeSignalSnapshot({
+              schemaVersion: 1,
+              shadowSignalId: result.shadowSignalId,
+              cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
+              strategyId: 'MICRO_BURST_V1',
+              strategyVersion: result.strategyVersion,
+              codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
+              configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
+              symbol: result.symbol,
+              side: result.side,
+              signalAtMs: result.snapshotAtMs,
+              marketPriceAtSignal: result.referencePrice,
+              referencePriceSource:
+                typeof result.diagnostics?.referencePriceSource === 'string'
+                  ? result.diagnostics.referencePriceSource
+                  : 'UNKNOWN',
+              structuralStopPrice: result.structuralInvalidation ?? 0,
+              destinationPrice: result.destinationPrice ?? 0,
+              support: result.supportPrice,
+              resistance: result.resistancePrice,
+              roomToTargetBps: result.roomToTargetBps ?? 0,
+              riskToInvalidationBps: result.riskToInvalidationBps ?? 0,
+              rewardRisk: result.rewardRisk ?? 0,
+              momentum: result.momentum,
+              book: {
+                status: result.book.status,
+                ageMs: result.book.ageMs,
+                imbalance: result.book.imbalance,
+                imbalanceSlope: result.book.imbalanceSlope,
+                temporalAbsorption:
+                  typeof result.diagnostics?.temporalAbsorptionDetected === 'boolean'
+                    ? result.diagnostics.temporalAbsorptionDetected
+                    : false,
+                temporalSweep:
+                  typeof result.diagnostics?.temporalSweepDetected === 'boolean'
+                    ? result.diagnostics.temporalSweepDetected
+                    : false,
+              },
+              tradeFlow: {
+                buyTakerVolume:
+                  typeof result.diagnostics?.takerBuyVolume === 'number'
+                    ? result.diagnostics.takerBuyVolume
+                    : 0,
+                sellTakerVolume:
+                  typeof result.diagnostics?.takerSellVolume === 'number'
+                    ? result.diagnostics.takerSellVolume
+                    : 0,
+                netTakerFlow:
+                  typeof result.diagnostics?.takerNetFlow === 'number'
+                    ? result.diagnostics.takerNetFlow
+                    : 0,
+                sampleCount:
+                  typeof result.diagnostics?.takerFlowSampleCount === 'number'
+                    ? result.diagnostics.takerFlowSampleCount
+                    : 0,
+              },
+              btc: {
+                status: result.btc.status,
+                ageMs: result.btc.ageMs,
+                ret1m: result.btc.ret1m,
+                ret3m: result.btc.ret3m,
+                ret5m: result.btc.ret5m,
+                acceleration:
+                  typeof result.diagnostics?.btcAcceleration === 'number'
+                    ? result.diagnostics.btcAcceleration
+                    : null,
+                direction:
+                  typeof result.diagnostics?.btcDirection === 'string'
+                    ? (result.diagnostics.btcDirection as any)
+                    : null,
+                conflict: result.btc.conflict,
+              },
+              confidence: result.confidence,
+              leverageTier:
+                typeof result.diagnostics?.leverageTier === 'string'
+                  ? result.diagnostics.leverageTier
+                  : 'NONE',
+              leverage:
+                typeof result.diagnostics?.leverage === 'number' ? result.diagnostics.leverage : 0,
+              positionFraction:
+                typeof result.diagnostics?.positionFraction === 'number'
+                  ? result.diagnostics.positionFraction
+                  : 0,
+              microRegime: result.microRegime,
+            });
+            this.deps.outcomeTracker.trackSignal(snapshot);
+          }
+        }
+      } else {
+        state.invalidContextCount++;
+        this.totalInvalidContexts++;
+      }
+
+      const bookState = state.book.getState();
+      state.bookResyncCount = bookState.resyncCount;
+
+      return result;
+    } catch (err) {
+      this.deps.logger.error('micro_burst_runtime_evaluation_error', {
+        symbol,
+        error: String(err),
+      });
+      return null;
+    } finally {
+      state.evaluationInFlight = false;
+    }
+  }
+
+  getHealth(): MicroBurstRuntimeHealth {
+    let healthyBooks = 0;
+    for (const [, state] of this.symbolStates) {
+      const h = state.book.getHealth();
+      if (h === 'HEALTHY') healthyBooks++;
+    }
+
+    const btcContext = this.btcProvider?.getBtcContext();
+    const btcAgeMs = btcContext ? this.deps.clock.now() - btcContext.receivedAtMs : null;
+    const btcHealthy = btcAgeMs !== null && btcAgeMs >= 0 && btcAgeMs < 120_000;
+
+    const archiveHealth = this.deps.marketStorage?.getHealth();
+    const mutationAudit = this.deps.mutationAudit?.() ?? {
+      totalMutationAttempts: 0,
+      forwardedMutationCalls: 0,
+    };
+    return {
+      running: this.running,
+      symbolCount: this.symbolStates.size,
+      healthyBooks,
+      btcHealthy,
+      totalEvaluations: this.totalEvaluations,
+      totalUniqueSignals: this.totalUniqueSignals,
+      paperSuppressedEntries: this.paperSuppressedEntries,
+      totalDuplicateSignals: this.totalDuplicateSignals,
+      totalInvalidContexts: this.totalInvalidContexts,
+      totalResyncs: this.getTotalResyncs(),
+      liveExecution: false,
+      paperEngine: 'GENERIC',
+      lastHealthReportAt: this.lastHealthReportAt,
+      outcomeTracker: this.deps.outcomeTracker ? this.deps.outcomeTracker.getHealth() : null,
+      signalJournalHealthy: this.journal.getHealth().healthy,
+      marketArchiveHealthy: archiveHealth?.healthy ?? null,
+      archiveQueueDepth: archiveHealth?.queueDepth ?? null,
+      archiveQueuedRecords: archiveHealth?.queuedRecords ?? null,
+      archiveWrittenRecords: archiveHealth?.writtenRecords ?? null,
+      archiveOverflowRecords: archiveHealth?.overflowRecords ?? null,
+      archiveActiveSegmentCount: archiveHealth?.activeSegmentCount ?? null,
+      archiveActiveSegmentRecords: archiveHealth?.activeSegmentRecords ?? null,
+      archiveSegmentsFinalized: archiveHealth?.segmentsFinalized ?? null,
+      archiveRecordsDurablyFlushed: archiveHealth?.recordsDurablyFlushed ?? null,
+      archiveFinalizationQueueDepth: archiveHealth?.finalizationQueueDepth ?? null,
+      archiveRecoveryFailures: archiveHealth?.recoveryFailures ?? null,
+      archiveBytes: archiveHealth?.archiveBytes ?? null,
+      archiveFileCount: archiveHealth?.archiveFileCount ?? null,
+      archiveRetentionAgeMs: archiveHealth?.archiveRetentionAgeMs ?? null,
+      archiveRetentionWarning: archiveHealth?.retentionWarning ?? null,
+      storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
+      mutationAttempts: mutationAudit.totalMutationAttempts,
+      forwardedMutations: mutationAudit.forwardedMutationCalls,
+      readiness: this.getReadiness(),
+      paperTrading: {
+        openPositions: this.shadowEngine.getOpenPositions().length,
+        recoveryBlocked:
+          this.paperRecoveryBlocked ||
+          Object.values(this.shadowEngine.getHealth().strategies).some(
+            (strategy) => strategy.recoveryBlocked > 0,
+          ),
+        journalHealthy: this.shadowTradeJournal.getHealth().healthy,
+        completedManagedTrades: this.shadowTradeJournal
+          .loadAllPositions()
+          .filter((position) => position.state === 'CLOSED').length,
+        persistenceErrors: this.shadowEngine.getCanonicalPersistenceFailureCount(),
+      },
+    };
+  }
+
+  private managePaperTrade(symbol: string, event: AggTradeEvent): void {
+    const state = this.symbolStates.get(symbol);
+    const snapshot = state?.book.getSnapshotForPressure();
+    const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
+    const result = this.shadowEngine.manage(
+      { strategyId: 'MICRO_BURST_V1', symbol },
+      {
+        exchangeTimeMs: event.eventTime,
+        receivedAtMs,
+        currentPrice: event.price,
+        quote: this.paperQuote(snapshot),
+        marketDataQuality: snapshot?.status ?? 'UNAVAILABLE',
+        strategyContext: {
+          currentBookPressure: snapshot
+            ? analyzeBookPressure(snapshot, receivedAtMs, undefined, snapshot.temporalHistory)
+            : null,
+          currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
+          anomalyExitFlag: false,
+        },
+      },
+    );
+    if (!result) return;
+    if (result.state === 'CLOSED') {
+      this.paperSuppressionDiagnostics.delete(`${symbol}:${result.tradeId}`);
+    }
+  }
+
+  private paperQuote(
+    snapshot: ReturnType<SynchronizedOrderBook['getSnapshotForPressure']>,
+  ): ShadowMarketQuote | undefined {
+    if (!snapshot) return undefined;
+    return {
+      bestBid: snapshot.bidDepth[0]?.price ?? NaN,
+      bestAsk: snapshot.askDepth[0]?.price ?? NaN,
+      observedAtMs: snapshot.observedAtMs,
+      status: snapshot.status,
+    };
+  }
+
+  getReadiness(): MicroBurstRuntimeReadiness {
+    const provenance = this.deps.provenance;
+    const archive = this.deps.marketStorage;
+    const archiveHealth = archive?.getHealth();
+
+    let healthyBookCount = 0;
+    for (const state of this.symbolStates.values()) {
+      if (state.book.getHealth() === 'HEALTHY') healthyBookCount++;
+    }
+    const btcContext = this.btcProvider?.getBtcContext();
+    const btcAgeMs = btcContext ? this.deps.clock.now() - btcContext.receivedAtMs : null;
+    const btcHealthy = btcAgeMs !== null && btcAgeMs >= 0 && btcAgeMs < 120_000;
+    const readiness = assessMicroBurstReadiness({
+      codeSha: provenance?.codeCommitSha,
+      configHash: provenance?.configHash,
+      strategyVersion: this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion,
+      cohortId: provenance?.cohortId,
+      officialCohortReady: provenance?.officialCohortReady,
+      mode: this.config.mode,
+      enabled: this.config.enabled,
+      enabledSymbolCount: Object.values(this.config.symbols).filter((symbol) => symbol.enabled)
+        .length,
+      healthyBookCount: this.running ? healthyBookCount : undefined,
+      btcHealthy: this.running ? btcHealthy : undefined,
+      aggTradeHealthy:
+        this.running && this.symbolStates.size > 0
+          ? [...this.symbolStates.values()].every((state) => {
+              const flow = state.aggTradeBuffer.getTakerFlow();
+              return flow.windowComplete && flow.gapFree && !flow.capacityTruncated;
+            })
+          : undefined,
+      archiveEnabled: this.config.marketArchive?.enabled === true,
+      archiveAvailable: archive !== undefined,
+      archiveHealthy: archiveHealth?.healthy,
+      storageHealthy: archiveHealth?.healthy,
+      storageErrors: archiveHealth?.errorCount,
+      databaseValid: archive !== undefined && archiveHealth?.healthy === true,
+      preregistrationEnabled: this.config.prospectiveValidation?.enabled === true,
+      mutationAuditAvailable: this.deps.readinessEvidence?.mutationAuditAvailable,
+      unresolvedTradeGaps: this.countCurrentAggTradeGaps(),
+      manifestValid: this.deps.readinessEvidence?.manifestValid,
+      schemaValid: this.deps.readinessEvidence?.schemaValid,
+      episodeDefinitionValid: this.deps.readinessEvidence?.episodeDefinitionValid,
+      gapSemanticsValid: true,
+      costSemanticsValid: this.deps.readinessEvidence?.costSemanticsValid,
+      outcomeJournalHealthy: this.deps.outcomeTracker?.getHealth().journalHealthy ?? true,
+      symbolBlockers: this.getSymbolReadinessBlockers(),
+    });
+    /* Retain detailed legacy diagnostics while the typed checks are authoritative. */
+    const blockers = [...readiness.blockers];
+    if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
+    if (this.paperRecoveryBlocked) blockers.push('PAPER_RECOVERY_BLOCKED');
+    if (this.config.mode !== 'SHADOW')
+      blockers.push(
+        this.config.mode === 'LIVE' ? 'LIVE_MODE_NOT_DISABLED' : 'SHADOW_MODE_NOT_ENABLED',
+      );
+    if (!this.config.prospectiveValidation?.enabled)
+      blockers.push('PROSPECTIVE_VALIDATION_DISABLED');
+    if (!this.config.marketArchive?.enabled) blockers.push('MARKET_ARCHIVE_DISABLED');
+    if (!archive) blockers.push('MARKET_ARCHIVE_UNAVAILABLE');
+    if (archiveHealth && !archiveHealth.healthy) blockers.push('MARKET_ARCHIVE_UNHEALTHY');
+    const outcomeHealth = this.deps.outcomeTracker?.getHealth();
+    if (outcomeHealth && outcomeHealth.journalHealthy === false)
+      blockers.push('OUTCOME_JOURNAL_MALFORMED');
+    if (
+      archiveHealth &&
+      archiveHealth.queueCapacity !== undefined &&
+      archiveHealth.queueDepth !== undefined &&
+      archiveHealth.queueDepth >= archiveHealth.queueCapacity
+    ) {
+      blockers.push('MARKET_ARCHIVE_QUEUE_AT_CAPACITY');
+    }
+    if (!provenance?.codeCommitSha || provenance.codeCommitSha === 'UNKNOWN')
+      blockers.push('CODE_COMMIT_SHA_UNKNOWN');
+    if (!provenance?.configHash || provenance.configHash === 'UNKNOWN')
+      blockers.push('CONFIG_HASH_UNKNOWN');
+    if (!provenance?.cohortId?.startsWith('MBV1-M3_2-')) blockers.push('COHORT_NAMESPACE_INVALID');
+    if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
+
+    return {
+      ...readiness,
+      ready: readiness.readyForSoak && blockers.length === 0,
+      readyForSoak: readiness.readyForSoak && blockers.length === 0,
+      readyForFreeze: readiness.readyForFreeze && blockers.length === 0,
+      officialAuthority: readiness.officialAuthority && blockers.length === 0,
+      blockers,
+      cohortId: provenance?.cohortId ?? null,
+      strategyVersion:
+        this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion ?? null,
+      codeCommitSha: provenance?.codeCommitSha ?? null,
+      configHash: provenance?.configHash ?? null,
+      liveExecution: false,
+    };
+  }
+
+  getSymbolHealth(symbol: string): {
+    bookStatus: string;
+    bookAgeMs: number | null;
+    lastUpdateId: number;
+    resyncCount: number;
+    aggTradeCount: number;
+    evaluationCount: number;
+    uniqueSignals: number;
+    duplicateSignals: number;
+    invalidContexts: number;
+    coverageStartedAtMs: number | null;
+    eventWatermarkMs: number | null;
+    requestedWindowMs: number;
+    windowComplete: boolean;
+    capacityTruncated: boolean;
+    gapFree: boolean;
+    tradeCount: number;
+  } | null {
+    const state = this.symbolStates.get(symbol);
+    if (!state) return null;
+
+    const bookState = state.book.getState();
+    const recentTrades = state.aggTradeBuffer.getRecent();
+    const flow = state.aggTradeBuffer.getTakerFlow();
+
+    return {
+      bookStatus: bookState.health,
+      bookAgeMs: bookState.observedAtMs > 0 ? this.deps.clock.now() - bookState.observedAtMs : null,
+      lastUpdateId: bookState.lastUpdateId,
+      resyncCount: bookState.resyncCount,
+      aggTradeCount: recentTrades.length,
+      evaluationCount: state.evaluationCount,
+      uniqueSignals: state.uniqueSignalCount,
+      duplicateSignals: state.duplicateSignalCount,
+      invalidContexts: state.invalidContextCount,
+      coverageStartedAtMs: flow.coverageStartedAtMs,
+      eventWatermarkMs: flow.eventWatermarkMs,
+      requestedWindowMs: flow.requestedWindowMs,
+      windowComplete: flow.windowComplete,
+      capacityTruncated: flow.capacityTruncated,
+      gapFree: flow.gapFree,
+      tradeCount: flow.tradeCount,
+    };
+  }
+
+  getSymbolStates(): ReadonlyMap<string, SymbolRuntimeState> {
+    return this.symbolStates;
+  }
+
+  private getSymbolReadinessBlockers(): Record<string, string[]> {
+    const blockers: Record<string, string[]> = {};
+    for (const [symbol, state] of this.symbolStates) {
+      const reasons: string[] = [];
+      const bookHealth = state.book.getHealth();
+      if (bookHealth !== 'HEALTHY') reasons.push(`BOOK_${bookHealth}`);
+      const flow = state.aggTradeBuffer.getTakerFlow();
+      if (!flow.windowComplete) reasons.push('AGG_TRADE_WINDOW_INCOMPLETE');
+      if (flow.capacityTruncated) reasons.push('AGG_TRADE_CAPACITY_TRUNCATED');
+      if (!flow.gapFree) reasons.push('AGG_TRADE_GAP');
+      blockers[symbol] = reasons;
+    }
+    return blockers;
+  }
+
+  private countCurrentAggTradeGaps(): number | undefined {
+    const storage = this.deps.marketStorage;
+    if (!storage?.hasAggTradeGap) return undefined;
+    let count = 0;
+    for (const [symbol, state] of this.symbolStates) {
+      const flow = state.aggTradeBuffer.getTakerFlow();
+      if (flow.eventWatermarkMs === null) continue;
+      if (
+        storage.hasAggTradeGap(
+          symbol,
+          flow.eventWatermarkMs - flow.requestedWindowMs,
+          flow.eventWatermarkMs,
+        )
+      )
+        count++;
+    }
+    return count;
+  }
+
+  private startEvaluationLoop(): void {
+    this.evaluationTimer = setInterval(async () => {
+      if (!this.running) return;
+      for (const symbol of this.symbolStates.keys()) {
+        if (!this.running) break;
+        await this.evaluateSymbol(symbol);
+      }
+    }, this.evaluationIntervalMs);
+  }
+
+  private startHealthReporting(): void {
+    this.healthTimer = setInterval(() => {
+      if (!this.running) return;
+      this.reportHealth('periodic');
+    }, HEALTH_REPORT_INTERVAL_MS);
+  }
+
+  private reportHealth(phase: 'periodic' | 'graceful_shutdown'): void {
+    const health = this.getHealth();
+    this.lastHealthReportAt = this.deps.clock.now();
+    this.deps.logger.info('MICRO_BURST_SHADOW_HEALTH', {
+      phase,
+      symbols: health.symbolCount,
+      healthyBooks: health.healthyBooks,
+      btcHealthy: health.btcHealthy,
+      evaluations: health.totalEvaluations,
+      uniqueSignals: health.totalUniqueSignals,
+      duplicates: health.totalDuplicateSignals,
+      invalidContexts: health.totalInvalidContexts,
+      resyncs: health.totalResyncs,
+      liveExecution: health.liveExecution,
+      signalJournalHealthy: health.signalJournalHealthy,
+      marketArchiveHealthy: health.marketArchiveHealthy,
+      archiveQueueDepth: health.archiveQueueDepth,
+      archiveQueuedRecords: health.archiveQueuedRecords,
+      archiveWrittenRecords: health.archiveWrittenRecords,
+      archiveOverflowRecords: health.archiveOverflowRecords,
+      archiveBytes: health.archiveBytes,
+      archiveFileCount: health.archiveFileCount,
+      archiveRetentionAgeMs: health.archiveRetentionAgeMs,
+      archiveRetentionWarning: health.archiveRetentionWarning,
+      pendingOutcomes: health.outcomeTracker?.pendingOutcomes ?? 0,
+      completedOutcomes: health.outcomeTracker?.completedOutcomes ?? 0,
+      storageErrors: health.storageErrors,
+      mutationAttempts: health.mutationAttempts,
+      forwardedMutations: health.forwardedMutations,
+    });
+  }
+
+  private getTotalResyncs(): number {
+    let total = 0;
+    for (const [, state] of this.symbolStates) {
+      total += state.book.getState().resyncCount;
+    }
+    return total;
+  }
+
+  private async drainAndCloseStorage(): Promise<void> {
+    const storage = this.deps.marketStorage;
+    if (!storage) return;
+    try {
+      const flushed = await storage.flush?.();
+      if (flushed === false) throw new Error('MICRO_BURST_STORAGE_FLUSH_FAILED');
+      const result = await storage.close?.();
+      if ((result as boolean | undefined) === false)
+        throw new Error('MICRO_BURST_STORAGE_CLOSE_FAILED');
+    } catch (error) {
+      this.deps.logger.error('micro_burst_runtime_storage_shutdown_failed', {
+        error: String(error),
+      });
+      throw error;
+    }
+  }
+}
+
+function numberDiagnostic(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
