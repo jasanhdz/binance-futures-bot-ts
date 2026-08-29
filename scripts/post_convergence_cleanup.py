@@ -50,8 +50,6 @@ for old, new in MOVES.items():
     new.write_text(text)
     old.unlink()
 
-# Eliminate the strategy-owned OrderBook subclass. Core already exposes the same
-# causal OrderBookSnapshot used by the Micro Burst analyzers/runtime.
 runtime = Path('src/strategies/micro-burst/application/MicroBurstRuntime.ts')
 text = runtime.read_text()
 text = text.replace(
@@ -61,9 +59,25 @@ text = text.replace(
 text = text.replace('getSnapshotForPressure', 'getSnapshot')
 runtime.write_text(text)
 
+runtime_test = Path('src/strategies/micro-burst/application/MicroBurstRuntime.test.ts')
+if runtime_test.exists():
+    text = runtime_test.read_text().replace('.book.getSnapshotForPressure =', '.book.getSnapshot =')
+    runtime_test.write_text(text)
+
 wrapper = Path('src/strategies/micro-burst/domain/SynchronizedOrderBook.ts')
 if wrapper.exists():
     wrapper.unlink()
+
+# The Phase R contract should now protect absence of the compatibility adapter,
+# not require a file whose only purpose was transition to shared ownership.
+convergence_test = Path('src/core/market-data/MarketDataConvergence.test.ts')
+if convergence_test.exists():
+    text = convergence_test.read_text()
+    old = """  it('keeps the order-book compatibility adapter free of synchronization mechanics', () => {\n    const adapter = source('strategies/micro-burst/domain/SynchronizedOrderBook.ts');\n    expect(adapter).toContain('extends SharedSynchronizedOrderBook');\n    expect(adapter).not.toContain('syncFromSnapshot');\n    expect(adapter).not.toContain('handleDiff');\n    expect(adapter).not.toContain('diffBuffer');\n  });\n"""
+    new = """  it('removes the Micro Burst order-book compatibility adapter after shared ownership converges', () => {\n    expect(existsSync(resolve(srcRoot, 'strategies/micro-burst/domain/SynchronizedOrderBook.ts'))).toBe(false);\n  });\n"""
+    if old in text:
+        text = text.replace(old, new)
+    convergence_test.write_text(text)
 
 for d in sorted([p for p in Path('src').rglob('*') if p.is_dir()], key=lambda p: len(p.parts), reverse=True):
     try:
