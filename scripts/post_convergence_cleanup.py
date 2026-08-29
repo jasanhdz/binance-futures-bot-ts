@@ -68,15 +68,22 @@ wrapper = Path('src/strategies/micro-burst/domain/SynchronizedOrderBook.ts')
 if wrapper.exists():
     wrapper.unlink()
 
-# The Phase R contract should now protect absence of the compatibility adapter,
-# not require a file whose only purpose was transition to shared ownership.
+# Phase R must protect the final state: the temporary strategy adapter is gone.
 convergence_test = Path('src/core/market-data/MarketDataConvergence.test.ts')
 if convergence_test.exists():
     text = convergence_test.read_text()
-    old = """  it('keeps the order-book compatibility adapter free of synchronization mechanics', () => {\n    const adapter = source('strategies/micro-burst/domain/SynchronizedOrderBook.ts');\n    expect(adapter).toContain('extends SharedSynchronizedOrderBook');\n    expect(adapter).not.toContain('syncFromSnapshot');\n    expect(adapter).not.toContain('handleDiff');\n    expect(adapter).not.toContain('diffBuffer');\n  });\n"""
-    new = """  it('removes the Micro Burst order-book compatibility adapter after shared ownership converges', () => {\n    expect(existsSync(resolve(srcRoot, 'strategies/micro-burst/domain/SynchronizedOrderBook.ts'))).toBe(false);\n  });\n"""
-    if old in text:
-        text = text.replace(old, new)
+    start_marker = "  it('keeps the order-book compatibility adapter free of synchronization mechanics', () => {"
+    end_marker = "\n\n  it('keeps shared market-data production files free of concrete strategy imports', () => {"
+    start = text.find(start_marker)
+    end = text.find(end_marker, start)
+    if start < 0 or end < 0:
+        raise RuntimeError('unable to locate obsolete order-book compatibility contract')
+    replacement = """  it('removes the Micro Burst order-book compatibility adapter after shared ownership converges', () => {
+    expect(
+      existsSync(resolve(srcRoot, 'strategies/micro-burst/domain/SynchronizedOrderBook.ts')),
+    ).toBe(false);
+  });"""
+    text = text[:start] + replacement + text[end:]
     convergence_test.write_text(text)
 
 for d in sorted([p for p in Path('src').rglob('*') if p.is_dir()], key=lambda p: len(p.parts), reverse=True):
