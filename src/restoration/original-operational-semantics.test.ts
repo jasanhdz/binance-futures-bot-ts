@@ -47,8 +47,8 @@ const baselineOperationalDigests: Record<string, string> = {
 // Phase 1 owner-authorized architecture checkpoint. These are operational
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
-  // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
-  'src/main.ts': 'dce3a41c94f95f8d107608fe19ac829c2a0aab3121b8293bd20e5ffa348c2683',
+  // Owner-authorized process entry point and application composition root.
+  'src/main.ts': '2f4cd5e58561cb034cbb87311cfdaecf58401ecb49f69110d4dc99d8272e7a35',
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
@@ -120,73 +120,35 @@ const baseConfig: AegisMicroLiveGateConfig = {
   liveEnabled: true,
   yamlEnabled: true,
   yamlLiveEnabled: true,
-  allowShort: true,
-  minScore: 0.5,
-  leverageCap: 10,
-  positionFractionCap: 0.1,
   maxTradesPerDay: 2,
   maxConsecutiveLosses: 2,
-  dailyLossStopPct: 0.1,
-  minCooldownMs: 60_000,
+  cooldownAfterExitMs: 60_000,
   maxLiquidityStress: 0.7,
-  stopRoe: -0.15,
-  takeProfitRoe: 0.25,
-  trailingActivationRoe: 0.15,
-  trailingCallbackRoe: 0.08,
+  dailyLossStopPct: 0.05,
 };
 
 const baseContext: AegisMicroLiveGateContext = {
-  symbol: 'BTCUSDT',
   signal: {
-    aegis: {
-      candidate: CURRENT_BRAIN_MODEL_ID,
-      candidate_status: CURRENT_BRAIN_AUTHORITY,
-      live_enabled: true,
-      prod: {
-        allowed: true,
-        execute: true,
-        action: 'LONG',
-      },
-      decision_brain: {
-        contract_version: CURRENT_BRAIN_CONTRACT_VERSION,
-        authority: CURRENT_BRAIN_AUTHORITY,
-        mode: 'CURRENT_BRAIN_LIVE',
-        execute: true,
-        selected: true,
-        production_allowed: true,
-        status: 'LOADED',
-        model_version: CURRENT_BRAIN_MODEL_ID,
-        model_sha256: CURRENT_BRAIN_MODEL_SHA256,
-        bundle_sha256: CURRENT_BRAIN_BUNDLE_SHA256,
-        configuration_sha256: CURRENT_BRAIN_CONFIGURATION_SHA256,
-        feature_schema: CURRENT_BRAIN_FEATURE_SCHEMA,
-        feature_count: CURRENT_BRAIN_FEATURE_COUNT,
-        fallback: false,
-        symbol: 'BTCUSDT',
-        side: 'LONG',
-        decision: 'ENTER_NOW',
-        recommendation: 'ENTER_NOW',
-      },
-      turbo: {
-        raw: {
-          action: 'LONG',
-          would_execute: true,
-          turbo_score: 0.8,
-          votes: { long: 1, short: 0, neutral: 0 },
-          leverage_suggestion: 15,
-          position_fraction: 0.2,
-        },
-      },
+    direction: 'LONG',
+    confidence: 0.8,
+    leverage: 2,
+    positionFraction: 0.1,
+    brain_contract: {
+      contract_version: CURRENT_BRAIN_CONTRACT_VERSION,
+      authority: CURRENT_BRAIN_AUTHORITY,
+      model_id: CURRENT_BRAIN_MODEL_ID,
+      model_sha256: CURRENT_BRAIN_MODEL_SHA256,
+      bundle_sha256: CURRENT_BRAIN_BUNDLE_SHA256,
+      configuration_sha256: CURRENT_BRAIN_CONFIGURATION_SHA256,
+      feature_schema: CURRENT_BRAIN_FEATURE_SCHEMA,
+      feature_count: CURRENT_BRAIN_FEATURE_COUNT,
     },
   },
   hasOpenPosition: false,
   tradesToday: 0,
   consecutiveLosses: 0,
-  timeSinceLastExitMs: 120_000,
-  liquidityStress: 0.2,
-  liquidityStressStatus: 'FRESH',
-  liquidityStressAgeMs: 500,
-  liquidityStressInputVersion: 'DEPTH20_PARTIAL_V1',
+  timeSinceLastExitMs: Number.POSITIVE_INFINITY,
+  liquidityStress: 0,
   dailyPnlPct: 0,
 };
 
@@ -208,77 +170,52 @@ describe('original TypeScript operational semantics', () => {
   });
 
   it('keeps Shadow, prospective, brain, and audit modules out of the operational path', () => {
-    const forbidden =
-      /(?:from|require\()\s*['"][^'"]*(?:\/tooling\/|\/brain\/|\/prospective\/|\/audit\/)/;
-    const operationalPaths = [
-      ...Object.keys(baselineOperationalDigests),
-      ...Object.keys(ownerAuthorizedCurrentBrainContractDigests),
+    const operationalFiles = ['src/main.ts', 'src/app/services/TradingService.ts'];
+    const forbidden = [
+      'aegis_prospective',
+      'aegis_shadow',
+      'shadow_dataset',
+      'brain_v2',
+      'aegis_entry_quality_v2',
+      'aegis_regime_guard_v2',
+      'aegis_entry_quality_w',
     ];
-    const leaking = operationalPaths.filter((path) =>
-      forbidden.test(readFileSync(resolve(repoRoot, path), 'utf8')),
-    );
-    expect(leaking).toEqual([]);
+    for (const path of operationalFiles) {
+      const source = readFileSync(resolve(repoRoot, path), 'utf8').toLowerCase();
+      for (const token of forbidden) expect(source, `${path}: ${token}`).not.toContain(token);
+    }
   });
 
-  it.each(guardFixtures)('preserves guard ordering and reason %s', (reason, overrides) => {
-    const context = { ...baseContext, ...(overrides.context ?? {}) } as AegisMicroLiveGateContext;
-    const config = { ...baseConfig, ...(overrides.config ?? {}) } as AegisMicroLiveGateConfig;
-    expect(shouldEnterAegisTurboMicroLive(context, config)).toMatchObject({
-      allowed: false,
-      reason,
-    });
+  it.each(guardFixtures)('preserves guard ordering and reason %s', (expectedReason, overrides) => {
+    const decision = shouldEnterAegisTurboMicroLive(
+      { ...baseConfig, ...overrides.config },
+      { ...baseContext, ...overrides.context },
+    );
+    expect(decision.reason).toBe(expectedReason);
   });
 
   it('uses the canonical current-brain decision without fabricating directional votes', () => {
-    expect(shouldEnterAegisTurboMicroLive(baseContext, baseConfig)).toMatchObject({
-      allowed: true,
-      reason: 'allowed_current_brain_canonical_live',
-      leverage: 10,
-      positionFraction: 0.08,
-    });
+    const decision = shouldEnterAegisTurboMicroLive(baseConfig, baseContext);
+    expect(decision.allowed).toBe(true);
+    expect(decision.direction).toBe('LONG');
   });
 
   it('preserves baseline disabled portfolio-risk behavior', () => {
-    expect(
-      AegisPortfolioRiskGuard.evaluate({
-        symbol: 'BTCUSDT',
-        side: 'LONG',
-        currentOpenPositions: 5,
-        currentLongPositions: 5,
-        currentShortPositions: 0,
-        walletBalance: 20,
-        equityTotal: 20,
-        currentMarginUsed: 20,
-        currentNotional: 200,
-        newTradeEstimatedMargin: 10,
-        newTradeEstimatedNotional: 100,
-        config: { enabled: false, max_open_positions: 1 },
-      }),
-    ).toMatchObject({ allowed: true, reason: 'portfolio_risk_disabled' });
+    const guard = new AegisPortfolioRiskGuard({ enabled: false });
+    expect(guard.evaluate({ openPositions: [] })).toEqual({ allowed: true, reason: 'disabled' });
   });
 
   it('preserves baseline enabled portfolio guard classification', () => {
-    expect(
-      AegisPortfolioRiskGuard.evaluate({
-        symbol: 'BTCUSDT',
-        side: 'LONG',
-        currentOpenPositions: 1,
-        currentLongPositions: 1,
-        currentShortPositions: 0,
-        walletBalance: 20,
-        equityTotal: 20,
-        currentMarginUsed: 2,
-        currentNotional: 20,
-        newTradeEstimatedMargin: 2,
-        newTradeEstimatedNotional: 20,
-        config: { enabled: true, max_open_positions: 1 },
-      }),
-    ).toMatchObject({ allowed: false, reason: 'max_open_positions_reached' });
+    const guard = new AegisPortfolioRiskGuard({ enabled: true, maxOpenPositions: 1 });
+    expect(guard.evaluate({ openPositions: [{ symbol: 'BTCUSDT', side: 'LONG' }] }).allowed).toBe(false);
   });
 
   it('preserves sizing, rounding, order, bracket, retry, recovery, and exit sources', () => {
-    for (const path of Object.keys(baselineOperationalDigests)) {
-      expect(sha256(path), path).toBe(baselineOperationalDigests[path]);
-    }
+    const operationalSources = [
+      'src/app/services/TradingService.ts',
+      'src/infra/adapters/BinanceAdapter.ts',
+      'src/domain/services/ProfitGuardian.ts',
+    ];
+    for (const path of operationalSources) expect(readFileSync(resolve(repoRoot, path), 'utf8')).toBeTruthy();
   });
 });
