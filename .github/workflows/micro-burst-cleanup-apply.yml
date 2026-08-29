@@ -1,0 +1,172 @@
+name: Micro Burst Cleanup Apply
+
+on:
+  push:
+    branches: [work/micro-burst-rider-v1-20260826]
+    paths: ['.github/workflows/micro-burst-cleanup-apply.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply canonical import cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+          files = [p for base in ('src','scripts','tools') if Path(base).exists() for p in Path(base).rglob('*.ts')]
+
+          replacements = {
+              '/domain/strategies/micro-burst/MicroBurstConfigLoader': '/strategies/micro-burst/application/MicroBurstConfigLoader',
+              '/domain/strategies/micro-burst/MicroBurstOutcomeEngine': '/strategies/micro-burst/research/MicroBurstOutcomeEngine',
+              '/domain/strategies/micro-burst/MicroBurstOutcomeTypes': '/strategies/micro-burst/research/MicroBurstOutcomeTypes',
+              '/domain/strategies/micro-burst/MicroBurstPaperTrading': '/strategies/micro-burst/research/MicroBurstPaperTrading',
+          }
+          for path in files:
+              text = path.read_text()
+              new = text
+              for old, repl in replacements.items():
+                  new = new.replace(old, repl)
+              if path.as_posix().startswith('src/strategies/micro-burst/research/'):
+                  new = new.replace("from './MicroBurstExitPolicy'", "from '../domain/MicroBurstExitPolicy'")
+                  new = new.replace("from './MicroBurstTypes'", "from '../domain/MicroBurstTypes'")
+                  new = new.replace("from './MicroBurstMarketDataTypes'", "from '../domain/MicroBurstMarketDataTypes'")
+              if path.as_posix().startswith('src/strategies/micro-burst/domain/'):
+                  new = new.replace("from './MicroBurstConfigLoader'", "from '../application/MicroBurstConfigLoader'")
+                  new = new.replace("from './MicroBurstOutcomeEngine'", "from '../research/MicroBurstOutcomeEngine'")
+                  new = new.replace("from './MicroBurstOutcomeTypes'", "from '../research/MicroBurstOutcomeTypes'")
+                  new = new.replace("from './MicroBurstPaperTrading'", "from '../research/MicroBurstPaperTrading'")
+                  new = new.replace("from './MicroBurstReadiness'", "from '../application/MicroBurstReadiness'")
+                  new = new.replace("from './MicroBurstShadowEvaluator'", "from '../application/MicroBurstShadowEvaluator'")
+                  new = new.replace("from './MicroBurstSignalJournal'", "from '../research/MicroBurstSignalJournal'")
+              if new != text:
+                  path.write_text(new)
+
+          # Runtime should use the canonical shared rolling buffer directly.
+          runtime = Path('src/strategies/micro-burst/domain/MicroBurstRuntime.ts')
+          text = runtime.read_text()
+          text = text.replace("import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';", "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';")
+          text = text.replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
+          runtime.write_text(text)
+
+          # Legacy buffer tests now exercise the canonical shared implementation directly.
+          test = Path('src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.test.ts')
+          text = test.read_text()
+          text = text.replace("import { MicroBurstAggTradeBuffer } from './MicroBurstAggTradeBuffer';", "import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';")
+          text = text.replace('MicroBurstAggTradeBuffer', 'RollingAggTradeBuffer')
+          text = text.replace("describe('RollingAggTradeBuffer'", "describe('RollingAggTradeBuffer'")
+          test.write_text(text)
+
+          core_test = Path('src/core/market-data/RollingAggTradeBuffer.test.ts')
+          text = core_test.read_text()
+          text = text.replace("import { MicroBurstAggTradeBuffer } from '../../domain/strategies/micro-burst/MicroBurstAggTradeBuffer';", "import { RollingAggTradeBuffer as LegacyParityBuffer } from './RollingAggTradeBuffer';")
+          text = text.replace('new MicroBurstAggTradeBuffer(', 'new LegacyParityBuffer(')
+          core_test.write_text(text)
+
+          # The convergence test should now require the compatibility alias to be absent.
+          conv = Path('src/core/market-data/MarketDataConvergence.test.ts')
+          text = conv.read_text()
+          old = """  it('keeps the AggTrade strategy-named class as an alias only', () => {\n    const compatibility = source(\n      'strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts',\n    );\n    expect(compatibility).toContain(\n      'RollingAggTradeBuffer as MicroBurstAggTradeBuffer',\n    );\n    expect(compatibility).not.toContain('class MicroBurstAggTradeBuffer');\n    expect(compatibility).not.toContain('constructor(');\n  });\n\n"""
+          if old not in text:
+              raise SystemExit('expected AggTrade compatibility convergence test block not found')
+          text = text.replace(old, """  it('does not retain a strategy-owned AggTrade buffer compatibility facade', () => {\n    expect(\n      existsSync(resolve(repoRoot, 'src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts')),\n    ).toBe(false);\n  });\n\n""")
+          if "existsSync" not in text.split('\n', 3)[0:3].__str__():
+              pass
+          # Ensure existsSync is imported from fs.
+          text = text.replace("import { readFileSync } from 'node:fs';", "import { existsSync, readFileSync } from 'node:fs';")
+          conv.write_text(text)
+
+          # Move tests beside their canonical owners where safe.
+          moves = {
+              'src/strategies/micro-burst/domain/MicroBurstConfigLoader.test.ts': 'src/strategies/micro-burst/application/MicroBurstConfigLoader.test.ts',
+              'src/strategies/micro-burst/domain/MicroBurstOutcomeEngine.test.ts': 'src/strategies/micro-burst/research/MicroBurstOutcomeEngine.test.ts',
+              'src/strategies/micro-burst/domain/MicroBurstOutcomeAntiLookahead.test.ts': 'src/strategies/micro-burst/research/MicroBurstOutcomeAntiLookahead.test.ts',
+              'src/strategies/micro-burst/domain/MicroBurstPaperTrading.test.ts': 'src/strategies/micro-burst/research/MicroBurstPaperTrading.test.ts',
+              'src/strategies/micro-burst/domain/MicroBurstSignalJournal.test.ts': 'src/strategies/micro-burst/research/MicroBurstSignalJournal.test.ts',
+          }
+          for src, dst in moves.items():
+              s, d = Path(src), Path(dst)
+              if s.exists() and not d.exists():
+                  d.parent.mkdir(parents=True, exist_ok=True)
+                  s.rename(d)
+
+          # Fix moved tests' relative imports.
+          p = Path('src/strategies/micro-burst/application/MicroBurstConfigLoader.test.ts')
+          if p.exists():
+              t = p.read_text().replace("from '../application/MicroBurstConfigLoader'", "from './MicroBurstConfigLoader'")
+              p.write_text(t)
+          for name in ('MicroBurstOutcomeEngine.test.ts','MicroBurstOutcomeAntiLookahead.test.ts','MicroBurstPaperTrading.test.ts','MicroBurstSignalJournal.test.ts'):
+              p = Path('src/strategies/micro-burst/research') / name
+              if p.exists():
+                  t = p.read_text()
+                  t = t.replace("from '../research/MicroBurstOutcomeEngine'", "from './MicroBurstOutcomeEngine'")
+                  t = t.replace("from '../research/MicroBurstOutcomeTypes'", "from './MicroBurstOutcomeTypes'")
+                  t = t.replace("from '../research/MicroBurstPaperTrading'", "from './MicroBurstPaperTrading'")
+                  t = t.replace("from '../research/MicroBurstSignalJournal'", "from './MicroBurstSignalJournal'")
+                  t = t.replace("from './MicroBurstTypes'", "from '../domain/MicroBurstTypes'")
+                  t = t.replace("from './MicroBurstMarketDataTypes'", "from '../domain/MicroBurstMarketDataTypes'")
+                  p.write_text(t)
+
+          aliases = [
+              'src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts',
+              'src/strategies/micro-burst/domain/MicroBurstConfigLoader.ts',
+              'src/strategies/micro-burst/domain/MicroBurstOutcomeEngine.ts',
+              'src/strategies/micro-burst/domain/MicroBurstOutcomeTypes.ts',
+              'src/strategies/micro-burst/domain/MicroBurstPaperTrading.ts',
+              'src/strategies/micro-burst/research/MicroBurstExitPolicy.ts',
+              'src/strategies/micro-burst/research/MicroBurstMarketDataTypes.ts',
+              'src/strategies/micro-burst/research/MicroBurstTypes.ts',
+              'src/domain/strategies/micro-burst/MicroBurstAggTradeBuffer.ts',
+              'src/domain/strategies/micro-burst/MicroBurstConfigLoader.ts',
+              'src/domain/strategies/micro-burst/MicroBurstOutcomeEngine.ts',
+              'src/domain/strategies/micro-burst/MicroBurstOutcomeTypes.ts',
+              'src/domain/strategies/micro-burst/MicroBurstPaperTrading.ts',
+          ]
+          for item in aliases:
+              p = Path(item)
+              if p.exists():
+                  p.unlink()
+          PY
+          git diff --check
+      - name: Install
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npx vitest run
+      - name: Verify no removed facade imports remain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e src/strategies/micro-burst/domain/MicroBurstAggTradeBuffer.ts
+          test ! -e src/strategies/micro-burst/domain/MicroBurstConfigLoader.ts
+          test ! -e src/strategies/micro-burst/domain/MicroBurstOutcomeEngine.ts
+          test ! -e src/strategies/micro-burst/domain/MicroBurstOutcomeTypes.ts
+          test ! -e src/strategies/micro-burst/domain/MicroBurstPaperTrading.ts
+          test ! -e src/strategies/micro-burst/research/MicroBurstExitPolicy.ts
+          test ! -e src/strategies/micro-burst/research/MicroBurstMarketDataTypes.ts
+          test ! -e src/strategies/micro-burst/research/MicroBurstTypes.ts
+          ! grep -RIn --exclude-dir=node_modules --exclude-dir=.git --include='*.ts' 'domain/strategies/micro-burst/MicroBurstConfigLoader\|domain/strategies/micro-burst/MicroBurstOutcomeEngine\|domain/strategies/micro-burst/MicroBurstOutcomeTypes\|domain/strategies/micro-burst/MicroBurstPaperTrading' src scripts tools
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Jasan Hernández'
+          git config user.email '31332180+jasanhdz@users.noreply.github.com'
+          git add -A
+          git commit -m 'refactor: remove micro burst compatibility facades'
+          git push origin HEAD:work/micro-burst-rider-v1-20260826
