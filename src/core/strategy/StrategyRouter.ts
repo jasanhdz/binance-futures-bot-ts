@@ -1,8 +1,5 @@
 import type { StrategyDecisionObservationHook } from '../blackbox/StrategyDecisionObservation';
-import {
-  StrategyDecisionEnvelope,
-  StrategyEvaluationResult,
-} from './StrategyDecision';
+import { StrategyDecisionEnvelope, StrategyEvaluationResult } from './StrategyDecision';
 import { EntryStrategy } from './EntryStrategy';
 import { StrategyId } from './StrategyIdentity';
 

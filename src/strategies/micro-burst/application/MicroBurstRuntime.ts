@@ -1,7 +1,10 @@
 import { Logger } from '../../../app/ports/Logger';
 import { MarketDataPort } from '../../../app/ports/MarketData';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
-import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from '../../../core/market-data/SynchronizedOrderBook';
+import {
+  SynchronizedOrderBook,
+  SynchronizedOrderBookDeps,
+} from '../../../core/market-data/SynchronizedOrderBook';
 import { BtcMicroContextProvider, BtcMicroContextDeps } from '../domain/BtcMicroContextProvider';
 import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
 import {
@@ -36,6 +39,11 @@ import { AggTradeDataPlane } from '../../../core/market-data/AggTradeDataPlane';
 import type { AggTradeLease } from '../../../core/market-data/AggTradeDataPlane';
 import { ComposedBenchmarkMarketDataPort } from '../../../core/market-data/BenchmarkMarketData';
 import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
+import type {
+  DecisionEvidenceSink,
+  MarketSnapshotEvidenceSink,
+} from '../../../core/blackbox/StrategyDecisionBlackBox';
+import { createMicroBurstBlackBoxObservation } from './MicroBurstBlackBoxObservation';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -207,6 +215,10 @@ export interface MicroBurstRuntimeDeps {
   shadowTradeJournal?: ShadowJournal;
   orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
   aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
+  blackBox?: {
+    decisionSink: DecisionEvidenceSink;
+    marketSnapshotSink: MarketSnapshotEvidenceSink;
+  };
 }
 
 export class MicroBurstRuntime {
@@ -519,6 +531,24 @@ export class MicroBurstRuntime {
       },
     };
 
+    if (this.deps.blackBox) {
+      this.deps.strategyRouter.setObservationHook(
+        createMicroBurstBlackBoxObservation({
+          clock,
+          candles: candleProvider,
+          orderBookFor: (symbol) => this.symbolStates.get(symbol.toUpperCase())?.book,
+          aggTradeFor: (symbol) => this.symbolStates.get(symbol.toUpperCase())?.aggTradeBuffer,
+          decisionSink: this.deps.blackBox.decisionSink,
+          marketSnapshotSink: this.deps.blackBox.marketSnapshotSink,
+        }),
+      );
+      logger.info('micro_burst_decision_blackbox_attached', {
+        schema: 'STRATEGY_DECISION_BLACKBOX_V1',
+        authority: 'OBSERVATIONAL_ONLY',
+        liveExecution: false,
+      });
+    }
+
     this.shadowEvaluator = new MicroBurstShadowEvaluator(
       {
         contextBuilderDeps,
@@ -542,6 +572,7 @@ export class MicroBurstRuntime {
   }
 
   stop(): Promise<void> {
+    this.deps.strategyRouter.setObservationHook(undefined);
     if (this.stopPromise) return this.stopPromise;
     this.running = false;
 

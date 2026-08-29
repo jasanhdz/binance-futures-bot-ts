@@ -53,9 +53,9 @@ describe('StrategyDecisionBlackBox', () => {
   });
 
   it('rejects a snapshot captured after the local receive-time evaluation boundary', () => {
-    expect(() => createDecisionEvidenceV1(snapshot({ capturedAtMs: 1_001 }), decision(), 1_010, 1_000)).toThrow(
-      /causal violation/,
-    );
+    expect(() =>
+      createDecisionEvidenceV1(snapshot({ capturedAtMs: 1_001 }), decision(), 1_010, 1_000),
+    ).toThrow(/causal violation/);
   });
 
   it('rejects cross-symbol links', () => {

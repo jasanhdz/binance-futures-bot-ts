@@ -139,6 +139,8 @@ import { createHash } from 'node:crypto';
 import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
 import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/MicroBurstOutcomeTracker';
 import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
+import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvidenceSink';
+import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -1687,6 +1689,14 @@ export class TradingService {
             logger: this.deps.logger,
             clock: { now: () => Date.now() },
             strategyRouter: this.microBurstStrategyRouter,
+            blackBox: {
+              decisionSink: new JsonlDecisionEvidenceSink(
+                'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',
+              ),
+              marketSnapshotSink: new JsonlMarketSnapshotSink(
+                'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
+              ),
+            },
             outcomeTracker,
             marketStorage: storage,
             provenance,

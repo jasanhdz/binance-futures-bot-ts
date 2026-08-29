@@ -106,7 +106,9 @@ export function createDecisionEvidenceV1(
   evaluatedAtReceivedMs: number = snapshot.capturedAtMs,
 ): StrategyDecisionEvidenceV1 {
   if (snapshot.symbol !== decision.symbol) {
-    throw new Error(`black-box symbol mismatch: snapshot=${snapshot.symbol} decision=${decision.symbol}`);
+    throw new Error(
+      `black-box symbol mismatch: snapshot=${snapshot.symbol} decision=${decision.symbol}`,
+    );
   }
   if (!Number.isFinite(evaluatedAtReceivedMs) || evaluatedAtReceivedMs < snapshot.capturedAtMs) {
     throw new Error(
