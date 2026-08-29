@@ -1,6 +1,11 @@
 name: Shared Market Data Phase S Soak
 
 on:
+  push:
+    branches:
+      - work/micro-burst-rider-v1-20260826
+    paths:
+      - '.github/workflows/shared-market-data-phase-s-soak.yml'
   workflow_dispatch:
 
 permissions:
@@ -9,7 +14,7 @@ permissions:
 jobs:
   phase-s-soak:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       BINANCE_API_KEY: ''
       BINANCE_API_SECRET: ''
@@ -42,8 +47,59 @@ jobs:
       - name: Static read-only safety audit
         run: npm run audit:usdm-readonly:static
 
+      - name: Capture runner public IP before Tailscale
+        run: |
+          echo -n 'GitHub runner public IP: '
+          curl --fail --silent --show-error --max-time 15 https://api.ipify.org
+          echo
+
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          version: latest
+
+      - name: Route traffic through iPhone exit node
+        run: |
+          echo 'Tailscale peers:'
+          sudo -E tailscale status
+          timeout 3m sudo -E tailscale set --exit-node=iphone-15-pro-max --exit-node-allow-lan-access=true
+          sleep 5
+
+          echo 'Exit node status:'
+          sudo -E tailscale status
+
+          EXIT_ONLINE="$(sudo -E tailscale status --json | jq -r '.ExitNodeStatus.Online // false')"
+          if [ "$EXIT_ONLINE" != "true" ]; then
+            echo 'ERROR: iphone-15-pro-max is not active as the runner exit node.'
+            exit 1
+          fi
+
+      - name: Verify iPhone egress and Binance Futures REST
+        run: |
+          echo -n 'Public IP through iPhone: '
+          curl --fail --silent --show-error --max-time 15 https://api.ipify.org
+          echo
+
+          echo 'Checking Binance Futures public REST through the exit node...'
+          BODY="$(mktemp)"
+          HTTP_CODE="$(curl --silent --show-error --max-time 20 -o "$BODY" -w '%{http_code}' https://fapi.binance.com/fapi/v1/time || true)"
+          cat "$BODY"
+          echo
+          echo "HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo 'ERROR: Binance Futures REST is still inaccessible through the iPhone exit node.'
+            exit 1
+          fi
+
       - name: Phase S shared market data soak
         run: npm run market-data:phase-s-soak
+
+      - name: Disable exit node
+        if: always()
+        run: sudo -E tailscale set --exit-node= || true
 
       - name: Upload Phase S report
         if: always()
