@@ -6,6 +6,9 @@ on:
       - work/micro-burst-rider-v1-20260826
     paths:
       - '.github/workflows/shared-market-data-phase-s-soak.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/shared-market-data-phase-s-soak.ts'
   workflow_dispatch:
 
 permissions:
@@ -99,7 +102,10 @@ jobs:
 
       - name: Disable exit node
         if: always()
-        run: sudo -E tailscale set --exit-node= || true
+        run: |
+          if command -v tailscale >/dev/null 2>&1; then
+            sudo -E tailscale set --exit-node= || true
+          fi
 
       - name: Upload Phase S report
         if: always()
