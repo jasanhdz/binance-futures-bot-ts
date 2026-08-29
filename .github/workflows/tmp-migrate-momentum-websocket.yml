@@ -1,0 +1,31 @@
+name: Temporary Momentum WebSocket Migration
+on:
+  push:
+    branches:
+      - work/micro-burst-rider-v1-20260826
+permissions:
+  contents: write
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/micro-burst-rider-v1-20260826
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: python3 scripts/tmp-migrate-momentum-websocket.py
+      - run: cp config/regime_config.example.yaml regime_config.yaml
+      - run: npm ci
+      - run: npm run build
+      - run: npm test -- --run
+      - name: Commit migration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/app/services/TradingService.ts src/restoration/original-operational-semantics.test.ts
+          git commit -m 'feat(momentum): use shared websocket market state' || exit 0
+          git push
