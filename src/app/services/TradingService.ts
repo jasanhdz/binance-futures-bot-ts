@@ -143,6 +143,7 @@ import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvid
 import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
 import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
 import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
+import { MomentumRideBlackBoxObservation } from '../../strategies/momentum/application/MomentumRideBlackBoxObservation';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -274,6 +275,7 @@ export class TradingService {
   private microBurstRuntime: MicroBurstRuntime | null = null;
   private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;
   private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;
+  private momentumBlackBoxObservation: MomentumRideBlackBoxObservation | null = null;
   private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
   private stopPromise: Promise<void> | null = null;
 
@@ -1680,6 +1682,19 @@ export class TradingService {
       ),
     });
     this.aegisBlackBoxObservation.start(startupSymbols);
+    this.momentumBlackBoxObservation ??= new MomentumRideBlackBoxObservation({
+      exchange: this.deps.exchange,
+      sharedMarketData: this.sharedMarketDataRuntime,
+      clock: { now: () => Date.now() },
+      decisionSink: new JsonlDecisionEvidenceSink(
+        'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',
+      ),
+      marketSnapshotSink: new JsonlMarketSnapshotSink(
+        'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
+      ),
+    });
+    this.momentumBlackBoxObservation.start(startupSymbols);
+    this.momentumStrategyRouter.setObservationHook(this.momentumBlackBoxObservation);
     if (mbConfig.enabled && mbConfig.mode !== 'OFF') {
       try {
         const provenance = this.getMicroBurstProvenance(mbConfig);
@@ -1840,6 +1855,9 @@ export class TradingService {
     this.stopPromise = (async () => {
       this.aegisBlackBoxObservation?.close();
       this.aegisBlackBoxObservation = null;
+      this.momentumStrategyRouter.setObservationHook(undefined);
+      this.momentumBlackBoxObservation?.close();
+      this.momentumBlackBoxObservation = null;
       await microBurstRuntime?.stop();
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
       await Promise.all(stores.map((store) => store.flush?.()));

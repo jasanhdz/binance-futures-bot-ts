@@ -83,7 +83,8 @@ export class MomentumRideBlackBoxObservation
     this.snapshotProvider = new MarketSnapshotProvider(
       {
         quoteFor,
-        orderBookFor: (symbol) => deps.sharedMarketData.orderBookDataPlane.get(symbol.toUpperCase()),
+        orderBookFor: (symbol) =>
+          deps.sharedMarketData.orderBookDataPlane.get(symbol.toUpperCase()),
         aggTradeFor: (symbol) => deps.sharedMarketData.aggTradeDataPlane.get(symbol.toUpperCase()),
         candles,
         benchmark,
