@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { StrategyRouter } from './StrategyRouter';
-import { createUnfrozenStrategyIdentity } from '../../domain/strategy/StrategyIdentity';
+import { createUnfrozenStrategyIdentity } from './StrategyIdentity';
 
 const identity = createUnfrozenStrategyIdentity('MOMENTUM_RIDE', 'legacy-unfrozen', 'test-sha');
 

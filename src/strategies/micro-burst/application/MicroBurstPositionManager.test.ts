@@ -3,10 +3,10 @@ import { StrategyPositionLifecycleCore } from '../../../app/position/StrategyPos
 import {
   MicroBurstPositionManagementContext,
   MicroBurstPositionManager,
-} from '../../../app/strategy/MicroBurstPositionManager';
-import { BotState } from '../../../domain/types';
-import { createMicroBurstV1Identity } from './MicroBurstIdentity';
-import { MicroBurstExitContext } from './MicroBurstTypes';
+} from './MicroBurstPositionManager';
+import { BotState } from '../../../core/types';
+import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
+import { MicroBurstExitContext } from '../domain/MicroBurstTypes';
 
 function botState(overrides: Partial<BotState> = {}): BotState {
   return { mode: 'IDLE', ...overrides };

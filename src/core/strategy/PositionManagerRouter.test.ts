@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PositionManagerRouter } from './PositionManagerRouter';
-import { createUnfrozenStrategyIdentity } from '../../domain/strategy/StrategyIdentity';
+import { createUnfrozenStrategyIdentity } from './StrategyIdentity';
 
 const momentumIdentity = createUnfrozenStrategyIdentity(
   'MOMENTUM_RIDE',
