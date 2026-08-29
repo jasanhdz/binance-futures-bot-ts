@@ -1,0 +1,89 @@
+name: Strategy Loss Runtime Wire
+on:
+  push:
+    branches:
+      - work/micro-burst-rider-v1-20260826
+permissions:
+  contents: write
+jobs:
+  wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/micro-burst-rider-v1-20260826
+          fetch-depth: 0
+      - run: cp config/regime_config.example.yaml regime_config.yaml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - name: Wire registry to closes
+        run: |
+          python <<'PY'
+          from pathlib import Path
+          p=Path('src/app/services/TradingService.ts')
+          s=p.read_text()
+          anchor="import type {\n  StrategyLossStateStorePort,\n  StrategyLossStateWrite,\n} from '../../infra/state/StrategyLossStateStore';"
+          assert anchor in s
+          s=s.replace(anchor, anchor+"\nimport type { StrategyLossStateRegistry } from '../../infra/state/StrategyLossStateRegistry';",1)
+          dep="  consecutiveLossStateStore?: StrategyLossStateStorePort;"
+          assert dep in s
+          s=s.replace(dep, dep+"\n  strategyLossStateRegistry?: StrategyLossStateRegistry;",1)
+          anchor2="""    if (pnl !== undefined)
+      this.strategyRiskLedger.recordClose(closeStrategy, tradeId, pnl, Date.now());
+    if (closeStrategy === 'AEGIS_TURBO' && pnl !== undefined) {"""
+          insert="""    if (pnl !== undefined)
+      this.strategyRiskLedger.recordClose(closeStrategy, tradeId, pnl, Date.now());
+    if (pnl !== undefined && this.deps.strategyLossStateRegistry) {
+      const lossStrategyId =
+        botState.positionOwner === 'EXTERNAL' ||
+        botState.tradeOrigin === 'MANUAL_EXTERNAL' ||
+        tradeId.startsWith('MANUAL-')
+          ? 'MANUAL'
+          : closeStrategy;
+      if (lossStrategyId !== 'AEGIS_TURBO') {
+        await this.deps.strategyLossStateRegistry.record(lossStrategyId, this.getTradingMode(), {
+          tradeId,
+          closedAt: new Date().toISOString(),
+          pnlUsdt: pnl,
+        });
+        logger.info('strategy_loss_streak_updated', {
+          symbol,
+          tradeId,
+          strategyId: lossStrategyId,
+          consecutiveLosses: this.deps.strategyLossStateRegistry.trackerValue(lossStrategyId),
+        });
+      }
+    }
+    if (closeStrategy === 'AEGIS_TURBO' && pnl !== undefined) {"""
+          assert anchor2 in s
+          s=s.replace(anchor2,insert,1)
+          p.write_text(s)
+          PY
+      - run: npx prettier --write src/app/services/TradingService.ts src/app/bootstrap/StrategyComposition.ts
+      - name: Refresh digest
+        run: |
+          python <<'PY'
+          from pathlib import Path
+          import hashlib,re
+          target='src/app/services/TradingService.ts'
+          digest=hashlib.sha256(Path(target).read_bytes()).hexdigest()
+          p=Path('src/restoration/original-operational-semantics.test.ts')
+          s=p.read_text()
+          pattern=r"('src/app/services/TradingService\.ts':\s*\n?\s*)'[0-9a-f]{64}'"
+          s,n=re.subn(pattern, lambda m:m.group(1)+"'"+digest+"'", s, count=1)
+          assert n==1
+          p.write_text(s)
+          PY
+      - run: npx prettier --write src/restoration/original-operational-semantics.test.ts
+      - run: npm run build
+      - run: npm test -- --run
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A src
+          git commit -m "feat(loss-state): record Momentum and manual streaks generically" || exit 0
+          git push
