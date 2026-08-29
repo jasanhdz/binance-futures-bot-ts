@@ -47,7 +47,7 @@ jobs:
           service=Path('src/app/services/TradingService.ts')
           digest=hashlib.sha256(service.read_bytes()).hexdigest()
           p=Path('src/restoration/original-operational-semantics.test.ts'); s=p.read_text()
-          s,n=re.subn(r"('src/app/services/TradingService\\.ts':\\s*\\n\\s*)'[0-9a-f]{64}'", lambda m:m.group(1)+"'"+digest+"'", s, count=1)
+          s,n=re.subn(r"('src/app/services/TradingService\.ts':\s*\n\s*)'[0-9a-f]{64}'", lambda m:m.group(1)+"'"+digest+"'", s, count=1)
           assert n==1
           p.write_text(s)
       - run: npx prettier --write src/restoration/original-operational-semantics.test.ts
