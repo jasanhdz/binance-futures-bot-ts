@@ -1,9 +1,6 @@
 name: Shared Market Data Phase S Soak
 
 on:
-  push:
-    branches:
-      - work/micro-burst-rider-v1-20260826
   workflow_dispatch:
 
 permissions:
@@ -46,7 +43,7 @@ jobs:
         run: npm run audit:usdm-readonly:static
 
       - name: Phase S shared market data soak
-        run: npx tsx scripts/shared-market-data-phase-s-soak.ts
+        run: npm run market-data:phase-s-soak
 
       - name: Upload Phase S report
         if: always()
