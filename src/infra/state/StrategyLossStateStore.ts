@@ -19,9 +19,15 @@ export type StrategyLossState = {
   reset_at: string;
 };
 
-export type StrategyLossStateWrite = Omit<StrategyLossState, 'schema_id' | 'strategy_id'> & {
+export type StrategyLossStateWrite = Omit<
+  StrategyLossState,
+  'schema_id' | 'strategy_id' | 'total_losses' | 'total_wins' | 'last_result'
+> & {
   schema_id?: string;
   strategy_id?: string;
+  total_losses?: number;
+  total_wins?: number;
+  last_result?: StrategyLossResult;
 };
 
 export interface StrategyLossStateStorePort {
@@ -43,13 +49,7 @@ export interface StrategyLossStateStoreOptions {
 const safeStrategyFileName = (strategyId: string): string =>
   strategyId.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
 
-/**
- * Generic durable loss-state store scoped by strategy identity.
- *
- * The persistence mechanism knows nothing about Aegis, Momentum, Micro Burst or
- * manual trading. Strategy-specific reactions to the stored streak belong to the
- * strategy/risk-policy layer.
- */
+/** Generic durable loss state scoped by strategy identity. */
 export class StrategyLossStateStore implements StrategyLossStateStorePort {
   readonly strategyId: string;
   private readonly filePath: string;
@@ -157,6 +157,9 @@ export class StrategyLossStateStore implements StrategyLossStateStorePort {
   async write(input: StrategyLossStateWrite): Promise<void> {
     const state: StrategyLossState = {
       ...input,
+      total_losses: input.total_losses ?? 0,
+      total_wins: input.total_wins ?? 0,
+      last_result: input.last_result ?? null,
       schema_id: STRATEGY_LOSS_STATE_SCHEMA,
       strategy_id: this.strategyId,
     };
