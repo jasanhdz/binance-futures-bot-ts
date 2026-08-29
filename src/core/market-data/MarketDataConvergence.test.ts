@@ -106,12 +106,10 @@ describe('Phase R market-data convergence', () => {
     expect(websocketManager).not.toContain('app/micro-burst/MicroBurstMarketData');
   });
 
-  it('keeps the order-book compatibility adapter free of synchronization mechanics', () => {
-    const compatibility = source('strategies/micro-burst/domain/SynchronizedOrderBook.ts');
-    expect(compatibility).toContain('extends SharedSynchronizedOrderBook');
-    for (const forbidden of ['diffBuffer', 'syncFromSnapshot', 'handleDiff', 'applyDiff']) {
-      expect(compatibility).not.toContain(forbidden);
-    }
+  it('removes the Micro Burst order-book compatibility adapter after shared ownership converges', () => {
+    expect(
+      existsSync(resolve(srcRoot, 'strategies/micro-burst/domain/SynchronizedOrderBook.ts')),
+    ).toBe(false);
   });
 
   it('keeps shared market-data production files free of concrete strategy imports', () => {

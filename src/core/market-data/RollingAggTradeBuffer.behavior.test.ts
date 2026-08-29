@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
-import type { AggTradeEvent } from '../../../app/ports/MarketData';
+import { RollingAggTradeBuffer } from './RollingAggTradeBuffer';
+import type { AggTradeEvent } from '../../app/ports/MarketData';
 
 const NOW_MS = 1_700_000_000_000;
 

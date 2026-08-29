@@ -1,7 +1,7 @@
 import { Logger } from '../../../app/ports/Logger';
 import { MarketDataPort } from '../../../app/ports/MarketData';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
-import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from '../domain/SynchronizedOrderBook';
+import { SynchronizedOrderBook, SynchronizedOrderBookDeps } from '../../../core/market-data/SynchronizedOrderBook';
 import { BtcMicroContextProvider, BtcMicroContextDeps } from '../domain/BtcMicroContextProvider';
 import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
 import {
@@ -452,7 +452,7 @@ export class MicroBurstRuntime {
 
       const refPriceDeps: MicroBurstReferencePriceDeps = {
         getMarkPrice: (sym: string) => exchange.getMarkPrice(sym),
-        getDepthSnapshot: book.getSnapshotForPressure.bind(book) as any,
+        getDepthSnapshot: book.getSnapshot.bind(book) as any,
         logger,
       };
       const refPriceProvider = new MicroBurstReferencePriceProvider(refPriceDeps, clock);
@@ -485,7 +485,7 @@ export class MicroBurstRuntime {
         getDepthSnapshot: (sym: string) => {
           const state = this.symbolStates.get(sym);
           if (!state) return undefined;
-          return state.book.getSnapshotForPressure() as any;
+          return state.book.getSnapshot() as any;
         },
       },
       referencePrice: {
@@ -627,7 +627,7 @@ export class MicroBurstRuntime {
 
       let paperSuppressed = false;
       if (result.wouldEnter && !result.duplicateSuppressed && result.side) {
-        const quote = this.paperQuote(state.book.getSnapshotForPressure());
+        const quote = this.paperQuote(state.book.getSnapshot());
         const decisionReceivedAtMs = this.deps.clock.now();
         const opened = this.shadowEngine.open(
           {
@@ -868,7 +868,7 @@ export class MicroBurstRuntime {
 
   private managePaperTrade(symbol: string, event: AggTradeEvent): void {
     const state = this.symbolStates.get(symbol);
-    const snapshot = state?.book.getSnapshotForPressure();
+    const snapshot = state?.book.getSnapshot();
     const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
     const result = this.shadowEngine.manage(
       { strategyId: 'MICRO_BURST_V1', symbol },
@@ -894,7 +894,7 @@ export class MicroBurstRuntime {
   }
 
   private paperQuote(
-    snapshot: ReturnType<SynchronizedOrderBook['getSnapshotForPressure']>,
+    snapshot: ReturnType<SynchronizedOrderBook['getSnapshot']>,
   ): ShadowMarketQuote | undefined {
     if (!snapshot) return undefined;
     return {

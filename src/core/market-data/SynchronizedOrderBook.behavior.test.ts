@@ -4,7 +4,7 @@ import {
   type BinanceDepthDiffEvent,
   type BinanceDepthSnapshot,
   ORDER_BOOK_SNAPSHOT_DEPTH,
-} from '../../../app/ports/MarketData';
+} from '../../app/ports/MarketData';
 
 const SYMBOL = 'ETHUSDT';
 const NOW = 1_700_000_000_000;
@@ -333,7 +333,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     expect(book.getState().bids).toEqual([]);
     expect(book.getState().asks).toEqual([]);
     await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
-    expect(book.getSnapshotForPressure()).toBeUndefined();
+    expect(book.getSnapshot()).toBeUndefined();
     expect(book.getState().resyncCount).toBe(1);
   });
 
@@ -356,7 +356,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.diffSource.emit(diff(102, 102, 101, { bids: [['101', '5']] }));
     d.diffSource.emit(diff(103, 103, 102, { bids: [['101', '5']] }));
 
-    expect(book.getSnapshotForPressure()).toBeUndefined();
+    expect(book.getSnapshot()).toBeUndefined();
     expect(book.getState().bids).toEqual([]);
     await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
     expect(book.getState().resyncCount).toBe(1);

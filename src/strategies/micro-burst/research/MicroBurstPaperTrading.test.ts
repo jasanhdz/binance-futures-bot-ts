@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultMicroBurstConfig } from './MicroBurstTypes';
+import { defaultMicroBurstConfig } from '../domain/MicroBurstTypes';
 import { MicroBurstPaperQuote, MicroBurstPaperTrading } from '../research/MicroBurstPaperTrading';
 import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
 

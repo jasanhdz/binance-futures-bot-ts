@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MicroBurstShadowEvaluator } from '../application/MicroBurstShadowEvaluator';
-import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
+import { MicroBurstDuplicateSignalGuard } from '../domain/MicroBurstDuplicateSignalGuard';
 import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
-import { MicroBurstStrategy, MicroBurstStrategyContext } from './MicroBurstStrategy';
-import { createMicroBurstV1Identity } from './MicroBurstIdentity';
+import { MicroBurstStrategy, MicroBurstStrategyContext } from '../domain/MicroBurstStrategy';
+import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
 
 const NOW_MS = 1_700_000_000_000;
 

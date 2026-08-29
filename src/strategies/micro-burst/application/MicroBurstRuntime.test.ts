@@ -374,7 +374,7 @@ describe('MicroBurstRuntime', () => {
       makeConfig({ symbols: { ETHUSDT: { enabled: true }, SOLUSDT: { enabled: false } } }),
     );
     await runtime.start();
-    (runtime as any).symbolStates.get('ETHUSDT').book.getSnapshotForPressure = () => ({
+    (runtime as any).symbolStates.get('ETHUSDT').book.getSnapshot = () => ({
       bidDepth: [{ price: 99, qty: 1 }],
       askDepth: [{ price: 101, qty: 1 }],
       observedAtMs: 1_000,
