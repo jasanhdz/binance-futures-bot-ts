@@ -132,6 +132,7 @@ import {
 } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 import { externalLifecyclePolicy, strategyLifecyclePolicy } from '../../core/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
+import { PositionRecoveryService } from '../position/PositionRecoveryService';
 import { createHash } from 'node:crypto';
 import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
 import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/MicroBurstOutcomeTracker';
@@ -155,8 +156,6 @@ const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 const EXIT_EYE_SIGNAL_TTL_MS = 15000;
 const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
-const MANUAL_POSITION_DEFAULT_STOP_ROE = -0.4;
-const MANUAL_POSITION_DEFAULT_TAKE_PROFIT_ROE = 1.0;
 
 type PhaseOTurboMetadata = {
   isPhaseO: boolean;
@@ -271,6 +270,7 @@ export class TradingService {
     symbolState: StateStore;
   }>();
   private readonly positionLifecycleCore: StrategyPositionLifecycleCore;
+  private readonly positionRecovery: PositionRecoveryService;
   private readonly aegisStrategyIdentity: StrategyIdentity;
   private readonly momentumStrategyIdentity: StrategyIdentity;
   private readonly strategyRiskLedger = new StrategyRiskLedger();
@@ -360,6 +360,21 @@ export class TradingService {
         isMicroBurstShadowMode(mbConfig) ? 'SHADOW' : 'OFF',
       ),
     );
+
+    this.positionRecovery = new PositionRecoveryService({
+      exchange: deps.exchange,
+      logger: deps.logger,
+      notifier: deps.notifier,
+      globalState: deps.state,
+      configSymbols: config.symbols,
+      getLiveSymbols: () => this.getLiveAegisSymbols(),
+      stateForSymbol: (symbol) => this.stateForSymbol(symbol),
+      isVerifiedBotOwnedState: (state) => this.isVerifiedBotOwnedState(state),
+      isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
+      requireBrackets: () => this.getAegisTurboYamlConfig()?.require_brackets !== false,
+      ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
+        this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, state, overrides),
+    });
 
     this.positionLifecycleCore = new StrategyPositionLifecycleCore({
       exchange: deps.exchange,
@@ -1154,276 +1169,6 @@ export class TradingService {
     return scoped;
   }
 
-  private async migrateLegacyGlobalStateToFirstLiveSymbol(): Promise<void> {
-    if (typeof this.deps.state.forSymbol !== 'function') return;
-    const legacyState = this.deps.state.get();
-    if (legacyState.mode === 'IDLE') return;
-    const symbol = this.getLiveAegisSymbols()[0] ?? this.config.symbols[0];
-    if (!symbol) return;
-
-    const symbolState = this.stateForSymbol(symbol);
-    if (symbolState.get().mode !== 'IDLE') return;
-
-    symbolState.set(legacyState);
-    this.deps.state.set({
-      mode: 'IDLE',
-      lastExitAt: legacyState.lastExitAt ?? Date.now(),
-      lastExitReason: 'MIGRATED_TO_SYMBOL_STATE',
-    });
-    this.deps.logger.warn('aegis_legacy_global_state_migrated_to_symbol', {
-      symbol,
-      stateMode: legacyState.mode,
-      lastSide: legacyState.lastSide,
-    });
-  }
-
-  private async attachOpenExchangePositionsToSymbolState(): Promise<void> {
-    if (typeof this.deps.state.forSymbol !== 'function') return;
-    for (const symbol of this.getLiveAegisSymbols()) {
-      const symbolState = this.stateForSymbol(symbol);
-      const localState = symbolState.get();
-      if (
-        localState.mode !== 'IDLE' &&
-        this.isVerifiedBotOwnedState(localState) &&
-        !localState.lastOrderId
-      ) {
-        symbolState.set({
-          positionOwner: 'UNKNOWN',
-          tradeOrigin: 'UNKNOWN',
-          ownershipStatus: 'UNKNOWN',
-          eligibleForBotMetrics: false,
-          metricsExclusionReason: 'ENTRY_ORDER_ID_MISSING_AFTER_RESTART',
-        });
-        this.deps.logger.warn('aegis_bot_position_ownership_unresolved_after_restart', {
-          symbol,
-          reason: 'ENTRY_ORDER_ID_MISSING_AFTER_RESTART',
-        });
-      }
-      if (localState.mode !== 'IDLE' && !this.isVerifiedBotOwnedState(localState)) {
-        if (this.isLegacyBotOwnedState(localState)) {
-          symbolState.set({
-            positionOwner: 'BOT',
-            tradeOrigin: 'BOT',
-            ownershipStatus: 'VERIFIED',
-            eligibleForBotMetrics: false,
-            metricsExclusionReason: 'LEGACY_BOT_POSITION',
-          });
-          this.deps.logger.warn('aegis_legacy_bot_position_recovered', {
-            symbol,
-            side: localState.lastSide,
-            tradeId: localState.lastTradeId,
-            ownership: 'AEGIS_LEGACY',
-            eligibleForBotMetrics: false,
-          });
-        } else {
-          symbolState.set({
-            positionOwner: 'UNKNOWN',
-            tradeOrigin: 'UNKNOWN',
-            ownershipStatus: 'UNKNOWN',
-            eligibleForBotMetrics: false,
-            metricsExclusionReason: 'LEGACY_OR_UNVERIFIED_LOCAL_STATE',
-          });
-          this.deps.logger.warn('aegis_unverified_local_position_state_excluded', {
-            symbol,
-            side: localState.lastSide,
-            ownership: 'UNKNOWN',
-            reason: 'LEGACY_OR_UNVERIFIED_LOCAL_STATE',
-          });
-        }
-      }
-
-      for (const side of ['LONG', 'SHORT'] as Side[]) {
-        let position: PositionInfo | null;
-        try {
-          position = await this.deps.exchange.readActivePosition(symbol, side);
-        } catch (error) {
-          this.deps.logger.error('aegis_external_position_ownership_read_failed', {
-            symbol,
-            side,
-            error: String(error),
-            entryPolicy: 'FAIL_CLOSED',
-          });
-          continue;
-        }
-        if (!position) continue;
-
-        const currentState = symbolState.get();
-        if (
-          currentState.mode !== 'IDLE' &&
-          (this.isVerifiedBotOwnedState(currentState) ||
-            this.isLegacyBotOwnedState(currentState)) &&
-          currentState.lastSide === side
-        )
-          break;
-        const recoveringSamePosition =
-          currentState.mode !== 'IDLE' &&
-          currentState.lastSide === side &&
-          currentState.lastEntryPrice !== undefined &&
-          Math.abs(currentState.lastEntryPrice - position.entryPrice) <=
-            Math.max(1e-12, position.entryPrice * 1e-6);
-        symbolState.set({
-          mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
-          lastSide: side,
-          lastEntryPrice: position.entryPrice,
-          lastLeverage: position.leverage,
-          lastActualLeverage: position.leverage,
-          lastEntryQty: position.qtyAbs,
-          lastEntryMargin: position.isolatedMargin,
-          posSideMode: position.sideMode,
-          lastEntryAt: Date.now(),
-          lastTradeId: `MANUAL-${symbol}-${Date.now()}`,
-          positionOwner: 'EXTERNAL',
-          tradeOrigin: 'MANUAL_EXTERNAL',
-          ownershipStatus: 'UNKNOWN',
-          eligibleForBotMetrics: false,
-          metricsExclusionReason: 'MANUAL_POSITION',
-          lastTrailStop: recoveringSamePosition ? currentState.lastTrailStop : undefined,
-          lastBreakEvenStop: recoveringSamePosition ? currentState.lastBreakEvenStop : undefined,
-          lastStopPrice: recoveringSamePosition ? currentState.lastStopPrice : undefined,
-          breakEvenArmed: recoveringSamePosition ? currentState.breakEvenArmed : false,
-          breakEvenExecuted: recoveringSamePosition ? currentState.breakEvenExecuted : false,
-          peakRoe: recoveringSamePosition ? currentState.peakRoe : 0,
-          lowestRoe: recoveringSamePosition ? currentState.lowestRoe : 0,
-          lastPeakPrice: recoveringSamePosition ? currentState.lastPeakPrice : position.entryPrice,
-        });
-        this.deps.logger.warn('aegis_manual_external_position_adopted', {
-          symbol,
-          side,
-          qtyAbs: position.qtyAbs,
-          entryPrice: position.entryPrice,
-          leverage: position.leverage,
-          ownership: 'MANUAL/EXTERNAL',
-          action: 'MANAGE_GUARDS_AND_FILL_MISSING_BRACKETS',
-        });
-        if (this.getAegisTurboYamlConfig()?.require_brackets !== false) {
-          try {
-            const brackets = await this.ensureAegisBrackets(
-              symbol,
-              side,
-              position.entryPrice,
-              position.leverage,
-              position,
-              symbolState.get(),
-              {
-                stopRoe: MANUAL_POSITION_DEFAULT_STOP_ROE,
-                takeProfitRoe: MANUAL_POSITION_DEFAULT_TAKE_PROFIT_ROE,
-              },
-            );
-            if (brackets.stopPrice !== undefined) {
-              symbolState.set({
-                lastStopPrice: brackets.stopPrice,
-                lastTrailStop: recoveringSamePosition ? brackets.stopPrice : undefined,
-              });
-            }
-          } catch (error) {
-            this.deps.logger.error('aegis_manual_position_bracket_create_failed', {
-              symbol,
-              side,
-              error: String(error),
-            });
-            await this.deps.notifier.sendAlert(
-              'AEGIS MANUAL POSITION UNPROTECTED',
-              `${symbol} | ${side}\nNo se pudieron completar los brackets: ${String(error).slice(0, 180)}`,
-            );
-          }
-        }
-        break;
-      }
-    }
-  }
-
-  private async tryAdoptManualPositionRuntime(symbol: string): Promise<boolean> {
-    const { exchange, logger } = this.deps;
-    const symbolState = this.stateForSymbol(symbol);
-    const currentState = symbolState.get();
-    if (currentState.mode !== 'IDLE') return false;
-
-    let hasPosition = false;
-    try {
-      hasPosition = await exchange.hasOpenPosition(symbol, 'ANY');
-    } catch {
-      return false;
-    }
-    if (!hasPosition) return false;
-
-    for (const side of ['LONG', 'SHORT'] as Side[]) {
-      let position: PositionInfo | null;
-      try {
-        position = await exchange.readActivePosition(symbol, side);
-      } catch {
-        continue;
-      }
-      if (!position) continue;
-
-      symbolState.set({
-        mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
-        lastSide: side,
-        lastEntryPrice: position.entryPrice,
-        lastLeverage: position.leverage,
-        lastActualLeverage: position.leverage,
-        lastEntryQty: position.qtyAbs,
-        lastEntryMargin: position.isolatedMargin,
-        posSideMode: position.sideMode,
-        lastEntryAt: Date.now(),
-        lastTradeId: `MANUAL-${symbol}-${Date.now()}`,
-        positionOwner: 'EXTERNAL',
-        tradeOrigin: 'MANUAL_EXTERNAL',
-        ownershipStatus: 'UNKNOWN',
-        eligibleForBotMetrics: false,
-        metricsExclusionReason: 'MANUAL_POSITION',
-        lastTrailStop: undefined,
-        lastBreakEvenStop: undefined,
-        lastStopPrice: undefined,
-        breakEvenArmed: false,
-        breakEvenExecuted: false,
-        peakRoe: 0,
-        lowestRoe: 0,
-        lastPeakPrice: position.entryPrice,
-      });
-      logger.warn('aegis_manual_position_adopted_runtime', {
-        symbol,
-        side,
-        qtyAbs: position.qtyAbs,
-        entryPrice: position.entryPrice,
-        leverage: position.leverage,
-      });
-      if (this.getAegisTurboYamlConfig()?.require_brackets !== false) {
-        try {
-          const brackets = await this.ensureAegisBrackets(
-            symbol,
-            side,
-            position.entryPrice,
-            position.leverage,
-            position,
-            symbolState.get(),
-            {
-              stopRoe: MANUAL_POSITION_DEFAULT_STOP_ROE,
-              takeProfitRoe: MANUAL_POSITION_DEFAULT_TAKE_PROFIT_ROE,
-            },
-          );
-          if (brackets.stopPrice !== undefined) {
-            symbolState.set({
-              lastStopPrice: brackets.stopPrice,
-              lastTrailStop: brackets.stopPrice,
-            });
-          }
-        } catch (error) {
-          logger.error('aegis_manual_position_bracket_create_failed', {
-            symbol,
-            side,
-            error: String(error),
-          });
-          await this.deps.notifier.sendAlert(
-            'AEGIS MANUAL POSITION UNPROTECTED',
-            `${symbol} | ${side}\nNo se pudieron completar los brackets: ${String(error).slice(0, 180)}`,
-          );
-        }
-      }
-      return true;
-    }
-    return false;
-  }
-
   getAegisRuntimeSnapshot(): AegisRuntimeSnapshot {
     const liquidityStressBySymbol: Record<string, number> = {};
     const liquidityStressStatusBySymbol: Record<string, 'NO_DATA' | 'FRESH' | 'STALE'> = {};
@@ -1513,8 +1258,8 @@ export class TradingService {
       }
     }
 
-    await this.migrateLegacyGlobalStateToFirstLiveSymbol();
-    await this.attachOpenExchangePositionsToSymbolState();
+    await this.positionRecovery.migrateLegacyGlobalStateToFirstLiveSymbol();
+    await this.positionRecovery.attachOpenExchangePositionsToSymbolState();
 
     const startupPositions: AegisPositionMessageInput[] = [];
     for (const symbol of liveSymbols) {
@@ -1959,13 +1704,13 @@ export class TradingService {
       if (botState.mode !== 'IDLE') {
         await this.managePositionByOwner(symbol, botState, symbolState);
         if (symbolState.get().mode === 'IDLE') {
-          const adopted = await this.tryAdoptManualPositionRuntime(symbol);
+          const adopted = await this.positionRecovery.tryAdoptManualPositionRuntime(symbol);
           if (!adopted) {
             await this.lookForEntry(symbol);
           }
         }
       } else {
-        const adopted = await this.tryAdoptManualPositionRuntime(symbol);
+        const adopted = await this.positionRecovery.tryAdoptManualPositionRuntime(symbol);
         if (!adopted) {
           await this.lookForEntry(symbol);
         }
