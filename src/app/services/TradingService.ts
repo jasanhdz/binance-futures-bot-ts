@@ -144,6 +144,7 @@ import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvid
 import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
 import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
 import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
+import { AegisRealtimeMarketState } from '../../strategies/aegis/application/AegisRealtimeMarketState';
 import { MomentumRideBlackBoxObservation } from '../../strategies/momentum/application/MomentumRideBlackBoxObservation';
 import { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
 import { MomentumCandleState, type MomentumCandleSnapshot } from '../../strategies/momentum/application/MomentumCandleState';
@@ -279,6 +280,7 @@ export class TradingService {
   private microBurstRuntime: MicroBurstRuntime | null = null;
   private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;
   private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;
+  private aegisRealtimeMarketState: AegisRealtimeMarketState | null = null;
   private momentumBlackBoxObservation: MomentumRideBlackBoxObservation | null = null;
   private momentumRealtimeMarketState: MomentumRealtimeMarketState | null = null;
   private momentumCandleState: MomentumCandleState | null = null;
@@ -1648,9 +1650,10 @@ export class TradingService {
     });
     await notifier.sendMessage(startupMsg);
     for (const symbol of this.config.symbols) {
-      this.deps.exchange.subscribeToCandles(symbol);
-      this.detector[symbol] = new LiquidityVoidDetector(this.deps.logger);
-      if (this.deps.exchange.subscribeToPartialDepth) {
+      if (!this.aegisRealtimeMarketState) this.deps.exchange.subscribeToCandles(symbol);
+      this.detector[symbol] =
+        this.aegisRealtimeMarketState?.detectorFor(symbol) ?? new LiquidityVoidDetector(this.deps.logger);
+      if (!this.aegisRealtimeMarketState && this.deps.exchange.subscribeToPartialDepth) {
         this.deps.exchange.subscribeToPartialDepth(symbol, 20, '100ms', (depth: any) => {
           if (!depth?.bids || !depth?.asks) return;
           const mapper = (arr: any[]) =>
@@ -1675,6 +1678,12 @@ export class TradingService {
       logger: this.deps.logger,
       clock: { now: () => Date.now() },
     });
+    this.aegisRealtimeMarketState ??= new AegisRealtimeMarketState({
+      sharedMarketData: this.sharedMarketDataRuntime,
+      logger: this.deps.logger,
+      clock: { now: () => Date.now() },
+    });
+    this.aegisRealtimeMarketState.start(startupSymbols);
     this.momentumRealtimeMarketState ??= new MomentumRealtimeMarketState({
       sharedMarketData: this.sharedMarketDataRuntime,
       clock: { now: () => Date.now() },
@@ -1868,6 +1877,8 @@ export class TradingService {
     this.stopPromise = (async () => {
       this.aegisBlackBoxObservation?.close();
       this.aegisBlackBoxObservation = null;
+      this.aegisRealtimeMarketState?.close();
+      this.aegisRealtimeMarketState = null;
       this.momentumStrategyRouter.setObservationHook(undefined);
       this.momentumBlackBoxObservation?.close();
       this.momentumBlackBoxObservation = null;
@@ -2654,6 +2665,19 @@ export class TradingService {
         return;
       }
 
+      const realtimeMarket = this.aegisRealtimeMarketState?.read(symbol);
+      if (realtimeMarket && realtimeMarket.status !== 'FRESH') {
+        this.deps.logger.warn('aegis_realtime_market_not_fresh', {
+          symbol,
+          status: realtimeMarket.status,
+          orderBookHealth: realtimeMarket.orderBookHealth,
+          orderBookAgeMs: realtimeMarket.ageMs,
+          aggTradeAgeMs: realtimeMarket.aggTradeAgeMs,
+          aggTradeGapFree: realtimeMarket.aggTradeGapFree,
+        });
+        return;
+      }
+
       const signal = await mlService.getSignal(symbol);
       const selectedStrategy: AegisResearchStrategy = 'AEGIS_TURBO';
       const signalId = generateSignalId(symbol);
@@ -2941,7 +2965,11 @@ export class TradingService {
   private getCachedEntryQualityCandles(symbol: string): Candle[] {
     // RegimeEngineV2 needs 120 observations for EMA99 and regime stability.
     // Keep this cache-only so technical telemetry cannot add REST latency to entry.
-    const cachedCandles = this.deps.exchange.getCachedCandles?.(symbol, '5m', 160);
+    const sharedCandles = this.aegisRealtimeMarketState?.getCandles(symbol, 160) ?? [];
+    const cachedCandles =
+      sharedCandles.length > 0
+        ? sharedCandles
+        : this.deps.exchange.getCachedCandles?.(symbol, '5m', 160);
     if (!Array.isArray(cachedCandles)) return [];
     const now = Date.now();
     const intervalMs = 5 * 60 * 1000;
