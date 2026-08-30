@@ -4,6 +4,7 @@ import re
 root = Path('.')
 trading = root / 'src/app/services/TradingService.ts'
 lifecycle = root / 'src/app/position/StrategyPositionLifecycleCore.ts'
+restoration = root / 'src/restoration/original-operational-semantics.test.ts'
 
 text = trading.read_text()
 
@@ -57,5 +58,14 @@ assert old_sig in lt or new_sig in lt
 lt = lt.replace(old_sig, new_sig)
 lt = lt.replace('this.ports.logTradeEvent(symbol,', 'this.ports.logTradeEvent(lifecyclePolicy.strategyId, symbol,')
 lifecycle.write_text(lt)
+
+rt = restoration.read_text()
+old_digest = "68299d152235ce71243f9a01c8f6a730651aaaea2bc441a418031be76545261e"
+new_digest = "682797248587659799204aa02c9e2bbe905921bf4618383006e32766b5c7928a"
+if old_digest in rt:
+    rt = rt.replace(old_digest, new_digest, 1)
+elif new_digest not in rt:
+    raise AssertionError('TradingService restoration digest not found')
+restoration.write_text(rt)
 
 print('telemetry migration applied')
