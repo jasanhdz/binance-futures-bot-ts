@@ -111,7 +111,12 @@ export interface StrategyPositionLifecyclePorts {
     state: BotState,
     exit?: { exitPrice?: number; finalRoe?: number; pnl?: number },
   ): Promise<void>;
-  logTradeEvent(symbol: string, event: string, input?: LifecycleTradeEventInput): Promise<void>;
+  logTradeEvent(
+    strategyId: StrategyLifecyclePolicy['strategyId'],
+    symbol: string,
+    event: string,
+    input?: LifecycleTradeEventInput,
+  ): Promise<void>;
   safeMoveCloseStop(input: SafeStopMoveInput): Promise<SafeStopMoveResult>;
   ensureBrackets(
     symbol: string,
@@ -447,7 +452,7 @@ export class StrategyPositionLifecycleCore {
         updatedPeakRoe >= guardianConfig.beTriggerRoe
       ) {
         symbolState.set({ breakEvenArmed: true, lastBreakEvenRoe: guardianConfig.beTriggerRoe });
-        await this.ports.logTradeEvent(symbol, 'BREAK_EVEN_ARMED', {
+        await this.ports.logTradeEvent(lifecyclePolicy.strategyId, symbol, 'BREAK_EVEN_ARMED', {
           tradeId: botState.lastTradeId,
           price: markPrice,
           roe: currentRoe,
@@ -460,7 +465,7 @@ export class StrategyPositionLifecycleCore {
         previousPeakRoe < guardianConfig.trailingActivationRoe &&
         updatedPeakRoe >= guardianConfig.trailingActivationRoe
       ) {
-        await this.ports.logTradeEvent(symbol, 'TRAILING_ACTIVATED', {
+        await this.ports.logTradeEvent(lifecyclePolicy.strategyId, symbol, 'TRAILING_ACTIVATED', {
           tradeId: botState.lastTradeId,
           price: markPrice,
           roe: currentRoe,
@@ -526,7 +531,7 @@ export class StrategyPositionLifecycleCore {
               peakRoe: updatedPeakRoe,
               beRoe: guardianConfig.beTriggerRoe,
             });
-            await this.ports.logTradeEvent(symbol, 'BREAK_EVEN_EXECUTED', {
+            await this.ports.logTradeEvent(lifecyclePolicy.strategyId, symbol, 'BREAK_EVEN_EXECUTED', {
               tradeId: botState.lastTradeId,
               price: markPrice,
               roe: currentRoe,
@@ -559,7 +564,7 @@ export class StrategyPositionLifecycleCore {
               beRoe: guardianConfig.beTriggerRoe,
               error: moveResult.error,
             });
-            await this.ports.logTradeEvent(symbol, 'BREAK_EVEN_FAILED', {
+            await this.ports.logTradeEvent(lifecyclePolicy.strategyId, symbol, 'BREAK_EVEN_FAILED', {
               tradeId: botState.lastTradeId,
               price: markPrice,
               roe: currentRoe,
@@ -609,7 +614,7 @@ export class StrategyPositionLifecycleCore {
         if (moveResult.moved) {
           symbolState.set({ lastTrailStop: trailingPrice, lastStopPrice: trailingPrice });
           logger.info('aegis_trailing_stop_updated', { symbol, side, trailingPrice });
-          await this.ports.logTradeEvent(symbol, 'SL_MOVED', {
+          await this.ports.logTradeEvent(lifecyclePolicy.strategyId, symbol, 'SL_MOVED', {
             tradeId: botState.lastTradeId,
             price: markPrice,
             roe: currentRoe,

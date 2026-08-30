@@ -142,6 +142,11 @@ import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/
 import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
 import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvidenceSink';
 import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
+import { JsonlStrategyTelemetrySink } from '../../infra/logging/JsonlStrategyTelemetrySink';
+import { StrategyTelemetryBus } from '../../core/telemetry/StrategyTelemetryBus';
+import { DecisionEvidenceTelemetrySink } from '../../core/telemetry/DecisionEvidenceTelemetrySink';
+import { TelemetryStrategyExecutionPort } from '../../core/telemetry/TelemetryStrategyExecutionPort';
+import type { StrategyExecutionPort } from '../../core/strategy/StrategyExecution';
 import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
 import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
 import { AegisRealtimeMarketState } from '../../strategies/aegis/application/AegisRealtimeMarketState';
@@ -273,7 +278,17 @@ export class TradingService {
   private readonly aegisStrategyIdentity: StrategyIdentity;
   private readonly momentumStrategyIdentity: StrategyIdentity;
   private readonly strategyRiskLedger = new StrategyRiskLedger();
-  private readonly sharedStrategyExecution: SharedStrategyExecutionService;
+  private readonly strategyTelemetry = new StrategyTelemetryBus([
+    new JsonlStrategyTelemetrySink('data/strategy-telemetry/events-v1.jsonl'),
+  ]);
+  private readonly decisionEvidenceSink = new DecisionEvidenceTelemetrySink(
+    new JsonlDecisionEvidenceSink('data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl'),
+    this.strategyTelemetry,
+  );
+  private readonly marketSnapshotEvidenceSink = new JsonlMarketSnapshotSink(
+    'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
+  );
+  private readonly sharedStrategyExecution: StrategyExecutionPort;
   private readonly momentumStrategyRouter = new StrategyRouter<MomentumRideStrategyContext>();
   private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
   private readonly microBurstIdentity: StrategyIdentity;
@@ -311,7 +326,8 @@ export class TradingService {
     this.aegisStrategyIdentity = createAegisMigrationIdentity();
     this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
     this.microBurstIdentity = createMicroBurstV1Identity();
-    this.sharedStrategyExecution = new SharedStrategyExecutionService(deps.exchange, deps.logger, {
+    this.sharedStrategyExecution = new TelemetryStrategyExecutionPort(
+      new SharedStrategyExecutionService(deps.exchange, deps.logger, {
       feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
       confirmationAttempts: 3,
       confirmationDelaysMs: [300, 500, 1000],
@@ -328,7 +344,9 @@ export class TradingService {
           marketOpenAmbiguous: false,
           marketOpenClientOrderId: undefined,
         }),
-    });
+      }),
+      this.strategyTelemetry,
+    );
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
     const momentumRuntimeMode =
       momentumRuntimeConfig.enabled !== true || momentumRuntimeConfig.mode === 'OFF'
@@ -373,7 +391,28 @@ export class TradingService {
       formatRoe: (value) => this.formatRoe(value),
       notifyExit: (symbol, side, reason, state, exit) =>
         this.notifyExit(symbol, side, reason, state, exit),
-      logTradeEvent: (symbol, event, input) => this.logAegisTradeEvent(symbol, event, input),
+      logTradeEvent: async (strategyId, symbol, event, input) => {
+        await this.logAegisTradeEvent(symbol, event, input);
+        const state = this.stateForSymbol(symbol).get();
+        const upper = event.toUpperCase();
+        const eventType =
+          upper.includes('EXIT') || upper.includes('CLOSED')
+            ? 'EXIT'
+            : upper.includes('GUARD') || upper.includes('STOP') || upper.includes('TRAIL') || upper.includes('BREAK_EVEN') || upper.includes('PROTECT')
+              ? 'GUARD_RESULT'
+              : 'POSITION_EVENT';
+        await this.strategyTelemetry.publish({
+          eventType,
+          strategyId,
+          symbol,
+          occurredAtMs: Date.now(),
+          tradeId: input?.tradeId ?? state.lastTradeId,
+          side: state.lastSide as Side | undefined,
+          status: event,
+          reason: input?.reason,
+          details: { ...input, lifecycleEvent: event },
+        });
+      },
       safeMoveCloseStop: (input) => this.safeMoveCloseStop(input),
       ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
         this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, state, overrides),
@@ -1696,24 +1735,16 @@ export class TradingService {
       sharedMarketData: this.sharedMarketDataRuntime,
       identity: this.aegisStrategyIdentity,
       clock: { now: () => Date.now() },
-      decisionSink: new JsonlDecisionEvidenceSink(
-        'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',
-      ),
-      marketSnapshotSink: new JsonlMarketSnapshotSink(
-        'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
-      ),
+      decisionSink: this.decisionEvidenceSink,
+      marketSnapshotSink: this.marketSnapshotEvidenceSink,
     });
     this.aegisBlackBoxObservation.start(startupSymbols);
     this.momentumBlackBoxObservation ??= new MomentumRideBlackBoxObservation({
       exchange: this.deps.exchange,
       sharedMarketData: this.sharedMarketDataRuntime,
       clock: { now: () => Date.now() },
-      decisionSink: new JsonlDecisionEvidenceSink(
-        'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',
-      ),
-      marketSnapshotSink: new JsonlMarketSnapshotSink(
-        'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
-      ),
+      decisionSink: this.decisionEvidenceSink,
+      marketSnapshotSink: this.marketSnapshotEvidenceSink,
     });
     this.momentumBlackBoxObservation.start(startupSymbols);
     this.momentumStrategyRouter.setObservationHook(this.momentumBlackBoxObservation);
@@ -1787,12 +1818,8 @@ export class TradingService {
             orderBookDataPlane: this.sharedMarketDataRuntime.orderBookDataPlane,
             aggTradeDataPlane: this.sharedMarketDataRuntime.aggTradeDataPlane,
             blackBox: {
-              decisionSink: new JsonlDecisionEvidenceSink(
-                'data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl',
-              ),
-              marketSnapshotSink: new JsonlMarketSnapshotSink(
-                'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
-              ),
+              decisionSink: this.decisionEvidenceSink,
+              marketSnapshotSink: this.marketSnapshotEvidenceSink,
             },
             outcomeTracker,
             marketStorage: storage,
