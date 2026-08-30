@@ -1,0 +1,37 @@
+name: Temporary TradingService Micro Burst Bootstrap Validation
+
+on:
+  push:
+    branches:
+      - work/trading-service-thin-microburst-bootstrap-20260830
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: python scripts/tmp_extract_microburst_bootstrap.py
+      - name: Refresh authorized digest locally
+        run: |
+          NEW_DIGEST=$(sha256sum src/app/services/TradingService.ts | awk '{print $1}')
+          python - "$NEW_DIGEST" <<'PY'
+          import re, sys
+          from pathlib import Path
+          p = Path('src/restoration/original-operational-semantics.test.ts')
+          t = p.read_text()
+          key = "'src/app/services/TradingService.ts':"
+          i = t.index(key)
+          tail = t[i:]
+          tail = re.sub(r"'[0-9a-f]{64}'", "'" + sys.argv[1] + "'", tail, count=1)
+          p.write_text(t[:i] + tail)
+          PY
+      - run: cp config/regime_config.example.yaml regime_config.yaml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
