@@ -98,7 +98,7 @@ function isUnknownOrderError(error: unknown): boolean {
 }
 
 import { WebSocketManager } from './WebSocketManager';
-import type { BinanceDepthDiffEvent, BinanceDepthSnapshot } from '../../app/ports/MarketData';
+import type { BinanceDepthDiffEvent, BinanceDepthSnapshot, LiveCandleUpdate } from '../../app/ports/MarketData';
 
 export class BinanceExchange implements Exchange {
   private cli = Binance({
@@ -405,6 +405,35 @@ export class BinanceExchange implements Exchange {
       ? [...candles.filter((candle) => candle.openTime !== wsCandle.openTime), wsCandle]
       : candles;
     return merged.slice(-Math.max(0, limit));
+  }
+
+  public subscribeToKlineCandles(
+    symbol: string,
+    interval: string,
+    callback: (update: LiveCandleUpdate) => void,
+  ): () => void {
+    const normalizedSymbol = String(symbol || '').toUpperCase();
+    return this.wsManager.connectCandles(normalizedSymbol, interval, (wsCandle) => {
+      const candle: Candle = {
+        openTime: wsCandle.startTime,
+        timestamp: wsCandle.startTime,
+        open: Number(wsCandle.open),
+        high: Number(wsCandle.high),
+        low: Number(wsCandle.low),
+        close: Number(wsCandle.close),
+        volume: Number(wsCandle.volume),
+        buyVolume: Number((wsCandle as any).buyVolume || (wsCandle as any).baseAssetVolume || 0),
+        closeTime: wsCandle.closeTime,
+      };
+      if (interval === '5m') this.wsCandleCache[normalizedSymbol] = candle;
+      callback({
+        symbol: normalizedSymbol,
+        interval,
+        candle: { ...candle },
+        observedAtMs: Date.now(),
+        source: 'WEBSOCKET',
+      });
+    });
   }
 
   public subscribeToCandles(symbol: string): () => void {

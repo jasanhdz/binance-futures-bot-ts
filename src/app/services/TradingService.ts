@@ -146,6 +146,7 @@ import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
 import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
 import { MomentumRideBlackBoxObservation } from '../../strategies/momentum/application/MomentumRideBlackBoxObservation';
 import { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
+import { MomentumCandleState, type MomentumCandleSnapshot } from '../../strategies/momentum/application/MomentumCandleState';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -280,6 +281,7 @@ export class TradingService {
   private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;
   private momentumBlackBoxObservation: MomentumRideBlackBoxObservation | null = null;
   private momentumRealtimeMarketState: MomentumRealtimeMarketState | null = null;
+  private momentumCandleState: MomentumCandleState | null = null;
   private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
   private stopPromise: Promise<void> | null = null;
 
@@ -1678,6 +1680,8 @@ export class TradingService {
       clock: { now: () => Date.now() },
     });
     this.momentumRealtimeMarketState.start(startupSymbols);
+    this.momentumCandleState ??= new MomentumCandleState(this.sharedMarketDataRuntime);
+    this.momentumCandleState.start(startupSymbols);
     this.aegisBlackBoxObservation ??= new AegisBlackBoxObservation({
       exchange: this.deps.exchange,
       sharedMarketData: this.sharedMarketDataRuntime,
@@ -1869,6 +1873,8 @@ export class TradingService {
       this.momentumBlackBoxObservation = null;
       this.momentumRealtimeMarketState?.close();
       this.momentumRealtimeMarketState = null;
+      this.momentumCandleState?.close();
+      this.momentumCandleState = null;
       await microBurstRuntime?.stop();
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
       await Promise.all(stores.map((store) => store.flush?.()));
@@ -2275,14 +2281,40 @@ export class TradingService {
 
   private async findStandaloneMomentumCandidate(
     symbol: string,
-  ): Promise<{ decision: MainStackingMomentumDecision; candles: Candle[] } | undefined> {
+  ): Promise<{
+    decision: MainStackingMomentumDecision;
+    candles: Candle[];
+    candleState?: MomentumCandleSnapshot;
+  } | undefined> {
     const config = this.getAegisMomentumRideConfig();
     const symbolConfig = config.symbols[symbol];
     if (config.enabled !== true || config.standaloneMainReplica !== true || !symbolConfig?.enabled)
       return undefined;
 
     const now = Date.now();
-    let candles = this.getCachedEntryQualityCandles(symbol);
+    let candleState: MomentumCandleSnapshot | undefined;
+    let candles: Candle[] = [];
+    if (this.momentumCandleState) {
+      try {
+        candleState = await this.momentumCandleState.read(symbol, 300);
+        candles = candleState.candles.filter(
+          (candle) =>
+            this.isValidCandle(candle) &&
+            (!this.finiteNumber(candle.closeTime) || candle.closeTime <= now),
+        );
+      } catch (error) {
+        this.deps.logger.warn('momentum_live_candle_read_failed', {
+          symbol,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // Compatibility fallback for direct test harnesses or startup before the
+    // shared candle runtime exists. Operational steady state uses the branch above.
+    if (candles.length < 120) {
+      candles = this.getCachedEntryQualityCandles(symbol);
+    }
     if (candles.length < 120) {
       candles = (await this.deps.exchange.getCandles(symbol, '5m', 300)).filter(
         (candle) =>
@@ -2290,60 +2322,20 @@ export class TradingService {
           (!this.finiteNumber(candle.closeTime) || candle.closeTime <= now),
       );
     }
+
     const sides: Side[] = ['LONG', 'SHORT'];
     for (const side of sides) {
       const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
       if (!sideConfig.enabled) continue;
       const decision = evaluateMainStackingMomentum(candles, side);
-      if (decision.allowed) return { decision, candles };
+      if (decision.allowed) return { decision, candles, candleState };
     }
     return undefined;
   }
 
-  private withStandaloneMomentumCandidate(
-    signal: AegisTradingSignal,
-    candidate: MainStackingMomentumDecision,
-  ): AegisTradingSignal {
-    const sourceAegis = signal.metadata?.aegis ?? signal.aegis ?? {};
-    const turbo = sourceAegis.turbo ?? {};
-    return {
-      ...signal,
-      action: candidate.side,
-      confidence: 1,
-      metadata: {
-        ...signal.metadata,
-        momentum_stacking_replica: true,
-        momentum_stacking_authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
-        momentum_stacking_diagnostics: candidate.diagnostics,
-        aegis: {
-          ...sourceAegis,
-          turbo: {
-            ...turbo,
-            action: candidate.side,
-            reason: candidate.reason,
-            raw: {
-              ...turbo.raw,
-              action: candidate.side,
-              would_execute: true,
-              reason: candidate.reason,
-              turbo_score: 1,
-            },
-            gated: {
-              ...turbo.gated,
-              action: candidate.side,
-              would_execute: true,
-              reason: candidate.reason,
-              blocked_by: null,
-            },
-          },
-        },
-      },
-    };
-  }
-
   private async lookForMomentumEntry(
     symbol: string,
-    candidate: { decision: MainStackingMomentumDecision; candles: Candle[] },
+    candidate: { decision: MainStackingMomentumDecision; candles: Candle[]; candleState?: MomentumCandleSnapshot },
   ): Promise<void> {
     const { exchange, logger, notifier } = this.deps;
     const config = this.getAegisMomentumRideConfig();
@@ -2423,6 +2415,12 @@ export class TradingService {
       realtimeAggTradeGapFree: realtimeMarket.aggTradeGapFree,
       realtimeAggTradeCount: realtimeMarket.aggTradeCount,
       realtimeNetTakerVolume: realtimeMarket.netTakerVolume,
+      candleSource: candidate.candleState?.source,
+      candleStatus: candidate.candleState?.status,
+      candleAgeMs: candidate.candleState?.ageMs,
+      candleWebsocketObservedAtMs: candidate.candleState?.websocketObservedAtMs,
+      candleRestFallbackCount: candidate.candleState?.restFallbackCount,
+      candleUsedRestFallback: candidate.candleState?.usedRestFallback,
       policy,
       openPositionsCount: portfolioExposure.openPositions,
       openMomentumPositions,
