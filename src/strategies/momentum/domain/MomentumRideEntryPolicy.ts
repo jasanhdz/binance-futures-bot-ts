@@ -8,6 +8,7 @@ import {
 
 export type MomentumLiquidityStressStatus = 'NO_DATA' | 'FRESH' | 'STALE';
 export type MomentumRealtimeMarketStatus = 'NO_DATA' | 'FRESH' | 'STALE';
+export type MomentumCandleSource = 'WEBSOCKET' | 'REST_WARMUP' | 'REST_RECOVERY' | 'LEGACY_CACHE';
 export const MOMENTUM_LIQUIDITY_INPUT_VERSION = 'DEPTH20_PARTIAL_V1' as const;
 export const MOMENTUM_REALTIME_MARKET_SOURCE = 'SHARED_WEBSOCKET' as const;
 
@@ -37,6 +38,12 @@ export interface MomentumRideEntryContext {
   realtimeAggTradeGapFree: boolean;
   realtimeAggTradeCount: number;
   realtimeNetTakerVolume: number;
+  candleSource?: MomentumCandleSource;
+  candleStatus?: MomentumRealtimeMarketStatus;
+  candleAgeMs?: number;
+  candleWebsocketObservedAtMs?: number;
+  candleRestFallbackCount?: number;
+  candleUsedRestFallback?: boolean;
 }
 
 export interface MomentumRideEntryPolicyConfig {
@@ -67,13 +74,21 @@ export function evaluateMomentumRideEntry(
     realtimeAggTradeCount: context.realtimeAggTradeCount,
     realtimeNetTakerVolume: context.realtimeNetTakerVolume,
   };
+  const candleDiagnostics = {
+    candleSource: context.candleSource,
+    candleStatus: context.candleStatus,
+    candleAgeMs: context.candleAgeMs,
+    candleWebsocketObservedAtMs: context.candleWebsocketObservedAtMs,
+    candleRestFallbackCount: context.candleRestFallbackCount,
+    candleUsedRestFallback: context.candleUsedRestFallback,
+  };
   if (context.realtimeMarketStatus !== 'FRESH') {
     return noTrade(
       context,
       context.realtimeMarketStatus === 'NO_DATA'
         ? 'realtime_market_no_data'
         : 'realtime_market_stale',
-      realtimeDiagnostics,
+      { ...realtimeDiagnostics, ...candleDiagnostics },
     );
   }
 
@@ -88,7 +103,7 @@ export function evaluateMomentumRideEntry(
       context.liquidityStressStatus === 'NO_DATA'
         ? 'liquidity_data_no_data'
         : 'liquidity_data_stale',
-      { ...realtimeDiagnostics, ...liquidityDiagnostics },
+      { ...realtimeDiagnostics, ...candleDiagnostics, ...liquidityDiagnostics },
     );
   }
   const pattern = evaluateMainStackingMomentum(context.candles, context.side);
@@ -96,6 +111,7 @@ export function evaluateMomentumRideEntry(
     return noTrade(context, pattern.reason, {
       pattern: pattern.diagnostics,
       ...realtimeDiagnostics,
+      ...candleDiagnostics,
       ...liquidityDiagnostics,
     });
   }
@@ -153,6 +169,7 @@ export function evaluateMomentumRideEntry(
     return noTrade(context, safety.reason, {
       pattern: pattern.diagnostics,
       sharedSafety: safety,
+      ...candleDiagnostics,
     });
   }
 
@@ -164,6 +181,7 @@ export function evaluateMomentumRideEntry(
     reason: 'main_stacking_momentum_confirmed',
     diagnostics: {
       ...realtimeDiagnostics,
+      ...candleDiagnostics,
       ...liquidityDiagnostics,
       pattern: pattern.diagnostics,
       sharedSafety: safety,
@@ -199,6 +217,12 @@ function noTrade(
       realtimeAggTradeGapFree: context.realtimeAggTradeGapFree,
       realtimeAggTradeCount: context.realtimeAggTradeCount,
       realtimeNetTakerVolume: context.realtimeNetTakerVolume,
+      candleSource: context.candleSource,
+      candleStatus: context.candleStatus,
+      candleAgeMs: context.candleAgeMs,
+      candleWebsocketObservedAtMs: context.candleWebsocketObservedAtMs,
+      candleRestFallbackCount: context.candleRestFallbackCount,
+      candleUsedRestFallback: context.candleUsedRestFallback,
       liquidityStressStatus: context.liquidityStressStatus,
       liquidityStressAgeMs: context.liquidityStressAgeMs,
       liquidityStressInputVersion: context.liquidityStressInputVersion,
