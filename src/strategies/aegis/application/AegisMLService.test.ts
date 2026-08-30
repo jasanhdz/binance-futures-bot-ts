@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AegisMLService } from './AegisMLService';
 import type { AegisPredictionResponse } from '../domain/AegisStrategy';
+import { registerAegisMarketContextProvider } from './AegisMarketContextRegistry';
 
 describe('AegisMLService', () => {
   it('returns a PASS Aegis signal and preserves Aegis metadata', async () => {
@@ -59,7 +60,10 @@ describe('AegisMLService', () => {
     const service = new AegisMLService(client as any);
     const signal = await service.getSignal('ETHUSDT');
 
-    expect(client.fetchPrediction).toHaveBeenCalledWith({ symbol: 'ETHUSDT' });
+    expect(client.fetchPrediction).toHaveBeenCalledWith({
+      symbol: 'ETHUSDT',
+      marketContext: undefined,
+    });
     expect(signal.action).toBe('PASS');
     expect(signal.confidence).toBe(0);
     expect(signal.source).toBe('AEGIS_SAFE');
@@ -69,5 +73,37 @@ describe('AegisMLService', () => {
     expect(signal.metadata?.aegis?.entry_quality_model).toBe(prediction.aegis?.entry_quality_model);
     expect(signal.metadata?.aegis?.entry_quality_model?.execute).toBe(false);
     expect(signal.metadata?.rawPrediction).toBe(prediction);
+  });
+
+  it('automatically transports the registered causal WebSocket context', async () => {
+    const prediction = {
+      symbol: 'ETHUSDT',
+      long_prob: 0,
+      short_prob: 0,
+      neutral_prob: 1,
+    } as AegisPredictionResponse;
+    const client = {
+      fetchPrediction: vi.fn().mockResolvedValue(prediction),
+      getExitSignal: vi.fn(),
+      checkHealth: vi.fn(),
+    };
+    const context = {
+      version: 'AEGIS_MARKET_CONTEXT_V1',
+      symbol: 'ETHUSDT',
+      capturedAtMs: 1,
+      source: 'SHARED_MARKET_DATA_RUNTIME',
+      status: 'FRESH',
+    } as any;
+    const release = registerAegisMarketContextProvider(() => context);
+    try {
+      const service = new AegisMLService(client as any);
+      await service.getSignal('ethusdt');
+      expect(client.fetchPrediction).toHaveBeenCalledWith({
+        symbol: 'ETHUSDT',
+        marketContext: context,
+      });
+    } finally {
+      release();
+    }
   });
 });
