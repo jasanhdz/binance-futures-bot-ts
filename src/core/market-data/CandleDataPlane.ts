@@ -46,10 +46,7 @@ type Entry = {
 
 /**
  * Application-shared live candle cache.
- *
- * WebSocket updates are the steady-state source. REST is used only to seed
- * history and to recover a stale/insufficient series. Consumers acquire
- * reference-counted leases so one symbol/interval opens one live stream.
+ * WebSocket is steady state; REST only seeds history or recovers stale state.
  */
 export class CandleDataPlane {
   private readonly entries = new Map<string, Entry>();
@@ -117,13 +114,7 @@ export class CandleDataPlane {
     const symbol = rawSymbol.toUpperCase();
     const entry = this.entries.get(this.key(symbol, interval));
     if (!entry || entry.candles.length === 0) {
-      return {
-        symbol,
-        interval,
-        candles: [],
-        status: 'NO_DATA',
-        restFallbackCount: entry?.restFallbackCount ?? 0,
-      };
+      return { symbol, interval, candles: [], status: 'NO_DATA', restFallbackCount: entry?.restFallbackCount ?? 0 };
     }
     const now = this.deps.clock.now();
     const observedAtMs = entry.observedAtMs;
@@ -164,17 +155,24 @@ export class CandleDataPlane {
     source: 'REST_WARMUP' | 'REST_RECOVERY',
   ): Promise<void> {
     if (!entry.inFlight) {
+      const websocketAtStart = entry.websocketObservedAtMs;
       entry.inFlight = this.deps
         .fetch(symbol, interval, limit)
         .then((candles) => {
           this.merge(entry, candles);
           const observedAtMs = this.deps.clock.now();
-          // A REST warm-up must not overwrite a newer WebSocket observation.
-          if ((entry.websocketObservedAtMs ?? 0) <= observedAtMs) {
-            entry.lastSource = entry.websocketObservedAtMs ? entry.lastSource : source;
-            entry.observedAtMs = entry.websocketObservedAtMs ?? observedAtMs;
+          const websocketAdvanced =
+            entry.websocketObservedAtMs !== undefined && entry.websocketObservedAtMs !== websocketAtStart;
+          if (source === 'REST_RECOVERY') {
+            entry.restFallbackCount += 1;
+            if (!websocketAdvanced) {
+              entry.lastSource = 'REST_RECOVERY';
+              entry.observedAtMs = observedAtMs;
+            }
+          } else if (!websocketAdvanced && entry.websocketObservedAtMs === undefined) {
+            entry.lastSource = 'REST_WARMUP';
+            entry.observedAtMs = observedAtMs;
           }
-          if (source === 'REST_RECOVERY') entry.restFallbackCount += 1;
         })
         .finally(() => {
           entry.inFlight = undefined;
