@@ -13,6 +13,7 @@ import {
   type AegisCandleSeriesV1,
   type AegisMarketContextV1,
 } from './AegisMarketContext';
+import { registerAegisMarketContextProvider } from './AegisMarketContextRegistry';
 
 export type AegisRealtimeMarketStatus = 'NO_DATA' | 'FRESH' | 'STALE';
 
@@ -57,6 +58,7 @@ export class AegisRealtimeMarketState {
   private readonly takerFlowWindowMs: number;
   private readonly depthRefreshMs: number;
   private depthTimer: ReturnType<typeof setInterval> | null = null;
+  private releaseMarketContextProvider: (() => void) | null = null;
 
   constructor(private readonly deps: AegisRealtimeMarketStateDeps) {
     this.freshnessMs = deps.freshnessMs ?? 3_000;
@@ -93,6 +95,12 @@ export class AegisRealtimeMarketState {
       void this.deps.sharedMarketData.candleDataPlane
         .ensureWarm(symbol, '5m', 320)
         .catch(() => undefined);
+    }
+
+    if (!this.releaseMarketContextProvider) {
+      this.releaseMarketContextProvider = registerAegisMarketContextProvider((symbol) =>
+        this.buildMarketContext(symbol),
+      );
     }
 
     if (!this.depthTimer) {
@@ -295,6 +303,8 @@ export class AegisRealtimeMarketState {
   close(): void {
     if (this.depthTimer) clearInterval(this.depthTimer);
     this.depthTimer = null;
+    this.releaseMarketContextProvider?.();
+    this.releaseMarketContextProvider = null;
     for (const lease of this.bookLeases.values()) lease.release();
     for (const lease of this.aggTradeLeases.values()) lease.release();
     for (const lease of this.candleLeases.values()) lease.release();
@@ -315,7 +325,7 @@ export class AegisRealtimeMarketState {
       snapshot.observedAtMs === undefined ||
       snapshot.ageMs === undefined ||
       snapshot.websocketObservedAtMs === undefined ||
-      snapshot.candles.length < 60
+      snapshot.candles.length < 96
     ) {
       return null;
     }
