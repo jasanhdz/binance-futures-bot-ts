@@ -1,8 +1,10 @@
 import { StrategyId } from './StrategyIdentity';
 
+export type StrategyLifecycleOwner = StrategyId | 'EXTERNAL';
+
 export interface StrategyLifecyclePolicy {
-  strategyId: StrategyId;
-  /** Legacy ProfitGuardian is allowed only while a strategy explicitly declares it. */
+  strategyId: StrategyLifecycleOwner;
+  /** Legacy ProfitGuardian is allowed only while an owner explicitly declares it. */
   useLegacyProfitGuardian: boolean;
   useBreakEven: boolean;
   useTrailing: boolean;
@@ -47,6 +49,19 @@ const MICRO_BURST_RESERVED_POLICY: StrategyLifecyclePolicy = {
   allowManualQuantityReconciliation: false,
 };
 
+const EXTERNAL_POLICY: StrategyLifecyclePolicy = {
+  strategyId: 'EXTERNAL',
+  // External/manual positions keep only the protective mechanics that were
+  // historically provided by the Aegis fallback. They do not inherit Aegis authority.
+  useLegacyProfitGuardian: true,
+  useBreakEven: true,
+  useTrailing: true,
+  requireStopBracket: true,
+  requireTakeProfitBracket: true,
+  closeIfBracketFails: true,
+  allowManualQuantityReconciliation: false,
+};
+
 export function strategyLifecyclePolicy(strategyId: StrategyId): StrategyLifecyclePolicy {
   switch (strategyId) {
     case 'AEGIS_TURBO':
@@ -56,4 +71,8 @@ export function strategyLifecyclePolicy(strategyId: StrategyId): StrategyLifecyc
     case 'MICRO_BURST_V1':
       return MICRO_BURST_RESERVED_POLICY;
   }
+}
+
+export function externalLifecyclePolicy(): StrategyLifecyclePolicy {
+  return EXTERNAL_POLICY;
 }
