@@ -1,0 +1,101 @@
+name: Momentum WebSocket Operational Soak
+
+on:
+  push:
+    branches:
+      - work/micro-burst-rider-v1-20260826
+    paths:
+      - '.github/workflows/momentum-websocket-soak.yml'
+      - 'scripts/momentum-websocket-soak.ts'
+      - 'src/core/market-data/CandleDataPlane.ts'
+      - 'src/app/services/SharedMarketDataRuntime.ts'
+      - 'src/strategies/momentum/application/MomentumCandleState.ts'
+      - 'src/strategies/momentum/application/MomentumRealtimeMarketState.ts'
+      - 'src/infra/adapters/BinanceAdapter.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  momentum-websocket-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BINANCE_API_KEY: ''
+      BINANCE_API_SECRET: ''
+      IS_TESTNET: '0'
+      TRADING_MODE: 'AEGIS_SHADOW'
+      AEGIS_LIVE_ENABLED: '0'
+      TELEGRAM_COMMANDS_ENABLED: '0'
+      TELEGRAM_POLICY_MUTATIONS_ENABLED: '0'
+      MOMENTUM_WS_SOAK_SECONDS: '420'
+      MOMENTUM_WS_SAMPLE_MS: '2000'
+      MOMENTUM_WS_CHAOS_AT_SECONDS: '180'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare test configuration
+        run: cp config/regime_config.example.yaml regime_config.yaml
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Static read-only safety audit
+        run: npm run audit:usdm-readonly:static
+
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-phase-s
+          version: latest
+
+      - name: Route traffic through iPhone exit node
+        run: |
+          sudo -E tailscale status
+          timeout 3m sudo -E tailscale set --exit-node=iphone-15-pro-max --exit-node-allow-lan-access=true
+          sleep 5
+          EXIT_ONLINE="$(sudo -E tailscale status --json | jq -r '.ExitNodeStatus.Online // false')"
+          if [ "$EXIT_ONLINE" != "true" ]; then
+            echo 'ERROR: iphone-15-pro-max is not active as the runner exit node.'
+            exit 1
+          fi
+
+      - name: Verify Binance Futures public REST through iPhone
+        run: |
+          HTTP_CODE="$(curl --silent --show-error --max-time 20 -o /tmp/binance-time.json -w '%{http_code}' https://fapi.binance.com/fapi/v1/time || true)"
+          cat /tmp/binance-time.json || true
+          echo
+          echo "HTTP status: $HTTP_CODE"
+          test "$HTTP_CODE" = "200"
+
+      - name: Momentum WebSocket operational soak
+        run: npx ts-node scripts/momentum-websocket-soak.ts
+
+      - name: Disable exit node
+        if: always()
+        run: |
+          if command -v tailscale >/dev/null 2>&1; then
+            sudo -E tailscale set --exit-node= || true
+          fi
+
+      - name: Upload Momentum WebSocket soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: momentum-websocket-soak-${{ github.sha }}
+          path: momentum-websocket-soak-report.json
+          if-no-files-found: warn
+          retention-days: 14
