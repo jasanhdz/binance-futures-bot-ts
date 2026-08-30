@@ -1,8 +1,12 @@
 import type { Logger } from '../ports/Logger';
-import type { MarketDataPort } from '../ports/MarketData';
+import type { BinanceDepthSnapshot, MarketDataPort } from '../ports/MarketData';
 import { AggTradeDataPlane } from '../../core/market-data/AggTradeDataPlane';
 import { CandleDataPlane } from '../../core/market-data/CandleDataPlane';
 import { OrderBookDataPlane } from '../../core/market-data/OrderBookDataPlane';
+import {
+  DepthSnapshotCoordinator,
+  type DepthSnapshotCoordinatorMetrics,
+} from '../../core/market-data/DepthSnapshotCoordinator';
 import {
   RollingAggTradeBuffer,
   type AggTradeGap,
@@ -36,9 +40,15 @@ export class SharedMarketDataRuntime {
   readonly orderBookDataPlane: OrderBookDataPlane<SynchronizedOrderBook>;
   readonly aggTradeDataPlane: AggTradeDataPlane<RollingAggTradeBuffer>;
   private archiveObserver: SharedMarketDataArchiveObserver = {};
+  private readonly depthSnapshots: DepthSnapshotCoordinator<BinanceDepthSnapshot>;
 
   constructor(private readonly deps: SharedMarketDataRuntimeDeps) {
     const { exchange, logger, clock } = deps;
+
+    this.depthSnapshots = new DepthSnapshotCoordinator(
+      (symbol, levels) => exchange.getDepthSnapshot!(symbol, levels),
+      logger,
+    );
 
     this.candleDataPlane = new CandleDataPlane({
       clock,
@@ -61,7 +71,7 @@ export class SharedMarketDataRuntime {
             if (!exchange.getDepthSnapshot) {
               throw new Error('Exchange does not support depth snapshot');
             }
-            return exchange.getDepthSnapshot(sym, levels);
+            return this.depthSnapshots.request(sym, levels);
           },
         },
         diffSource: {
@@ -120,7 +130,12 @@ export class SharedMarketDataRuntime {
     this.archiveObserver = observer ?? {};
   }
 
+  getDepthSnapshotMetrics(): DepthSnapshotCoordinatorMetrics {
+    return this.depthSnapshots.getMetrics();
+  }
+
   close(): void {
+    this.depthSnapshots.close();
     this.candleDataPlane.close();
     this.orderBookDataPlane.close();
     this.aggTradeDataPlane.close();
