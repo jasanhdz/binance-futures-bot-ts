@@ -312,10 +312,7 @@ export class TradingService {
     private config: TradingServiceConfig,
   ) {
     this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
-    this.runtimeConfig = new TradingRuntimeConfigService(
-      deps.configManager,
-      () => this.getEntryQualityGateConfig(),
-    );
+    this.runtimeConfig = new TradingRuntimeConfigService(deps.configManager);
     this.aegisStrategyIdentity = createAegisMigrationIdentity();
     this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
     this.microBurstIdentity = createMicroBurstV1Identity();
@@ -575,80 +572,31 @@ export class TradingService {
   }
 
   private getEntryQualityGateConfig(symbol?: string): AegisEntryQualityGateRuntimeConfig {
-    const manager = this.deps.configManager as any;
-    if (typeof manager.getEntryQualityGateConfig === 'function') {
-      return manager.getEntryQualityGateConfig(symbol);
-    }
-    return {
-      enabled: false,
-      mode: 'OFF',
-      config: {
-        minScoreLong: 0.65,
-        minScoreShort: 0.7,
-        requireMomentumConfirm: false,
-        antiFallingKnifeEnabled: false,
-        antiFallingKnifeLookbackCandles: 3,
-        maxAdverseRecentReturn: 0.003,
-        overextensionEnabled: false,
-        emaDistanceLimit: 0.006,
-        volatilityEnabled: false,
-        maxAtrPercentile: 0.75,
-      },
-    };
+    return this.runtimeConfig.getEntryQualityGateConfig(symbol);
   }
 
   private getAegisTurboRegimeConfig(symbol?: string): RegimeConfig | undefined {
-    const manager = this.deps.configManager as any;
-    return typeof manager.getRegimeConfig === 'function'
-      ? manager.getRegimeConfig('AEGIS_TURBO', symbol)
-      : undefined;
+    return this.runtimeConfig.getAegisTurboRegimeConfig(symbol);
   }
 
   private getAegisTurboGateConfig(symbol: string) {
-    return buildAegisMicroLiveGateConfigFromEnv(
-      CONFIG,
-      this.getAegisTurboYamlConfig(),
-      this.getAegisTurboRegimeConfig(symbol),
-    );
+    return this.runtimeConfig.getAegisTurboGateConfig(symbol);
   }
 
   private getAegisGuardianConfig(symbol: string, regimeConfig?: RegimeConfig): GuardianConfig {
-    const manager = this.deps.configManager as any;
-    if (typeof manager.getGuardianConfig === 'function') {
-      return manager.getGuardianConfig('AEGIS_TURBO', symbol);
-    }
-    return {
-      ...DEFAULT_GUARDIAN_CONFIG,
-      beTriggerRoe: regimeConfig?.beRoe ?? DEFAULT_GUARDIAN_CONFIG.beTriggerRoe,
-      trailingActivationRoe:
-        regimeConfig?.trailingActivationRoe ?? DEFAULT_GUARDIAN_CONFIG.trailingActivationRoe,
-      trailingCallbackRoe:
-        regimeConfig?.trailingCallbackRoe ?? DEFAULT_GUARDIAN_CONFIG.trailingCallbackRoe,
-      atrMultiplier: 1.5,
-    };
+    return this.runtimeConfig.getAegisGuardianConfig(symbol, regimeConfig);
   }
 
   private getSymbolMode(symbol: string): AegisSymbolMode {
-    const manager = this.deps.configManager as any;
-    return typeof manager.getSymbolMode === 'function' ? manager.getSymbolMode(symbol) : 'LIVE';
+    return this.runtimeConfig.getSymbolMode(symbol);
   }
 
   private getLiveAegisSymbols(): string[] {
-    const manager = this.deps.configManager as any;
-    return typeof manager.getLiveAegisSymbols === 'function'
-      ? manager.getLiveAegisSymbols()
-      : [this.config.symbols[0]].filter(Boolean);
+    return this.runtimeConfig.getLiveAegisSymbols(this.config.symbols);
   }
 
   private canExecuteLive(symbol: string): boolean {
-    const turbo = this.getAegisTurboYamlConfig();
-    return (
-      this.getTradingMode() === 'AEGIS_TURBO_MICRO_LIVE' &&
-      CONFIG.AEGIS_LIVE_ENABLED === true &&
-      this.getSymbolMode(symbol) === 'LIVE' &&
-      turbo?.enabled === true &&
-      turbo?.live_enabled === true
-    );
+    return this.runtimeConfig.canExecuteLive(symbol, this.getTradingMode());
   }
 
   private normalizeSymbol(symbol: string): string {

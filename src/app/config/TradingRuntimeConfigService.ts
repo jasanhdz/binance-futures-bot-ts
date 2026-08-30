@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
 import { Side } from '../../core/types';
+import { DEFAULT_GUARDIAN_CONFIG, GuardianConfig } from '../../domain/services/ProfitGuardian';
+import { RegimeConfig } from '../ports/RegimeStrategy';
+import { buildAegisMicroLiveGateConfigFromEnv } from '../../strategies/aegis/domain/services/AegisMicroLiveGate';
+import { CONFIG } from '../../infra/config/environment';
 import {
   AegisCleanEntryGuardRuntimeConfig,
   AegisDecisionEnforcementRuntimeConfig,
@@ -13,6 +17,7 @@ import {
   AegisShortGateYamlConfig,
   AegisTelegramNotificationsRuntimeConfig,
   AegisTurboYamlConfig,
+  AegisSymbolMode,
   NinjaConfigManager,
 } from '../../infra/config/ConfigLoader';
 import {
@@ -38,10 +43,7 @@ import {
 } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 
 export class TradingRuntimeConfigService {
-  constructor(
-    private readonly manager: NinjaConfigManager,
-    private readonly entryQualityGateConfig: () => AegisEntryQualityGateRuntimeConfig,
-  ) {}
+  constructor(private readonly manager: NinjaConfigManager) {}
 
   getMicroBurstConfig(): ReturnType<typeof parseMicroBurstConfig> {
     const manager = this.manager as NinjaConfigManager & {
@@ -218,7 +220,7 @@ export class TradingRuntimeConfigService {
   getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
     const manager = this.manager as any;
     if (typeof manager.getAegisEntryPolicyConfig === 'function') return manager.getAegisEntryPolicyConfig();
-    const entryQualityGate = this.entryQualityGateConfig();
+    const entryQualityGate = this.getEntryQualityGateConfig();
     const eventRisk = this.getAegisEventRiskConfig();
     const regimeGuard = this.getAegisRegimeGuardConfig();
     const regimeContext = this.getAegisRegimeContextConfig();
@@ -242,4 +244,81 @@ export class TradingRuntimeConfigService {
       },
     };
   }
+  getEntryQualityGateConfig(symbol?: string): AegisEntryQualityGateRuntimeConfig {
+    const manager = this.manager as any;
+    if (typeof manager.getEntryQualityGateConfig === 'function') {
+      return manager.getEntryQualityGateConfig(symbol);
+    }
+    return {
+      enabled: false,
+      mode: 'OFF',
+      config: {
+        minScoreLong: 0.65,
+        minScoreShort: 0.7,
+        requireMomentumConfirm: false,
+        antiFallingKnifeEnabled: false,
+        antiFallingKnifeLookbackCandles: 3,
+        maxAdverseRecentReturn: 0.003,
+        overextensionEnabled: false,
+        emaDistanceLimit: 0.006,
+        volatilityEnabled: false,
+        maxAtrPercentile: 0.75,
+      },
+    };
+  }
+
+  getAegisTurboRegimeConfig(symbol?: string): RegimeConfig | undefined {
+    const manager = this.manager as any;
+    return typeof manager.getRegimeConfig === 'function'
+      ? manager.getRegimeConfig('AEGIS_TURBO', symbol)
+      : undefined;
+  }
+
+  getAegisTurboGateConfig(symbol: string) {
+    return buildAegisMicroLiveGateConfigFromEnv(
+      CONFIG,
+      this.getAegisTurboYamlConfig(),
+      this.getAegisTurboRegimeConfig(symbol),
+    );
+  }
+
+  getAegisGuardianConfig(symbol: string, regimeConfig?: RegimeConfig): GuardianConfig {
+    const manager = this.manager as any;
+    if (typeof manager.getGuardianConfig === 'function') {
+      return manager.getGuardianConfig('AEGIS_TURBO', symbol);
+    }
+    return {
+      ...DEFAULT_GUARDIAN_CONFIG,
+      beTriggerRoe: regimeConfig?.beRoe ?? DEFAULT_GUARDIAN_CONFIG.beTriggerRoe,
+      trailingActivationRoe:
+        regimeConfig?.trailingActivationRoe ?? DEFAULT_GUARDIAN_CONFIG.trailingActivationRoe,
+      trailingCallbackRoe:
+        regimeConfig?.trailingCallbackRoe ?? DEFAULT_GUARDIAN_CONFIG.trailingCallbackRoe,
+      atrMultiplier: 1.5,
+    };
+  }
+
+  getSymbolMode(symbol: string): AegisSymbolMode {
+    const manager = this.manager as any;
+    return typeof manager.getSymbolMode === 'function' ? manager.getSymbolMode(symbol) : 'LIVE';
+  }
+
+  getLiveAegisSymbols(fallbackSymbols: string[]): string[] {
+    const manager = this.manager as any;
+    return typeof manager.getLiveAegisSymbols === 'function'
+      ? manager.getLiveAegisSymbols()
+      : [fallbackSymbols[0]].filter(Boolean);
+  }
+
+  canExecuteLive(symbol: string, tradingMode: string): boolean {
+    const turbo = this.getAegisTurboYamlConfig();
+    return (
+      tradingMode === 'AEGIS_TURBO_MICRO_LIVE' &&
+      CONFIG.AEGIS_LIVE_ENABLED === true &&
+      this.getSymbolMode(symbol) === 'LIVE' &&
+      turbo?.enabled === true &&
+      turbo?.live_enabled === true
+    );
+  }
+
 }
