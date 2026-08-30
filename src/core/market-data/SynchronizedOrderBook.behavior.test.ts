@@ -76,7 +76,7 @@ async function startAndBridge(
 }
 
 describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
-  it('drops buffered events with u < snapshot lastUpdateId and bridges with U <= lastUpdateId <= u', async () => {
+  it('drops buffered events with u < snapshot lastUpdateId and bridges with U <= lastUpdateId + 1 <= u', async () => {
     let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
     const source = new Promise<BinanceDepthSnapshot>((resolve) => {
       resolveSnapshot = resolve;
@@ -93,7 +93,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     expect(book.getState().bids[0].qty).toBe(12);
   });
 
-  it('retains a boundary event ending at the snapshot ID without reapplying its levels', async () => {
+  it('discards an event ending at the snapshot ID because it is already represented', async () => {
     let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
     const source = new Promise<BinanceDepthSnapshot>((resolve) => {
       resolveSnapshot = resolve;
@@ -105,7 +105,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.diffSource.emit(diff(99, 100, 98, { bids: [['100', '99']] }));
 
     resolveSnapshot(snapshot(100));
-    await vi.waitFor(() => expect(book.getState().health).toBe('HEALTHY'));
+    await vi.waitFor(() => expect(book.getState().health).toBe('UNSYNCED'));
     expect(book.getState().lastUpdateId).toBe(100);
     expect(book.getState().bids[0].qty).toBe(10);
   });
@@ -147,11 +147,11 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     expect(book.getState().health).toBe('HEALTHY');
   });
 
-  it('uses the exact USD-M bridge U <= snapshot.lastUpdateId <= u', async () => {
+  it('accepts the first update immediately after the snapshot as the USD-M bridge', async () => {
     const d = deps();
     const book = new SynchronizedOrderBook(SYMBOL, d);
     book.start();
-    d.diffSource.emit(diff(100, 101, 99));
+    d.diffSource.emit(diff(101, 101, 100));
     await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(101));
     expect(d.snapshotSource.getSnapshot).toHaveBeenCalledWith(
       SYMBOL,
@@ -167,6 +167,19 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.diffSource.emit(diff(106, 109, 105));
     expect(book.getState().lastUpdateId).toBe(109);
     expect(book.getHealth()).toBe('HEALTHY');
+  });
+
+  it('ignores an old or duplicate event without validating its predecessor', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    await startAndBridge(book, d);
+
+    d.diffSource.emit(diff(100, 101, 1, { bids: [['100', '999']] }));
+
+    expect(book.getState().health).toBe('HEALTHY');
+    expect(book.getState().lastUpdateId).toBe(101);
+    expect(book.getState().bids[0].qty).toBe(10);
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('does not fetch snapshots while a healthy book remains fresh', async () => {

@@ -232,7 +232,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
       this.temporalHistory = [];
 
       const snapshotUpdateId = this.lastUpdateId;
-      const buffered = this.diffBuffer.filter((event) => event.u >= snapshotUpdateId);
+      const buffered = this.diffBuffer.filter((event) => event.u >= snapshotUpdateId + 1);
       this.diffBuffer = [];
       if (!buffered.length) {
         this.health = 'UNSYNCED';
@@ -240,16 +240,14 @@ export class SynchronizedOrderBook implements OrderBookPort {
       }
       {
         const first = buffered[0];
-        if (!(first.U <= this.lastUpdateId && this.lastUpdateId <= first.u)) {
+        // Binance's bridge includes the first update after the snapshot. The
+        // snapshot itself is already applied, so the boundary is +1.
+        if (!(first.U <= this.lastUpdateId + 1 && this.lastUpdateId + 1 <= first.u)) {
           this.desync('snapshot bridge missing');
           return;
         }
-        // A boundary event ending at the snapshot ID is retained for the bridge and chain,
-        // but its levels are already represented by the snapshot and must not be reapplied.
-        if (first.u > snapshotUpdateId) {
-          this.apply(first);
-          if (this.health !== 'HEALTHY') return;
-        }
+        this.apply(first);
+        if (this.health !== 'HEALTHY') return;
         for (let index = 1; index < buffered.length; index++) {
           const event = buffered[index];
           if (event.u <= this.lastUpdateId) continue;
