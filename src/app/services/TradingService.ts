@@ -110,7 +110,6 @@ import { AegisExecutionIntentFactory } from '../../strategies/aegis/domain/Aegis
 import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
 import { StrategyRiskLedger } from '../../core/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
-import { createReadOnlyAuditedExchange } from '../../infra/adapters/ReadOnlyAuditedExchange';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import {
   MomentumRideStrategy,
@@ -121,10 +120,8 @@ import {
   MicroBurstStrategyContext,
 } from '../../strategies/micro-burst/domain/MicroBurstStrategy';
 import { createMicroBurstV1Identity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
-import {
-  MicroBurstRuntime,
-  MicroBurstRuntimeReadiness,
-} from '../../strategies/micro-burst/application/MicroBurstRuntime';
+import type { MicroBurstRuntimeReadiness } from '../../strategies/micro-burst/application/MicroBurstRuntime';
+import { MicroBurstRuntimeCoordinator } from '../../strategies/micro-burst/application/MicroBurstRuntimeCoordinator';
 import {
   parseMicroBurstConfig,
   isMicroBurstShadowMode,
@@ -138,9 +135,6 @@ import {
   type HistoryAccountSnapshotInput,
   type HistoryTradeEventInput,
 } from '../logging/StrategyHistoryService';
-import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
-import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/MicroBurstOutcomeTracker';
-import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
 import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvidenceSink';
 import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
 import { JsonlStrategyTelemetrySink } from '../../infra/logging/JsonlStrategyTelemetrySink';
@@ -287,7 +281,7 @@ export class TradingService {
   private readonly momentumStrategyRouter = new StrategyRouter<MomentumRideStrategyContext>();
   private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
   private readonly microBurstIdentity: StrategyIdentity;
-  private microBurstRuntime: MicroBurstRuntime | null = null;
+  private microBurstRuntimeCoordinator: MicroBurstRuntimeCoordinator | null = null;
   private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;
   private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;
   private aegisRealtimeMarketState: AegisRealtimeMarketState | null = null;
@@ -976,139 +970,17 @@ export class TradingService {
     this.momentumBlackBoxObservation.start(startupSymbols);
     this.momentumStrategyRouter.setObservationHook(this.momentumBlackBoxObservation);
     if (mbConfig.enabled && mbConfig.mode !== 'OFF') {
-      try {
-        const provenance = this.getMicroBurstProvenance(mbConfig);
-        const microBurstExchange = createReadOnlyAuditedExchange(
-          this.deps.exchange,
-          provenance.codeCommitSha,
-        );
-        const archiveConfig = mbConfig.marketArchive;
-        const storage = archiveConfig?.enabled
-          ? new MicroBurstStorage({
-              databasePath:
-                archiveConfig.sqlitePath ?? 'data/micro-burst/micro_burst_research.sqlite',
-              archivePath: archiveConfig.rootDir ?? 'data/micro-burst/market-data',
-              maxActiveSegmentRecords: archiveConfig.maxActiveSegmentRecords,
-              maxActiveSegmentBytes: archiveConfig.maxActiveSegmentBytes,
-              maxActiveSegmentDurationMs: archiveConfig.maxActiveSegmentDurationMs,
-              durabilityFlushIntervalMs: archiveConfig.durabilityFlushIntervalMs,
-            })
-          : undefined;
-        this.sharedMarketDataRuntime.setArchiveObserver({
-          onDepth: (symbol, depth) => {
-            storage?.appendDepth({
-              symbol,
-              eventTime: depth.E,
-              receivedAtMs: depth.receivedAtMs,
-              E: depth.E,
-              T: depth.T,
-              U: depth.U,
-              u: depth.u,
-              pu: depth.pu,
-              b: depth.bids,
-              a: depth.asks,
-            });
-          },
-          onAggTradeGap: (symbol, gap) => {
-            storage?.recordGap?.({
-              symbol,
-              startedAtMs: gap.previousEventTimeMs ?? gap.nextEventTimeMs,
-              endedAtMs: gap.nextEventTimeMs,
-              reason: 'AGG_TRADE_SEQUENCE_GAP',
-              kind: 'AGG_TRADE_SEQUENCE',
-              feed: 'AGG_TRADE',
-              previousAggregateTradeId: gap.previousAggregateTradeId,
-              nextAggregateTradeId: gap.nextAggregateTradeId,
-              previousFirstTradeId: gap.previousFirstTradeId,
-              previousLastTradeId: gap.previousLastTradeId,
-              nextFirstTradeId: gap.nextFirstTradeId,
-              nextLastTradeId: gap.nextLastTradeId,
-              dedupeKey: gap.dedupeKey,
-            });
-          },
-          hasAggTradeGap: (symbol, fromMs, toMs) =>
-            storage?.hasAggTradeGap?.(symbol, fromMs, toMs) ?? false,
-        });
-
-        const outcomeTracker = new MicroBurstOutcomeTracker({
-          logger: this.deps.logger,
-          clock: { now: () => Date.now() },
-          journal: new MicroBurstOutcomeJournal(),
-          storage,
-        });
-        this.microBurstRuntime = new MicroBurstRuntime(
-          {
-            exchange: microBurstExchange.exchange,
-            logger: this.deps.logger,
-            clock: { now: () => Date.now() },
-            strategyRouter: this.microBurstStrategyRouter,
-            orderBookDataPlane: this.sharedMarketDataRuntime.orderBookDataPlane,
-            aggTradeDataPlane: this.sharedMarketDataRuntime.aggTradeDataPlane,
-            blackBox: {
-              decisionSink: this.decisionEvidenceSink,
-              marketSnapshotSink: this.marketSnapshotEvidenceSink,
-            },
-            outcomeTracker,
-            marketStorage: storage,
-            provenance,
-            mutationAudit: () => ({
-              totalMutationAttempts: microBurstExchange.audit.totalMutationAttempts,
-              forwardedMutationCalls: microBurstExchange.audit.forwardedMutationCalls,
-            }),
-          },
-          mbConfig,
-        );
-        outcomeTracker.recoverPending();
-        await this.microBurstRuntime.start();
-        const readiness = this.microBurstRuntime.getReadiness();
-        this.microBurstReadiness = readiness;
-        if (readiness.ready) {
-          this.deps.logger.info('MICRO_BURST_PROSPECTIVE_COHORT_READY', {
-            ...readiness,
-          });
-        } else {
-          this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
-            ...readiness,
-          });
-        }
-        this.deps.logger.info('micro_burst_runtime_integrated', {
-          mode: mbConfig.mode,
-          symbols: Object.keys(mbConfig.symbols).filter((s) => mbConfig.symbols[s].enabled),
-          liveExecution: false,
-          readOnlyExchangeBoundary: true,
-          mutationAttempts: microBurstExchange.audit.totalMutationAttempts,
-          forwardedMutations: microBurstExchange.audit.forwardedMutationCalls,
-        });
-      } catch (err) {
-        this.deps.logger.error('micro_burst_runtime_startup_failed', { error: String(err) });
-        const readiness = this.microBurstRuntime?.getReadiness();
-        this.microBurstReadiness = readiness
-          ? {
-              ...readiness,
-              ready: false,
-              blockers: [...new Set([...readiness.blockers, 'NOT_READY'])],
-            }
-          : {
-              ready: false,
-              blockers: ['MICRO_BURST_RUNTIME_STARTUP_FAILED', 'NOT_READY'],
-              cohortId: null,
-              strategyVersion: null,
-              codeCommitSha: null,
-              configHash: null,
-              liveExecution: false,
-              readyForSoak: false,
-              readyForFreeze: false,
-              official: false,
-              officialAuthority: false,
-              liveAuthority: false,
-              checks: {} as any,
-              warnings: [],
-              symbolBlockers: {},
-            };
-        this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
-          ...this.microBurstReadiness,
-        });
-      }
+      const provenance = this.getMicroBurstProvenance(mbConfig);
+      this.microBurstRuntimeCoordinator = new MicroBurstRuntimeCoordinator({
+        exchange: this.deps.exchange,
+        logger: this.deps.logger,
+        sharedMarketData: this.sharedMarketDataRuntime,
+        strategyRouter: this.microBurstStrategyRouter,
+        decisionSink: this.decisionEvidenceSink,
+        marketSnapshotSink: this.marketSnapshotEvidenceSink,
+        provenance,
+      });
+      this.microBurstReadiness = await this.microBurstRuntimeCoordinator.start(mbConfig);
     }
 
     this.hardWatchdogTimer = setInterval(() => {
@@ -1124,8 +996,8 @@ export class TradingService {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     this.isRunning = false;
-    const microBurstRuntime = this.microBurstRuntime;
-    this.microBurstRuntime = null;
+    const microBurstRuntimeCoordinator = this.microBurstRuntimeCoordinator;
+    this.microBurstRuntimeCoordinator = null;
     this.deps.logger.info('Aegis bot stopped');
     if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
     this.stopPromise = (async () => {
@@ -1140,7 +1012,7 @@ export class TradingService {
       this.momentumRealtimeMarketState = null;
       this.momentumCandleState?.close();
       this.momentumCandleState = null;
-      await microBurstRuntime?.stop();
+      await microBurstRuntimeCoordinator?.stop();
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
       await Promise.all(stores.map((store) => store.flush?.()));
     })().finally(() => {
