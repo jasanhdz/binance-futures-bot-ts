@@ -146,6 +146,10 @@ import type { StrategyExecutionPort } from '../../core/strategy/StrategyExecutio
 import { SharedMarketDataRuntime } from './SharedMarketDataRuntime';
 import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
 import { AegisRealtimeMarketState } from '../../strategies/aegis/application/AegisRealtimeMarketState';
+import {
+  extractAegisPhaseOMetadata,
+  type AegisPhaseOMetadata,
+} from '../../strategies/aegis/application/AegisPhaseOMetadataParser';
 import { MomentumRideBlackBoxObservation } from '../../strategies/momentum/application/MomentumRideBlackBoxObservation';
 import { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
 import { MomentumCandleState, type MomentumCandleSnapshot } from '../../strategies/momentum/application/MomentumCandleState';
@@ -155,17 +159,6 @@ const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
 const EXIT_EYE_SIGNAL_TTL_MS = 15000;
 const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
-
-type PhaseOTurboMetadata = {
-  isPhaseO: boolean;
-  side: Side | null;
-  entryEnabled: boolean;
-  avoidOnly: boolean;
-  modelFamily?: string;
-  symbol?: string;
-  sourcePath: string;
-  raw?: Record<string, unknown>;
-};
 
 type SafeStopMoveReason = 'MOVE_SL_BE' | 'PROTECT_PROFIT' | 'MOVE_SL_TRAILING';
 type SafeStopMoveSkipReason =
@@ -531,171 +524,11 @@ export class TradingService {
     return this.runtimeConfig.getAegisEntryPolicyConfig();
   }
 
-  private asRecord(value: unknown): Record<string, any> | undefined {
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, any>)
-      : undefined;
-  }
-
-  private normalizeSideValue(value: unknown): Side | null {
-    const normalized = String(value ?? '')
-      .trim()
-      .toUpperCase();
-    if (normalized === 'SHORT' || normalized === 'SELL') return 'SHORT';
-    if (normalized === 'LONG' || normalized === 'BUY') return 'LONG';
-    return null;
-  }
-
-  private isTruthyPhaseOFlag(value: unknown): boolean {
-    return value === true || value === 'true' || value === 'PHASE_O' || value === 'phase_o';
-  }
-
-  private hasPhaseOModelPath(value: unknown): boolean {
-    if (!value) return false;
-    if (typeof value === 'string') return value.toLowerCase().includes('phase_o');
-    if (Array.isArray(value)) return value.some((item) => this.hasPhaseOModelPath(item));
-    const record = this.asRecord(value);
-    if (!record) return false;
-    return Object.values(record).some((item) => this.hasPhaseOModelPath(item));
-  }
-
   private extractPhaseOTurboMetadata(
     signalOrPrediction: unknown,
     fallbackSide?: Side,
-  ): PhaseOTurboMetadata | null {
-    const root = this.asRecord(signalOrPrediction);
-    if (!root) return null;
-    const candidates: Array<{
-      path: string;
-      container?: Record<string, any>;
-      phase?: Record<string, any>;
-    }> = [
-      {
-        path: 'signal.metadata.aegis.turbo.phase_o',
-        container: this.asRecord(root.metadata)?.aegis?.turbo,
-        phase: this.asRecord(this.asRecord(root.metadata)?.aegis?.turbo?.phase_o),
-      },
-      {
-        path: 'signal.metadata.aegis.turbo.raw.phase_o',
-        container: this.asRecord(root.metadata)?.aegis?.turbo,
-        phase: this.asRecord(this.asRecord(root.metadata)?.aegis?.turbo?.raw?.phase_o),
-      },
-      {
-        path: 'signal.metadata.turbo.phase_o',
-        container: this.asRecord(root.metadata)?.turbo,
-        phase: this.asRecord(this.asRecord(root.metadata)?.turbo?.phase_o),
-      },
-      {
-        path: 'signal.metadata.turbo.raw.phase_o',
-        container: this.asRecord(root.metadata)?.turbo,
-        phase: this.asRecord(this.asRecord(root.metadata)?.turbo?.raw?.phase_o),
-      },
-      {
-        path: 'signal.aegis.turbo.phase_o',
-        container: this.asRecord(root.aegis)?.turbo,
-        phase: this.asRecord(this.asRecord(root.aegis)?.turbo?.phase_o),
-      },
-      {
-        path: 'signal.aegis.turbo.raw.phase_o',
-        container: this.asRecord(root.aegis)?.turbo,
-        phase: this.asRecord(this.asRecord(root.aegis)?.turbo?.raw?.phase_o),
-      },
-      {
-        path: 'signal.turbo.phase_o',
-        container: this.asRecord(root.turbo),
-        phase: this.asRecord(this.asRecord(root.turbo)?.phase_o),
-      },
-      {
-        path: 'signal.turbo.raw.phase_o',
-        container: this.asRecord(root.turbo),
-        phase: this.asRecord(this.asRecord(root.turbo)?.raw?.phase_o),
-      },
-      {
-        path: 'signal.metadata.rawPrediction.aegis.turbo.phase_o',
-        container: this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo,
-        phase: this.asRecord(
-          this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo?.phase_o,
-        ),
-      },
-      {
-        path: 'signal.metadata.rawPrediction.aegis.turbo.raw.phase_o',
-        container: this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo,
-        phase: this.asRecord(
-          this.asRecord(this.asRecord(root.metadata)?.rawPrediction)?.aegis?.turbo?.raw?.phase_o,
-        ),
-      },
-      {
-        path: 'signal.metadata.phase_o',
-        container: this.asRecord(root.metadata),
-        phase: this.asRecord(this.asRecord(root.metadata)?.phase_o),
-      },
-      { path: 'signal.phase_o', container: root, phase: this.asRecord(root.phase_o) },
-      { path: 'signal.phaseO', container: root, phase: this.asRecord(root.phaseO) },
-      {
-        path: 'signal.metadata.phase_o_short_live',
-        container: this.asRecord(root.metadata),
-        phase: this.asRecord(this.asRecord(root.metadata)?.phase_o_short_live),
-      },
-    ];
-
-    for (const candidate of candidates) {
-      const phase = candidate.phase;
-      const container = candidate.container;
-      if (!phase && !container) continue;
-      const phaseRecord = phase ?? {};
-      const isPhaseO =
-        this.isTruthyPhaseOFlag(phaseRecord.phase_o) ||
-        this.isTruthyPhaseOFlag(phaseRecord.phaseO) ||
-        this.isTruthyPhaseOFlag(phaseRecord.is_phase_o) ||
-        this.isTruthyPhaseOFlag(phaseRecord.phase_o_live_enabled) ||
-        this.isTruthyPhaseOFlag(phaseRecord.enabled) ||
-        String(phaseRecord.phase_o_live_mode ?? '')
-          .toLowerCase()
-          .includes('experimental_short') ||
-        this.hasPhaseOModelPath(phaseRecord.phase_o_source_model_paths) ||
-        this.hasPhaseOModelPath(phaseRecord.model_paths) ||
-        this.hasPhaseOModelPath(container?.raw?.model_path) ||
-        this.hasPhaseOModelPath(container?.raw?.model_paths) ||
-        this.hasPhaseOModelPath(container?.model_paths);
-      if (!isPhaseO) continue;
-      const side =
-        this.normalizeSideValue(phaseRecord.side) ??
-        this.normalizeSideValue(container?.gated?.action) ??
-        this.normalizeSideValue(container?.action) ??
-        this.normalizeSideValue(container?.raw?.action) ??
-        fallbackSide ??
-        null;
-      const symbol =
-        String(phaseRecord.symbol ?? container?.symbol ?? root.symbol ?? '').toUpperCase() ||
-        undefined;
-      const avoidOnly =
-        phaseRecord.phase_o_link_avoid_only === true ||
-        phaseRecord.link_avoid_only === true ||
-        phaseRecord.avoid_only === true ||
-        phaseRecord.phase_o_avoid_only === true;
-      const entryEnabled =
-        phaseRecord.entry_enabled !== false &&
-        phaseRecord.entryEnabled !== false &&
-        phaseRecord.phase_o_entry_enabled !== false &&
-        phaseRecord.allow_orders !== false;
-      return {
-        isPhaseO,
-        side,
-        entryEnabled,
-        avoidOnly,
-        modelFamily:
-          String(
-            phaseRecord.model_family ??
-              phaseRecord.modelFamily ??
-              phaseRecord.phase_o_live_mode ??
-              '',
-          ).trim() || undefined,
-        symbol,
-        sourcePath: candidate.path,
-        raw: phaseRecord,
-      };
-    }
-    return null;
+  ): AegisPhaseOMetadata | null {
+    return extractAegisPhaseOMetadata(signalOrPrediction, fallbackSide);
   }
 
   private isPhaseOShortLiveSignal(signal: AegisTradingSignal, side: Side): boolean {
