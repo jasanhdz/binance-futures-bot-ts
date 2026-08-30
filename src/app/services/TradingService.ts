@@ -134,7 +134,7 @@ import {
   mergeMicroBurstConfigs,
   isMicroBurstShadowMode,
 } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
-import { strategyLifecyclePolicy } from '../../core/strategy/StrategyLifecyclePolicy';
+import { externalLifecyclePolicy, strategyLifecyclePolicy } from '../../core/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 import { createHash } from 'node:crypto';
 import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
@@ -401,17 +401,19 @@ export class TradingService {
             : upper.includes('GUARD') || upper.includes('STOP') || upper.includes('TRAIL') || upper.includes('BREAK_EVEN') || upper.includes('PROTECT')
               ? 'GUARD_RESULT'
               : 'POSITION_EVENT';
-        await this.strategyTelemetry.publish({
-          eventType,
-          strategyId,
-          symbol,
-          occurredAtMs: Date.now(),
-          tradeId: input?.tradeId ?? state.lastTradeId,
-          side: state.lastSide as Side | undefined,
-          status: event,
-          reason: input?.reason,
-          details: { ...input, lifecycleEvent: event },
-        });
+        if (strategyId !== 'EXTERNAL') {
+          await this.strategyTelemetry.publish({
+            eventType,
+            strategyId,
+            symbol,
+            occurredAtMs: Date.now(),
+            tradeId: input?.tradeId ?? state.lastTradeId,
+            side: state.lastSide as Side | undefined,
+            status: event,
+            reason: input?.reason,
+            details: { ...input, lifecycleEvent: event },
+          });
+        }
       },
       safeMoveCloseStop: (input) => this.safeMoveCloseStop(input),
       ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
@@ -1994,7 +1996,7 @@ export class TradingService {
     if (ownership.status === 'EXTERNAL') {
       // Manual/external positions retain protective mechanics without
       // receiving Aegis strategy authority such as ExitEye.
-      await this.positionLifecycleCore.manage(strategyLifecyclePolicy('AEGIS_TURBO'), {
+      await this.positionLifecycleCore.manage(externalLifecyclePolicy(), {
         symbol,
         botState,
         symbolState,

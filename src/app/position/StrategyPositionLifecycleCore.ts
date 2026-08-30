@@ -388,7 +388,9 @@ export class StrategyPositionLifecycleCore {
         const timeLimitReason =
           lifecyclePolicy.strategyId === 'MOMENTUM_RIDE'
             ? 'MOMENTUM_TIME_LIMIT'
-            : 'AEGIS_TIME_LIMIT';
+            : lifecyclePolicy.strategyId === 'EXTERNAL'
+              ? 'MANUAL_TIME_LIMIT'
+              : 'AEGIS_TIME_LIMIT';
         await exchange.closeSideMarketSafe(
           symbol,
           side,
