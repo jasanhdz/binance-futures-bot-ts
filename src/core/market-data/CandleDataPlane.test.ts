@@ -66,7 +66,7 @@ describe('CandleDataPlane', () => {
     const live = plane.read('BTCUSDT', '5m', 2);
     expect(live.source).toBe('WEBSOCKET');
     expect(live.status).toBe('FRESH');
-    expect(live.candles.at(-1)?.close).toBe(105);
+    expect(live.candles[live.candles.length - 1]?.close).toBe(105);
   });
 
   it('records explicit REST recovery when live candles are stale', async () => {
