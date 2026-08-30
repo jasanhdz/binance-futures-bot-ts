@@ -23,8 +23,10 @@ new_external = """      await this.positionLifecycleCore.manage(externalLifecycl
         botState,
         symbolState,
       });"""
-assert old_external in text, 'external Aegis fallback call not found'
-text = text.replace(old_external, new_external, 1)
+if old_external in text:
+    text = text.replace(old_external, new_external, 1)
+elif new_external not in text:
+    raise AssertionError('external lifecycle route not found')
 
 old_publish = """        await this.strategyTelemetry.publish({
           eventType,
@@ -50,8 +52,10 @@ new_publish = """        if (strategyId !== 'EXTERNAL') {
             details: { ...input, lifecycleEvent: event },
           });
         }"""
-assert old_publish in text, 'telemetry publish block not found'
-text = text.replace(old_publish, new_publish, 1)
+if old_publish in text:
+    text = text.replace(old_publish, new_publish, 1)
+elif new_publish not in text:
+    raise AssertionError('telemetry publish block not found')
 trading.write_text(text)
 
 lt = lifecycle.read_text()
@@ -65,8 +69,10 @@ new_reason = """        const timeLimitReason =
             : lifecyclePolicy.strategyId === 'EXTERNAL'
               ? 'MANUAL_TIME_LIMIT'
               : 'AEGIS_TIME_LIMIT';"""
-assert old_reason in lt, 'time limit route not found'
-lt = lt.replace(old_reason, new_reason, 1)
+if old_reason in lt:
+    lt = lt.replace(old_reason, new_reason, 1)
+elif new_reason not in lt:
+    raise AssertionError('time limit route not found')
 lifecycle.write_text(lt)
 
 rt = restoration.read_text()
@@ -76,5 +82,5 @@ rt, count = pattern.subn(lambda m: m.group(1) + digest + m.group(3), rt, count=1
 assert count == 1, 'restoration TradingService digest not found'
 restoration.write_text(rt)
 
-print('removed external Aegis lifecycle fallback')
+print('external Aegis lifecycle fallback removed')
 print('TradingService sha256:', digest)
