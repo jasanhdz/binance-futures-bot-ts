@@ -8,7 +8,9 @@ import type { RollingAggTradeBuffer } from '../../../core/market-data/RollingAgg
 import { LiquidityVoidDetector } from '../../../app/services/LiquidityVoidDetector';
 import type { Logger } from '../../../app/ports/Logger';
 import {
+  AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS,
   AEGIS_MARKET_CONTEXT_VERSION,
+  type AegisCandleSeriesV1,
   type AegisMarketContextV1,
 } from './AegisMarketContext';
 
@@ -63,23 +65,34 @@ export class AegisRealtimeMarketState {
   }
 
   start(symbols: readonly string[]): void {
-    for (const rawSymbol of symbols) {
-      const symbol = rawSymbol.toUpperCase();
+    const activeSymbols = [...new Set(symbols.map((value) => value.toUpperCase()))];
+
+    // Instantaneous microstructure is required only for actively evaluated symbols.
+    for (const symbol of activeSymbols) {
       if (!this.bookLeases.has(symbol)) {
         this.bookLeases.set(symbol, this.deps.sharedMarketData.orderBookDataPlane.acquire(symbol));
       }
       if (!this.aggTradeLeases.has(symbol)) {
         this.aggTradeLeases.set(symbol, this.deps.sharedMarketData.aggTradeDataPlane.acquire(symbol));
       }
-      if (!this.candleLeases.has(symbol)) {
-        this.candleLeases.set(symbol, this.deps.sharedMarketData.candleDataPlane.acquire(symbol, '5m'));
-        void this.deps.sharedMarketData.candleDataPlane
-          .ensureWarm(symbol, '5m', 320)
-          .catch(() => undefined);
-      }
       if (!this.detectors.has(symbol)) {
         this.detectors.set(symbol, new LiquidityVoidDetector(this.deps.logger));
       }
+    }
+
+    // The frozen 83-feature Current Brain evaluates all 11 symbols together.
+    // Keep their 5m histories warm from the shared plane without opening extra
+    // order-book/aggTrade streams for symbols that are not actively traded.
+    const candleSymbols = new Set<string>([
+      ...AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS,
+      ...activeSymbols,
+    ]);
+    for (const symbol of candleSymbols) {
+      if (this.candleLeases.has(symbol)) continue;
+      this.candleLeases.set(symbol, this.deps.sharedMarketData.candleDataPlane.acquire(symbol, '5m'));
+      void this.deps.sharedMarketData.candleDataPlane
+        .ensureWarm(symbol, '5m', 320)
+        .catch(() => undefined);
     }
 
     if (!this.depthTimer) {
@@ -196,23 +209,14 @@ export class AegisRealtimeMarketState {
     const flow = agg.getTakerFlow(this.takerFlowWindowMs);
     if (!flow.gapFree || flow.tradeCount <= 0 || flow.eventWatermarkMs === null) return null;
 
-    const candleSnapshot = this.deps.sharedMarketData.candleDataPlane.read(
-      symbol,
-      '5m',
-      candleLimit,
-    );
-    // Warm-up REST is allowed to seed history, but a prediction must have observed
-    // at least one live kline update and be fresh at capture time.
-    if (
-      candleSnapshot.status !== 'FRESH' ||
-      candleSnapshot.source !== 'WEBSOCKET' ||
-      candleSnapshot.observedAtMs === undefined ||
-      candleSnapshot.ageMs === undefined ||
-      candleSnapshot.websocketObservedAtMs === undefined ||
-      candleSnapshot.candles.length === 0
-    ) {
-      return null;
+    const universeCandles5m: Record<string, AegisCandleSeriesV1> = {};
+    for (const universeSymbol of AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS) {
+      const series = this.readFreshCandleSeries(universeSymbol, candleLimit);
+      if (!series) return null;
+      universeCandles5m[universeSymbol] = series;
     }
+    const candleSnapshot = universeCandles5m[symbol] ?? this.readFreshCandleSeries(symbol, candleLimit);
+    if (!candleSnapshot) return null;
 
     this.refreshDepthDerivedState();
     const liquidity = this.detectorFor(symbol).getLiquidityStressStatus(now, this.freshnessMs);
@@ -260,15 +264,8 @@ export class AegisRealtimeMarketState {
         sellVolume: flow.sellVolume,
         netTakerVolume: flow.netTakerVolume,
       }),
-      candles5m: Object.freeze({
-        source: candleSnapshot.source,
-        status: candleSnapshot.status,
-        observedAtMs: candleSnapshot.observedAtMs,
-        ageMs: candleSnapshot.ageMs,
-        websocketObservedAtMs: candleSnapshot.websocketObservedAtMs,
-        restFallbackCount: candleSnapshot.restFallbackCount,
-        candles: Object.freeze(candleSnapshot.candles.map((candle) => Object.freeze({ ...candle }))),
-      }),
+      candles5m: candleSnapshot,
+      universeCandles5m: Object.freeze(universeCandles5m),
       liquidity: Object.freeze({
         stress: liquidity.stress,
         status: 'FRESH',
@@ -306,6 +303,31 @@ export class AegisRealtimeMarketState {
     this.candleLeases.clear();
     this.detectors.clear();
     this.lastDepthObservation.clear();
+  }
+
+  private readFreshCandleSeries(symbol: string, limit: number): AegisCandleSeriesV1 | null {
+    const snapshot = this.deps.sharedMarketData.candleDataPlane.read(symbol, '5m', limit);
+    // REST may seed or recover the cache, but inference waits for a subsequent
+    // live kline observation so the source is explicitly WebSocket again.
+    if (
+      snapshot.status !== 'FRESH' ||
+      snapshot.source !== 'WEBSOCKET' ||
+      snapshot.observedAtMs === undefined ||
+      snapshot.ageMs === undefined ||
+      snapshot.websocketObservedAtMs === undefined ||
+      snapshot.candles.length < 60
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      source: snapshot.source,
+      status: snapshot.status,
+      observedAtMs: snapshot.observedAtMs,
+      ageMs: snapshot.ageMs,
+      websocketObservedAtMs: snapshot.websocketObservedAtMs,
+      restFallbackCount: snapshot.restFallbackCount,
+      candles: Object.freeze(snapshot.candles.map((candle) => Object.freeze({ ...candle }))),
+    });
   }
 
   private noData(): AegisRealtimeMarketSnapshot {
