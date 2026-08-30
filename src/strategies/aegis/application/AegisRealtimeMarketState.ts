@@ -7,6 +7,10 @@ import type { SynchronizedOrderBook } from '../../../core/market-data/Synchroniz
 import type { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
 import { LiquidityVoidDetector } from '../../../app/services/LiquidityVoidDetector';
 import type { Logger } from '../../../app/ports/Logger';
+import {
+  AEGIS_MARKET_CONTEXT_VERSION,
+  type AegisMarketContextV1,
+} from './AegisMarketContext';
 
 export type AegisRealtimeMarketStatus = 'NO_DATA' | 'FRESH' | 'STALE';
 
@@ -69,7 +73,9 @@ export class AegisRealtimeMarketState {
       }
       if (!this.candleLeases.has(symbol)) {
         this.candleLeases.set(symbol, this.deps.sharedMarketData.candleDataPlane.acquire(symbol, '5m'));
-        void this.deps.sharedMarketData.candleDataPlane.ensureWarm(symbol, '5m', 320).catch(() => undefined);
+        void this.deps.sharedMarketData.candleDataPlane
+          .ensureWarm(symbol, '5m', 320)
+          .catch(() => undefined);
       }
       if (!this.detectors.has(symbol)) {
         this.detectors.set(symbol, new LiquidityVoidDetector(this.deps.logger));
@@ -159,6 +165,118 @@ export class AegisRealtimeMarketState {
       aggTradeCount: flow.tradeCount,
       netTakerVolume: flow.netTakerVolume,
     };
+  }
+
+  /**
+   * Builds the complete causal payload used for Aegis inference.
+   * Returns null rather than mixing stale/legacy data into a prediction.
+   */
+  buildMarketContext(rawSymbol: string, candleLimit = 320): AegisMarketContextV1 | null {
+    const symbol = rawSymbol.toUpperCase();
+    const now = this.deps.clock.now();
+    const realtime = this.read(symbol);
+    if (
+      realtime.status !== 'FRESH' ||
+      realtime.observedAtMs === undefined ||
+      realtime.ageMs === undefined ||
+      realtime.bestBid === undefined ||
+      realtime.bestAsk === undefined ||
+      realtime.midPrice === undefined ||
+      realtime.aggTradeAgeMs === undefined
+    ) {
+      return null;
+    }
+
+    const book = this.deps.sharedMarketData.orderBookDataPlane.get(symbol);
+    const agg = this.deps.sharedMarketData.aggTradeDataPlane.get(symbol);
+    if (!book || !agg) return null;
+    const bookState = book.getState();
+    if (bookState.health !== 'HEALTHY' || !bookState.bids.length || !bookState.asks.length) return null;
+
+    const flow = agg.getTakerFlow(this.takerFlowWindowMs);
+    if (!flow.gapFree || flow.tradeCount <= 0 || flow.eventWatermarkMs === null) return null;
+
+    const candleSnapshot = this.deps.sharedMarketData.candleDataPlane.read(
+      symbol,
+      '5m',
+      candleLimit,
+    );
+    // Warm-up REST is allowed to seed history, but a prediction must have observed
+    // at least one live kline update and be fresh at capture time.
+    if (
+      candleSnapshot.status !== 'FRESH' ||
+      candleSnapshot.source !== 'WEBSOCKET' ||
+      candleSnapshot.observedAtMs === undefined ||
+      candleSnapshot.ageMs === undefined ||
+      candleSnapshot.websocketObservedAtMs === undefined ||
+      candleSnapshot.candles.length === 0
+    ) {
+      return null;
+    }
+
+    this.refreshDepthDerivedState();
+    const liquidity = this.detectorFor(symbol).getLiquidityStressStatus(now, this.freshnessMs);
+    if (
+      liquidity.status !== 'FRESH' ||
+      liquidity.lastReceivedAtMs === undefined ||
+      liquidity.receiveAgeMs === undefined
+    ) {
+      return null;
+    }
+
+    const spreadBps =
+      ((realtime.bestAsk - realtime.bestBid) / Math.max(realtime.midPrice, Number.EPSILON)) * 10_000;
+
+    return Object.freeze({
+      version: AEGIS_MARKET_CONTEXT_VERSION,
+      symbol,
+      capturedAtMs: now,
+      source: 'SHARED_MARKET_DATA_RUNTIME',
+      status: 'FRESH',
+      quote: Object.freeze({
+        bestBid: realtime.bestBid,
+        bestAsk: realtime.bestAsk,
+        midPrice: realtime.midPrice,
+        spreadBps,
+        observedAtMs: realtime.observedAtMs,
+        ageMs: realtime.ageMs,
+      }),
+      orderBook: Object.freeze({
+        health: bookState.health,
+        observedAtMs: realtime.observedAtMs,
+        ageMs: realtime.ageMs,
+        lastUpdateId: bookState.lastUpdateId,
+        bids: Object.freeze(bookState.bids.slice(0, 20).map((level) => Object.freeze({ ...level }))),
+        asks: Object.freeze(bookState.asks.slice(0, 20).map((level) => Object.freeze({ ...level }))),
+      }),
+      aggTrades: Object.freeze({
+        windowMs: this.takerFlowWindowMs,
+        observedAtMs: flow.eventWatermarkMs,
+        ageMs: realtime.aggTradeAgeMs,
+        gapFree: flow.gapFree,
+        windowComplete: flow.windowComplete,
+        tradeCount: flow.tradeCount,
+        buyVolume: flow.buyVolume,
+        sellVolume: flow.sellVolume,
+        netTakerVolume: flow.netTakerVolume,
+      }),
+      candles5m: Object.freeze({
+        source: candleSnapshot.source,
+        status: candleSnapshot.status,
+        observedAtMs: candleSnapshot.observedAtMs,
+        ageMs: candleSnapshot.ageMs,
+        websocketObservedAtMs: candleSnapshot.websocketObservedAtMs,
+        restFallbackCount: candleSnapshot.restFallbackCount,
+        candles: Object.freeze(candleSnapshot.candles.map((candle) => Object.freeze({ ...candle }))),
+      }),
+      liquidity: Object.freeze({
+        stress: liquidity.stress,
+        status: 'FRESH',
+        observedAtMs: liquidity.lastReceivedAtMs,
+        ageMs: liquidity.receiveAgeMs,
+        inputVersion: liquidity.inputVersion,
+      }),
+    });
   }
 
   refreshDepthDerivedState(): void {
