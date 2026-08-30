@@ -74,26 +74,15 @@ if old_cache in text:
 """
     replace_once(old_cache, new_cache, 'aegis shared candle cache')
 
-realtime_gate_anchor = """      if (
-        momentumConfig.enabled === true &&
-        momentumConfig.mode === 'ENFORCE' &&
-        momentumConfig.aegisFallbackEnabled === false
-      ) {
-        return;
-      }
-
-      const signal = await mlService.getSignal(symbol);
-"""
 if "aegis_realtime_market_not_fresh" not in text:
-    realtime_gate_replacement = """      if (
-        momentumConfig.enabled === true &&
-        momentumConfig.mode === 'ENFORCE' &&
-        momentumConfig.aegisFallbackEnabled === false
-      ) {
-        return;
-      }
-
-      const realtimeMarket = this.aegisRealtimeMarketState?.read(symbol);
+    pattern = re.compile(
+        r"(momentumConfig\.aegisFallbackEnabled === false[\s\S]{0,300}?return;\n\s*}\n\s*)(const signal = await mlService\.getSignal\(symbol\);)",
+        re.M,
+    )
+    match = pattern.search(text)
+    if not match:
+        raise SystemExit('aegis realtime gate anchor not found')
+    gate = """const realtimeMarket = this.aegisRealtimeMarketState?.read(symbol);
       if (realtimeMarket && realtimeMarket.status !== 'FRESH') {
         this.deps.logger.warn('aegis_realtime_market_not_fresh', {
           symbol,
@@ -106,9 +95,8 @@ if "aegis_realtime_market_not_fresh" not in text:
         return;
       }
 
-      const signal = await mlService.getSignal(symbol);
-"""
-    replace_once(realtime_gate_anchor, realtime_gate_replacement, 'aegis realtime gate')
+      """
+    text = text[:match.start(2)] + gate + match.group(2) + text[match.end(2):]
 
 path.write_text(text)
 
