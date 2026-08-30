@@ -42,8 +42,9 @@ export interface MLTradingSignal {
 }
 
 export interface MLService {
-  getSignal(symbol: string): Promise<MLTradingSignal>;
-  getAegisPrediction?(symbol: string): Promise<MLPredictionResponse>;
+  /** Optional context stays opaque here; concrete strategy services own its schema. */
+  getSignal(symbol: string, context?: unknown): Promise<MLTradingSignal>;
+  getAegisPrediction?(symbol: string, context?: unknown): Promise<MLPredictionResponse>;
   getExitSignal(payload: {
     symbol: string;
     entry_price: number;
