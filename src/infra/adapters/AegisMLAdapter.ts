@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { MLService } from '../../app/ports/MLService';
 import { AegisPredictionResponse } from '../../strategies/aegis/domain/AegisStrategy';
+import type { AegisPredictionInputV1 } from '../../strategies/aegis/application/AegisMarketContext';
 import { CONFIG } from '../config/environment';
 
 export class AegisMLServiceClient {
@@ -13,11 +14,14 @@ export class AegisMLServiceClient {
     });
   }
 
-  async fetchPrediction(payload: { symbol: string }): Promise<AegisPredictionResponse> {
+  async fetchPrediction(payload: AegisPredictionInputV1): Promise<AegisPredictionResponse> {
     try {
       const { data } = await this.http.post<AegisPredictionResponse>(
         '/ml-v2/predict',
-        { symbol: payload.symbol },
+        {
+          symbol: payload.symbol,
+          ...(payload.marketContext ? { market_context: payload.marketContext } : {}),
+        },
         { timeout: CONFIG.ML_PREDICT_TIMEOUT_MS },
       );
       return data;
