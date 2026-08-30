@@ -4,6 +4,31 @@ import type { SharedCandleSource, SharedCandleStatus } from '../../../core/marke
 
 export const AEGIS_MARKET_CONTEXT_VERSION = 'AEGIS_MARKET_CONTEXT_V1' as const;
 
+/** Frozen universe consumed by the current 83-feature Python brain. */
+export const AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS = [
+  'ETHUSDT',
+  'BTCUSDT',
+  'SOLUSDT',
+  'BNBUSDT',
+  'XRPUSDT',
+  'DOGEUSDT',
+  'ADAUSDT',
+  'AVAXUSDT',
+  'LINKUSDT',
+  'SUIUSDT',
+  'LTCUSDT',
+] as const;
+
+export interface AegisCandleSeriesV1 {
+  readonly source: SharedCandleSource;
+  readonly status: SharedCandleStatus;
+  readonly observedAtMs: number;
+  readonly ageMs: number;
+  readonly websocketObservedAtMs?: number;
+  readonly restFallbackCount: number;
+  readonly candles: readonly Candle[];
+}
+
 export interface AegisMarketContextV1 {
   readonly version: typeof AEGIS_MARKET_CONTEXT_VERSION;
   readonly symbol: string;
@@ -37,15 +62,10 @@ export interface AegisMarketContextV1 {
     readonly sellVolume: number;
     readonly netTakerVolume: number;
   };
-  readonly candles5m: {
-    readonly source: SharedCandleSource;
-    readonly status: SharedCandleStatus;
-    readonly observedAtMs: number;
-    readonly ageMs: number;
-    readonly websocketObservedAtMs?: number;
-    readonly restFallbackCount: number;
-    readonly candles: readonly Candle[];
-  };
+  /** Current-symbol convenience view retained for diagnostics. */
+  readonly candles5m: AegisCandleSeriesV1;
+  /** Exact 11-symbol candle universe required by the current Python feature pipeline. */
+  readonly universeCandles5m: Readonly<Record<string, AegisCandleSeriesV1>>;
   readonly liquidity: {
     readonly stress: number;
     readonly status: 'FRESH';
