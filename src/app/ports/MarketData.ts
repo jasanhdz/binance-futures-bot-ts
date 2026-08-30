@@ -38,6 +38,15 @@ export interface AggTradeEvent {
   lastTradeId?: number;
 }
 
+export interface LiveCandleUpdate {
+  readonly symbol: string;
+  readonly interval: string;
+  readonly candle: Candle;
+  /** Local receive time of the WebSocket update. */
+  readonly observedAtMs: number;
+  readonly source: 'WEBSOCKET';
+}
+
 export interface OrderBookDepthLevel {
   price: number;
   qty: number;
@@ -162,7 +171,14 @@ export interface MarketDataPort {
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   getLastCandle(symbol: string): Promise<Candle | null>;
   getCachedCandles?(symbol: string, interval: string, limit: number): Candle[];
+  /** Legacy 5m candle subscription retained for existing consumers. */
   subscribeToCandles(symbol: string): () => void;
+  /** Neutral live kline stream used by the application-owned shared candle plane. */
+  subscribeToKlineCandles?(
+    symbol: string,
+    interval: string,
+    callback: (update: LiveCandleUpdate) => void,
+  ): () => void;
   subscribeToPartialDepth?(
     symbol: string,
     levels: number,
