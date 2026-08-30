@@ -21,15 +21,14 @@ needle = """  const candleDiagnostics = {
 replacement = needle + """  // Compute route ownership once inside the canonical strategy policy. The
   // application layer may use patternMatched to preserve fallback semantics,
   // but it must never call the raw momentum detector directly.
-  const pattern = evaluateMainStackingMomentum(context.candles, context.side);
+  const routePattern = evaluateMainStackingMomentum(context.candles, context.side);
   const patternRouteDiagnostics = {
-    patternMatched: pattern.allowed,
-    pattern: pattern.diagnostics,
+    patternMatched: routePattern.allowed,
+    pattern: routePattern.diagnostics,
   };
 """
-if 'const patternRouteDiagnostics' not in p:
-    assert needle in p
-    p = p.replace(needle, replacement, 1)
+assert needle in p
+p = p.replace(needle, replacement, 1)
 
 p = p.replace(
     '{ ...realtimeDiagnostics, ...candleDiagnostics },',
@@ -41,16 +40,16 @@ p = p.replace(
     '{ ...realtimeDiagnostics, ...candleDiagnostics, ...liquidityDiagnostics, ...patternRouteDiagnostics },',
     1,
 )
-p = p.replace("  const pattern = evaluateMainStackingMomentum(context.candles, context.side);\n", '', 1)
+# Remove the old post-realtime duplicate evaluator and use the canonical result above.
+old_pattern = "  const pattern = evaluateMainStackingMomentum(context.candles, context.side);\n"
+assert old_pattern in p
+p = p.replace(old_pattern, '', 1)
+p = p.replace('if (!pattern.allowed) {', 'if (!routePattern.allowed) {', 1)
+p = p.replace('return noTrade(context, pattern.reason, {', 'return noTrade(context, routePattern.reason, {', 1)
 # Every post-pattern decision should carry the canonical route-claim marker.
 p = p.replace('      pattern: pattern.diagnostics,\n', '      ...patternRouteDiagnostics,\n')
-p = p.replace('return noTrade(context, \'momentum_long_disabled\', { pattern: pattern.diagnostics });', "return noTrade(context, 'momentum_long_disabled', patternRouteDiagnostics);")
-p = p.replace('return noTrade(context, \'momentum_short_disabled\', { pattern: pattern.diagnostics });', "return noTrade(context, 'momentum_short_disabled', patternRouteDiagnostics);")
-p = p.replace('      pattern: pattern.diagnostics,\n      sharedSafety: safety,', '      ...patternRouteDiagnostics,\n      sharedSafety: safety,')
-p = p.replace('      pattern: pattern.diagnostics,\n      sharedSafety: safety,', '      ...patternRouteDiagnostics,\n      sharedSafety: safety,')
-# ENTRY_INTENT diagnostics.
-p = p.replace('      pattern: pattern.diagnostics,\n      sharedSafety: safety,', '      ...patternRouteDiagnostics,\n      sharedSafety: safety,')
-# Handle any remaining direct pattern diagnostic fields in post-pattern branches.
+p = p.replace("return noTrade(context, 'momentum_long_disabled', { pattern: pattern.diagnostics });", "return noTrade(context, 'momentum_long_disabled', patternRouteDiagnostics);")
+p = p.replace("return noTrade(context, 'momentum_short_disabled', { pattern: pattern.diagnostics });", "return noTrade(context, 'momentum_short_disabled', patternRouteDiagnostics);")
 p = p.replace('      pattern: pattern.diagnostics,\n', '      ...patternRouteDiagnostics,\n')
 policy.write_text(p)
 
@@ -70,7 +69,6 @@ start = t.index('  private async findStandaloneMomentumCandidate(')
 end = t.index('  private async lookForEntry(', start)
 old = t[start:end]
 
-# Reuse the existing execution body while changing its authority boundary.
 method_start = old.index('  private async lookForMomentumEntry(')
 loader_old = old[:method_start]
 executor_old = old[method_start:]
@@ -99,7 +97,6 @@ raw_loop = """    const sides: Side[] = ['LONG', 'SHORT'];
 assert raw_loop in loader_new
 loader_new = loader_new.replace(raw_loop, '    return { candles, candleState };\n', 1)
 
-# Convert the old single-candidate executor to one side executor.
 executor = executor_old
 executor = executor.replace(
 """  private async lookForMomentumEntry(
@@ -121,13 +118,10 @@ executor = executor.replace(
     router_marker + "    const patternMatched = decision.diagnostics.patternMatched === true;\n    if (!patternMatched) return false;\n",
     1,
 )
-# Once the canonical router says this side owns the momentum pattern, preserve the
-# previous no-Aegis-fallback behavior even when later safety/live gates deny entry.
 pos = executor.index('    const patternMatched =')
 prefix, suffix = executor[:pos], executor[pos:]
 suffix = suffix.replace(' return;\n', ' return true;\n')
 suffix = suffix.replace('      return;\n', '      return true;\n')
-# Successful end becomes handled=true.
 last = suffix.rfind('  }\n')
 assert last >= 0
 suffix = suffix[:last] + '    return true;\n' + suffix[last:]
@@ -173,7 +167,6 @@ rt, count = pattern_re.subn(lambda m: m.group(1) + digest + m.group(3), rt, coun
 assert count == 1
 restoration.write_text(rt)
 
-# Hard guard: TradingService must no longer import/call raw Momentum detector.
 assert 'evaluateMainStackingMomentum' not in trading.read_text()
 assert 'MainStackingMomentumDecision' not in trading.read_text()
 print('removed Momentum direct pre-routing decision path')
