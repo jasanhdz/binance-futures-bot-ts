@@ -133,6 +133,11 @@ import { externalLifecyclePolicy, strategyLifecyclePolicy } from '../../core/str
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 import { PositionRecoveryService } from '../position/PositionRecoveryService';
 import { TradingRuntimeConfigService } from '../config/TradingRuntimeConfigService';
+import {
+  StrategyHistoryService,
+  type HistoryAccountSnapshotInput,
+  type HistoryTradeEventInput,
+} from '../logging/StrategyHistoryService';
 import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
 import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/MicroBurstOutcomeTracker';
 import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
@@ -264,6 +269,7 @@ export class TradingService {
   private readonly positionLifecycleCore: StrategyPositionLifecycleCore;
   private readonly positionRecovery: PositionRecoveryService;
   private readonly runtimeConfig: TradingRuntimeConfigService;
+  private readonly strategyHistory: StrategyHistoryService;
   private readonly aegisStrategyIdentity: StrategyIdentity;
   private readonly momentumStrategyIdentity: StrategyIdentity;
   private readonly strategyRiskLedger = new StrategyRiskLedger();
@@ -316,6 +322,15 @@ export class TradingService {
     this.aegisStrategyIdentity = createAegisMigrationIdentity();
     this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
     this.microBurstIdentity = createMicroBurstV1Identity();
+    this.strategyHistory = new StrategyHistoryService({
+      logger: deps.logger,
+      historyLogger: this.historyLogger,
+      tradingMode: () => this.getTradingMode(),
+      strategyIdentity: (strategy) => this.strategyIdentity(strategy),
+      strategyForSymbol: (symbol, tradeId) => this.strategyForSymbol(symbol, tradeId),
+      tradesToday: () => this.tradesToday,
+      consecutiveLosses: () => this.consecutiveLossTracker.value,
+    });
     this.sharedStrategyExecution = new TelemetryStrategyExecutionPort(
       new SharedStrategyExecutionService(deps.exchange, deps.logger, {
       feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
@@ -1279,22 +1294,7 @@ export class TradingService {
   }
 
   private logAegisScan(symbol: string, signal: AegisTradingSignal): void {
-    const aegis = signal.metadata?.aegis ?? signal.aegis;
-    this.deps.logger.info('aegis_scan', {
-      symbol,
-      mode: this.getTradingMode(),
-      safeAction: aegis?.shadow?.action,
-      safeReason: aegis?.shadow?.reason,
-      turboRawAction: aegis?.turbo?.raw?.action,
-      turboRawScore: aegis?.turbo?.raw?.turbo_score,
-      turboRawWouldExecute: aegis?.turbo?.raw?.would_execute,
-      turboGatedAction: aegis?.turbo?.gated?.action,
-      turboGatedReason: aegis?.turbo?.gated?.reason,
-      turboBlockedBy: aegis?.turbo?.gated?.blocked_by,
-      execute: aegis?.turbo?.execute,
-      smartLeverage: signal.smart_leverage ?? 0,
-      prodExecute: aegis?.prod?.execute,
-    });
+    this.strategyHistory.logScan(symbol, signal);
   }
 
   private async logAegisTurboSignal(
@@ -1311,93 +1311,15 @@ export class TradingService {
       metadata?: Record<string, unknown>;
     } = {},
   ): Promise<void> {
-    const aegis = signal.metadata?.aegis ?? signal.aegis;
-    const turbo = aegis?.turbo as any;
-    const raw = turbo?.raw;
-    const gated = turbo?.gated;
-    const inferredMomentum = signal.metadata?.momentum_stacking_replica === true;
-    const strategy = extras.strategy ?? (inferredMomentum ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO');
-    const identity = extras.identity ?? this.strategyIdentity(strategy);
-    await this.historyLogger.logSignal({
-      signal_id: extras.signalId ?? generateSignalId(symbol),
-      portfolio_session_id: getPortfolioSessionId(),
-      symbol,
-      strategy,
-      strategy_version: identity.strategyVersion,
-      strategy_hash: identity.strategyHash,
-      config_hash: identity.configHash,
-      code_commit_sha: identity.codeCommitSha,
-      mode: this.getTradingMode(),
-      price: extras.price,
-      raw_action: raw?.action,
-      gated_action: gated?.action,
-      final_action: turbo?.action ?? gated?.action ?? raw?.action,
-      reason: turbo?.reason ?? gated?.reason ?? raw?.reason,
-      turbo_score: raw?.turbo_score ?? turbo?.turbo_score ?? extras.gate?.turboScore,
-      confidence: typeof signal.confidence === 'number' ? `${signal.confidence}` : undefined,
-      votes: raw?.votes ?? extras.gate?.votes,
-      recent_scores: raw?.recent_scores ?? turbo?.recent_scores,
-      freshness: raw?.freshness ?? turbo?.freshness,
-      gate_allowed: extras.gate?.allowed,
-      gate_reason: extras.gate?.reason,
-      gated_blocked_by: extras.gate?.gatedBlockedBy,
-      executed: extras.executed ?? false,
-      trade_id: extras.tradeId,
-      leverage: extras.gate?.leverage,
-      position_fraction: extras.gate?.positionFraction,
-      stop_roe: extras.gate?.stopRoe,
-      take_profit_roe: extras.gate?.takeProfitRoe,
-      trailing_activation_roe: extras.gate?.trailingActivationRoe,
-      trailing_callback_roe: extras.gate?.trailingCallbackRoe,
-      metadata: {
-        source: signal.source,
-        safe_action: aegis?.shadow?.action,
-        safe_reason: aegis?.shadow?.reason,
-        prod_execute: aegis?.prod?.execute,
-        ...extras.metadata,
-      },
-    });
+    await this.strategyHistory.logTurboSignal(symbol, signal, extras);
   }
 
   private async logAegisTradeEvent(
     symbol: string,
     event: string,
-    input: {
-      tradeId?: string;
-      price?: number;
-      roe?: number;
-      oldStop?: number;
-      newStop?: number;
-      oldTp?: number;
-      newTp?: number;
-      reason?: string;
-      strategy?: AegisResearchStrategy;
-      identity?: StrategyIdentity;
-      metadata?: Record<string, unknown>;
-    } = {},
+    input: HistoryTradeEventInput = {},
   ): Promise<void> {
-    const strategy = input.strategy ?? this.strategyForSymbol(symbol, input.tradeId);
-    const identity = input.identity ?? this.strategyIdentity(strategy);
-    await this.historyLogger.logTradeEvent({
-      trade_id: input.tradeId,
-      portfolio_session_id: getPortfolioSessionId(),
-      symbol,
-      strategy,
-      strategy_version: identity.strategyVersion,
-      strategy_hash: identity.strategyHash,
-      config_hash: identity.configHash,
-      code_commit_sha: identity.codeCommitSha,
-      mode: this.getTradingMode(),
-      event,
-      price: input.price,
-      roe: input.roe,
-      old_stop: input.oldStop,
-      new_stop: input.newStop,
-      old_tp: input.oldTp,
-      new_tp: input.newTp,
-      reason: input.reason,
-      metadata: input.metadata,
-    });
+    await this.strategyHistory.logTradeEvent(symbol, event, input);
   }
 
   private async logEntryIntelligenceDispositionShadow(
@@ -1436,61 +1358,9 @@ export class TradingService {
   }
 
   private async logAegisAccountSnapshot(
-    input: {
-      symbol?: string;
-      walletBalance?: number;
-      availableBalance?: number;
-      unrealizedPnl?: number;
-      dailyPnlPct?: number;
-      positionOpen?: boolean;
-      side?: Side;
-      entryPrice?: number;
-      markPrice?: number;
-      roe?: number;
-      marginUsed?: number;
-      quantity?: number;
-      leverage?: number;
-      metadata?: Record<string, unknown>;
-    } = {},
+    input: HistoryAccountSnapshotInput = {},
   ): Promise<void> {
-    const notional =
-      input.entryPrice && input.quantity ? input.entryPrice * input.quantity : undefined;
-    await this.historyLogger.logAccountSnapshot({
-      portfolio_session_id: getPortfolioSessionId(),
-      mode: this.getTradingMode(),
-      wallet_balance: input.walletBalance,
-      available_balance: input.availableBalance ?? input.walletBalance,
-      unrealized_pnl: input.unrealizedPnl,
-      daily_pnl_pct: input.dailyPnlPct,
-      trades_today: this.tradesToday,
-      consecutive_losses: this.consecutiveLossTracker.value,
-      open_positions_count: input.positionOpen ? 1 : 0,
-      total_margin_used: input.marginUsed,
-      total_notional: notional,
-      symbols: input.symbol
-        ? [
-            {
-              symbol: input.symbol,
-              position_open: input.positionOpen,
-              side: input.side,
-              entry_price: input.entryPrice,
-              mark_price: input.markPrice,
-              roe: input.roe,
-              unrealized_pnl: input.unrealizedPnl,
-              margin_used: input.marginUsed,
-              notional,
-            },
-          ]
-        : undefined,
-      portfolio_exposure: {
-        long_symbols: input.positionOpen && input.side === 'LONG' ? 1 : 0,
-        short_symbols: input.positionOpen && input.side === 'SHORT' ? 1 : 0,
-        total_symbols: input.positionOpen ? 1 : 0,
-        total_margin_used: input.marginUsed,
-        total_notional: notional,
-      },
-      metadata: input.metadata,
-    });
+    await this.strategyHistory.logAccountSnapshot(input);
   }
 
   private evaluateAegisTurboGate(
