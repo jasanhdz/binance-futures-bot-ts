@@ -44,7 +44,7 @@ jobs:
         run: |
           git config user.name "Jasan Hernández"
           git config user.email "31332180+jasanhdz@users.noreply.github.com"
-          git add src/app/services/TradingService.ts src/app/position/StrategyPositionLifecycleCore.ts
+          git add src/app/services/TradingService.ts src/app/position/StrategyPositionLifecycleCore.ts src/restoration/original-operational-semantics.test.ts
           if git diff --cached --quiet; then
             echo "No migration changes to commit"
           else
