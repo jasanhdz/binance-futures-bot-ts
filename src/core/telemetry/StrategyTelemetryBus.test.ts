@@ -6,8 +6,7 @@ import { TelemetryStrategyExecutionPort } from './TelemetryStrategyExecutionPort
 const identity = {
   strategyId: 'MOMENTUM_RIDE' as const,
   strategyVersion: 'test',
-  strategyHash: 'hash',
-  configHash: 'config',
+  freezeState: 'DRAFT' as const,
   codeCommitSha: 'sha',
 };
 
