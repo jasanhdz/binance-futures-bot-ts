@@ -82,13 +82,21 @@ export function evaluateMomentumRideEntry(
     candleRestFallbackCount: context.candleRestFallbackCount,
     candleUsedRestFallback: context.candleUsedRestFallback,
   };
+  // Compute route ownership once inside the canonical strategy policy. The
+  // application layer may use patternMatched to preserve fallback semantics,
+  // but it must never call the raw momentum detector directly.
+  const routePattern = evaluateMainStackingMomentum(context.candles, context.side);
+  const patternRouteDiagnostics = {
+    patternMatched: routePattern.allowed,
+    pattern: routePattern.diagnostics,
+  };
   if (context.realtimeMarketStatus !== 'FRESH') {
     return noTrade(
       context,
       context.realtimeMarketStatus === 'NO_DATA'
         ? 'realtime_market_no_data'
         : 'realtime_market_stale',
-      { ...realtimeDiagnostics, ...candleDiagnostics },
+      { ...realtimeDiagnostics, ...candleDiagnostics, ...patternRouteDiagnostics },
     );
   }
 
@@ -103,13 +111,12 @@ export function evaluateMomentumRideEntry(
       context.liquidityStressStatus === 'NO_DATA'
         ? 'liquidity_data_no_data'
         : 'liquidity_data_stale',
-      { ...realtimeDiagnostics, ...candleDiagnostics, ...liquidityDiagnostics },
+      { ...realtimeDiagnostics, ...candleDiagnostics, ...liquidityDiagnostics, ...patternRouteDiagnostics },
     );
   }
-  const pattern = evaluateMainStackingMomentum(context.candles, context.side);
-  if (!pattern.allowed) {
-    return noTrade(context, pattern.reason, {
-      pattern: pattern.diagnostics,
+  if (!routePattern.allowed) {
+    return noTrade(context, routePattern.reason, {
+      ...patternRouteDiagnostics,
       ...realtimeDiagnostics,
       ...candleDiagnostics,
       ...liquidityDiagnostics,
@@ -117,17 +124,17 @@ export function evaluateMomentumRideEntry(
   }
 
   if (context.side === 'LONG' && !config.longEnabled) {
-    return noTrade(context, 'momentum_long_disabled', { pattern: pattern.diagnostics });
+    return noTrade(context, 'momentum_long_disabled', patternRouteDiagnostics);
   }
   if (context.side === 'SHORT' && !config.shortEnabled) {
-    return noTrade(context, 'momentum_short_disabled', { pattern: pattern.diagnostics });
+    return noTrade(context, 'momentum_short_disabled', patternRouteDiagnostics);
   }
 
   const openMomentumPositions = context.openMomentumPositions ?? 0;
   const maxOpenMomentumPositions = config.maxOpenMomentumPositions ?? Number.POSITIVE_INFINITY;
   if (openMomentumPositions >= maxOpenMomentumPositions) {
     return noTrade(context, 'momentum_max_open_positions_reached', {
-      pattern: pattern.diagnostics,
+      ...patternRouteDiagnostics,
       openMomentumPositions,
       limit: maxOpenMomentumPositions,
     });
@@ -138,7 +145,7 @@ export function evaluateMomentumRideEntry(
     config.maxTotalOpenPositionsWhenMomentum ?? Number.POSITIVE_INFINITY;
   if (openPositionsCount >= maxTotalOpenPositions) {
     return noTrade(context, 'momentum_total_open_positions_reached', {
-      pattern: pattern.diagnostics,
+      ...patternRouteDiagnostics,
       openPositionsCount,
       limit: maxTotalOpenPositions,
     });
@@ -151,7 +158,7 @@ export function evaluateMomentumRideEntry(
     context.timestamp - context.symbolLastStopLossAt < disableSymbolAfterStopLossMs
   ) {
     return noTrade(context, 'momentum_symbol_stop_loss_cooldown', {
-      pattern: pattern.diagnostics,
+      ...patternRouteDiagnostics,
       symbolLastStopLossAt: context.symbolLastStopLossAt,
       disableSymbolAfterStopLossMs,
     });
@@ -167,7 +174,7 @@ export function evaluateMomentumRideEntry(
   });
   if (!safety.allowed) {
     return noTrade(context, safety.reason, {
-      pattern: pattern.diagnostics,
+      ...patternRouteDiagnostics,
       sharedSafety: safety,
       ...candleDiagnostics,
     });
@@ -183,7 +190,7 @@ export function evaluateMomentumRideEntry(
       ...realtimeDiagnostics,
       ...candleDiagnostics,
       ...liquidityDiagnostics,
-      pattern: pattern.diagnostics,
+      ...patternRouteDiagnostics,
       sharedSafety: safety,
       strategyRisk: {
         tradesToday: context.safety.tradesToday,

@@ -12,11 +12,7 @@ import {
   buildAegisMicroLiveGateConfigFromEnv,
   shouldEnterAegisTurboMicroLive,
 } from '../../strategies/aegis/domain/services/AegisMicroLiveGate';
-import {
-  evaluateMainStackingMomentum,
-  MainStackingMomentumDecision,
-  MAIN_STACKING_MOMENTUM_AUTHORITY,
-} from '../../strategies/momentum/domain/MainStackingMomentumStrategy';
+import { MAIN_STACKING_MOMENTUM_AUTHORITY } from '../../strategies/momentum/domain/MainStackingMomentumStrategy';
 import {
   AegisExitEyeYamlConfig,
   AegisEntryQualityGateRuntimeConfig,
@@ -2319,10 +2315,9 @@ export class TradingService {
     );
   }
 
-  private async findStandaloneMomentumCandidate(
+  private async loadStandaloneMomentumData(
     symbol: string,
   ): Promise<{
-    decision: MainStackingMomentumDecision;
     candles: Candle[];
     candleState?: MomentumCandleSnapshot;
   } | undefined> {
@@ -2363,26 +2358,34 @@ export class TradingService {
       );
     }
 
-    const sides: Side[] = ['LONG', 'SHORT'];
-    for (const side of sides) {
-      const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
-      if (!sideConfig.enabled) continue;
-      const decision = evaluateMainStackingMomentum(candles, side);
-      if (decision.allowed) return { decision, candles, candleState };
-    }
-    return undefined;
+    return { candles, candleState };
   }
 
-  private async lookForMomentumEntry(
+  private async lookForMomentumEntry(symbol: string): Promise<boolean> {
+    const candidate = await this.loadStandaloneMomentumData(symbol);
+    if (!candidate) return false;
+    const config = this.getAegisMomentumRideConfig();
+    const symbolConfig = config.symbols[symbol];
+    if (!symbolConfig?.enabled) return false;
+
+    for (const side of ['LONG', 'SHORT'] as Side[]) {
+      const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
+      if (!sideConfig.enabled) continue;
+      if (await this.evaluateAndExecuteMomentumSide(symbol, side, candidate)) return true;
+    }
+    return false;
+  }
+
+  private async evaluateAndExecuteMomentumSide(
     symbol: string,
-    candidate: { decision: MainStackingMomentumDecision; candles: Candle[]; candleState?: MomentumCandleSnapshot },
-  ): Promise<void> {
+    side: Side,
+    candidate: { candles: Candle[]; candleState?: MomentumCandleSnapshot },
+  ): Promise<boolean> {
     const { exchange, logger, notifier } = this.deps;
     const config = this.getAegisMomentumRideConfig();
     const symbolConfig = config.symbols[symbol];
-    if (!symbolConfig?.enabled) return;
+    if (!symbolConfig?.enabled) return false;
 
-    const side = candidate.decision.side;
     const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
     const now = Date.now();
     const signalId = generateSignalId(symbol);
@@ -2478,6 +2481,8 @@ export class TradingService {
       },
     };
     const decision = await this.momentumStrategyRouter.evaluate('MOMENTUM_RIDE', strategyContext);
+    const patternMatched = decision.diagnostics.patternMatched === true;
+    if (!patternMatched) return false;
 
     await this.historyLogger.logSignal({
       signal_id: signalId,
@@ -2509,12 +2514,12 @@ export class TradingService {
       },
     });
 
-    if (decision.decision !== 'ENTRY_INTENT') return;
-    if (decision.mode !== 'LIVE') return;
-    if (this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return;
-    if (CONFIG.AEGIS_LIVE_ENABLED !== true) return;
-    if (this.getSymbolMode(symbol) !== 'LIVE') return;
-    if (!sideConfig.enabled || policy.leverage <= 0 || policy.positionFraction <= 0) return;
+    if (decision.decision !== 'ENTRY_INTENT') return true;
+    if (decision.mode !== 'LIVE') return true;
+    if (this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return true;
+    if (CONFIG.AEGIS_LIVE_ENABLED !== true) return true;
+    if (this.getSymbolMode(symbol) !== 'LIVE') return true;
+    if (!sideConfig.enabled || policy.leverage <= 0 || policy.positionFraction <= 0) return true;
 
     const protection = config.protection ?? {
       hardStopRoe: -0.4,
@@ -2570,7 +2575,7 @@ export class TradingService {
         status: execution.status,
         reason: execution.reason,
       });
-      return;
+      return true;
     }
 
     const metadata = execution.metadata as Record<string, any>;
@@ -2673,6 +2678,7 @@ export class TradingService {
         `Strategy: MOMENTUM_RIDE\n` +
         `Python/Aegis policy: NO`,
     );
+    return true;
   }
 
   private async lookForEntry(symbol: string): Promise<void> {
@@ -2682,11 +2688,8 @@ export class TradingService {
 
     try {
       const momentumConfig = this.getAegisMomentumRideConfig();
-      const standaloneMomentum = await this.findStandaloneMomentumCandidate(symbol);
-      if (standaloneMomentum) {
-        await this.lookForMomentumEntry(symbol, standaloneMomentum);
-        return;
-      }
+      const standaloneMomentumHandled = await this.lookForMomentumEntry(symbol);
+      if (standaloneMomentumHandled) return;
       if (
         momentumConfig.standaloneMainReplica === true &&
         momentumConfig.aegisFallbackEnabled === false
