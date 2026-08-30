@@ -1,6 +1,7 @@
 import type { Logger } from '../ports/Logger';
 import type { MarketDataPort } from '../ports/MarketData';
 import { AggTradeDataPlane } from '../../core/market-data/AggTradeDataPlane';
+import { CandleDataPlane } from '../../core/market-data/CandleDataPlane';
 import { OrderBookDataPlane } from '../../core/market-data/OrderBookDataPlane';
 import {
   RollingAggTradeBuffer,
@@ -27,16 +28,31 @@ export interface SharedMarketDataRuntimeDeps {
  * Application-owned canonical market-data state.
  *
  * Strategies acquire leases from these planes; no strategy owns the underlying
- * Binance depth/AggTrade subscriptions. A plane opens one stream per symbol and
- * reference-counts all consumers.
+ * Binance candle/depth/AggTrade subscriptions. A plane opens one stream per
+ * symbol (and interval for candles) and reference-counts all consumers.
  */
 export class SharedMarketDataRuntime {
+  readonly candleDataPlane: CandleDataPlane;
   readonly orderBookDataPlane: OrderBookDataPlane<SynchronizedOrderBook>;
   readonly aggTradeDataPlane: AggTradeDataPlane<RollingAggTradeBuffer>;
   private archiveObserver: SharedMarketDataArchiveObserver = {};
 
   constructor(private readonly deps: SharedMarketDataRuntimeDeps) {
     const { exchange, logger, clock } = deps;
+
+    this.candleDataPlane = new CandleDataPlane({
+      clock,
+      subscribe: (symbol, interval, onCandle) => {
+        if (!exchange.subscribeToKlineCandles) {
+          logger.warn('shared_market_data_exchange_no_kline_stream', { symbol, interval });
+          return () => {};
+        }
+        return exchange.subscribeToKlineCandles(symbol, interval, (update) => {
+          onCandle(update.candle, update.observedAtMs);
+        });
+      },
+      fetch: (symbol, interval, limit) => exchange.getCandles(symbol, interval, limit),
+    });
 
     this.orderBookDataPlane = new OrderBookDataPlane((symbol) => {
       const bookDeps: SynchronizedOrderBookDeps = {
@@ -105,6 +121,7 @@ export class SharedMarketDataRuntime {
   }
 
   close(): void {
+    this.candleDataPlane.close();
     this.orderBookDataPlane.close();
     this.aggTradeDataPlane.close();
     this.archiveObserver = {};
