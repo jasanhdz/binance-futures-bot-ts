@@ -32,7 +32,7 @@ describe('AegisRealtimeMarketState', () => {
       getTakerFlow: () => ({ gapFree: true, tradeCount: 4, netTakerVolume: 3 }),
     };
     const candlePlane = {
-      acquire: vi.fn(() => ({ symbol: 'BTCUSDT', interval: '5m', release: () => releases.candle++ })),
+      acquire: vi.fn((symbol: string) => ({ symbol, interval: '5m', release: () => releases.candle++ })),
       ensureWarm: vi.fn(async () => undefined),
       read: vi.fn(() => ({ candles: [{ openTime: 0, timestamp: 0, open: 1, high: 2, low: 1, close: 2, volume: 1, buyVolume: 1, closeTime: 299_999 }], status: 'FRESH', restFallbackCount: 0 })),
     };
@@ -60,7 +60,7 @@ describe('AegisRealtimeMarketState', () => {
 
     expect(sharedMarketData.orderBookDataPlane.acquire).toHaveBeenCalledTimes(1);
     expect(sharedMarketData.aggTradeDataPlane.acquire).toHaveBeenCalledTimes(1);
-    expect(candlePlane.acquire).toHaveBeenCalledTimes(1);
+    expect(candlePlane.acquire).toHaveBeenCalledTimes(11);
     expect(state.read('BTCUSDT')).toMatchObject({
       source: 'SHARED_WEBSOCKET',
       status: 'FRESH',
@@ -75,6 +75,6 @@ describe('AegisRealtimeMarketState', () => {
     expect(state.getCandles('BTCUSDT', 1)).toHaveLength(1);
 
     state.close();
-    expect(releases).toEqual({ book: 1, agg: 1, candle: 1 });
+    expect(releases).toEqual({ book: 1, agg: 1, candle: 11 });
   });
 });
