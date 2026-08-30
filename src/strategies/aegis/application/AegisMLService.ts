@@ -2,6 +2,7 @@ import type { MLService } from '../../../app/ports/MLService';
 import type { AegisPredictionResponse, AegisTradingSignal } from '../domain/AegisStrategy';
 import { AegisMLServiceClient } from '../../../infra/adapters/AegisMLAdapter';
 import type { AegisMarketContextV1 } from './AegisMarketContext';
+import { readAegisMarketContext } from './AegisMarketContextRegistry';
 
 /** Aegis-specific ML application service. Not part of the generic bot bootstrap contract. */
 export class AegisMLService implements MLService {
@@ -11,7 +12,9 @@ export class AegisMLService implements MLService {
     symbol: string,
     context?: AegisMarketContextV1,
   ): Promise<AegisPredictionResponse> {
-    return this.client.fetchPrediction({ symbol, marketContext: context });
+    const normalized = symbol.trim().toUpperCase();
+    const marketContext = context ?? readAegisMarketContext(normalized) ?? undefined;
+    return this.client.fetchPrediction({ symbol: normalized, marketContext });
   }
 
   async getSignal(symbol: string, context?: unknown): Promise<AegisTradingSignal> {
