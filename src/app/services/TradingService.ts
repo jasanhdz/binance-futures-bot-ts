@@ -322,6 +322,20 @@ export class TradingService {
     this.aegisStrategyIdentity = createAegisMigrationIdentity();
     this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
     this.microBurstIdentity = createMicroBurstV1Identity();
+    this.positionRecovery = new PositionRecoveryService({
+      exchange: deps.exchange,
+      logger: deps.logger,
+      notifier: deps.notifier,
+      globalState: deps.state,
+      configSymbols: this.config.symbols,
+      getLiveSymbols: () => this.getLiveAegisSymbols(),
+      stateForSymbol: (symbol) => this.stateForSymbol(symbol),
+      isVerifiedBotOwnedState: (state) => this.isVerifiedBotOwnedState(state),
+      isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
+      requireBrackets: () => this.getAegisTurboYamlConfig()?.require_brackets !== false,
+      ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
+        this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, state, overrides),
+    });
     this.strategyHistory = new StrategyHistoryService({
       logger: deps.logger,
       historyLogger: this.historyLogger,
