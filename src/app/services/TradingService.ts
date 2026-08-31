@@ -369,6 +369,8 @@ export class TradingService {
         execution: {
           readActivePosition: (symbol, side) => this.deps.exchange.readActivePosition(symbol, side),
           listCloseOrdersForSide: (symbol, side) => this.deps.exchange.listCloseOrdersForSide(symbol, side),
+          closeSideMarketSafe: (symbol, side, qtyAbs, sideMode, reason) =>
+            this.deps.exchange.closeSideMarketSafe(symbol, side, qtyAbs, sideMode, reason),
           moveCloseStop: (params) => this.performSafeMoveCloseStop(params as Parameters<TradingService['performSafeMoveCloseStop']>[0]),
         },
         telemetry: { log: (event, payload) => this.logAegisTradeEvent(payload.symbol as string, event, payload) },
@@ -4367,13 +4369,13 @@ export class TradingService {
         decision.reason === 'neutral_momentum_decay_profit_exit'
           ? 'AEGIS_EXIT_EYE_NEUTRAL_DECAY'
           : 'AEGIS_EXIT_EYE_OPPOSITE_SIGNAL';
-      await this.deps.exchange.closeSideMarketSafe(
-        input.symbol,
-        input.side,
-        input.position.qtyAbs,
-        input.position.sideMode,
-        exitReason,
-      );
+      await this.aegisExitManagementService.closePosition({
+        symbol: input.symbol,
+        side: input.side,
+        qtyAbs: input.position.qtyAbs,
+        sideMode: input.position.sideMode,
+        reason: exitReason,
+      });
       input.symbolState.set({
         mode: 'IDLE',
         lastExitAt: Date.now(),

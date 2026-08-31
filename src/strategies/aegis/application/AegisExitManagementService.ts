@@ -46,6 +46,14 @@ export interface ProtectedStopInput {
   immediateTriggerBufferPct: number;
 }
 
+export interface ClosePositionInput {
+  symbol: string;
+  side: Side;
+  qtyAbs: number;
+  sideMode: 'BOTH' | 'LONG' | 'SHORT';
+  reason: string;
+}
+
 export interface AegisExitEyeSignal {
   currentTurboAction?: string;
   rawAction?: string;
@@ -74,6 +82,19 @@ export class AegisExitManagementService {
 
   classifyDecision(decision: AegisExitEyeDecision, currentRoe: number): AegisExitDecisionEffect {
     return classifyAegisExitDecision(decision, currentRoe);
+  }
+
+  closePosition(input: ClosePositionInput): Promise<void> {
+    if (!this.ports.execution?.closeSideMarketSafe) {
+      return Promise.reject(new Error('AEGIS_EXIT_CLOSE_POSITION_PORT_UNAVAILABLE'));
+    }
+    return this.ports.execution.closeSideMarketSafe(
+      input.symbol,
+      input.side,
+      input.qtyAbs,
+      input.sideMode,
+      input.reason,
+    );
   }
 
   protectedStopPrice(input: ProtectedStopInput): { protectedRoe: number; stopPrice: number } {
