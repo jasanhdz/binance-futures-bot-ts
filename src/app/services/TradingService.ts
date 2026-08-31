@@ -81,8 +81,6 @@ import {
   AegisMomentumRideRuntimeConfig,
   AegisRegimeContextRuntimeConfig,
 } from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
-import { AegisEntryGuardOrchestrator } from '../../strategies/aegis/domain/entry/AegisEntryGuardOrchestrator';
-import { evaluateAegisEntrySafetyConsensus } from '../../strategies/aegis/domain/services/AegisEntrySafetyConsensus';
 import {
   AegisClosedTradeOutcome,
   AegisConsecutiveLossTracker,
@@ -150,6 +148,7 @@ import {
 } from '../../strategies/aegis/application/AegisPhaseOMetadataParser';
 import type { MomentumCandleSnapshot } from '../../strategies/momentum/application/MomentumCandleState';
 import { StrategyRuntimeCoordinator } from '../runtime/StrategyRuntimeCoordinator';
+import { AegisEntryCoordinator } from '../../strategies/aegis/application/AegisEntryCoordinator';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -280,6 +279,7 @@ export class TradingService {
   private readonly microBurstStrategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
   private readonly microBurstIdentity: StrategyIdentity;
   private readonly strategyRuntimeCoordinator: StrategyRuntimeCoordinator;
+  private readonly aegisEntryCoordinator = new AegisEntryCoordinator();
   private stopPromise: Promise<void> | null = null;
 
   private persistDailyRiskState(now = Date.now()): void {
@@ -2708,22 +2708,23 @@ export class TradingService {
       }
       const aegisBlackBoxSnapshot =
         await this.strategyRuntimeCoordinator.captureAegisDecision(symbol);
-      const entryDecision = await AegisEntryGuardOrchestrator.evaluate(entryContext, entryPolicy);
       const consensusConfig = this.getAegisTurboYamlConfig()?.entry_safety_consensus;
-      const entrySafetyConsensus = evaluateAegisEntrySafetyConsensus({
-        side,
-        entryDecision,
-        config: consensusConfig
-          ? {
-              enabled: consensusConfig.enabled,
-              mode: consensusConfig.mode,
-              minimumRootRiskFamilies: consensusConfig.minimum_root_risk_families,
-              criticalLongVetoMode: consensusConfig.critical_long_veto_mode,
-              requireValidRegimeForCriticalLong:
-                consensusConfig.require_valid_regime_for_critical_long,
-            }
-          : undefined,
-      });
+      const { entryDecision, safetyConsensus: entrySafetyConsensus } =
+        await this.aegisEntryCoordinator.decide({
+          context: entryContext,
+          side,
+          policy: entryPolicy,
+          consensusConfig: consensusConfig
+            ? {
+                enabled: consensusConfig.enabled,
+                mode: consensusConfig.mode,
+                minimumRootRiskFamilies: consensusConfig.minimum_root_risk_families,
+                criticalLongVetoMode: consensusConfig.critical_long_veto_mode,
+                requireValidRegimeForCriticalLong:
+                  consensusConfig.require_valid_regime_for_critical_long,
+              }
+            : undefined,
+        });
       await this.strategyRuntimeCoordinator.observeAegisDecision(aegisBlackBoxSnapshot ?? null, {
         symbol,
         timestamp: entryContext.operational.timestamp,

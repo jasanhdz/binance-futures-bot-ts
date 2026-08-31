@@ -25,7 +25,9 @@ interface RuntimeHarness {
 
 function runtimeHarness(): RuntimeHarness {
   const events: string[] = [];
-  const sharedMarketData = {} as SharedMarketDataRuntime;
+  const sharedMarketData = {
+    close: vi.fn(() => events.push('shared-market-data:close')),
+  } as unknown as SharedMarketDataRuntime;
   const aegisRealtime = {
     start: vi.fn(() => events.push('aegis-realtime:start')),
     close: vi.fn(() => events.push('aegis-realtime:close')),
@@ -129,6 +131,7 @@ describe('StrategyRuntimeCoordinator', () => {
       'momentum-blackbox:close',
       'momentum-realtime:close',
       'momentum-candles:close',
+      'shared-market-data:close',
     ]);
   });
 

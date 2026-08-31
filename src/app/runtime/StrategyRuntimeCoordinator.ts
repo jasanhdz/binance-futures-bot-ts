@@ -221,6 +221,8 @@ export class StrategyRuntimeCoordinator {
     this.momentumCandleState?.close();
     this.momentumCandleState = null;
     await microBurstRuntime?.stop();
+    this.sharedMarketDataRuntime?.close();
+    this.sharedMarketDataRuntime = null;
   }
 
   private async startMicroBurst(
