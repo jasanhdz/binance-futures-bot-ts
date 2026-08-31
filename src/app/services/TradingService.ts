@@ -357,6 +357,25 @@ export class TradingService {
     this.aegisExecutionCoordinator = new AegisExecutionCoordinator(this.sharedStrategyExecution);
     this.aegisExitManagementService = new AegisExitManagementService((input) =>
       this.evaluateExitEyeForPosition(input as Parameters<TradingService['evaluateExitEyeForPosition']>[0]),
+      {
+        config: {
+          getExitEyeConfig: () => this.getAegisExitEyeConfig(),
+          getProfitProtectionConfig: () => this.getAegisProfitProtectionConfig(),
+        },
+        state: {
+          read: (symbol) => this.stateForSymbol(symbol).get(),
+          write: (symbol, patch) => this.stateForSymbol(symbol).set(patch as any),
+        },
+        execution: {
+          readActivePosition: (symbol, side) => this.deps.exchange.readActivePosition(symbol, side),
+          listCloseOrdersForSide: (symbol, side) => this.deps.exchange.listCloseOrdersForSide(symbol, side),
+        },
+        telemetry: { log: (event, payload) => this.logAegisTradeEvent(payload.symbol as string, event, payload) },
+        notifications: {
+          send: (message) => this.deps.notifier.sendMessage(message),
+          alert: (title, message) => this.deps.notifier.sendAlert(title, message),
+        },
+      },
     );
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
     const momentumRuntimeMode =

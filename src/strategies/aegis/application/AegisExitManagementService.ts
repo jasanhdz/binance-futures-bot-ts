@@ -1,4 +1,19 @@
 import type { Side } from '../../../core/types';
+import type {
+  AegisExitConfigPort,
+  AegisExitExecutionPort,
+  AegisExitNotificationPort,
+  AegisExitStatePort,
+  AegisExitTelemetryPort,
+} from './AegisExitManagementPorts';
+
+export interface AegisExitManagementPorts {
+  config?: AegisExitConfigPort;
+  state?: AegisExitStatePort;
+  execution?: AegisExitExecutionPort;
+  telemetry?: AegisExitTelemetryPort;
+  notifications?: AegisExitNotificationPort;
+}
 
 export interface AegisExitManagementInput {
   symbol: string;
@@ -17,7 +32,10 @@ export type AegisExitManagementEvaluator = (input: AegisExitManagementInput) => 
 
 /** Application boundary for Aegis position-exit decisions. */
 export class AegisExitManagementService {
-  constructor(private readonly evaluator: AegisExitManagementEvaluator) {}
+  constructor(
+    private readonly evaluator: AegisExitManagementEvaluator,
+    readonly ports: AegisExitManagementPorts = {},
+  ) {}
 
   evaluate(input: AegisExitManagementInput): Promise<boolean> {
     return this.evaluator(input);
