@@ -28,13 +28,6 @@ import {
   AegisTurboYamlConfig,
   NinjaConfigManager,
 } from '../../infra/config/ConfigLoader';
-import {
-  AegisExitEyeDecision,
-  AegisExitEyeVotes,
-  evaluateAegisExitEye,
-} from '../../strategies/aegis/domain/services/AegisExitEye';
-import { evaluateAegisExitEyeV2Shadow } from '../../strategies/aegis/domain/services/AegisExitEyeV2Shadow';
-import { inspectCurrentBrainCanonicalDecision } from '../../strategies/aegis/domain/CurrentBrainCanonicalDecision';
 import { buildAegisOperationalDispositionShadow } from '../../strategies/aegis/domain/services/AegisOperationalDispositionShadow';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector, LIQUIDITY_STRESS_INPUT_VERSION } from './LiquidityVoidDetector';
@@ -149,12 +142,11 @@ import { StrategyRuntimeCoordinator } from '../runtime/StrategyRuntimeCoordinato
 import { AegisEntryCoordinator } from '../../strategies/aegis/application/AegisEntryCoordinator';
 import { AegisExecutionCoordinator } from '../../strategies/aegis/application/AegisExecutionCoordinator';
 import { AegisExitManagementService } from '../../strategies/aegis/application/AegisExitManagementService';
+import { AegisProfitProtectionService } from '../../strategies/aegis/application/AegisProfitProtectionService';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
-const EXIT_EYE_SIGNAL_TTL_MS = 15000;
-const EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
 type SafeStopMoveReason = 'MOVE_SL_BE' | 'PROTECT_PROFIT' | 'MOVE_SL_TRAILING';
 type SafeStopMoveSkipReason =
@@ -247,10 +239,6 @@ export class TradingService {
   private detector: Record<string, LiquidityVoidDetector> = {};
   private readonly historyLogger: AegisTurboHistoryLogger;
   private readonly symbolStateStores = new Map<string, StateStore>();
-  private readonly exitEyeSignalCache = new Map<
-    string,
-    { at: number; signal: AegisTradingSignal }
-  >();
   private readonly aegisTelegramBlockNotifier = new AegisTelegramBlockNotifier();
   private readonly positionManagerRouter = new PositionManagerRouter<{
     symbol: string;
@@ -282,6 +270,7 @@ export class TradingService {
   private readonly aegisEntryCoordinator = new AegisEntryCoordinator();
   private readonly aegisExecutionCoordinator: AegisExecutionCoordinator;
   private readonly aegisExitManagementService: AegisExitManagementService;
+  private readonly aegisProfitProtectionService: AegisProfitProtectionService;
   private readonly momentumEntryCoordinator: MomentumEntryCoordinator;
   private stopPromise: Promise<void> | null = null;
 
@@ -355,31 +344,44 @@ export class TradingService {
       this.strategyTelemetry,
     );
     this.aegisExecutionCoordinator = new AegisExecutionCoordinator(this.sharedStrategyExecution);
-    this.aegisExitManagementService = new AegisExitManagementService((input) =>
-      this.evaluateExitEyeForPosition(input as Parameters<TradingService['evaluateExitEyeForPosition']>[0]),
-      {
-        config: {
-          getExitEyeConfig: () => this.getAegisExitEyeConfig(),
-          getProfitProtectionConfig: () => this.getAegisProfitProtectionConfig(),
-        },
-        state: {
-          read: (symbol) => this.stateForSymbol(symbol).get(),
-          write: (symbol, patch) => this.stateForSymbol(symbol).set(patch as any),
-        },
-        execution: {
-          readActivePosition: (symbol, side) => this.deps.exchange.readActivePosition(symbol, side),
-          listCloseOrdersForSide: (symbol, side) => this.deps.exchange.listCloseOrdersForSide(symbol, side),
-          executePositionClose: (symbol, side, qtyAbs, sideMode, reason) =>
-            this.deps.exchange.closeSideMarketSafe(symbol, side, qtyAbs, sideMode, reason),
-          moveCloseStop: (params) => this.performSafeMoveCloseStop(params as Parameters<TradingService['performSafeMoveCloseStop']>[0]),
-        },
-        telemetry: { log: (event, payload) => this.logAegisTradeEvent(payload.symbol as string, event, payload) },
-        notifications: {
-          send: (message) => this.deps.notifier.sendMessage(message),
-          alert: (title, message) => this.deps.notifier.sendAlert(title, message),
-        },
-      },
-    );
+    this.aegisProfitProtectionService = new AegisProfitProtectionService({
+      logger: deps.logger,
+      notifier: deps.notifier,
+      now: () => Date.now(),
+      getConfig: () => this.getAegisProfitProtectionConfig(),
+      getFallbackLeverage: (symbol) => this.getAegisTurboGateConfig(symbol).leverageCap,
+      getSymbolFilters: (symbol, leverage) =>
+        this.deps.exchange.getSymbolFilters(symbol, leverage),
+      roundPrice: (price, filters) => this.roundPrice(price, filters),
+      useClosePosition: (state) =>
+        !this.isVerifiedBotOwnedState(state) && !this.isLegacyBotOwnedState(state),
+      moveCloseStop: (input) => this.performSafeMoveCloseStop(input),
+      logTradeEvent: (symbol, event, payload) =>
+        this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
+      formatRoe: (value) => this.formatRoe(value),
+    });
+    this.aegisExitManagementService = new AegisExitManagementService({
+      logger: deps.logger,
+      notifier: deps.notifier,
+      now: () => Date.now(),
+      getSignal: (symbol) => this.deps.mlService.getSignal(symbol),
+      getExitEyeConfig: () => this.getAegisExitEyeConfig(),
+      getEntryThreshold: (symbol) => this.getAegisTurboGateConfig(symbol).minScore,
+      logTradeEvent: (symbol, event, payload) =>
+        this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
+      protectProfit: (input) => this.aegisProfitProtectionService.execute(input),
+      executePositionClose: (input) =>
+        this.deps.exchange.closeSideMarketSafe(
+          input.symbol,
+          input.side,
+          input.qtyAbs,
+          input.sideMode,
+          input.reason,
+        ),
+      notifyExit: (symbol, side, reason, state, exit) =>
+        this.notifyExit(symbol, side, reason, state, exit),
+      formatRoe: (value) => this.formatRoe(value),
+    });
     this.momentumEntryCoordinator = new MomentumEntryCoordinator({
       logger: deps.logger,
       notifier: deps.notifier,
@@ -3342,202 +3344,6 @@ export class TradingService {
     }
   }
 
-  private async getExitEyeSignal(symbol: string): Promise<AegisTradingSignal | null> {
-    const cached = this.exitEyeSignalCache.get(symbol);
-    const now = Date.now();
-    if (cached && now - cached.at < EXIT_EYE_SIGNAL_TTL_MS) {
-      return cached.signal;
-    }
-    try {
-      const signal = await this.deps.mlService.getSignal(symbol);
-      this.exitEyeSignalCache.set(symbol, { at: now, signal });
-      return signal;
-    } catch (error) {
-      this.deps.logger.warn('aegis_exit_eye_signal_unavailable', { symbol, error: String(error) });
-      return null;
-    }
-  }
-
-  private extractExitEyeSignal(signal: AegisTradingSignal | null) {
-    return this.aegisExitManagementService.extractSignal(signal);
-  }
-
-  private legacyExtractExitEyeSignal(signal: AegisTradingSignal | null): {
-    currentTurboAction?: string;
-    rawAction?: string;
-    gatedAction?: string;
-    turboScore?: number;
-    votes?: AegisExitEyeVotes;
-    reason?: string;
-  } {
-    const aegis = signal?.metadata?.aegis ?? signal?.aegis;
-    const turbo = aegis?.turbo as any;
-    const raw = turbo?.raw;
-    const gated = turbo?.gated;
-    return {
-      currentTurboAction: turbo?.action ?? gated?.action ?? raw?.action,
-      rawAction: raw?.action,
-      gatedAction: gated?.action,
-      turboScore: raw?.turbo_score ?? turbo?.turbo_score,
-      votes: raw?.votes ?? turbo?.votes,
-      reason: gated?.reason ?? raw?.reason ?? turbo?.reason,
-    };
-  }
-
-  private updateExitEyeCounters(
-    side: Side,
-    botState: BotState,
-    symbolState: StateStore,
-    signal: ReturnType< AegisExitManagementService['extractSignal']>,
-    config: AegisExitEyeYamlConfig,
-  ) {
-    return this.aegisExitManagementService.updateCounters(
-      side,
-      botState,
-      (patch) => symbolState.set(patch as any),
-      signal,
-      config,
-    );
-  }
-
-  private legacyUpdateExitEyeCounters(
-    side: Side,
-    botState: BotState,
-    symbolState: StateStore,
-    signal: {
-      currentTurboAction?: string;
-      rawAction?: string;
-      gatedAction?: string;
-      turboScore?: number;
-      votes?: AegisExitEyeVotes;
-      reason?: string;
-    },
-    config: AegisExitEyeYamlConfig,
-  ): { neutralCount: number; neutralCloseCount: number; oppositeCount: number } {
-    const action = String(signal.currentTurboAction || '').toUpperCase();
-    const rawAction = String(signal.rawAction || '').toUpperCase();
-    const gatedAction = String(signal.gatedAction || '').toUpperCase();
-    const votes = signal.votes || {};
-    const neutralCondition =
-      action !== side && Number(votes.neutral ?? 0) >= config.neutral_votes_to_protect;
-    const neutralCloseCondition =
-      action !== side && Number(votes.neutral ?? 0) >= config.neutral_close_votes;
-    const oppositeAction = side === 'LONG' ? 'SHORT' : 'LONG';
-    const oppositeVotes = side === 'LONG' ? Number(votes.short ?? 0) : Number(votes.long ?? 0);
-    const oppositeCondition =
-      (action === oppositeAction ||
-        rawAction === oppositeAction ||
-        gatedAction === oppositeAction) &&
-      oppositeVotes >= config.opposite_votes_to_close;
-    const neutralCount = neutralCondition ? (botState.exitEyeNeutralCount || 0) + 1 : 0;
-    const neutralCloseCount = neutralCloseCondition
-      ? (botState.exitEyeNeutralCloseCount || 0) + 1
-      : 0;
-    const oppositeCount = oppositeCondition ? (botState.exitEyeOppositeCount || 0) + 1 : 0;
-    symbolState.set({
-      exitEyeNeutralCount: neutralCount,
-      exitEyeNeutralCloseCount: neutralCloseCount,
-      exitEyeOppositeCount: oppositeCount,
-    });
-    return { neutralCount, neutralCloseCount, oppositeCount };
-  }
-
-  private async evaluateExitEyeForPosition(input: {
-    symbol: string;
-    side: Side;
-    botState: BotState;
-    symbolState: StateStore;
-    position: PositionInfo;
-    markPrice: number;
-    currentRoe: number;
-    peakRoe: number;
-    lowestRoe: number;
-    tradeDurationMs: number;
-  }): Promise<boolean> {
-    const config = this.getAegisExitEyeConfig();
-    const signal = await this.getExitEyeSignal(input.symbol);
-    const exitSignal = this.extractExitEyeSignal(signal);
-    const signalAegis = signal?.metadata?.aegis ?? signal?.aegis;
-    const canonicalDecision = inspectCurrentBrainCanonicalDecision(signalAegis, input.symbol);
-    const exitEyeV2Shadow = evaluateAegisExitEyeV2Shadow({
-      symbol: input.symbol,
-      positionSide: input.side,
-      currentRoe: input.currentRoe,
-      peakRoe: input.peakRoe,
-      canonical: canonicalDecision,
-      minimumPeakRoeToStudyProtection: config.min_peak_roe_to_protect,
-      minimumGivebackRoeToStudyProtection: config.min_giveback_from_peak_roe,
-    });
-    try {
-      await this.logAegisTradeEvent(input.symbol, 'EXIT_EYE_V2_SHADOW_OBSERVATION', {
-        tradeId: input.botState.lastTradeId,
-        price: input.markPrice,
-        roe: input.currentRoe,
-        reason: exitEyeV2Shadow.reason,
-        metadata: {
-          ...exitEyeV2Shadow,
-          trailingChanged: false,
-          callbackChanged: false,
-          bracketChanged: false,
-        },
-      });
-    } catch (error) {
-      this.deps.logger.warn('aegis_exit_eye_v2_shadow_log_failed', {
-        symbol: input.symbol,
-        error: String(error),
-      });
-    }
-    if (!config.enabled || config.mode === 'OFF') return false;
-    const counters = this.updateExitEyeCounters(
-      input.side,
-      input.botState,
-      input.symbolState,
-      exitSignal,
-      config,
-    );
-    const decision = evaluateAegisExitEye({
-      enabled: config.enabled,
-      mode: config.mode,
-      symbol: input.symbol,
-      positionSide: input.side,
-      currentRoe: input.currentRoe,
-      peakRoe: input.peakRoe,
-      lowestRoe: input.lowestRoe,
-      minutesInTrade: input.tradeDurationMs / 60000,
-      currentTurboAction: exitSignal.currentTurboAction,
-      rawAction: exitSignal.rawAction,
-      gatedAction: exitSignal.gatedAction,
-      turboScore: exitSignal.turboScore,
-      votes: exitSignal.votes,
-      entryThreshold: this.getAegisTurboGateConfig(input.symbol).minScore,
-      currentReason: exitSignal.reason,
-      minRoeToProtect: config.min_roe_to_protect,
-      minPeakRoeToProtect: config.min_peak_roe_to_protect,
-      minGivebackFromPeakRoe: config.min_giveback_from_peak_roe,
-      neutralVotesToProtect: config.neutral_votes_to_protect,
-      oppositeVotesToClose: config.opposite_votes_to_close,
-      minRoeToCloseOnOpposite: config.min_roe_to_close_on_opposite,
-      minPeakRoeToCloseOnOpposite: config.min_peak_roe_to_close_on_opposite,
-      closeOnNeutralDecay: config.close_on_neutral_decay,
-      neutralCloseVotes: config.neutral_close_votes,
-      minRoeToCloseOnNeutral: config.min_roe_to_close_on_neutral,
-      minPeakRoeToCloseOnNeutral: config.min_peak_roe_to_close_on_neutral,
-      minGivebackToCloseOnNeutral: config.min_giveback_to_close_on_neutral,
-      requireConsecutiveNeutralClose: config.require_consecutive_neutral_close,
-      requireConsecutiveNeutral: config.require_consecutive_neutral,
-      requireConsecutiveOpposite: config.require_consecutive_opposite,
-      consecutiveNeutralCount: counters.neutralCount,
-      consecutiveNeutralCloseCount: counters.neutralCloseCount,
-      consecutiveOppositeCount: counters.oppositeCount,
-      minMinutesInTrade: config.min_minutes_in_trade,
-    });
-
-    if (decision.action === 'NONE') return false;
-
-    await this.handleExitEyeDecision(input, decision);
-    return decision.action === 'CLOSE_POSITION' && decision.shouldClose;
-  }
-
   private wouldStopTriggerImmediately(
     side: Side,
     stopPrice: number,
@@ -3569,7 +3375,7 @@ export class TradingService {
     reason: SafeStopMoveReason;
     useClosePosition?: boolean;
   }): Promise<SafeStopMoveResult> {
-    return this.aegisExitManagementService.moveCloseStop<SafeStopMoveResult>(params);
+    return this.performSafeMoveCloseStop(params);
   }
 
   private async performSafeMoveCloseStop(params: {
@@ -3770,368 +3576,6 @@ export class TradingService {
         error: String(error),
       };
     }
-  }
-
-  private protectedStopPrice(input: {
-    side: Side;
-    entryPrice: number;
-    leverage: number;
-    currentRoe: number;
-    peakRoe: number;
-  }): { protectedRoe: number; stopPrice: number } {
-    const config = this.getAegisProfitProtectionConfig();
-    return this.aegisExitManagementService.protectedStopPrice({
-      ...input,
-      minLockedRoe: config.min_locked_roe,
-      protectGivebackRoe: config.protect_giveback_roe,
-      immediateTriggerBufferPct: config.immediate_trigger_buffer_pct,
-    });
-  }
-
-  private async executeProtectProfitStopMove(input: {
-    symbol: string;
-    side: Side;
-    botState: BotState;
-    symbolState: StateStore;
-    position: PositionInfo;
-    markPrice: number;
-    currentRoe: number;
-    peakRoe: number;
-    decision: AegisExitEyeDecision;
-  }): Promise<SafeStopMoveResult> {
-    const config = this.getAegisProfitProtectionConfig();
-    const entryPrice = input.botState.lastEntryPrice || input.position.entryPrice || 0;
-    const leverage =
-      input.botState.lastLeverage ||
-      input.position.leverage ||
-      this.getAegisTurboGateConfig(input.symbol).leverageCap;
-    const filters = await this.deps.exchange.getSymbolFilters(input.symbol, leverage);
-    const tradeId = input.botState.lastTradeId;
-
-    if (
-      !config.enabled ||
-      !config.protect_profit_enabled ||
-      input.peakRoe < config.min_peak_roe_to_protect
-    ) {
-      const result: SafeStopMoveResult = {
-        moved: false,
-        reason: 'stop_not_improved',
-        newStopPrice: input.botState.lastStopPrice || 0,
-      };
-      await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_SKIPPED', {
-        tradeId,
-        price: input.markPrice,
-        roe: input.currentRoe,
-        reason: 'profit_protection_disabled_or_peak_too_low',
-        metadata: {
-          symbol: input.symbol,
-          side: input.side,
-          currentRoe: input.currentRoe,
-          peakRoe: input.peakRoe,
-          enabled: config.enabled,
-          protectProfitEnabled: config.protect_profit_enabled,
-          minPeakRoeToProtect: config.min_peak_roe_to_protect,
-        },
-      });
-      return result;
-    }
-
-    const protectedStop = this.protectedStopPrice({
-      side: input.side,
-      entryPrice,
-      leverage,
-      currentRoe: input.currentRoe,
-      peakRoe: input.peakRoe,
-    });
-    let newStopPrice = this.roundPrice(protectedStop.stopPrice, filters);
-    const buffer = config.immediate_trigger_buffer_pct;
-    const tickSize = filters.tickSize > 0 ? filters.tickSize : 10 ** -filters.pricePrecision;
-    if (input.side === 'LONG') {
-      const maxSafeStop = input.markPrice * (1 - buffer);
-      if (newStopPrice >= maxSafeStop) {
-        newStopPrice = this.roundPrice(maxSafeStop - tickSize, filters);
-      }
-    } else {
-      const minSafeStop = input.markPrice * (1 + buffer);
-      if (newStopPrice <= minSafeStop) {
-        newStopPrice = this.roundPrice(minSafeStop + tickSize, filters);
-      }
-    }
-    const actualProtectedRoe =
-      input.side === 'LONG'
-        ? ((newStopPrice - entryPrice) / entryPrice) * leverage
-        : ((entryPrice - newStopPrice) / entryPrice) * leverage;
-    const result = await this.safeMoveCloseStop({
-      symbol: input.symbol,
-      side: input.side,
-      tradeId,
-      entryPrice,
-      markPrice: input.markPrice,
-      leverage,
-      quantity: input.position.qtyAbs,
-      position: input.position,
-      newStopPrice,
-      currentRoe: input.currentRoe,
-      peakRoe: input.peakRoe,
-      protectedRoe: actualProtectedRoe,
-      reason: 'PROTECT_PROFIT',
-      useClosePosition:
-        !this.isVerifiedBotOwnedState(input.botState) &&
-        !this.isLegacyBotOwnedState(input.botState),
-    });
-
-    if (result.moved) {
-      input.symbolState.set({
-        lastTrailStop: result.newStopPrice,
-        lastStopPrice: result.newStopPrice,
-        lastExitEyeAction: input.decision.action,
-        lastExitEyeReason: input.decision.reason,
-        lastExitEyeAt: Date.now(),
-      });
-      await this.logAegisTradeEvent(input.symbol, 'AEGIS_EXIT_EYE_PROTECT_PROFIT_EXECUTED', {
-        tradeId,
-        price: input.markPrice,
-        roe: input.currentRoe,
-        oldStop: result.oldStopPrice,
-        newStop: result.newStopPrice,
-        reason: input.decision.reason,
-        metadata: {
-          protectedRoe: actualProtectedRoe,
-          peakRoe: input.peakRoe,
-          currentRoe: input.currentRoe,
-          oldStopPrice: result.oldStopPrice,
-          newStopPrice: result.newStopPrice,
-        },
-      });
-      await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_EXECUTED', {
-        tradeId,
-        price: input.markPrice,
-        roe: input.currentRoe,
-        oldStop: result.oldStopPrice,
-        newStop: result.newStopPrice,
-        reason: input.decision.reason,
-        metadata: {
-          protectedRoe: actualProtectedRoe,
-          peakRoe: input.peakRoe,
-          currentRoe: input.currentRoe,
-          oldStopPrice: result.oldStopPrice,
-          newStopPrice: result.newStopPrice,
-        },
-      });
-      await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_STOP_MOVED', {
-        tradeId,
-        price: input.markPrice,
-        roe: input.currentRoe,
-        oldStop: result.oldStopPrice,
-        newStop: result.newStopPrice,
-        reason: 'PROTECT_PROFIT',
-        metadata: {
-          protectedRoe: actualProtectedRoe,
-          peakRoe: input.peakRoe,
-          currentRoe: input.currentRoe,
-        },
-      });
-      await this.deps.notifier.sendMessage(
-        `🛡️ **Ganancia protegida**\n` +
-          `${input.symbol} ${input.side}\n` +
-          `Peak: ${this.formatRoe(input.peakRoe)}\n` +
-          `Actual: ${this.formatRoe(input.currentRoe)}\n` +
-          `SL movido a: $${result.newStopPrice}\n` +
-          `Ganancia protegida aprox: ${this.formatRoe(actualProtectedRoe)}`,
-      );
-    } else {
-      await this.logAegisTradeEvent(input.symbol, 'AEGIS_EXIT_EYE_PROTECT_PROFIT_SKIPPED', {
-        tradeId,
-        price: input.markPrice,
-        roe: input.currentRoe,
-        oldStop: result.oldStopPrice,
-        newStop: result.newStopPrice,
-        reason: result.reason,
-        metadata: {
-          protectedRoe: actualProtectedRoe,
-          peakRoe: input.peakRoe,
-          currentRoe: input.currentRoe,
-          error: result.error,
-        },
-      });
-      await this.logAegisTradeEvent(input.symbol, 'PROTECT_PROFIT_SKIPPED', {
-        tradeId,
-        price: input.markPrice,
-        roe: input.currentRoe,
-        oldStop: result.oldStopPrice,
-        newStop: result.newStopPrice,
-        reason: result.reason,
-        metadata: {
-          protectedRoe: actualProtectedRoe,
-          peakRoe: input.peakRoe,
-          currentRoe: input.currentRoe,
-          error: result.error,
-        },
-      });
-      if (result.reason === 'exchange_error') {
-        await this.deps.notifier.sendAlert(
-          'AEGIS PROTECT PROFIT FAILED',
-          `${input.symbol} ${input.side}\nSL protegido: ${result.newStopPrice}\n${String(result.error || '').slice(0, 180)}`,
-        );
-      }
-    }
-
-    return result;
-  }
-
-  private async handleExitEyeDecision(
-    input: {
-      symbol: string;
-      side: Side;
-      botState: BotState;
-      symbolState: StateStore;
-      position: PositionInfo;
-      markPrice: number;
-      currentRoe: number;
-      peakRoe: number;
-      lowestRoe: number;
-    },
-    decision: AegisExitEyeDecision,
-  ): Promise<void> {
-    const event = this.exitEyeEventName(decision.action);
-    const metadata = {
-      decision,
-      currentRoe: input.currentRoe,
-      peakRoe: input.peakRoe,
-      givebackRoe: decision.metadata.givebackRoe,
-      currentTurboAction: decision.metadata.currentTurboAction,
-      rawAction: decision.metadata.rawAction,
-      gatedAction: decision.metadata.gatedAction,
-      turboScore: decision.metadata.turboScore,
-      votes: decision.metadata.votes,
-      reason: decision.reason,
-    };
-    input.symbolState.set({
-      lastExitEyeAction: decision.action,
-      lastExitEyeReason: decision.reason,
-      lastExitEyeAt: Date.now(),
-    });
-    await this.logAegisTradeEvent(input.symbol, event, {
-      tradeId: input.botState.lastTradeId,
-      price: input.markPrice,
-      roe: input.currentRoe,
-      reason: decision.reason,
-      metadata,
-    });
-    const logPayload = {
-      symbol: input.symbol,
-      side: input.side,
-      action: decision.action,
-      shouldClose: decision.shouldClose,
-      shouldProtect: decision.shouldProtect,
-      reason: decision.reason,
-      currentRoe: input.currentRoe,
-      peakRoe: input.peakRoe,
-      givebackRoe: decision.metadata.givebackRoe,
-      mode: this.getAegisExitEyeConfig().mode,
-    };
-    if (decision.action === 'CLOSE_POSITION') {
-      this.deps.logger.warn('aegis_exit_eye_decision', logPayload);
-    } else {
-      this.deps.logger.info('aegis_exit_eye_decision', logPayload);
-    }
-
-    await this.aegisExitManagementService.applyDecision(
-      {
-        ...input,
-        decision,
-      },
-      {
-        protectProfit: async (context) => {
-          await this.executeProtectProfitStopMove({
-            ...context,
-            botState: context.botState as BotState,
-            symbolState: context.symbolState as StateStore,
-            position: context.position as PositionInfo,
-          });
-        },
-        closePosition: async (context, exitReason) => {
-          await this.aegisExitManagementService.closePosition({
-            symbol: context.symbol,
-            side: context.side,
-            qtyAbs: context.position.qtyAbs,
-            sideMode: context.position.sideMode,
-            reason: exitReason,
-          });
-          const symbolState = context.symbolState as StateStore;
-          symbolState.set({
-            mode: 'IDLE',
-            lastExitAt: Date.now(),
-            lastExitReason: exitReason,
-          });
-          await this.notifyExit(
-            context.symbol,
-            context.side,
-            exitReason,
-            context.botState as BotState,
-            { exitPrice: context.markPrice, finalRoe: context.currentRoe },
-          );
-          await this.sendExitEyeTelegram(context.symbol, context.side, context.decision, true);
-        },
-        notify: async (context, force) => {
-          await this.sendExitEyeTelegram(
-            context.symbol,
-            context.side,
-            context.decision,
-            force,
-            context.symbolState as StateStore,
-          );
-        },
-      },
-    );
-  }
-
-  private exitEyeEventName(action: AegisExitEyeDecision['action']): string {
-    return `AEGIS_EXIT_EYE_${action}`;
-  }
-
-  private async sendExitEyeTelegram(
-    symbol: string,
-    side: Side,
-    decision: AegisExitEyeDecision,
-    force: boolean,
-    symbolState?: StateStore,
-  ): Promise<void> {
-    const state = symbolState?.get();
-    const now = Date.now();
-    if (
-      !force &&
-      state?.lastExitEyeTelegramAt &&
-      now - state.lastExitEyeTelegramAt < EXIT_EYE_SHADOW_ALERT_COOLDOWN_MS
-    ) {
-      return;
-    }
-    if (symbolState) symbolState.set({ lastExitEyeTelegramAt: now });
-    const votes = decision.metadata.votes || {};
-    if (force && decision.reason === 'neutral_momentum_decay_profit_exit') {
-      await this.deps.notifier.sendMessage(
-        `👁️ **AEGIS EXIT EYE**\n` +
-          `${symbol} ${side} ${side === 'LONG' ? '📈' : '📉'}\n` +
-          `Cierre por pérdida de momentum\n` +
-          `ROE: ${this.formatRoe(decision.metadata.currentRoe)} | Peak: ${this.formatRoe(decision.metadata.peakRoe)}\n` +
-          `Señal actual: ${decision.metadata.currentTurboAction ?? 'N/D'} | Votes L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0}\n` +
-          `Motivo: neutralidad fuerte + devolución de profit`,
-      );
-      return;
-    }
-    const suggested = decision.action.includes('CLOSE') ? 'CERRAR' : 'PROTEGER GANANCIA';
-    const modeLine = force
-      ? 'CLOSE ejecutado'
-      : `Modo: ${this.getAegisExitEyeConfig().mode}, no se cerró`;
-    await this.deps.notifier.sendMessage(
-      `👁️ **AEGIS EXIT EYE**\n` +
-        `${symbol} ${side} ${side === 'LONG' ? '📈' : '📉'}\n` +
-        `Acción sugerida: ${suggested}\n` +
-        `ROE actual: ${this.formatRoe(decision.metadata.currentRoe)} | Peak: ${this.formatRoe(decision.metadata.peakRoe)}\n` +
-        `Señal actual: ${decision.metadata.currentTurboAction ?? 'N/D'} | Votes L=${votes.long ?? 0} S=${votes.short ?? 0} N=${votes.neutral ?? 0}\n` +
-        `Motivo: ${decision.reason}\n` +
-        modeLine,
-    );
   }
 
   private async notifyExit(
