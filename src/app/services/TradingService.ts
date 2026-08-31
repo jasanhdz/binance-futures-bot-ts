@@ -12,7 +12,6 @@ import {
   buildAegisMicroLiveGateConfigFromEnv,
   shouldEnterAegisTurboMicroLive,
 } from '../../strategies/aegis/domain/services/AegisMicroLiveGate';
-import { MAIN_STACKING_MOMENTUM_AUTHORITY } from '../../strategies/momentum/domain/MainStackingMomentumStrategy';
 import {
   AegisExitEyeYamlConfig,
   AegisEntryQualityGateRuntimeConfig,
@@ -146,7 +145,6 @@ import {
   extractAegisPhaseOMetadata,
   type AegisPhaseOMetadata,
 } from '../../strategies/aegis/application/AegisPhaseOMetadataParser';
-import type { MomentumCandleSnapshot } from '../../strategies/momentum/application/MomentumCandleState';
 import { StrategyRuntimeCoordinator } from '../runtime/StrategyRuntimeCoordinator';
 import { AegisEntryCoordinator } from '../../strategies/aegis/application/AegisEntryCoordinator';
 import { AegisExecutionCoordinator } from '../../strategies/aegis/application/AegisExecutionCoordinator';
@@ -382,9 +380,60 @@ export class TradingService {
         },
       },
     );
-    this.momentumEntryCoordinator = new MomentumEntryCoordinator((symbol) =>
-      this.lookForMomentumEntry(symbol),
-    );
+    this.momentumEntryCoordinator = new MomentumEntryCoordinator({
+      logger: deps.logger,
+      notifier: deps.notifier,
+      identity: this.momentumStrategyIdentity,
+      strategyRouter: this.momentumStrategyRouter,
+      execution: this.sharedStrategyExecution,
+      historyLogger: this.historyLogger,
+      now: () => Date.now(),
+      getConfig: () => this.getAegisMomentumRideConfig(),
+      readRuntimeCandles: (symbol, limit) =>
+        this.strategyRuntimeCoordinator.readMomentumCandles(symbol, limit),
+      readRealtimeMarket: (symbol) =>
+        this.strategyRuntimeCoordinator.readMomentumRealtimeMarket(symbol),
+      getCachedCandles: (symbol) => this.getCachedEntryQualityCandles(symbol),
+      getRestCandles: (symbol, interval, limit) =>
+        this.deps.exchange.getCandles(symbol, interval, limit),
+      isValidCandle: (candle) => this.isValidCandle(candle),
+      isFiniteNumber: (value): value is number => this.finiteNumber(value),
+      getUSDTBalance: () => this.deps.exchange.getUSDTBalance(),
+      readEntryAccountSnapshot: (walletFallback) =>
+        this.readEntryAccountSnapshot(walletFallback),
+      initializeDailyStartBalance: (balance, now) =>
+        this.initializeDailyStartBalance(balance, now),
+      getDailyStartBalance: () => this.dailyStartBalance,
+      setLastDailyPnlPct: (value) => {
+        this.lastDailyPnlPct = value;
+      },
+      readClosedOutcomes: () =>
+        this.deps.closedTradeOutcomeReader?.() ??
+        readStrategyClosedTradeOutcomes(undefined, this.getTradingMode()),
+      getTradingMode: () => this.getTradingMode(),
+      getSymbolMode: (symbol) => this.getSymbolMode(symbol),
+      isLiveEnabled: () => CONFIG.AEGIS_LIVE_ENABLED === true,
+      readStrategyRisk: (now) => this.strategyRiskLedger.snapshot('MOMENTUM_RIDE', now),
+      timeSinceLastLossMs: (now) =>
+        this.strategyRiskLedger.timeSinceLastLossMs('MOMENTUM_RIDE', now),
+      readPortfolioExposure: () => this.readAegisPortfolioExposure(),
+      getLiveSymbols: () => this.getLiveAegisSymbols(),
+      stateForSymbol: (symbol) => this.stateForSymbol(symbol),
+      hasOpenPosition: (symbol) => this.deps.exchange.hasOpenPosition(symbol, 'ANY'),
+      readLiquidityStatus: (symbol, now) =>
+        this.detector[symbol]?.getLiquidityStressStatus(
+          now,
+          LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+        ),
+      liquidityInputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
+      logTradeEvent: (symbol, event, payload) =>
+        this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
+      recordConfirmedOpen: (openedAt) => {
+        this.strategyRiskLedger.recordOpen('MOMENTUM_RIDE', openedAt);
+        this.tradesToday += 1;
+        this.persistDailyRiskState(openedAt);
+      },
+    });
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
     const momentumRuntimeMode =
       momentumRuntimeConfig.enabled !== true || momentumRuntimeConfig.mode === 'OFF'
@@ -1257,379 +1306,6 @@ export class TradingService {
       },
       this.getAegisTurboGateConfig(symbol),
     );
-  }
-
-  private async loadStandaloneMomentumData(symbol: string): Promise<
-    | {
-        candles: Candle[];
-        candleState?: MomentumCandleSnapshot;
-      }
-    | undefined
-  > {
-    const config = this.getAegisMomentumRideConfig();
-    const symbolConfig = config.symbols[symbol];
-    if (config.enabled !== true || config.standaloneMainReplica !== true || !symbolConfig?.enabled)
-      return undefined;
-
-    const now = Date.now();
-    let candleState: MomentumCandleSnapshot | undefined;
-    let candles: Candle[] = [];
-    try {
-      candleState = await this.strategyRuntimeCoordinator.readMomentumCandles(symbol, 300);
-      if (candleState) {
-        candles = candleState.candles.filter(
-          (candle) =>
-            this.isValidCandle(candle) &&
-            (!this.finiteNumber(candle.closeTime) || candle.closeTime <= now),
-        );
-      }
-    } catch (error) {
-      this.deps.logger.warn('momentum_live_candle_read_failed', {
-        symbol,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    // Compatibility fallback for direct test harnesses or startup before the
-    // shared candle runtime exists. Operational steady state uses the branch above.
-    if (candles.length < 120) {
-      candles = this.getCachedEntryQualityCandles(symbol);
-    }
-    if (candles.length < 120) {
-      candles = (await this.deps.exchange.getCandles(symbol, '5m', 300)).filter(
-        (candle) =>
-          this.isValidCandle(candle) &&
-          (!this.finiteNumber(candle.closeTime) || candle.closeTime <= now),
-      );
-    }
-
-    return { candles, candleState };
-  }
-
-  private async lookForMomentumEntry(symbol: string): Promise<boolean> {
-    const candidate = await this.loadStandaloneMomentumData(symbol);
-    if (!candidate) return false;
-    const config = this.getAegisMomentumRideConfig();
-    const symbolConfig = config.symbols[symbol];
-    if (!symbolConfig?.enabled) return false;
-
-    for (const side of ['LONG', 'SHORT'] as Side[]) {
-      const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
-      if (!sideConfig.enabled) continue;
-      if (await this.evaluateAndExecuteMomentumSide(symbol, side, candidate)) return true;
-    }
-    return false;
-  }
-
-  private async evaluateAndExecuteMomentumSide(
-    symbol: string,
-    side: Side,
-    candidate: { candles: Candle[]; candleState?: MomentumCandleSnapshot },
-  ): Promise<boolean> {
-    const { exchange, logger, notifier } = this.deps;
-    const config = this.getAegisMomentumRideConfig();
-    const symbolConfig = config.symbols[symbol];
-    if (!symbolConfig?.enabled) return false;
-
-    const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
-    const now = Date.now();
-    const signalId = generateSignalId(symbol);
-    const tradeId = generateStrategyTradeId('MOMENTUM_RIDE', symbol);
-    const identity = this.momentumStrategyIdentity;
-
-    const balance = await exchange.getUSDTBalance();
-    const accountSnapshot = await this.readEntryAccountSnapshot(balance);
-    const dailyEquity = accountSnapshot.equityTotal ?? accountSnapshot.walletBalance ?? balance;
-    this.initializeDailyStartBalance(dailyEquity, now);
-    const dailyStartBalance = this.dailyStartBalance;
-    const dayStart = Math.floor(now / 86400000) * 86400000;
-    const outcomes = await (this.deps.closedTradeOutcomeReader?.() ??
-      readStrategyClosedTradeOutcomes(undefined, this.getTradingMode()));
-    const botDailyPnlUsdt = outcomes.reduce((total, outcome) => {
-      const closedAt = Date.parse(outcome.closedAt);
-      return Number.isFinite(closedAt) && closedAt >= dayStart ? total + outcome.pnlUsdt : total;
-    }, 0);
-    const dailyPnlPct =
-      dailyStartBalance && dailyStartBalance > 0 ? botDailyPnlUsdt / dailyStartBalance : undefined;
-    this.lastDailyPnlPct = dailyPnlPct;
-
-    const strategyRisk = this.strategyRiskLedger.snapshot('MOMENTUM_RIDE', now);
-    const portfolioExposure = await this.readAegisPortfolioExposure();
-    let openMomentumPositions = 0;
-    for (const liveSymbol of this.getLiveAegisSymbols()) {
-      const state = this.stateForSymbol(liveSymbol).get();
-      if (state.mode !== 'IDLE' && state.lastStrategy === 'MOMENTUM_RIDE')
-        openMomentumPositions += 1;
-    }
-    const hasOpenPosition =
-      this.stateForSymbol(symbol).get().mode !== 'IDLE' ||
-      (await exchange.hasOpenPosition(symbol, 'ANY'));
-    const policy = {
-      longEnabled: symbolConfig.long.enabled,
-      shortEnabled: symbolConfig.short.enabled,
-      leverage: Math.min(sideConfig.leverage, config.safetyCaps.maxLeverage),
-      positionFraction: Math.min(
-        sideConfig.positionFraction,
-        config.safetyCaps.maxPositionFraction,
-      ),
-      maxTradesPerDay: config.safetyCaps.maxMomentumTradesPerDay,
-      maxConsecutiveLosses: config.safetyCaps.maxConsecutiveMomentumLosses,
-      minCooldownMs: config.safetyCaps.cooldownAfterLossMinutes * 60_000,
-      maxLiquidityStress: config.safetyCaps.maxLiquidityStress ?? 0.7,
-      dailyLossStopPct: config.safetyCaps.dailyLossStopPct ?? 0.9,
-      maxOpenMomentumPositions: config.safetyCaps.maxOpenMomentumPositions,
-      maxTotalOpenPositionsWhenMomentum: config.safetyCaps.maxTotalOpenPositionsWhenMomentum,
-      disableSymbolAfterStopLossMs: config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000,
-    };
-    const liquidity = this.detector[symbol]?.getLiquidityStressStatus(
-      now,
-      LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
-    ) ?? {
-      stress: 0,
-      status: 'NO_DATA' as const,
-      inputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
-    };
-    const realtimeMarket = this.strategyRuntimeCoordinator.readMomentumRealtimeMarket(symbol) ?? {
-      source: 'SHARED_WEBSOCKET' as const,
-      status: 'NO_DATA' as const,
-      orderBookHealth: 'UNAVAILABLE' as const,
-      aggTradeGapFree: false,
-      aggTradeCount: 0,
-      netTakerVolume: 0,
-    };
-    const strategyContext: MomentumRideStrategyContext = {
-      symbol,
-      timestamp: now,
-      candles: candidate.candles,
-      side,
-      realtimeMarketSource: realtimeMarket.source,
-      realtimeMarketStatus: realtimeMarket.status,
-      realtimeMarketAgeMs: realtimeMarket.ageMs,
-      realtimeAggTradeAgeMs: realtimeMarket.aggTradeAgeMs,
-      realtimeAggTradeGapFree: realtimeMarket.aggTradeGapFree,
-      realtimeAggTradeCount: realtimeMarket.aggTradeCount,
-      realtimeNetTakerVolume: realtimeMarket.netTakerVolume,
-      candleSource: candidate.candleState?.source,
-      candleStatus: candidate.candleState?.status,
-      candleAgeMs: candidate.candleState?.ageMs,
-      candleWebsocketObservedAtMs: candidate.candleState?.websocketObservedAtMs,
-      candleRestFallbackCount: candidate.candleState?.restFallbackCount,
-      candleUsedRestFallback: candidate.candleState?.usedRestFallback,
-      policy,
-      openPositionsCount: portfolioExposure.openPositions,
-      openMomentumPositions,
-      symbolLastStopLossAt: this.stateForSymbol(symbol).get().lastStopLossAt,
-      liquidityStressStatus: liquidity.status,
-      liquidityStressAgeMs: liquidity.receiveAgeMs,
-      liquidityStressInputVersion: liquidity.inputVersion,
-      safety: {
-        hasOpenPosition,
-        tradesToday: strategyRisk.tradesToday,
-        consecutiveLosses: strategyRisk.consecutiveLosses,
-        timeSinceLastExitMs: this.strategyRiskLedger.timeSinceLastLossMs('MOMENTUM_RIDE', now),
-        liquidityStress: liquidity.stress,
-        dailyPnlPct,
-      },
-    };
-    const decision = await this.momentumStrategyRouter.evaluate('MOMENTUM_RIDE', strategyContext);
-    const patternMatched = decision.diagnostics.patternMatched === true;
-    if (!patternMatched) return false;
-
-    await this.historyLogger.logSignal({
-      signal_id: signalId,
-      portfolio_session_id: getPortfolioSessionId(),
-      symbol,
-      strategy: 'MOMENTUM_RIDE',
-      strategy_version: identity.strategyVersion,
-      strategy_hash: identity.strategyHash,
-      config_hash: identity.configHash,
-      code_commit_sha: identity.codeCommitSha,
-      mode: this.getTradingMode(),
-      raw_action: side,
-      gated_action: decision.decision === 'ENTRY_INTENT' ? side : 'HOLD',
-      final_action: decision.decision === 'ENTRY_INTENT' ? side : 'HOLD',
-      reason: decision.reason,
-      gate_allowed: decision.decision === 'ENTRY_INTENT',
-      gate_reason: decision.reason,
-      executed: false,
-      trade_id: decision.decision === 'ENTRY_INTENT' ? tradeId : undefined,
-      leverage: policy.leverage,
-      position_fraction: policy.positionFraction,
-      metadata: {
-        authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
-        decisionMode: decision.mode,
-        diagnostics: decision.diagnostics,
-        pythonBrainUsed: false,
-        aegisEntryPolicyUsed: false,
-        e4Used: false,
-      },
-    });
-
-    if (decision.decision !== 'ENTRY_INTENT') return false;
-    if (decision.mode !== 'LIVE') return false;
-    if (this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return false;
-    if (CONFIG.AEGIS_LIVE_ENABLED !== true) return false;
-    if (this.getSymbolMode(symbol) !== 'LIVE') return false;
-    if (!sideConfig.enabled || policy.leverage <= 0 || policy.positionFraction <= 0) return false;
-
-    const protection = config.protection ?? {
-      hardStopRoe: -0.4,
-      takeProfitRoe: 0.5,
-      breakEvenRoe: 0.08,
-      trailingActivationRoe: 0.15,
-      trailingCallbackRoe: 0.08,
-      maxHoldMs: 28_800_000,
-    };
-    const execution = await this.sharedStrategyExecution.execute({
-      identity,
-      signalId,
-      tradeId,
-      symbol,
-      side,
-      requestedAt: now,
-      leverage: policy.leverage,
-      positionFraction: policy.positionFraction,
-      stopRoe: protection.hardStopRoe,
-      takeProfitRoe: protection.takeProfitRoe,
-      protection: {
-        requireStop: true,
-        requireTakeProfit: true,
-        closeIfProtectionFails: true,
-      },
-      metadata: {
-        authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
-        decisionReason: decision.reason,
-        decisionDiagnostics: decision.diagnostics,
-        protectionProfileSource: 'momentum_owned_protection_profile',
-        aegisEntryPolicyUsed: false,
-        pythonBrainUsed: false,
-      },
-    });
-
-    await this.logAegisTradeEvent(
-      symbol,
-      execution.status === 'OPENED' ? 'POSITION_CONFIRMED' : 'ORDER_EXECUTION_FAILED',
-      {
-        strategy: 'MOMENTUM_RIDE',
-        identity,
-        tradeId,
-        reason:
-          execution.status === 'OPENED' ? 'momentum_shared_execution_opened' : execution.reason,
-        metadata: execution.metadata,
-      },
-    );
-    if (execution.status !== 'OPENED') {
-      logger.warn('momentum_shared_execution_not_opened', {
-        symbol,
-        side,
-        tradeId,
-        status: execution.status,
-        reason: execution.reason,
-      });
-      return false;
-    }
-
-    const metadata = execution.metadata as Record<string, any>;
-    const symbolState = this.stateForSymbol(symbol);
-    symbolState.set({
-      mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
-      positionOwner: 'BOT',
-      tradeOrigin: 'BOT',
-      ownershipStatus: 'VERIFIED',
-      eligibleForBotMetrics: true,
-      metricsExclusionReason: null,
-      lastSide: side,
-      lastEntryPrice: execution.entryPrice,
-      lastLeverage: execution.leverage,
-      lastActualLeverage: execution.leverage,
-      lastRequestedLeverage: policy.leverage,
-      lastEntryAt: execution.openedAt,
-      lastTradeId: tradeId,
-      lastOrderId: execution.orderId,
-      lastStrategy: 'MOMENTUM_RIDE',
-      lastStrategyVersion: identity.strategyVersion,
-      lastStrategyHash: identity.strategyHash,
-      lastConfigHash: identity.configHash,
-      lastCodeCommitSha: identity.codeCommitSha,
-      lastStrategyFreezeState: identity.freezeState,
-      lastEntryQty: execution.quantity,
-      lastEntryMargin: this.finiteNumber(metadata.marginUsed) ? metadata.marginUsed : undefined,
-      lastPositionFraction: execution.positionFraction,
-      lastStopRoe: protection.hardStopRoe,
-      lastTakeProfitRoe: protection.takeProfitRoe,
-      lastStopPrice: this.finiteNumber(metadata.stopPrice) ? metadata.stopPrice : undefined,
-      lastBreakEvenRoe: protection.breakEvenRoe,
-      lastTrailingActivationRoe: protection.trailingActivationRoe,
-      lastTrailingCallbackRoe: protection.trailingCallbackRoe,
-      lastMaxHoldMs: protection.maxHoldMs,
-      lastBracketStatus: 'OK',
-      breakEvenArmed: false,
-      breakEvenExecuted: false,
-      peakRoe: 0,
-      lowestRoe: 0,
-      lastPeakPrice: execution.entryPrice,
-      exitEyeNeutralCount: 0,
-      exitEyeOppositeCount: 0,
-    });
-
-    this.strategyRiskLedger.recordOpen('MOMENTUM_RIDE', execution.openedAt);
-    this.tradesToday += 1;
-    this.persistDailyRiskState(execution.openedAt);
-    await this.historyLogger.logTradeOpen({
-      ...VERIFIED_AEGIS_TRADE_OWNERSHIP,
-      trade_id: tradeId,
-      portfolio_session_id: getPortfolioSessionId(),
-      symbol,
-      strategy: 'MOMENTUM_RIDE',
-      strategy_version: identity.strategyVersion,
-      strategy_hash: identity.strategyHash,
-      config_hash: identity.configHash,
-      code_commit_sha: identity.codeCommitSha,
-      mode: this.getTradingMode(),
-      side,
-      opened_at: new Date(execution.openedAt).toISOString(),
-      entry_price: execution.entryPrice,
-      quantity: execution.quantity,
-      leverage: execution.leverage,
-      position_fraction: execution.positionFraction,
-      margin_estimated: this.finiteNumber(metadata.marginUsed) ? metadata.marginUsed : undefined,
-      notional_estimated: execution.entryPrice * execution.quantity,
-      stop_roe: protection.hardStopRoe,
-      take_profit_roe: protection.takeProfitRoe,
-      trailing_activation_roe: protection.trailingActivationRoe,
-      trailing_callback_roe: protection.trailingCallbackRoe,
-      sl_price: this.finiteNumber(metadata.stopPrice) ? metadata.stopPrice : undefined,
-      tp_price: this.finiteNumber(metadata.takeProfitPrice) ? metadata.takeProfitPrice : undefined,
-      brackets_confirmed: true,
-      status: 'OPEN',
-      metadata: {
-        authority: MAIN_STACKING_MOMENTUM_AUTHORITY,
-        orderId: execution.orderId,
-        pythonBrainUsed: false,
-        aegisEntryPolicyUsed: false,
-        e4Used: false,
-        protectionProfileSource: 'momentum_owned_protection_profile',
-      },
-    });
-
-    logger.warn('momentum_ride_live_entry', {
-      symbol,
-      side,
-      tradeId,
-      entryPrice: execution.entryPrice,
-      quantity: execution.quantity,
-      leverage: execution.leverage,
-      positionFraction: execution.positionFraction,
-    });
-    await notifier.sendMessage(
-      `⚡ **MOMENTUM RIDE ENTRY**\n` +
-        `${symbol} | ${side}\n` +
-        `Entrada: $${execution.entryPrice}\n` +
-        `Leverage: ${execution.leverage}x\n` +
-        `Strategy: MOMENTUM_RIDE\n` +
-        `Python/Aegis policy: NO`,
-    );
-    return true;
   }
 
   private async lookForEntry(symbol: string): Promise<void> {
