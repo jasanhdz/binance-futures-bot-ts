@@ -30,6 +30,17 @@ export interface AegisExitManagementInput {
 
 export type AegisExitManagementEvaluator = (input: AegisExitManagementInput) => Promise<boolean>;
 
+export interface ProtectedStopInput {
+  side: Side;
+  entryPrice: number;
+  leverage: number;
+  currentRoe: number;
+  peakRoe: number;
+  minLockedRoe: number;
+  protectGivebackRoe: number;
+  immediateTriggerBufferPct: number;
+}
+
 /** Application boundary for Aegis position-exit decisions. */
 export class AegisExitManagementService {
   constructor(
@@ -39,5 +50,36 @@ export class AegisExitManagementService {
 
   evaluate(input: AegisExitManagementInput): Promise<boolean> {
     return this.evaluator(input);
+  }
+
+  protectedStopPrice(input: ProtectedStopInput): { protectedRoe: number; stopPrice: number } {
+    const targetProtectedRoe = Math.max(
+      input.minLockedRoe,
+      input.peakRoe - input.protectGivebackRoe,
+    );
+    const maxSafeRoeAtCurrentPrice =
+      input.currentRoe - input.immediateTriggerBufferPct * input.leverage;
+    const protectedRoe = Math.max(
+      input.minLockedRoe,
+      Math.min(targetProtectedRoe, maxSafeRoeAtCurrentPrice),
+    );
+    const move = protectedRoe / input.leverage;
+    const stopPrice =
+      input.side === 'LONG'
+        ? input.entryPrice * (1 + move)
+        : input.entryPrice * (1 - move);
+    return { protectedRoe, stopPrice };
+  }
+
+  wouldStopTriggerImmediately(
+    side: Side,
+    stopPrice: number,
+    markPrice: number,
+    bufferPct: number,
+  ): boolean {
+    if (!Number.isFinite(stopPrice) || !Number.isFinite(markPrice) || markPrice <= 0) return true;
+    return side === 'LONG'
+      ? stopPrice >= markPrice * (1 - bufferPct)
+      : stopPrice <= markPrice * (1 + bufferPct);
   }
 }

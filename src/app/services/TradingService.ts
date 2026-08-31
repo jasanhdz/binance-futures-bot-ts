@@ -3841,9 +3841,12 @@ export class TradingService {
     bufferPct: number,
   ): boolean {
     if (!Number.isFinite(stopPrice) || !Number.isFinite(markPrice) || markPrice <= 0) return true;
-    return side === 'LONG'
-      ? stopPrice >= markPrice * (1 - bufferPct)
-      : stopPrice <= markPrice * (1 + bufferPct);
+    return this.aegisExitManagementService.wouldStopTriggerImmediately(
+      side,
+      stopPrice,
+      markPrice,
+      bufferPct,
+    );
   }
 
   private async safeMoveCloseStop(params: {
@@ -4054,20 +4057,12 @@ export class TradingService {
     peakRoe: number;
   }): { protectedRoe: number; stopPrice: number } {
     const config = this.getAegisProfitProtectionConfig();
-    const targetProtectedRoe = Math.max(
-      config.min_locked_roe,
-      input.peakRoe - config.protect_giveback_roe,
-    );
-    const maxSafeRoeAtCurrentPrice =
-      input.currentRoe - config.immediate_trigger_buffer_pct * input.leverage;
-    const protectedRoe = Math.max(
-      config.min_locked_roe,
-      Math.min(targetProtectedRoe, maxSafeRoeAtCurrentPrice),
-    );
-    const move = protectedRoe / input.leverage;
-    const stopPrice =
-      input.side === 'LONG' ? input.entryPrice * (1 + move) : input.entryPrice * (1 - move);
-    return { protectedRoe, stopPrice };
+    return this.aegisExitManagementService.protectedStopPrice({
+      ...input,
+      minLockedRoe: config.min_locked_roe,
+      protectGivebackRoe: config.protect_giveback_roe,
+      immediateTriggerBufferPct: config.immediate_trigger_buffer_pct,
+    });
   }
 
   private async executeProtectProfitStopMove(input: {
