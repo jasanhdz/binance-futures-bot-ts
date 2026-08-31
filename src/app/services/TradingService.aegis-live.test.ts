@@ -1821,13 +1821,20 @@ describe('TradingService Aegis live execution', () => {
       momentumRide: config,
     });
 
-    (service as any).momentumRealtimeMarketState = {
-      read: () => ({
-        source: 'SHARED_WEBSOCKET', status: 'FRESH', orderBookHealth: 'HEALTHY',
-        observedAtMs: Date.now(), ageMs: 0, aggTradeAgeMs: 0, aggTradeGapFree: true,
-        aggTradeCount: 10, netTakerVolume: 1,
-      }),
-    };
+    vi.spyOn(
+      (service as any).strategyRuntimeCoordinator,
+      'readMomentumRealtimeMarket',
+    ).mockReturnValue({
+      source: 'SHARED_WEBSOCKET',
+      status: 'FRESH',
+      orderBookHealth: 'HEALTHY',
+      observedAtMs: Date.now(),
+      ageMs: 0,
+      aggTradeAgeMs: 0,
+      aggTradeGapFree: true,
+      aggTradeCount: 10,
+      netTakerVolume: 1,
+    });
 
     await service.tick('ETHUSDT');
 
@@ -1884,13 +1891,20 @@ describe('TradingService Aegis live execution', () => {
       closedTradeOutcomes: [loss],
     });
 
-    (service as any).momentumRealtimeMarketState = {
-      read: () => ({
-        source: 'SHARED_WEBSOCKET', status: 'FRESH', orderBookHealth: 'HEALTHY',
-        observedAtMs: Date.now(), ageMs: 0, aggTradeAgeMs: 0, aggTradeGapFree: true,
-        aggTradeCount: 10, netTakerVolume: 1,
-      }),
-    };
+    vi.spyOn(
+      (service as any).strategyRuntimeCoordinator,
+      'readMomentumRealtimeMarket',
+    ).mockReturnValue({
+      source: 'SHARED_WEBSOCKET',
+      status: 'FRESH',
+      orderBookHealth: 'HEALTHY',
+      observedAtMs: Date.now(),
+      ageMs: 0,
+      aggTradeAgeMs: 0,
+      aggTradeGapFree: true,
+      aggTradeCount: 10,
+      netTakerVolume: 1,
+    });
 
     await service.tick('ETHUSDT');
 
