@@ -4,7 +4,7 @@ import { Logger } from '../ports/Logger';
 import { StateStore } from '../ports/StateStore';
 import { Notifier } from '../ports/Notifier';
 import { BotState, Candle, Side } from '../../core/types';
-import { DEFAULT_GUARDIAN_CONFIG, GuardianConfig } from '../../domain/services/ProfitGuardian';
+import { DEFAULT_GUARDIAN_CONFIG } from '../../domain/services/ProfitGuardian';
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
 import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import {
@@ -12,24 +12,8 @@ import {
   buildAegisMicroLiveGateConfigFromEnv,
   shouldEnterAegisTurboMicroLive,
 } from '../../strategies/aegis/domain/services/AegisMicroLiveGate';
-import {
-  AegisExitEyeYamlConfig,
-  AegisEntryQualityGateRuntimeConfig,
-  AegisEventRiskRuntimeConfig,
-  AegisDecisionEnforcementRuntimeConfig,
-  AegisCleanEntryGuardRuntimeConfig,
-  AegisPositionFractionOverride,
-  AegisPhaseOShortLiveYamlConfig,
-  AegisPortfolioRiskYamlConfig,
-  AegisProfitProtectionRuntimeConfig,
-  AegisShortGateYamlConfig,
-  AegisSymbolMode,
-  AegisTelegramNotificationsRuntimeConfig,
-  AegisTurboYamlConfig,
-  NinjaConfigManager,
-} from '../../infra/config/ConfigLoader';
+import { AegisSymbolMode, NinjaConfigManager } from '../../infra/config/ConfigLoader';
 import { buildAegisOperationalDispositionShadow } from '../../strategies/aegis/domain/services/AegisOperationalDispositionShadow';
-import { RegimeConfig } from '../ports/RegimeStrategy';
 import { LiquidityVoidDetector, LIQUIDITY_STRESS_INPUT_VERSION } from './LiquidityVoidDetector';
 import { CONFIG } from '../../infra/config/environment';
 import {
@@ -54,10 +38,8 @@ import {
 import { AegisEntryQualityGateDecision } from '../../strategies/aegis/domain/services/AegisEntryQualityGate';
 import { AegisEventRiskOverlayDecision } from '../../strategies/aegis/domain/services/AegisEventRiskOverlay';
 import { AegisDecisionEnforcementDecision } from '../../strategies/aegis/domain/services/AegisDecisionEnforcement';
-import {
-  AegisTelegramBlockNotifier,
-  DEFAULT_AEGIS_BLOCK_NOTIFICATION_CONFIG,
-} from './AegisTelegramBlockNotifier';
+import { AegisTelegramBlockNotifier } from './AegisTelegramBlockNotifier';
+import { AegisEntryNotificationService } from './AegisEntryNotificationService';
 import {
   DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG,
   AegisCleanEntryGuardOutput,
@@ -70,12 +52,7 @@ import {
   AegisRegimeGuardConfig,
   DEFAULT_AEGIS_REGIME_GUARD_CONFIG,
 } from '../../strategies/aegis/domain/services/AegisRegimeGuard';
-import {
-  AegisEntryGuardPolicy,
-  AegisEntryPolicyRuntimeConfig,
-  AegisMomentumRideRuntimeConfig,
-  AegisRegimeContextRuntimeConfig,
-} from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
+import { AegisEntryPolicyRuntimeConfig } from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
 import { AegisClosedTradeOutcome } from '../../strategies/aegis/domain/services/AegisConsecutiveLossTracker';
 import {
   readAegisClosedTradeOutcomes,
@@ -195,6 +172,7 @@ export class TradingService {
   private readonly historyLogger: AegisTurboHistoryLogger;
   private readonly symbolStateStores = new Map<string, StateStore>();
   private readonly aegisTelegramBlockNotifier = new AegisTelegramBlockNotifier();
+  private readonly aegisEntryNotificationService: AegisEntryNotificationService;
   private readonly positionManagerRouter = new PositionManagerRouter<{
     symbol: string;
     botState: BotState;
@@ -238,6 +216,13 @@ export class TradingService {
   ) {
     this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
     this.runtimeConfig = new TradingRuntimeConfigService(deps.configManager);
+    this.aegisEntryNotificationService = new AegisEntryNotificationService({
+      notifier: deps.notifier,
+      logger: deps.logger,
+      blockNotifier: this.aegisTelegramBlockNotifier,
+      getConfig: () => this.runtimeConfig.getAegisTelegramNotificationsConfig(),
+      logTradeEvent: (symbol, event, input) => this.logAegisTradeEvent(symbol, event, input),
+    });
     this.riskSession = new StrategyRiskSessionService({
       state: deps.state,
       logger: deps.logger,
@@ -259,16 +244,16 @@ export class TradingService {
     this.positionProtection = new PositionProtectionService({
       exchange: deps.exchange,
       logger: deps.logger,
-      getRegimeConfig: (symbol) => this.getAegisTurboRegimeConfig(symbol),
+      getRegimeConfig: (symbol) => this.runtimeConfig.getAegisTurboRegimeConfig(symbol),
       getImmediateTriggerBufferPct: () =>
-        this.getAegisProfitProtectionConfig().immediate_trigger_buffer_pct,
+        this.runtimeConfig.getAegisProfitProtectionConfig().immediate_trigger_buffer_pct,
       logTradeEvent: (symbol, event, input) => this.logAegisTradeEvent(symbol, event, input),
     });
     this.aegisEntryContextBuilder = new AegisEntryContextBuilder({
       logger: deps.logger,
       now: () => Date.now(),
-      getEntryQualityConfig: (symbol) => this.getEntryQualityGateConfig(symbol),
-      getEventRiskConfig: () => this.getAegisEventRiskConfig(),
+      getEntryQualityConfig: (symbol) => this.runtimeConfig.getEntryQualityGateConfig(symbol),
+      getEventRiskConfig: () => this.runtimeConfig.getAegisEventRiskConfig(),
       getGlobalState: () => this.deps.state.get(),
       countStateOpenPositions: () => this.countStateOpenPositions(),
       mostRecentStopLossAt: () => this.mostRecentStopLossAt(),
@@ -276,12 +261,12 @@ export class TradingService {
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       hasOpenPosition: (symbol) => this.deps.exchange.hasOpenPosition(symbol, 'ANY'),
       buildEntryQualityMarketContext: (symbol) => this.buildEntryQualityMarketContext(symbol),
-      getRegimeGuardConfig: () => this.getAegisRegimeGuardConfig(),
-      getRegimeContextConfig: () => this.getAegisRegimeContextConfig(),
-      getCleanEntryConfig: () => this.getAegisCleanEntryGuardConfig(),
-      getProbeModeConfig: () => this.getAegisProbeModeConfig(),
-      getShortGateConfig: () => this.getAegisShortGateConfig(),
-      getDecisionEnforcementConfig: () => this.getAegisDecisionEnforcementConfig(),
+      getRegimeGuardConfig: () => this.runtimeConfig.getAegisRegimeGuardConfig(),
+      getRegimeContextConfig: () => this.runtimeConfig.getAegisRegimeContextConfig(),
+      getCleanEntryConfig: () => this.runtimeConfig.getAegisCleanEntryGuardConfig(),
+      getProbeModeConfig: () => this.runtimeConfig.getAegisProbeModeConfig(),
+      getShortGateConfig: () => this.runtimeConfig.getAegisShortGateConfig(),
+      getDecisionEnforcementConfig: () => this.runtimeConfig.getAegisDecisionEnforcementConfig(),
     });
     this.positionRecovery = new PositionRecoveryService({
       exchange: deps.exchange,
@@ -293,7 +278,8 @@ export class TradingService {
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       isVerifiedBotOwnedState: (state) => this.isVerifiedBotOwnedState(state),
       isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
-      requireBrackets: () => this.getAegisTurboYamlConfig()?.require_brackets !== false,
+      requireBrackets: () =>
+        this.runtimeConfig.getAegisTurboYamlConfig()?.require_brackets !== false,
       ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
         this.positionProtection.ensureBrackets(
           symbol,
@@ -340,8 +326,9 @@ export class TradingService {
       logger: deps.logger,
       notifier: deps.notifier,
       now: () => Date.now(),
-      getConfig: () => this.getAegisProfitProtectionConfig(),
-      getFallbackLeverage: (symbol) => this.getAegisTurboGateConfig(symbol).leverageCap,
+      getConfig: () => this.runtimeConfig.getAegisProfitProtectionConfig(),
+      getFallbackLeverage: (symbol) =>
+        this.runtimeConfig.getAegisTurboGateConfig(symbol).leverageCap,
       getSymbolFilters: (symbol, leverage) => this.deps.exchange.getSymbolFilters(symbol, leverage),
       roundPrice: (price, filters) => this.positionProtection.roundPrice(price, filters),
       useClosePosition: (state) =>
@@ -356,8 +343,8 @@ export class TradingService {
       notifier: deps.notifier,
       now: () => Date.now(),
       getSignal: (symbol) => this.deps.mlService.getSignal(symbol),
-      getExitEyeConfig: () => this.getAegisExitEyeConfig(),
-      getEntryThreshold: (symbol) => this.getAegisTurboGateConfig(symbol).minScore,
+      getExitEyeConfig: () => this.runtimeConfig.getAegisExitEyeConfig(),
+      getEntryThreshold: (symbol) => this.runtimeConfig.getAegisTurboGateConfig(symbol).minScore,
       logTradeEvent: (symbol, event, payload) =>
         this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
       protectProfit: (input) => this.aegisProfitProtectionService.execute(input),
@@ -381,7 +368,7 @@ export class TradingService {
       execution: this.sharedStrategyExecution,
       historyLogger: this.historyLogger,
       now: () => Date.now(),
-      getConfig: () => this.getAegisMomentumRideConfig(),
+      getConfig: () => this.runtimeConfig.getAegisMomentumRideConfig(),
       readRuntimeCandles: (symbol, limit) =>
         this.strategyRuntimeCoordinator.readMomentumCandles(symbol, limit),
       readRealtimeMarket: (symbol) =>
@@ -418,7 +405,7 @@ export class TradingService {
         this.riskSession.recordConfirmedOpen({ strategyId: 'MOMENTUM_RIDE', openedAt });
       },
     });
-    const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
+    const momentumRuntimeConfig = this.runtimeConfig.getAegisMomentumRideConfig();
     const momentumRuntimeMode =
       momentumRuntimeConfig.enabled !== true || momentumRuntimeConfig.mode === 'OFF'
         ? 'OFF'
@@ -428,7 +415,7 @@ export class TradingService {
     this.momentumStrategyRouter.register(
       new MomentumRideStrategy(this.momentumStrategyIdentity, momentumRuntimeMode),
     );
-    const mbConfig = this.getMicroBurstConfig();
+    const mbConfig = this.runtimeConfig.getMicroBurstConfig();
     this.microBurstStrategyRouter.register(
       new MicroBurstStrategy(
         this.microBurstIdentity,
@@ -454,17 +441,17 @@ export class TradingService {
       canExecuteLive: (symbol) => this.canExecuteLive(symbol),
       getSymbolMode: (symbol) => this.getSymbolMode(symbol),
       getTradingMode: () => this.getTradingMode(),
-      getAegisTurboYamlConfig: () => this.getAegisTurboYamlConfig(),
+      getAegisTurboYamlConfig: () => this.runtimeConfig.getAegisTurboYamlConfig(),
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       getAegisPositionFractionOverride: (symbol, side) =>
-        this.getAegisPositionFractionOverride(symbol, side),
+        this.runtimeConfig.getAegisPositionFractionOverride(symbol, side),
       logAegisTradeEvent: (symbol, event, input) => this.logAegisTradeEvent(symbol, event, input),
       buildAegisEntryContext: (input) => this.aegisEntryContextBuilder.build(input),
-      getAegisEntryPolicyConfig: () => this.getAegisEntryPolicyConfig(),
+      getAegisEntryPolicyConfig: () => this.runtimeConfig.getAegisEntryPolicyConfig(),
       extractPhaseOTurboMetadata: (signal, side) => this.extractPhaseOTurboMetadata(signal, side),
       isPhaseOShortLiveSignal: (signal, side) => this.isPhaseOShortLiveSignal(signal, side),
       withPhaseOShortGuardModes: (policy) => this.withPhaseOShortGuardModes(policy),
-      getAegisPhaseOShortLiveConfig: () => this.getAegisPhaseOShortLiveConfig(),
+      getAegisPhaseOShortLiveConfig: () => this.runtimeConfig.getAegisPhaseOShortLiveConfig(),
       getPhaseOShortTradesToday: () => this.riskSession.snapshot().phaseOShortTradesToday,
       logAegisTurboSignal: (symbol, signal, extras) =>
         this.logAegisTurboSignal(symbol, signal, extras),
@@ -478,24 +465,25 @@ export class TradingService {
       logAegisEventRiskDecision: (...args) => (this.logAegisEventRiskDecision as any)(...args),
       logAegisDecisionEnforcementDenied: (...args) =>
         (this.logAegisDecisionEnforcementDenied as any)(...args),
-      notifyDecisionEnforcementDenied: (...args) =>
-        (this.notifyDecisionEnforcementDenied as any)(...args),
+      notifyDecisionEnforcementDenied: (symbol, decision) =>
+        this.aegisEntryNotificationService.notifyDecisionEnforcementDenied(symbol, decision),
       logAegisProbeModeDecision: (...args) => (this.logAegisProbeModeDecision as any)(...args),
       logAegisCleanEntryGuardDecision: (...args) =>
         (this.logAegisCleanEntryGuardDecision as any)(...args),
-      notifyProbeModeAllowed: (...args) => (this.notifyProbeModeAllowed as any)(...args),
-      getEntryQualityGateConfig: (symbol) => this.getEntryQualityGateConfig(symbol),
+      notifyProbeModeAllowed: (symbol, side, decision) =>
+        this.aegisEntryNotificationService.notifyProbeModeAllowed(symbol, side, decision),
+      getEntryQualityGateConfig: (symbol) => this.runtimeConfig.getEntryQualityGateConfig(symbol),
       readEntryAccountSnapshot: (walletFallback) => this.readEntryAccountSnapshot(walletFallback),
       roundQuantity: (quantity, filters) =>
         this.positionProtection.roundQuantity(quantity, filters),
-      getAegisPortfolioRiskConfig: () => this.getAegisPortfolioRiskConfig(),
+      getAegisPortfolioRiskConfig: () => this.runtimeConfig.getAegisPortfolioRiskConfig(),
       readAegisPortfolioExposure: () => this.readAegisPortfolioExposure(),
       notifyError: (symbol, title, error) => this.notifyError(symbol, title, error),
       strategyIdentity: (strategy) => this.strategyIdentity(strategy),
       aegisExecutionCoordinator: this.aegisExecutionCoordinator,
-      getAegisTurboRegimeConfig: (symbol) => this.getAegisTurboRegimeConfig(symbol),
+      getAegisTurboRegimeConfig: (symbol) => this.runtimeConfig.getAegisTurboRegimeConfig(symbol),
       getAegisGuardianConfig: (symbol, regimeConfig) =>
-        this.getAegisGuardianConfig(symbol, regimeConfig),
+        this.runtimeConfig.getAegisGuardianConfig(symbol, regimeConfig),
       recordProbeModeEntry: (openedAtMs, tradeId) => this.recordProbeModeEntry(openedAtMs, tradeId),
       historyLogger: this.historyLogger,
       logAegisAccountSnapshot: (input) => this.logAegisAccountSnapshot(input),
@@ -521,16 +509,16 @@ export class TradingService {
       exchange: deps.exchange,
       logger: deps.logger,
       notifier: deps.notifier,
-      defaultLeverage: (symbol) => this.getAegisTurboGateConfig(symbol).leverageCap,
+      defaultLeverage: (symbol) => this.runtimeConfig.getAegisTurboGateConfig(symbol).leverageCap,
       requireBrackets: (policy) =>
         policy.strategyId === 'AEGIS_TURBO'
-          ? this.getAegisTurboYamlConfig()?.require_brackets !== false
+          ? this.runtimeConfig.getAegisTurboYamlConfig()?.require_brackets !== false
           : policy.strategyId === 'MOMENTUM_RIDE'
-            ? this.getAegisMomentumRideConfig().safetyCaps.requireBrackets
+            ? this.runtimeConfig.getAegisMomentumRideConfig().safetyCaps.requireBrackets
             : true,
-      getRegimeConfig: (symbol) => this.getAegisTurboRegimeConfig(symbol),
+      getRegimeConfig: (symbol) => this.runtimeConfig.getAegisTurboRegimeConfig(symbol),
       getGuardianConfig: (symbol, regimeConfig) =>
-        this.getAegisGuardianConfig(symbol, regimeConfig),
+        this.runtimeConfig.getAegisGuardianConfig(symbol, regimeConfig),
       isVerifiedBotOwnedState: (state) => this.isVerifiedBotOwnedState(state),
       isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
       consecutiveLosses: () => this.riskSession.snapshot().consecutiveLosses,
@@ -609,85 +597,6 @@ export class TradingService {
     return this.config.tradingMode || CONFIG.TRADING_MODE;
   }
 
-  private getMicroBurstConfig(): ReturnType<typeof parseMicroBurstConfig> {
-    return this.runtimeConfig.getMicroBurstConfig();
-  }
-
-  private getMicroBurstProvenance(config: ReturnType<typeof parseMicroBurstConfig>) {
-    return this.runtimeConfig.getMicroBurstProvenance(config);
-  }
-
-  private getAegisTurboYamlConfig(): AegisTurboYamlConfig | undefined {
-    return this.runtimeConfig.getAegisTurboYamlConfig();
-  }
-
-  private getAegisPhaseOShortLiveConfig(): AegisPhaseOShortLiveYamlConfig | undefined {
-    return this.runtimeConfig.getAegisPhaseOShortLiveConfig();
-  }
-
-  private getAegisExitEyeConfig(): AegisExitEyeYamlConfig {
-    return this.runtimeConfig.getAegisExitEyeConfig();
-  }
-
-  private getAegisProfitProtectionConfig(): AegisProfitProtectionRuntimeConfig {
-    return this.runtimeConfig.getAegisProfitProtectionConfig();
-  }
-
-  private getAegisPortfolioRiskConfig(): Required<AegisPortfolioRiskYamlConfig> {
-    return this.runtimeConfig.getAegisPortfolioRiskConfig();
-  }
-
-  private getAegisShortGateConfig(): Required<AegisShortGateYamlConfig> {
-    return this.runtimeConfig.getAegisShortGateConfig();
-  }
-
-  private getAegisEventRiskConfig(): AegisEventRiskRuntimeConfig {
-    return this.runtimeConfig.getAegisEventRiskConfig();
-  }
-
-  private getAegisDecisionEnforcementConfig(): AegisDecisionEnforcementRuntimeConfig {
-    return this.runtimeConfig.getAegisDecisionEnforcementConfig();
-  }
-
-  private getAegisTelegramNotificationsConfig(): AegisTelegramNotificationsRuntimeConfig {
-    return this.runtimeConfig.getAegisTelegramNotificationsConfig();
-  }
-
-  private getAegisPositionFractionOverride(
-    symbol: string,
-    side: Side,
-  ): AegisPositionFractionOverride | undefined {
-    return this.runtimeConfig.getAegisPositionFractionOverride(symbol, side);
-  }
-
-  private getAegisCleanEntryGuardConfig(): AegisCleanEntryGuardRuntimeConfig {
-    return this.runtimeConfig.getAegisCleanEntryGuardConfig();
-  }
-
-  private getAegisProbeModeConfig(): AegisProbeModeRuntimeConfig {
-    return this.runtimeConfig.getAegisProbeModeConfig();
-  }
-
-  private getAegisRegimeGuardConfig(): AegisRegimeGuardConfig {
-    return this.runtimeConfig.getAegisRegimeGuardConfig();
-  }
-
-  private getAegisRegimeContextConfig(): AegisRegimeContextRuntimeConfig {
-    return this.runtimeConfig.getAegisRegimeContextConfig();
-  }
-
-  private getAegisMomentumRideConfig(): AegisMomentumRideRuntimeConfig {
-    return this.runtimeConfig.getAegisMomentumRideConfig();
-  }
-
-  private getE4TailRiskConfig(): AegisEntryGuardPolicy {
-    return this.runtimeConfig.getE4TailRiskConfig();
-  }
-
-  private getAegisEntryPolicyConfig(): AegisEntryPolicyRuntimeConfig {
-    return this.runtimeConfig.getAegisEntryPolicyConfig();
-  }
-
   private extractPhaseOTurboMetadata(
     signalOrPrediction: unknown,
     fallbackSide?: Side,
@@ -696,7 +605,7 @@ export class TradingService {
   }
 
   private isPhaseOShortLiveSignal(signal: AegisTradingSignal, side: Side): boolean {
-    const phaseOConfig = this.getAegisPhaseOShortLiveConfig() as any;
+    const phaseOConfig = this.runtimeConfig.getAegisPhaseOShortLiveConfig() as any;
     const metadata = this.extractPhaseOTurboMetadata(signal, side);
     const symbol = this.normalizeSymbol(signal.symbol);
     if (symbol === 'LINKUSDT' || metadata?.avoidOnly === true) {
@@ -736,22 +645,6 @@ export class TradingService {
         long_risk_shadow: { ...policy.guards.long_risk_shadow, enabled: true, mode: 'SHADOW' },
       },
     };
-  }
-
-  private getEntryQualityGateConfig(symbol?: string): AegisEntryQualityGateRuntimeConfig {
-    return this.runtimeConfig.getEntryQualityGateConfig(symbol);
-  }
-
-  private getAegisTurboRegimeConfig(symbol?: string): RegimeConfig | undefined {
-    return this.runtimeConfig.getAegisTurboRegimeConfig(symbol);
-  }
-
-  private getAegisTurboGateConfig(symbol: string) {
-    return this.runtimeConfig.getAegisTurboGateConfig(symbol);
-  }
-
-  private getAegisGuardianConfig(symbol: string, regimeConfig?: RegimeConfig): GuardianConfig {
-    return this.runtimeConfig.getAegisGuardianConfig(symbol, regimeConfig);
   }
 
   private getSymbolMode(symbol: string): AegisSymbolMode {
@@ -867,16 +760,16 @@ export class TradingService {
       walletBalance: startupWalletBalance,
       mode: tradingMode,
       liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
-      yamlLiveEnabled: this.getAegisTurboYamlConfig()?.live_enabled === true,
+      yamlLiveEnabled: this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled === true,
     });
 
     const liveSymbols = this.getLiveAegisSymbols();
     const startupSymbols = liveSymbols.length > 0 ? liveSymbols : this.config.symbols;
     const firstSymbol = startupSymbols[0] ?? this.config.symbols[0];
-    const gateConfig = this.getAegisTurboGateConfig(firstSymbol);
-    const regimeConfig = this.getAegisTurboRegimeConfig(firstSymbol);
-    const momentumRideConfig = this.getAegisMomentumRideConfig();
-    const probeModeConfig = this.getAegisProbeModeConfig();
+    const gateConfig = this.runtimeConfig.getAegisTurboGateConfig(firstSymbol);
+    const regimeConfig = this.runtimeConfig.getAegisTurboRegimeConfig(firstSymbol);
+    const momentumRideConfig = this.runtimeConfig.getAegisMomentumRideConfig();
+    const probeModeConfig = this.runtimeConfig.getAegisProbeModeConfig();
     const entryThreshold = gateConfig.minScore;
     const maxHoldMs =
       (gateConfig as any).maxHoldMs ?? regimeConfig?.maxHoldMs ?? DEFAULT_AEGIS_MAX_HOLD_MS;
@@ -904,8 +797,8 @@ export class TradingService {
       if (symbolState.mode === 'IDLE') continue;
 
       const side = symbolState.lastSide as Side;
-      const symbolGateConfig = this.getAegisTurboGateConfig(symbol);
-      const symbolRegimeConfig = this.getAegisTurboRegimeConfig(symbol);
+      const symbolGateConfig = this.runtimeConfig.getAegisTurboGateConfig(symbol);
+      const symbolRegimeConfig = this.runtimeConfig.getAegisTurboRegimeConfig(symbol);
       const markPrice = await exchange.getMarkPrice(symbol);
       const position = await exchange.readActivePosition(symbol, side);
       const entryPrice = symbolState.lastEntryPrice || position?.entryPrice || markPrice;
@@ -1001,7 +894,7 @@ export class TradingService {
         tradingMode,
         liveEnabled:
           CONFIG.AEGIS_LIVE_ENABLED === true &&
-          this.getAegisTurboYamlConfig()?.live_enabled === true,
+          this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled === true,
         strategy: 'AEGIS_TURBO+MOMENTUM_RIDE',
         shortsEnabled: gateConfig.allowShort === true,
         activeSymbols: startupSymbols,
@@ -1026,10 +919,10 @@ export class TradingService {
         requireBrackets: gateConfig.requireBrackets,
       },
       aegisTurbo: {
-        enabled: this.getAegisTurboYamlConfig()?.enabled === true,
+        enabled: this.runtimeConfig.getAegisTurboYamlConfig()?.enabled === true,
         mode:
           CONFIG.AEGIS_LIVE_ENABLED === true &&
-          this.getAegisTurboYamlConfig()?.live_enabled === true
+          this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled === true
             ? 'LIVE'
             : 'SHADOW',
         fallbackEnabled: true,
@@ -1097,13 +990,13 @@ export class TradingService {
 
     this.isRunning = true;
 
-    const mbConfig = this.getMicroBurstConfig();
+    const mbConfig = this.runtimeConfig.getMicroBurstConfig();
     await this.strategyRuntimeCoordinator.start({
       symbols: startupSymbols,
       microBurstConfig: mbConfig,
       loadMicroBurstProvenance:
         mbConfig.enabled && mbConfig.mode !== 'OFF'
-          ? () => this.getMicroBurstProvenance(mbConfig)
+          ? () => this.runtimeConfig.getMicroBurstProvenance(mbConfig)
           : undefined,
     });
 
@@ -1376,7 +1269,7 @@ export class TradingService {
         liquidityStressInputVersion: liquidity.inputVersion,
         dailyPnlPct,
       },
-      this.getAegisTurboGateConfig(symbol),
+      this.runtimeConfig.getAegisTurboGateConfig(symbol),
     );
   }
 
@@ -1386,7 +1279,7 @@ export class TradingService {
     const tradingMode = this.getTradingMode();
 
     try {
-      const momentumConfig = this.getAegisMomentumRideConfig();
+      const momentumConfig = this.runtimeConfig.getAegisMomentumRideConfig();
       const standaloneMomentumHandled = await this.momentumEntryCoordinator.evaluate(symbol);
       if (standaloneMomentumHandled) return;
       if (
@@ -1463,7 +1356,7 @@ export class TradingService {
           ? botDailyPnlUsdt / dailyStartBalance
           : undefined;
       this.riskSession.setDailyPnlPct(dailyPnlPct);
-      const gateConfig = this.getAegisTurboGateConfig(symbol);
+      const gateConfig = this.runtimeConfig.getAegisTurboGateConfig(symbol);
       const gateDecision = this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
       await this.logEntryIntelligenceDispositionShadow(
         symbol,
@@ -1511,7 +1404,7 @@ export class TradingService {
           gatedReason: gateDecision.gatedReason,
           gatedBlockedBy: gateDecision.gatedBlockedBy,
           liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
-          yamlLiveEnabled: this.getAegisTurboYamlConfig()?.live_enabled === true,
+          yamlLiveEnabled: this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled === true,
           balance,
           dailyStartBalance: this.riskSession.snapshot().dailyStartBalance,
           dailyPnlPct,
@@ -1549,7 +1442,7 @@ export class TradingService {
         return;
       }
 
-      const turboYaml = this.getAegisTurboYamlConfig();
+      const turboYaml = this.runtimeConfig.getAegisTurboYamlConfig();
       if (turboYaml && turboYaml.enabled !== true) {
         await this.logAegisTurboSignal(symbol, signal, {
           signalId,
@@ -1563,7 +1456,7 @@ export class TradingService {
         return;
       }
 
-      if (this.getAegisTurboYamlConfig()?.live_enabled !== true) {
+      if (this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled !== true) {
         await this.logAegisTurboSignal(symbol, signal, {
           signalId,
           gate: { ...gateDecision, allowed: false, reason: 'aegis_turbo_yaml_live_disabled' },
@@ -1889,94 +1782,6 @@ export class TradingService {
     this.deps.logger.warn('aegis_decision_enforcement_denied', metadata);
   }
 
-  private async notifyDecisionEnforcementDenied(
-    symbol: string,
-    decision: AegisDecisionEnforcementDecision,
-  ): Promise<void> {
-    const now = Date.now();
-    const telegramNotificationsConfig = this.getAegisTelegramNotificationsConfig();
-    if (!telegramNotificationsConfig.automatic_block_alerts_enabled) {
-      this.deps.logger.debug('telegram_block_notification_auto_disabled', {
-        symbol,
-        side: decision.metadata.side,
-        reason: decision.reason,
-        eventRiskMode: decision.metadata.eventRiskMode,
-        setupGrade: decision.metadata.setupGrade,
-        decisionBrainDecision: decision.metadata.decisionBrainDecision,
-        entryQualityRecommendation: decision.metadata.entryQualityRecommendation,
-        entryQualityGateAction: decision.metadata.entryQualityGateAction,
-      });
-      return;
-    }
-
-    const blockDedupeConfig = telegramNotificationsConfig.block_dedupe;
-    const notification = this.aegisTelegramBlockNotifier.decide(
-      {
-        timestamp: now,
-        symbol,
-        side: decision.metadata.side,
-        reason: decision.reason,
-        eventRiskMode: decision.metadata.eventRiskMode,
-        setupGrade: decision.metadata.setupGrade,
-        decisionBrain: decision.metadata.decisionBrainDecision,
-        entryQuality:
-          decision.metadata.entryQualityRecommendation ?? decision.metadata.entryQualityGateAction,
-        tailRiskScore: decision.metadata.tailRiskScore ?? undefined,
-        turboScore: decision.metadata.turboScore,
-        source: 'DECISION_ENFORCEMENT_DENIED',
-      },
-      blockDedupeConfig,
-    );
-
-    const notificationMetadata = {
-      dedupeKey: notification.dedupeKey,
-      symbol,
-      side: decision.metadata.side,
-      reason: decision.reason,
-      notificationType: notification.notificationType,
-      suppressedCount: notification.suppressedCount,
-      lastNotifiedAt: notification.lastNotifiedAt,
-      cooldownMinutes: blockDedupeConfig.cooldown_minutes,
-      eventRiskMode: decision.metadata.eventRiskMode,
-      setupGrade: decision.metadata.setupGrade,
-      decisionBrainDecision: decision.metadata.decisionBrainDecision,
-      entryQualityRecommendation: decision.metadata.entryQualityRecommendation,
-      entryQualityGateAction: decision.metadata.entryQualityGateAction,
-    };
-
-    if (!notification.shouldNotify) {
-      this.deps.logger.info('telegram_block_notification_suppressed', notificationMetadata);
-      await this.logAegisTradeEvent(symbol, 'telegram_block_notification_suppressed', {
-        reason: decision.reason,
-        metadata: notificationMetadata,
-      });
-      return;
-    }
-
-    if (notification.notificationType === 'SUMMARY') {
-      this.deps.logger.info('telegram_block_notification_summary_sent', notificationMetadata);
-      await this.logAegisTradeEvent(symbol, 'telegram_block_notification_summary_sent', {
-        reason: decision.reason,
-        metadata: notificationMetadata,
-      });
-    }
-
-    await this.deps.notifier
-      .sendMessage(
-        notification.message ??
-          `🛡️ Entrada bloqueada\n` +
-            `${symbol} ${decision.metadata.side}\n` +
-            `Motivo: ${decision.reason}`,
-      )
-      .catch((error) => {
-        this.deps.logger.warn('aegis_decision_enforcement_telegram_failed', {
-          symbol,
-          reason: decision.reason,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }
-
   private async logAegisCleanEntryGuardDecision(
     symbol: string,
     decision: AegisCleanEntryGuardOutput,
@@ -2078,29 +1883,6 @@ export class TradingService {
     this.deps.logger.info('aegis_probe_mode_denied', decision.metadata);
   }
 
-  private async notifyProbeModeAllowed(
-    symbol: string,
-    side: Side,
-    decision: AegisProbeModeDecision,
-  ): Promise<void> {
-    await Promise.resolve(
-      this.deps.notifier.sendMessage(
-        `🧪 Probe Mode permitió entrada\n` +
-          `${symbol} ${side}\n` +
-          `Score: ${formatScore(decision.metadata.turboScore ?? 0)} | TailRisk: ${formatScore(decision.metadata.tailRiskScore ?? 0)}\n` +
-          `DB: ${decision.metadata.decisionBrain ?? 'N/D'} | EQ: ${decision.metadata.entryQualityRecommendation ?? 'N/D'}\n` +
-          `Motivo: ${decision.reason}`,
-      ),
-    ).catch((error) => {
-      this.deps.logger.warn('aegis_probe_mode_telegram_failed', {
-        symbol,
-        side,
-        reason: decision.reason,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
-
   private recordProbeModeEntry(openedAtMs: number, tradeId: string): void {
     const globalState = this.deps.state.get();
     const cutoff = openedAtMs - 60 * 60 * 1000;
@@ -2138,7 +1920,7 @@ export class TradingService {
     const leverage =
       botState.lastLeverage ||
       botState.lastActualLeverage ||
-      this.getAegisTurboGateConfig(symbol).leverageCap;
+      this.runtimeConfig.getAegisTurboGateConfig(symbol).leverageCap;
     const exitPrice = exit?.exitPrice ?? (await exchange.getMarkPrice(symbol));
     const finalRoe =
       exit?.finalRoe ?? this.calculateRoe(side, entryPrice || exitPrice, exitPrice, leverage);
@@ -2324,7 +2106,7 @@ export class TradingService {
       gate,
       filters,
     } = input;
-    const threshold = this.getAegisTurboGateConfig(symbol).minScore;
+    const threshold = this.runtimeConfig.getAegisTurboGateConfig(symbol).minScore;
     return formatAegisTurboEntryMessage({
       symbol,
       side,

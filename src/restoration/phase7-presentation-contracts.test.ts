@@ -24,4 +24,38 @@ describe('Phase 7 presentation contracts', () => {
     expect(formatter).not.toContain('TradingService');
     expect(formatter).toContain('computeBracketPrice');
   });
+
+  it('removes pure runtime-config forwarding methods from TradingService', () => {
+    const tradingService = readFileSync(
+      resolve(repoRoot, 'src/app/services/TradingService.ts'),
+      'utf8',
+    );
+    const removedProxyNames = [
+      'getMicroBurstConfig',
+      'getMicroBurstProvenance',
+      'getAegisTurboYamlConfig',
+      'getAegisPhaseOShortLiveConfig',
+      'getAegisExitEyeConfig',
+      'getAegisProfitProtectionConfig',
+      'getAegisPortfolioRiskConfig',
+      'getAegisShortGateConfig',
+      'getAegisEventRiskConfig',
+      'getAegisDecisionEnforcementConfig',
+      'getAegisTelegramNotificationsConfig',
+      'getAegisPositionFractionOverride',
+      'getAegisCleanEntryGuardConfig',
+      'getAegisProbeModeConfig',
+      'getAegisRegimeGuardConfig',
+      'getAegisRegimeContextConfig',
+      'getAegisMomentumRideConfig',
+      'getAegisEntryPolicyConfig',
+      'getEntryQualityGateConfig',
+      'getAegisTurboRegimeConfig',
+      'getAegisTurboGateConfig',
+      'getAegisGuardianConfig',
+    ];
+    for (const name of removedProxyNames) {
+      expect(tradingService).not.toMatch(new RegExp(`private ${name}\\s*\\(`));
+    }
+  });
 });
