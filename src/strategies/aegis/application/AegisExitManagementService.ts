@@ -6,6 +6,11 @@ import type {
   AegisExitStatePort,
   AegisExitTelemetryPort,
 } from './AegisExitManagementPorts';
+import {
+  classifyAegisExitDecision,
+  type AegisExitDecisionEffect,
+} from './AegisExitDecisionPolicy';
+import type { AegisExitEyeDecision } from '../domain/services/AegisExitEye';
 
 export interface AegisExitManagementPorts {
   config?: AegisExitConfigPort;
@@ -65,6 +70,10 @@ export class AegisExitManagementService {
 
   evaluate(input: AegisExitManagementInput): Promise<boolean> {
     return this.evaluator(input);
+  }
+
+  classifyDecision(decision: AegisExitEyeDecision, currentRoe: number): AegisExitDecisionEffect {
+    return classifyAegisExitDecision(decision, currentRoe);
   }
 
   protectedStopPrice(input: ProtectedStopInput): { protectedRoe: number; stopPrice: number } {

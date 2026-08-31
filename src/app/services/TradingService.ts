@@ -4335,6 +4335,7 @@ export class TradingService {
       reason: decision.reason,
       metadata,
     });
+    const effect = this.aegisExitManagementService.classifyDecision(decision, input.currentRoe);
     const logPayload = {
       symbol: input.symbol,
       side: input.side,
@@ -4353,7 +4354,7 @@ export class TradingService {
       this.deps.logger.info('aegis_exit_eye_decision', logPayload);
     }
 
-    if (decision.action === 'PROTECT_PROFIT' && decision.shouldProtect) {
+    if (effect === 'PROTECT_PROFIT') {
       await this.executeProtectProfitStopMove({
         ...input,
         decision,
@@ -4361,7 +4362,7 @@ export class TradingService {
       return;
     }
 
-    if (decision.action === 'CLOSE_POSITION' && decision.shouldClose && input.currentRoe > 0) {
+    if (effect === 'CLOSE_POSITION') {
       const exitReason =
         decision.reason === 'neutral_momentum_decay_profit_exit'
           ? 'AEGIS_EXIT_EYE_NEUTRAL_DECAY'
