@@ -42,6 +42,12 @@ import {
 } from '../../infra/logging/AegisTurboHistoryLogger';
 import { formatAegisTurboEntryMessage } from '../telegram/presentation/AegisTurboEntryMessageFormatter';
 import {
+  describeAegisExit,
+  formatRoe,
+  formatScore,
+  formatSignedUsd,
+} from '../telegram/presentation/AegisExitMessageFormatter';
+import {
   AegisPositionMessageInput,
   formatAegisStartupMessage,
 } from '../messages/AegisMessageFormatter';
@@ -141,16 +147,6 @@ import { StrategyRiskSessionService } from '../risk/StrategyRiskSessionService';
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
-
-type AegisExitDescription = {
-  emoji: string;
-  title: string;
-  reason: string;
-  canonicalExitType: string;
-  displayExitLabel: string;
-  labelMismatch: boolean;
-  mismatchReason?: string;
-};
 
 export interface TradingServiceDeps {
   exchange: Exchange;
@@ -353,7 +349,7 @@ export class TradingService {
       moveCloseStop: (input) => this.positionProtection.moveCloseStop(input),
       logTradeEvent: (symbol, event, payload) =>
         this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
-      formatRoe: (value) => this.formatRoe(value),
+      formatRoe,
     });
     this.aegisExitManagementService = new AegisExitManagementService({
       logger: deps.logger,
@@ -375,7 +371,7 @@ export class TradingService {
         ),
       notifyExit: (symbol, side, reason, state, exit) =>
         this.notifyExit(symbol, side, reason, state, exit),
-      formatRoe: (value) => this.formatRoe(value),
+      formatRoe,
     });
     this.momentumEntryCoordinator = new MomentumEntryCoordinator({
       logger: deps.logger,
@@ -408,8 +404,7 @@ export class TradingService {
       getSymbolMode: (symbol) => this.getSymbolMode(symbol),
       isLiveEnabled: () => CONFIG.AEGIS_LIVE_ENABLED === true,
       readStrategyRisk: (now) => this.riskSession.strategySnapshot('MOMENTUM_RIDE', now),
-      timeSinceLastLossMs: (now) =>
-        this.riskSession.timeSinceLastLossMs('MOMENTUM_RIDE', now),
+      timeSinceLastLossMs: (now) => this.riskSession.timeSinceLastLossMs('MOMENTUM_RIDE', now),
       readPortfolioExposure: () => this.readAegisPortfolioExposure(),
       getLiveSymbols: () => this.getLiveAegisSymbols(),
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
@@ -507,7 +502,7 @@ export class TradingService {
       recordConfirmedOpen: (strategyId, openedAt, phaseOShortLive) =>
         this.riskSession.recordConfirmedOpen({ strategyId, openedAt, phaseOShortLive }),
       buildAegisEntryMessage: (input) => this.buildAegisEntryMessage(input),
-      formatScore: (value) => this.formatScore(value),
+      formatScore,
       get lastEntryBalance() {
         return thisService.lastEntryBalance;
       },
@@ -546,7 +541,7 @@ export class TradingService {
       roundPrice: (price, filters) => this.positionProtection.roundPrice(price, filters),
       isBetterStop: (side, next, previous) =>
         this.positionProtection.isBetterStop(side, next, previous),
-      formatRoe: (value) => this.formatRoe(value),
+      formatRoe,
       notifyExit: (symbol, side, reason, state, exit) =>
         this.notifyExit(symbol, side, reason, state, exit),
       logTradeEvent: async (strategyId, symbol, event, input) => {
@@ -2092,7 +2087,7 @@ export class TradingService {
       this.deps.notifier.sendMessage(
         `🧪 Probe Mode permitió entrada\n` +
           `${symbol} ${side}\n` +
-          `Score: ${this.formatScore(decision.metadata.turboScore ?? 0)} | TailRisk: ${this.formatScore(decision.metadata.tailRiskScore ?? 0)}\n` +
+          `Score: ${formatScore(decision.metadata.turboScore ?? 0)} | TailRisk: ${formatScore(decision.metadata.tailRiskScore ?? 0)}\n` +
           `DB: ${decision.metadata.decisionBrain ?? 'N/D'} | EQ: ${decision.metadata.entryQualityRecommendation ?? 'N/D'}\n` +
           `Motivo: ${decision.reason}`,
       ),
@@ -2150,10 +2145,17 @@ export class TradingService {
     const pnl = exit?.pnl;
     const durationMs = Date.now() - (botState.lastEntryAt || Date.now());
     const durationHrs = (durationMs / 3600000).toFixed(2);
-    const exitType = this.describeAegisExit(reason, pnl, botState, side, exitPrice);
+    const exitType = describeAegisExit({
+      reason,
+      pnl,
+      botState,
+      side,
+      exitPrice,
+      computeBracketPrice: (exitSide, entry, roe, leverage, type) =>
+        this.positionProtection.bracketPrice(exitSide, entry, roe, leverage, type),
+    });
     const margin = this.entryMargin(botState);
-    const pnlStr =
-      pnl === undefined ? 'UNKNOWN (exact close unavailable)' : this.formatSignedUsd(pnl);
+    const pnlStr = pnl === undefined ? 'UNKNOWN (exact close unavailable)' : formatSignedUsd(pnl);
     const closeStrategy: AegisResearchStrategy =
       botState.lastStrategy === 'MOMENTUM_RIDE' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
     const closeIdentity = this.strategyIdentity(closeStrategy);
@@ -2280,17 +2282,17 @@ export class TradingService {
       `${exitType.emoji} **${exitType.title}**\n` +
         `${symbol} | ${side}\n` +
         `Entrada: $${entryPrice.toFixed(2)} → Salida: $${exitPrice.toFixed(2)}\n` +
-        `ROE Final: **${this.formatRoe(finalRoe)}**\n` +
+        `ROE Final: **${formatRoe(finalRoe)}**\n` +
         `PnL: **${pnlStr}**\n` +
         `Margen: **$${margin.toFixed(2)} USDT**\n` +
         `Duración: ${durationHrs}h\n` +
-        `MFE Pico: ${this.formatRoe(botState.peakRoe || 0)}\n` +
-        `MAE: ${this.formatRoe(botState.lowestRoe || 0)}\n` +
+        `MFE Pico: ${formatRoe(botState.peakRoe || 0)}\n` +
+        `MAE: ${formatRoe(botState.lowestRoe || 0)}\n` +
         `Balance: **$${currentBalance.toFixed(2)}**\n` +
         `Razón: ${exitType.reason}`,
     );
     logger.info('📱 [TELEGRAM_REPORT] AEGIS EXIT SENT', {
-      message: `${exitType.emoji} **${exitType.title}** PnL: ${pnlStr} ROE: ${this.formatRoe(finalRoe)}`,
+      message: `${exitType.emoji} **${exitType.title}** PnL: ${pnlStr} ROE: ${formatRoe(finalRoe)}`,
     });
   }
 
@@ -2396,142 +2398,6 @@ export class TradingService {
   private pnlFromRoe(margin: number, roe: number): number {
     if (!Number.isFinite(margin) || !Number.isFinite(roe)) return 0;
     return margin * roe;
-  }
-
-  private formatScore(value?: number): string {
-    const score = typeof value === 'number' && Number.isFinite(value) ? value : 0;
-    return `${(score * 100).toFixed(1)}%`;
-  }
-
-  private formatRoe(value: number): string {
-    const roe = Number.isFinite(value) ? value * 100 : 0;
-    return `${roe >= 0 ? '+' : ''}${roe.toFixed(2)}% ROE`;
-  }
-
-  private formatSignedUsd(value: number): string {
-    const safe = Number.isFinite(value) ? value : 0;
-    return safe >= 0 ? `+$${safe.toFixed(2)}` : `-$${Math.abs(safe).toFixed(2)}`;
-  }
-
-  private formatBracketLine(price: number | undefined, roe: number): string {
-    const priceText =
-      typeof price === 'number' && Number.isFinite(price) ? `$${price.toFixed(2)}` : '$—';
-    return `${priceText} (${this.formatRoe(roe)})`;
-  }
-
-  private describeAegisExit(
-    reason: string,
-    pnl: number | undefined,
-    botState: BotState,
-    side: Side,
-    exitPrice: number,
-  ): AegisExitDescription {
-    const normalized = String(reason || '').toUpperCase();
-    const build = (
-      emoji: string,
-      canonicalExitType: string,
-      detail: string,
-      displayExitLabel = canonicalExitType,
-      mismatchReason?: string,
-    ): AegisExitDescription => ({
-      emoji,
-      title: displayExitLabel,
-      reason: detail,
-      canonicalExitType,
-      displayExitLabel,
-      labelMismatch: Boolean(mismatchReason),
-      mismatchReason,
-    });
-
-    if (normalized.includes('AEGIS_EXIT_EYE_OPPOSITE_SIGNAL')) {
-      return build('👁️', 'EXIT_EYE_OPPOSITE_SIGNAL', 'Cierre por ExitEye: señal opuesta en profit');
-    }
-    if (normalized.includes('AEGIS_EXIT_EYE_NEUTRAL_DECAY')) {
-      return build(
-        '👁️',
-        'EXIT_EYE_NEUTRAL_DECAY',
-        'Cierre por ExitEye: pérdida de momentum en profit',
-      );
-    }
-    if (normalized.includes('AEGIS_EXIT_EYE_PROTECT_PROFIT')) {
-      return build(
-        '👁️',
-        'EXIT_EYE_PROTECT_PROFIT',
-        'Cierre/protección por ExitEye: protección de ganancia',
-      );
-    }
-    if (normalized.includes('TIME_LIMIT')) {
-      return build('⏰', 'TIME_LIMIT_EXIT', 'Cierre por límite de tiempo con posición en ganancia');
-    }
-    if (normalized.includes('BREAK') || normalized.includes('BE_')) {
-      return build('🟰', 'BREAK_EVEN_EXIT', 'Cierre por protección de break even');
-    }
-    if (normalized.includes('TRAIL') || normalized.includes('CALLBACK')) {
-      return build('🛡️', 'TRAILING_STOP_EXIT', `Cierre por trailing/callback (${reason})`);
-    }
-    if (
-      normalized.includes('AI') ||
-      normalized.includes('IA') ||
-      normalized.includes('GUARDIAN') ||
-      normalized.includes('SMART') ||
-      normalized.includes('CLOSE')
-    ) {
-      return build('🤖', 'AI_GUARDIAN_EXIT', `Cierre decidido por IA/guardian (${reason})`);
-    }
-    if (
-      normalized.includes('BRACKET') ||
-      normalized.includes('EMERGENCY') ||
-      normalized.includes('FAILED')
-    ) {
-      return build('⚠️', 'RISK_CONTROL_EXIT', `Cierre por control de riesgo (${reason})`);
-    }
-
-    const entryPrice = botState.lastEntryPrice || 0;
-    const leverage = botState.lastLeverage || botState.lastActualLeverage || 20;
-    const stopRoe = botState.lastStopRoe ?? -0.15;
-    const takeProfitRoe = botState.lastTakeProfitRoe ?? 0.25;
-    const stopPrice =
-      entryPrice > 0
-        ? this.positionProtection.bracketPrice(side, entryPrice, stopRoe, leverage, 'STOP')
-        : undefined;
-    const tpPrice =
-      entryPrice > 0
-        ? this.positionProtection.bracketPrice(side, entryPrice, takeProfitRoe, leverage, 'TP')
-        : undefined;
-    const near = (target?: number) =>
-      typeof target === 'number' && target > 0 && Math.abs(exitPrice - target) / target < 0.004;
-
-    if (near(botState.lastTrailStop)) {
-      return build('🛡️', 'TRAILING_STOP_EXIT', 'Cierre por trailing stop ejecutado');
-    }
-    if (near(tpPrice)) {
-      return build('💰', 'TAKE_PROFIT', 'Cierre por take profit', 'TAKE PROFIT (TP)');
-    }
-    if (near(stopPrice)) {
-      return build('💸', 'STOP_LOSS', 'Cierre por stop loss', 'STOP LOSS (SL)');
-    }
-    if (pnl === undefined) {
-      return build(
-        '❔',
-        'CLOSE_OUTCOME_UNKNOWN',
-        'Cierre confirmado, pero el PnL realizado exacto no está disponible',
-        'CLOSE OUTCOME UNKNOWN',
-      );
-    }
-    if (pnl >= 0) {
-      return build(
-        '💰',
-        'PROFIT_EXIT_UNCLASSIFIED',
-        'Cierre en ganancia; no se pudo distinguir TP/trailing con precisión',
-        'TAKE PROFIT (TP)',
-      );
-    }
-    return build(
-      '💸',
-      'LOSS_EXIT_UNCLASSIFIED',
-      'Cierre en pérdida; no se pudo distinguir SL/trailing con precisión',
-      'STOP LOSS (SL)',
-    );
   }
 
   private async notifyError(symbol: string, type: string, error: unknown): Promise<void> {
