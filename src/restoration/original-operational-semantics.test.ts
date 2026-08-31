@@ -57,7 +57,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 2: Aegis entry evaluation now captures its causal snapshot and
   // policy decision through AegisEntryCoordinator.
   'src/app/services/TradingService.ts':
-    'cfc230ed94d063963b1e4268aeddc0f0902190cd0df2e92bfa08bc3b0d1bbcee',
+    'e1f97161edbd86ec316a7b1649a127ea7076fb370bf9cfaae404b4ac3791bd8d',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

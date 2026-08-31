@@ -41,6 +41,21 @@ export interface ProtectedStopInput {
   immediateTriggerBufferPct: number;
 }
 
+export interface AegisExitEyeSignal {
+  currentTurboAction?: string;
+  rawAction?: string;
+  gatedAction?: string;
+  turboScore?: number;
+  votes?: Record<string, number | undefined>;
+  reason?: string;
+}
+
+export interface AegisExitEyeCounterConfig {
+  neutral_votes_to_protect: number;
+  neutral_close_votes: number;
+  opposite_votes_to_close: number;
+}
+
 /** Application boundary for Aegis position-exit decisions. */
 export class AegisExitManagementService {
   constructor(
@@ -88,5 +103,45 @@ export class AegisExitManagementService {
       return Promise.reject(new Error('AEGIS_EXIT_MOVE_STOP_PORT_UNAVAILABLE'));
     }
     return this.ports.execution.moveCloseStop(params) as Promise<T>;
+  }
+
+  extractSignal(signal: any | null): AegisExitEyeSignal {
+    const aegis = signal?.metadata?.aegis ?? signal?.aegis;
+    const turbo = aegis?.turbo as any;
+    const raw = turbo?.raw;
+    const gated = turbo?.gated;
+    return {
+      currentTurboAction: turbo?.action ?? gated?.action ?? raw?.action,
+      rawAction: raw?.action,
+      gatedAction: gated?.action,
+      turboScore: raw?.turbo_score ?? turbo?.turbo_score,
+      votes: raw?.votes ?? turbo?.votes,
+      reason: gated?.reason ?? raw?.reason ?? turbo?.reason,
+    };
+  }
+
+  updateCounters(
+    side: Side,
+    botState: any,
+    writeState: (patch: Record<string, unknown>) => void,
+    signal: AegisExitEyeSignal,
+    config: AegisExitEyeCounterConfig,
+  ): { neutralCount: number; neutralCloseCount: number; oppositeCount: number } {
+    const action = String(signal.currentTurboAction || '').toUpperCase();
+    const rawAction = String(signal.rawAction || '').toUpperCase();
+    const gatedAction = String(signal.gatedAction || '').toUpperCase();
+    const votes = signal.votes || {};
+    const neutralCondition = action !== side && Number(votes.neutral ?? 0) >= config.neutral_votes_to_protect;
+    const neutralCloseCondition = action !== side && Number(votes.neutral ?? 0) >= config.neutral_close_votes;
+    const oppositeAction = side === 'LONG' ? 'SHORT' : 'LONG';
+    const oppositeVotes = side === 'LONG' ? Number(votes.short ?? 0) : Number(votes.long ?? 0);
+    const oppositeCondition =
+      (action === oppositeAction || rawAction === oppositeAction || gatedAction === oppositeAction) &&
+      oppositeVotes >= config.opposite_votes_to_close;
+    const neutralCount = neutralCondition ? (botState.exitEyeNeutralCount || 0) + 1 : 0;
+    const neutralCloseCount = neutralCloseCondition ? (botState.exitEyeNeutralCloseCount || 0) + 1 : 0;
+    const oppositeCount = oppositeCondition ? (botState.exitEyeOppositeCount || 0) + 1 : 0;
+    writeState({ exitEyeNeutralCount: neutralCount, exitEyeNeutralCloseCount: neutralCloseCount, exitEyeOppositeCount: oppositeCount });
+    return { neutralCount, neutralCloseCount, oppositeCount };
   }
 }

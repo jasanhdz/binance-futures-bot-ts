@@ -3675,7 +3675,11 @@ export class TradingService {
     }
   }
 
-  private extractExitEyeSignal(signal: AegisTradingSignal | null): {
+  private extractExitEyeSignal(signal: AegisTradingSignal | null) {
+    return this.aegisExitManagementService.extractSignal(signal);
+  }
+
+  private legacyExtractExitEyeSignal(signal: AegisTradingSignal | null): {
     currentTurboAction?: string;
     rawAction?: string;
     gatedAction?: string;
@@ -3698,6 +3702,22 @@ export class TradingService {
   }
 
   private updateExitEyeCounters(
+    side: Side,
+    botState: BotState,
+    symbolState: StateStore,
+    signal: ReturnType< AegisExitManagementService['extractSignal']>,
+    config: AegisExitEyeYamlConfig,
+  ) {
+    return this.aegisExitManagementService.updateCounters(
+      side,
+      botState,
+      (patch) => symbolState.set(patch as any),
+      signal,
+      config,
+    );
+  }
+
+  private legacyUpdateExitEyeCounters(
     side: Side,
     botState: BotState,
     symbolState: StateStore,
