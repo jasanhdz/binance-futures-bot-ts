@@ -4337,7 +4337,6 @@ export class TradingService {
       reason: decision.reason,
       metadata,
     });
-    const effect = this.aegisExitManagementService.classifyDecision(decision, input.currentRoe);
     const logPayload = {
       symbol: input.symbol,
       side: input.side,
@@ -4356,40 +4355,54 @@ export class TradingService {
       this.deps.logger.info('aegis_exit_eye_decision', logPayload);
     }
 
-    if (effect === 'PROTECT_PROFIT') {
-      await this.executeProtectProfitStopMove({
+    await this.aegisExitManagementService.applyDecision(
+      {
         ...input,
         decision,
-      });
-      return;
-    }
-
-    if (effect === 'CLOSE_POSITION') {
-      const exitReason =
-        decision.reason === 'neutral_momentum_decay_profit_exit'
-          ? 'AEGIS_EXIT_EYE_NEUTRAL_DECAY'
-          : 'AEGIS_EXIT_EYE_OPPOSITE_SIGNAL';
-      await this.aegisExitManagementService.closePosition({
-        symbol: input.symbol,
-        side: input.side,
-        qtyAbs: input.position.qtyAbs,
-        sideMode: input.position.sideMode,
-        reason: exitReason,
-      });
-      input.symbolState.set({
-        mode: 'IDLE',
-        lastExitAt: Date.now(),
-        lastExitReason: exitReason,
-      });
-      await this.notifyExit(input.symbol, input.side, exitReason, input.botState, {
-        exitPrice: input.markPrice,
-        finalRoe: input.currentRoe,
-      });
-      await this.sendExitEyeTelegram(input.symbol, input.side, decision, true);
-      return;
-    }
-
-    await this.sendExitEyeTelegram(input.symbol, input.side, decision, false, input.symbolState);
+      },
+      {
+        protectProfit: async (context) => {
+          await this.executeProtectProfitStopMove({
+            ...context,
+            botState: context.botState as BotState,
+            symbolState: context.symbolState as StateStore,
+            position: context.position as PositionInfo,
+          });
+        },
+        closePosition: async (context, exitReason) => {
+          await this.aegisExitManagementService.closePosition({
+            symbol: context.symbol,
+            side: context.side,
+            qtyAbs: context.position.qtyAbs,
+            sideMode: context.position.sideMode,
+            reason: exitReason,
+          });
+          const symbolState = context.symbolState as StateStore;
+          symbolState.set({
+            mode: 'IDLE',
+            lastExitAt: Date.now(),
+            lastExitReason: exitReason,
+          });
+          await this.notifyExit(
+            context.symbol,
+            context.side,
+            exitReason,
+            context.botState as BotState,
+            { exitPrice: context.markPrice, finalRoe: context.currentRoe },
+          );
+          await this.sendExitEyeTelegram(context.symbol, context.side, context.decision, true);
+        },
+        notify: async (context, force) => {
+          await this.sendExitEyeTelegram(
+            context.symbol,
+            context.side,
+            context.decision,
+            force,
+            context.symbolState as StateStore,
+          );
+        },
+      },
+    );
   }
 
   private exitEyeEventName(action: AegisExitEyeDecision['action']): string {

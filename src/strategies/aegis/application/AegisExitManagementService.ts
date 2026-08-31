@@ -54,6 +54,26 @@ export interface ClosePositionInput {
   reason: string;
 }
 
+export interface AegisExitDecisionContext {
+  symbol: string;
+  side: Side;
+  botState: unknown;
+  symbolState: unknown;
+  position: { qtyAbs: number; sideMode: 'BOTH' | 'LONG' | 'SHORT' };
+  markPrice: number;
+  currentRoe: number;
+  peakRoe: number;
+  decision: AegisExitEyeDecision;
+}
+
+export interface AegisExitDecisionEffects {
+  protectProfit(context: AegisExitDecisionContext): Promise<void>;
+  closePosition(context: AegisExitDecisionContext, reason: string): Promise<void>;
+  notify(context: AegisExitDecisionContext, force: boolean): Promise<void>;
+}
+
+export type AegisExitDecisionResult = 'PROTECTED' | 'CLOSED' | 'NOTIFIED';
+
 export interface AegisExitEyeSignal {
   currentTurboAction?: string;
   rawAction?: string;
@@ -95,6 +115,27 @@ export class AegisExitManagementService {
       input.sideMode,
       input.reason,
     );
+  }
+
+  async applyDecision(
+    context: AegisExitDecisionContext,
+    effects: AegisExitDecisionEffects,
+  ): Promise<AegisExitDecisionResult> {
+    const effect = this.classifyDecision(context.decision, context.currentRoe);
+    if (effect === 'PROTECT_PROFIT') {
+      await effects.protectProfit(context);
+      return 'PROTECTED';
+    }
+    if (effect === 'CLOSE_POSITION') {
+      const reason =
+        context.decision.reason === 'neutral_momentum_decay_profit_exit'
+          ? 'AEGIS_EXIT_EYE_NEUTRAL_DECAY'
+          : 'AEGIS_EXIT_EYE_OPPOSITE_SIGNAL';
+      await effects.closePosition(context, reason);
+      return 'CLOSED';
+    }
+    await effects.notify(context, false);
+    return 'NOTIFIED';
   }
 
   protectedStopPrice(input: ProtectedStopInput): { protectedRoe: number; stopPrice: number } {

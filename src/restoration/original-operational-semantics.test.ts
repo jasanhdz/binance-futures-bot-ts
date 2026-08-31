@@ -57,7 +57,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 2: Aegis entry evaluation and ExitEye effect classification now
   // capture policy decisions behind application boundaries.
   'src/app/services/TradingService.ts':
-    '745eddeb0f52701675c919676ca2dbf1168b6084fbe156aee74ca23e52562426',
+    'ecd301275bcbb73cbbf18e19f47ba9d6e7392d95a195e2ba0a7cd4414641b32f',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
