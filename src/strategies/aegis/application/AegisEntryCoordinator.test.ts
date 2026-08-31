@@ -10,6 +10,31 @@ const context = { side: 'LONG' } as AegisEntryContext;
 const policy = { enabled: true, guards: {} } as AegisEntryPolicyRuntimeConfig;
 
 describe('AegisEntryCoordinator', () => {
+  it('captures causal evidence before evaluating the entry policy', async () => {
+    const capture = vi.fn().mockResolvedValue({ schema: 'MARKET_SNAPSHOT_V1' } as any);
+    vi.spyOn(AegisEntryGuardOrchestrator, 'evaluate').mockResolvedValue({
+      shouldOpen: false,
+      finalDecision: 'BLOCK',
+      finalReason: 'test_blocked',
+      guards: [],
+      decisions: {},
+      metadata: {},
+      trace: {},
+    } as any);
+    const coordinator = new AegisEntryCoordinator();
+    const result = await coordinator.evaluate({
+      context,
+      side: 'LONG',
+      policy,
+      captureDecision: capture,
+    });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(result.blackBoxSnapshot).toEqual({ schema: 'MARKET_SNAPSHOT_V1' });
+    expect(result.entryDecision).toBeDefined();
+    expect(result.safetyConsensus).toBeDefined();
+  });
+
   it('returns the guard decision and derived safety consensus without execution', async () => {
     const entryDecision = {
       finalDecision: 'ALLOW',

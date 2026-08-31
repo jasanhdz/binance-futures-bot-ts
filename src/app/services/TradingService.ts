@@ -2708,14 +2708,13 @@ export class TradingService {
           metadata: phaseOGuardMetadata,
         });
       }
-      const aegisBlackBoxSnapshot =
-        await this.strategyRuntimeCoordinator.captureAegisDecision(symbol);
       const consensusConfig = this.getAegisTurboYamlConfig()?.entry_safety_consensus;
-      const { entryDecision, safetyConsensus: entrySafetyConsensus } =
-        await this.aegisEntryCoordinator.decide({
+      const { entryDecision, safetyConsensus: entrySafetyConsensus, blackBoxSnapshot } =
+        await this.aegisEntryCoordinator.evaluate({
           context: entryContext,
           side,
           policy: entryPolicy,
+          captureDecision: () => this.strategyRuntimeCoordinator.captureAegisDecision(symbol),
           consensusConfig: consensusConfig
             ? {
                 enabled: consensusConfig.enabled,
@@ -2727,7 +2726,7 @@ export class TradingService {
               }
             : undefined,
         });
-      await this.strategyRuntimeCoordinator.observeAegisDecision(aegisBlackBoxSnapshot ?? null, {
+      await this.strategyRuntimeCoordinator.observeAegisDecision(blackBoxSnapshot ?? null, {
         symbol,
         timestamp: entryContext.operational.timestamp,
         side,

@@ -54,8 +54,10 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
+  // Phase 2: Aegis entry evaluation now captures its causal snapshot and
+  // policy decision through AegisEntryCoordinator.
   'src/app/services/TradingService.ts':
-    '26985391cf1cd6d1eed2a196cde32329dffd6320fee65b5ba28433b029a5b16a',
+    '4a667e0c90a5fa40c85c776b1c5da5bf3bd28aa50a295a462111c39d75a9271f',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
