@@ -384,21 +384,6 @@ export class TradingService {
       ),
     );
 
-    this.positionRecovery = new PositionRecoveryService({
-      exchange: deps.exchange,
-      logger: deps.logger,
-      notifier: deps.notifier,
-      globalState: deps.state,
-      configSymbols: config.symbols,
-      getLiveSymbols: () => this.getLiveAegisSymbols(),
-      stateForSymbol: (symbol) => this.stateForSymbol(symbol),
-      isVerifiedBotOwnedState: (state) => this.isVerifiedBotOwnedState(state),
-      isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
-      requireBrackets: () => this.getAegisTurboYamlConfig()?.require_brackets !== false,
-      ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
-        this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, state, overrides),
-    });
-
     this.positionLifecycleCore = new StrategyPositionLifecycleCore({
       exchange: deps.exchange,
       logger: deps.logger,

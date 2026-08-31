@@ -75,6 +75,14 @@ const mutationAuthorityAllowlist = new Set([
 ]);
 
 describe('Phase 0 architecture contracts', () => {
+  it('keeps position recovery under one application owner', () => {
+    const tradingService = readFileSync(
+      resolve(repoRoot, 'src/app/services/TradingService.ts'),
+      'utf8',
+    );
+    expect(tradingService.match(/new PositionRecoveryService\(/g) ?? []).toHaveLength(1);
+  });
+
   it('keeps shared/core imports independent from concrete strategy implementations', () => {
     const violations: string[] = [];
     for (const fileName of productionSourceFiles()) {
