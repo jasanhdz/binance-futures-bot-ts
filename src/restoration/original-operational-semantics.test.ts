@@ -54,10 +54,10 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': 'ddbff696eac59a92da96c474d68e5f0967b62d45aa5ca8fe6a06cadda509c6e6',
-  // Phases 2-5: entry, exit, Momentum, and position protection are extracted
+  // Phases 2-6: entry, exit, Momentum, position protection, and risk session are extracted
   // while this digest and behavior tests bind the owner-authorized result.
   'src/app/services/TradingService.ts':
-    '7e6929a1d0112ebdb95a1a73f4029c3f9a2dd13964d7a7400a67b479ed40de34',
+    '10c87b25dcf45d5ce5d5e916dd02ec2c21877b9befb41d60474ed635a1c95a8b',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

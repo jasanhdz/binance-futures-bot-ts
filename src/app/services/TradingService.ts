@@ -70,19 +70,13 @@ import {
   AegisMomentumRideRuntimeConfig,
   AegisRegimeContextRuntimeConfig,
 } from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
-import {
-  AegisClosedTradeOutcome,
-  AegisConsecutiveLossTracker,
-} from '../../strategies/aegis/domain/services/AegisConsecutiveLossTracker';
+import { AegisClosedTradeOutcome } from '../../strategies/aegis/domain/services/AegisConsecutiveLossTracker';
 import {
   readAegisClosedTradeOutcomes,
   readStrategyClosedTradeOutcomes,
 } from '../../infra/logging/AegisClosedTradeHistoryReader';
 import { VERIFIED_AEGIS_TRADE_OWNERSHIP } from '../../infra/logging/AegisTradeOwnership';
-import type {
-  StrategyLossStateStorePort,
-  StrategyLossStateWrite,
-} from '../../infra/state/StrategyLossStateStore';
+import type { StrategyLossStateStorePort } from '../../infra/state/StrategyLossStateStore';
 import type { StrategyLossStateRegistry } from '../../infra/state/StrategyLossStateRegistry';
 import { PositionManagerRouter } from '../../core/strategy/PositionManagerRouter';
 import {
@@ -94,7 +88,6 @@ import { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
 import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/AegisIdentity';
 import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
-import { StrategyRiskLedger } from '../../core/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { MomentumEntryCoordinator } from '../../strategies/momentum/application/MomentumEntryCoordinator';
@@ -143,6 +136,7 @@ import { AegisEntryWorkflow } from '../../strategies/aegis/application/AegisEntr
 import { AegisExecutionCoordinator } from '../../strategies/aegis/application/AegisExecutionCoordinator';
 import { AegisExitManagementService } from '../../strategies/aegis/application/AegisExitManagementService';
 import { AegisProfitProtectionService } from '../../strategies/aegis/application/AegisProfitProtectionService';
+import { StrategyRiskSessionService } from '../risk/StrategyRiskSessionService';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -195,12 +189,6 @@ export interface AegisRuntimeSnapshot {
 
 export class TradingService {
   private isRunning = false;
-  private tradesToday = 0;
-  private phaseOShortTradesToday = 0;
-  private lastTradeDayReset = 0;
-  private dailyStartBalance: number | null = null;
-  private lastDailyPnlPct: number | undefined;
-  private readonly consecutiveLossTracker = new AegisConsecutiveLossTracker();
   private lastEntryBalance = INITIAL_BALANCE;
   private peakBalance = INITIAL_BALANCE;
   private lastErrorTime: Record<string, number> = {};
@@ -221,9 +209,9 @@ export class TradingService {
   private readonly positionProtection: PositionProtectionService;
   private readonly runtimeConfig: TradingRuntimeConfigService;
   private readonly strategyHistory: StrategyHistoryService;
+  private readonly riskSession: StrategyRiskSessionService;
   private readonly aegisStrategyIdentity: StrategyIdentity;
   private readonly momentumStrategyIdentity: StrategyIdentity;
-  private readonly strategyRiskLedger = new StrategyRiskLedger();
   private readonly strategyTelemetry = new StrategyTelemetryBus([
     new JsonlStrategyTelemetrySink('data/strategy-telemetry/events-v1.jsonl'),
   ]);
@@ -248,28 +236,27 @@ export class TradingService {
   private readonly momentumEntryCoordinator: MomentumEntryCoordinator;
   private stopPromise: Promise<void> | null = null;
 
-  private persistDailyRiskState(now = Date.now()): void {
-    this.deps.state.set({
-      dailyRisk: {
-        ...this.strategyRiskLedger.dailyState(now),
-        tradesToday: this.tradesToday,
-        dailyStartBalance: this.dailyStartBalance,
-      },
-    });
-  }
-
-  private initializeDailyStartBalance(balance: number, now = Date.now()): void {
-    if (this.dailyStartBalance !== null && this.dailyStartBalance > 0) return;
-    this.dailyStartBalance = balance;
-    this.persistDailyRiskState(now);
-  }
-
   constructor(
     private deps: TradingServiceDeps,
     private config: TradingServiceConfig,
   ) {
     this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
     this.runtimeConfig = new TradingRuntimeConfigService(deps.configManager);
+    this.riskSession = new StrategyRiskSessionService({
+      state: deps.state,
+      logger: deps.logger,
+      getTradingMode: () => this.getTradingMode(),
+      readClosedOutcomes: async () => {
+        const aegisOutcomes = await (deps.closedTradeOutcomeReader?.() ??
+          readAegisClosedTradeOutcomes(undefined, this.getTradingMode()));
+        const strategyOutcomes = deps.closedTradeOutcomeReader
+          ? aegisOutcomes
+          : await readStrategyClosedTradeOutcomes(undefined, this.getTradingMode());
+        return { aegisOutcomes, strategyOutcomes };
+      },
+      consecutiveLossStateStore: deps.consecutiveLossStateStore,
+      now: () => Date.now(),
+    });
     this.aegisStrategyIdentity = createAegisMigrationIdentity();
     this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
     this.microBurstIdentity = createMicroBurstV1Identity();
@@ -289,7 +276,7 @@ export class TradingService {
       getGlobalState: () => this.deps.state.get(),
       countStateOpenPositions: () => this.countStateOpenPositions(),
       mostRecentStopLossAt: () => this.mostRecentStopLossAt(),
-      readAegisRisk: (now) => this.strategyRiskLedger.snapshot('AEGIS_TURBO', now),
+      readAegisRisk: (now) => this.riskSession.strategySnapshot('AEGIS_TURBO', now),
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       hasOpenPosition: (symbol) => this.deps.exchange.hasOpenPosition(symbol, 'ANY'),
       buildEntryQualityMarketContext: (symbol) => this.buildEntryQualityMarketContext(symbol),
@@ -328,8 +315,8 @@ export class TradingService {
       tradingMode: () => this.getTradingMode(),
       strategyIdentity: (strategy) => this.strategyIdentity(strategy),
       strategyForSymbol: (symbol, tradeId) => this.strategyForSymbol(symbol, tradeId),
-      tradesToday: () => this.tradesToday,
-      consecutiveLosses: () => this.consecutiveLossTracker.value,
+      tradesToday: () => this.riskSession.snapshot().tradesToday,
+      consecutiveLosses: () => this.riskSession.snapshot().consecutiveLosses,
     });
     this.sharedStrategyExecution = new TelemetryStrategyExecutionPort(
       new SharedStrategyExecutionService(deps.exchange, deps.logger, {
@@ -410,20 +397,19 @@ export class TradingService {
       isFiniteNumber: (value): value is number => this.finiteNumber(value),
       getUSDTBalance: () => this.deps.exchange.getUSDTBalance(),
       readEntryAccountSnapshot: (walletFallback) => this.readEntryAccountSnapshot(walletFallback),
-      initializeDailyStartBalance: (balance, now) => this.initializeDailyStartBalance(balance, now),
-      getDailyStartBalance: () => this.dailyStartBalance,
-      setLastDailyPnlPct: (value) => {
-        this.lastDailyPnlPct = value;
-      },
+      initializeDailyStartBalance: (balance, now) =>
+        this.riskSession.initializeDailyStartBalance(balance, now),
+      getDailyStartBalance: () => this.riskSession.snapshot().dailyStartBalance,
+      setLastDailyPnlPct: (value) => this.riskSession.setDailyPnlPct(value),
       readClosedOutcomes: () =>
         this.deps.closedTradeOutcomeReader?.() ??
         readStrategyClosedTradeOutcomes(undefined, this.getTradingMode()),
       getTradingMode: () => this.getTradingMode(),
       getSymbolMode: (symbol) => this.getSymbolMode(symbol),
       isLiveEnabled: () => CONFIG.AEGIS_LIVE_ENABLED === true,
-      readStrategyRisk: (now) => this.strategyRiskLedger.snapshot('MOMENTUM_RIDE', now),
+      readStrategyRisk: (now) => this.riskSession.strategySnapshot('MOMENTUM_RIDE', now),
       timeSinceLastLossMs: (now) =>
-        this.strategyRiskLedger.timeSinceLastLossMs('MOMENTUM_RIDE', now),
+        this.riskSession.timeSinceLastLossMs('MOMENTUM_RIDE', now),
       readPortfolioExposure: () => this.readAegisPortfolioExposure(),
       getLiveSymbols: () => this.getLiveAegisSymbols(),
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
@@ -434,9 +420,7 @@ export class TradingService {
       logTradeEvent: (symbol, event, payload) =>
         this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
       recordConfirmedOpen: (openedAt) => {
-        this.strategyRiskLedger.recordOpen('MOMENTUM_RIDE', openedAt);
-        this.tradesToday += 1;
-        this.persistDailyRiskState(openedAt);
+        this.riskSession.recordConfirmedOpen({ strategyId: 'MOMENTUM_RIDE', openedAt });
       },
     });
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
@@ -466,7 +450,7 @@ export class TradingService {
       decisionSink: this.decisionEvidenceSink,
       marketSnapshotSink: this.marketSnapshotEvidenceSink,
     });
-    const tradingService = this;
+    const thisService = this;
     this.aegisEntryWorkflow = new AegisEntryWorkflow({
       exchange: deps.exchange,
       logger: deps.logger,
@@ -486,12 +470,7 @@ export class TradingService {
       isPhaseOShortLiveSignal: (signal, side) => this.isPhaseOShortLiveSignal(signal, side),
       withPhaseOShortGuardModes: (policy) => this.withPhaseOShortGuardModes(policy),
       getAegisPhaseOShortLiveConfig: () => this.getAegisPhaseOShortLiveConfig(),
-      get phaseOShortTradesToday() {
-        return tradingService.phaseOShortTradesToday;
-      },
-      set phaseOShortTradesToday(value) {
-        tradingService.phaseOShortTradesToday = value;
-      },
+      getPhaseOShortTradesToday: () => this.riskSession.snapshot().phaseOShortTradesToday,
       logAegisTurboSignal: (symbol, signal, extras) =>
         this.logAegisTurboSignal(symbol, signal, extras),
       shouldLogError: (symbol, key, intervalMs) => this.shouldLogError(symbol, key, intervalMs),
@@ -525,27 +504,21 @@ export class TradingService {
       recordProbeModeEntry: (openedAtMs, tradeId) => this.recordProbeModeEntry(openedAtMs, tradeId),
       historyLogger: this.historyLogger,
       logAegisAccountSnapshot: (input) => this.logAegisAccountSnapshot(input),
-      strategyRiskLedger: this.strategyRiskLedger,
-      persistDailyRiskState: (now) => this.persistDailyRiskState(now),
+      recordConfirmedOpen: (strategyId, openedAt, phaseOShortLive) =>
+        this.riskSession.recordConfirmedOpen({ strategyId, openedAt, phaseOShortLive }),
       buildAegisEntryMessage: (input) => this.buildAegisEntryMessage(input),
       formatScore: (value) => this.formatScore(value),
-      get tradesToday() {
-        return tradingService.tradesToday;
-      },
-      set tradesToday(value) {
-        tradingService.tradesToday = value;
-      },
       get lastEntryBalance() {
-        return tradingService.lastEntryBalance;
+        return thisService.lastEntryBalance;
       },
       set lastEntryBalance(value) {
-        tradingService.lastEntryBalance = value;
+        thisService.lastEntryBalance = value;
       },
       get peakBalance() {
-        return tradingService.peakBalance;
+        return thisService.peakBalance;
       },
       set peakBalance(value) {
-        tradingService.peakBalance = value;
+        thisService.peakBalance = value;
       },
     });
 
@@ -565,7 +538,7 @@ export class TradingService {
         this.getAegisGuardianConfig(symbol, regimeConfig),
       isVerifiedBotOwnedState: (state) => this.isVerifiedBotOwnedState(state),
       isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
-      consecutiveLosses: () => this.consecutiveLossTracker.value,
+      consecutiveLosses: () => this.riskSession.snapshot().consecutiveLosses,
       calculateRoe: (side, entryPrice, markPrice, leverage) =>
         this.calculateRoe(side, entryPrice, markPrice, leverage),
       entryMargin: (state) => this.entryMargin(state),
@@ -838,6 +811,7 @@ export class TradingService {
   }
 
   getAegisRuntimeSnapshot(): AegisRuntimeSnapshot {
+    const riskSession = this.riskSession.snapshot();
     const liquidityStressBySymbol: Record<string, number> = {};
     const liquidityStressStatusBySymbol: Record<string, 'NO_DATA' | 'FRESH' | 'STALE'> = {};
     const liquidityStressAgeMsBySymbol: Record<string, number | undefined> = {};
@@ -859,11 +833,11 @@ export class TradingService {
     return {
       tradingMode: this.getTradingMode(),
       isRunning: this.isRunning,
-      tradesToday: this.tradesToday,
-      consecutiveLosses: this.consecutiveLossTracker.value,
-      dailyStartBalance: this.dailyStartBalance,
-      dailyPnlPct: this.lastDailyPnlPct,
-      lastTradeDayReset: this.lastTradeDayReset,
+      tradesToday: riskSession.tradesToday,
+      consecutiveLosses: riskSession.consecutiveLosses,
+      dailyStartBalance: riskSession.dailyStartBalance,
+      dailyPnlPct: riskSession.dailyPnlPct,
+      lastTradeDayReset: riskSession.lastTradeDayReset,
       liquidityStressBySymbol,
       liquidityStressStatusBySymbol,
       liquidityStressAgeMsBySymbol,
@@ -891,7 +865,7 @@ export class TradingService {
       logger.warn('startup_wallet_balance_unavailable', { error });
     }
     const startupAccount = await this.readEntryAccountSnapshot(startupWalletBalance ?? undefined);
-    await this.restoreConsecutiveLossState();
+    await this.riskSession.restore();
 
     logger.info(isTurbo ? '⚡ AEGIS TURBO MICRO-LIVE MODE' : '🛡️ AEGIS SHADOW MODE', {
       initial: INITIAL_BALANCE,
@@ -1170,7 +1144,7 @@ export class TradingService {
   private async runLoop(): Promise<void> {
     while (this.isRunning) {
       try {
-        this.checkDailyReset();
+        this.riskSession.checkDailyReset();
         for (const symbol of this.config.symbols) {
           if (!this.isRunning) break;
           await this.processSymbol(symbol);
@@ -1382,8 +1356,8 @@ export class TradingService {
   ): AegisMicroLiveGateDecision {
     const botState = this.stateForSymbol(symbol).get();
     const now = Date.now();
-    const aegisRisk = this.strategyRiskLedger.snapshot('AEGIS_TURBO', now);
-    const timeSinceLastExitMs = this.strategyRiskLedger.timeSinceLastExitMs('AEGIS_TURBO', now);
+    const aegisRisk = this.riskSession.strategySnapshot('AEGIS_TURBO', now);
+    const timeSinceLastExitMs = this.riskSession.timeSinceLastExitMs('AEGIS_TURBO', now);
     const liquidity = this.detector[symbol]?.getLiquidityStressStatus(
       now,
       LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
@@ -1476,8 +1450,8 @@ export class TradingService {
       const balance = await exchange.getUSDTBalance();
       const accountSnapshot = await this.readEntryAccountSnapshot(balance);
       const dailyEquity = accountSnapshot.equityTotal ?? accountSnapshot.walletBalance ?? balance;
-      this.initializeDailyStartBalance(dailyEquity);
-      const dailyStartBalance = this.dailyStartBalance;
+      this.riskSession.initializeDailyStartBalance(dailyEquity);
+      const dailyStartBalance = this.riskSession.snapshot().dailyStartBalance;
       const accountWideDailyPnlPct =
         dailyStartBalance && dailyStartBalance > 0
           ? (dailyEquity - dailyStartBalance) / dailyStartBalance
@@ -1493,7 +1467,7 @@ export class TradingService {
         dailyStartBalance && dailyStartBalance > 0
           ? botDailyPnlUsdt / dailyStartBalance
           : undefined;
-      this.lastDailyPnlPct = dailyPnlPct;
+      this.riskSession.setDailyPnlPct(dailyPnlPct);
       const gateConfig = this.getAegisTurboGateConfig(symbol);
       const gateDecision = this.evaluateAegisTurboGate(symbol, signal, dailyPnlPct);
       await this.logEntryIntelligenceDispositionShadow(
@@ -1544,7 +1518,7 @@ export class TradingService {
           liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
           yamlLiveEnabled: this.getAegisTurboYamlConfig()?.live_enabled === true,
           balance,
-          dailyStartBalance: this.dailyStartBalance,
+          dailyStartBalance: this.riskSession.snapshot().dailyStartBalance,
           dailyPnlPct,
           dailyPnlScope: 'VERIFIED_BOT_CLOSED_OUTCOMES',
           botDailyPnlUsdt,
@@ -1620,7 +1594,7 @@ export class TradingService {
           liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
           yamlLiveEnabled: false,
           balance,
-          dailyStartBalance: this.dailyStartBalance,
+          dailyStartBalance: this.riskSession.snapshot().dailyStartBalance,
           dailyPnlPct,
           dailyEquity,
           availableBalance: balance,
@@ -1641,7 +1615,7 @@ export class TradingService {
       }
 
       if (!gateDecision.side || symbolState.get().mode !== 'IDLE') return;
-      if (this.tradesToday >= gateConfig.maxTradesPerDay) return;
+      if (this.riskSession.snapshot().tradesToday >= gateConfig.maxTradesPerDay) return;
       if (await exchange.hasOpenPosition(symbol, 'ANY')) {
         logger.warn('aegis_real_position_already_open', { symbol });
         return;
@@ -2228,8 +2202,17 @@ export class TradingService {
         mismatch_reason: exitType.mismatchReason,
       },
     });
-    if (pnl !== undefined)
-      this.strategyRiskLedger.recordClose(closeStrategy, tradeId, pnl, Date.now());
+    const closedAt = Date.now();
+    if (pnl !== undefined) {
+      this.riskSession.recordStrategyClose({
+        strategyId: closeStrategy,
+        symbol,
+        tradeId,
+        pnlUsdt: pnl,
+        closedAt,
+        reason,
+      });
+    }
     if (pnl !== undefined && this.deps.strategyLossStateRegistry) {
       const lossStrategyId =
         botState.positionOwner === 'EXTERNAL' ||
@@ -2252,18 +2235,14 @@ export class TradingService {
       }
     }
     if (closeStrategy === 'AEGIS_TURBO' && pnl !== undefined) {
-      const streakUpdate = this.consecutiveLossTracker.record(tradeId, pnl);
-      if (streakUpdate.applied) {
-        await this.persistConsecutiveLossState(tradeId);
-        logger.info('aegis_consecutive_loss_streak_updated', {
-          symbol,
-          tradeId,
-          reason,
-          outcome: pnl < 0 ? 'LOSS' : 'NON_LOSS',
-          previous: streakUpdate.previous,
-          current: streakUpdate.current,
-        });
-      }
+      await this.riskSession.recordAegisLossOutcome({
+        strategyId: closeStrategy,
+        symbol,
+        tradeId,
+        pnlUsdt: pnl,
+        closedAt,
+        reason,
+      });
     }
     const currentBalance = await exchange.getUSDTBalance();
     await this.logAegisTradeEvent(symbol, 'TRADE_CLOSED', {
@@ -2313,55 +2292,6 @@ export class TradingService {
     logger.info('📱 [TELEGRAM_REPORT] AEGIS EXIT SENT', {
       message: `${exitType.emoji} **${exitType.title}** PnL: ${pnlStr} ROE: ${this.formatRoe(finalRoe)}`,
     });
-  }
-
-  private async restoreConsecutiveLossState(): Promise<void> {
-    try {
-      const aegisOutcomes = await (this.deps.closedTradeOutcomeReader?.() ??
-        readAegisClosedTradeOutcomes(undefined, this.getTradingMode()));
-      this.consecutiveLossTracker.restore(
-        aegisOutcomes.filter((outcome) => !outcome.tradeId.startsWith('MOMENTUM-RIDE-')),
-      );
-      const strategyOutcomes = this.deps.closedTradeOutcomeReader
-        ? aegisOutcomes
-        : await readStrategyClosedTradeOutcomes(undefined, this.getTradingMode());
-      this.strategyRiskLedger.restoreClosedOutcomes(strategyOutcomes);
-      const now = Date.now();
-      const dailyRisk = this.deps.state.get().dailyRisk;
-      this.lastTradeDayReset = Math.floor(now / 86400000);
-      if (dailyRisk?.dayKey === this.lastTradeDayReset) {
-        this.tradesToday = dailyRisk.tradesToday;
-        this.dailyStartBalance = dailyRisk.dailyStartBalance ?? null;
-        this.strategyRiskLedger.restoreDailyState(dailyRisk, now);
-      }
-      this.deps.logger.info('aegis_consecutive_loss_streak_restored', {
-        consecutiveLosses: this.consecutiveLossTracker.value,
-        processedClosedTrades: this.consecutiveLossTracker.processedCount,
-        source: 'CLOSED_TRADE_HISTORY',
-      });
-    } catch (error) {
-      this.deps.logger.error('aegis_consecutive_loss_streak_recovery_failed', {
-        error: String(error),
-      });
-      throw new Error('AEGIS_CONSECUTIVE_LOSS_RECOVERY_FAILED');
-    }
-  }
-
-  private async persistConsecutiveLossState(lastTradeId: string): Promise<void> {
-    const store = this.deps.consecutiveLossStateStore;
-    if (!store) return;
-    const previous = await store.read(this.getTradingMode());
-    const now = new Date().toISOString();
-    const state: StrategyLossStateWrite = {
-      schema_id: 'strategy-loss-state-v2',
-      mode: this.getTradingMode(),
-      consecutive_losses: this.consecutiveLossTracker.value,
-      updated_at: now,
-      last_trade_id: lastTradeId,
-      reset_authority: previous?.reset_authority ?? 'SYSTEM_INITIALIZED_FROM_CLOSED_TRADE_HISTORY',
-      reset_at: previous?.reset_at ?? now,
-    };
-    await store.write(state);
   }
 
   private buildAegisEntryMessage(input: {
@@ -2602,19 +2532,6 @@ export class TradingService {
       'Cierre en pérdida; no se pudo distinguir SL/trailing con precisión',
       'STOP LOSS (SL)',
     );
-  }
-
-  private checkDailyReset(): void {
-    const today = Math.floor(Date.now() / 86400000);
-    if (today > this.lastTradeDayReset) {
-      this.tradesToday = 0;
-      this.phaseOShortTradesToday = 0;
-      this.dailyStartBalance = null;
-      this.lastDailyPnlPct = undefined;
-      this.lastTradeDayReset = today;
-      this.strategyRiskLedger.resetDaily(Date.now());
-      this.persistDailyRiskState();
-    }
   }
 
   private async notifyError(symbol: string, type: string, error: unknown): Promise<void> {

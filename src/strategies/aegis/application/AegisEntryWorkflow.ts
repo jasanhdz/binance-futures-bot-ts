@@ -2,10 +2,12 @@ import type { Exchange, USDTAccountSnapshot } from '../../../app/ports/Exchange'
 import type { Logger } from '../../../app/ports/Logger';
 import type { Notifier } from '../../../app/ports/Notifier';
 import type { StateStore } from '../../../app/ports/StateStore';
-import type { HistoryAccountSnapshotInput, HistoryTradeEventInput } from '../../../app/logging/StrategyHistoryService';
+import type {
+  HistoryAccountSnapshotInput,
+  HistoryTradeEventInput,
+} from '../../../app/logging/StrategyHistoryService';
 import type { Side } from '../../../core/types';
-import type { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
-import type { StrategyRiskLedger } from '../../../core/risk/StrategyRiskLedger';
+import type { StrategyId, StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import { CONFIG } from '../../../infra/config/environment';
 import type { NinjaConfigManager } from '../../../infra/config/ConfigLoader';
 import {
@@ -15,7 +17,10 @@ import {
 } from '../../../infra/logging/AegisTurboHistoryLogger';
 import { VERIFIED_AEGIS_TRADE_OWNERSHIP } from '../../../infra/logging/AegisTradeOwnership';
 import type { AegisTradingSignal } from '../domain/AegisStrategy';
-import type { AegisEntryContext, AegisEntryPolicyRuntimeConfig } from '../domain/entry/AegisEntryDecisionTypes';
+import type {
+  AegisEntryContext,
+  AegisEntryPolicyRuntimeConfig,
+} from '../domain/entry/AegisEntryDecisionTypes';
 import type { AegisMicroLiveGateDecision } from '../domain/services/AegisMicroLiveGate';
 import type { AegisProbeModeDecision } from '../domain/services/AegisProbeMode';
 import { AegisPortfolioRiskGuard } from '../domain/services/AegisPortfolioRiskGuard';
@@ -52,7 +57,7 @@ export interface AegisEntryWorkflowDeps {
   isPhaseOShortLiveSignal(signal: AegisTradingSignal, side: Side): boolean;
   withPhaseOShortGuardModes(policy: AegisEntryPolicyRuntimeConfig): AegisEntryPolicyRuntimeConfig;
   getAegisPhaseOShortLiveConfig(): any;
-  phaseOShortTradesToday: number;
+  getPhaseOShortTradesToday(): number;
   logAegisTurboSignal(symbol: string, signal: AegisTradingSignal, extras?: any): Promise<void>;
   shouldLogError(symbol: string, key: string, intervalMs: number): boolean;
   aegisEntryCoordinator: AegisEntryCoordinator;
@@ -88,11 +93,9 @@ export interface AegisEntryWorkflowDeps {
   recordProbeModeEntry(openedAtMs: number, tradeId: string): void;
   historyLogger: AegisTurboHistoryLogger;
   logAegisAccountSnapshot(input: HistoryAccountSnapshotInput): Promise<void>;
-  strategyRiskLedger: StrategyRiskLedger;
-  persistDailyRiskState(now: number): void;
+  recordConfirmedOpen(strategyId: StrategyId, openedAt: number, phaseOShortLive: boolean): void;
   buildAegisEntryMessage(input: any): string;
   formatScore(value?: number): string;
-  tradesToday: number;
   lastEntryBalance: number;
   peakBalance: number;
 }
@@ -184,7 +187,10 @@ export class AegisEntryWorkflow {
       if (phaseOShortLive) {
         const phaseOConfig = this.deps.getAegisPhaseOShortLiveConfig();
         const phaseOLimit = phaseOConfig?.max_phase_o_trades_per_day;
-        if (typeof phaseOLimit === 'number' && this.deps.phaseOShortTradesToday >= phaseOLimit) {
+        if (
+          typeof phaseOLimit === 'number' &&
+          this.deps.getPhaseOShortTradesToday() >= phaseOLimit
+        ) {
           await this.deps.logAegisTurboSignal(symbol, signal, {
             signalId,
             tradeId,
@@ -200,7 +206,7 @@ export class AegisEntryWorkflow {
             reason: 'risk_guard_max_phase_o_trades_per_day',
             metadata: {
               countSource: 'trade_opened',
-              currentCount: this.deps.phaseOShortTradesToday,
+              currentCount: this.deps.getPhaseOShortTradesToday(),
               limit: phaseOLimit,
               phaseOOnly: true,
               side,
@@ -215,7 +221,7 @@ export class AegisEntryWorkflow {
             symbol,
             side,
             countSource: 'trade_opened',
-            currentCount: this.deps.phaseOShortTradesToday,
+            currentCount: this.deps.getPhaseOShortTradesToday(),
             limit: phaseOLimit,
             phaseOOnly: true,
           });
@@ -270,7 +276,11 @@ export class AegisEntryWorkflow {
           ignoredForPhaseO: true,
         };
         if (
-          this.deps.shouldLogError(symbol, 'PHASE_O_TECHNICAL_ENTRY_PROTECTION_NOT_ENFORCED', 300000)
+          this.deps.shouldLogError(
+            symbol,
+            'PHASE_O_TECHNICAL_ENTRY_PROTECTION_NOT_ENFORCED',
+            300000,
+          )
         ) {
           logger.error('aegis_phase_o_technical_entry_protection_not_enforced', {
             symbol,
@@ -290,23 +300,26 @@ export class AegisEntryWorkflow {
         });
       }
       const consensusConfig = this.deps.getAegisTurboYamlConfig()?.entry_safety_consensus;
-      const { entryDecision, safetyConsensus: entrySafetyConsensus, blackBoxSnapshot } =
-        await this.deps.aegisEntryCoordinator.evaluate({
-          context: entryContext,
-          side,
-          policy: entryPolicy,
-          captureDecision: () => this.deps.strategyRuntimeCoordinator.captureAegisDecision(symbol),
-          consensusConfig: consensusConfig
-            ? {
-                enabled: consensusConfig.enabled,
-                mode: consensusConfig.mode,
-                minimumRootRiskFamilies: consensusConfig.minimum_root_risk_families,
-                criticalLongVetoMode: consensusConfig.critical_long_veto_mode,
-                requireValidRegimeForCriticalLong:
-                  consensusConfig.require_valid_regime_for_critical_long,
-              }
-            : undefined,
-        });
+      const {
+        entryDecision,
+        safetyConsensus: entrySafetyConsensus,
+        blackBoxSnapshot,
+      } = await this.deps.aegisEntryCoordinator.evaluate({
+        context: entryContext,
+        side,
+        policy: entryPolicy,
+        captureDecision: () => this.deps.strategyRuntimeCoordinator.captureAegisDecision(symbol),
+        consensusConfig: consensusConfig
+          ? {
+              enabled: consensusConfig.enabled,
+              mode: consensusConfig.mode,
+              minimumRootRiskFamilies: consensusConfig.minimum_root_risk_families,
+              criticalLongVetoMode: consensusConfig.critical_long_veto_mode,
+              requireValidRegimeForCriticalLong:
+                consensusConfig.require_valid_regime_for_critical_long,
+            }
+          : undefined,
+      });
       await this.deps.strategyRuntimeCoordinator.observeAegisDecision(blackBoxSnapshot ?? null, {
         symbol,
         timestamp: entryContext.operational.timestamp,
@@ -315,7 +328,9 @@ export class AegisEntryWorkflow {
         reason: entrySafetyConsensus.allowed
           ? entryDecision.finalReason
           : entrySafetyConsensus.reason,
-        confidence: this.deps.finiteNumber(signal.confidence) ? Number(signal.confidence) : undefined,
+        confidence: this.deps.finiteNumber(signal.confidence)
+          ? Number(signal.confidence)
+          : undefined,
         requestedRisk: entryDecision.adjustedPositionFraction,
         diagnostics: {
           signalId,
@@ -1168,10 +1183,7 @@ export class AegisEntryWorkflow {
         metadata: { event: 'trade_open', tradeId },
       });
 
-      this.deps.tradesToday++;
-      this.deps.strategyRiskLedger.recordOpen(finalStrategyLabel, openedAtMs);
-      this.deps.persistDailyRiskState(openedAtMs);
-      if (phaseOShortLive) this.deps.phaseOShortTradesToday++;
+      this.deps.recordConfirmedOpen(finalStrategyLabel, openedAtMs, phaseOShortLive);
       this.deps.lastEntryBalance = wallet;
       if (wallet > this.deps.peakBalance) this.deps.peakBalance = wallet;
 
@@ -1214,5 +1226,4 @@ export class AegisEntryWorkflow {
       await this.deps.notifyError(symbol, 'AEGIS ENTRY FAILED', error);
     }
   }
-
 }
