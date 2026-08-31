@@ -6,15 +6,9 @@ import type { BotState, Side } from '../../../core/types';
 import type { AegisExitEyeYamlConfig } from '../../../infra/config/ConfigLoader';
 import type { AegisTradingSignal } from '../domain/AegisStrategy';
 import { inspectCurrentBrainCanonicalDecision } from '../domain/CurrentBrainCanonicalDecision';
-import {
-  evaluateAegisExitEye,
-  type AegisExitEyeDecision,
-} from '../domain/services/AegisExitEye';
+import { evaluateAegisExitEye, type AegisExitEyeDecision } from '../domain/services/AegisExitEye';
 import { evaluateAegisExitEyeV2Shadow } from '../domain/services/AegisExitEyeV2Shadow';
-import {
-  classifyAegisExitDecision,
-  type AegisExitDecisionEffect,
-} from './AegisExitDecisionPolicy';
+import { classifyAegisExitDecision, type AegisExitDecisionEffect } from './AegisExitDecisionPolicy';
 import type { AegisProfitProtectionInput } from './AegisProfitProtectionService';
 
 const EXIT_EYE_SIGNAL_TTL_MS = 15_000;
@@ -70,11 +64,7 @@ export interface AegisExitManagementDeps {
   getSignal(symbol: string): Promise<AegisTradingSignal>;
   getExitEyeConfig(): AegisExitEyeYamlConfig;
   getEntryThreshold(symbol: string): number;
-  logTradeEvent(
-    symbol: string,
-    event: string,
-    payload: Record<string, unknown>,
-  ): Promise<void>;
+  logTradeEvent(symbol: string, event: string, payload: Record<string, unknown>): Promise<void>;
   protectProfit(input: AegisProfitProtectionInput): Promise<unknown>;
   executePositionClose(input: ClosePositionInput): Promise<void>;
   notifyExit(
@@ -257,18 +247,6 @@ export class AegisExitManagementService {
     return { neutralCount, neutralCloseCount, oppositeCount };
   }
 
-  wouldStopTriggerImmediately(
-    side: Side,
-    stopPrice: number,
-    markPrice: number,
-    bufferPct: number,
-  ): boolean {
-    if (!Number.isFinite(stopPrice) || !Number.isFinite(markPrice) || markPrice <= 0) return true;
-    return side === 'LONG'
-      ? stopPrice >= markPrice * (1 - bufferPct)
-      : stopPrice <= markPrice * (1 + bufferPct);
-  }
-
   private async getSignal(symbol: string): Promise<AegisTradingSignal | null> {
     const cached = this.signalCache.get(symbol);
     const now = this.deps.now();
@@ -358,13 +336,7 @@ export class AegisExitManagementService {
         await this.sendTelegram(value.symbol, value.side, value.decision, true);
       },
       notify: async (value, force) => {
-        await this.sendTelegram(
-          value.symbol,
-          value.side,
-          value.decision,
-          force,
-          value.symbolState,
-        );
+        await this.sendTelegram(value.symbol, value.side, value.decision, force, value.symbolState);
       },
     });
   }

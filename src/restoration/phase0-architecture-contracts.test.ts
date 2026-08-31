@@ -45,12 +45,7 @@ const concreteStrategyPrefixes = [
   'src/strategies/micro-burst/',
 ];
 
-const sharedRoots = [
-  'src/core/',
-  'src/app/execution/',
-  'src/app/position/',
-  'src/app/ports/',
-];
+const sharedRoots = ['src/core/', 'src/app/execution/', 'src/app/position/', 'src/app/ports/'];
 
 const sharedImportAllowlist: Record<string, string[]> = {};
 
@@ -70,6 +65,7 @@ const mutationAuthorityAllowlist = new Set([
   'src/app/execution/SharedStrategyExecutionService.ts',
   // Generic lifecycle mechanics may close a position but do not choose strategy policy.
   'src/app/position/StrategyPositionLifecycleCore.ts',
+  'src/app/position/PositionProtectionService.ts',
   'src/infra/adapters/BinanceAdapter.ts',
   'src/infra/adapters/ReadOnlyAuditedExchange.ts',
 ]);
@@ -81,6 +77,17 @@ describe('Phase 0 architecture contracts', () => {
       'utf8',
     );
     expect(tradingService.match(/new PositionRecoveryService\(/g) ?? []).toHaveLength(1);
+  });
+
+  it('keeps concrete position protection outside TradingService', () => {
+    const tradingService = readFileSync(
+      resolve(repoRoot, 'src/app/services/TradingService.ts'),
+      'utf8',
+    );
+    expect(tradingService.match(/new PositionProtectionService\(/g) ?? []).toHaveLength(1);
+    expect(tradingService).not.toMatch(
+      /private (?:async )?(?:ensureAegisBrackets|replaceBracketsForNewEntryPrice|reconcileManualPositionSizeIncrease|safeMoveCloseStop|performSafeMoveCloseStop|bracketPrice|roundPrice|roundQuantity|isBetterStop)\b/,
+    );
   });
 
   it('keeps shared/core imports independent from concrete strategy implementations', () => {

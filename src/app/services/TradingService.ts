@@ -118,6 +118,7 @@ import {
 } from '../../core/strategy/StrategyLifecyclePolicy';
 import { StrategyPositionLifecycleCore } from '../position/StrategyPositionLifecycleCore';
 import { PositionRecoveryService } from '../position/PositionRecoveryService';
+import { PositionProtectionService } from '../position/PositionProtectionService';
 import { TradingRuntimeConfigService } from '../config/TradingRuntimeConfigService';
 import {
   StrategyHistoryService,
@@ -146,35 +147,6 @@ import { AegisProfitProtectionService } from '../../strategies/aegis/application
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
-
-type SafeStopMoveReason = 'MOVE_SL_BE' | 'PROTECT_PROFIT' | 'MOVE_SL_TRAILING';
-type SafeStopMoveSkipReason =
-  | 'immediate_trigger_risk'
-  | 'stop_not_improved'
-  | 'missing_position'
-  | 'missing_entry'
-  | 'missing_leverage'
-  | 'missing_quantity'
-  | 'exchange_error';
-
-type SafeStopMoveResult =
-  | {
-      moved: true;
-      oldStopPrice?: number;
-      newStopPrice: number;
-      exchangeOrderId?: string;
-      hasSLAfter?: boolean;
-      hasTPAfter?: boolean;
-    }
-  | {
-      moved: false;
-      reason: SafeStopMoveSkipReason;
-      oldStopPrice?: number;
-      newStopPrice: number;
-      error?: string;
-      hasSLAfter?: boolean;
-      hasTPAfter?: boolean;
-    };
 
 type AegisExitDescription = {
   emoji: string;
@@ -246,6 +218,7 @@ export class TradingService {
   }>();
   private readonly positionLifecycleCore: StrategyPositionLifecycleCore;
   private readonly positionRecovery: PositionRecoveryService;
+  private readonly positionProtection: PositionProtectionService;
   private readonly runtimeConfig: TradingRuntimeConfigService;
   private readonly strategyHistory: StrategyHistoryService;
   private readonly aegisStrategyIdentity: StrategyIdentity;
@@ -300,6 +273,14 @@ export class TradingService {
     this.aegisStrategyIdentity = createAegisMigrationIdentity();
     this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
     this.microBurstIdentity = createMicroBurstV1Identity();
+    this.positionProtection = new PositionProtectionService({
+      exchange: deps.exchange,
+      logger: deps.logger,
+      getRegimeConfig: (symbol) => this.getAegisTurboRegimeConfig(symbol),
+      getImmediateTriggerBufferPct: () =>
+        this.getAegisProfitProtectionConfig().immediate_trigger_buffer_pct,
+      logTradeEvent: (symbol, event, input) => this.logAegisTradeEvent(symbol, event, input),
+    });
     this.aegisEntryContextBuilder = new AegisEntryContextBuilder({
       logger: deps.logger,
       now: () => Date.now(),
@@ -331,7 +312,15 @@ export class TradingService {
       isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
       requireBrackets: () => this.getAegisTurboYamlConfig()?.require_brackets !== false,
       ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
-        this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, state, overrides),
+        this.positionProtection.ensureBrackets(
+          symbol,
+          side,
+          entryPrice,
+          leverage,
+          position,
+          state,
+          overrides,
+        ),
     });
     this.strategyHistory = new StrategyHistoryService({
       logger: deps.logger,
@@ -370,12 +359,11 @@ export class TradingService {
       now: () => Date.now(),
       getConfig: () => this.getAegisProfitProtectionConfig(),
       getFallbackLeverage: (symbol) => this.getAegisTurboGateConfig(symbol).leverageCap,
-      getSymbolFilters: (symbol, leverage) =>
-        this.deps.exchange.getSymbolFilters(symbol, leverage),
-      roundPrice: (price, filters) => this.roundPrice(price, filters),
+      getSymbolFilters: (symbol, leverage) => this.deps.exchange.getSymbolFilters(symbol, leverage),
+      roundPrice: (price, filters) => this.positionProtection.roundPrice(price, filters),
       useClosePosition: (state) =>
         !this.isVerifiedBotOwnedState(state) && !this.isLegacyBotOwnedState(state),
-      moveCloseStop: (input) => this.performSafeMoveCloseStop(input),
+      moveCloseStop: (input) => this.positionProtection.moveCloseStop(input),
       logTradeEvent: (symbol, event, payload) =>
         this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
       formatRoe: (value) => this.formatRoe(value),
@@ -421,10 +409,8 @@ export class TradingService {
       isValidCandle: (candle) => this.isValidCandle(candle),
       isFiniteNumber: (value): value is number => this.finiteNumber(value),
       getUSDTBalance: () => this.deps.exchange.getUSDTBalance(),
-      readEntryAccountSnapshot: (walletFallback) =>
-        this.readEntryAccountSnapshot(walletFallback),
-      initializeDailyStartBalance: (balance, now) =>
-        this.initializeDailyStartBalance(balance, now),
+      readEntryAccountSnapshot: (walletFallback) => this.readEntryAccountSnapshot(walletFallback),
+      initializeDailyStartBalance: (balance, now) => this.initializeDailyStartBalance(balance, now),
       getDailyStartBalance: () => this.dailyStartBalance,
       setLastDailyPnlPct: (value) => {
         this.lastDailyPnlPct = value;
@@ -443,10 +429,7 @@ export class TradingService {
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       hasOpenPosition: (symbol) => this.deps.exchange.hasOpenPosition(symbol, 'ANY'),
       readLiquidityStatus: (symbol, now) =>
-        this.detector[symbol]?.getLiquidityStressStatus(
-          now,
-          LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
-        ),
+        this.detector[symbol]?.getLiquidityStressStatus(now, LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS),
       liquidityInputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
       logTradeEvent: (symbol, event, payload) =>
         this.logAegisTradeEvent(symbol, event, payload as HistoryTradeEventInput),
@@ -496,12 +479,10 @@ export class TradingService {
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       getAegisPositionFractionOverride: (symbol, side) =>
         this.getAegisPositionFractionOverride(symbol, side),
-      logAegisTradeEvent: (symbol, event, input) =>
-        this.logAegisTradeEvent(symbol, event, input),
+      logAegisTradeEvent: (symbol, event, input) => this.logAegisTradeEvent(symbol, event, input),
       buildAegisEntryContext: (input) => this.aegisEntryContextBuilder.build(input),
       getAegisEntryPolicyConfig: () => this.getAegisEntryPolicyConfig(),
-      extractPhaseOTurboMetadata: (signal, side) =>
-        this.extractPhaseOTurboMetadata(signal, side),
+      extractPhaseOTurboMetadata: (signal, side) => this.extractPhaseOTurboMetadata(signal, side),
       isPhaseOShortLiveSignal: (signal, side) => this.isPhaseOShortLiveSignal(signal, side),
       withPhaseOShortGuardModes: (policy) => this.withPhaseOShortGuardModes(policy),
       getAegisPhaseOShortLiveConfig: () => this.getAegisPhaseOShortLiveConfig(),
@@ -513,30 +494,26 @@ export class TradingService {
       },
       logAegisTurboSignal: (symbol, signal, extras) =>
         this.logAegisTurboSignal(symbol, signal, extras),
-      shouldLogError: (symbol, key, intervalMs) =>
-        this.shouldLogError(symbol, key, intervalMs),
+      shouldLogError: (symbol, key, intervalMs) => this.shouldLogError(symbol, key, intervalMs),
       aegisEntryCoordinator: this.aegisEntryCoordinator,
       strategyRuntimeCoordinator: this.strategyRuntimeCoordinator,
       finiteNumber: (value): value is number => this.finiteNumber(value),
       logEntryIntelligenceDispositionShadow: (...args) =>
         (this.logEntryIntelligenceDispositionShadow as any)(...args),
-      logEntryQualityGateDecision: (...args) =>
-        (this.logEntryQualityGateDecision as any)(...args),
-      logAegisEventRiskDecision: (...args) =>
-        (this.logAegisEventRiskDecision as any)(...args),
+      logEntryQualityGateDecision: (...args) => (this.logEntryQualityGateDecision as any)(...args),
+      logAegisEventRiskDecision: (...args) => (this.logAegisEventRiskDecision as any)(...args),
       logAegisDecisionEnforcementDenied: (...args) =>
         (this.logAegisDecisionEnforcementDenied as any)(...args),
       notifyDecisionEnforcementDenied: (...args) =>
         (this.notifyDecisionEnforcementDenied as any)(...args),
-      logAegisProbeModeDecision: (...args) =>
-        (this.logAegisProbeModeDecision as any)(...args),
+      logAegisProbeModeDecision: (...args) => (this.logAegisProbeModeDecision as any)(...args),
       logAegisCleanEntryGuardDecision: (...args) =>
         (this.logAegisCleanEntryGuardDecision as any)(...args),
       notifyProbeModeAllowed: (...args) => (this.notifyProbeModeAllowed as any)(...args),
       getEntryQualityGateConfig: (symbol) => this.getEntryQualityGateConfig(symbol),
-      readEntryAccountSnapshot: (walletFallback) =>
-        this.readEntryAccountSnapshot(walletFallback),
-      roundQuantity: (quantity, filters) => this.roundQuantity(quantity, filters),
+      readEntryAccountSnapshot: (walletFallback) => this.readEntryAccountSnapshot(walletFallback),
+      roundQuantity: (quantity, filters) =>
+        this.positionProtection.roundQuantity(quantity, filters),
       getAegisPortfolioRiskConfig: () => this.getAegisPortfolioRiskConfig(),
       readAegisPortfolioExposure: () => this.readAegisPortfolioExposure(),
       notifyError: (symbol, title, error) => this.notifyError(symbol, title, error),
@@ -545,8 +522,7 @@ export class TradingService {
       getAegisTurboRegimeConfig: (symbol) => this.getAegisTurboRegimeConfig(symbol),
       getAegisGuardianConfig: (symbol, regimeConfig) =>
         this.getAegisGuardianConfig(symbol, regimeConfig),
-      recordProbeModeEntry: (openedAtMs, tradeId) =>
-        this.recordProbeModeEntry(openedAtMs, tradeId),
+      recordProbeModeEntry: (openedAtMs, tradeId) => this.recordProbeModeEntry(openedAtMs, tradeId),
       historyLogger: this.historyLogger,
       logAegisAccountSnapshot: (input) => this.logAegisAccountSnapshot(input),
       strategyRiskLedger: this.strategyRiskLedger,
@@ -594,8 +570,9 @@ export class TradingService {
         this.calculateRoe(side, entryPrice, markPrice, leverage),
       entryMargin: (state) => this.entryMargin(state),
       pnlFromRoe: (margin, roe) => this.pnlFromRoe(margin, roe),
-      roundPrice: (price, filters) => this.roundPrice(price, filters),
-      isBetterStop: (side, next, previous) => this.isBetterStop(side, next, previous),
+      roundPrice: (price, filters) => this.positionProtection.roundPrice(price, filters),
+      isBetterStop: (side, next, previous) =>
+        this.positionProtection.isBetterStop(side, next, previous),
       formatRoe: (value) => this.formatRoe(value),
       notifyExit: (symbol, side, reason, state, exit) =>
         this.notifyExit(symbol, side, reason, state, exit),
@@ -627,12 +604,27 @@ export class TradingService {
           });
         }
       },
-      safeMoveCloseStop: (input) => this.safeMoveCloseStop(input),
+      safeMoveCloseStop: (input) => this.positionProtection.moveCloseStop(input),
       ensureBrackets: (symbol, side, entryPrice, leverage, position, state, overrides) =>
-        this.ensureAegisBrackets(symbol, side, entryPrice, leverage, position, state, overrides),
+        this.positionProtection.ensureBrackets(
+          symbol,
+          side,
+          entryPrice,
+          leverage,
+          position,
+          state,
+          overrides,
+        ),
       replaceBracketsForNewEntryPrice: (symbol, side, entryPrice, leverage, position, state) =>
-        this.replaceBracketsForNewEntryPrice(symbol, side, entryPrice, leverage, position, state),
-      reconcilePositionSize: (input) => this.reconcileManualPositionSizeIncrease(input),
+        this.positionProtection.replaceBracketsForNewEntryPrice(
+          symbol,
+          side,
+          entryPrice,
+          leverage,
+          position,
+          state,
+        ),
+      reconcilePositionSize: (input) => this.positionProtection.reconcilePositionSize(input),
     });
     const aegisLifecycle = this.positionLifecycleCore.createAegisLifecycle(
       strategyLifecyclePolicy('AEGIS_TURBO'),
@@ -2153,240 +2145,6 @@ export class TradingService {
     });
   }
 
-  private wouldStopTriggerImmediately(
-    side: Side,
-    stopPrice: number,
-    markPrice: number,
-    bufferPct: number,
-  ): boolean {
-    if (!Number.isFinite(stopPrice) || !Number.isFinite(markPrice) || markPrice <= 0) return true;
-    return this.aegisExitManagementService.wouldStopTriggerImmediately(
-      side,
-      stopPrice,
-      markPrice,
-      bufferPct,
-    );
-  }
-
-  private async safeMoveCloseStop(params: {
-    symbol: string;
-    side: Side;
-    tradeId?: string;
-    entryPrice: number;
-    markPrice: number;
-    leverage: number;
-    quantity: number;
-    position: PositionInfo;
-    newStopPrice: number;
-    currentRoe: number;
-    peakRoe: number;
-    protectedRoe?: number;
-    reason: SafeStopMoveReason;
-    useClosePosition?: boolean;
-  }): Promise<SafeStopMoveResult> {
-    return this.performSafeMoveCloseStop(params);
-  }
-
-  private async performSafeMoveCloseStop(params: {
-    symbol: string;
-    side: Side;
-    tradeId?: string;
-    entryPrice: number;
-    markPrice: number;
-    leverage: number;
-    quantity: number;
-    position: PositionInfo;
-    newStopPrice: number;
-    currentRoe: number;
-    peakRoe: number;
-    protectedRoe?: number;
-    reason: SafeStopMoveReason;
-    useClosePosition?: boolean;
-  }): Promise<SafeStopMoveResult> {
-    const { exchange, logger } = this.deps;
-    const profitConfig = this.getAegisProfitProtectionConfig();
-    const baseMetadata = {
-      symbol: params.symbol,
-      side: params.side,
-      tradeId: params.tradeId,
-      entryPrice: params.entryPrice,
-      markPrice: params.markPrice,
-      newStopPrice: params.newStopPrice,
-      peakRoe: params.peakRoe,
-      currentRoe: params.currentRoe,
-      protectedRoe: params.protectedRoe,
-      reason: params.reason,
-    };
-
-    const skip = async (
-      reason: SafeStopMoveSkipReason,
-      oldStopPrice?: number,
-      extra: Record<string, unknown> = {},
-    ): Promise<SafeStopMoveResult> => {
-      const metadata = { ...baseMetadata, oldStopPrice, skipReason: reason, ...extra };
-      logger.warn('aegis_safe_stop_move_skipped', metadata);
-      await this.logAegisTradeEvent(params.symbol, 'SAFE_STOP_MOVE_SKIPPED', {
-        tradeId: params.tradeId,
-        price: params.markPrice,
-        roe: params.currentRoe,
-        oldStop: oldStopPrice,
-        newStop: params.newStopPrice,
-        reason,
-        metadata,
-      });
-      return { moved: false, reason, oldStopPrice, newStopPrice: params.newStopPrice };
-    };
-
-    if (!Number.isFinite(params.entryPrice) || params.entryPrice <= 0) {
-      return skip('missing_entry');
-    }
-    if (!Number.isFinite(params.leverage) || params.leverage <= 0) {
-      return skip('missing_leverage');
-    }
-    if (!Number.isFinite(params.quantity) || params.quantity <= 0 || !params.position?.qtyAbs) {
-      return skip('missing_quantity');
-    }
-
-    const livePosition = await exchange.readActivePosition(params.symbol, params.side);
-    if (!livePosition || livePosition.qtyAbs <= 0) {
-      return skip('missing_position');
-    }
-
-    const beforeOrders = await exchange.listCloseOrdersForSide(params.symbol, params.side);
-    const oldStops = beforeOrders.filter(
-      (order) => order.type === 'STOP_MARKET' || order.type === 'STOP',
-    );
-    const oldStopPrice = oldStops.length
-      ? params.side === 'LONG'
-        ? Math.max(...oldStops.map((order) => order.stopPrice))
-        : Math.min(...oldStops.map((order) => order.stopPrice))
-      : undefined;
-
-    const stopImproved = this.isBetterStop(params.side, params.newStopPrice, oldStopPrice);
-    if (!stopImproved) {
-      return skip('stop_not_improved', oldStopPrice, { stopImproved });
-    }
-
-    const immediateTriggerRisk = this.wouldStopTriggerImmediately(
-      params.side,
-      params.newStopPrice,
-      params.markPrice,
-      profitConfig.immediate_trigger_buffer_pct,
-    );
-    if (immediateTriggerRisk) {
-      return skip('immediate_trigger_risk', oldStopPrice, { immediateTriggerRisk });
-    }
-
-    try {
-      if (params.useClosePosition) {
-        for (const stop of oldStops) {
-          if (typeof exchange.cancelOrderById === 'function') {
-            await exchange.cancelOrderById(params.symbol, stop.orderId);
-          }
-        }
-        try {
-          await exchange.placeStopClose(params.symbol, params.side, params.newStopPrice);
-        } catch (placementError) {
-          if (oldStopPrice !== undefined) {
-            try {
-              await exchange.placeStopClose(params.symbol, params.side, oldStopPrice);
-              logger.warn('aegis_safe_stop_move_previous_stop_restored', {
-                ...baseMetadata,
-                oldStopPrice,
-                error: String(placementError),
-              });
-            } catch (restoreError) {
-              logger.error('aegis_safe_stop_move_previous_stop_restore_failed', {
-                ...baseMetadata,
-                oldStopPrice,
-                placementError: String(placementError),
-                restoreError: String(restoreError),
-              });
-            }
-          }
-          throw placementError;
-        }
-      } else {
-        await exchange.placeStopClose(
-          params.symbol,
-          params.side,
-          params.newStopPrice,
-          livePosition.qtyAbs,
-        );
-        for (const stop of oldStops) {
-          if (typeof exchange.cancelOrderById === 'function') {
-            await exchange.cancelOrderById(params.symbol, stop.orderId);
-          }
-        }
-      }
-
-      const afterOrders = await exchange.listCloseOrdersForSide(params.symbol, params.side);
-      const hasSLAfter = afterOrders.some(
-        (order) => order.type === 'STOP_MARKET' || order.type === 'STOP',
-      );
-      const hasTPAfter = afterOrders.some(
-        (order) => order.type === 'TAKE_PROFIT_MARKET' || order.type === 'TAKE_PROFIT',
-      );
-      if (!hasSLAfter || !hasTPAfter) {
-        logger.warn('aegis_safe_stop_move_bracket_verify_warning', {
-          ...baseMetadata,
-          oldStopPrice,
-          hasSLAfter,
-          hasTPAfter,
-        });
-      }
-
-      logger.info('aegis_safe_stop_moved', {
-        ...baseMetadata,
-        oldStopPrice,
-        hasSLAfter,
-        hasTPAfter,
-      });
-      await this.logAegisTradeEvent(params.symbol, 'SL_MOVED', {
-        tradeId: params.tradeId,
-        price: params.markPrice,
-        roe: params.currentRoe,
-        oldStop: oldStopPrice,
-        newStop: params.newStopPrice,
-        reason: params.reason,
-        metadata: {
-          ...baseMetadata,
-          oldStopPrice,
-          hasSLAfter,
-          hasTPAfter,
-          stopImproved: true,
-          immediateTriggerRisk: false,
-        },
-      });
-      return {
-        moved: true,
-        oldStopPrice,
-        newStopPrice: params.newStopPrice,
-        hasSLAfter,
-        hasTPAfter,
-      };
-    } catch (error) {
-      const metadata = { ...baseMetadata, oldStopPrice, error: String(error) };
-      logger.error('aegis_safe_stop_move_failed', metadata);
-      await this.logAegisTradeEvent(params.symbol, 'SAFE_STOP_MOVE_FAILED', {
-        tradeId: params.tradeId,
-        price: params.markPrice,
-        roe: params.currentRoe,
-        oldStop: oldStopPrice,
-        newStop: params.newStopPrice,
-        reason: 'exchange_error',
-        metadata,
-      });
-      return {
-        moved: false,
-        reason: 'exchange_error',
-        oldStopPrice,
-        newStopPrice: params.newStopPrice,
-        error: String(error),
-      };
-    }
-  }
-
   private async notifyExit(
     symbol: string,
     side: Side,
@@ -2606,220 +2364,6 @@ export class TradingService {
     await store.write(state);
   }
 
-  private async ensureAegisBrackets(
-    symbol: string,
-    side: Side,
-    entryPrice: number,
-    leverage: number,
-    position: PositionInfo,
-    botState: BotState,
-    roeOverrides?: { stopRoe: number; takeProfitRoe: number },
-  ): Promise<{ stopPrice?: number; takeProfitPrice?: number }> {
-    const { exchange, logger } = this.deps;
-    const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
-    const stopOrders = openOrders.filter((order) => order.type.includes('STOP'));
-    const tpOrders = openOrders.filter((order) => order.type.includes('TAKE_PROFIT'));
-    const hasSL = stopOrders.length > 0;
-    const hasTP = tpOrders.length > 0;
-    let activeStopPrice = hasSL
-      ? side === 'LONG'
-        ? Math.max(...stopOrders.map((order) => order.stopPrice))
-        : Math.min(...stopOrders.map((order) => order.stopPrice))
-      : undefined;
-    let activeTakeProfitPrice = tpOrders[0]?.stopPrice;
-    if (hasSL && hasTP)
-      return { stopPrice: activeStopPrice, takeProfitPrice: activeTakeProfitPrice };
-    await this.logAegisTradeEvent(symbol, 'BRACKET_MISSING', {
-      tradeId: botState.lastTradeId,
-      reason: !hasSL && !hasTP ? 'SL_AND_TP_MISSING' : !hasSL ? 'SL_MISSING' : 'TP_MISSING',
-      metadata: { hasSL, hasTP },
-    });
-
-    const filters = await exchange.getSymbolFilters(symbol, leverage);
-    const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
-    if (!hasSL) {
-      const configuredStopPrice = this.roundPrice(
-        this.bracketPrice(
-          side,
-          entryPrice,
-          roeOverrides?.stopRoe ?? botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15,
-          leverage,
-          'STOP',
-        ),
-        filters,
-      );
-      const rememberedStops = [
-        botState.lastTrailStop,
-        botState.lastBreakEvenStop,
-        botState.lastStopPrice,
-        botState.highestRatchetStop,
-      ].filter((value): value is number => Number.isFinite(value));
-      const stopPrice = rememberedStops.reduce(
-        (best, remembered) => (this.isBetterStop(side, remembered, best) ? remembered : best),
-        configuredStopPrice,
-      );
-      await exchange.placeStopClose(symbol, side, stopPrice);
-      activeStopPrice = stopPrice;
-      logger.info('aegis_turbo_brackets_created', { symbol, side, stopPrice, recreated: true });
-      await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
-        tradeId: botState.lastTradeId,
-        newStop: stopPrice,
-        reason: 'SL_RECREATED',
-      });
-    }
-    if (!hasTP) {
-      const tpPrice = this.roundPrice(
-        this.bracketPrice(
-          side,
-          entryPrice,
-          roeOverrides?.takeProfitRoe ?? botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25,
-          leverage,
-          'TP',
-        ),
-        filters,
-      );
-      await exchange.placeTpClose(symbol, side, tpPrice);
-      activeTakeProfitPrice = tpPrice;
-      logger.info('aegis_turbo_brackets_created', { symbol, side, tpPrice, recreated: true });
-      await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
-        tradeId: botState.lastTradeId,
-        newTp: tpPrice,
-        reason: 'TP_RECREATED',
-      });
-    }
-    return { stopPrice: activeStopPrice, takeProfitPrice: activeTakeProfitPrice };
-  }
-
-  private async replaceBracketsForNewEntryPrice(
-    symbol: string,
-    side: Side,
-    newEntryPrice: number,
-    leverage: number,
-    position: PositionInfo,
-    botState: BotState,
-  ): Promise<void> {
-    const { exchange, logger } = this.deps;
-    const openOrders = await exchange.listCloseOrdersForSide(symbol, side);
-    for (const order of openOrders) {
-      try {
-        await exchange.cancelOrderById(symbol, order.orderId);
-      } catch (error) {
-        logger.warn('aegis_bracket_cancel_failed', {
-          symbol,
-          side,
-          orderId: order.orderId,
-          error: String(error),
-        });
-      }
-    }
-    const filters = await exchange.getSymbolFilters(symbol, leverage);
-    const regimeConfig = this.getAegisTurboRegimeConfig(symbol);
-    const stopPrice = this.roundPrice(
-      this.bracketPrice(
-        side,
-        newEntryPrice,
-        botState.lastStopRoe ?? regimeConfig?.hardStopRoe ?? -0.15,
-        leverage,
-        'STOP',
-      ),
-      filters,
-    );
-    const tpPrice = this.roundPrice(
-      this.bracketPrice(
-        side,
-        newEntryPrice,
-        botState.lastTakeProfitRoe ?? regimeConfig?.tpRoe ?? 0.25,
-        leverage,
-        'TP',
-      ),
-      filters,
-    );
-    await exchange.placeStopClose(symbol, side, stopPrice);
-    await exchange.placeTpClose(symbol, side, tpPrice);
-    logger.info('aegis_brackets_replaced_for_new_entry', {
-      symbol,
-      side,
-      newEntryPrice,
-      stopPrice,
-      tpPrice,
-    });
-    await this.logAegisTradeEvent(symbol, 'BRACKET_RECREATED', {
-      tradeId: botState.lastTradeId,
-      newStop: stopPrice,
-      newTp: tpPrice,
-      reason: 'QUANTITY_CHANGED_ENTRY_PRICE_UPDATED',
-      metadata: { newEntryPrice, leverage },
-    });
-  }
-
-  private async reconcileManualPositionSizeIncrease(input: {
-    symbol: string;
-    side: Side;
-    leverage: number;
-    position: PositionInfo;
-    botState: BotState;
-    symbolState: StateStore;
-  }): Promise<{ changed: boolean }> {
-    const { logger } = this.deps;
-    const previousQty = input.botState.lastEntryQty;
-    const currentQty = input.position.qtyAbs;
-    if (!Number.isFinite(currentQty) || currentQty <= 0) return { changed: false };
-
-    if (!Number.isFinite(previousQty) || (previousQty ?? 0) <= 0) {
-      input.symbolState.set({
-        ownershipStatus: 'TAINTED',
-        eligibleForBotMetrics: false,
-        metricsExclusionReason: 'MANAGED_QUANTITY_BASELINE_MISSING',
-        lastEntryQty: currentQty,
-      });
-      logger.warn('aegis_managed_position_tainted', {
-        symbol: input.symbol,
-        side: input.side,
-        previousQty,
-        currentQty,
-        reason: 'MANAGED_QUANTITY_BASELINE_MISSING',
-        action: 'CONTINUE_MANAGEMENT_TAINTED',
-      });
-      return { changed: true };
-    }
-
-    const quantityTolerance = Math.max(1e-12, previousQty! * 1e-6);
-    const sameQuantity = Math.abs(currentQty - previousQty!) <= quantityTolerance;
-    if (sameQuantity) return { changed: false };
-
-    const reason =
-      currentQty > previousQty! ? 'EXTERNAL_QUANTITY_INCREASE' : 'EXTERNAL_QUANTITY_REDUCTION';
-    input.symbolState.set({
-      ownershipStatus: 'TAINTED',
-      eligibleForBotMetrics: false,
-      metricsExclusionReason: reason,
-      lastEntryQty: currentQty,
-    });
-    logger.warn('aegis_managed_position_tainted', {
-      symbol: input.symbol,
-      side: input.side,
-      previousQty,
-      currentQty,
-      reason,
-      action: 'CONTINUE_MANAGEMENT_TAINTED',
-    });
-    return { changed: true };
-  }
-
-  private bracketPrice(
-    side: Side,
-    entryPrice: number,
-    roe: number,
-    leverage: number,
-    kind: 'STOP' | 'TP',
-  ): number {
-    const move = Math.abs(roe) / leverage;
-    if (kind === 'STOP') {
-      return side === 'LONG' ? entryPrice * (1 - move) : entryPrice * (1 + move);
-    }
-    return side === 'LONG' ? entryPrice * (1 + move) : entryPrice * (1 - move);
-  }
-
   private buildAegisEntryMessage(input: {
     symbol: string;
     side: Side;
@@ -3017,10 +2561,12 @@ export class TradingService {
     const stopRoe = botState.lastStopRoe ?? -0.15;
     const takeProfitRoe = botState.lastTakeProfitRoe ?? 0.25;
     const stopPrice =
-      entryPrice > 0 ? this.bracketPrice(side, entryPrice, stopRoe, leverage, 'STOP') : undefined;
+      entryPrice > 0
+        ? this.positionProtection.bracketPrice(side, entryPrice, stopRoe, leverage, 'STOP')
+        : undefined;
     const tpPrice =
       entryPrice > 0
-        ? this.bracketPrice(side, entryPrice, takeProfitRoe, leverage, 'TP')
+        ? this.positionProtection.bracketPrice(side, entryPrice, takeProfitRoe, leverage, 'TP')
         : undefined;
     const near = (target?: number) =>
       typeof target === 'number' && target > 0 && Math.abs(exitPrice - target) / target < 0.004;
@@ -3056,21 +2602,6 @@ export class TradingService {
       'Cierre en pérdida; no se pudo distinguir SL/trailing con precisión',
       'STOP LOSS (SL)',
     );
-  }
-
-  private roundQuantity(quantity: number, filters: SymbolFilters): number {
-    const scale = 10 ** filters.qtyPrecision;
-    return Number((Math.floor(quantity * scale) / scale).toFixed(filters.qtyPrecision));
-  }
-
-  private roundPrice(price: number, filters: SymbolFilters): number {
-    const precision = Number.isInteger(filters.pricePrecision) ? filters.pricePrecision : 2;
-    return Number(price.toFixed(precision));
-  }
-
-  private isBetterStop(side: Side, next: number, previous?: number): boolean {
-    if (previous === undefined) return true;
-    return side === 'LONG' ? next > previous : next < previous;
   }
 
   private checkDailyReset(): void {
