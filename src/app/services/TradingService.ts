@@ -149,6 +149,7 @@ import type { MomentumCandleSnapshot } from '../../strategies/momentum/applicati
 import { StrategyRuntimeCoordinator } from '../runtime/StrategyRuntimeCoordinator';
 import { AegisEntryCoordinator } from '../../strategies/aegis/application/AegisEntryCoordinator';
 import { AegisExecutionCoordinator } from '../../strategies/aegis/application/AegisExecutionCoordinator';
+import { AegisExitManagementService } from '../../strategies/aegis/application/AegisExitManagementService';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -281,6 +282,7 @@ export class TradingService {
   private readonly strategyRuntimeCoordinator: StrategyRuntimeCoordinator;
   private readonly aegisEntryCoordinator = new AegisEntryCoordinator();
   private readonly aegisExecutionCoordinator: AegisExecutionCoordinator;
+  private readonly aegisExitManagementService: AegisExitManagementService;
   private stopPromise: Promise<void> | null = null;
 
   private persistDailyRiskState(now = Date.now()): void {
@@ -353,6 +355,9 @@ export class TradingService {
       this.strategyTelemetry,
     );
     this.aegisExecutionCoordinator = new AegisExecutionCoordinator(this.sharedStrategyExecution);
+    this.aegisExitManagementService = new AegisExitManagementService((input) =>
+      this.evaluateExitEyeForPosition(input as Parameters<TradingService['evaluateExitEyeForPosition']>[0]),
+    );
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
     const momentumRuntimeMode =
       momentumRuntimeConfig.enabled !== true || momentumRuntimeConfig.mode === 'OFF'
@@ -444,7 +449,7 @@ export class TradingService {
     });
     const aegisLifecycle = this.positionLifecycleCore.createAegisLifecycle(
       strategyLifecyclePolicy('AEGIS_TURBO'),
-      (input) => this.evaluateExitEyeForPosition(input),
+      (input) => this.aegisExitManagementService.evaluate(input),
     );
     this.positionManagerRouter.register(new AegisPositionManager(aegisLifecycle));
     this.positionManagerRouter.register(
