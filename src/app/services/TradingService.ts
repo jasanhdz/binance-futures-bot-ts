@@ -104,7 +104,6 @@ import { MicroBurstPositionManager } from '../../strategies/micro-burst/applicat
 import { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
 import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/AegisIdentity';
-import { AegisExecutionIntentFactory } from '../../strategies/aegis/domain/AegisExecutionIntentFactory';
 import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
 import { StrategyRiskLedger } from '../../core/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
@@ -149,6 +148,7 @@ import {
 import type { MomentumCandleSnapshot } from '../../strategies/momentum/application/MomentumCandleState';
 import { StrategyRuntimeCoordinator } from '../runtime/StrategyRuntimeCoordinator';
 import { AegisEntryCoordinator } from '../../strategies/aegis/application/AegisEntryCoordinator';
+import { AegisExecutionCoordinator } from '../../strategies/aegis/application/AegisExecutionCoordinator';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -280,6 +280,7 @@ export class TradingService {
   private readonly microBurstIdentity: StrategyIdentity;
   private readonly strategyRuntimeCoordinator: StrategyRuntimeCoordinator;
   private readonly aegisEntryCoordinator = new AegisEntryCoordinator();
+  private readonly aegisExecutionCoordinator: AegisExecutionCoordinator;
   private stopPromise: Promise<void> | null = null;
 
   private persistDailyRiskState(now = Date.now()): void {
@@ -351,6 +352,7 @@ export class TradingService {
       }),
       this.strategyTelemetry,
     );
+    this.aegisExecutionCoordinator = new AegisExecutionCoordinator(this.sharedStrategyExecution);
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
     const momentumRuntimeMode =
       momentumRuntimeConfig.enabled !== true || momentumRuntimeConfig.mode === 'OFF'
@@ -3257,7 +3259,7 @@ export class TradingService {
       const configuredCloseIfBracketFails = yaml?.close_if_bracket_fails !== false;
       const finalStrategyLabel: AegisResearchStrategy = 'AEGIS_TURBO';
       const finalStrategyIdentity = this.strategyIdentity(finalStrategyLabel);
-      const executionIntent = AegisExecutionIntentFactory.create({
+      const execution = await this.aegisExecutionCoordinator.execute({
         identity: finalStrategyIdentity,
         signalId,
         tradeId,
@@ -3289,7 +3291,6 @@ export class TradingService {
           entryPolicy: entryDecision.metadata,
         },
       });
-      const execution = await this.sharedStrategyExecution.execute(executionIntent);
       const executionMetadata = execution.metadata as Record<string, any>;
       for (const adjustment of executionMetadata.quantityAdjustments ?? []) {
         logger.warn('aegis_entry_quantity_rejected', { symbol, side, ...adjustment });
@@ -3394,7 +3395,7 @@ export class TradingService {
               metadata: executionMetadata,
             },
           );
-          if (executionIntent.protection.closeIfProtectionFails) {
+          if (executionMetadata.closeIfProtectionFails !== false) {
             if (executionMetadata.emergencyCloseError) {
               await this.logAegisTradeEvent(symbol, 'EMERGENCY_CLOSE_FAILED', {
                 tradeId,
