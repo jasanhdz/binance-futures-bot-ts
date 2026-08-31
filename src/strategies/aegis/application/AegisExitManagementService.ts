@@ -105,10 +105,10 @@ export class AegisExitManagementService {
   }
 
   closePosition(input: ClosePositionInput): Promise<void> {
-    if (!this.ports.execution?.closeSideMarketSafe) {
+    if (!this.ports.execution?.executePositionClose) {
       return Promise.reject(new Error('AEGIS_EXIT_CLOSE_POSITION_PORT_UNAVAILABLE'));
     }
-    return this.ports.execution.closeSideMarketSafe(
+    return this.ports.execution.executePositionClose(
       input.symbol,
       input.side,
       input.qtyAbs,

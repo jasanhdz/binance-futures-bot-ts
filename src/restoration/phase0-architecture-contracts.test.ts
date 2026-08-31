@@ -70,7 +70,6 @@ const mutationAuthorityAllowlist = new Set([
   'src/app/execution/SharedStrategyExecutionService.ts',
   // Generic lifecycle mechanics may close a position but do not choose strategy policy.
   'src/app/position/StrategyPositionLifecycleCore.ts',
-  'src/strategies/aegis/application/AegisExitManagementService.ts',
   'src/infra/adapters/BinanceAdapter.ts',
   'src/infra/adapters/ReadOnlyAuditedExchange.ts',
 ]);

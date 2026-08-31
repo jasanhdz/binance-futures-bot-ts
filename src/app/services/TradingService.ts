@@ -371,7 +371,7 @@ export class TradingService {
         execution: {
           readActivePosition: (symbol, side) => this.deps.exchange.readActivePosition(symbol, side),
           listCloseOrdersForSide: (symbol, side) => this.deps.exchange.listCloseOrdersForSide(symbol, side),
-          closeSideMarketSafe: (symbol, side, qtyAbs, sideMode, reason) =>
+          executePositionClose: (symbol, side, qtyAbs, sideMode, reason) =>
             this.deps.exchange.closeSideMarketSafe(symbol, side, qtyAbs, sideMode, reason),
           moveCloseStop: (params) => this.performSafeMoveCloseStop(params as Parameters<TradingService['performSafeMoveCloseStop']>[0]),
         },

@@ -11,12 +11,12 @@ describe('AegisExitManagementService', () => {
   });
 
   it('delegates profitable position closure through the execution port', async () => {
-    const closeSideMarketSafe = vi.fn().mockResolvedValue(undefined);
+    const executePositionClose = vi.fn().mockResolvedValue(undefined);
     const service = new AegisExitManagementService(vi.fn(), {
       execution: {
         readActivePosition: vi.fn(),
         listCloseOrdersForSide: vi.fn(),
-        closeSideMarketSafe,
+        executePositionClose,
       },
     });
     await service.closePosition({
@@ -26,7 +26,7 @@ describe('AegisExitManagementService', () => {
       sideMode: 'BOTH',
       reason: 'AEGIS_EXIT_EYE_OPPOSITE_SIGNAL',
     });
-    expect(closeSideMarketSafe).toHaveBeenCalledWith(
+    expect(executePositionClose).toHaveBeenCalledWith(
       'BTCUSDT',
       'LONG',
       1.25,
