@@ -5,9 +5,14 @@ import {
   AegisEntryContext,
   AegisEntryGuardName,
   AegisEntryPolicyRuntimeConfig,
+  guardDisabledResult,
 } from './AegisEntryDecisionTypes';
 import { CleanEntryGuardAdapter } from './guards/CleanEntryGuardAdapter';
 import { DecisionBrainGuardAdapter } from './guards/DecisionBrainGuardAdapter';
+import { EntryQualityGuardAdapter } from './guards/EntryQualityGuardAdapter';
+import { EventRiskGuardAdapter } from './guards/EventRiskGuardAdapter';
+import { RegimeGuardAdapter } from './guards/RegimeGuardAdapter';
+import { ShortGateGuardAdapter } from './guards/ShortGateGuardAdapter';
 
 const guardNames: AegisEntryGuardName[] = [
   'regime_context',
@@ -139,6 +144,29 @@ function context(): AegisEntryContext {
 afterEach(() => vi.restoreAllMocks());
 
 describe('AegisEntryGuardOrchestrator strategy authority', () => {
+  it('keeps the canonical guard order when the policy is disabled', async () => {
+    const disabledPolicy = policy();
+    disabledPolicy.enabled = false;
+    const regime = vi.spyOn(RegimeGuardAdapter, 'evaluate');
+    const shortGate = vi.spyOn(ShortGateGuardAdapter, 'evaluate');
+
+    const result = await AegisEntryGuardOrchestrator.evaluate(context(), disabledPolicy);
+
+    expect(result).toMatchObject({
+      finalDecision: 'ALLOW',
+      finalReason: 'entry_policy_disabled',
+      allowedBy: 'entry_policy',
+      adjustedLeverage: 20,
+      adjustedPositionFraction: 0.1,
+    });
+    expect(result.guards.map((guard) => guard.name)).toEqual(guardNames);
+    expect(result.guards.map((guard) => guard.reason)).toEqual(
+      guardNames.map(() => 'entry_policy_disabled'),
+    );
+    expect(regime).not.toHaveBeenCalled();
+    expect(shortGate).not.toHaveBeenCalled();
+  });
+
   it('keeps an Aegis allow attributed to Aegis only', async () => {
     const result = await AegisEntryGuardOrchestrator.evaluate(context(), policy());
 
@@ -209,5 +237,117 @@ describe('AegisEntryGuardOrchestrator strategy authority', () => {
       shouldOpen: false,
     });
     expect(JSON.stringify(result)).not.toContain('momentum_ride');
+  });
+
+  it('short-circuits at regime denial and marks every later guard as not evaluated', async () => {
+    vi.spyOn(RegimeGuardAdapter, 'evaluate').mockReturnValue({
+      guard: {
+        name: 'regime',
+        enabled: true,
+        mode: 'ENFORCE',
+        decision: 'DENY',
+        reason: 'regime_characterization_block',
+        wouldBlock: true,
+        enforced: true,
+        metadata: {},
+      },
+      decision: {
+        allowed: false,
+        reason: 'regime_characterization_block',
+      } as any,
+    });
+    const shortGate = vi.spyOn(ShortGateGuardAdapter, 'evaluate');
+
+    const result = await AegisEntryGuardOrchestrator.evaluate(context(), policy());
+
+    expect(result).toMatchObject({
+      finalDecision: 'DENY',
+      finalReason: 'regime_characterization_block',
+      deniedBy: 'regime',
+      shouldOpen: false,
+    });
+    expect(result.guards.map((guard) => guard.name)).toEqual(guardNames);
+    expect(result.guards.slice(2).map((guard) => guard.reason)).toEqual(
+      guardNames.slice(2).map((name) => `${name}_not_evaluated`),
+    );
+    expect(shortGate).not.toHaveBeenCalled();
+  });
+
+  it('carries short-gate sizing adjustments through the remaining simulated evaluation', async () => {
+    vi.spyOn(ShortGateGuardAdapter, 'evaluate').mockReturnValue({
+      guard: {
+        name: 'short_gate',
+        enabled: true,
+        mode: 'ENFORCE',
+        decision: 'ALLOW',
+        reason: 'short_gate_adjusted',
+        wouldBlock: false,
+        enforced: true,
+        metadata: {},
+      },
+      decision: {
+        allowed: true,
+        reason: 'short_gate_adjusted',
+        adjustedLeverage: 7,
+        adjustedPositionFraction: 0.03,
+        metadata: {},
+      } as any,
+      adjustedLeverage: 7,
+      adjustedPositionFraction: 0.03,
+    });
+    const entryQuality = vi
+      .spyOn(EntryQualityGuardAdapter, 'evaluate')
+      .mockImplementation((adjustedContext) => {
+        expect(adjustedContext.leverage).toBe(7);
+        expect(adjustedContext.requestedPositionFraction).toBe(0.03);
+        return { guard: guardDisabledResult('entry_quality') };
+      });
+
+    const result = await AegisEntryGuardOrchestrator.evaluate(context(), policy());
+
+    expect(entryQuality).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      finalDecision: 'ALLOW',
+      adjustedLeverage: 7,
+      adjustedPositionFraction: 0.03,
+    });
+    expect(result.guards.map((guard) => guard.name)).toEqual(guardNames);
+  });
+
+  it('stops at enforced event risk and preserves its exact blocking reason', async () => {
+    vi.spyOn(EventRiskGuardAdapter, 'evaluate').mockReturnValue({
+      guard: {
+        name: 'event_risk',
+        enabled: true,
+        mode: 'ENFORCE',
+        decision: 'DENY',
+        reason: 'event_risk_characterization_block',
+        wouldBlock: true,
+        enforced: true,
+        metadata: {},
+      },
+      decision: {
+        allowed: false,
+        action: 'BLOCK',
+        reason: 'event_risk_characterization_block',
+        wouldBlock: true,
+        metadata: {},
+      } as any,
+    });
+    const decisionBrain = vi.spyOn(DecisionBrainGuardAdapter, 'evaluate');
+
+    const result = await AegisEntryGuardOrchestrator.evaluate(context(), policy());
+
+    expect(result).toMatchObject({
+      finalDecision: 'DENY',
+      finalReason: 'event_risk_characterization_block',
+      deniedBy: 'event_risk',
+      shouldOpen: false,
+    });
+    expect(result.guards.map((guard) => guard.name)).toEqual(guardNames);
+    expect(result.guards.slice(5).map((guard) => guard.reason)).toEqual(
+      guardNames.slice(5).map((name) => `${name}_not_evaluated`),
+    );
+    expect(decisionBrain).not.toHaveBeenCalled();
   });
 });
