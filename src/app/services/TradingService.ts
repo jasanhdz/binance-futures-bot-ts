@@ -369,6 +369,7 @@ export class TradingService {
         execution: {
           readActivePosition: (symbol, side) => this.deps.exchange.readActivePosition(symbol, side),
           listCloseOrdersForSide: (symbol, side) => this.deps.exchange.listCloseOrdersForSide(symbol, side),
+          moveCloseStop: (params) => this.performSafeMoveCloseStop(params as Parameters<TradingService['performSafeMoveCloseStop']>[0]),
         },
         telemetry: { log: (event, payload) => this.logAegisTradeEvent(payload.symbol as string, event, payload) },
         notifications: {
@@ -3850,6 +3851,25 @@ export class TradingService {
   }
 
   private async safeMoveCloseStop(params: {
+    symbol: string;
+    side: Side;
+    tradeId?: string;
+    entryPrice: number;
+    markPrice: number;
+    leverage: number;
+    quantity: number;
+    position: PositionInfo;
+    newStopPrice: number;
+    currentRoe: number;
+    peakRoe: number;
+    protectedRoe?: number;
+    reason: SafeStopMoveReason;
+    useClosePosition?: boolean;
+  }): Promise<SafeStopMoveResult> {
+    return this.aegisExitManagementService.moveCloseStop<SafeStopMoveResult>(params);
+  }
+
+  private async performSafeMoveCloseStop(params: {
     symbol: string;
     side: Side;
     tradeId?: string;

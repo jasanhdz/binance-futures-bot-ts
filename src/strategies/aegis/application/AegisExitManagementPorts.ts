@@ -13,6 +13,7 @@ export interface AegisExitStatePort<State = unknown> {
 export interface AegisExitExecutionPort<Position = unknown> {
   readActivePosition(symbol: string, side: Side): Promise<Position | null>;
   listCloseOrdersForSide(symbol: string, side: Side): Promise<unknown[]>;
+  moveCloseStop?(params: unknown): Promise<unknown>;
 }
 
 export interface AegisExitTelemetryPort {

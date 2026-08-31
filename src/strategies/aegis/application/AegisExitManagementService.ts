@@ -82,4 +82,11 @@ export class AegisExitManagementService {
       ? stopPrice >= markPrice * (1 - bufferPct)
       : stopPrice <= markPrice * (1 + bufferPct);
   }
+
+  moveCloseStop<T>(params: unknown): Promise<T> {
+    if (!this.ports.execution?.moveCloseStop) {
+      return Promise.reject(new Error('AEGIS_EXIT_MOVE_STOP_PORT_UNAVAILABLE'));
+    }
+    return this.ports.execution.moveCloseStop(params) as Promise<T>;
+  }
 }
