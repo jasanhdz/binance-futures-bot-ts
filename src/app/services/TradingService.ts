@@ -108,6 +108,7 @@ import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/doma
 import { StrategyRiskLedger } from '../../core/risk/StrategyRiskLedger';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
+import { MomentumEntryCoordinator } from '../../strategies/momentum/application/MomentumEntryCoordinator';
 import {
   MomentumRideStrategy,
   MomentumRideStrategyContext,
@@ -283,6 +284,7 @@ export class TradingService {
   private readonly aegisEntryCoordinator = new AegisEntryCoordinator();
   private readonly aegisExecutionCoordinator: AegisExecutionCoordinator;
   private readonly aegisExitManagementService: AegisExitManagementService;
+  private readonly momentumEntryCoordinator: MomentumEntryCoordinator;
   private stopPromise: Promise<void> | null = null;
 
   private persistDailyRiskState(now = Date.now()): void {
@@ -379,6 +381,9 @@ export class TradingService {
           alert: (title, message) => this.deps.notifier.sendAlert(title, message),
         },
       },
+    );
+    this.momentumEntryCoordinator = new MomentumEntryCoordinator((symbol) =>
+      this.lookForMomentumEntry(symbol),
     );
     const momentumRuntimeConfig = this.getAegisMomentumRideConfig();
     const momentumRuntimeMode =
@@ -1634,7 +1639,7 @@ export class TradingService {
 
     try {
       const momentumConfig = this.getAegisMomentumRideConfig();
-      const standaloneMomentumHandled = await this.lookForMomentumEntry(symbol);
+      const standaloneMomentumHandled = await this.momentumEntryCoordinator.evaluate(symbol);
       if (standaloneMomentumHandled) return;
       if (
         momentumConfig.standaloneMainReplica === true &&
