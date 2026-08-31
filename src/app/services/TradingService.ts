@@ -1465,12 +1465,12 @@ export class TradingService {
       },
     });
 
-    if (decision.decision !== 'ENTRY_INTENT') return true;
-    if (decision.mode !== 'LIVE') return true;
-    if (this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return true;
-    if (CONFIG.AEGIS_LIVE_ENABLED !== true) return true;
-    if (this.getSymbolMode(symbol) !== 'LIVE') return true;
-    if (!sideConfig.enabled || policy.leverage <= 0 || policy.positionFraction <= 0) return true;
+    if (decision.decision !== 'ENTRY_INTENT') return false;
+    if (decision.mode !== 'LIVE') return false;
+    if (this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return false;
+    if (CONFIG.AEGIS_LIVE_ENABLED !== true) return false;
+    if (this.getSymbolMode(symbol) !== 'LIVE') return false;
+    if (!sideConfig.enabled || policy.leverage <= 0 || policy.positionFraction <= 0) return false;
 
     const protection = config.protection ?? {
       hardStopRoe: -0.4,
@@ -1526,7 +1526,7 @@ export class TradingService {
         status: execution.status,
         reason: execution.reason,
       });
-      return true;
+      return false;
     }
 
     const metadata = execution.metadata as Record<string, any>;

@@ -53,11 +53,11 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
+  'regime_config.live.yaml': 'ddbff696eac59a92da96c474d68e5f0967b62d45aa5ca8fe6a06cadda509c6e6',
   // Phase 2: Aegis entry evaluation and ExitEye effect classification now
   // capture policy decisions behind application boundaries.
   'src/app/services/TradingService.ts':
-    '0c99ea43ef70ac93e48d904dcca58e04552527d7bcfd1526f8b84edac00abc7e',
+    'd37361c5aa63b412775371da7492c86c5ef86f37ac4ad77793d7632d1f912f1c',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
