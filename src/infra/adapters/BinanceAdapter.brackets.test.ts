@@ -14,6 +14,9 @@ const mockClient = vi.hoisted(() => ({
   futuresAccountInfo: vi.fn(() =>
     Promise.resolve({ positions: [{ symbol: 'BTCUSDT', marginType: 'isolated' }] }),
   ),
+  futuresBook: vi.fn(() =>
+    Promise.resolve({ lastUpdateId: 1, bids: [{ price: '100', quantity: '1' }], asks: [{ price: '101', quantity: '1' }] }),
+  ),
 }));
 
 vi.mock('binance-api-node', () => ({
@@ -45,6 +48,11 @@ describe('BinanceExchange bracket placement', () => {
     mockClient.futuresPositionRisk.mockResolvedValue([{ symbol: 'BTCUSDT', leverage: '20' }]);
     mockClient.futuresAccountInfo.mockResolvedValue({
       positions: [{ symbol: 'BTCUSDT', marginType: 'isolated' }],
+    });
+    mockClient.futuresBook.mockResolvedValue({
+      lastUpdateId: 1,
+      bids: [{ price: '100', quantity: '1' }],
+      asks: [{ price: '101', quantity: '1' }],
     });
   });
 
@@ -193,6 +201,30 @@ describe('BinanceExchange bracket placement', () => {
     await exchange.ensureMarginType('BTCUSDT', 'CROSSED');
 
     expect(mockClient.futuresMarginType).not.toHaveBeenCalled();
+  });
+
+  it('coalesces concurrent margin reconciliation for one symbol', async () => {
+    const exchange = new BinanceExchange(logger as any);
+
+    await Promise.all([
+      exchange.ensureMarginType('BTCUSDT', 'ISOLATED'),
+      exchange.ensureMarginType('BTCUSDT', 'ISOLATED'),
+    ]);
+
+    expect(mockClient.futuresAccountInfo).toHaveBeenCalledTimes(1);
+    expect(mockClient.futuresMarginType).not.toHaveBeenCalled();
+  });
+
+  it('accounts for the weighted depth request in the shared scheduler', async () => {
+    const exchange = new BinanceExchange(logger as any);
+
+    await exchange.getDepthSnapshot('BTCUSDT', 20);
+
+    expect(exchange.getRequestMetrics()).toMatchObject({
+      requests: 2,
+      totalWeight: 25,
+      weightUsed: 25,
+    });
   });
 
   it('uses distinct owned client IDs for repeated bracket placements', async () => {

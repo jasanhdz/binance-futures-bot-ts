@@ -7,7 +7,19 @@ import { SharedMarketDataRuntime } from '../src/app/services/SharedMarketDataRun
 import { MomentumRealtimeMarketState } from '../src/strategies/momentum/application/MomentumRealtimeMarketState';
 import { MomentumCandleState } from '../src/strategies/momentum/application/MomentumCandleState';
 
-const symbols = ['BTCUSDT', 'ETHUSDT'] as const;
+const symbols = [
+  'BTCUSDT',
+  'ETHUSDT',
+  'SOLUSDT',
+  'BNBUSDT',
+  'XRPUSDT',
+  'DOGEUSDT',
+  'ADAUSDT',
+  'AVAXUSDT',
+  'LINKUSDT',
+  'SUIUSDT',
+  'LTCUSDT',
+] as const;
 const durationSeconds = Number(process.env.MOMENTUM_WS_SOAK_SECONDS ?? 420);
 const sampleMs = Number(process.env.MOMENTUM_WS_SAMPLE_MS ?? 2_000);
 const chaosAtSeconds = Number(process.env.MOMENTUM_WS_CHAOS_AT_SECONDS ?? 180);

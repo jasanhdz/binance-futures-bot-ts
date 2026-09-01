@@ -53,6 +53,7 @@ export class MarketDataHub {
   private readonly webSocketFactory: (url: string) => RawWebSocket;
   private readonly connections = new Map<string, StreamConnection>();
   private readonly watchdogTimer: NodeJS.Timeout;
+  private readonly reconnectAllTimers = new Set<NodeJS.Timeout>();
   private closed = false;
 
   constructor(
@@ -109,14 +110,22 @@ export class MarketDataHub {
   }
 
   public reconnectAll(): void {
-    for (const [key, connection] of this.connections) {
-      this.reconnect(key, key.slice(key.indexOf(':') + 1), connection);
+    for (const [index, [key, connection]] of [...this.connections.entries()].entries()) {
+      const timer = setTimeout(() => {
+        this.reconnectAllTimers.delete(timer);
+        if (this.connections.get(key) === connection) {
+          this.reconnect(key, key.slice(key.indexOf(':') + 1), connection);
+        }
+      }, index * 100);
+      this.reconnectAllTimers.add(timer);
     }
   }
 
   public close(): void {
     this.closed = true;
     clearInterval(this.watchdogTimer);
+    for (const timer of this.reconnectAllTimers) clearTimeout(timer);
+    this.reconnectAllTimers.clear();
     for (const [key, connection] of this.connections) {
       this.closeConnection(key, key.slice(key.indexOf(':') + 1), connection);
     }

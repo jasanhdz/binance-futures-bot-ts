@@ -3,18 +3,21 @@ import { Logger } from '../../app/ports/Logger';
 import { BinanceDepthDiffEvent } from '../../app/ports/MarketData';
 import { parseAggTrade, parseDepth } from '../../core/market-data/NormalizedMarketEvents';
 import { MarketDataHub } from './MarketDataHub';
+import { CombinedMarketDataHub } from './CombinedMarketDataHub';
 import { MARKET, PUBLIC } from './MarketDataEndpoints';
+import { createWsWebSocket } from './WsWebSocketFactory';
 
 export interface WebSocketConfig {
   reconnectIntervalMs?: number;
   watchdogTimeoutMs?: number;
   maxRetries?: number;
   isTestnet?: boolean;
-  marketDataHub?: MarketDataHub;
+  marketDataHub?: MarketDataHub | CombinedMarketDataHub;
+  combinedStreams?: boolean;
 }
 
 export class WebSocketManager {
-  private readonly marketDataHub: MarketDataHub;
+  private readonly marketDataHub: MarketDataHub | CombinedMarketDataHub;
   private userCleanup?: () => void;
   private userCallback?: (data: any) => void;
 
@@ -23,12 +26,17 @@ export class WebSocketManager {
     private readonly logger: Logger,
     config: WebSocketConfig = {},
   ) {
-    this.marketDataHub =
-      config.marketDataHub ??
-      new MarketDataHub(logger, {
-        isTestnet: config.isTestnet,
-        watchdogTimeoutMs: config.watchdogTimeoutMs,
-      });
+    this.marketDataHub = config.marketDataHub ??
+      (config.combinedStreams ?? true
+        ? new CombinedMarketDataHub(logger, {
+            isTestnet: config.isTestnet,
+            watchdogTimeoutMs: config.watchdogTimeoutMs,
+            webSocketFactory: createWsWebSocket,
+          })
+        : new MarketDataHub(logger, {
+            isTestnet: config.isTestnet,
+            watchdogTimeoutMs: config.watchdogTimeoutMs,
+          }));
   }
 
   public connectCandles(

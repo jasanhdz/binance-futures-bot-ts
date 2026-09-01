@@ -1,6 +1,14 @@
 // src/infra/rate-limit.ts
 let banUntil = 0;
 
+const metrics = {
+  rateLimitEvents: 0,
+  cooldownBlockedRequests: 0,
+  circuitBreakerActivations: 0,
+  lastStatus: undefined as number | undefined,
+  lastBanUntil: undefined as number | undefined,
+};
+
 export interface RateLimitDetails {
   status?: number;
   retryAfterMs?: number;
@@ -21,6 +29,10 @@ function extractBanUntil(msg: string): number | null {
 }
 
 function readRetryAfter(value: unknown, now: number): number | null {
+  if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : null;
+  }
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds < 0) return null;
   if (seconds > now) return seconds - now;
@@ -29,10 +41,12 @@ function readRetryAfter(value: unknown, now: number): number | null {
 
 export function parseRateLimitError(err: unknown, now = Date.now()): RateLimitDetails | null {
   const candidate = (err && typeof err === 'object' ? err : {}) as any;
-  const status = Number(
+  const candidateStatus = Number(
     candidate.status ?? candidate.response?.status ?? candidate.response?.data?.status ?? candidate.code,
   );
   const message = String(candidate.message ?? candidate.err ?? candidate.response?.data?.msg ?? err ?? '');
+  const messageStatus = message.match(/\b(429|418)\b/)?.[1];
+  const status = Number.isFinite(candidateStatus) ? candidateStatus : Number(messageStatus);
   const retryAfter = readRetryAfter(
     candidate.retryAfter ?? candidate.response?.headers?.['retry-after'] ?? candidate.response?.data?.retryAfter,
     now,
@@ -54,6 +68,7 @@ export function getRateLimitUntil() {
 export function noteRateLimitUntil(ts: number) {
   if (!Number.isFinite(ts)) return;
   if (ts > banUntil) {
+    if (banUntil <= Date.now()) metrics.circuitBreakerActivations++;
     banUntil = ts;
   }
 }
@@ -62,6 +77,9 @@ export function noteRateLimitFromError(err: unknown): number | null {
   const details = parseRateLimitError(err);
   const ts = details?.banUntil ?? null;
   if (ts) {
+    metrics.rateLimitEvents++;
+    metrics.lastStatus = details?.status;
+    metrics.lastBanUntil = ts;
     noteRateLimitUntil(ts);
     return ts;
   }
@@ -70,4 +88,21 @@ export function noteRateLimitFromError(err: unknown): number | null {
 
 export function isRateLimited(now = Date.now()) {
   return now < banUntil;
+}
+
+export function noteRateLimitBlockedRequest() {
+  metrics.cooldownBlockedRequests++;
+}
+
+export function getRateLimitMetrics() {
+  return { ...metrics, banUntil };
+}
+
+export function resetRateLimitStateForTests() {
+  banUntil = 0;
+  metrics.rateLimitEvents = 0;
+  metrics.cooldownBlockedRequests = 0;
+  metrics.circuitBreakerActivations = 0;
+  metrics.lastStatus = undefined;
+  metrics.lastBanUntil = undefined;
 }
