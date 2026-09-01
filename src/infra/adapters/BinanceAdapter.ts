@@ -16,7 +16,9 @@ import {
   isRateLimited,
   noteRateLimitBlockedRequest,
   noteRateLimitFromError,
+  parseRateLimitError,
 } from './rate-limit';
+import { SharedBinanceRateLimiter, type SharedRequestPriority } from './shared-binance-rate-limit';
 import { randomBytes } from 'node:crypto';
 
 const DEFAULT_MIN_REQ_GAP_MS = Number(process.env.BINANCE_REQ_GAP_MS ?? 40);
@@ -157,6 +159,8 @@ export class BinanceExchange implements Exchange {
   private nextRequestAt = 0;
   private readonly minReqGapMs = Math.max(0, DEFAULT_MIN_REQ_GAP_MS);
   private readonly recentRequestWeights: Array<{ at: number; weight: number }> = [];
+  private readonly sharedRateLimiter = new SharedBinanceRateLimiter('01-Trading-Bot');
+  private readonly depthSnapshotInflight = new Map<string, Promise<BinanceDepthSnapshot>>();
   private requestMetrics = {
     requests: 0,
     totalWeight: 0,
@@ -168,7 +172,7 @@ export class BinanceExchange implements Exchange {
   constructor(private log: Logger) {
     this.wsManager = new WebSocketManager(this.cli, log, { isTestnet: CONFIG.IS_TESTNET });
     const isTestnet = process.env.IS_TESTNET === '1';
-    void this.enqueue(() => this.cli.futuresPing())
+    void this.enqueue(() => this.cli.futuresPing(), DEFAULT_REQUEST_WEIGHT, 'ping')
       .then(() => {
         this.log.info('binance_connected', {
           net: isTestnet ? 'TESTNET' : 'PROD',
@@ -188,11 +192,18 @@ export class BinanceExchange implements Exchange {
       ...this.requestMetrics,
       weightUsed: this.getRequestWeightUsed(),
       maxWeightPerMinute: MAX_REQUEST_WEIGHT_PER_MINUTE,
+      shared: this.sharedRateLimiter.getMetrics(),
     };
   }
 
-  private enqueue<T>(task: () => Promise<T>, weight = DEFAULT_REQUEST_WEIGHT): Promise<T> {
+  private enqueue<T>(
+    task: () => Promise<T>,
+    weight = DEFAULT_REQUEST_WEIGHT,
+    endpoint = 'unknown',
+    priority: SharedRequestPriority = 'normal',
+  ): Promise<T> {
     const run = async () => {
+      await this.sharedRateLimiter.acquire(weight, endpoint, priority);
       while (isRateLimited()) {
         noteRateLimitBlockedRequest();
         this.requestMetrics.cooldownBlocked++;
@@ -217,6 +228,8 @@ export class BinanceExchange implements Exchange {
       } catch (err) {
         this.nextRequestAt = Date.now() + this.minReqGapMs;
         noteRateLimitFromError(err);
+        const details = parseRateLimitError(err);
+        if (details?.banUntil) this.sharedRateLimiter.noteRateLimit(details.banUntil, details.status);
         throw err;
       }
     };
@@ -247,7 +260,7 @@ export class BinanceExchange implements Exchange {
       return cached.data;
     }
     try {
-      const info = await this.enqueue(() => this.cli.futuresAccountInfo());
+      const info = await this.enqueue(() => this.cli.futuresAccountInfo(), DEFAULT_REQUEST_WEIGHT, 'account_info');
       this.accountInfoCache = { data: info, ts: Date.now() };
       return info;
     } catch (err) {
@@ -279,6 +292,8 @@ export class BinanceExchange implements Exchange {
     try {
       const raw = await this.enqueue(() =>
         this.cli.futuresCandles({ symbol, interval: interval as any, limit }),
+        DEFAULT_REQUEST_WEIGHT,
+        'candles',
       );
       return raw.map((c) => this.fromRestCandle(c));
     } catch (err) {
@@ -296,7 +311,11 @@ export class BinanceExchange implements Exchange {
     if (cached && now - cached.ts < 60_000) {
       return cached.snapshot;
     }
-    const data = await this.enqueue(() => this.cli.futuresFundingRate({ symbol, limit: 1 }));
+    const data = await this.enqueue(
+      () => this.cli.futuresFundingRate({ symbol, limit: 1 }),
+      DEFAULT_REQUEST_WEIGHT,
+      'funding_rate',
+    );
     const entry = Array.isArray(data) && data.length ? data[0] : undefined;
     const rate = entry && entry.fundingRate !== undefined ? Number(entry.fundingRate) : NaN;
     const nextFundingTime =
@@ -312,7 +331,7 @@ export class BinanceExchange implements Exchange {
     if (cached && now - cached.ts < 5_000) {
       return cached.snapshot;
     }
-    const markData = await this.enqueue(() => this.cli.futuresMarkPrice());
+    const markData = await this.enqueue(() => this.cli.futuresMarkPrice(), DEFAULT_REQUEST_WEIGHT, 'mark_price');
     const entry = Array.isArray(markData)
       ? (markData.find((r: any) => r.symbol === symbol) as any)
       : (markData as any);
@@ -333,7 +352,7 @@ export class BinanceExchange implements Exchange {
       return this.exchangeInfoCache.data;
     }
     try {
-      const data = await this.enqueue(() => this.cli.futuresExchangeInfo());
+      const data = await this.enqueue(() => this.cli.futuresExchangeInfo(), DEFAULT_REQUEST_WEIGHT, 'exchange_info');
       this.exchangeInfoCache = { data, ts: now };
       return data;
     } catch (err) {
@@ -354,6 +373,8 @@ export class BinanceExchange implements Exchange {
           symbol,
           recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 20_000),
         }),
+        DEFAULT_REQUEST_WEIGHT,
+        'leverage_bracket',
       );
       this.leverageBracketCache.set(symbol, { data, ts: now });
       return data;
@@ -368,7 +389,11 @@ export class BinanceExchange implements Exchange {
       return this.hedgeCache.value;
     }
     try {
-      const pm: any = await this.enqueue(() => (this.cli as any).futuresPositionMode());
+      const pm: any = await this.enqueue(
+        () => (this.cli as any).futuresPositionMode(),
+        DEFAULT_REQUEST_WEIGHT,
+        'position_mode',
+      );
       const val = !!pm?.dualSidePosition;
       this.hedgeCache = { value: val, at: Date.now() };
       return val;
@@ -425,7 +450,7 @@ export class BinanceExchange implements Exchange {
 
   async getServerTime() {
     try {
-      const t: any = await this.enqueue(() => this.cli.futuresTime());
+      const t: any = await this.enqueue(() => this.cli.futuresTime(), DEFAULT_REQUEST_WEIGHT, 'server_time');
       return Number((t && t.serverTime) ?? t);
     } catch (err) {
       noteRateLimitFromError(err);
@@ -595,13 +620,25 @@ export class BinanceExchange implements Exchange {
   }
 
   public async getDepthSnapshot(symbol: string, levels = 20): Promise<BinanceDepthSnapshot> {
-    const book = await this.enqueue(() => this.cli.futuresBook({ symbol, limit: levels }), 20);
-    return {
+    const key = `${symbol}:${levels}`;
+    const existing = this.depthSnapshotInflight.get(key);
+    if (existing) return existing;
+    const request = this.enqueue(
+      () => this.cli.futuresBook({ symbol, limit: levels }),
+      20,
+      'depth_snapshot',
+    ).then((book) => ({
       lastUpdateId: book.lastUpdateId,
       bids: book.bids.map((b) => [b.price, b.quantity] as [string, string]),
       asks: book.asks.map((a) => [a.price, a.quantity] as [string, string]),
       receivedAtMs: Date.now(),
-    };
+    }));
+    this.depthSnapshotInflight.set(key, request);
+    void request.then(
+      () => this.depthSnapshotInflight.delete(key),
+      () => this.depthSnapshotInflight.delete(key),
+    );
+    return request;
   }
 
   public simulateChaos(durationMs: number) {
@@ -648,7 +685,11 @@ export class BinanceExchange implements Exchange {
       return this.usdtCache.value;
     }
     try {
-      const b = await this.enqueue(() => this.cli.futuresAccountBalance());
+      const b = await this.enqueue(
+        () => this.cli.futuresAccountBalance(),
+        DEFAULT_REQUEST_WEIGHT,
+        'account_balance',
+      );
       const usdt = b.find((x) => x.asset === 'USDT');
       // NINJA v7.0 FIX: Use AVAILABLE balance (free margin) instead of total balance
       // This prevents "Insufficient Margin" errors when other positions are open.
@@ -705,18 +746,31 @@ export class BinanceExchange implements Exchange {
     }
     const operation = (async () => {
       try {
-        const before: any[] = await this.enqueue(() => this.cli.futuresPositionRisk({ symbol }));
+        const before: any[] = await this.enqueue(
+          () => this.cli.futuresPositionRisk({ symbol }),
+          DEFAULT_REQUEST_WEIGHT,
+          'position_risk',
+        );
         const beforeRow = before.find((item) => item.symbol === symbol);
         if (beforeRow && Number(beforeRow.leverage) === leverage) {
           this.leverageCache.set(symbol, { leverage, ts: Date.now() });
           this.log.debug('binance_leverage_already_desired', { symbol, leverage });
           return;
         }
-        const response: any = await this.enqueue(() => this.cli.futuresLeverage({ symbol, leverage }));
+        const response: any = await this.enqueue(
+          () => this.cli.futuresLeverage({ symbol, leverage }),
+          DEFAULT_REQUEST_WEIGHT,
+          'leverage_mutation',
+          'critical',
+        );
         if (Number(response?.leverage) !== leverage) {
           throw new Error(`Binance leverage response mismatch: requested ${leverage}`);
         }
-        const risk: any[] = await this.enqueue(() => this.cli.futuresPositionRisk({ symbol }));
+        const risk: any[] = await this.enqueue(
+          () => this.cli.futuresPositionRisk({ symbol }),
+          DEFAULT_REQUEST_WEIGHT,
+          'position_risk',
+        );
         const row = risk.find((item) => item.symbol === symbol);
         if (!row || Number(row.leverage) !== leverage) {
           throw new Error(`Binance leverage readback mismatch or unavailable for ${symbol}`);
@@ -766,7 +820,12 @@ export class BinanceExchange implements Exchange {
           this.log.debug('binance_margin_already_desired', { symbol, marginType });
           return;
         }
-        await this.enqueue(() => this.cli.futuresMarginType({ symbol, marginType }));
+        await this.enqueue(
+          () => this.cli.futuresMarginType({ symbol, marginType }),
+          DEFAULT_REQUEST_WEIGHT,
+          'margin_mutation',
+          'critical',
+        );
         if (!(await verify())) throw new Error(`Binance margin type readback mismatch for ${symbol}`);
         this.marginTypeCache.set(symbol, { type: marginType, ts: Date.now() });
         this.log.info('binance_margin_changed_and_verified', { symbol, marginType });
@@ -912,7 +971,12 @@ export class BinanceExchange implements Exchange {
 
     const t0 = Date.now();
     try {
-      const res = await this.enqueue(() => this.cli.futuresOrder(payload));
+      const res = await this.enqueue(
+        () => this.cli.futuresOrder(payload),
+        DEFAULT_REQUEST_WEIGHT,
+        'order_mutation',
+        'critical',
+      );
       this.log.debug('api_market_open', {
         ms: Date.now() - t0,
         symbol,
@@ -924,7 +988,12 @@ export class BinanceExchange implements Exchange {
     } catch (e: any) {
       noteRateLimitFromError(e);
       if (BinanceExchange.posSideMismatch(e)) {
-        const res = await this.enqueue(() => this.cli.futuresOrder(base));
+        const res = await this.enqueue(
+          () => this.cli.futuresOrder(base),
+          DEFAULT_REQUEST_WEIGHT,
+          'order_mutation',
+          'critical',
+        );
         this.hedgeCache = undefined;
         this.log.warn('api_market_open_fallback', { symbol, side, qty: quantity });
         this.invalidateAccountInfo();
@@ -1014,7 +1083,12 @@ export class BinanceExchange implements Exchange {
 
     const t0 = Date.now();
     try {
-      await this.enqueue(() => this.cli.futuresOrder(standardParams));
+      await this.enqueue(
+        () => this.cli.futuresOrder(standardParams),
+        DEFAULT_REQUEST_WEIGHT,
+        'protection_order_mutation',
+        'critical',
+      );
       this.log.debug('api_stop_upsert', {
         ms: Date.now() - t0,
         symbol,
@@ -1028,7 +1102,12 @@ export class BinanceExchange implements Exchange {
       if (BinanceExchange.posSideMismatch(e)) {
         const fallbackParams = { ...standardParams };
         delete fallbackParams.positionSide;
-        await this.enqueue(() => this.cli.futuresOrder(fallbackParams));
+        await this.enqueue(
+          () => this.cli.futuresOrder(fallbackParams),
+          DEFAULT_REQUEST_WEIGHT,
+          'protection_order_mutation',
+          'critical',
+        );
         this.hedgeCache = undefined;
         this.log.warn('api_stop_upsert_fallback', {
           symbol,
@@ -1057,7 +1136,12 @@ export class BinanceExchange implements Exchange {
       error: String(cause),
     });
     try {
-      await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+      await this.enqueue(
+        () => this.placeAlgoOrderRaw(algoParams),
+        DEFAULT_REQUEST_WEIGHT,
+        'protection_algo_mutation',
+        'critical',
+      );
       this.log.warn('api_stop_upsert_algo', {
         ms: Date.now() - startedAt,
         symbol,
@@ -1069,7 +1153,12 @@ export class BinanceExchange implements Exchange {
       noteRateLimitFromError(fallbackError);
       if (BinanceExchange.posSideMismatch(fallbackError)) {
         delete algoParams.positionSide;
-        await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+        await this.enqueue(
+          () => this.placeAlgoOrderRaw(algoParams),
+          DEFAULT_REQUEST_WEIGHT,
+          'protection_algo_mutation',
+          'critical',
+        );
         this.hedgeCache = undefined;
         this.log.warn('api_stop_upsert_algo_without_position_side', { symbol, side, stopPrice });
         return true;
@@ -1134,7 +1223,7 @@ export class BinanceExchange implements Exchange {
       }
 
       return response.json();
-    });
+    }, DEFAULT_REQUEST_WEIGHT, 'protection_algo_mutation', 'critical');
 
     this.log.info('api_stop_algo_placed', { symbol, side, stopPrice });
   }
@@ -1177,7 +1266,12 @@ export class BinanceExchange implements Exchange {
 
     const t0 = Date.now();
     try {
-      await this.enqueue(() => this.cli.futuresOrder(standardParams));
+      await this.enqueue(
+        () => this.cli.futuresOrder(standardParams),
+        DEFAULT_REQUEST_WEIGHT,
+        'protection_order_mutation',
+        'critical',
+      );
       this.log.debug('api_tp_upsert', {
         ms: Date.now() - t0,
         symbol,
@@ -1191,7 +1285,12 @@ export class BinanceExchange implements Exchange {
       if (BinanceExchange.posSideMismatch(e)) {
         const fallbackParams = { ...standardParams };
         delete fallbackParams.positionSide;
-        await this.enqueue(() => this.cli.futuresOrder(fallbackParams));
+        await this.enqueue(
+          () => this.cli.futuresOrder(fallbackParams),
+          DEFAULT_REQUEST_WEIGHT,
+          'protection_order_mutation',
+          'critical',
+        );
         this.hedgeCache = undefined;
         this.log.warn('api_tp_upsert_fallback', {
           symbol,
@@ -1247,7 +1346,12 @@ export class BinanceExchange implements Exchange {
       error: String(cause),
     });
     try {
-      await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+      await this.enqueue(
+        () => this.placeAlgoOrderRaw(algoParams),
+        DEFAULT_REQUEST_WEIGHT,
+        'protection_algo_mutation',
+        'critical',
+      );
       this.log.warn('api_tp_upsert_algo', {
         ms: Date.now() - startedAt,
         symbol,
@@ -1259,7 +1363,12 @@ export class BinanceExchange implements Exchange {
       noteRateLimitFromError(fallbackError);
       if (BinanceExchange.posSideMismatch(fallbackError)) {
         delete algoParams.positionSide;
-        await this.enqueue(() => this.placeAlgoOrderRaw(algoParams));
+        await this.enqueue(
+          () => this.placeAlgoOrderRaw(algoParams),
+          DEFAULT_REQUEST_WEIGHT,
+          'protection_algo_mutation',
+          'critical',
+        );
         this.hedgeCache = undefined;
         this.log.warn('api_tp_upsert_algo_without_position_side', {
           symbol,
@@ -1362,7 +1471,7 @@ export class BinanceExchange implements Exchange {
       }
 
       return response.json();
-    });
+    }, DEFAULT_REQUEST_WEIGHT, 'protection_algo_mutation', 'critical');
 
     this.log.info('api_tp_algo_placed', { symbol, side, tp: triggerPrice });
   }
@@ -1391,7 +1500,12 @@ export class BinanceExchange implements Exchange {
         : { ...base, positionSide: side };
 
     try {
-      await this.enqueue(() => this.cli.futuresOrder(payload));
+      await this.enqueue(
+        () => this.cli.futuresOrder(payload),
+        DEFAULT_REQUEST_WEIGHT,
+        'protection_order_mutation',
+        'critical',
+      );
       this.invalidateAccountInfo();
     } catch (e: any) {
       noteRateLimitFromError(e);
