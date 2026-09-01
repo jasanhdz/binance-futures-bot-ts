@@ -57,7 +57,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phases 2-6: entry, exit, Momentum, position protection, and risk session are extracted
   // while this digest and behavior tests bind the owner-authorized result.
   'src/app/services/TradingService.ts':
-    '0467886a4e7e23d687a1011f75c51e7bb12d0587fc2ccc2896ae209cac5de239',
+    '2c51db86e4dbb5d950bd41767da8c81eee2a29e3ac83e1a0fd81466b89830e06',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -84,7 +84,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/strategies/aegis/domain/CurrentBrainCanonicalDecision.ts':
     'a32681b0c93eb9990ec942013196c213cb0487922e4045baa9ab13d2979b2bca',
   'src/strategies/aegis/domain/entry/AegisEntryDecisionTypes.ts':
-    '00910364266e2f25a98822b51720e24b63408a0776aa5e1abc38bdb8c78eda3b',
+    'e65aa7c8da6f562ce01f6405fe3d8a1defc7e976ea9ecdd0e36d781d104b86f4',
   'src/strategies/aegis/domain/entry/AegisEntryGuardOrchestrator.ts':
     '208dd77c73729451e41abbdb5c072baac1181b369f34ed72e80b89a9b4afe59a',
   'src/strategies/aegis/domain/entry/guards/ProbeModeGuardAdapter.ts':

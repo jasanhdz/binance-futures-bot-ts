@@ -3,6 +3,7 @@ import { unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { SharedBinanceRateLimiter } from './shared-binance-rate-limit';
 
 const dbPath = join(tmpdir(), `shared-binance-rate-limit-test-${process.pid}.sqlite3`);
@@ -56,5 +57,26 @@ describe('shared Binance rate limiter', () => {
 
     await Promise.all([run('child-a'), run('child-b')]);
     expect(new SharedBinanceRateLimiter('assertion', dbPath).getMetrics().rateLimitEvents).toBe(0);
+    const db = new Database(dbPath, { readonly: true });
+    expect(db.pragma('journal_mode', { simple: true })).toBe('wal');
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM binance_rate_limit_events WHERE endpoint = 'concurrent_test'").get(),
+    ).toEqual({ count: 80 });
+    db.close();
+  });
+
+  it.each(['SQLITE_BUSY', 'SQLITE_LOCKED'])('bounds retries for %s', (code) => {
+    const limiter = new SharedBinanceRateLimiter('retry-test', dbPath) as SharedBinanceRateLimiter & {
+      runWithBusyRetry<T>(transaction: () => T): T;
+    };
+    let attempts = 0;
+
+    expect(() =>
+      limiter.runWithBusyRetry(() => {
+        attempts += 1;
+        throw Object.assign(new Error(code), { code });
+      }),
+    ).toThrow(code);
+    expect(attempts).toBe(6);
   });
 });
