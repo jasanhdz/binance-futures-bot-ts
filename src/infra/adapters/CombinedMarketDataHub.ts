@@ -20,6 +20,8 @@ type Route = {
   streams: Map<string, Stream>;
   socket?: RawWebSocket;
   socketGeneration: number;
+  openedAtMs?: number;
+  lastMessageAtMs?: number;
   openTimer?: NodeJS.Timeout;
   reconnectTimer?: NodeJS.Timeout;
   intentionallyClosed: boolean;
@@ -153,6 +155,8 @@ export class CombinedMarketDataHub {
       route.socket = socket;
       socket.onopen = () => {
         if (!this.isCurrentSocket(route, socket, generation)) return;
+        route.openedAtMs = Date.now();
+        route.lastMessageAtMs = undefined;
         for (const stream of route!.streams.values()) {
           stream.status = 'open';
           stream.lastMessageAtMs = undefined;
@@ -187,11 +191,12 @@ export class CombinedMarketDataHub {
     if (!this.isCurrentSocket(route, socket, generation)) return;
     try {
       const message = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(String(raw));
+      const receivedAtMs = Date.now();
+      route.lastMessageAtMs = receivedAtMs;
       const streamName =
         typeof message.stream === 'string' ? message.stream : [...route.streams.keys()][0];
       const stream = route.streams.get(streamName);
       if (!stream) return;
-      const receivedAtMs = Date.now();
       stream.lastMessageAtMs = receivedAtMs;
       const payload = message.data ?? message;
       for (const consumer of stream.consumers) {
@@ -235,15 +240,18 @@ export class CombinedMarketDataHub {
     if (this.closed) return;
     const now = Date.now();
     for (const route of this.routes.values()) {
+      if (!route.socket) continue;
+      const lastRouteActivityAtMs = route.lastMessageAtMs ?? route.openedAtMs;
       if (
-        [...route.streams.values()].some(
-          (stream) =>
-            stream.status === 'open' &&
-            (stream.lastMessageAtMs === undefined ||
-              now - stream.lastMessageAtMs > this.watchdogTimeoutMs),
-        )
-      )
+        lastRouteActivityAtMs !== undefined &&
+        now - lastRouteActivityAtMs > this.watchdogTimeoutMs
+      ) {
+        this.logger.warn('market_data_combined_ws_stale', {
+          route: route.descriptor.accessMode,
+          elapsed: now - lastRouteActivityAtMs,
+        });
         this.reconnect(route);
+      }
     }
   }
 

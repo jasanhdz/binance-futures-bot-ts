@@ -161,4 +161,40 @@ describe('CombinedMarketDataHub', () => {
     hub.close();
     vi.useRealTimers();
   });
+
+  it('keeps a combined route open when another subscribed stream is legitimately quiet', () => {
+    vi.useFakeTimers();
+    const sockets: FakeWebSocket[] = [];
+    const hub = new CombinedMarketDataHub(logger, {
+      watchdogTimeoutMs: 1_500,
+      reconnectDelayMs: 5,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn());
+    hub.subscribe('ltcusdt@aggTrade', MARKET, vi.fn());
+    vi.runOnlyPendingTimers();
+    sockets[0].open();
+
+    vi.advanceTimersByTime(4_000);
+    sockets[0].message({ stream: 'btcusdt@aggTrade', data: { p: '100' } });
+    vi.advanceTimersByTime(1_000);
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].closed).toBe(false);
+    expect(hub.getHealth()).toEqual([
+      expect.objectContaining({ stream: 'btcusdt@aggTrade', status: 'open' }),
+      expect.objectContaining({
+        stream: 'ltcusdt@aggTrade',
+        status: 'open',
+        lastMessageAtMs: undefined,
+      }),
+    ]);
+    hub.close();
+    vi.useRealTimers();
+  });
 });

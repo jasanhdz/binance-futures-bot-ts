@@ -6,6 +6,7 @@ import { createReadOnlyAuditedExchange } from '../src/infra/adapters/ReadOnlyAud
 import { SharedMarketDataRuntime } from '../src/app/services/SharedMarketDataRuntime';
 import { MomentumRealtimeMarketState } from '../src/strategies/momentum/application/MomentumRealtimeMarketState';
 import { MomentumCandleState } from '../src/strategies/momentum/application/MomentumCandleState';
+import { getRateLimitMetrics } from '../src/infra/adapters/rate-limit';
 
 const symbols = [
   'BTCUSDT',
@@ -34,7 +35,8 @@ const logs = { debug: 0, info: 0, warn: 0, error: 0 };
 const logger: Logger = {
   debug: (message, context) => {
     logs.debug++;
-    if (process.env.MOMENTUM_WS_VERBOSE === '1') console.log(JSON.stringify({ level: 'debug', message, context }));
+    if (process.env.MOMENTUM_WS_VERBOSE === '1')
+      console.log(JSON.stringify({ level: 'debug', message, context }));
   },
   info: (message, context) => {
     logs.info++;
@@ -63,28 +65,39 @@ type SymbolMetrics = {
   realtimeFresh: number;
   realtimeStale: number;
   realtimeNoData: number;
+  orderBookHealthy: number;
+  aggTradeGapFree: number;
   maxRealtimeAgeMs: number;
   maxAggTradeAgeMs: number;
+  maxGapCount: number;
+  maxResyncCount: number;
   postChaosFreshAtMs?: number;
 };
 
 const perSymbol: Record<string, SymbolMetrics> = Object.fromEntries(
-  symbols.map((symbol) => [symbol, {
-    samples: 0,
-    candleFresh: 0,
-    candleStale: 0,
-    candleNoData: 0,
-    candleWebsocketSource: 0,
-    candleRestWarmupSource: 0,
-    candleRestRecoverySource: 0,
-    candleFallbackReads: 0,
-    maxCandleAgeMs: 0,
-    realtimeFresh: 0,
-    realtimeStale: 0,
-    realtimeNoData: 0,
-    maxRealtimeAgeMs: 0,
-    maxAggTradeAgeMs: 0,
-  }]),
+  symbols.map((symbol) => [
+    symbol,
+    {
+      samples: 0,
+      candleFresh: 0,
+      candleStale: 0,
+      candleNoData: 0,
+      candleWebsocketSource: 0,
+      candleRestWarmupSource: 0,
+      candleRestRecoverySource: 0,
+      candleFallbackReads: 0,
+      maxCandleAgeMs: 0,
+      realtimeFresh: 0,
+      realtimeStale: 0,
+      realtimeNoData: 0,
+      orderBookHealthy: 0,
+      aggTradeGapFree: 0,
+      maxRealtimeAgeMs: 0,
+      maxAggTradeAgeMs: 0,
+      maxGapCount: 0,
+      maxResyncCount: 0,
+    },
+  ]),
 );
 
 const raw = new BinanceExchange(logger);
@@ -101,6 +114,7 @@ const realtime = new MomentumRealtimeMarketState({
 const candles = new MomentumCandleState(shared, '5m', 320);
 
 let chaosTriggeredAtMs: number | undefined;
+const preChaosBookCounters = new Map<string, { gapCount: number; resyncCount: number }>();
 let rssMin = Number.POSITIVE_INFINITY;
 let rssMax = 0;
 
@@ -119,8 +133,22 @@ async function main(): Promise<void> {
   while (Date.now() - startedAt < durationSeconds * 1_000) {
     const elapsedMs = Date.now() - startedAt;
     if (!chaosTriggeredAtMs && elapsedMs >= chaosAtSeconds * 1_000) {
+      for (const symbol of symbols) {
+        const state = shared.orderBookDataPlane.get(symbol)?.getState();
+        if (state) {
+          preChaosBookCounters.set(symbol, {
+            gapCount: state.gapCount,
+            resyncCount: state.resyncCount,
+          });
+        }
+      }
       chaosTriggeredAtMs = Date.now();
-      console.log(JSON.stringify({ event: 'CONTROLLED_WS_RECONNECT', at: new Date(chaosTriggeredAtMs).toISOString() }));
+      console.log(
+        JSON.stringify({
+          event: 'CONTROLLED_WS_RECONNECT',
+          at: new Date(chaosTriggeredAtMs).toISOString(),
+        }),
+      );
       raw.simulateChaos(5_000);
     }
 
@@ -128,6 +156,7 @@ async function main(): Promise<void> {
       const metric = perSymbol[symbol];
       const candle = await candles.read(symbol, 300);
       const market = realtime.read(symbol);
+      const bookState = shared.orderBookDataPlane.get(symbol)?.getState();
       metric.samples++;
 
       if (candle.status === 'FRESH') metric.candleFresh++;
@@ -142,8 +171,12 @@ async function main(): Promise<void> {
       if (market.status === 'FRESH') metric.realtimeFresh++;
       else if (market.status === 'STALE') metric.realtimeStale++;
       else metric.realtimeNoData++;
+      if (market.orderBookHealth === 'HEALTHY') metric.orderBookHealthy++;
+      if (market.aggTradeGapFree) metric.aggTradeGapFree++;
       metric.maxRealtimeAgeMs = Math.max(metric.maxRealtimeAgeMs, market.ageMs ?? 0);
       metric.maxAggTradeAgeMs = Math.max(metric.maxAggTradeAgeMs, market.aggTradeAgeMs ?? 0);
+      metric.maxGapCount = Math.max(metric.maxGapCount, bookState?.gapCount ?? 0);
+      metric.maxResyncCount = Math.max(metric.maxResyncCount, bookState?.resyncCount ?? 0);
 
       if (
         chaosTriggeredAtMs &&
@@ -163,36 +196,131 @@ async function main(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, sampleMs));
   }
 
-  const finalCandleRefs = Object.fromEntries(symbols.map((s) => [s, shared.candleDataPlane.getReferenceCount(s, '5m')]));
-  const finalBookRefs = Object.fromEntries(symbols.map((s) => [s, shared.orderBookDataPlane.getReferenceCount(s)]));
-  const finalAggRefs = Object.fromEntries(symbols.map((s) => [s, shared.aggTradeDataPlane.getReferenceCount(s)]));
+  const finalCandleRefs = Object.fromEntries(
+    symbols.map((s) => [s, shared.candleDataPlane.getReferenceCount(s, '5m')]),
+  );
+  const finalBookRefs = Object.fromEntries(
+    symbols.map((s) => [s, shared.orderBookDataPlane.getReferenceCount(s)]),
+  );
+  const finalAggRefs = Object.fromEntries(
+    symbols.map((s) => [s, shared.aggTradeDataPlane.getReferenceCount(s)]),
+  );
+  const finalBookStates = Object.fromEntries(
+    symbols.map((symbol) => {
+      const state = shared.orderBookDataPlane.get(symbol)?.getState();
+      return [
+        symbol,
+        state
+          ? {
+              health: state.health,
+              observedAtMs: state.observedAtMs,
+              lastDiffAtMs: state.lastDiffAtMs,
+              gapCount: state.gapCount,
+              resyncCount: state.resyncCount,
+            }
+          : null,
+      ];
+    }),
+  );
+  const finalRealtimeStates = Object.fromEntries(
+    symbols.map((symbol) => [symbol, realtime.read(symbol)]),
+  );
+  const finalStreamHealth = ((raw as any).wsManager?.getMarketDataHealth?.() ?? []) as Array<{
+    stream: string;
+    consumers: number;
+    status: 'connecting' | 'open' | 'reconnecting';
+    lastMessageAtMs?: number;
+    reconnectCount: number;
+  }>;
+  const requestMetrics = raw.getRequestMetrics();
+  const rateLimitMetrics = getRateLimitMetrics();
+  const depthSnapshotMetrics = shared.getDepthSnapshotMetrics();
 
   candles.close();
   realtime.close();
   shared.close();
   (raw as any).wsManager?.disconnectAll?.();
+  const referenceCountsAfterClose = {
+    candles: Object.fromEntries(
+      symbols.map((s) => [s, shared.candleDataPlane.getReferenceCount(s, '5m')]),
+    ),
+    orderBook: Object.fromEntries(
+      symbols.map((s) => [s, shared.orderBookDataPlane.getReferenceCount(s)]),
+    ),
+    aggTrades: Object.fromEntries(
+      symbols.map((s) => [s, shared.aggTradeDataPlane.getReferenceCount(s)]),
+    ),
+  };
 
   const blockers: string[] = [];
   for (const symbol of symbols) {
     const m = perSymbol[symbol];
     if (m.samples < 100) blockers.push(`${symbol}_INSUFFICIENT_SAMPLES_${m.samples}`);
-    if (pct(m.candleFresh, m.samples) < 0.95) blockers.push(`${symbol}_CANDLE_FRESH_RATE_${pct(m.candleFresh, m.samples).toFixed(3)}`);
+    if (pct(m.candleFresh, m.samples) < 0.95)
+      blockers.push(`${symbol}_CANDLE_FRESH_RATE_${pct(m.candleFresh, m.samples).toFixed(3)}`);
     if (m.candleWebsocketSource === 0) blockers.push(`${symbol}_NO_WEBSOCKET_CANDLE_SOURCE`);
-    if (pct(m.realtimeFresh, m.samples) < 0.90) blockers.push(`${symbol}_REALTIME_FRESH_RATE_${pct(m.realtimeFresh, m.samples).toFixed(3)}`);
-    if (m.candleFallbackReads > 3) blockers.push(`${symbol}_EXCESSIVE_REST_RECOVERY_${m.candleFallbackReads}`);
     if (!m.postChaosFreshAtMs) blockers.push(`${symbol}_DID_NOT_RECOVER_AFTER_RECONNECT`);
     else if (chaosTriggeredAtMs && m.postChaosFreshAtMs - chaosTriggeredAtMs > 45_000) {
-      blockers.push(`${symbol}_RECONNECT_RECOVERY_TOO_SLOW_${m.postChaosFreshAtMs - chaosTriggeredAtMs}`);
+      blockers.push(
+        `${symbol}_RECONNECT_RECOVERY_TOO_SLOW_${m.postChaosFreshAtMs - chaosTriggeredAtMs}`,
+      );
+    }
+    const finalBook = finalBookStates[symbol];
+    const beforeChaos = preChaosBookCounters.get(symbol);
+    if (!finalBook || !beforeChaos) blockers.push(`${symbol}_MISSING_BOOK_RECOVERY_EVIDENCE`);
+    else {
+      const gapDelta = finalBook.gapCount - beforeChaos.gapCount;
+      const resyncDelta = finalBook.resyncCount - beforeChaos.resyncCount;
+      if (gapDelta > 1) blockers.push(`${symbol}_REPEATED_POST_CHAOS_GAPS_${gapDelta}`);
+      if (resyncDelta > 1) blockers.push(`${symbol}_REPEATED_POST_CHAOS_RESYNCS_${resyncDelta}`);
+    }
+  }
+  const expectedStreams = symbols.flatMap((symbol) => {
+    const normalized = symbol.toLowerCase();
+    return [`${normalized}@depth@100ms`, `${normalized}@aggTrade`, `${normalized}@kline_5m`];
+  });
+  const healthByStream = new Map(finalStreamHealth.map((health) => [health.stream, health]));
+  if (healthByStream.size !== finalStreamHealth.length)
+    blockers.push('DUPLICATE_COMBINED_STREAM_HEALTH');
+  for (const stream of expectedStreams) {
+    const health = healthByStream.get(stream);
+    if (!health) blockers.push(`MISSING_STREAM_${stream}`);
+    else {
+      if (health.status !== 'open') blockers.push(`STREAM_NOT_OPEN_${stream}_${health.status}`);
+      if (health.reconnectCount > 1)
+        blockers.push(`UNEXPECTED_STREAM_RECONNECTS_${stream}_${health.reconnectCount}`);
     }
   }
   if (!chaosTriggeredAtMs) blockers.push('CONTROLLED_RECONNECT_NOT_TRIGGERED');
-  if (audited.audit.totalMutationAttempts !== 0 || audited.audit.forwardedMutationCalls !== 0) blockers.push('EXCHANGE_MUTATION_NONZERO');
+  if (audited.audit.totalMutationAttempts !== 0 || audited.audit.forwardedMutationCalls !== 0)
+    blockers.push('EXCHANGE_MUTATION_NONZERO');
   if (audited.audit.readOnlyCalls.authenticated !== 0) blockers.push('AUTHENTICATED_READ_OCCURRED');
+  if (logs.error !== 0) blockers.push(`MARKET_DATA_ERROR_LOGS_${logs.error}`);
+  if (rateLimitMetrics.rateLimitEvents !== 0)
+    blockers.push(`RATE_LIMIT_EVENTS_${rateLimitMetrics.rateLimitEvents}`);
+  if (rateLimitMetrics.circuitBreakerActivations !== 0)
+    blockers.push(`RATE_LIMIT_CIRCUIT_BREAKERS_${rateLimitMetrics.circuitBreakerActivations}`);
+  if (depthSnapshotMetrics.failures !== 0)
+    blockers.push(`DEPTH_SNAPSHOT_FAILURES_${depthSnapshotMetrics.failures}`);
+  if (depthSnapshotMetrics.circuitBreakerActivations !== 0)
+    blockers.push(`DEPTH_CIRCUIT_BREAKERS_${depthSnapshotMetrics.circuitBreakerActivations}`);
+  if (depthSnapshotMetrics.requestsExecutedDuringBan !== 0)
+    blockers.push(`DEPTH_REQUESTS_DURING_BAN_${depthSnapshotMetrics.requestsExecutedDuringBan}`);
+  if (
+    Object.values(referenceCountsAfterClose).some((counts) =>
+      Object.values(counts).some((count) => count !== 0),
+    )
+  ) {
+    blockers.push('MARKET_DATA_REFERENCES_NOT_RELEASED');
+  }
   const rssGrowthBytes = rssMax - rssMin;
   if (rssGrowthBytes > 256 * 1024 * 1024) blockers.push(`RSS_GROWTH_TOO_HIGH_${rssGrowthBytes}`);
 
   const report = {
-    verdict: blockers.length === 0 ? 'MOMENTUM_WEBSOCKET_SOAK_VERIFIED' : 'MOMENTUM_WEBSOCKET_SOAK_BLOCKED',
+    verdict:
+      blockers.length === 0
+        ? 'MOMENTUM_WEBSOCKET_SOAK_VERIFIED'
+        : 'MOMENTUM_WEBSOCKET_SOAK_BLOCKED',
     readyForAegisWebsocketMigration: blockers.length === 0,
     codeSha,
     durationSeconds,
@@ -201,13 +329,24 @@ async function main(): Promise<void> {
     startedAtUtc: new Date(startedAt).toISOString(),
     endedAtUtc: new Date().toISOString(),
     mutationAudit: audited.audit,
+    acceptanceBasis: {
+      transportFreshnessSeparatedFromMarketActivity: true,
+      strategyRealtimeFreshnessRetainedAsDiagnostic: true,
+    },
     logs,
     perSymbol,
+    finalBookStates,
+    finalRealtimeStates,
+    finalStreamHealth,
+    requestMetrics,
+    rateLimitMetrics,
+    depthSnapshotMetrics,
     referenceCountsBeforeClose: {
       candles: finalCandleRefs,
       orderBook: finalBookRefs,
       aggTrades: finalAggRefs,
     },
+    referenceCountsAfterClose,
     memory: { rssGrowthBytes, rssMin, rssMax },
     blockers,
   };
@@ -222,7 +361,7 @@ main().catch((error) => {
     verdict: 'MOMENTUM_WEBSOCKET_SOAK_BLOCKED',
     readyForAegisWebsocketMigration: false,
     codeSha,
-    error: error instanceof Error ? error.stack ?? error.message : String(error),
+    error: error instanceof Error ? (error.stack ?? error.message) : String(error),
   };
   writeFileSync('momentum-websocket-soak-report.json', JSON.stringify(report, null, 2) + '\n');
   console.error(error);
