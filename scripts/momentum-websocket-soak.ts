@@ -71,7 +71,8 @@ type SymbolMetrics = {
   maxAggTradeAgeMs: number;
   maxGapCount: number;
   maxResyncCount: number;
-  postChaosFreshAtMs?: number;
+  postChaosTransportRecoveredAtMs?: number;
+  postChaosStrategyFreshAtMs?: number;
 };
 
 const perSymbol: Record<string, SymbolMetrics> = Object.fromEntries(
@@ -180,13 +181,24 @@ async function main(): Promise<void> {
 
       if (
         chaosTriggeredAtMs &&
-        metric.postChaosFreshAtMs === undefined &&
+        metric.postChaosTransportRecoveredAtMs === undefined &&
+        Date.now() > chaosTriggeredAtMs &&
+        candle.status === 'FRESH' &&
+        candle.source === 'WEBSOCKET' &&
+        market.orderBookHealth === 'HEALTHY' &&
+        market.aggTradeGapFree
+      ) {
+        metric.postChaosTransportRecoveredAtMs = Date.now();
+      }
+      if (
+        chaosTriggeredAtMs &&
+        metric.postChaosStrategyFreshAtMs === undefined &&
         Date.now() > chaosTriggeredAtMs &&
         candle.status === 'FRESH' &&
         candle.source === 'WEBSOCKET' &&
         market.status === 'FRESH'
       ) {
-        metric.postChaosFreshAtMs = Date.now();
+        metric.postChaosStrategyFreshAtMs = Date.now();
       }
     }
 
@@ -259,10 +271,14 @@ async function main(): Promise<void> {
     if (pct(m.candleFresh, m.samples) < 0.95)
       blockers.push(`${symbol}_CANDLE_FRESH_RATE_${pct(m.candleFresh, m.samples).toFixed(3)}`);
     if (m.candleWebsocketSource === 0) blockers.push(`${symbol}_NO_WEBSOCKET_CANDLE_SOURCE`);
-    if (!m.postChaosFreshAtMs) blockers.push(`${symbol}_DID_NOT_RECOVER_AFTER_RECONNECT`);
-    else if (chaosTriggeredAtMs && m.postChaosFreshAtMs - chaosTriggeredAtMs > 45_000) {
+    if (!m.postChaosTransportRecoveredAtMs)
+      blockers.push(`${symbol}_TRANSPORT_DID_NOT_RECOVER_AFTER_RECONNECT`);
+    else if (
+      chaosTriggeredAtMs &&
+      m.postChaosTransportRecoveredAtMs - chaosTriggeredAtMs > 45_000
+    ) {
       blockers.push(
-        `${symbol}_RECONNECT_RECOVERY_TOO_SLOW_${m.postChaosFreshAtMs - chaosTriggeredAtMs}`,
+        `${symbol}_TRANSPORT_RECOVERY_TOO_SLOW_${m.postChaosTransportRecoveredAtMs - chaosTriggeredAtMs}`,
       );
     }
     const finalBook = finalBookStates[symbol];
@@ -332,6 +348,8 @@ async function main(): Promise<void> {
     acceptanceBasis: {
       transportFreshnessSeparatedFromMarketActivity: true,
       strategyRealtimeFreshnessRetainedAsDiagnostic: true,
+      postChaosTransportGate:
+        'WEBSOCKET candle fresh + order book healthy + aggTrade continuity gap-free',
     },
     logs,
     perSymbol,
