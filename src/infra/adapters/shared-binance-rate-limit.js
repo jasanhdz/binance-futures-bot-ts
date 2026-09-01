@@ -11,6 +11,9 @@ const CAPACITY = 1800;
 const REFILL_PER_MS = CAPACITY / 60000;
 const CRITICAL_RESERVE = 300;
 const DEFAULT_DB = (0, node_path_1.join)((0, node_os_1.tmpdir)(), 'trading_system-binance-shared-rate-limit.sqlite3');
+const SQLITE_BUSY_RETRIES = 5;
+const SQLITE_BUSY_JITTER_MIN_MS = 5;
+const SQLITE_BUSY_JITTER_MAX_MS = 35;
 class SharedBinanceRateLimiter {
     constructor(processName, dbPath = process.env.BINANCE_SHARED_RATE_LIMIT_DB ??
         (process.env.NODE_ENV === 'test' ? `${DEFAULT_DB}.${process.pid}` : DEFAULT_DB)) {
@@ -62,8 +65,8 @@ class SharedBinanceRateLimiter {
             const cooldownUntil = Math.max(state.cooldown_until, until);
             this.db.prepare('UPDATE binance_rate_limit_state SET cooldown_until = ?, updated_at = ? WHERE id = 1').run(cooldownUntil, now);
             this.db.prepare('INSERT INTO binance_rate_limit_events(created_at, process_name, endpoint, weight, priority, outcome) VALUES (?, ?, ?, ?, ?, ?)').run(now, this.processName, 'unknown', 0, 'normal', `rate_limit_${status ?? 'unknown'}`);
-        });
-        transaction();
+        }).immediate;
+        this.runWithBusyRetry(transaction);
         this.metrics.rateLimitEvents++;
         this.metrics.lastRateLimitStatus = status;
         this.metrics.cooldownUntil = until;
@@ -99,9 +102,26 @@ class SharedBinanceRateLimiter {
                 waitMs = Math.ceil((weight - available) / REFILL_PER_MS);
             }
             this.db.prepare('UPDATE binance_rate_limit_state SET tokens = ?, updated_at = ? WHERE id = 1').run(tokens, now);
-        });
-        transaction();
+        }).immediate;
+        this.runWithBusyRetry(transaction);
         return waitMs;
+    }
+    runWithBusyRetry(transaction) {
+        for (let attempt = 0; attempt <= SQLITE_BUSY_RETRIES; attempt += 1) {
+            try {
+                return transaction();
+            }
+            catch (error) {
+                const code = error && typeof error === 'object' ? error.code : undefined;
+                if (code !== 'SQLITE_BUSY' && code !== 'SQLITE_LOCKED')
+                    throw error;
+                if (attempt === SQLITE_BUSY_RETRIES)
+                    throw error;
+                const jitter = SQLITE_BUSY_JITTER_MIN_MS + Math.floor(Math.random() * (SQLITE_BUSY_JITTER_MAX_MS - SQLITE_BUSY_JITTER_MIN_MS + 1));
+                const atomics = new Int32Array(new SharedArrayBuffer(4));
+                Atomics.wait(atomics, 0, 0, jitter);
+            }
+        }
     }
 }
 exports.SharedBinanceRateLimiter = SharedBinanceRateLimiter;

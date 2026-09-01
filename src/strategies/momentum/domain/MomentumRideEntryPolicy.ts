@@ -1,6 +1,9 @@
 import { Candle, Side } from '../../../core/types';
 import { StrategyEvaluationResult } from '../../../core/strategy/StrategyDecision';
-import { evaluateMainStackingMomentum } from './MainStackingMomentumStrategy';
+import {
+  evaluateMainStackingMomentum,
+  type MainStackingMomentumDecision,
+} from './MainStackingMomentumStrategy';
 import {
   evaluateSharedEntrySafety,
   SharedEntrySafetyContext,
@@ -59,6 +62,20 @@ export interface MomentumRideEntryPolicyConfig {
   maxOpenMomentumPositions?: number;
   maxTotalOpenPositionsWhenMomentum?: number;
   disableSymbolAfterStopLossMs?: number;
+}
+
+/**
+ * Cheap, side-effect-free route preflight.  Application orchestration may use
+ * this domain boundary to avoid account/exposure I/O when the canonical
+ * momentum pattern is already absent.  Full policy evaluation still happens
+ * through evaluateMomentumRideEntry once the preflight passes.
+ */
+export function evaluateMomentumPattern(
+  candles: Candle[],
+  side: Side,
+): MainStackingMomentumDecision {
+  const decision = evaluateMainStackingMomentum(candles, side);
+  return decision;
 }
 
 export function evaluateMomentumRideEntry(

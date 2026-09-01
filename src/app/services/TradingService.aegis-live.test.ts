@@ -1870,7 +1870,7 @@ describe('TradingService Aegis live execution', () => {
       closedAt: new Date().toISOString(),
       pnlUsdt: -2,
     };
-    const { exchange, historyLogger, service } = makeHarness({
+    const { exchange, historyLogger, mlService, service } = makeHarness({
       cachedCandles: Array.from({ length: 80 }, (_, index) => {
         const close = 100 + index * 0.01;
         const isMomentum = index >= 77;
@@ -1916,9 +1916,10 @@ describe('TradingService Aegis live execution', () => {
         reason: 'daily_loss_stop_reached',
       }),
     );
+    expect(mlService.getSignal).toHaveBeenCalledWith('ETHUSDT');
   });
 
-  it('ignores non-momentum ticks when standalone momentum is active and no pattern exists', async () => {
+  it('evaluates Aegis independently when standalone Momentum finds no pattern', async () => {
     const regularCandles = Array.from({ length: 80 }, (_, index) => ({
       openTime: index * 300_000,
       timestamp: index * 300_000,
@@ -1943,7 +1944,7 @@ describe('TradingService Aegis live execution', () => {
     config.standaloneMainReplica = true;
     config.aegisFallbackEnabled = false;
 
-    const { exchange, service } = makeHarness({
+    const { exchange, mlService, service } = makeHarness({
       signal: abstainSignal,
       cachedCandles: regularCandles,
       momentumRide: config,
@@ -1951,6 +1952,28 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
+    expect(exchange.marketOpen).not.toHaveBeenCalled();
+    expect(mlService.getSignal).toHaveBeenCalledWith('ETHUSDT');
+  });
+
+  it('isolates a Momentum evaluation failure and still evaluates Aegis', async () => {
+    const signal: AegisTradingSignal = {
+      symbol: 'ETHUSDT',
+      action: 'PASS',
+      confidence: 0,
+      source: 'AEGIS_TURBO',
+      longProb: 0.33,
+      shortProb: 0.33,
+      neutralProb: 0.34,
+    };
+    const { exchange, mlService, service } = makeHarness({ signal });
+    vi.spyOn((service as any).momentumEntryCoordinator, 'evaluate').mockRejectedValueOnce(
+      new Error('momentum_test_failure'),
+    );
+
+    await service.tick('ETHUSDT');
+
+    expect(mlService.getSignal).toHaveBeenCalledWith('ETHUSDT');
     expect(exchange.marketOpen).not.toHaveBeenCalled();
   });
 

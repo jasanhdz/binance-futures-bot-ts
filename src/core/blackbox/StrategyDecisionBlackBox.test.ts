@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { MarketSnapshotV1 } from '../market-data/MarketSnapshotProvider';
 import type { StrategyDecisionEnvelope } from '../strategy/StrategyDecision';
 import {
-  createDecisionEvidenceV1,
+  createDecisionEvidenceV2,
   type DecisionEvidenceSink,
   type MarketSnapshotEvidenceSink,
   StrategyDecisionBlackBox,
@@ -41,9 +41,24 @@ function decision(overrides: Partial<StrategyDecisionEnvelope> = {}): StrategyDe
   };
 }
 
+function storedSnapshotReference(snapshotId = 'snapshot-1') {
+  return {
+    marketSnapshotId: snapshotId,
+    marketSnapshotStored: true,
+    marketSnapshotContentHash: `content-hash:${snapshotId}`,
+  };
+}
+
 describe('StrategyDecisionBlackBox', () => {
   it('links a strategy decision to the causal shared market snapshot without mixing clock domains', () => {
-    const record = createDecisionEvidenceV1(snapshot(), decision({ timestamp: 100 }), 1_010, 950);
+    const record = createDecisionEvidenceV2(
+      snapshot(),
+      decision({ timestamp: 100 }),
+      storedSnapshotReference(),
+      1_010,
+      950,
+    );
+    expect(record.schemaVersion).toBe(2);
     expect(record.marketSnapshotId).toBe('snapshot-1');
     expect(record.strategy.strategyId).toBe('MICRO_BURST_V1');
     expect(record.decision).toBe('ENTRY_INTENT');
@@ -54,14 +69,24 @@ describe('StrategyDecisionBlackBox', () => {
 
   it('rejects a snapshot captured after the local receive-time evaluation boundary', () => {
     expect(() =>
-      createDecisionEvidenceV1(snapshot({ capturedAtMs: 1_001 }), decision(), 1_010, 1_000),
+      createDecisionEvidenceV2(
+        snapshot({ capturedAtMs: 1_001 }),
+        decision(),
+        storedSnapshotReference(),
+        1_010,
+        1_000,
+      ),
     ).toThrow(/causal violation/);
   });
 
   it('rejects cross-symbol links', () => {
-    expect(() => createDecisionEvidenceV1(snapshot({ symbol: 'ETHUSDT' }), decision())).toThrow(
-      /symbol mismatch/,
-    );
+    expect(() =>
+      createDecisionEvidenceV2(
+        snapshot({ symbol: 'ETHUSDT' }),
+        decision(),
+        storedSnapshotReference(),
+      ),
+    ).toThrow(/symbol mismatch/);
   });
 
   it('persists the market snapshot before the linked decision', async () => {
@@ -69,6 +94,11 @@ describe('StrategyDecisionBlackBox', () => {
     const snapshotSink: MarketSnapshotEvidenceSink = {
       append: async (value) => {
         writes.push(`snapshot:${value.snapshotId}`);
+        return {
+          snapshotId: value.snapshotId,
+          stored: true,
+          contentHash: `content-hash:${value.snapshotId}`,
+        };
       },
     };
     const decisionSink: DecisionEvidenceSink = {
@@ -87,6 +117,7 @@ describe('StrategyDecisionBlackBox', () => {
       failed: 0,
       snapshotsAttempted: 1,
       snapshotsWritten: 1,
+      snapshotsDeduplicated: 0,
       snapshotsFailed: 0,
     });
   });
@@ -116,22 +147,127 @@ describe('StrategyDecisionBlackBox', () => {
         throw new Error('disk unavailable');
       },
     };
-    const blackBox = new StrategyDecisionBlackBox(sink, () => 1_010);
+    const blackBox = new StrategyDecisionBlackBox(sink, () => 1_010, {
+      append: async (value) => ({
+        snapshotId: value.snapshotId,
+        stored: true,
+        contentHash: `content-hash:${value.snapshotId}`,
+      }),
+    });
 
     await expect(blackBox.observe(snapshot(), decision())).resolves.toBeUndefined();
     expect(blackBox.health()).toEqual({
       attempted: 1,
       written: 0,
       failed: 1,
-      snapshotsAttempted: 0,
-      snapshotsWritten: 0,
+      snapshotsAttempted: 1,
+      snapshotsWritten: 1,
+      snapshotsDeduplicated: 0,
       snapshotsFailed: 0,
     });
   });
 
   it('produces a stable decision id for the same causal identity', () => {
-    const a = createDecisionEvidenceV1(snapshot(), decision(), 1_010, 950);
-    const b = createDecisionEvidenceV1(snapshot(), decision(), 9_999, 950);
+    const a = createDecisionEvidenceV2(
+      snapshot(),
+      decision(),
+      storedSnapshotReference(),
+      1_010,
+      950,
+    );
+    const b = createDecisionEvidenceV2(
+      snapshot(),
+      decision(),
+      storedSnapshotReference(),
+      9_999,
+      950,
+    );
     expect(a.decisionId).toBe(b.decisionId);
+  });
+
+  it('links decisions to a canonical snapshot returned by a deduplicating sink', async () => {
+    let record: ReturnType<typeof createDecisionEvidenceV2> | undefined;
+    const blackBox = new StrategyDecisionBlackBox(
+      {
+        append: async (value) => {
+          record = value;
+        },
+      },
+      () => 1_010,
+      {
+        append: async () => ({
+          snapshotId: 'canonical-1',
+          stored: false,
+          contentHash: 'content-hash-1',
+        }),
+      },
+    );
+
+    await blackBox.observe(snapshot(), decision());
+
+    expect(record).toMatchObject({
+      marketSnapshotId: 'canonical-1',
+      observedMarketSnapshotId: 'snapshot-1',
+      marketSnapshotStored: false,
+      marketSnapshotContentHash: 'content-hash-1',
+    });
+    expect(blackBox.health().snapshotsDeduplicated).toBe(1);
+  });
+
+  it('compacts repeated NO_TRADE candle replay while preserving its hash and bounds', () => {
+    const candles = Array.from({ length: 300 }, (_, index) => ({
+      openTime: index,
+      closeTime: index + 1,
+      close: 100 + index,
+    }));
+    const record = createDecisionEvidenceV2(
+      snapshot(),
+      decision({
+        decision: 'NO_TRADE',
+        side: undefined,
+        diagnostics: {
+          patternMatched: false,
+          strategyInputReplay: { symbol: 'BTCUSDT', side: 'LONG', candles },
+        },
+      }),
+      storedSnapshotReference(),
+      1_010,
+      950,
+    );
+
+    expect(record.evidenceLevel).toBe('COMPACT');
+    expect(record.diagnostics.strategyInputReplayCompacted).toBe(true);
+    expect(record.diagnostics.strategyInputReplay).toMatchObject({
+      symbol: 'BTCUSDT',
+      candleReplaySummary: {
+        count: 300,
+        firstOpenTime: 0,
+        lastCloseTime: 300,
+        sha256: expect.any(String),
+      },
+    });
+    expect(JSON.stringify(record.diagnostics)).not.toContain('"close":399');
+  });
+
+  it('keeps the full strategy replay for entry intents', () => {
+    const candles = [{ openTime: 1, closeTime: 2, close: 101 }];
+    const record = createDecisionEvidenceV2(
+      snapshot(),
+      decision({
+        decision: 'ENTRY_INTENT',
+        side: 'LONG',
+        diagnostics: {
+          patternMatched: true,
+          strategyInputReplay: { symbol: 'BTCUSDT', side: 'LONG', candles },
+        },
+      }),
+      storedSnapshotReference(),
+      1_010,
+      950,
+    );
+
+    expect(record.evidenceLevel).toBe('FULL_REPLAY');
+    expect(record.diagnostics.strategyInputReplay).toMatchObject({ candles });
+    expect(record.diagnostics).not.toHaveProperty('strategyInputReplayCompacted');
   });
 });

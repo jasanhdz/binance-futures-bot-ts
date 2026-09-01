@@ -1,6 +1,6 @@
 import type {
   DecisionEvidenceSink,
-  StrategyDecisionEvidenceV1,
+  StrategyDecisionEvidenceV2,
 } from '../blackbox/StrategyDecisionBlackBox';
 import type { StrategyTelemetryBus } from './StrategyTelemetryBus';
 
@@ -11,7 +11,7 @@ export class DecisionEvidenceTelemetrySink implements DecisionEvidenceSink {
     private readonly telemetry: StrategyTelemetryBus,
   ) {}
 
-  async append(record: StrategyDecisionEvidenceV1): Promise<void> {
+  async append(record: StrategyDecisionEvidenceV2): Promise<void> {
     await this.primary.append(record);
     await this.telemetry.publish({
       eventType: 'DECISION',
@@ -25,12 +25,17 @@ export class DecisionEvidenceTelemetrySink implements DecisionEvidenceSink {
       status: record.decision,
       reason: record.reason,
       details: {
+        evidenceSchemaVersion: record.schemaVersion,
+        evidenceLevel: record.evidenceLevel,
+        evidenceRecordId: record.decisionId,
+        marketSnapshotStored: record.marketSnapshotStored,
+        marketSnapshotContentHash: record.marketSnapshotContentHash,
+        observedMarketSnapshotId: record.observedMarketSnapshotId,
         mode: record.mode,
         confidence: record.confidence,
         structuralInvalidation: record.structuralInvalidation,
         destinationPrice: record.destinationPrice,
         requestedRisk: record.requestedRisk,
-        diagnostics: record.diagnostics,
         marketHealth: record.marketHealth,
       },
     });

@@ -150,6 +150,11 @@ export interface AegisMomentumRideRuntimeConfig {
   mode: AegisEntryPolicyMode;
   researchMode: boolean;
   standaloneMainReplica?: boolean;
+  /**
+   * Legacy compatibility field. Momentum no longer owns Aegis evaluation
+   * authority; TradingService evaluates Aegis independently whenever no
+   * strategy has opened the symbol during the current entry cycle.
+   */
   aegisFallbackEnabled?: boolean;
   regimeFilter: {
     enabled: boolean;

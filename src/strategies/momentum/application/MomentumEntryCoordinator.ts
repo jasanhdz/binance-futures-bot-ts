@@ -15,6 +15,7 @@ import {
 import { VERIFIED_AEGIS_TRADE_OWNERSHIP } from '../../../infra/logging/AegisTradeOwnership';
 import type { AegisMomentumRideRuntimeConfig } from '../../aegis/domain/entry/AegisEntryDecisionTypes';
 import { MAIN_STACKING_MOMENTUM_AUTHORITY } from '../domain/MainStackingMomentumStrategy';
+import { evaluateMomentumPattern } from '../domain/MomentumRideEntryPolicy';
 import type { MomentumRideStrategyContext } from '../domain/MomentumRideStrategy';
 import type { MomentumCandleSnapshot } from './MomentumCandleState';
 import type { MomentumRealtimeMarketSnapshot } from './MomentumRealtimeMarketState';
@@ -29,6 +30,11 @@ interface LiquidityStressSnapshot {
   status: 'NO_DATA' | 'FRESH' | 'STALE';
   receiveAgeMs?: number;
   inputVersion: MomentumRideStrategyContext['liquidityStressInputVersion'];
+}
+
+interface EntryAccountContext {
+  balance: number;
+  snapshot: USDTAccountSnapshot;
 }
 
 export interface MomentumEntryCoordinatorDeps {
@@ -81,10 +87,14 @@ export class MomentumEntryCoordinator {
     const symbolConfig = this.deps.getConfig().symbols[symbol];
     if (!symbolConfig?.enabled) return false;
 
+    // LONG and SHORT share the same account view for this symbol evaluation.
+    // It is populated lazily, only after a side passes the pure pattern gate.
+    const accountContext: { value?: EntryAccountContext } = {};
+
     for (const side of ['LONG', 'SHORT'] as Side[]) {
       const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
       if (!sideConfig.enabled) continue;
-      if (await this.evaluateAndExecuteSide(symbol, side, candidate)) return true;
+      if (await this.evaluateAndExecuteSide(symbol, side, candidate, accountContext)) return true;
     }
     return false;
   }
@@ -98,7 +108,11 @@ export class MomentumEntryCoordinator {
   > {
     const config = this.deps.getConfig();
     const symbolConfig = config.symbols[symbol];
-    if (config.enabled !== true || config.standaloneMainReplica !== true || !symbolConfig?.enabled) {
+    if (
+      config.enabled !== true ||
+      config.standaloneMainReplica !== true ||
+      !symbolConfig?.enabled
+    ) {
       return undefined;
     }
 
@@ -139,19 +153,41 @@ export class MomentumEntryCoordinator {
     symbol: string,
     side: Side,
     candidate: { candles: Candle[]; candleState?: MomentumCandleSnapshot },
+    accountContext: { value?: EntryAccountContext },
   ): Promise<boolean> {
     const config = this.deps.getConfig();
     const symbolConfig = config.symbols[symbol];
     if (!symbolConfig?.enabled) return false;
 
     const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
+    if (!sideConfig.enabled) return false;
+
+    // The canonical pattern is pure and local. Avoid account, exposure and
+    // outcome I/O until the pattern has actually produced a candidate.
+    const pattern = evaluateMomentumPattern(candidate.candles, side);
+    if (!pattern.allowed) {
+      this.deps.logger.debug('momentum_pattern_preflight_blocked', {
+        symbol,
+        side,
+        reason: pattern.reason,
+        diagnostics: pattern.diagnostics,
+      });
+      return false;
+    }
+
     const now = this.deps.now();
     const signalId = generateSignalId(symbol);
     const tradeId = generateStrategyTradeId('MOMENTUM_RIDE', symbol);
     const identity = this.deps.identity;
 
-    const balance = await this.deps.getUSDTBalance();
-    const accountSnapshot = await this.deps.readEntryAccountSnapshot(balance);
+    if (!accountContext.value) {
+      const balance = await this.deps.getUSDTBalance();
+      accountContext.value = {
+        balance,
+        snapshot: await this.deps.readEntryAccountSnapshot(balance),
+      };
+    }
+    const { balance, snapshot: accountSnapshot } = accountContext.value;
     const dailyEquity = accountSnapshot.equityTotal ?? accountSnapshot.walletBalance ?? balance;
     this.deps.initializeDailyStartBalance(dailyEquity, now);
     const dailyStartBalance = this.deps.getDailyStartBalance();
@@ -192,8 +228,7 @@ export class MomentumEntryCoordinator {
       dailyLossStopPct: config.safetyCaps.dailyLossStopPct ?? 0.9,
       maxOpenMomentumPositions: config.safetyCaps.maxOpenMomentumPositions,
       maxTotalOpenPositionsWhenMomentum: config.safetyCaps.maxTotalOpenPositionsWhenMomentum,
-      disableSymbolAfterStopLossMs:
-        config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000,
+      disableSymbolAfterStopLossMs: config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000,
     };
     const liquidity = this.deps.readLiquidityStatus(symbol, now) ?? {
       stress: 0,
@@ -275,8 +310,8 @@ export class MomentumEntryCoordinator {
       },
     });
 
-    // A veto/non-live result deliberately returns false so the configured Aegis
-    // fallback remains controlled by TradingService's strategy ordering gate.
+    // A veto/non-live result returns false so TradingService can continue with
+    // the independently evaluated Aegis strategy without granting it Momentum authority.
     if (decision.decision !== 'ENTRY_INTENT') return false;
     if (decision.mode !== 'LIVE') return false;
     if (this.deps.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return false;
@@ -370,9 +405,7 @@ export class MomentumEntryCoordinator {
       lastPositionFraction: execution.positionFraction,
       lastStopRoe: protection.hardStopRoe,
       lastTakeProfitRoe: protection.takeProfitRoe,
-      lastStopPrice: this.deps.isFiniteNumber(metadata.stopPrice)
-        ? metadata.stopPrice
-        : undefined,
+      lastStopPrice: this.deps.isFiniteNumber(metadata.stopPrice) ? metadata.stopPrice : undefined,
       lastBreakEvenRoe: protection.breakEvenRoe,
       lastTrailingActivationRoe: protection.trailingActivationRoe,
       lastTrailingCallbackRoe: protection.trailingCallbackRoe,
@@ -449,3 +482,4 @@ export class MomentumEntryCoordinator {
     return true;
   }
 }
+

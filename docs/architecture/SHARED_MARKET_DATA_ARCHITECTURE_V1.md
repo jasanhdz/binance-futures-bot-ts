@@ -422,4 +422,4 @@ The architecture is considered successfully established only when all are true:
 
 ## 20. Authority
 
-This document is the design source of truth for Shared Market Data V1. The phased implementation sequence and stop/go gates are defined in `SHARED_MARKET_DATA_MIGRATION_PLAN.md`. The current code inventory and migration classification are defined in `SHARED_MARKET_DATA_CLASSIFICATION.md`. The future research consumer is defined in `../research/STRATEGY_DECISION_BLACKBOX_V1.md`.
+This document is the design source of truth for Shared Market Data V1. The phased implementation sequence and stop/go gates are defined in `SHARED_MARKET_DATA_MIGRATION_PLAN.md`. The current code inventory and migration classification are defined in `SHARED_MARKET_DATA_CLASSIFICATION.md`. The observational research consumer is defined in `../research/STRATEGY_DECISION_BLACKBOX_V2.md`.

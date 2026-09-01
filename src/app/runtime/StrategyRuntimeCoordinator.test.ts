@@ -88,7 +88,13 @@ function runtimeHarness(): RuntimeHarness {
       momentumStrategyRouter: momentumRouter,
       microBurstStrategyRouter: new StrategyRouter<MicroBurstStrategyContext>(),
       decisionSink: { append: vi.fn(async () => undefined) },
-      marketSnapshotSink: { append: vi.fn(async () => undefined) },
+      marketSnapshotSink: {
+        append: vi.fn(async (snapshot) => ({
+          snapshotId: snapshot.snapshotId,
+          stored: true,
+          contentHash: `content-hash:${snapshot.snapshotId}`,
+        })),
+      },
     },
     factories,
   );

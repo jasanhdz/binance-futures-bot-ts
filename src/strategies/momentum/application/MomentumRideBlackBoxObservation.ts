@@ -63,7 +63,7 @@ export class MomentumRideBlackBoxObservation
 {
   private readonly bookLeases = new Map<string, OrderBookLease<SynchronizedOrderBook>>();
   private readonly aggTradeLeases = new Map<string, AggTradeLease<RollingAggTradeBuffer>>();
-  private readonly pendingContexts = new Map<string, ReplayContext>();
+  private readonly pendingContexts = new Map<string, MomentumRideStrategyContext>();
   private readonly snapshotProvider: MarketSnapshotProvider;
   private readonly blackBox: StrategyDecisionBlackBox;
 
@@ -151,7 +151,10 @@ export class MomentumRideBlackBoxObservation
           ...decision,
           diagnostics: {
             ...decision.diagnostics,
-            strategyInputReplay: context,
+            // Delay the defensive copy until after the strategy has produced a
+            // meaningful candidate. The pre-evaluation map retains only the
+            // short-lived context reference instead of up to 256 candle clones.
+            strategyInputReplay: createReplayContext(context),
             strategyInputReplaySchema: 'MOMENTUM_RIDE_CONTEXT_V1',
             observationalOnly: true,
           },
@@ -169,25 +172,28 @@ export class MomentumRideBlackBoxObservation
   }
 
   private rememberContext(snapshotId: string, context: MomentumRideStrategyContext): void {
-    const replayContext: ReplayContext = structuredClone({
-      symbol: context.symbol,
-      timestamp: context.timestamp,
-      side: context.side,
-      candles: context.candles,
-      policy: context.policy,
-      safety: context.safety,
-      openPositionsCount: context.openPositionsCount,
-      openMomentumPositions: context.openMomentumPositions,
-      symbolLastStopLossAt: context.symbolLastStopLossAt,
-      liquidityStressStatus: context.liquidityStressStatus,
-      liquidityStressAgeMs: context.liquidityStressAgeMs,
-      liquidityStressInputVersion: context.liquidityStressInputVersion,
-    });
-    this.pendingContexts.set(snapshotId, replayContext);
+    this.pendingContexts.set(snapshotId, context);
     while (this.pendingContexts.size > MAX_PENDING_CONTEXTS) {
       const oldest = this.pendingContexts.keys().next().value;
       if (typeof oldest !== 'string') break;
       this.pendingContexts.delete(oldest);
     }
   }
+}
+
+function createReplayContext(context: MomentumRideStrategyContext): ReplayContext {
+  return structuredClone({
+    symbol: context.symbol,
+    timestamp: context.timestamp,
+    side: context.side,
+    candles: context.candles,
+    policy: context.policy,
+    safety: context.safety,
+    openPositionsCount: context.openPositionsCount,
+    openMomentumPositions: context.openMomentumPositions,
+    symbolLastStopLossAt: context.symbolLastStopLossAt,
+    liquidityStressStatus: context.liquidityStressStatus,
+    liquidityStressAgeMs: context.liquidityStressAgeMs,
+    liquidityStressInputVersion: context.liquidityStressInputVersion,
+  });
 }

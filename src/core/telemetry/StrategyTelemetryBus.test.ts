@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { StrategyDecisionEvidenceV2 } from '../blackbox/StrategyDecisionBlackBox';
 import { StrategyTelemetryBus } from './StrategyTelemetryBus';
 import { DecisionEvidenceTelemetrySink } from './DecisionEvidenceTelemetrySink';
 import { TelemetryStrategyExecutionPort } from './TelemetryStrategyExecutionPort';
@@ -13,13 +14,19 @@ const identity = {
 describe('StrategyTelemetryBus', () => {
   it('mirrors black-box decisions without replacing the primary evidence sink', async () => {
     const events: any[] = [];
-    const telemetry = new StrategyTelemetryBus([{ append: async (event) => void events.push(event) }], () => 2000);
+    const telemetry = new StrategyTelemetryBus(
+      [{ append: async (event) => void events.push(event) }],
+      () => 2000,
+    );
     const primary = { append: vi.fn(async () => undefined) };
     const sink = new DecisionEvidenceTelemetrySink(primary, telemetry);
-    const evidence: any = {
-      schemaVersion: 1,
+    const evidence: StrategyDecisionEvidenceV2 = {
+      schemaVersion: 2,
       decisionId: 'decision-1',
       marketSnapshotId: 'snapshot-1',
+      marketSnapshotStored: true,
+      marketSnapshotContentHash: 'snapshot-content-hash-1',
+      evidenceLevel: 'COMPACT',
       symbol: 'BTCUSDT',
       evaluatedAtReceivedMs: 1500,
       strategyTimestampMs: 1400,
@@ -31,8 +38,14 @@ describe('StrategyTelemetryBus', () => {
       reason: 'momentum',
       confidence: 0.8,
       diagnostics: { score: 4 },
-      marketHealth: { status: 'FRESH' },
-      provenance: {},
+      marketHealth: 'COMPLETE',
+      provenance: {
+        schema: 'STRATEGY_DECISION_BLACKBOX_V2',
+        schemaVersion: 2,
+        marketSnapshotSchemaVersion: 1,
+        causalClock: 'LOCAL_RECEIVE_TIME',
+        storagePolicy: 'TIERED_DEDUPLICATED_ROTATING_JSONL_V2',
+      },
     };
 
     await sink.append(evidence);
@@ -44,12 +57,20 @@ describe('StrategyTelemetryBus', () => {
       decisionId: 'decision-1',
       marketSnapshotId: 'snapshot-1',
       status: 'ENTRY_INTENT',
+      details: {
+        evidenceRecordId: 'decision-1',
+        evidenceLevel: 'COMPACT',
+      },
     });
+    expect(events[0].details).not.toHaveProperty('diagnostics');
   });
 
   it('traces execution intent and result with the same trade id', async () => {
     const events: any[] = [];
-    const telemetry = new StrategyTelemetryBus([{ append: async (event) => void events.push(event) }], () => 3000);
+    const telemetry = new StrategyTelemetryBus(
+      [{ append: async (event) => void events.push(event) }],
+      () => 3000,
+    );
     const inner = {
       execute: vi.fn(async (intent: any) => ({
         status: 'OPENED' as const,
@@ -82,19 +103,30 @@ describe('StrategyTelemetryBus', () => {
       metadata: {},
     });
 
-    expect(events.map((event) => event.eventType)).toEqual(['EXECUTION_INTENT', 'EXECUTION_RESULT']);
+    expect(events.map((event) => event.eventType)).toEqual([
+      'EXECUTION_INTENT',
+      'EXECUTION_RESULT',
+    ]);
     expect(events.every((event) => event.tradeId === 'trade-1')).toBe(true);
   });
 
   it('fails open when telemetry persistence fails', async () => {
-    const telemetry = new StrategyTelemetryBus([{ append: async () => { throw new Error('disk'); } }]);
-    await expect(telemetry.publish({
-      eventType: 'OUTCOME',
-      strategyId: 'AEGIS_TURBO',
-      symbol: 'ETHUSDT',
-      occurredAtMs: 1,
-      status: 'LOSS',
-    })).resolves.toBeUndefined();
+    const telemetry = new StrategyTelemetryBus([
+      {
+        append: async () => {
+          throw new Error('disk');
+        },
+      },
+    ]);
+    await expect(
+      telemetry.publish({
+        eventType: 'OUTCOME',
+        strategyId: 'AEGIS_TURBO',
+        symbol: 'ETHUSDT',
+        occurredAtMs: 1,
+        status: 'LOSS',
+      }),
+    ).resolves.toBeUndefined();
     expect(telemetry.health()).toEqual({ attempted: 1, written: 0, failed: 1 });
   });
 });

@@ -1,15 +1,30 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import type { StrategyTelemetryEventV1 } from '../../core/telemetry/StrategyTelemetry';
 import type { StrategyTelemetrySink } from '../../core/telemetry/StrategyTelemetryBus';
+import {
+  RotatingJsonlWriter,
+  type RotatingJsonlWriterMetrics,
+  type RotatingJsonlWriterOptions,
+} from './RotatingJsonlWriter';
 
 export class JsonlStrategyTelemetrySink implements StrategyTelemetrySink {
+  private readonly writer: RotatingJsonlWriter;
+
   constructor(
-    private readonly filePath = 'data/strategy-telemetry/events-v1.jsonl',
-  ) {}
+    filePath = 'data/strategy-telemetry/events-v2.jsonl',
+    options?: RotatingJsonlWriterOptions,
+  ) {
+    this.writer = new RotatingJsonlWriter(filePath, options);
+  }
 
   async append(event: StrategyTelemetryEventV1): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.appendFile(this.filePath, `${JSON.stringify(event)}\n`, 'utf8');
+    await this.writer.append(event);
+  }
+
+  health(): Readonly<RotatingJsonlWriterMetrics> {
+    return this.writer.health();
+  }
+
+  async drain(): Promise<void> {
+    await this.writer.drain();
   }
 }
