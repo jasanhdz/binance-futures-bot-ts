@@ -32,6 +32,11 @@ interface LiquidityStressSnapshot {
   inputVersion: MomentumRideStrategyContext['liquidityStressInputVersion'];
 }
 
+interface EntryAccountContext {
+  balance: number;
+  snapshot: USDTAccountSnapshot;
+}
+
 export interface MomentumEntryCoordinatorDeps {
   logger: Logger;
   notifier: Notifier;
@@ -82,10 +87,14 @@ export class MomentumEntryCoordinator {
     const symbolConfig = this.deps.getConfig().symbols[symbol];
     if (!symbolConfig?.enabled) return false;
 
+    // LONG and SHORT share the same account view for this symbol evaluation.
+    // It is populated lazily, only after a side passes the pure pattern gate.
+    const accountContext: { value?: EntryAccountContext } = {};
+
     for (const side of ['LONG', 'SHORT'] as Side[]) {
       const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
       if (!sideConfig.enabled) continue;
-      if (await this.evaluateAndExecuteSide(symbol, side, candidate)) return true;
+      if (await this.evaluateAndExecuteSide(symbol, side, candidate, accountContext)) return true;
     }
     return false;
   }
@@ -144,6 +153,7 @@ export class MomentumEntryCoordinator {
     symbol: string,
     side: Side,
     candidate: { candles: Candle[]; candleState?: MomentumCandleSnapshot },
+    accountContext: { value?: EntryAccountContext },
   ): Promise<boolean> {
     const config = this.deps.getConfig();
     const symbolConfig = config.symbols[symbol];
@@ -170,8 +180,14 @@ export class MomentumEntryCoordinator {
     const tradeId = generateStrategyTradeId('MOMENTUM_RIDE', symbol);
     const identity = this.deps.identity;
 
-    const balance = await this.deps.getUSDTBalance();
-    const accountSnapshot = await this.deps.readEntryAccountSnapshot(balance);
+    if (!accountContext.value) {
+      const balance = await this.deps.getUSDTBalance();
+      accountContext.value = {
+        balance,
+        snapshot: await this.deps.readEntryAccountSnapshot(balance),
+      };
+    }
+    const { balance, snapshot: accountSnapshot } = accountContext.value;
     const dailyEquity = accountSnapshot.equityTotal ?? accountSnapshot.walletBalance ?? balance;
     this.deps.initializeDailyStartBalance(dailyEquity, now);
     const dailyStartBalance = this.deps.getDailyStartBalance();
@@ -466,3 +482,4 @@ export class MomentumEntryCoordinator {
     return true;
   }
 }
+
