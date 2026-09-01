@@ -45,12 +45,7 @@ const concreteStrategyPrefixes = [
   'src/strategies/micro-burst/',
 ];
 
-const sharedRoots = [
-  'src/core/',
-  'src/app/execution/',
-  'src/app/position/',
-  'src/app/ports/',
-];
+const sharedRoots = ['src/core/', 'src/app/execution/', 'src/app/position/', 'src/app/ports/'];
 
 const sharedImportAllowlist: Record<string, string[]> = {};
 
@@ -70,11 +65,45 @@ const mutationAuthorityAllowlist = new Set([
   'src/app/execution/SharedStrategyExecutionService.ts',
   // Generic lifecycle mechanics may close a position but do not choose strategy policy.
   'src/app/position/StrategyPositionLifecycleCore.ts',
+  'src/app/position/PositionProtectionService.ts',
   'src/infra/adapters/BinanceAdapter.ts',
   'src/infra/adapters/ReadOnlyAuditedExchange.ts',
 ]);
 
 describe('Phase 0 architecture contracts', () => {
+  it('keeps position recovery under one application owner', () => {
+    const tradingService = readFileSync(
+      resolve(repoRoot, 'src/app/services/TradingService.ts'),
+      'utf8',
+    );
+    expect(tradingService.match(/new PositionRecoveryService\(/g) ?? []).toHaveLength(1);
+  });
+
+  it('keeps concrete position protection outside TradingService', () => {
+    const tradingService = readFileSync(
+      resolve(repoRoot, 'src/app/services/TradingService.ts'),
+      'utf8',
+    );
+    expect(tradingService.match(/new PositionProtectionService\(/g) ?? []).toHaveLength(1);
+    expect(tradingService).not.toMatch(
+      /private (?:async )?(?:ensureAegisBrackets|replaceBracketsForNewEntryPrice|reconcileManualPositionSizeIncrease|safeMoveCloseStop|performSafeMoveCloseStop|bracketPrice|roundPrice|roundQuantity|isBetterStop)\b/,
+    );
+  });
+
+  it('keeps mutable risk-session state outside TradingService', () => {
+    const tradingService = readFileSync(
+      resolve(repoRoot, 'src/app/services/TradingService.ts'),
+      'utf8',
+    );
+    expect(tradingService.match(/new StrategyRiskSessionService\(/g) ?? []).toHaveLength(1);
+    expect(tradingService).not.toMatch(
+      /private (?:readonly )?(?:tradesToday|phaseOShortTradesToday|lastTradeDayReset|dailyStartBalance|lastDailyPnlPct|consecutiveLossTracker|strategyRiskLedger)\b/,
+    );
+    expect(tradingService).not.toMatch(
+      /private (?:async )?(?:persistDailyRiskState|initializeDailyStartBalance|restoreConsecutiveLossState|persistConsecutiveLossState|checkDailyReset)\b/,
+    );
+  });
+
   it('keeps shared/core imports independent from concrete strategy implementations', () => {
     const violations: string[] = [];
     for (const fileName of productionSourceFiles()) {

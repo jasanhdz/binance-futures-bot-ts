@@ -1251,7 +1251,7 @@ describe('TradingService Aegis live execution', () => {
 
   it('resets the streak when a TIME_LIMIT close is profitable', async () => {
     const { service } = makeHarness();
-    (service as any).consecutiveLossTracker.restore([
+    (service as any).riskSession.consecutiveLossTracker.restore([
       { tradeId: 'loss-1', closedAt: '2026-07-27T00:00:00.000Z', pnlUsdt: -2 },
       { tradeId: 'loss-2', closedAt: '2026-07-27T00:05:00.000Z', pnlUsdt: -1 },
     ]);
@@ -1821,13 +1821,20 @@ describe('TradingService Aegis live execution', () => {
       momentumRide: config,
     });
 
-    (service as any).momentumRealtimeMarketState = {
-      read: () => ({
-        source: 'SHARED_WEBSOCKET', status: 'FRESH', orderBookHealth: 'HEALTHY',
-        observedAtMs: Date.now(), ageMs: 0, aggTradeAgeMs: 0, aggTradeGapFree: true,
-        aggTradeCount: 10, netTakerVolume: 1,
-      }),
-    };
+    vi.spyOn(
+      (service as any).strategyRuntimeCoordinator,
+      'readMomentumRealtimeMarket',
+    ).mockReturnValue({
+      source: 'SHARED_WEBSOCKET',
+      status: 'FRESH',
+      orderBookHealth: 'HEALTHY',
+      observedAtMs: Date.now(),
+      ageMs: 0,
+      aggTradeAgeMs: 0,
+      aggTradeGapFree: true,
+      aggTradeCount: 10,
+      netTakerVolume: 1,
+    });
 
     await service.tick('ETHUSDT');
 
@@ -1884,13 +1891,20 @@ describe('TradingService Aegis live execution', () => {
       closedTradeOutcomes: [loss],
     });
 
-    (service as any).momentumRealtimeMarketState = {
-      read: () => ({
-        source: 'SHARED_WEBSOCKET', status: 'FRESH', orderBookHealth: 'HEALTHY',
-        observedAtMs: Date.now(), ageMs: 0, aggTradeAgeMs: 0, aggTradeGapFree: true,
-        aggTradeCount: 10, netTakerVolume: 1,
-      }),
-    };
+    vi.spyOn(
+      (service as any).strategyRuntimeCoordinator,
+      'readMomentumRealtimeMarket',
+    ).mockReturnValue({
+      source: 'SHARED_WEBSOCKET',
+      status: 'FRESH',
+      orderBookHealth: 'HEALTHY',
+      observedAtMs: Date.now(),
+      ageMs: 0,
+      aggTradeAgeMs: 0,
+      aggTradeGapFree: true,
+      aggTradeCount: 10,
+      netTakerVolume: 1,
+    });
 
     await service.tick('ETHUSDT');
 
@@ -1947,7 +1961,7 @@ describe('TradingService Aegis live execution', () => {
         { tradeId: 'today-loss', closedAt: new Date().toISOString(), pnlUsdt: -2.1 },
       ],
     });
-    (service as any).dailyStartBalance = 20;
+    (service as any).riskSession.dailyStartBalance = 20;
 
     await service.tick('ETHUSDT');
 
@@ -1971,7 +1985,7 @@ describe('TradingService Aegis live execution', () => {
 
   it('allows entry flow when daily loss is inside the limit', async () => {
     const { exchange, logger, service } = makeHarness({ balance: 19.2 });
-    (service as any).dailyStartBalance = 20;
+    (service as any).riskSession.dailyStartBalance = 20;
 
     await service.tick('ETHUSDT');
 
@@ -2517,7 +2531,7 @@ describe('TradingService Aegis live execution', () => {
         equityTotal: 20,
       },
     });
-    (service as any).dailyStartBalance = 20;
+    (service as any).riskSession.dailyStartBalance = 20;
 
     await service.tick('ETHUSDT');
 
@@ -4686,7 +4700,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('BTCUSDT');
     expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
-    expect((service as any).phaseOShortTradesToday).toBe(1);
+    expect((service as any).riskSession.snapshot().phaseOShortTradesToday).toBe(1);
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'POSITION_CONFIRMED' }),
     );
@@ -4700,7 +4714,7 @@ describe('TradingService Aegis live execution', () => {
       yaml: yamlTurbo({ allow_short: true }),
       phaseOShortLive: { enabled: true, max_phase_o_trades_per_day: 1 },
     });
-    (service as any).phaseOShortTradesToday = 1;
+    (service as any).riskSession.setPhaseOShortTradesToday(1);
 
     await service.tick('BTCUSDT');
 
@@ -4728,7 +4742,7 @@ describe('TradingService Aegis live execution', () => {
       signal: validSignal(),
       phaseOShortLive: { enabled: true, max_phase_o_trades_per_day: 1 },
     });
-    (service as any).phaseOShortTradesToday = 1;
+    (service as any).riskSession.setPhaseOShortTradesToday(1);
 
     await service.tick('ETHUSDT');
 
