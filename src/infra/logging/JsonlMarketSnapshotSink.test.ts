@@ -33,7 +33,14 @@ describe('JsonlMarketSnapshotSink', () => {
 
       expect(first).toMatchObject({ snapshotId: 'snapshot-1', stored: true });
       expect(second).toMatchObject({ snapshotId: 'snapshot-1', stored: false });
-      expect((await readFile(path, 'utf8')).trim().split('\n')).toHaveLength(1);
+      const records = (await readFile(path, 'utf8')).trim().split('\n');
+      expect(records).toHaveLength(1);
+      expect(JSON.parse(records[0])).toMatchObject({
+        schemaVersion: 2,
+        schema: 'STRATEGY_MARKET_SNAPSHOT_EVIDENCE_V2',
+        snapshotId: 'snapshot-1',
+        marketSnapshot: { schemaVersion: 1, snapshotId: 'snapshot-1' },
+      });
       expect(sink.health()).toMatchObject({ storedSnapshots: 1, deduplicatedSnapshots: 1 });
     } finally {
       await rm(root, { recursive: true, force: true });

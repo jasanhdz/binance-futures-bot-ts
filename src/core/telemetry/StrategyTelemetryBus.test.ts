@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { StrategyDecisionEvidenceV2 } from '../blackbox/StrategyDecisionBlackBox';
 import { StrategyTelemetryBus } from './StrategyTelemetryBus';
 import { DecisionEvidenceTelemetrySink } from './DecisionEvidenceTelemetrySink';
 import { TelemetryStrategyExecutionPort } from './TelemetryStrategyExecutionPort';
@@ -19,10 +20,13 @@ describe('StrategyTelemetryBus', () => {
     );
     const primary = { append: vi.fn(async () => undefined) };
     const sink = new DecisionEvidenceTelemetrySink(primary, telemetry);
-    const evidence: any = {
-      schemaVersion: 1,
+    const evidence: StrategyDecisionEvidenceV2 = {
+      schemaVersion: 2,
       decisionId: 'decision-1',
       marketSnapshotId: 'snapshot-1',
+      marketSnapshotStored: true,
+      marketSnapshotContentHash: 'snapshot-content-hash-1',
+      evidenceLevel: 'COMPACT',
       symbol: 'BTCUSDT',
       evaluatedAtReceivedMs: 1500,
       strategyTimestampMs: 1400,
@@ -34,8 +38,14 @@ describe('StrategyTelemetryBus', () => {
       reason: 'momentum',
       confidence: 0.8,
       diagnostics: { score: 4 },
-      marketHealth: { status: 'FRESH' },
-      provenance: {},
+      marketHealth: 'COMPLETE',
+      provenance: {
+        schema: 'STRATEGY_DECISION_BLACKBOX_V2',
+        schemaVersion: 2,
+        marketSnapshotSchemaVersion: 1,
+        causalClock: 'LOCAL_RECEIVE_TIME',
+        storagePolicy: 'TIERED_DEDUPLICATED_ROTATING_JSONL_V2',
+      },
     };
 
     await sink.append(evidence);

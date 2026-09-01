@@ -4,6 +4,7 @@ import type {
   MarketSnapshotEvidenceReference,
   MarketSnapshotEvidenceSink,
 } from '../../core/blackbox/StrategyDecisionBlackBox';
+import { createMarketSnapshotEvidenceV2 } from '../../core/blackbox/StrategyDecisionBlackBox';
 import {
   RotatingJsonlWriter,
   type RotatingJsonlWriterMetrics,
@@ -74,7 +75,7 @@ export class JsonlMarketSnapshotSink implements MarketSnapshotEvidenceSink {
     now: number,
     dedupeWindowMs: number,
   ): Promise<MarketSnapshotEvidenceReference> {
-    await this.writer.append(snapshot);
+    await this.writer.append(createMarketSnapshotEvidenceV2(snapshot, contentHash, now));
     this.storedSnapshots += 1;
     this.canonicalByContent.delete(contentHash);
     this.canonicalByContent.set(contentHash, { snapshotId: snapshot.snapshotId, storedAtMs: now });

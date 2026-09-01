@@ -288,7 +288,7 @@ Gate S: shared data plane operationally trustworthy.
 
 ### T — Define generic Strategy Decision Black Box contracts
 
-Implement only after `STRATEGY_DECISION_BLACKBOX_V1.md` requirements are satisfied.
+Implement only after `STRATEGY_DECISION_BLACKBOX_V2.md` requirements are satisfied.
 
 Separate:
 

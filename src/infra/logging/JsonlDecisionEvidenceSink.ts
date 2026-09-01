@@ -1,6 +1,7 @@
-import type {
-  DecisionEvidenceSink,
-  StrategyDecisionEvidenceV1,
+import {
+  assertStrategyDecisionEvidenceV2,
+  type StrategyDecisionEvidenceV2,
+  type DecisionEvidenceSink,
 } from '../../core/blackbox/StrategyDecisionBlackBox';
 import {
   RotatingJsonlWriter,
@@ -8,7 +9,7 @@ import {
   type RotatingJsonlWriterOptions,
 } from './RotatingJsonlWriter';
 
-/** Append-only V1 evidence sink. It has no exchange dependency or trading authority. */
+/** Append-only V2 evidence sink. It has no exchange dependency or trading authority. */
 export class JsonlDecisionEvidenceSink implements DecisionEvidenceSink {
   private readonly writer: RotatingJsonlWriter;
 
@@ -16,7 +17,8 @@ export class JsonlDecisionEvidenceSink implements DecisionEvidenceSink {
     this.writer = new RotatingJsonlWriter(filePath, options);
   }
 
-  async append(record: StrategyDecisionEvidenceV1): Promise<void> {
+  async append(record: StrategyDecisionEvidenceV2): Promise<void> {
+    assertStrategyDecisionEvidenceV2(record);
     await this.writer.append(record);
   }
 

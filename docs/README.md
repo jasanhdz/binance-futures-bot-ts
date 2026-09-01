@@ -16,7 +16,8 @@ These documents define the next architecture program. They are design/migration 
 - [Shared Market Data Architecture V1](./architecture/SHARED_MARKET_DATA_ARCHITECTURE_V1.md): ownership boundaries for candles, quotes, synchronized order book, AggTrades, benchmarks, neutral features, clocks, quality, and future snapshots.
 - [Shared Market Data Migration Plan — A to Z](./architecture/SHARED_MARKET_DATA_MIGRATION_PLAN.md): phased A–Z roadmap, implementation waves, gates, acceptance criteria, and stop/go policy.
 - [Shared Market Data Classification](./architecture/SHARED_MARKET_DATA_CLASSIFICATION.md): baseline code inventory at the reviewed runtime SHA and classification of generic vs strategy-specific components.
-- [Strategy Decision Black Box V1](./research/STRATEGY_DECISION_BLACKBOX_V1.md): future observational decision/market evidence model and offline learning boundary. It does not authorize ML feedback into strategies.
+- [Strategy Decision Black Box V2](./research/STRATEGY_DECISION_BLACKBOX_V2.md): operational observational decision/market evidence model and offline learning boundary. It does not authorize ML feedback into strategies.
+- [Strategy Decision Black Box Storage V2](./research/STRATEGY_DECISION_BLACKBOX_STORAGE_V2.md): tiering, deduplication, rotation, compression and clean-start policy.
 
 The governing architectural principle is: **shared layers describe what the market is doing; strategies decide what it means.** In particular, making order-book or AggTrade state available globally does not make Aegis or Momentum depend on those feeds for decisions.
 

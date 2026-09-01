@@ -2,7 +2,7 @@
 
 **Status:** operational evidence storage; observational and fail-open
 **Trading authority:** none
-**Decision schema:** remains `StrategyDecisionEvidenceV1`; V2 describes the storage policy
+**Decision schema:** `StrategyDecisionEvidenceV2` (`schemaVersion: 2`)
 
 ## Objective
 
@@ -20,8 +20,9 @@ New runtime evidence is written to:
 - `data/strategy-blackbox/market-snapshots/snapshots-v2.jsonl`
 - `data/strategy-telemetry/events-v2.jsonl`
 
-Existing V1 files are deliberately left untouched. Deployment must not delete or rewrite them.
-They may be archived offline only through a separate, explicitly authorized operation.
+Black Box V2 does not read, append, migrate, or import V1 decision files. A clean deployment may
+remove the obsolete V1 dataset through a separate, explicitly audited operation while the bot is
+stopped. Runtime code contains no V1 fallback.
 
 ## Candidate boundary
 
@@ -46,6 +47,9 @@ strategy telemetry stores its identifiers and operational summary, not a second 
 
 Snapshots with identical causal market content are stored once within a five-minute runtime
 window. Differences limited to local capture boundaries reference the first canonical snapshot.
+The shared `MarketSnapshotV1` input is persisted inside a
+`STRATEGY_MARKET_SNAPSHOT_EVIDENCE_V2` envelope containing the V2 storage schema, content hash and
+recording boundary; raw V1 snapshot records are not appended directly.
 Every decision retains:
 
 - the canonical `marketSnapshotId`;

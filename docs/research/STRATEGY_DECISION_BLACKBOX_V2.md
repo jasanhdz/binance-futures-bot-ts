@@ -1,8 +1,8 @@
-# Strategy Decision Black Box V1
+# Strategy Decision Black Box V2
 
-**Status:** RESEARCH DESIGN — NOT YET RUNTIME AUTHORITY  
-**Dependency:** Shared Market Data V1 must be established before broad multi-strategy black-box collection.  
-**Initial role:** observational evidence only; no feedback into strategy decisions.
+**Status:** OPERATIONAL OBSERVABILITY — NO RUNTIME AUTHORITY
+**Dependency:** Shared Market Data V1 is the causal market-snapshot contract consumed by Black Box V2.
+**Role:** tiered observational evidence only; no feedback into strategy decisions.
 
 ## 1. Research objective
 
@@ -10,7 +10,7 @@ Create a causal, reproducible record of what the market looked like and what eac
 
 The black box is not a trading strategy and is not an entry gate.
 
-Initial information flow is strictly:
+Runtime information flow is strictly:
 
 ```text
 market state + strategy evaluation
@@ -22,7 +22,8 @@ market state + strategy evaluation
        offline research
 ```
 
-There is no arrow from the black box back into Aegis, Momentum, Micro Burst, risk, sizing, execution, or LIVE authority in V1.
+There is no arrow from the black box back into Aegis, Momentum, Micro Burst, risk, sizing,
+execution, or LIVE authority in V2.
 
 ## 2. Why shared market data comes first
 
@@ -40,36 +41,23 @@ The black box therefore references a shared causal `MarketSnapshot` plus a separ
 
 ### 3.1 MarketSnapshot
 
-A versioned immutable representation of market facts causally available at capture time.
+A versioned immutable representation of market facts causally available at capture time. Shared
+Market Data continues to produce `MarketSnapshotV1`; Black Box persists it only inside its V2
+storage envelope.
 
 Conceptual fields:
 
 ```ts
-interface MarketSnapshot {
-  schemaVersion: number;
+interface MarketSnapshotEvidenceV2 {
+  schemaVersion: 2;
+  schema: 'STRATEGY_MARKET_SNAPSHOT_EVIDENCE_V2';
   snapshotId: string;
-  symbol: string;
-  capturedAtReceivedMs: number;
-
-  quote?: {
-    bid: number;
-    ask: number;
-    mid: number;
-    observedAtMs: number;
-    quality: string;
-  };
-
-  candles?: Record<string, unknown>;
-  orderBook?: unknown;
-  aggTradeFlow?: unknown;
-  benchmarks?: Record<string, unknown>;
-  sharedFeatures?: Record<string, number | null>;
-
-  sourceQuality: Record<string, unknown>;
+  contentHash: string;
+  recordedAtMs: number;
+  marketSnapshot: MarketSnapshotV1;
   provenance: {
-    codeSha: string;
-    schemaVersion: number;
-    featureDefinitionsVersion?: string;
+    marketSnapshotSchemaVersion: 1;
+    storagePolicy: 'DEDUPLICATED_ROTATING_JSONL_V2';
   };
 }
 ```
@@ -83,27 +71,34 @@ A strategy-owned record linked to a shared market snapshot.
 Conceptual fields:
 
 ```ts
-interface StrategyDecisionSnapshot {
-  schemaVersion: number;
+interface StrategyDecisionEvidenceV2 {
+  schemaVersion: 2;
   decisionId: string;
-  strategyId: string;
-  strategyVersion: string;
-  configHash: string;
-  codeSha: string;
-  symbol: string;
-  side?: 'LONG' | 'SHORT';
-  evaluatedAtReceivedMs: number;
   marketSnapshotId: string;
-
-  decision: 'ENTER' | 'SKIP' | 'WAIT' | 'NO_TRADE' | string;
-  actionable: boolean;
-  strategyFeatures: Record<string, number | string | boolean | null>;
-  gateResults?: Record<string, unknown>;
-  provenance?: Record<string, unknown>;
+  marketSnapshotStored: boolean;
+  marketSnapshotContentHash: string;
+  observedMarketSnapshotId?: string;
+  evidenceLevel: 'COMPACT' | 'FULL_REPLAY';
+  symbol: string;
+  evaluatedAtReceivedMs: number;
+  strategyTimestampMs: number;
+  strategy: StrategyIdentity;
+  decision: 'ENTRY_INTENT' | 'NO_TRADE';
+  diagnostics: Record<string, unknown>;
+  provenance: {
+    schema: 'STRATEGY_DECISION_BLACKBOX_V2';
+    schemaVersion: 2;
+    marketSnapshotSchemaVersion: 1;
+    causalClock: 'LOCAL_RECEIVE_TIME';
+    storagePolicy: 'TIERED_DEDUPLICATED_ROTATING_JSONL_V2';
+  };
 }
 ```
 
-Each strategy decides which of its internal features are safe and meaningful to persist. Shared market facts should not be copied into strategy-specific fields unless needed for exact decision reconstruction.
+Each strategy decides which internal features are safe and meaningful to persist. Full replay is
+reserved for candidates, entry intents and evaluation failures; routine decisions use compact
+evidence. Shared market facts are referenced by content hash and snapshot id instead of copied
+into strategy-specific fields.
 
 ### 3.3 Outcome
 
@@ -334,7 +329,8 @@ No model training runs inside `01-Trading-Bot`.
 
 ## 13. Failure semantics
 
-V1 black-box collection is observational. A storage failure should be visible through health/telemetry but must not silently alter a strategy's decision.
+V2 black-box collection is observational. A storage failure should be visible through
+health/telemetry but must not silently alter a strategy's decision.
 
 For a future official evidence cohort, governance may choose to declare a period invalid if collection health is incomplete. That is different from blocking a LIVE decision.
 
@@ -368,7 +364,7 @@ Later research can ask:
 - Did Momentum correctly avoid moves the others chased?
 - Are there neutral quality features useful across strategies?
 
-The black box must not automatically vote, rank, or select strategies in V1.
+The black box must not automatically vote, rank, or select strategies in V2.
 
 ## 15. No-retroactive-use rule
 
@@ -400,7 +396,7 @@ Every official decision record must make it possible to identify:
 
 Dataset outputs must also store builder version/hash and preregistration identity.
 
-## 17. Initial implementation sequence
+## 17. Implementation sequence
 
 Do not build this entire system before Shared Market Data is qualified.
 
@@ -418,9 +414,9 @@ Recommended sequence:
 10. offline outcome/dataset tooling;
 11. only later modeling experiments.
 
-## 18. V1 success definition
+## 18. V2 success definition
 
-Black Box V1 succeeds when:
+Black Box V2 succeeds when:
 
 - the same market reality can be referenced by multiple strategies;
 - captured features are causally available at decision time;

@@ -545,7 +545,7 @@ export class MicroBurstRuntime {
         }),
       );
       logger.info('micro_burst_decision_blackbox_attached', {
-        schema: 'STRATEGY_DECISION_BLACKBOX_V1',
+        schema: 'STRATEGY_DECISION_BLACKBOX_V2',
         authority: 'OBSERVATIONAL_ONLY',
         liveExecution: false,
       });

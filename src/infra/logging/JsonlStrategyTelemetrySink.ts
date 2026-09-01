@@ -10,7 +10,7 @@ export class JsonlStrategyTelemetrySink implements StrategyTelemetrySink {
   private readonly writer: RotatingJsonlWriter;
 
   constructor(
-    filePath = 'data/strategy-telemetry/events-v1.jsonl',
+    filePath = 'data/strategy-telemetry/events-v2.jsonl',
     options?: RotatingJsonlWriterOptions,
   ) {
     this.writer = new RotatingJsonlWriter(filePath, options);
