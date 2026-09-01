@@ -53,7 +53,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': 'ddbff696eac59a92da96c474d68e5f0967b62d45aa5ca8fe6a06cadda509c6e6',
+  'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
   // Phases 2-6: entry, exit, Momentum, position protection, and risk session are extracted
   // while this digest and behavior tests bind the owner-authorized result.
   'src/app/services/TradingService.ts':
