@@ -47,7 +47,7 @@ const baselineOperationalDigests: Record<string, string> = {
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Owner-authorized additive market-data/composition change.
   'src/infra/adapters/BinanceAdapter.ts':
-    'aa8a8ec4018ce81c12c1e8078b37b41a9c9001448df41771307accee45a4a558',
+    '1d2f351b573e96546e459a5b813de1a77a470373f086b821c54219ec94d1262c',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2f4cd5e58561cb034cbb87311cfdaecf58401ecb49f69110d4dc99d8272e7a35',
   'config/regime_config.example.yaml':

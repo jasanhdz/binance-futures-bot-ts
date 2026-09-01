@@ -18,8 +18,10 @@ import {
   noteRateLimitFromError,
   parseRateLimitError,
 } from './rate-limit';
-import { SharedBinanceRateLimiter, type SharedRequestPriority } from './shared-binance-rate-limit';
+import { SharedBinanceRateLimiter } from './shared-binance-rate-limit';
 import { randomBytes } from 'node:crypto';
+
+type SharedRequestPriority = 'normal' | 'critical';
 
 const DEFAULT_MIN_REQ_GAP_MS = Number(process.env.BINANCE_REQ_GAP_MS ?? 40);
 const EXCHANGE_INFO_TTL_MS = Number(process.env.BINANCE_EXCHANGEINFO_TTL_MS ?? 5 * 60_000);
