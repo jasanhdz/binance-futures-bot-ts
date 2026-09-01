@@ -12,6 +12,10 @@ on:
       - 'src/strategies/momentum/application/MomentumCandleState.ts'
       - 'src/strategies/momentum/application/MomentumRealtimeMarketState.ts'
       - 'src/infra/adapters/BinanceAdapter.ts'
+      - 'src/infra/adapters/CombinedMarketDataHub.ts'
+      - 'src/infra/adapters/CombinedMarketDataHub.test.ts'
+      - 'src/infra/adapters/MarketDataHub.ts'
+      - 'src/infra/adapters/WebSocketManager.ts'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +24,7 @@ permissions:
 jobs:
   momentum-websocket-soak:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       BINANCE_API_KEY: ''
       BINANCE_API_SECRET: ''
@@ -29,9 +33,9 @@ jobs:
       AEGIS_LIVE_ENABLED: '0'
       TELEGRAM_COMMANDS_ENABLED: '0'
       TELEGRAM_POLICY_MUTATIONS_ENABLED: '0'
-      MOMENTUM_WS_SOAK_SECONDS: '420'
+      MOMENTUM_WS_SOAK_SECONDS: '1200'
       MOMENTUM_WS_SAMPLE_MS: '2000'
-      MOMENTUM_WS_CHAOS_AT_SECONDS: '180'
+      MOMENTUM_WS_CHAOS_AT_SECONDS: '300'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,8 +55,18 @@ jobs:
       - name: TypeScript build
         run: npm run build
 
+      - name: Unit and integration tests
+        run: npm test
+
       - name: Static read-only safety audit
         run: npm run audit:usdm-readonly:static
+
+      - name: Capture runner public IP before Tailscale
+        run: |
+          RUNNER_PUBLIC_IP="$(curl --fail --silent --show-error --max-time 15 https://api.ipify.org)"
+          test -n "$RUNNER_PUBLIC_IP"
+          echo "Runner public IP: $RUNNER_PUBLIC_IP"
+          echo "RUNNER_PUBLIC_IP=$RUNNER_PUBLIC_IP" >> "$GITHUB_ENV"
 
       - name: Connect runner to Tailscale
         uses: tailscale/github-action@v4
@@ -75,6 +89,17 @@ jobs:
 
       - name: Verify Binance Futures public REST through iPhone
         run: |
+          test -z "$BINANCE_API_KEY"
+          test -z "$BINANCE_API_SECRET"
+
+          EXIT_PUBLIC_IP="$(curl --fail --silent --show-error --max-time 15 https://api.ipify.org)"
+          test -n "$EXIT_PUBLIC_IP"
+          echo "iPhone exit-node public IP: $EXIT_PUBLIC_IP"
+          if [ "$EXIT_PUBLIC_IP" = "$RUNNER_PUBLIC_IP" ]; then
+            echo 'ERROR: public IP did not change after selecting the iPhone exit node.'
+            exit 1
+          fi
+
           HTTP_CODE="$(curl --silent --show-error --max-time 20 -o /tmp/binance-time.json -w '%{http_code}' https://fapi.binance.com/fapi/v1/time || true)"
           cat /tmp/binance-time.json || true
           echo
