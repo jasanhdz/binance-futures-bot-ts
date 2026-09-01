@@ -35,6 +35,9 @@ import type { Exchange } from '../ports/Exchange';
 import type { Logger } from '../ports/Logger';
 import type { LiquidityVoidDetector } from '../services/LiquidityVoidDetector';
 import { SharedMarketDataRuntime } from '../services/SharedMarketDataRuntime';
+import { buildMarketDataDiagnostics } from '../diagnostics/MarketDataDiagnostics';
+import { AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS } from '../../strategies/aegis/application/AegisMarketContext';
+import { getRateLimitMetrics } from '../../infra/adapters/rate-limit';
 
 export type MicroBurstRuntimeProvenance = NonNullable<MicroBurstRuntimeDeps['provenance']>;
 
@@ -151,6 +154,28 @@ export class StrategyRuntimeCoordinator {
 
   getMicroBurstReadiness(): MicroBurstRuntimeReadiness | null {
     return this.microBurstReadiness;
+  }
+
+  getMarketDataDiagnostics(): Record<string, unknown> {
+    const exchangeRuntime = this.deps.exchange as unknown as {
+      wsManager?: {
+        getMarketDataHealth(): readonly {
+          stream: string;
+          consumers: number;
+          status: string;
+          lastMessageAtMs?: number;
+          reconnectCount: number;
+        }[];
+      };
+    };
+    const diagnostics = buildMarketDataDiagnostics(this.sharedMarketDataRuntime!, {
+      symbols: AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS,
+      streams: exchangeRuntime.wsManager?.getMarketDataHealth(),
+      rateLimit: getRateLimitMetrics(),
+    });
+    const summary = diagnostics.summary as Record<string, unknown>;
+    summary.depthSnapshotMetrics = this.sharedMarketDataRuntime?.getDepthSnapshotMetrics();
+    return diagnostics;
   }
 
   async start(input: StrategyRuntimeStartInput): Promise<void> {

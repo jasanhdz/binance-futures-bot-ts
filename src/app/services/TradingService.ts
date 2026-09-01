@@ -738,6 +738,10 @@ export class TradingService {
     return this.strategyRuntimeCoordinator.getMicroBurstReadiness();
   }
 
+  getMarketDataDiagnostics(): Record<string, unknown> {
+    return this.strategyRuntimeCoordinator.getMarketDataDiagnostics();
+  }
+
   async start(startLoop = true): Promise<void> {
     const { logger, notifier, mlService, configManager, exchange } = this.deps;
     const manager = configManager as any;

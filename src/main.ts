@@ -2,6 +2,7 @@ import { CONFIG } from './infra/config/environment';
 import { createApplicationInfrastructure } from './app/bootstrap/ApplicationInfrastructure';
 import { createCommandListener } from './app/bootstrap/CommandComposition';
 import { composeStrategyRuntime } from './app/bootstrap/StrategyComposition';
+import { MarketDataDiagnosticsServer } from './app/diagnostics/MarketDataDiagnosticsServer';
 
 /** Process entry point and application composition root. */
 async function main(): Promise<void> {
@@ -11,6 +12,11 @@ async function main(): Promise<void> {
   const infrastructure = createApplicationInfrastructure();
   const runtime = composeStrategyRuntime(infrastructure);
   const commands = createCommandListener(infrastructure, runtime);
+  const diagnostics = new MarketDataDiagnosticsServer({
+    getDiagnostics: () => runtime.service.getMarketDataDiagnostics(),
+    logger: infrastructure.logger,
+  });
+  diagnostics.start();
 
   console.log(`Runtime mode: ${CONFIG.TRADING_MODE}`);
   console.log(`Active symbols: ${runtime.config.symbols.join(', ')}`);
@@ -22,6 +28,13 @@ async function main(): Promise<void> {
     shutdownStarted = true;
     commands?.stop();
     const completed = await stopWithTimeout(runtime.service.stop(), infrastructure.logger, signal);
+    await diagnostics
+      .stop()
+      .catch((error) =>
+        infrastructure.logger.error('market_data_diagnostics_stop_failed', {
+          error: String(error),
+        }),
+      );
     process.exit(completed ? 0 : 1);
   };
 
