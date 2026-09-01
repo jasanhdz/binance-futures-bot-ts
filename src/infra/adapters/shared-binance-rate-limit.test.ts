@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { unlinkSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SharedBinanceRateLimiter } from './shared-binance-rate-limit';
@@ -28,5 +29,32 @@ describe('shared Binance rate limiter', () => {
     const started = Date.now();
     await limiter.acquire(10, 'account', 'critical');
     expect(Date.now() - started).toBeGreaterThanOrEqual(75);
+  });
+
+  it('coordinates concurrent writers from separate node processes', async () => {
+    const modulePath = join(process.cwd(), 'src/infra/adapters/shared-binance-rate-limit.js');
+    const script = `
+      const { SharedBinanceRateLimiter } = require(process.argv[1]);
+      const limiter = new SharedBinanceRateLimiter(process.argv[3], process.argv[2]);
+      (async () => {
+        for (let i = 0; i < 40; i += 1) await limiter.acquire(1, 'concurrent_test');
+      })().catch((error) => { console.error(error); process.exitCode = 1; });
+    `;
+    const run = (name: string) =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, ['-e', script, modulePath, dbPath, name], {
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let stderr = '';
+        child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+        child.once('error', reject);
+        child.once('exit', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`child exited ${code}: ${stderr}`));
+        });
+      });
+
+    await Promise.all([run('child-a'), run('child-b')]);
+    expect(new SharedBinanceRateLimiter('assertion', dbPath).getMetrics().rateLimitEvents).toBe(0);
   });
 });

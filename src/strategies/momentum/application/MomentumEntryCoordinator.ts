@@ -15,6 +15,7 @@ import {
 import { VERIFIED_AEGIS_TRADE_OWNERSHIP } from '../../../infra/logging/AegisTradeOwnership';
 import type { AegisMomentumRideRuntimeConfig } from '../../aegis/domain/entry/AegisEntryDecisionTypes';
 import { MAIN_STACKING_MOMENTUM_AUTHORITY } from '../domain/MainStackingMomentumStrategy';
+import { evaluateMomentumPattern } from '../domain/MomentumRideEntryPolicy';
 import type { MomentumRideStrategyContext } from '../domain/MomentumRideStrategy';
 import type { MomentumCandleSnapshot } from './MomentumCandleState';
 import type { MomentumRealtimeMarketSnapshot } from './MomentumRealtimeMarketState';
@@ -145,6 +146,21 @@ export class MomentumEntryCoordinator {
     if (!symbolConfig?.enabled) return false;
 
     const sideConfig = side === 'LONG' ? symbolConfig.long : symbolConfig.short;
+    if (!sideConfig.enabled) return false;
+
+    // The canonical pattern is pure and local. Avoid account, exposure and
+    // outcome I/O until the pattern has actually produced a candidate.
+    const pattern = evaluateMomentumPattern(candidate.candles, side);
+    if (!pattern.allowed) {
+      this.deps.logger.debug('momentum_pattern_preflight_blocked', {
+        symbol,
+        side,
+        reason: pattern.reason,
+        diagnostics: pattern.diagnostics,
+      });
+      return false;
+    }
+
     const now = this.deps.now();
     const signalId = generateSignalId(symbol);
     const tradeId = generateStrategyTradeId('MOMENTUM_RIDE', symbol);
