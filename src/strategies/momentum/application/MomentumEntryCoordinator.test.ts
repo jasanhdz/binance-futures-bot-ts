@@ -14,7 +14,7 @@ describe('MomentumEntryCoordinator', () => {
           enabled: false,
           standaloneMainReplica: true,
           symbols: {},
-        }) as AegisMomentumRideRuntimeConfig,
+        }) as unknown as AegisMomentumRideRuntimeConfig,
       readRuntimeCandles,
     } as unknown as MomentumEntryCoordinatorDeps;
 
@@ -49,11 +49,14 @@ describe('MomentumEntryCoordinator', () => {
         ({
           enabled: true,
           standaloneMainReplica: true,
-          symbols: { BTCUSDT: { enabled: true, long: { enabled: true }, short: { enabled: true } } },
-        }) as AegisMomentumRideRuntimeConfig,
+          symbols: {
+            BTCUSDT: { enabled: true, long: { enabled: true }, short: { enabled: true } },
+          },
+        }) as unknown as AegisMomentumRideRuntimeConfig,
       readRuntimeCandles,
       getCachedCandles: vi.fn().mockReturnValue([]),
       getRestCandles: vi.fn(),
+      now: vi.fn().mockReturnValue(100_000_000),
       isValidCandle: vi.fn().mockReturnValue(true),
       isFiniteNumber: vi.fn().mockImplementation((value: unknown) => typeof value === 'number'),
       getUSDTBalance,

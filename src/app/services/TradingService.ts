@@ -186,15 +186,19 @@ export class TradingService {
   private readonly riskSession: StrategyRiskSessionService;
   private readonly aegisStrategyIdentity: StrategyIdentity;
   private readonly momentumStrategyIdentity: StrategyIdentity;
-  private readonly strategyTelemetry = new StrategyTelemetryBus([
-    new JsonlStrategyTelemetrySink('data/strategy-telemetry/events-v1.jsonl'),
-  ]);
+  private readonly telemetryJsonlSink = new JsonlStrategyTelemetrySink(
+    'data/strategy-telemetry/events-v2.jsonl',
+  );
+  private readonly strategyTelemetry = new StrategyTelemetryBus([this.telemetryJsonlSink]);
+  private readonly decisionJsonlSink = new JsonlDecisionEvidenceSink(
+    'data/strategy-blackbox/strategy-decisions/decisions-v2.jsonl',
+  );
   private readonly decisionEvidenceSink = new DecisionEvidenceTelemetrySink(
-    new JsonlDecisionEvidenceSink('data/strategy-blackbox/strategy-decisions/decisions-v1.jsonl'),
+    this.decisionJsonlSink,
     this.strategyTelemetry,
   );
   private readonly marketSnapshotEvidenceSink = new JsonlMarketSnapshotSink(
-    'data/strategy-blackbox/market-snapshots/snapshots-v1.jsonl',
+    'data/strategy-blackbox/market-snapshots/snapshots-v2.jsonl',
   );
   private readonly sharedStrategyExecution: StrategyExecutionPort;
   private readonly momentumStrategyRouter = new StrategyRouter<MomentumRideStrategyContext>();
@@ -739,7 +743,15 @@ export class TradingService {
   }
 
   getMarketDataDiagnostics(): Record<string, unknown> {
-    return this.strategyRuntimeCoordinator.getMarketDataDiagnostics();
+    return {
+      ...this.strategyRuntimeCoordinator.getMarketDataDiagnostics(),
+      blackBoxStorage: {
+        decisions: this.decisionJsonlSink.health(),
+        snapshots: this.marketSnapshotEvidenceSink.health(),
+        telemetry: this.telemetryJsonlSink.health(),
+        observation: this.strategyTelemetry.health(),
+      },
+    };
   }
 
   async start(startLoop = true): Promise<void> {
@@ -1022,7 +1034,12 @@ export class TradingService {
     this.stopPromise = (async () => {
       await this.strategyRuntimeCoordinator.stop();
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
-      await Promise.all(stores.map((store) => store.flush?.()));
+      await Promise.all([
+        ...stores.map((store) => store.flush?.()),
+        this.decisionJsonlSink.drain(),
+        this.marketSnapshotEvidenceSink.drain(),
+        this.telemetryJsonlSink.drain(),
+      ]);
     })().finally(() => {
       this.stopPromise = null;
     });
@@ -1302,7 +1319,6 @@ export class TradingService {
     const tradingMode = this.getTradingMode();
 
     try {
-
       const realtimeMarket = this.strategyRuntimeCoordinator.readAegisRealtimeMarket(symbol);
       if (realtimeMarket && realtimeMarket.status !== 'FRESH') {
         this.deps.logger.warn('aegis_realtime_market_not_fresh', {

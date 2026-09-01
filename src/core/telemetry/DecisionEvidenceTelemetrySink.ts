@@ -25,12 +25,17 @@ export class DecisionEvidenceTelemetrySink implements DecisionEvidenceSink {
       status: record.decision,
       reason: record.reason,
       details: {
+        evidenceSchemaVersion: record.schemaVersion,
+        evidenceLevel: record.evidenceLevel ?? 'COMPACT',
+        evidenceRecordId: record.decisionId,
+        marketSnapshotStored: record.marketSnapshotStored,
+        marketSnapshotContentHash: record.marketSnapshotContentHash,
+        observedMarketSnapshotId: record.observedMarketSnapshotId,
         mode: record.mode,
         confidence: record.confidence,
         structuralInvalidation: record.structuralInvalidation,
         destinationPrice: record.destinationPrice,
         requestedRisk: record.requestedRisk,
-        diagnostics: record.diagnostics,
         marketHealth: record.marketHealth,
       },
     });

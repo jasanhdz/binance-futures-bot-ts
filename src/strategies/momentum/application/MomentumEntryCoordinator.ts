@@ -99,7 +99,11 @@ export class MomentumEntryCoordinator {
   > {
     const config = this.deps.getConfig();
     const symbolConfig = config.symbols[symbol];
-    if (config.enabled !== true || config.standaloneMainReplica !== true || !symbolConfig?.enabled) {
+    if (
+      config.enabled !== true ||
+      config.standaloneMainReplica !== true ||
+      !symbolConfig?.enabled
+    ) {
       return undefined;
     }
 
@@ -208,8 +212,7 @@ export class MomentumEntryCoordinator {
       dailyLossStopPct: config.safetyCaps.dailyLossStopPct ?? 0.9,
       maxOpenMomentumPositions: config.safetyCaps.maxOpenMomentumPositions,
       maxTotalOpenPositionsWhenMomentum: config.safetyCaps.maxTotalOpenPositionsWhenMomentum,
-      disableSymbolAfterStopLossMs:
-        config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000,
+      disableSymbolAfterStopLossMs: config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000,
     };
     const liquidity = this.deps.readLiquidityStatus(symbol, now) ?? {
       stress: 0,
@@ -291,8 +294,8 @@ export class MomentumEntryCoordinator {
       },
     });
 
-    // A veto/non-live result deliberately returns false so the configured Aegis
-    // fallback remains controlled by TradingService's strategy ordering gate.
+    // A veto/non-live result returns false so TradingService can continue with
+    // the independently evaluated Aegis strategy without granting it Momentum authority.
     if (decision.decision !== 'ENTRY_INTENT') return false;
     if (decision.mode !== 'LIVE') return false;
     if (this.deps.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE') return false;
@@ -386,9 +389,7 @@ export class MomentumEntryCoordinator {
       lastPositionFraction: execution.positionFraction,
       lastStopRoe: protection.hardStopRoe,
       lastTakeProfitRoe: protection.takeProfitRoe,
-      lastStopPrice: this.deps.isFiniteNumber(metadata.stopPrice)
-        ? metadata.stopPrice
-        : undefined,
+      lastStopPrice: this.deps.isFiniteNumber(metadata.stopPrice) ? metadata.stopPrice : undefined,
       lastBreakEvenRoe: protection.breakEvenRoe,
       lastTrailingActivationRoe: protection.trailingActivationRoe,
       lastTrailingCallbackRoe: protection.trailingCallbackRoe,
