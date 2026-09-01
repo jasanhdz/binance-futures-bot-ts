@@ -1278,20 +1278,30 @@ export class TradingService {
   }
 
   private async lookForEntry(symbol: string): Promise<void> {
+    let standaloneMomentumHandled = false;
+    try {
+      standaloneMomentumHandled = await this.momentumEntryCoordinator.evaluate(symbol);
+    } catch (error) {
+      if (this.shouldLogError(symbol, 'MOMENTUM_ENTRY_EVALUATION', 60000)) {
+        this.deps.logger.error('Momentum entry evaluation error', { error: String(error) });
+      }
+      await this.notifyError(symbol, 'MOMENTUM ENTRY EVALUATION', error);
+    }
+    if (standaloneMomentumHandled) return;
+
+    // Momentum and Aegis are independent strategy participants. Aegis is
+    // evaluated whenever Momentum did not open a position; a Momentum veto,
+    // abstention or failure cannot suppress Aegis evaluation. The execution
+    // boundary stays serial so only one strategy may open this symbol.
+    await this.evaluateAegisEntry(symbol);
+  }
+
+  private async evaluateAegisEntry(symbol: string): Promise<void> {
     const { mlService, exchange, logger } = this.deps;
     const symbolState = this.stateForSymbol(symbol);
     const tradingMode = this.getTradingMode();
 
     try {
-      const momentumConfig = this.runtimeConfig.getAegisMomentumRideConfig();
-      const standaloneMomentumHandled = await this.momentumEntryCoordinator.evaluate(symbol);
-      if (standaloneMomentumHandled) return;
-      if (
-        momentumConfig.standaloneMainReplica === true &&
-        momentumConfig.aegisFallbackEnabled === false
-      ) {
-        return;
-      }
 
       const realtimeMarket = this.strategyRuntimeCoordinator.readAegisRealtimeMarket(symbol);
       if (realtimeMarket && realtimeMarket.status !== 'FRESH') {
