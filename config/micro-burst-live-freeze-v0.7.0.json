@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "strategyId": "MICRO_BURST_V1",
+  "strategyVersion": "0.7.0-intelligent-exit",
+  "freezeState": "FROZEN_LIVE",
+  "approvedAt": "2026-09-02",
+  "approvedCommit": "f0716a23dca8302bb41d0e9cba0088986a4f6e22",
+  "approval": "Owner explicitly selected LIVE deployment without an A/B profitability comparison.",
+  "acceptedRisk": "Profitability versus the legacy trailing exit is not established.",
+  "strategyHashAlgorithm": "sha256 of ordered sha256sum output for componentFiles",
+  "strategySha256": "dc3f5c54d7f70b79a1881ade667ee1c2b7da509b3b6b28a0c6933a273bd1b3e0",
+  "configFile": "regime_config.live.yaml",
+  "configFileSha256": "cec46bb83aa041f33f91cbd66fde066a6432c0dd0d4b2ab8df8e17f220481391",
+  "effectiveConfigSha256": "1279413477f094eb8d88f73e53fabf40fe694d139d563e07995a2f6b995c0223",
+  "componentFiles": {
+    "src/app/execution/SharedStrategyExecutionService.ts": "9e9a611f7d50abdd2ecfaa45a6ca42c1e5a170f89df24053620accce560341be",
+    "src/app/runtime/StrategyRuntimeCoordinator.ts": "3951cc940108963a14d105c7753a9f9668ce99e43c8b80fbc58d3417907122da",
+    "src/app/services/TradingService.ts": "8c90999425903bf980abed2622dba8c377c452eea99b9e260f887e2427cb1a7c",
+    "src/core/strategy/StrategyLifecyclePolicy.ts": "dddd31e1d616a6e6e8d6c804f9dba6fb21396a47e346f569554a8ff25bd84f1b",
+    "src/core/strategy/StrategyPositionOwnership.ts": "2c64084876d51e07be4dca5f01d0f5164ede8152eba9c3ba70ae3d2e7f1df236",
+    "src/core/types.ts": "426cf084eb0575580fc89cf81d8ce4f5229c77cfddf41e53a8ca271f2ba4773b",
+    "src/infra/logging/AegisClosedTradeHistoryReader.ts": "7b50c758a221167ff1bf3c5b2dce04795758ef90018518976fbba0014873560e",
+    "src/strategies/micro-burst/application/MicroBurstConfigLoader.ts": "dad67faf3d80fbe0dd137894c62842f581ec4714b2f2c2934af06ff1bd745e5d",
+    "src/strategies/micro-burst/application/MicroBurstPositionManager.ts": "39b63d2a10a8062e878d2f2c385296fd0b77c21f4f5c7e29b685061bb1202993",
+    "src/strategies/micro-burst/application/MicroBurstRuntime.ts": "9aec41ee5f3378e85db4b658a8e653f39f412ca92aaeb5bbf1babbde63d98bc7",
+    "src/strategies/micro-burst/application/MicroBurstRuntimeTypes.ts": "e6b97923e7e6f1669d2ee285a98552a024f12f06a13a5f30fc95aa471f319205",
+    "src/strategies/micro-burst/domain/MicroBurstEntryPolicy.ts": "c614be342fcc176f2472bcb3673f588096e17a82d0bcc39962eddba833428959",
+    "src/strategies/micro-burst/domain/MicroBurstExecutionIntentFactory.ts": "c6b2d8b6d079c2f5f3e54f26e6f3c7cdea2bb8b8f1ecd52fe06e3211cb722a39",
+    "src/strategies/micro-burst/domain/MicroBurstExitPolicy.ts": "35ece8f34729d8160903bd135350aa4ecae48e3d6907fd005678a16708dd4a4e",
+    "src/strategies/micro-burst/domain/MicroBurstStrategy.ts": "2bd2d9de70a36fe7e117e7e9cc89f5f95843aa643d707ee2359dc616e110ff51"
+  }
+}
