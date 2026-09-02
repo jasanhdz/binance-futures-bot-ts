@@ -315,7 +315,7 @@ describe('Micro Burst full golden parity', () => {
       ],
     },
     {
-      name: 'trailing',
+      name: 'peak-callback-does-not-exit',
       side: 'LONG',
       destination: 110,
       stop: 90,

@@ -318,9 +318,7 @@ describe('MicroBurstOutcomeEngine cost scenarios', () => {
   });
 
   it('does not charge conservative entry slippage a second time', () => {
-    const result = computeCostComponents(95, [
-      { label: 'cost_14', feeBps: 10, slippageBps: 4 },
-    ], 5);
+    const result = computeCostComponents(95, [{ label: 'cost_14', feeBps: 10, slippageBps: 4 }], 5);
     expect(result.cost_14).toEqual({
       feeBps: 10,
       entrySlippageBps: 5,
@@ -425,7 +423,6 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
     const config = {
       ...defaultMicroBurstConfig(),
       exitBreakEvenActivationBps: 10,
-      exitTrailingActivationBps: 1_000,
     };
     const result = simulateDynamicExit(
       makeSignal(),
@@ -445,7 +442,6 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
     const config = {
       ...defaultMicroBurstConfig(),
       exitBreakEvenActivationBps: 10,
-      exitTrailingActivationBps: 1_000,
     };
     const result = simulateDynamicExit(
       makeShortSignal(),

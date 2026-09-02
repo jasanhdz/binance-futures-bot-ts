@@ -37,6 +37,19 @@ describe('Micro Burst architecture boundaries', () => {
     });
   });
 
+  it('keeps trailing callbacks out of the active Micro Burst exit implementation', () => {
+    const activeExitSource = [
+      'MicroBurstTypes.ts',
+      'MicroBurstExitPolicy.ts',
+      '../research/MicroBurstPaperTrading.ts',
+    ]
+      .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))
+      .join('\n');
+    expect(activeExitSource).not.toContain('exitTrailing');
+    expect(activeExitSource).not.toContain("reason: 'TRAILING'");
+    expect(activeExitSource).not.toContain('TRAILING_ACTIVATED');
+  });
+
   it('keeps domain production imports isolated from other strategies and legacy guardians', () => {
     const imports = getDomainProductionFiles()
       .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))

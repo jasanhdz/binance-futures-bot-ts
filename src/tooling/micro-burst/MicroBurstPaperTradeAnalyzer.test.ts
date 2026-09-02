@@ -27,7 +27,6 @@ function trade(overrides: Partial<MicroBurstPaperPosition> = {}): MicroBurstPape
     peakPrice: 105,
     troughPrice: 99,
     breakEvenArmed: true,
-    trailingActivated: false,
     lastObservedAtMs: 1000,
     cohortId: 'C',
     codeCommitSha: 'S',

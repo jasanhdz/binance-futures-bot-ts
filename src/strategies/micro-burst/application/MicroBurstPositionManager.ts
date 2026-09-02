@@ -11,7 +11,7 @@ import {
   MicroBurstExitDecision,
   defaultMicroBurstConfig,
 } from '../domain/MicroBurstTypes';
-import { evaluateMicroBurstExit } from '../domain/MicroBurstExitPolicy';
+import { MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
 
 export interface MicroBurstPositionManagementContext extends StrategyPositionLifecycleContext {
   strategyMode: 'OFF';
@@ -43,13 +43,19 @@ export class MicroBurstPositionManager
   readonly strategyId = 'MICRO_BURST_V1' as const;
 
   private readonly config: MicroBurstConfig;
+  private readonly exitEngine = new MicroBurstExitEngine();
+  private readonly activeTradeBySymbol = new Map<string, string>();
 
   constructor(_lifecycle: StrategyPositionLifecycleCore, config?: Partial<MicroBurstConfig>) {
     this.config = { ...defaultMicroBurstConfig(), ...config };
   }
 
-  evaluateExit(exitContext: MicroBurstExitContext, side: 'LONG' | 'SHORT'): MicroBurstExitDecision {
-    return evaluateMicroBurstExit(exitContext, this.config, side);
+  evaluateExit(
+    exitContext: MicroBurstExitContext,
+    side: 'LONG' | 'SHORT',
+    tradeId = 'MICRO-BURST-DIRECT-EVALUATION',
+  ): MicroBurstExitDecision {
+    return this.exitEngine.evaluate(tradeId, exitContext, this.config, side);
   }
 
   async manage(
@@ -58,12 +64,16 @@ export class MicroBurstPositionManager
   ): Promise<PositionManagementResult> {
     assertOwnership(this.strategyId, identity);
     const hasExitContext = hasExitDecisionContext(context);
+    const tradeId = context.botState.lastTradeId ?? `MICRO-BURST-V1-${context.symbol}`;
+    const previousTradeId = this.activeTradeBySymbol.get(context.symbol);
+    if (previousTradeId && previousTradeId !== tradeId) this.exitEngine.forget(previousTradeId);
+    this.activeTradeBySymbol.set(context.symbol, tradeId);
     const exitDecision = hasExitContext
-      ? this.evaluateExit(context.exitContext, context.side)
+      ? this.evaluateExit(context.exitContext, context.side, tradeId)
       : null;
     if (exitDecision) {
       return {
-        tradeId: context.botState.lastTradeId ?? `MICRO-BURST-V1-${context.symbol}`,
+        tradeId,
         decision: exitDecision.action,
         reason: exitDecision.reason,
         requestedStopPrice: exitDecision.requestedStopPrice,

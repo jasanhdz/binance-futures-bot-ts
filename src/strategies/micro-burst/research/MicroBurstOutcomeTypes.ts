@@ -141,7 +141,6 @@ export type CounterfactualExitReason =
   | 'HARD_INVALIDATION'
   | 'TARGET'
   | 'BREAK_EVEN'
-  | 'TRAILING'
   | 'EARLY_FAILURE'
   | 'MAX_HOLD'
   | 'HOLD_AT_HORIZON';

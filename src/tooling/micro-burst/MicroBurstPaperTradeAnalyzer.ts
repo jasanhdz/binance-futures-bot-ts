@@ -20,7 +20,6 @@ export interface MicroBurstPaperTradeReport {
   meanDurationMs: number | null;
   exitReasons: Record<string, number>;
   breakEvenUsed: number;
-  trailingUsed: number;
   costBps: {
     fees: number | null;
     spread: number | null;
@@ -137,7 +136,6 @@ export function analyzeMicroBurstPaperTrades(
     meanDurationMs: mean(durations),
     exitReasons: counts(closed.map((position) => position.exitReason ?? 'UNKNOWN')),
     breakEvenUsed: closed.filter((position) => position.breakEvenArmed).length,
-    trailingUsed: closed.filter((position) => position.trailingActivated).length,
     costBps: {
       fees: sum(closed, 'feesBps'),
       spread: sum(closed, 'spreadImpactBps'),

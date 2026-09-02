@@ -1,6 +1,10 @@
-import { MicroBurstExitContext, MicroBurstExitDecision, MicroBurstConfig } from '../domain/MicroBurstTypes';
+import {
+  MicroBurstExitContext,
+  MicroBurstExitDecision,
+  MicroBurstConfig,
+} from '../domain/MicroBurstTypes';
 import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
-import { evaluateMicroBurstExit } from '../domain/MicroBurstExitPolicy';
+import { MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
 import { decimalReturnToBps } from '../domain/MicroBurstUnits';
 import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
 
@@ -26,9 +30,15 @@ export interface MicroBurstPaperObservation {
   currentPrice: number;
   observedAtMs: number;
   quote?: MicroBurstPaperQuote;
-  exitContext?: Pick<
-    MicroBurstExitContext,
-    'currentBookPressure' | 'currentBtcContext' | 'anomalyExitFlag'
+  exitContext?: Partial<
+    Pick<
+      MicroBurstExitContext,
+      | 'currentBookPressure'
+      | 'currentBtcContext'
+      | 'anomalyExitFlag'
+      | 'marketEvidence'
+      | 'momentumDecayFlag'
+    >
   >;
 }
 
@@ -54,7 +64,6 @@ export interface MicroBurstPaperPosition {
   peakPrice: number;
   troughPrice: number;
   breakEvenArmed: boolean;
-  trailingActivated: boolean;
   lastObservedAtMs: number;
   cohortId: string;
   codeCommitSha: string;
@@ -99,8 +108,6 @@ export type PaperLifecycleEventName =
   | 'ENTRY_SUPPRESSED_POSITION_OPEN'
   | 'STOP_MOVED'
   | 'BREAK_EVEN_ARMED'
-  | 'TRAILING_ACTIVATED'
-  | 'TRAILING_MOVED'
   | 'DATA_UNCERTAIN'
   | 'RECOVERED_AFTER_RESTART'
   | 'CLOSED';
@@ -129,6 +136,7 @@ export type PaperManageResult = {
 
 export class MicroBurstPaperTrading {
   private readonly positions = new Map<string, MicroBurstPaperPosition>();
+  private readonly exitEngine = new MicroBurstExitEngine();
 
   constructor(private readonly config: MicroBurstConfig) {}
 
@@ -141,6 +149,8 @@ export class MicroBurstPaperTrading {
   }
 
   discard(symbol: string): void {
+    const position = this.positions.get(symbol);
+    if (position) this.exitEngine.forget(position.tradeId);
     this.positions.delete(symbol);
   }
 
@@ -211,7 +221,6 @@ export class MicroBurstPaperTrading {
       peakPrice: fill.price,
       troughPrice: fill.price,
       breakEvenArmed: false,
-      trailingActivated: false,
       lastObservedAtMs: eventAtMs,
       cohortId: provenance.cohortId,
       codeCommitSha: provenance.codeCommitSha,
@@ -262,29 +271,15 @@ export class MicroBurstPaperTrading {
         destinationPrice: position.destinationPrice,
         currentStopPrice: position.currentStop,
         timeInTradeMs: Math.max(0, observation.observedAtMs - position.openedAtMs),
-        momentumDecayFlag: false,
+        observedAtMs: observation.observedAtMs,
+        momentumDecayFlag: observation.exitContext?.momentumDecayFlag ?? false,
         anomalyExitFlag: observation.exitContext?.anomalyExitFlag ?? false,
         currentBookPressure: observation.exitContext?.currentBookPressure ?? null,
         currentBtcContext: observation.exitContext?.currentBtcContext ?? null,
+        marketEvidence: observation.exitContext?.marketEvidence ?? null,
         leverage: position.leverage,
       };
-      decision = evaluateMicroBurstExit(context, this.config, side);
-    }
-
-    if (
-      this.favorableBps(position) >= this.config.exitTrailingActivationBps &&
-      !position.trailingActivated
-    ) {
-      position.trailingActivated = true;
-      events.push(
-        this.event(
-          'TRAILING_ACTIVATED',
-          observation.observedAtMs,
-          symbol,
-          position.tradeId,
-          position.state,
-        ),
-      );
+      decision = this.exitEngine.evaluate(position.tradeId, context, this.config, side);
     }
     if (decision?.action === 'MOVE_STOP' && decision.requestedStopPrice !== undefined) {
       const next = tightenStop(side, position.currentStop, decision.requestedStopPrice);
@@ -368,6 +363,7 @@ export class MicroBurstPaperTrading {
       position.netRoe = undefined;
       position.state = 'CLOSED';
       this.positions.delete(symbol);
+      this.exitEngine.forget(position.tradeId);
       events.push(
         this.event(
           'CLOSED',

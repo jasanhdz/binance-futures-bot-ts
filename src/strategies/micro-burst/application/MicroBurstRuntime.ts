@@ -26,7 +26,11 @@ import { ShadowSignalSnapshot } from '../research/MicroBurstOutcomeTypes';
 import { freezeSignalSnapshot } from '../research/MicroBurstOutcomeEngine';
 import { assessMicroBurstReadiness, MicroBurstReadinessResult } from './MicroBurstReadiness';
 import { GapKind, MarketDataFeed } from '../../../core/market-data/NormalizedMarketEvents';
-import { defaultMicroBurstConfig, MicroBurstConfig } from '../domain/MicroBurstTypes';
+import {
+  defaultMicroBurstConfig,
+  MicroBurstConfig,
+  MicroBurstExitMarketEvidence,
+} from '../domain/MicroBurstTypes';
 import { analyzeBookPressure } from '../domain/MicroBurstBookPressureAnalyzer';
 import { FileShadowTradeJournal, ShadowJournal } from '../../../core/shadow/ShadowTradeJournal';
 import { ShadowTradingEngine } from '../../../core/shadow/ShadowTradingEngine';
@@ -47,6 +51,8 @@ import { createMicroBurstBlackBoxObservation } from './MicroBurstBlackBoxObserva
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
+const EXIT_SHORT_HORIZON_MS = 5_000;
+const EXIT_MEDIUM_HORIZON_MS = 20_000;
 
 interface Clock {
   now(): number;
@@ -903,6 +909,9 @@ export class MicroBurstRuntime {
     const state = this.symbolStates.get(symbol);
     const snapshot = state?.book.getSnapshot();
     const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
+    const currentBookPressure = snapshot
+      ? analyzeBookPressure(snapshot, receivedAtMs, undefined, snapshot.temporalHistory)
+      : null;
     const result = this.shadowEngine.manage(
       { strategyId: 'MICRO_BURST_V1', symbol },
       {
@@ -912,10 +921,11 @@ export class MicroBurstRuntime {
         quote: this.paperQuote(snapshot),
         marketDataQuality: snapshot?.status ?? 'UNAVAILABLE',
         strategyContext: {
-          currentBookPressure: snapshot
-            ? analyzeBookPressure(snapshot, receivedAtMs, undefined, snapshot.temporalHistory)
-            : null,
+          currentBookPressure,
           currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
+          marketEvidence: state
+            ? buildExitMarketEvidence(state.aggTradeBuffer, receivedAtMs)
+            : null,
           anomalyExitFlag: false,
         },
       },
@@ -1189,6 +1199,34 @@ export class MicroBurstRuntime {
       throw error;
     }
   }
+}
+
+function buildExitMarketEvidence(
+  buffer: RollingAggTradeBuffer,
+  observedAtMs: number,
+): MicroBurstExitMarketEvidence {
+  const shortTrades = buffer.getRecent(EXIT_SHORT_HORIZON_MS);
+  const mediumTrades = buffer.getRecent(EXIT_MEDIUM_HORIZON_MS);
+  const flow = buffer.getTakerFlow(EXIT_SHORT_HORIZON_MS);
+  return {
+    observedAtMs,
+    shortHorizonReturnBps: priceReturnBps(shortTrades),
+    mediumHorizonReturnBps: priceReturnBps(mediumTrades),
+    priceSampleCount: shortTrades.length,
+    buyTakerVolume: flow.buyVolume,
+    sellTakerVolume: flow.sellVolume,
+    takerTradeCount: flow.tradeCount,
+    takerFlowWindowComplete: flow.windowComplete,
+    takerFlowGapFree: flow.gapFree,
+  };
+}
+
+function priceReturnBps(trades: ReadonlyArray<AggTradeEvent>): number | null {
+  if (trades.length < 2) return null;
+  const first = trades[0]?.price;
+  const last = trades[trades.length - 1]?.price;
+  if (!Number.isFinite(first) || !Number.isFinite(last) || first <= 0 || last <= 0) return null;
+  return ((last - first) / first) * 10_000;
 }
 
 function numberDiagnostic(value: unknown): number | undefined {

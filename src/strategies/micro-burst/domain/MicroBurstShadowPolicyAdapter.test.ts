@@ -110,4 +110,72 @@ describe('MicroBurstShadowPolicyAdapter', () => {
     });
     expect(decision).toMatchObject({ action: 'CLOSE', reason: 'MAX_HOLD' });
   });
+
+  it('uses the confirmed intelligent exit in the SHADOW lifecycle adapter', () => {
+    const position = {
+      schemaVersion: 2,
+      key: shadowPositionKey('MICRO_BURST_V1', 'ETHUSDT'),
+      strategyId: 'MICRO_BURST_V1',
+      strategyVersion: 'test',
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      tradeId: 'intelligent-exit-trade',
+      parentDecisionId: 'd',
+      decisionAtMs: 0,
+      decisionReceivedAtMs: 0,
+      openedAtMs: 0,
+      openedReceivedAtMs: 0,
+      entryDecisionPrice: 100,
+      entryExecutablePrice: 100,
+      entryPrice: 100,
+      stop: 100,
+      destination: 102,
+      state: 'MANAGING',
+      lastObservedAtMs: 0,
+      peakPrice: 100.7,
+      troughPrice: 100,
+      mfeBps: 70,
+      maeBps: 0,
+      provenance: { strategyVersion: 'test', codeCommitSha: 'test' },
+    } as ShadowPosition;
+    const adapter = new MicroBurstShadowPolicyAdapter(defaultMicroBurstConfig());
+    const observation = (receivedAtMs: number) => ({
+      exchangeTimeMs: receivedAtMs,
+      receivedAtMs,
+      currentPrice: 100.5,
+      marketDataQuality: 'HEALTHY' as const,
+      strategyContext: {
+        currentBookPressure: {
+          spreadBps: 1,
+          signedTopOfBookImbalance: -0.3,
+          topOfBookImbalance: 0.3,
+          imbalanceSlope: -0.08,
+          temporalAbsorptionDetected: false,
+          temporalSweepDetected: false,
+          staticBidConcentration: false,
+          staticAskConcentration: false,
+          anomalyFlag: false,
+          status: 'HEALTHY' as const,
+        },
+        marketEvidence: {
+          observedAtMs: receivedAtMs,
+          shortHorizonReturnBps: -2,
+          mediumHorizonReturnBps: 2,
+          priceSampleCount: 30,
+          buyTakerVolume: 20,
+          sellTakerVolume: 80,
+          takerTradeCount: 100,
+          takerFlowWindowComplete: true,
+          takerFlowGapFree: true,
+        },
+      },
+    });
+
+    expect(adapter.evaluateLifecycle(position, observation(20_000)).action).toBe('HOLD');
+    expect(adapter.evaluateLifecycle(position, observation(21_000)).action).toBe('HOLD');
+    expect(adapter.evaluateLifecycle(position, observation(23_000))).toMatchObject({
+      action: 'CLOSE',
+      reason: 'INTELLIGENT_EXIT',
+    });
+  });
 });

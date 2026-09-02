@@ -23,7 +23,7 @@ import {
   MicroBurstExitDecision,
   defaultMicroBurstConfig,
 } from '../domain/MicroBurstTypes';
-import { evaluateMicroBurstExit } from '../domain/MicroBurstExitPolicy';
+import { MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -366,6 +366,7 @@ export function simulateDynamicExit(
   let peakPrice = entryPrice;
   let troughPrice = entryPrice;
   let currentStopPrice: number | null = signal.structuralStopPrice;
+  const exitEngine = new MicroBurstExitEngine();
 
   for (const trade of trajectory) {
     const currentPrice = trade.price;
@@ -385,7 +386,8 @@ export function simulateDynamicExit(
               : ('HARD_INVALIDATION' as const),
           diagnostics: {},
         }
-      : evaluateMicroBurstExit(
+      : exitEngine.evaluate(
+          signal.shadowSignalId,
           {
             unrealizedRoe: sideAwareReturnBps(entryPrice, currentPrice, side) / BPS_PER_UNIT,
             priceReturn: (currentPrice - entryPrice) / entryPrice,
@@ -397,10 +399,12 @@ export function simulateDynamicExit(
             destinationPrice: signal.destinationPrice,
             currentStopPrice,
             timeInTradeMs,
+            observedAtMs: trade.eventTime,
             momentumDecayFlag: false,
             anomalyExitFlag: false,
             currentBookPressure: null,
             currentBtcContext: null,
+            marketEvidence: null,
             leverage: signal.leverage,
           },
           config,
