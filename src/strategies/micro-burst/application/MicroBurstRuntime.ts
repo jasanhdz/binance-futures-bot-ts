@@ -248,6 +248,7 @@ export class MicroBurstRuntime {
   private stopPromise: Promise<void> | null = null;
   private readonly shadowEngine: ShadowTradingEngine;
   private readonly shadowTradeJournal: ShadowJournal;
+  private readonly paperOpenSymbols = new Set<string>();
   private paperRecoveryBlocked = false;
   private paperPersistenceError: string | null = null;
   private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
@@ -284,6 +285,9 @@ export class MicroBurstRuntime {
       new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(microBurstConfig)]] as const),
       costScenarios,
     );
+    for (const position of this.shadowEngine.getOpenPositions()) {
+      if (position.strategyId === 'MICRO_BURST_V1') this.paperOpenSymbols.add(position.symbol);
+    }
     try {
       if (!this.shadowTradeJournal.getHealth().healthy)
         throw new Error('SHADOW_TRADE_JOURNAL_MALFORMED');
@@ -692,7 +696,9 @@ export class MicroBurstRuntime {
           },
           quote,
         );
-        if (opened.status === 'SUPPRESSED') {
+        if (opened.status === 'OPENED') {
+          this.paperOpenSymbols.add(result.symbol);
+        } else if (opened.status === 'SUPPRESSED') {
           paperSuppressed = true;
           this.paperSuppressedEntries++;
           const suppressionKey = `${symbol}:${opened.event.tradeId ?? 'UNKNOWN'}`;
@@ -906,6 +912,7 @@ export class MicroBurstRuntime {
   }
 
   private managePaperTrade(symbol: string, event: AggTradeEvent): void {
+    if (!this.paperOpenSymbols.has(symbol)) return;
     const state = this.symbolStates.get(symbol);
     const snapshot = state?.book.getSnapshot();
     const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
@@ -932,6 +939,7 @@ export class MicroBurstRuntime {
     );
     if (!result) return;
     if (result.state === 'CLOSED') {
+      this.paperOpenSymbols.delete(symbol);
       this.paperSuppressionDiagnostics.delete(`${symbol}:${result.tradeId}`);
     }
   }
