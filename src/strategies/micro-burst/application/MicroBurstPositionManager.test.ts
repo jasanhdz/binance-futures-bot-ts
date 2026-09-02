@@ -39,14 +39,16 @@ function exitContext(overrides: Partial<MicroBurstExitContext> = {}): MicroBurst
   };
 }
 
-function managementContext(): MicroBurstPositionManagementContext {
+function managementContext(
+  exitOverrides: Partial<MicroBurstExitContext> = {},
+): MicroBurstPositionManagementContext {
   return {
     symbol: 'ETHUSDT',
     botState: botState({ lastTradeId: 'MICRO-BURST-V1-123' }),
     symbolState: {} as MicroBurstPositionManagementContext['symbolState'],
     strategyMode: 'OFF',
     side: 'LONG',
-    exitContext: exitContext(),
+    exitContext: exitContext(exitOverrides),
   };
 }
 
@@ -97,5 +99,62 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       decision: 'NO_ACTION',
       diagnostics: { actionApplied: false, authorityReason: 'EXIT_CONTEXT_UNAVAILABLE' },
     });
+  });
+
+  it('uses the shared intelligent exit engine without granting LIVE mutation authority', async () => {
+    const core = lifecycle();
+    const manager = new MicroBurstPositionManager(core);
+    const contextAt = (observedAtMs: number) =>
+      managementContext({
+        currentPrice: 100.5,
+        peakPrice: 100.7,
+        troughPrice: 100,
+        structuralInvalidationPrice: 99,
+        destinationPrice: 102,
+        currentStopPrice: 100,
+        timeInTradeMs: observedAtMs,
+        observedAtMs,
+        currentBookPressure: {
+          spreadBps: 1,
+          signedTopOfBookImbalance: -0.3,
+          topOfBookImbalance: 0.3,
+          imbalanceSlope: -0.08,
+          temporalAbsorptionDetected: false,
+          temporalSweepDetected: false,
+          staticBidConcentration: false,
+          staticAskConcentration: false,
+          anomalyFlag: false,
+          status: 'HEALTHY',
+        },
+        marketEvidence: {
+          observedAtMs,
+          shortHorizonReturnBps: -2,
+          mediumHorizonReturnBps: 2,
+          priceSampleCount: 30,
+          buyTakerVolume: 20,
+          sellTakerVolume: 80,
+          takerTradeCount: 100,
+          takerFlowWindowComplete: true,
+          takerFlowGapFree: true,
+        },
+      });
+
+    expect(await manager.manage(createMicroBurstV1Identity(), contextAt(20_000))).toMatchObject({
+      decision: 'HOLD',
+      diagnostics: { actionApplied: false },
+    });
+    expect(await manager.manage(createMicroBurstV1Identity(), contextAt(21_000))).toMatchObject({
+      decision: 'HOLD',
+      diagnostics: { actionApplied: false },
+    });
+    expect(await manager.manage(createMicroBurstV1Identity(), contextAt(23_000))).toMatchObject({
+      decision: 'CLOSE_MARKET',
+      reason: 'INTELLIGENT_EXIT',
+      diagnostics: {
+        actionApplied: false,
+        authorityReason: 'MICRO_BURST_V1_OFF',
+      },
+    });
+    expect(core.manage).not.toHaveBeenCalled();
   });
 });
