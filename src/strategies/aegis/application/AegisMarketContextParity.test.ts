@@ -5,7 +5,7 @@ import { CandleDataPlane } from '../../../core/market-data/CandleDataPlane';
 import type { Candle } from '../../../core/types';
 
 const FIVE_MIN = 5 * 60 * 1000;
-const NOW = 1_700_000_000_000;
+const NOW = 1_700_000_160_000;
 
 function makeCandle(openTime: number, close = 100): Candle {
   return {
@@ -21,37 +21,51 @@ function makeCandle(openTime: number, close = 100): Candle {
   };
 }
 
-function makeClosedCandles(count: number, baseTime = NOW - count * FIVE_MIN): Candle[] {
+function makeClosedCandles(
+  count: number,
+  latestOpenTime = Math.floor(NOW / FIVE_MIN) * FIVE_MIN - FIVE_MIN,
+): Candle[] {
+  const baseTime = latestOpenTime - (count - 1) * FIVE_MIN;
   return Array.from({ length: count }, (_, i) => makeCandle(baseTime + i * FIVE_MIN));
 }
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-function buildMockEnv(opts: {
-  now?: number;
-  bookHealth?: string;
-  bookBids?: { price: number; qty: number }[];
-  bookAsks?: { price: number; qty: number }[];
-  aggRecent?: any[];
-  aggFlow?: any;
-  candleSource?: string;
-  candleAgeMs?: number;
-  candles?: Candle[];
-  candleObservedAtMs?: number;
-  routeHealthy?: boolean;
-  seriesComplete?: boolean;
-  seriesReason?: string;
-  aggTradeAgeMs?: number;
-  aggRecentLength?: number;
-  flowGapFree?: boolean;
-  flowTradeCount?: number;
-} = {}) {
+function buildMockEnv(
+  opts: {
+    now?: number;
+    bookHealth?: string;
+    bookBids?: { price: number; qty: number }[];
+    bookAsks?: { price: number; qty: number }[];
+    aggRecent?: any[];
+    aggFlow?: any;
+    candleSource?: string;
+    candleAgeMs?: number;
+    candles?: Candle[];
+    candleObservedAtMs?: number;
+    routeHealthy?: boolean;
+    seriesComplete?: boolean;
+    seriesReason?: string;
+    aggTradeAgeMs?: number;
+    aggRecentLength?: number;
+    flowGapFree?: boolean;
+    flowTradeCount?: number;
+  } = {},
+) {
   const now = opts.now ?? NOW;
   const bookHealth = opts.bookHealth ?? 'HEALTHY';
   const bookBids = opts.bookBids ?? [{ price: 100, qty: 8 }];
   const bookAsks = opts.bookAsks ?? [{ price: 101, qty: 2 }];
   const aggRecent = opts.aggRecent ?? [{ receivedAtMs: now - 50, eventTime: now - 60 }];
-  const aggFlow = opts.aggFlow ?? { gapFree: opts.flowGapFree ?? true, tradeCount: opts.flowTradeCount ?? 4, netTakerVolume: 3, eventWatermarkMs: now - 60, windowComplete: true, buyVolume: 2, sellVolume: 1 };
+  const aggFlow = opts.aggFlow ?? {
+    gapFree: opts.flowGapFree ?? true,
+    tradeCount: opts.flowTradeCount ?? 4,
+    netTakerVolume: 3,
+    eventWatermarkMs: now - 60,
+    windowComplete: true,
+    buyVolume: 2,
+    sellVolume: 1,
+  };
   const candleSource = opts.candleSource ?? 'WEBSOCKET';
   const candleAgeMs = opts.candleAgeMs ?? 500;
   const candles = opts.candles ?? makeClosedCandles(100);
@@ -83,14 +97,20 @@ function buildMockEnv(opts: {
   };
 
   // Compute realtime status from aggTrade freshness (matches AegisRealtimeMarketState.read)
-  const aggTradeAge = aggRecent.length > 0 ? now - (aggRecent[aggRecent.length - 1].receivedAtMs ?? aggRecent[aggRecent.length - 1].eventTime) : undefined;
-  const bookAge = now - (book.getState().observedAtMs);
+  const aggTradeAge =
+    aggRecent.length > 0
+      ? now -
+        (aggRecent[aggRecent.length - 1].receivedAtMs ?? aggRecent[aggRecent.length - 1].eventTime)
+      : undefined;
+  const bookAge = now - book.getState().observedAtMs;
   const realtimeStatus =
     bookHealth === 'HEALTHY' &&
-    aggTradeAge !== undefined && aggTradeAge <= 3_000 &&
+    aggTradeAge !== undefined &&
+    aggTradeAge <= 3_000 &&
     bookAge <= 3_000 &&
     aggFlow.gapFree
-      ? 'FRESH' : 'STALE';
+      ? 'FRESH'
+      : 'STALE';
 
   const agg = {
     getRecent: () => aggRecent,
@@ -203,7 +223,10 @@ describe('AegisRealtimeMarketState — Market Context Parity', () => {
   });
 
   it('TC-4: missing closed candle DOES invalidate context', () => {
-    const { state } = buildMockEnv({ seriesComplete: false, seriesReason: 'CLOSED_CANDLES_50_OF_96' });
+    const { state } = buildMockEnv({
+      seriesComplete: false,
+      seriesReason: 'CLOSED_CANDLES_50_OF_96',
+    });
     state.start(AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS as unknown as string[]);
 
     const ctx = state.buildMarketContext('LTCUSDT');
@@ -213,7 +236,10 @@ describe('AegisRealtimeMarketState — Market Context Parity', () => {
   });
 
   it('TC-5: series with gaps DOES invalidate context', () => {
-    const { state } = buildMockEnv({ seriesComplete: false, seriesReason: 'GAP_DETECTED_IN_SERIES' });
+    const { state } = buildMockEnv({
+      seriesComplete: false,
+      seriesReason: 'GAP_DETECTED_IN_SERIES',
+    });
     state.start(AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS as unknown as string[]);
 
     const ctx = state.buildMarketContext('LTCUSDT');
@@ -223,7 +249,10 @@ describe('AegisRealtimeMarketState — Market Context Parity', () => {
   });
 
   it('TC-6: misaligned series DOES invalidate context', () => {
-    const { state } = buildMockEnv({ seriesComplete: false, seriesReason: 'INSUFFICIENT_CANDLES_30_OF_96' });
+    const { state } = buildMockEnv({
+      seriesComplete: false,
+      seriesReason: 'INSUFFICIENT_CANDLES_30_OF_96',
+    });
     state.start(AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS as unknown as string[]);
 
     const ctx = state.buildMarketContext('LTCUSDT');
@@ -313,7 +342,10 @@ describe('AegisRealtimeMarketState — Market Context Parity', () => {
 
   it('TC-12: fail-closed semantics are not relaxed', () => {
     // Series incomplete → context MUST be null
-    const { state: s1 } = buildMockEnv({ seriesComplete: false, seriesReason: 'INSUFFICIENT_CANDLES_50_OF_96' });
+    const { state: s1 } = buildMockEnv({
+      seriesComplete: false,
+      seriesReason: 'INSUFFICIENT_CANDLES_50_OF_96',
+    });
     s1.start(AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS as unknown as string[]);
     expect(s1.buildMarketContext('LTCUSDT')).toBeNull();
     s1.close();
@@ -325,7 +357,9 @@ describe('AegisRealtimeMarketState — Market Context Parity', () => {
     s2.close();
 
     // Strategic symbol stale (aggTrade age > 3s) → context MUST be null
-    const { state: s3 } = buildMockEnv({ aggRecent: [{ receivedAtMs: NOW - 30_000, eventTime: NOW - 30_000 }] });
+    const { state: s3 } = buildMockEnv({
+      aggRecent: [{ receivedAtMs: NOW - 30_000, eventTime: NOW - 30_000 }],
+    });
     s3.start(AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS as unknown as string[]);
     expect(s3.buildMarketContext('LTCUSDT')).toBeNull();
     s3.close();
@@ -385,6 +419,138 @@ describe('CandleDataPlane — Route Health and Series Completeness', () => {
     const result = plane.isSeriesComplete('btcusdt', '5m', 96);
     expect(result.complete).toBe(false);
     expect(result.reason).toContain('INSUFFICIENT_CANDLES');
+
+    plane.close();
+  });
+
+  it('accepts a quiet symbol when its latest canonical closed candle is current', () => {
+    const latestClosedOpenTime = Math.floor(NOW / FIVE_MIN) * FIVE_MIN - FIVE_MIN;
+    const candles = makeClosedCandles(100, latestClosedOpenTime);
+    const plane = new CandleDataPlane({
+      clock: { now: () => NOW },
+      fetch: async () => [],
+      subscribe: (symbol: string, _interval: string, cb: any) => {
+        const observedAtMs = symbol === 'LINKUSDT' ? NOW - 15_000 : NOW;
+        for (const c of candles) cb(c, observedAtMs);
+        return () => {};
+      },
+    });
+
+    plane.acquire('LINKUSDT');
+    plane.acquire('BTCUSDT');
+
+    expect(plane.isRouteHealthy(NOW)).toBe(true);
+    expect(plane.read('LINKUSDT').status).toBe('STALE');
+    expect(plane.isSeriesComplete('LINKUSDT', '5m', 96, NOW)).toMatchObject({
+      complete: true,
+      reason: 'OK',
+    });
+
+    plane.close();
+  });
+
+  it('rejects a historically complete series whose latest closed candle is behind', () => {
+    const expectedLatestOpenTime = Math.floor(NOW / FIVE_MIN) * FIVE_MIN - FIVE_MIN;
+    const candles = makeClosedCandles(100, expectedLatestOpenTime - FIVE_MIN);
+    const plane = new CandleDataPlane({
+      clock: { now: () => NOW },
+      fetch: async () => [],
+      subscribe: (_s: string, _i: string, cb: any) => {
+        for (const c of candles) cb(c, NOW);
+        return () => {};
+      },
+    });
+
+    plane.acquire('LINKUSDT');
+    const result = plane.isSeriesComplete('LINKUSDT', '5m', 96, NOW);
+    expect(result.complete).toBe(false);
+    expect(result.reason).toContain('LATEST_CLOSED_CANDLE_STALE');
+
+    plane.close();
+  });
+
+  it('rejects a gap inside the required closed-candle window', () => {
+    const latestClosedOpenTime = Math.floor(NOW / FIVE_MIN) * FIVE_MIN - FIVE_MIN;
+    const candles = makeClosedCandles(100, latestClosedOpenTime);
+    candles.splice(candles.length - 20, 1);
+    const plane = new CandleDataPlane({
+      clock: { now: () => NOW },
+      fetch: async () => [],
+      subscribe: (_s: string, _i: string, cb: any) => {
+        for (const c of candles) cb(c, NOW);
+        return () => {};
+      },
+    });
+
+    plane.acquire('LINKUSDT');
+    const result = plane.isSeriesComplete('LINKUSDT', '5m', 96, NOW);
+    expect(result.complete).toBe(false);
+    expect(result.reason).toBe('GAP_DETECTED_IN_SERIES');
+
+    plane.close();
+  });
+
+  it('rejects a malformed candle boundary', () => {
+    const latestClosedOpenTime = Math.floor(NOW / FIVE_MIN) * FIVE_MIN - FIVE_MIN;
+    const candles = makeClosedCandles(100, latestClosedOpenTime);
+    candles[candles.length - 10] = {
+      ...candles[candles.length - 10],
+      closeTime: candles[candles.length - 10].closeTime - 1,
+    };
+    const plane = new CandleDataPlane({
+      clock: { now: () => NOW },
+      fetch: async () => [],
+      subscribe: (_s: string, _i: string, cb: any) => {
+        for (const c of candles) cb(c, NOW);
+        return () => {};
+      },
+    });
+
+    plane.acquire('LINKUSDT');
+    const result = plane.isSeriesComplete('LINKUSDT', '5m', 96, NOW);
+    expect(result.complete).toBe(false);
+    expect(result.reason).toBe('CANDLE_BOUNDARY_MISMATCH');
+
+    plane.close();
+  });
+
+  it('allows a short publication grace after the boundary, then requires the new close', () => {
+    const boundary = Math.floor(NOW / FIVE_MIN) * FIVE_MIN;
+    const previousLatestOpenTime = boundary - 2 * FIVE_MIN;
+    const candles = makeClosedCandles(100, previousLatestOpenTime);
+    const plane = new CandleDataPlane({
+      clock: { now: () => boundary + 5_000 },
+      freshnessMs: 10_000,
+      fetch: async () => [],
+      subscribe: (_s: string, _i: string, cb: any) => {
+        for (const c of candles) cb(c, boundary + 5_000);
+        return () => {};
+      },
+    });
+
+    plane.acquire('LINKUSDT');
+    expect(plane.isSeriesComplete('LINKUSDT', '5m', 96, boundary + 5_000).complete).toBe(true);
+    const afterGrace = plane.isSeriesComplete('LINKUSDT', '5m', 96, boundary + 11_000);
+    expect(afterGrace.complete).toBe(false);
+    expect(afterGrace.reason).toContain('LATEST_CLOSED_CANDLE_STALE');
+
+    plane.close();
+  });
+
+  it('accepts the current closed series when no open candle has traded yet', () => {
+    const latestClosedOpenTime = Math.floor(NOW / FIVE_MIN) * FIVE_MIN - FIVE_MIN;
+    const candles = makeClosedCandles(100, latestClosedOpenTime);
+    const plane = new CandleDataPlane({
+      clock: { now: () => NOW },
+      fetch: async () => [],
+      subscribe: (_s: string, _i: string, cb: any) => {
+        for (const c of candles) cb(c, NOW - 12_000);
+        return () => {};
+      },
+    });
+
+    plane.acquire('LINKUSDT');
+    expect(plane.isSeriesComplete('LINKUSDT', '5m', 96, NOW).complete).toBe(true);
 
     plane.close();
   });

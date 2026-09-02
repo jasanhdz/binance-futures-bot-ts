@@ -30,6 +30,8 @@ export interface CandleDataPlaneDeps {
   fetch(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   clock: { now(): number };
   freshnessMs?: number;
+  /** Grace after a candle boundary while the just-closed candle is being published. */
+  closedCandleGraceMs?: number;
   maxCandles?: number;
 }
 
@@ -46,10 +48,6 @@ type Entry = {
   lastKlineEventAtMs?: number;
   /** DIAGNOSTIC: count of kline events received since acquire */
   klineEventCount: number;
-  /** DIAGNOSTIC: timestamp when the current 5m candle closed (last candle openTime + 5min) */
-  lastClosedCandleCloseTimeMs?: number;
-  /** DIAGNOSTIC: reason for staleness */
-  staleReason?: string;
 };
 
 /**
@@ -59,12 +57,14 @@ type Entry = {
 export class CandleDataPlane {
   private readonly entries = new Map<string, Entry>();
   private readonly freshnessMs: number;
+  private readonly closedCandleGraceMs: number;
   private readonly maxCandles: number;
   /** Tracks the most recent kline event across ALL subscribed symbols for route health. */
   private lastKlineEventAcrossAllSymbolsMs = 0;
 
   constructor(private readonly deps: CandleDataPlaneDeps) {
     this.freshnessMs = deps.freshnessMs ?? 10_000;
+    this.closedCandleGraceMs = deps.closedCandleGraceMs ?? this.freshnessMs;
     this.maxCandles = deps.maxCandles ?? 1_000;
   }
 
@@ -87,11 +87,6 @@ export class CandleDataPlane {
         next.websocketObservedAtMs = observedAtMs;
         next.lastKlineEventAtMs = observedAtMs;
         next.klineEventCount += 1;
-        // Track the close time of the last closed candle (openTime + 5min)
-        const candleCloseTimeMs = candle.openTime + 5 * 60 * 1000;
-        if (candleCloseTimeMs <= observedAtMs) {
-          next.lastClosedCandleCloseTimeMs = candleCloseTimeMs;
-        }
         // Update route health: any kline event proves the route is alive
         if (observedAtMs > this.lastKlineEventAcrossAllSymbolsMs) {
           this.lastKlineEventAcrossAllSymbolsMs = observedAtMs;
@@ -136,7 +131,13 @@ export class CandleDataPlane {
     const symbol = rawSymbol.toUpperCase();
     const entry = this.entries.get(this.key(symbol, interval));
     if (!entry || entry.candles.length === 0) {
-      return { symbol, interval, candles: [], status: 'NO_DATA', restFallbackCount: entry?.restFallbackCount ?? 0 };
+      return {
+        symbol,
+        interval,
+        candles: [],
+        status: 'NO_DATA',
+        restFallbackCount: entry?.restFallbackCount ?? 0,
+      };
     }
     const now = this.deps.clock.now();
     const observedAtMs = entry.observedAtMs;
@@ -159,7 +160,10 @@ export class CandleDataPlane {
   }
 
   /** DIAGNOSTIC: returns detailed freshness info for a symbol */
-  getDiagnostics(rawSymbol: string, interval = '5m'): {
+  getDiagnostics(
+    rawSymbol: string,
+    interval = '5m',
+  ): {
     exists: boolean;
     candleCount: number;
     lastSource?: SharedCandleSource;
@@ -169,6 +173,9 @@ export class CandleDataPlane {
     lastKlineEventAtMs?: number;
     klineEventCount: number;
     lastClosedCandleCloseTimeMs?: number;
+    expectedLastClosedCandleCloseTimeMs?: number;
+    seriesComplete: boolean;
+    seriesReason: string;
     status: SharedCandleStatus;
     staleReason: string;
   } {
@@ -181,11 +188,14 @@ export class CandleDataPlane {
         candleCount: 0,
         status: 'NO_DATA',
         klineEventCount: 0,
+        seriesComplete: false,
+        seriesReason: 'NO_ENTRY',
         staleReason: 'NO_ENTRY',
       };
     }
     const observedAtMs = entry.observedAtMs;
     const ageMs = observedAtMs === undefined ? undefined : Math.max(0, now - observedAtMs);
+    const series = this.isSeriesComplete(symbol, interval, 96, now);
     const status: SharedCandleStatus =
       ageMs !== undefined && ageMs <= this.freshnessMs ? 'FRESH' : 'STALE';
     let staleReason = 'OK';
@@ -211,9 +221,12 @@ export class CandleDataPlane {
       websocketObservedAtMs: entry.websocketObservedAtMs,
       lastKlineEventAtMs: entry.lastKlineEventAtMs,
       klineEventCount: entry.klineEventCount,
-      lastClosedCandleCloseTimeMs: entry.lastClosedCandleCloseTimeMs,
+      lastClosedCandleCloseTimeMs: series.latestClosedCandleCloseTimeMs,
+      expectedLastClosedCandleCloseTimeMs: series.expectedLatestClosedCandleCloseTimeMs,
+      seriesComplete: series.complete,
+      seriesReason: series.reason,
       status,
-      staleReason,
+      staleReason: series.complete ? staleReason : series.reason,
     };
   }
 
@@ -224,8 +237,10 @@ export class CandleDataPlane {
    */
   isRouteHealthy(now?: number): boolean {
     const ts = now ?? this.deps.clock.now();
-    return this.lastKlineEventAcrossAllSymbolsMs > 0 &&
-      (ts - this.lastKlineEventAcrossAllSymbolsMs) <= this.freshnessMs;
+    return (
+      this.lastKlineEventAcrossAllSymbolsMs > 0 &&
+      ts - this.lastKlineEventAcrossAllSymbolsMs <= this.freshnessMs
+    );
   }
 
   /**
@@ -233,46 +248,114 @@ export class CandleDataPlane {
    * regardless of when the last kline event was received.
    * Checks: (1) entry exists, (2) source is WEBSOCKET, (3) 96+ candles, (4) aligned close times.
    */
-  isSeriesComplete(rawSymbol: string, interval = '5m', requiredCandles = 96): {
+  isSeriesComplete(
+    rawSymbol: string,
+    interval = '5m',
+    requiredCandles = 96,
+    now?: number,
+  ): {
     complete: boolean;
     reason: string;
     candleCount: number;
     lastSource?: SharedCandleSource;
     aligned: boolean;
+    latestClosedCandleCloseTimeMs?: number;
+    expectedLatestClosedCandleCloseTimeMs?: number;
   } {
     const symbol = rawSymbol.toUpperCase();
     const entry = this.entries.get(this.key(symbol, interval));
     if (!entry) return { complete: false, reason: 'NO_ENTRY', candleCount: 0, aligned: false };
+    const intervalMs = this.parseIntervalMs(interval);
+    if (intervalMs === undefined) {
+      return {
+        complete: false,
+        reason: `UNSUPPORTED_INTERVAL_${interval}`,
+        candleCount: entry.candles.length,
+        aligned: false,
+      };
+    }
     if (entry.lastSource !== 'WEBSOCKET') {
-      return { complete: false, reason: `SOURCE_${entry.lastSource ?? 'NONE'}_NOT_WEBSOCKET`, candleCount: entry.candles.length, aligned: false };
+      return {
+        complete: false,
+        reason: `SOURCE_${entry.lastSource ?? 'NONE'}_NOT_WEBSOCKET`,
+        candleCount: entry.candles.length,
+        aligned: false,
+      };
     }
     if (entry.candles.length < requiredCandles) {
-      return { complete: false, reason: `INSUFFICIENT_CANDLES_${entry.candles.length}_OF_${requiredCandles}`, candleCount: entry.candles.length, aligned: false };
+      return {
+        complete: false,
+        reason: `INSUFFICIENT_CANDLES_${entry.candles.length}_OF_${requiredCandles}`,
+        candleCount: entry.candles.length,
+        aligned: false,
+      };
     }
-    // Check alignment: all closed candles should have closeTime = openTime + 5min
-    // and be sequential without gaps
-    const closedCandles = entry.candles.filter(c => {
-      const closeTime = c.openTime + 5 * 60 * 1000;
-      return closeTime <= (entry.observedAtMs ?? 0);
-    });
+    const evaluatedAtMs = now ?? this.deps.clock.now();
+    const closedCandles = entry.candles.filter((candle) => candle.closeTime <= evaluatedAtMs);
     if (closedCandles.length < requiredCandles) {
-      return { complete: false, reason: `CLOSED_CANDLES_${closedCandles.length}_OF_${requiredCandles}`, candleCount: entry.candles.length, aligned: false };
+      return {
+        complete: false,
+        reason: `CLOSED_CANDLES_${closedCandles.length}_OF_${requiredCandles}`,
+        candleCount: entry.candles.length,
+        aligned: false,
+      };
     }
-    // Check for gaps: sequential openTimes should differ by exactly 5 minutes
-    let aligned = true;
-    let gapDetected = false;
-    for (let i = 1; i < closedCandles.length; i++) {
-      const expected = closedCandles[i - 1].openTime + 5 * 60 * 1000;
-      if (closedCandles[i].openTime !== expected) {
-        aligned = false;
-        gapDetected = true;
-        break;
+    const validationWindow = closedCandles.slice(-requiredCandles);
+    for (let i = 1; i < validationWindow.length; i++) {
+      const expected = validationWindow[i - 1].openTime + intervalMs;
+      if (validationWindow[i].openTime !== expected) {
+        return {
+          complete: false,
+          reason: 'GAP_DETECTED_IN_SERIES',
+          candleCount: entry.candles.length,
+          aligned: false,
+        };
       }
     }
-    if (gapDetected) {
-      return { complete: false, reason: 'GAP_DETECTED_IN_SERIES', candleCount: entry.candles.length, aligned: false };
+    for (const candle of validationWindow) {
+      if (candle.closeTime !== candle.openTime + intervalMs - 1) {
+        return {
+          complete: false,
+          reason: 'CANDLE_BOUNDARY_MISMATCH',
+          candleCount: entry.candles.length,
+          aligned: false,
+        };
+      }
     }
-    return { complete: true, reason: 'OK', candleCount: entry.candles.length, lastSource: entry.lastSource, aligned };
+    const latestClosedCandle = closedCandles[closedCandles.length - 1];
+    const expectedLatestOpenTimeMs =
+      Math.floor(Math.max(0, evaluatedAtMs - this.closedCandleGraceMs) / intervalMs) * intervalMs -
+      intervalMs;
+    const expectedLatestClosedCandleCloseTimeMs = expectedLatestOpenTimeMs + intervalMs - 1;
+    if (latestClosedCandle.openTime < expectedLatestOpenTimeMs) {
+      return {
+        complete: false,
+        reason: `LATEST_CLOSED_CANDLE_STALE_${latestClosedCandle.closeTime}_EXPECTED_${expectedLatestClosedCandleCloseTimeMs}`,
+        candleCount: entry.candles.length,
+        aligned: true,
+        latestClosedCandleCloseTimeMs: latestClosedCandle.closeTime,
+        expectedLatestClosedCandleCloseTimeMs,
+      };
+    }
+    if (latestClosedCandle.openTime > expectedLatestOpenTimeMs) {
+      return {
+        complete: false,
+        reason: `LATEST_CLOSED_CANDLE_AHEAD_${latestClosedCandle.closeTime}_EXPECTED_${expectedLatestClosedCandleCloseTimeMs}`,
+        candleCount: entry.candles.length,
+        aligned: false,
+        latestClosedCandleCloseTimeMs: latestClosedCandle.closeTime,
+        expectedLatestClosedCandleCloseTimeMs,
+      };
+    }
+    return {
+      complete: true,
+      reason: 'OK',
+      candleCount: entry.candles.length,
+      lastSource: entry.lastSource,
+      aligned: true,
+      latestClosedCandleCloseTimeMs: latestClosedCandle.closeTime,
+      expectedLatestClosedCandleCloseTimeMs,
+    };
   }
 
   close(): void {
@@ -301,7 +384,8 @@ export class CandleDataPlane {
           this.merge(entry, candles);
           const observedAtMs = this.deps.clock.now();
           const websocketAdvanced =
-            entry.websocketObservedAtMs !== undefined && entry.websocketObservedAtMs !== websocketAtStart;
+            entry.websocketObservedAtMs !== undefined &&
+            entry.websocketObservedAtMs !== websocketAtStart;
           if (source === 'REST_RECOVERY') {
             entry.restFallbackCount += 1;
             if (!websocketAdvanced) {
@@ -331,5 +415,15 @@ export class CandleDataPlane {
 
   private key(symbol: string, interval: string): string {
     return `${symbol}|${interval}`;
+  }
+
+  private parseIntervalMs(interval: string): number | undefined {
+    const match = /^(\d+)([smhd])$/.exec(interval);
+    if (!match) return undefined;
+    const amount = Number(match[1]);
+    const unitMs = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[
+      match[2] as 's' | 'm' | 'h' | 'd'
+    ];
+    return Number.isSafeInteger(amount) && amount > 0 ? amount * unitMs : undefined;
   }
 }
