@@ -30,3 +30,24 @@ export interface MicroBurstRuntimeConfig {
     durabilityFlushIntervalMs?: number;
   };
 }
+
+export interface MicroBurstLiveEntryRequest {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  signalId: string;
+  strategyVersion: string;
+  requestedAt: number;
+  leverage: number;
+  positionFraction: number;
+  structuralStopPrice: number;
+  destinationPrice: number;
+  diagnostics: Record<string, unknown>;
+}
+
+export interface MicroBurstExitMarketSnapshot {
+  currentPrice: number;
+  observedAtMs: number;
+  currentBookPressure: import('../domain/MicroBurstTypes').BookPressureSignal | null;
+  currentBtcContext: import('../domain/MicroBurstTypes').BtcContext | null;
+  marketEvidence: import('../domain/MicroBurstTypes').MicroBurstExitMarketEvidence | null;
+}

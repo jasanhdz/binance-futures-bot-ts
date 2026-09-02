@@ -20,6 +20,18 @@ describe('resolveStrategyOwnership', () => {
     ).toEqual({ status: 'OWNED', strategyId: 'AEGIS_TURBO' });
   });
 
+  it('resolves Micro Burst ownership from its canonical trade id', () => {
+    expect(
+      resolveStrategyOwnership(
+        state({
+          positionOwner: 'BOT',
+          tradeOrigin: 'BOT',
+          lastTradeId: 'MICRO-BURST-V1-ETHUSDT-1',
+        }),
+      ),
+    ).toEqual({ status: 'OWNED', strategyId: 'MICRO_BURST_V1' });
+  });
+
   it('migrates legacy AEGIS ownership using Aegis trade provenance', () => {
     expect(
       resolveStrategyOwnership(

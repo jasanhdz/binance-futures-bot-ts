@@ -93,6 +93,16 @@ export type BotState = {
   lastCodeCommitSha?: string;
   lastStrategyFreezeState?: StrategyFreezeState;
 
+  // Micro Burst lifecycle state is persisted to preserve exit hysteresis after restart.
+  microBurstStructuralStopPrice?: number;
+  microBurstDestinationPrice?: number;
+  microBurstPeakPrice?: number;
+  microBurstTroughPrice?: number;
+  microBurstExitState?: unknown;
+  /** Fail-closed quarantine until an operator reconciles an exact realized close PnL. */
+  microBurstPnlUnverified?: boolean;
+  microBurstPnlUnverifiedAt?: number;
+
   // Aegis Turbo / legacy lifecycle metadata
   lastStopRoe?: number;
   lastBreakEvenRoe?: number;

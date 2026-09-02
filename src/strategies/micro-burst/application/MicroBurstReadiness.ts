@@ -1,3 +1,5 @@
+import { MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
+
 export interface MicroBurstReadinessChecks {
   code: boolean;
   config: boolean;
@@ -57,7 +59,7 @@ export interface MicroBurstReadinessResult {
   readyForFreeze: boolean;
   official: false;
   officialAuthority: boolean;
-  liveAuthority: false;
+  liveAuthority: boolean;
   checks: MicroBurstReadinessChecks;
   blockers: string[];
   warnings: string[];
@@ -75,9 +77,7 @@ export function assessMicroBurstReadiness(
     code: known(input.codeSha),
     config: known(input.configHash),
     version: known(input.strategyVersion),
-    cohort:
-      known(cohortId) &&
-      cohortId?.startsWith('MBV1-M3_2-') === true,
+    cohort: known(cohortId) && cohortId?.startsWith('MBV1-M3_2-') === true,
     manifest: input.manifestValid === true,
     archive: input.archiveEnabled && input.archiveAvailable && input.archiveHealthy === true,
     db: input.databaseValid === true,
@@ -91,7 +91,9 @@ export function assessMicroBurstReadiness(
     BTC: input.btcHealthy === true,
     AggTrade: input.aggTradeHealthy === true,
     mutation: input.mutationAuditAvailable === true,
-    liveFlags: input.mode === 'SHADOW',
+    liveFlags:
+      input.mode === 'SHADOW' ||
+      (input.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED === true),
     preregistration: input.enabled && input.preregistrationEnabled,
     schema: input.schemaValid === true,
     episode: input.episodeDefinitionValid === true,
@@ -105,7 +107,7 @@ export function assessMicroBurstReadiness(
   const warnings: string[] = [];
   if (input.officialCohortReady !== true)
     warnings.push('Official cohort authority was not asserted.');
-  if (input.mode === 'LIVE')
+  if (input.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED !== true)
     warnings.push('LIVE mode is rejected; no exchange authority is granted.');
   const readyForSoak = soakBlockers.length === 0;
   const readyForFreeze = readyForSoak && input.officialCohortReady === true;
@@ -117,7 +119,7 @@ export function assessMicroBurstReadiness(
     readyForFreeze,
     official: false,
     officialAuthority,
-    liveAuthority: false,
+    liveAuthority: input.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED === true,
     checks,
     blockers,
     warnings,

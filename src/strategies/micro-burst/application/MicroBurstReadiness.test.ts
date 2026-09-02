@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { assessMicroBurstReadiness, MicroBurstReadinessInput } from '../application/MicroBurstReadiness';
+import {
+  assessMicroBurstReadiness,
+  MicroBurstReadinessInput,
+} from '../application/MicroBurstReadiness';
 
 const complete: MicroBurstReadinessInput = {
   codeSha: 'abc123',
@@ -30,6 +33,10 @@ const complete: MicroBurstReadinessInput = {
 };
 
 describe('Micro Burst readiness', () => {
+  it('reports explicit LIVE authority when the release kill switch is enabled', () => {
+    expect(assessMicroBurstReadiness({ ...complete, mode: 'LIVE' }).liveAuthority).toBe(true);
+  });
+
   it('is complete only when every requested check is evidenced', () => {
     const result = assessMicroBurstReadiness(complete);
     expect(result.ready).toBe(true);

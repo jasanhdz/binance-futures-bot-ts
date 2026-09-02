@@ -83,7 +83,7 @@ describe('readAegisClosedTradeOutcomes', () => {
     await expect(readAegisClosedTradeOutcomes(path.join(tempDir, 'missing'))).resolves.toEqual([]);
   });
 
-  it('loads verified Aegis and Momentum outcomes for account-wide reconstruction', async () => {
+  it('loads verified exact strategy outcomes for account-wide reconstruction', async () => {
     const ownership = {
       status: 'CLOSED',
       mode: 'AEGIS_TURBO_MICRO_LIVE',
@@ -99,11 +99,18 @@ describe('readAegisClosedTradeOutcomes', () => {
       [
         { ...ownership, trade_id: 'AEGIS-TURBO-1', strategy: 'AEGIS_TURBO' },
         { ...ownership, trade_id: 'MOMENTUM-RIDE-1', strategy: 'MOMENTUM_RIDE' },
+        { ...ownership, trade_id: 'MICRO-BURST-V1-1', strategy: 'MICRO_BURST_V1' },
+        {
+          ...ownership,
+          trade_id: 'MICRO-BURST-V1-ESTIMATED',
+          strategy: 'MICRO_BURST_V1',
+          metadata: { pnl_status: 'ESTIMATED_FROM_MARK_PRICE' },
+        },
       ]
         .map((record) => JSON.stringify(record))
         .join('\n'),
     );
 
-    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(2);
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(3);
   });
 });

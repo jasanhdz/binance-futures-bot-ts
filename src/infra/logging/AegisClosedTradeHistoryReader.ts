@@ -32,6 +32,13 @@ export async function readAegisClosedTradeOutcomes(
       if (record.status !== 'CLOSED' || record.strategy !== 'AEGIS_TURBO' || record.mode !== mode)
         continue;
       if (!isVerifiedAegisMetricRecord(record)) continue;
+      const metadata = record.metadata;
+      if (
+        metadata &&
+        typeof metadata === 'object' &&
+        (metadata as Record<string, unknown>).pnl_status === 'ESTIMATED_FROM_MARK_PRICE'
+      )
+        continue;
       if (typeof record.trade_id !== 'string' || typeof record.closed_at !== 'string') continue;
       if (typeof record.pnl_usdt !== 'number' || !Number.isFinite(record.pnl_usdt)) continue;
       if (!Number.isFinite(Date.parse(record.closed_at))) continue;
@@ -72,11 +79,20 @@ export async function readStrategyClosedTradeOutcomes(
       }
       if (
         record.status !== 'CLOSED' ||
-        (record.strategy !== 'AEGIS_TURBO' && record.strategy !== 'MOMENTUM_RIDE') ||
+        (record.strategy !== 'AEGIS_TURBO' &&
+          record.strategy !== 'MOMENTUM_RIDE' &&
+          record.strategy !== 'MICRO_BURST_V1') ||
         record.mode !== mode
       )
         continue;
       if (!isVerifiedAegisMetricRecord(record)) continue;
+      const metadata = record.metadata;
+      if (
+        metadata &&
+        typeof metadata === 'object' &&
+        (metadata as Record<string, unknown>).pnl_status === 'ESTIMATED_FROM_MARK_PRICE'
+      )
+        continue;
       if (typeof record.trade_id !== 'string' || typeof record.closed_at !== 'string') continue;
       if (typeof record.pnl_usdt !== 'number' || !Number.isFinite(record.pnl_usdt)) continue;
       if (!Number.isFinite(Date.parse(record.closed_at))) continue;

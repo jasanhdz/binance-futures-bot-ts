@@ -202,6 +202,18 @@ describe('MicroBurst intelligent exit hysteresis', () => {
     });
   });
 
+  it('does not move the confirmation window backwards on regressing timestamps', () => {
+    const engine = new MicroBurstExitEngine();
+    expect(engine.evaluate('trade', longRiskContext(20_000), config, 'LONG').action).toBe('HOLD');
+    expect(engine.evaluate('trade', longRiskContext(19_000), config, 'LONG').action).toBe('HOLD');
+    expect(engine.evaluate('trade', longRiskContext(22_000), config, 'LONG').action).toBe('HOLD');
+    expect(engine.getState('trade')).toMatchObject({
+      riskStartedAtMs: 20_000,
+      lastObservedAtMs: 22_000,
+      consecutiveRiskObservations: 2,
+    });
+  });
+
   it('resets the confirmation window when risk disappears', () => {
     const engine = new MicroBurstExitEngine();
     engine.evaluate('trade', longRiskContext(20_000), config, 'LONG');

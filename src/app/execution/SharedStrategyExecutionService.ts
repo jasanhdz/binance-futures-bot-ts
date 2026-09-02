@@ -627,6 +627,15 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         error: String(error),
       });
     }
+    if (reconcilePosition && !positionObserved) {
+      return {
+        quantity: closeQuantity,
+        sideMode: closeSideMode,
+        emergencyCloseError: 'submitted entry position could not be reconciled',
+        positionStillOpen: true,
+        closeAmbiguous: true,
+      };
+    }
     try {
       if (positionObserved || !reconcilePosition) {
         await this.exchange.closeSideMarketSafe(
@@ -656,6 +665,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         for (const order of orphans as any[]) {
           if (order.owner === 'BOT')
             await this.exchange.cancelOrderById(intent.symbol, order.orderId);
+        }
+        const survivors = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
+        if (survivors.some((order) => order.owner === 'BOT')) {
+          throw new Error('BOT_CLOSE_ORDERS_REMAIN_AFTER_EMERGENCY_CLOSE');
         }
       } catch (cleanupError) {
         return {

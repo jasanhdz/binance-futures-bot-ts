@@ -66,9 +66,9 @@ describe('Micro Burst M3 static audit', () => {
     }
   });
 
-  it('SHADOW authority enabled, LIVE authority disabled', () => {
+  it('SHADOW and LIVE authority enabled', () => {
     expect(MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED).toBe(true);
-    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(false);
+    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
   });
 
   it('application layer files do not invoke exchange mutation', () => {
@@ -109,7 +109,7 @@ describe('Micro Burst M3 static audit', () => {
     expect(appImports).not.toContain('SharedStrategyExecutionService');
   });
 
-  it('LIVE authority flag is false', () => {
-    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(false);
+  it('LIVE authority flag is true', () => {
+    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
   });
 });

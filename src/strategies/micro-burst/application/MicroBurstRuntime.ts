@@ -13,7 +13,11 @@ import {
 } from '../domain/MicroBurstReferencePrice';
 import { MicroBurstShadowEvaluator } from './MicroBurstShadowEvaluator';
 import { MicroBurstDuplicateSignalGuard } from '../domain/MicroBurstDuplicateSignalGuard';
-import type { MicroBurstRuntimeConfig } from './MicroBurstRuntimeTypes';
+import type {
+  MicroBurstExitMarketSnapshot,
+  MicroBurstLiveEntryRequest,
+  MicroBurstRuntimeConfig,
+} from './MicroBurstRuntimeTypes';
 import type { MicroBurstShadowEvaluationResult } from './MicroBurstShadowEvaluationTypes';
 import type {
   AggTradeEvent,
@@ -69,7 +73,7 @@ export interface MicroBurstRuntimeHealth {
   totalDuplicateSignals: number;
   totalInvalidContexts: number;
   totalResyncs: number;
-  liveExecution: false;
+  liveExecution: boolean;
   paperEngine: 'GENERIC';
   lastHealthReportAt: number;
   outcomeTracker: {
@@ -117,7 +121,7 @@ export interface MicroBurstRuntimeReadiness extends MicroBurstReadinessResult {
   strategyVersion: string | null;
   codeCommitSha: string | null;
   configHash: string | null;
-  liveExecution: false;
+  liveExecution: boolean;
 }
 
 interface SymbolRuntimeState {
@@ -227,6 +231,9 @@ export interface MicroBurstRuntimeDeps {
     decisionSink: DecisionEvidenceSink;
     marketSnapshotSink: MarketSnapshotEvidenceSink;
   };
+  liveTrading?: {
+    open(request: MicroBurstLiveEntryRequest): Promise<boolean>;
+  };
 }
 
 export class MicroBurstRuntime {
@@ -311,11 +318,11 @@ export class MicroBurstRuntime {
       return;
     }
 
-    if (this.config.mode === 'LIVE') {
+    if (this.config.mode === 'LIVE' && !this.deps.liveTrading) {
       this.deps.logger.error('micro_burst_runtime_live_rejected', {
-        message: 'MICRO_BURST_V1 LIVE mode not authorized. Failing closed.',
+        message: 'MICRO_BURST_V1 LIVE execution port missing. Failing closed.',
       });
-      throw new Error('MICRO_BURST_V1_LIVE_NOT_AUTHORIZED');
+      throw new Error('MICRO_BURST_V1_LIVE_EXECUTION_PORT_REQUIRED');
     }
 
     const enabledSymbols = Object.entries(this.config.symbols)
@@ -669,7 +676,12 @@ export class MicroBurstRuntime {
       });
 
       let paperSuppressed = false;
-      if (result.wouldEnter && !result.duplicateSuppressed && result.side) {
+      if (
+        this.config.mode === 'SHADOW' &&
+        result.wouldEnter &&
+        !result.duplicateSuppressed &&
+        result.side
+      ) {
         const quote = this.paperQuote(state.book.getSnapshot());
         const decisionReceivedAtMs = this.deps.clock.now();
         const opened = this.shadowEngine.open(
@@ -714,6 +726,32 @@ export class MicroBurstRuntime {
             this.paperRecoveryBlocked = true;
             this.paperPersistenceError = 'RECOVERY_BLOCKED';
           }
+        }
+      }
+
+      if (
+        this.config.mode === 'LIVE' &&
+        result.wouldEnter &&
+        !result.duplicateSuppressed &&
+        result.side &&
+        result.structuralInvalidation &&
+        result.destinationPrice
+      ) {
+        const leverage = numberDiagnostic(result.diagnostics?.leverage);
+        const positionFraction = numberDiagnostic(result.diagnostics?.positionFraction);
+        if (leverage && positionFraction) {
+          await this.deps.liveTrading?.open({
+            symbol: result.symbol,
+            side: result.side,
+            signalId: result.shadowSignalId,
+            strategyVersion: result.strategyVersion,
+            requestedAt: this.deps.clock.now(),
+            leverage,
+            positionFraction,
+            structuralStopPrice: result.structuralInvalidation,
+            destinationPrice: result.destinationPrice,
+            diagnostics: result.diagnostics ?? {},
+          });
         }
       }
 
@@ -871,7 +909,7 @@ export class MicroBurstRuntime {
       totalDuplicateSignals: this.totalDuplicateSignals,
       totalInvalidContexts: this.totalInvalidContexts,
       totalResyncs: this.getTotalResyncs(),
-      liveExecution: false,
+      liveExecution: this.config.mode === 'LIVE' && this.deps.liveTrading !== undefined,
       paperEngine: 'GENERIC',
       lastHealthReportAt: this.lastHealthReportAt,
       outcomeTracker: this.deps.outcomeTracker ? this.deps.outcomeTracker.getHealth() : null,
@@ -930,9 +968,7 @@ export class MicroBurstRuntime {
         strategyContext: {
           currentBookPressure,
           currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
-          marketEvidence: state
-            ? buildExitMarketEvidence(state.aggTradeBuffer, receivedAtMs)
-            : null,
+          marketEvidence: state ? buildExitMarketEvidence(state.aggTradeBuffer) : null,
           anomalyExitFlag: false,
         },
       },
@@ -942,6 +978,29 @@ export class MicroBurstRuntime {
       this.paperOpenSymbols.delete(symbol);
       this.paperSuppressionDiagnostics.delete(`${symbol}:${result.tradeId}`);
     }
+  }
+
+  readExitMarketSnapshot(symbol: string, sinceMs?: number): MicroBurstExitMarketSnapshot | null {
+    const state = this.symbolStates.get(symbol);
+    if (!state) return null;
+    const trades = state.aggTradeBuffer.getRecent(EXIT_SHORT_HORIZON_MS);
+    const eligibleTrades =
+      sinceMs === undefined ? trades : trades.filter((trade) => trade.eventTime >= sinceMs);
+    const latest = eligibleTrades[eligibleTrades.length - 1];
+    if (!latest || !Number.isFinite(latest.price) || latest.price <= 0) return null;
+    const now = this.deps.clock.now();
+    if (latest.eventTime > now || now - latest.eventTime > EXIT_SHORT_HORIZON_MS) return null;
+    const observedAtMs = latest.eventTime;
+    const bookSnapshot = state.book.getSnapshot();
+    return {
+      currentPrice: latest.price,
+      observedAtMs,
+      currentBookPressure: bookSnapshot
+        ? analyzeBookPressure(bookSnapshot, now, undefined, bookSnapshot.temporalHistory)
+        : null,
+      currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
+      marketEvidence: buildExitMarketEvidence(state.aggTradeBuffer, sinceMs),
+    };
   }
 
   private paperQuote(
@@ -1008,10 +1067,7 @@ export class MicroBurstRuntime {
     const blockers = [...readiness.blockers];
     if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
     if (this.paperRecoveryBlocked) blockers.push('PAPER_RECOVERY_BLOCKED');
-    if (this.config.mode !== 'SHADOW')
-      blockers.push(
-        this.config.mode === 'LIVE' ? 'LIVE_MODE_NOT_DISABLED' : 'SHADOW_MODE_NOT_ENABLED',
-      );
+    if (this.config.mode === 'OFF') blockers.push('SHADOW_MODE_NOT_ENABLED');
     if (!this.config.prospectiveValidation?.enabled)
       blockers.push('PROSPECTIVE_VALIDATION_DISABLED');
     if (!this.config.marketArchive?.enabled) blockers.push('MARKET_ARCHIVE_DISABLED');
@@ -1047,7 +1103,8 @@ export class MicroBurstRuntime {
         this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion ?? null,
       codeCommitSha: provenance?.codeCommitSha ?? null,
       configHash: provenance?.configHash ?? null,
-      liveExecution: false,
+      liveExecution:
+        this.running && this.config.mode === 'LIVE' && this.deps.liveTrading !== undefined,
     };
   }
 
@@ -1211,20 +1268,31 @@ export class MicroBurstRuntime {
 
 function buildExitMarketEvidence(
   buffer: RollingAggTradeBuffer,
-  observedAtMs: number,
-): MicroBurstExitMarketEvidence {
-  const shortTrades = buffer.getRecent(EXIT_SHORT_HORIZON_MS);
-  const mediumTrades = buffer.getRecent(EXIT_MEDIUM_HORIZON_MS);
+  sinceMs?: number,
+): MicroBurstExitMarketEvidence | null {
+  const afterEntry = (trade: AggTradeEvent): boolean =>
+    sinceMs === undefined || trade.eventTime >= sinceMs;
+  const shortTrades = buffer.getRecent(EXIT_SHORT_HORIZON_MS).filter(afterEntry);
+  const mediumTrades = buffer.getRecent(EXIT_MEDIUM_HORIZON_MS).filter(afterEntry);
   const flow = buffer.getTakerFlow(EXIT_SHORT_HORIZON_MS);
+  if (flow.eventWatermarkMs === null) return null;
+  let buyTakerVolume = 0;
+  let sellTakerVolume = 0;
+  for (const trade of shortTrades) {
+    if (trade.isBuyerMaker) sellTakerVolume += trade.quantity;
+    else buyTakerVolume += trade.quantity;
+  }
   return {
-    observedAtMs,
+    observedAtMs: flow.eventWatermarkMs,
     shortHorizonReturnBps: priceReturnBps(shortTrades),
     mediumHorizonReturnBps: priceReturnBps(mediumTrades),
     priceSampleCount: shortTrades.length,
-    buyTakerVolume: flow.buyVolume,
-    sellTakerVolume: flow.sellVolume,
-    takerTradeCount: flow.tradeCount,
-    takerFlowWindowComplete: flow.windowComplete,
+    buyTakerVolume,
+    sellTakerVolume,
+    takerTradeCount: shortTrades.length,
+    takerFlowWindowComplete:
+      flow.windowComplete &&
+      (sinceMs === undefined || sinceMs <= flow.eventWatermarkMs - flow.requestedWindowMs),
     takerFlowGapFree: flow.gapFree,
   };
 }

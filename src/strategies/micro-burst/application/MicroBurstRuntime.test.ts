@@ -342,13 +342,73 @@ describe('MicroBurstRuntime', () => {
     expect(runtime.getHealth().symbolCount).toBe(0);
   });
 
-  it('rejects LIVE mode at startup', async () => {
+  it('rejects LIVE mode without an execution port', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'LIVE' }));
-    await expect(runtime.start()).rejects.toThrow('MICRO_BURST_V1_LIVE_NOT_AUTHORIZED');
+    await expect(runtime.start()).rejects.toThrow('MICRO_BURST_V1_LIVE_EXECUTION_PORT_REQUIRED');
     expect(runtime.getReadiness()).toMatchObject({
       ready: false,
       blockers: expect.arrayContaining(['RUNTIME_NOT_RUNNING']),
     });
+  });
+
+  it('routes a LIVE entry through the explicit execution port without opening paper state', async () => {
+    const open = vi.fn(async () => true);
+    deps.liveTrading = { open };
+    const shadowJournal = new MemoryShadowJournal();
+    deps.shadowTradeJournal = shadowJournal;
+    const runtime = new MicroBurstRuntime(
+      deps,
+      makeConfig({ mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } }),
+    );
+    await runtime.start();
+    (runtime as any).shadowEvaluator = {
+      evaluate: async () => ({
+        strategyId: 'MICRO_BURST_V1',
+        strategyVersion: '0.7.0-intelligent-exit',
+        symbol: 'ETHUSDT',
+        snapshotAtMs: 1_000,
+        decision: 'ENTRY_INTENT',
+        side: 'LONG',
+        confidence: 0.9,
+        referencePrice: 100,
+        supportPrice: 99,
+        resistancePrice: 110,
+        structuralInvalidation: 99,
+        destinationPrice: 102,
+        roomToTargetBps: 200,
+        riskToInvalidationBps: 100,
+        rewardRisk: 2,
+        momentum: { direction: 'LONG', strength: 0.9, continuationScore: 0.9 },
+        book: { status: 'HEALTHY', ageMs: 1, imbalance: 0.3, imbalanceSlope: null },
+        btc: { status: 'HEALTHY', ageMs: 1, ret1m: 0, ret3m: 0, ret5m: 0, conflict: false },
+        microRegime: 'RANGING',
+        dataQuality: { contextValid: true, invalidReasons: [] },
+        wouldEnter: true,
+        liveExecution: true,
+        shadowSignalId: 'live-signal',
+        duplicateSuppressed: false,
+        firstObservedAt: 1_000,
+        lastObservedAt: 1_000,
+        diagnostics: { leverage: 20, positionFraction: 0.05 },
+      }),
+    };
+
+    await runtime.evaluateSymbol('ETHUSDT');
+
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: 'ETHUSDT',
+        side: 'LONG',
+        signalId: 'live-signal',
+        leverage: 20,
+        positionFraction: 0.05,
+        structuralStopPrice: 99,
+        destinationPrice: 102,
+      }),
+    );
+    expect(shadowJournal.positions).toHaveLength(0);
+    expect(runtime.getHealth().liveExecution).toBe(true);
+    await runtime.stop();
   });
 
   it('reports health with correct symbol count', async () => {
@@ -358,6 +418,45 @@ describe('MicroBurstRuntime', () => {
     expect(health.symbolCount).toBe(2);
     expect(health.running).toBe(true);
     expect(health.liveExecution).toBe(false);
+    await runtime.stop();
+  });
+
+  it('uses fresh aggregate-trade event time for LIVE exit observations', async () => {
+    let now = 10_000;
+    deps.clock = { now: () => now };
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    await runtime.start();
+    const buffer = (runtime as any).symbolStates.get('ETHUSDT').aggTradeBuffer;
+    buffer.push({
+      eventTime: 8_500,
+      receivedAtMs: 8_600,
+      price: 99,
+      quantity: 10,
+      isBuyerMaker: true,
+      aggregateTradeId: 1,
+    });
+    buffer.push({
+      eventTime: 9_000,
+      receivedAtMs: 9_100,
+      price: 101,
+      quantity: 1,
+      isBuyerMaker: false,
+      aggregateTradeId: 2,
+    });
+
+    expect(runtime.readExitMarketSnapshot('ETHUSDT', 8_750)).toMatchObject({
+      currentPrice: 101,
+      observedAtMs: 9_000,
+      marketEvidence: {
+        priceSampleCount: 1,
+        buyTakerVolume: 1,
+        sellTakerVolume: 0,
+        takerTradeCount: 1,
+        takerFlowWindowComplete: false,
+      },
+    });
+    now = 14_001;
+    expect(runtime.readExitMarketSnapshot('ETHUSDT')).toBeNull();
     await runtime.stop();
   });
 
@@ -522,14 +621,13 @@ describe('MicroBurstRuntime', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it('reports archive, live mode, and provenance blockers without enabling execution', async () => {
+  it('reports archive and provenance blockers before LIVE runtime startup', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'LIVE' }));
 
     expect(runtime.getReadiness()).toMatchObject({
       ready: false,
       liveExecution: false,
       blockers: expect.arrayContaining([
-        'LIVE_MODE_NOT_DISABLED',
         'PROSPECTIVE_VALIDATION_DISABLED',
         'MARKET_ARCHIVE_DISABLED',
         'MARKET_ARCHIVE_UNAVAILABLE',

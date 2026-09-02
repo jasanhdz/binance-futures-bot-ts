@@ -694,6 +694,8 @@ function makeHarness(
     entryPolicy?: any;
     cachedCandles?: any[];
     momentumRide?: any;
+    microBurst?: any;
+    recentFills?: any[];
     regimeContext?: any;
     closedTradeOutcomes?: Array<{ tradeId: string; closedAt: string; pnlUsdt: number }>;
     preserveUnverifiedState?: boolean;
@@ -704,6 +706,7 @@ function makeHarness(
     { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 2970, owner: 'BOT' },
     { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: 3050, owner: 'BOT' },
   ];
+  const cancelledOrderIds = new Set<string>();
   const normalizeCloseOrders = (orders: any[], side: 'LONG' | 'SHORT') =>
     orders.map((order) => ({
       ...order,
@@ -755,9 +758,11 @@ function makeHarness(
             { orderId: 'tp', type: 'TAKE_PROFIT_MARKET', stopPrice: takeProfit?.[2], owner: 'BOT' },
           ],
           side,
-        );
+        ).filter((order) => !cancelledOrderIds.has(order.orderId));
       }
-      return normalizeCloseOrders(closeOrders, side);
+      return normalizeCloseOrders(closeOrders, side).filter(
+        (order) => !cancelledOrderIds.has(order.orderId),
+      );
     });
   }
   const exchange = {
@@ -791,7 +796,9 @@ function makeHarness(
       ? vi.fn().mockRejectedValue(new Error('tp failed'))
       : vi.fn().mockResolvedValue(true),
     listCloseOrdersForSide,
-    cancelOrderById: vi.fn().mockResolvedValue(undefined),
+    cancelOrderById: vi.fn(async (_symbol: string, orderId: string) => {
+      cancelledOrderIds.add(orderId);
+    }),
     closeSideMarketSafe: options.closeSideMarketSafeReject
       ? vi.fn().mockRejectedValue(new Error('close failed'))
       : vi.fn().mockResolvedValue(undefined),
@@ -806,6 +813,7 @@ function makeHarness(
       }),
     getCachedCandles: vi.fn().mockReturnValue(options.cachedCandles ?? []),
     subscribeToCandles: vi.fn(),
+    getRecentFills: vi.fn().mockResolvedValue(options.recentFills ?? []),
     subscribeToPartialDepth: vi.fn(
       (
         _symbol: string,
@@ -1005,6 +1013,16 @@ function makeHarness(
             requireBrackets: true,
             requireProfitProtection: true,
           },
+        },
+    ),
+    getMicroBurstConfig: vi.fn(
+      () =>
+        options.microBurst ?? {
+          enabled: false,
+          mode: 'OFF',
+          symbols: {},
+          prospectiveValidation: { enabled: false },
+          marketArchive: { enabled: false },
         },
     ),
     getAegisDecisionEnforcementConfig: vi.fn(
@@ -1345,6 +1363,88 @@ describe('TradingService Aegis live execution', () => {
     expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(0);
   });
 
+  it('quarantines Micro Burst after a close without verified realized PnL', async () => {
+    const microBurst = {
+      enabled: true,
+      mode: 'LIVE',
+      symbols: { ETHUSDT: { enabled: true } },
+      prospectiveValidation: { enabled: false },
+      marketArchive: { enabled: false },
+    };
+    const { exchange, logger, service, state } = makeHarness({
+      microBurst,
+      readActivePositionSequence: [
+        { sideMode: 'LONG', qtyAbs: 0.01, entryPrice: 3000, leverage: 20 },
+        null,
+        null,
+      ],
+      recentFills: [],
+      initialState: {
+        mode: 'LONG_RIDE',
+        lastStrategy: 'MICRO_BURST_V1',
+        lastTradeId: 'MICRO-BURST-V1-QUARANTINE',
+        lastSide: 'LONG',
+        lastEntryAt: Date.now() - 60_000,
+        lastEntryPrice: 3000,
+        lastEntryQty: 0.01,
+        lastLeverage: 20,
+      },
+    });
+    const manager = (service as any).positionManagerRouter.managers.get('MICRO_BURST_V1');
+
+    const closed = await manager.execution.close(
+      {
+        symbol: 'ETHUSDT',
+        side: 'LONG',
+        botState: state.get(),
+        symbolState: state,
+        exitContext: {
+          currentPrice: 2990,
+          entryPrice: 3000,
+          unrealizedRoe: -0.06,
+        },
+      },
+      { action: 'CLOSE_MARKET', reason: 'HARD_STOP', diagnostics: {} },
+    );
+
+    expect(closed).toBe(true);
+    expect(state.get()).toMatchObject({
+      mode: 'IDLE',
+      microBurstPnlUnverified: true,
+      microBurstPnlUnverifiedAt: expect.any(Number),
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      'micro_burst_close_pnl_unverified_quarantine',
+      expect.objectContaining({ tradeId: 'MICRO-BURST-V1-QUARANTINE' }),
+    );
+
+    const approvedCommit = 'a'.repeat(40);
+    (service as any).microBurstIdentity.codeCommitSha = approvedCommit;
+    (service as any).runtimeConfig.getMicroBurstProvenance = () => ({
+      codeCommitSha: approvedCommit,
+      configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
+    });
+    const opened = await (service as any).openMicroBurstLivePosition({
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      signalId: 'signal-after-unverified-close',
+      strategyVersion: '0.7.0-intelligent-exit',
+      requestedAt: Date.now(),
+      leverage: 20,
+      positionFraction: 0.01,
+      structuralStopPrice: 2970,
+      destinationPrice: 3030,
+      diagnostics: {},
+    });
+
+    expect(opened).toBe(false);
+    expect(exchange.hasOpenPosition).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      'micro_burst_live_entry_denied',
+      expect.objectContaining({ reason: 'PREVIOUS_CLOSE_PNL_UNVERIFIED' }),
+    );
+  });
+
   it('includes approximate wallet balance with open unrealized PnL in the startup Telegram message', async () => {
     const { notifier, service } = makeHarness({
       balance: 500,
@@ -1665,11 +1765,11 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
     expect(exchange.ensureMarginType).toHaveBeenCalledWith('ETHUSDT', 'ISOLATED');
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
-    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
-    expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
+    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
+    expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
     expect(exchange.setLeverage.mock.invocationCallOrder[0]).toBeLessThan(
       exchange.marketOpen.mock.invocationCallOrder[0],
     );
@@ -1690,7 +1790,7 @@ describe('TradingService Aegis live execution', () => {
         ownershipStatus: 'VERIFIED',
         eligibleForBotMetrics: true,
         lastBracketStatus: 'OK',
-        lastActualLeverage: 15,
+        lastActualLeverage: 20,
         lastPositionFraction: 0.08,
         lastStopRoe: -0.15,
         lastTakeProfitRoe: 0.25,
@@ -1711,7 +1811,7 @@ describe('TradingService Aegis live execution', () => {
       expect.objectContaining({
         symbol: 'ETHUSDT',
         side: 'LONG',
-        leverage: 15,
+        leverage: 20,
         positionFraction: 0.08,
       }),
     );
@@ -1720,10 +1820,10 @@ describe('TradingService Aegis live execution', () => {
     );
     expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('ETHUSDT | 📈 LONG'));
     expect(notifier.sendMessage).toHaveBeenCalledWith(
-      expect.stringContaining('SL: $2970.00 (-15.0% ROE)'),
+      expect.stringContaining('SL: $2977.50 (-15.0% ROE)'),
     );
     expect(notifier.sendMessage).toHaveBeenCalledWith(
-      expect.stringContaining('TP: $3050.00 (+25.0% ROE)'),
+      expect.stringContaining('TP: $3037.50 (+25.0% ROE)'),
     );
     expect(notifier.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('Score: 72.0% / 60.0%'),
@@ -1748,7 +1848,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
     expect(exchange.marketOpen).toHaveBeenCalledWith(
       'ETHUSDT',
       'LONG',
@@ -1758,20 +1858,20 @@ describe('TradingService Aegis live execution', () => {
     expect(state.set).toHaveBeenCalledWith(
       expect.objectContaining({
         lastStrategy: 'AEGIS_TURBO',
-        lastActualLeverage: 15,
+        lastActualLeverage: 20,
       }),
     );
     expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(
       expect.objectContaining({
         strategy: 'AEGIS_TURBO',
-        leverage: 15,
+        leverage: 20,
       }),
     );
     expect(logger.warn).toHaveBeenCalledWith(
       'aegis_turbo_micro_live_entry',
       expect.objectContaining({
         finalStrategy: 'aegis_turbo',
-        leverage: 15,
+        leverage: 20,
       }),
     );
   });
@@ -2018,7 +2118,7 @@ describe('TradingService Aegis live execution', () => {
         reason: 'daily_loss_stop_reached',
       }),
     );
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.009, expect.any(String));
   });
 
   it('overrides ML position fraction for a configured LONG symbol before sizing the order', async () => {
@@ -2034,7 +2134,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.009, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.012, expect.any(String));
     expect(state.set).toHaveBeenCalledWith(
       expect.objectContaining({
         lastPositionFraction: 0.1,
@@ -2076,7 +2176,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'CLEAN_ENTRY_GUARD_SHADOW_ALLOW',
@@ -2107,7 +2207,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(state.set).toHaveBeenCalled();
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2145,13 +2245,13 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
-    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
-    expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
+    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
+    expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
     expect(state.set).toHaveBeenCalledWith(
       expect.objectContaining({
-        lastActualLeverage: 15,
+        lastActualLeverage: 20,
         lastPositionFraction: 0.08,
         lastBracketStatus: 'OK',
       }),
@@ -2166,13 +2266,13 @@ describe('TradingService Aegis live execution', () => {
             dirty: false,
           }),
           positionFraction: 0.08,
-          leverage: 15,
+          leverage: 20,
         }),
       }),
     );
     expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(
       expect.objectContaining({
-        leverage: 15,
+        leverage: 20,
         position_fraction: 0.08,
         metadata: expect.objectContaining({
           cleanEntryGuard: expect.objectContaining({
@@ -2212,7 +2312,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ADAUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.01, expect.any(String));
     expect(exchange.placeStopClose).toHaveBeenCalled();
     expect(exchange.placeTpClose).toHaveBeenCalled();
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
@@ -2564,7 +2664,7 @@ describe('TradingService Aegis live execution', () => {
         reason: 'daily_loss_stop_reached',
       }),
     );
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.005, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
   });
 
   it('retries readActivePosition after marketOpen until the position is confirmed', async () => {
@@ -2583,8 +2683,8 @@ describe('TradingService Aegis live execution', () => {
 
     expect(exchange.readActivePosition).toHaveBeenCalledTimes(3);
     expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
-    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2970);
-    expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3050);
+    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 2977.5);
+    expect(exchange.placeTpClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 3037.5);
   });
 
   it('does not blindly close when position cannot be verified after marketOpen', async () => {
@@ -2610,7 +2710,7 @@ describe('TradingService Aegis live execution', () => {
     );
   });
 
-  it('alerts if emergency close fails after verify failed', async () => {
+  it('alerts and quarantines exposure when an opened position cannot be reconciled', async () => {
     const { exchange, logger, notifier, service, state } = makeHarness({
       readActivePositionSequence: [null, null, null, null, null],
       closeSideMarketSafeReject: true,
@@ -2629,7 +2729,13 @@ describe('TradingService Aegis live execution', () => {
     expect(notifier.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('AEGIS_POSITION_VERIFY_FAILED'),
     );
-    expect(state.get()).toEqual(expect.objectContaining({ mode: 'IDLE' }));
+    expect(state.get()).toEqual(
+      expect.objectContaining({
+        mode: 'LONG_RIDE',
+        ownershipStatus: 'UNKNOWN',
+        metricsExclusionReason: 'entry_emergency_close_failed',
+      }),
+    );
   });
 
   it('closes immediately when bracket validation fails', async () => {
@@ -2747,7 +2853,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('BTCUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('BTCUSDT', 'LONG', 0.01, expect.any(String));
     expect(logger.warn).not.toHaveBeenCalledWith(
       'aegis_skip_manage_position_global_state_symbol_mismatch',
       expect.anything(),
@@ -2857,7 +2963,7 @@ describe('TradingService Aegis live execution', () => {
       expect.objectContaining({
         event: 'SHORT_GATE_ADJUSTED',
         metadata: expect.objectContaining({
-          originalLeverage: 15,
+          originalLeverage: 20,
           adjustedLeverage: 10,
           originalPositionFraction: 0.08,
           adjustedPositionFraction: 0.08,
@@ -2990,9 +3096,9 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
     expect(exchange.ensureMarginType).toHaveBeenCalledWith('ETHUSDT', 'ISOLATED');
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
   });
 
   it('portfolio_risk.enabled=false allows entry despite restrictive limits', async () => {
@@ -3008,7 +3114,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).not.toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'PORTFOLIO_RISK_DENIED',
@@ -3028,8 +3134,8 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
   });
 
   it('in SHADOW, ENTRY_QUALITY_GATE_SHADOW_BLOCK does not prevent marketOpen', async () => {
@@ -3043,7 +3149,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'ENTRY_QUALITY_GATE_SHADOW_BLOCK',
@@ -3085,8 +3191,8 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'ENTRY_POLICY_DECISION',
@@ -3149,7 +3255,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ADAUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ADAUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'ENTRY_POLICY_DECISION',
@@ -3175,8 +3281,8 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'ENTRY_POLICY_DECISION',
@@ -3273,7 +3379,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'EVENT_RISK_SHADOW_BLOCK',
@@ -3348,7 +3454,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'EVENT_RISK_SHADOW_ALLOW',
@@ -3378,7 +3484,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'ENTRY_QUALITY_GATE_SHADOW_ALLOW',
@@ -3482,8 +3588,8 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
   });
 
   it('canonical current brain blocks DO_NOT_ENTER before legacy decision enforcement', async () => {
@@ -3671,8 +3777,8 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'GATE_ALLOWED',
@@ -3769,8 +3875,8 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 15);
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.007, expect.any(String));
+    expect(exchange.setLeverage).toHaveBeenCalledWith('ETHUSDT', 20);
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.01, expect.any(String));
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'GATE_ALLOWED',
@@ -4797,7 +4903,7 @@ describe('TradingService Aegis live execution', () => {
 
     await service.tick('ETHUSDT');
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.102, expect.any(String));
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 0.136, expect.any(String));
   });
 
   it('caps the initial order at the maximum notional for the leverage tier', async () => {
@@ -4851,21 +4957,21 @@ describe('TradingService Aegis live execution', () => {
       1,
       'ETHUSDT',
       'LONG',
-      0.085,
+      0.114,
       clientOrderIds[0],
     );
     expect(exchange.marketOpen).toHaveBeenNthCalledWith(
       2,
       'ETHUSDT',
       'LONG',
-      0.076,
+      0.101,
       clientOrderIds[1],
     );
     expect(exchange.marketOpen).toHaveBeenNthCalledWith(
       3,
       'ETHUSDT',
       'LONG',
-      0.068,
+      0.09,
       clientOrderIds[2],
     );
     expect(logger.warn).toHaveBeenCalledWith('shared_execution_quantity_retry', expect.any(Object));

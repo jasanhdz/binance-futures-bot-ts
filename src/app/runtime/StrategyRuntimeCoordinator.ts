@@ -17,6 +17,10 @@ import {
   type MicroBurstRuntimeReadiness,
 } from '../../strategies/micro-burst/application/MicroBurstRuntime';
 import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
+import type {
+  MicroBurstExitMarketSnapshot,
+  MicroBurstLiveEntryRequest,
+} from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import type { MicroBurstStrategyContext } from '../../strategies/micro-burst/domain/MicroBurstStrategy';
 import { MicroBurstOutcomeJournal } from '../../strategies/micro-burst/research/MicroBurstOutcomeJournal';
 import { MicroBurstOutcomeTracker } from '../../strategies/micro-burst/research/MicroBurstOutcomeTracker';
@@ -50,6 +54,9 @@ export interface StrategyRuntimeCoordinatorDeps {
   microBurstStrategyRouter: StrategyRouter<MicroBurstStrategyContext>;
   decisionSink: DecisionEvidenceSink;
   marketSnapshotSink: MarketSnapshotEvidenceSink;
+  microBurstLiveTrading?: {
+    open(request: MicroBurstLiveEntryRequest): Promise<boolean>;
+  };
 }
 
 export interface StrategyRuntimeStartInput {
@@ -156,6 +163,10 @@ export class StrategyRuntimeCoordinator {
     return this.microBurstReadiness;
   }
 
+  readMicroBurstExitMarket(symbol: string, sinceMs?: number): MicroBurstExitMarketSnapshot | null {
+    return this.microBurstRuntime?.readExitMarketSnapshot(symbol, sinceMs) ?? null;
+  }
+
   getMarketDataDiagnostics(): Record<string, unknown> {
     const exchangeRuntime = this.deps.exchange as unknown as {
       wsManager?: {
@@ -260,7 +271,7 @@ export class StrategyRuntimeCoordinator {
 
     try {
       const provenance = loadProvenance?.();
-      const microBurstExchange = createReadOnlyAuditedExchange(
+      const readOnlyExchange = createReadOnlyAuditedExchange(
         this.deps.exchange,
         provenance?.codeCommitSha ?? 'UNKNOWN',
       );
@@ -321,7 +332,7 @@ export class StrategyRuntimeCoordinator {
       });
       this.microBurstRuntime = new MicroBurstRuntime(
         {
-          exchange: microBurstExchange.exchange,
+          exchange: readOnlyExchange.exchange,
           logger: this.deps.logger,
           clock: this.deps.clock,
           strategyRouter: this.deps.microBurstStrategyRouter,
@@ -334,9 +345,10 @@ export class StrategyRuntimeCoordinator {
           outcomeTracker,
           marketStorage: storage,
           provenance,
+          liveTrading: config.mode === 'LIVE' ? this.deps.microBurstLiveTrading : undefined,
           mutationAudit: () => ({
-            totalMutationAttempts: microBurstExchange.audit.totalMutationAttempts,
-            forwardedMutationCalls: microBurstExchange.audit.forwardedMutationCalls,
+            totalMutationAttempts: readOnlyExchange.audit.totalMutationAttempts,
+            forwardedMutationCalls: readOnlyExchange.audit.forwardedMutationCalls,
           }),
         },
         config,
@@ -353,10 +365,10 @@ export class StrategyRuntimeCoordinator {
       this.deps.logger.info('micro_burst_runtime_integrated', {
         mode: config.mode,
         symbols: Object.keys(config.symbols).filter((symbol) => config.symbols[symbol].enabled),
-        liveExecution: false,
+        liveExecution: config.mode === 'LIVE',
         readOnlyExchangeBoundary: true,
-        mutationAttempts: microBurstExchange.audit.totalMutationAttempts,
-        forwardedMutations: microBurstExchange.audit.forwardedMutationCalls,
+        mutationAttempts: readOnlyExchange.audit.totalMutationAttempts,
+        forwardedMutations: readOnlyExchange.audit.forwardedMutationCalls,
       });
     } catch (error) {
       this.deps.logger.error('micro_burst_runtime_startup_failed', { error: String(error) });

@@ -11,12 +11,23 @@ import {
   MicroBurstExitDecision,
   defaultMicroBurstConfig,
 } from '../domain/MicroBurstTypes';
-import { MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
+import { isMicroBurstExitEngineState, MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
 
 export interface MicroBurstPositionManagementContext extends StrategyPositionLifecycleContext {
-  strategyMode: 'OFF';
+  strategyMode: 'OFF' | 'LIVE';
   exitContext: MicroBurstExitContext;
   side: 'LONG' | 'SHORT';
+}
+
+export interface MicroBurstPositionManagerExecution {
+  close(
+    context: MicroBurstPositionManagementContext,
+    decision: MicroBurstExitDecision,
+  ): Promise<boolean>;
+  moveStop(
+    context: MicroBurstPositionManagementContext,
+    decision: MicroBurstExitDecision,
+  ): Promise<boolean>;
 }
 
 function assertOwnership(expected: 'MICRO_BURST_V1', identity: StrategyIdentity): void {
@@ -30,7 +41,7 @@ function hasExitDecisionContext(
 ): context is MicroBurstPositionManagementContext {
   return (
     'strategyMode' in context &&
-    context.strategyMode === 'OFF' &&
+    (context.strategyMode === 'OFF' || context.strategyMode === 'LIVE') &&
     'exitContext' in context &&
     'side' in context &&
     (context.side === 'LONG' || context.side === 'SHORT')
@@ -46,7 +57,11 @@ export class MicroBurstPositionManager
   private readonly exitEngine = new MicroBurstExitEngine();
   private readonly activeTradeBySymbol = new Map<string, string>();
 
-  constructor(_lifecycle: StrategyPositionLifecycleCore, config?: Partial<MicroBurstConfig>) {
+  constructor(
+    _lifecycle: StrategyPositionLifecycleCore,
+    config?: Partial<MicroBurstConfig>,
+    private readonly execution?: MicroBurstPositionManagerExecution,
+  ) {
     this.config = { ...defaultMicroBurstConfig(), ...config };
   }
 
@@ -67,11 +82,36 @@ export class MicroBurstPositionManager
     const tradeId = context.botState.lastTradeId ?? `MICRO-BURST-V1-${context.symbol}`;
     const previousTradeId = this.activeTradeBySymbol.get(context.symbol);
     if (previousTradeId && previousTradeId !== tradeId) this.exitEngine.forget(previousTradeId);
+    if (
+      !previousTradeId &&
+      isMicroBurstExitEngineState(context.botState.microBurstExitState) &&
+      (!hasExitContext ||
+        context.botState.microBurstExitState.lastObservedAtMs === null ||
+        context.botState.microBurstExitState.lastObservedAtMs <= context.exitContext.observedAtMs!)
+    ) {
+      this.exitEngine.restore(tradeId, context.botState.microBurstExitState);
+    }
     this.activeTradeBySymbol.set(context.symbol, tradeId);
     const exitDecision = hasExitContext
       ? this.evaluateExit(context.exitContext, context.side, tradeId)
       : null;
     if (exitDecision) {
+      const engineState = this.exitEngine.getState(tradeId);
+      if (typeof context.symbolState.set === 'function') {
+        context.symbolState.set({ microBurstExitState: engineState });
+      }
+      let actionApplied = false;
+      if (hasExitContext && context.strategyMode === 'LIVE' && this.execution) {
+        if (exitDecision.action === 'CLOSE_MARKET') {
+          actionApplied = await this.execution.close(context, exitDecision);
+          if (actionApplied) {
+            this.exitEngine.forget(tradeId);
+            this.activeTradeBySymbol.delete(context.symbol);
+          }
+        } else if (exitDecision.action === 'MOVE_STOP') {
+          actionApplied = await this.execution.moveStop(context, exitDecision);
+        }
+      }
       return {
         tradeId,
         decision: exitDecision.action,
@@ -80,10 +120,15 @@ export class MicroBurstPositionManager
         diagnostics: {
           ...exitDecision.diagnostics,
           lifecycleOwner: this.strategyId,
-          strategyMode: 'OFF',
-          actionApplied: false,
-          authorityReason: 'MICRO_BURST_V1_OFF',
-          lifecycleApplied: false,
+          strategyMode: hasExitContext ? context.strategyMode : 'OFF',
+          actionApplied,
+          authorityReason:
+            hasExitContext && context.strategyMode === 'LIVE'
+              ? this.execution
+                ? 'MICRO_BURST_V1_LIVE'
+                : 'LIVE_EXECUTION_PORT_MISSING'
+              : 'MICRO_BURST_V1_OFF',
+          lifecycleApplied: actionApplied,
         },
       };
     }

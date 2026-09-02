@@ -57,17 +57,19 @@ describe('Phase 1 architecture boundaries', () => {
     }
   });
 
-  it('keeps Micro Burst reserved without runtime registration or execution authority', () => {
-    const authoritySurfaces = [
-      'src/main.ts',
-      'src/app/services/TradingService.ts',
-      'src/core/strategy/StrategyRouter.ts',
-      'src/core/strategy/PositionManagerRouter.ts',
-      'src/infra/config/ConfigLoader.ts',
-    ];
+  it('grants Micro Burst execution only through application-owned ports', () => {
+    const tradingService = source('src/app/services/TradingService.ts');
+    const runtime = source('src/strategies/micro-burst/application/MicroBurstRuntime.ts');
 
-    for (const path of authoritySurfaces) {
-      expect(source(path), path).not.toContain('MICRO_BURST_V1');
+    expect(tradingService).toContain('microBurstLiveTrading');
+    expect(tradingService).toContain('createMicroBurstExecutionIntent');
+    for (const mutation of [
+      'marketOpen(',
+      'placeStopClose(',
+      'placeTpClose(',
+      'closeSideMarketSafe(',
+    ]) {
+      expect(runtime, mutation).not.toContain(mutation);
     }
   });
 });

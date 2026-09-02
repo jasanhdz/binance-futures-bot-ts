@@ -42,6 +42,55 @@ export function initialMicroBurstExitEngineState(): MicroBurstExitEngineState {
   };
 }
 
+export function isMicroBurstExitEngineState(value: unknown): value is MicroBurstExitEngineState {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Partial<MicroBurstExitEngineState>;
+  const riskStartedAtMs = state.riskStartedAtMs;
+  const lastObservedAtMs = state.lastObservedAtMs;
+  const evidenceFamilies = new Set<MicroBurstExitEvidenceFamily>([
+    'MOMENTUM_REVERSAL',
+    'TAKER_FLOW_REVERSAL',
+    'BOOK_PRESSURE_REVERSAL',
+    'ABSORPTION',
+    'LIQUIDITY_SWEEP',
+    'STRUCTURAL_EXHAUSTION',
+    'TIME_DECAY',
+  ]);
+  const decision = state.confirmedDecision;
+  const validDecision =
+    decision === undefined ||
+    (typeof decision === 'object' &&
+      (decision.action === 'HOLD' ||
+        decision.action === 'CLOSE_MARKET' ||
+        decision.action === 'MOVE_STOP') &&
+      typeof decision.reason === 'string' &&
+      decision.diagnostics !== null &&
+      typeof decision.diagnostics === 'object' &&
+      (decision.requestedStopPrice === undefined ||
+        (Number.isFinite(decision.requestedStopPrice) && decision.requestedStopPrice > 0)));
+  return (
+    state.schemaVersion === 1 &&
+    (state.phase === 'OBSERVING' || state.phase === 'ARMED' || state.phase === 'EXIT_CONFIRMED') &&
+    (riskStartedAtMs === null ||
+      (typeof riskStartedAtMs === 'number' && Number.isFinite(riskStartedAtMs))) &&
+    (lastObservedAtMs === null ||
+      (typeof lastObservedAtMs === 'number' && Number.isFinite(lastObservedAtMs))) &&
+    Number.isInteger(state.consecutiveRiskObservations) &&
+    Number(state.consecutiveRiskObservations) >= 0 &&
+    Array.isArray(state.evidenceFamilies) &&
+    state.evidenceFamilies.every((family) => evidenceFamilies.has(family)) &&
+    (riskStartedAtMs === null ||
+      lastObservedAtMs === null ||
+      (typeof riskStartedAtMs === 'number' &&
+        typeof lastObservedAtMs === 'number' &&
+        riskStartedAtMs <= lastObservedAtMs)) &&
+    (state.phase === 'EXIT_CONFIRMED'
+      ? decision?.action === 'CLOSE_MARKET'
+      : decision === undefined) &&
+    validDecision
+  );
+}
+
 function favorableExcursionBps(context: MicroBurstExitContext, side: 'LONG' | 'SHORT'): number {
   const priceReturn =
     side === 'LONG'
@@ -390,8 +439,10 @@ export function advanceMicroBurstExit(
     evidenceFamilies.length >= config.exitIntelligenceMinEvidenceFamilies &&
     evidenceScore >= config.exitIntelligenceScoreThreshold;
 
-  let nextState = resetRiskState(observedAtMs);
-  if (riskQualified) {
+  const nonAdvancingObservation =
+    previousState.lastObservedAtMs !== null && observedAtMs <= previousState.lastObservedAtMs;
+  let nextState = nonAdvancingObservation ? previousState : resetRiskState(observedAtMs);
+  if (riskQualified && !nonAdvancingObservation) {
     const priorFamilies = new Set(previousState.evidenceFamilies);
     const hasPersistentFamily = evidenceFamilies.some((family) => priorFamilies.has(family));
     const observationAdvanced =
@@ -541,6 +592,10 @@ export class MicroBurstExitEngine {
 
   getState(tradeId: string): MicroBurstExitEngineState {
     return this.states.get(tradeId) ?? initialMicroBurstExitEngineState();
+  }
+
+  restore(tradeId: string, state: MicroBurstExitEngineState): void {
+    this.states.set(tradeId, state);
   }
 
   forget(tradeId: string): void {

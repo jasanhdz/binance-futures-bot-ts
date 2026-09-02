@@ -37,6 +37,7 @@ import {
 } from '../messages/AegisMessageFormatter';
 import { AegisEntryQualityGateDecision } from '../../strategies/aegis/domain/services/AegisEntryQualityGate';
 import { AegisEventRiskOverlayDecision } from '../../strategies/aegis/domain/services/AegisEventRiskOverlay';
+import { AegisPortfolioRiskGuard } from '../../strategies/aegis/domain/services/AegisPortfolioRiskGuard';
 import { AegisDecisionEnforcementDecision } from '../../strategies/aegis/domain/services/AegisDecisionEnforcement';
 import { AegisTelegramBlockNotifier } from './AegisTelegramBlockNotifier';
 import { AegisEntryNotificationService } from './AegisEntryNotificationService';
@@ -67,7 +68,8 @@ import {
   MomentumRidePositionManager,
 } from '../strategy/OwnedPositionManagers';
 import { MicroBurstPositionManager } from '../../strategies/micro-burst/application/MicroBurstPositionManager';
-import { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import { hasLiveAuthority, StrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import { evaluateSharedEntrySafety } from '../../core/risk/SharedEntrySafetyGate';
 import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/AegisIdentity';
 import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
@@ -82,8 +84,14 @@ import {
   MicroBurstStrategy,
   MicroBurstStrategyContext,
 } from '../../strategies/micro-burst/domain/MicroBurstStrategy';
-import { createMicroBurstV1Identity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
+import {
+  createMicroBurstV1Identity,
+  MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
+  hasMicroBurstV1LiveAuthority,
+} from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 import type { MicroBurstRuntimeReadiness } from '../../strategies/micro-burst/application/MicroBurstRuntime';
+import type { MicroBurstLiveEntryRequest } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
+import { createMicroBurstExecutionIntent } from '../../strategies/micro-burst/domain/MicroBurstExecutionIntentFactory';
 import {
   parseMicroBurstConfig,
   isMicroBurstShadowMode,
@@ -124,6 +132,7 @@ import { StrategyRiskSessionService } from '../risk/StrategyRiskSessionService';
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
+const MICRO_BURST_LIVE_LEVERAGE_CAP = 20;
 
 export interface TradingServiceDeps {
   exchange: Exchange;
@@ -213,6 +222,8 @@ export class TradingService {
   private readonly aegisProfitProtectionService: AegisProfitProtectionService;
   private readonly momentumEntryCoordinator: MomentumEntryCoordinator;
   private stopPromise: Promise<void> | null = null;
+  private readonly entryInFlightSymbols = new Set<string>();
+  private entryInFlight = false;
 
   constructor(
     private deps: TradingServiceDeps,
@@ -423,7 +434,11 @@ export class TradingService {
     this.microBurstStrategyRouter.register(
       new MicroBurstStrategy(
         this.microBurstIdentity,
-        isMicroBurstShadowMode(mbConfig) ? 'SHADOW' : 'OFF',
+        mbConfig.enabled && mbConfig.mode === 'LIVE'
+          ? 'LIVE'
+          : isMicroBurstShadowMode(mbConfig)
+            ? 'SHADOW'
+            : 'OFF',
       ),
     );
     this.strategyRuntimeCoordinator = new StrategyRuntimeCoordinator({
@@ -435,6 +450,9 @@ export class TradingService {
       microBurstStrategyRouter: this.microBurstStrategyRouter,
       decisionSink: this.decisionEvidenceSink,
       marketSnapshotSink: this.marketSnapshotEvidenceSink,
+      microBurstLiveTrading: {
+        open: (request) => this.openMicroBurstLivePosition(request),
+      },
     });
     const thisService = this;
     this.aegisEntryWorkflow = new AegisEntryWorkflow({
@@ -594,7 +612,154 @@ export class TradingService {
     this.positionManagerRouter.register(
       new MomentumRidePositionManager(this.positionLifecycleCore),
     );
-    this.positionManagerRouter.register(new MicroBurstPositionManager(this.positionLifecycleCore));
+    this.positionManagerRouter.register(
+      new MicroBurstPositionManager(this.positionLifecycleCore, undefined, {
+        close: async (context, decision) => {
+          const closeStartedAt = Date.now();
+          const position = await this.deps.exchange.readActivePosition(
+            context.symbol,
+            context.side,
+          );
+          if (position) {
+            await this.deps.exchange.closeSideMarketSafe(
+              context.symbol,
+              context.side,
+              position.qtyAbs,
+              position.sideMode,
+              decision.reason,
+            );
+          }
+          let remaining: PositionInfo | null = null;
+          let flatObservations = 0;
+          for (let attempt = 0; attempt < 3 && flatObservations < 2; attempt++) {
+            if (attempt > 0) await this.sleep(300);
+            remaining = await this.deps.exchange.readActivePosition(context.symbol, context.side);
+            flatObservations = remaining ? 0 : flatObservations + 1;
+          }
+          if (remaining || flatObservations < 2) {
+            this.deps.logger.error('micro_burst_live_close_not_flat', {
+              symbol: context.symbol,
+              side: context.side,
+              tradeId: context.botState.lastTradeId,
+              remainingQuantity: remaining?.qtyAbs ?? 0,
+            });
+            return false;
+          }
+          try {
+            const closeOrders = await this.deps.exchange.listCloseOrdersForSide(
+              context.symbol,
+              context.side,
+            );
+            for (const order of closeOrders) {
+              if (order.owner === 'BOT') {
+                await this.deps.exchange.cancelOrderById(context.symbol, order.orderId);
+              }
+            }
+            const survivingBotOrders = (
+              await this.deps.exchange.listCloseOrdersForSide(context.symbol, context.side)
+            ).filter((order) => order.owner === 'BOT');
+            if (survivingBotOrders.length > 0) {
+              throw new Error(`BOT_CLOSE_ORDERS_REMAIN:${survivingBotOrders.length}`);
+            }
+          } catch (error) {
+            this.deps.logger.error('micro_burst_live_close_order_cleanup_failed', {
+              symbol: context.symbol,
+              side: context.side,
+              tradeId: context.botState.lastTradeId,
+              error: String(error),
+            });
+            return false;
+          }
+          const fillLookupStart = position
+            ? closeStartedAt
+            : (context.botState.lastEntryAt ?? closeStartedAt);
+          const closeFills = await this.deps.exchange
+            .getRecentFills(context.symbol, fillLookupStart, 100)
+            .catch(() => []);
+          const expectedCloseSide = context.side === 'LONG' ? 'SELL' : 'BUY';
+          const realizedFills = closeFills.filter(
+            (fill) =>
+              fill.side === expectedCloseSide &&
+              typeof fill.realizedPnl === 'number' &&
+              Number.isFinite(fill.realizedPnl),
+          );
+          const realizedPnl = realizedFills.reduce(
+            (total, fill) => total + (fill.realizedPnl ?? 0) - (fill.commission ?? 0),
+            0,
+          );
+          const estimatedPnl =
+            context.side === 'LONG'
+              ? (context.exitContext.currentPrice - context.exitContext.entryPrice) *
+                (position?.qtyAbs ?? context.botState.lastEntryQty ?? 0)
+              : (context.exitContext.entryPrice - context.exitContext.currentPrice) *
+                (position?.qtyAbs ?? context.botState.lastEntryQty ?? 0);
+          const pnlVerified = realizedFills.length > 0;
+          context.symbolState.set({
+            mode: 'IDLE',
+            lastExitAt: Date.now(),
+            lastExitReason: decision.reason,
+            microBurstExitState: undefined,
+            microBurstPnlUnverified: !pnlVerified,
+            microBurstPnlUnverifiedAt: pnlVerified ? undefined : Date.now(),
+          });
+          if (!pnlVerified) {
+            this.deps.logger.error('micro_burst_close_pnl_unverified_quarantine', {
+              symbol: context.symbol,
+              side: context.side,
+              tradeId: context.botState.lastTradeId,
+            });
+          }
+          await this.notifyExit(context.symbol, context.side, decision.reason, context.botState, {
+            exitPrice: context.exitContext.currentPrice,
+            finalRoe: context.exitContext.unrealizedRoe,
+            pnl: realizedFills.length > 0 ? realizedPnl : estimatedPnl,
+            pnlEstimated: realizedFills.length === 0,
+          });
+          return true;
+        },
+        moveStop: async (context, decision) => {
+          if (decision.requestedStopPrice === undefined) return false;
+          const position = await this.deps.exchange.readActivePosition(
+            context.symbol,
+            context.side,
+          );
+          if (!position) return false;
+          const filters = await this.deps.exchange.getSymbolFilters(
+            context.symbol,
+            context.exitContext.leverage,
+          );
+          const stopPrice = this.positionProtection.roundPrice(
+            decision.requestedStopPrice,
+            filters,
+          );
+          const moved = await this.positionProtection.moveCloseStop({
+            symbol: context.symbol,
+            side: context.side,
+            tradeId: context.botState.lastTradeId,
+            entryPrice: context.exitContext.entryPrice,
+            markPrice: context.exitContext.currentPrice,
+            leverage: context.exitContext.leverage,
+            quantity: position.qtyAbs,
+            position,
+            newStopPrice: stopPrice,
+            currentRoe: context.exitContext.unrealizedRoe,
+            peakRoe: context.botState.peakRoe ?? 0,
+            protectedRoe: 0,
+            reason: 'MOVE_SL_BE',
+            useClosePosition: false,
+          });
+          if (moved.moved) {
+            context.symbolState.set({
+              breakEvenArmed: true,
+              breakEvenExecuted: true,
+              lastBreakEvenStop: stopPrice,
+              lastStopPrice: stopPrice,
+            });
+          }
+          return moved.moved;
+        },
+      }),
+    );
   }
 
   private getTradingMode(): string {
@@ -1087,17 +1252,284 @@ export class TradingService {
         if (symbolState.get().mode === 'IDLE') {
           const adopted = await this.positionRecovery.tryAdoptManualPositionRuntime(symbol);
           if (!adopted) {
-            await this.lookForEntry(symbol);
+            await this.lookForEntryWithLock(symbol);
           }
         }
       } else {
         const adopted = await this.positionRecovery.tryAdoptManualPositionRuntime(symbol);
         if (!adopted) {
-          await this.lookForEntry(symbol);
+          await this.lookForEntryWithLock(symbol);
         }
       }
     } catch (error) {
       this.deps.logger.warn('Process error', { symbol, error: String(error) });
+    }
+  }
+
+  private async openMicroBurstLivePosition(request: MicroBurstLiveEntryRequest): Promise<boolean> {
+    const config = this.runtimeConfig.getMicroBurstConfig();
+    const provenance = this.runtimeConfig.getMicroBurstProvenance(config);
+    if (
+      !config.enabled ||
+      config.mode !== 'LIVE' ||
+      MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED !== true ||
+      !hasLiveAuthority(this.microBurstIdentity, 'LIVE') ||
+      !hasMicroBurstV1LiveAuthority(
+        this.microBurstIdentity,
+        provenance.configHash,
+        provenance.codeCommitSha,
+      ) ||
+      this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE' ||
+      CONFIG.AEGIS_LIVE_ENABLED !== true ||
+      config.symbols[request.symbol]?.enabled !== true ||
+      this.getSymbolMode(request.symbol) !== 'LIVE'
+    ) {
+      this.deps.logger.warn('micro_burst_live_entry_denied', {
+        symbol: request.symbol,
+        reason: 'LIVE_AUTHORITY_NOT_ENABLED',
+        deployedCodeCommitSha: provenance.codeCommitSha,
+        effectiveConfigHash: `sha256:${provenance.configHash}`,
+      });
+      return false;
+    }
+
+    if (this.entryInFlight || this.entryInFlightSymbols.has(request.symbol)) return false;
+    this.entryInFlight = true;
+    this.entryInFlightSymbols.add(request.symbol);
+    try {
+      const symbolState = this.stateForSymbol(request.symbol);
+      if (symbolState.get().microBurstPnlUnverified === true) {
+        this.deps.logger.error('micro_burst_live_entry_denied', {
+          symbol: request.symbol,
+          reason: 'PREVIOUS_CLOSE_PNL_UNVERIFIED',
+          quarantinedAt: symbolState.get().microBurstPnlUnverifiedAt,
+        });
+        return false;
+      }
+      const hasOpenPosition = await this.deps.exchange.hasOpenPosition(request.symbol, 'ANY');
+      const walletBalance = await this.deps.exchange.getUSDTBalance();
+      const account = await this.readEntryAccountSnapshot(walletBalance);
+      const dailyEquity = account.equityTotal ?? account.walletBalance ?? walletBalance;
+      this.riskSession.initializeDailyStartBalance(dailyEquity, request.requestedAt);
+      const dailyStartBalance = this.riskSession.snapshot().dailyStartBalance;
+      const dayStart = Math.floor(request.requestedAt / 86_400_000) * 86_400_000;
+      const verifiedOutcomes = await (this.deps.closedTradeOutcomeReader?.() ??
+        readStrategyClosedTradeOutcomes(undefined, this.getTradingMode()));
+      const botDailyPnlUsdt = verifiedOutcomes.reduce((total, outcome) => {
+        const closedAt = Date.parse(outcome.closedAt);
+        return Number.isFinite(closedAt) && closedAt >= dayStart ? total + outcome.pnlUsdt : total;
+      }, 0);
+      const dailyPnlPct =
+        dailyStartBalance && dailyStartBalance > 0
+          ? botDailyPnlUsdt / dailyStartBalance
+          : undefined;
+      this.riskSession.setDailyPnlPct(dailyPnlPct);
+      const risk = this.riskSession.strategySnapshot('MICRO_BURST_V1', request.requestedAt);
+      const gateConfig = this.runtimeConfig.getAegisTurboGateConfig(request.symbol);
+      const liquidity = this.detector[request.symbol]?.getLiquidityStressStatus(
+        request.requestedAt,
+        LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+      );
+      const safety = evaluateSharedEntrySafety({
+        hasOpenPosition: symbolState.get().mode !== 'IDLE' || hasOpenPosition,
+        tradesToday: risk.tradesToday,
+        maxTradesPerDay: gateConfig.maxTradesPerDay,
+        consecutiveLosses: risk.consecutiveLosses,
+        maxConsecutiveLosses: gateConfig.maxConsecutiveLosses,
+        timeSinceLastExitMs: this.riskSession.timeSinceLastExitMs(
+          'MICRO_BURST_V1',
+          request.requestedAt,
+        ),
+        minCooldownMs: gateConfig.minCooldownMs,
+        liquidityStress: liquidity?.stress ?? Number.POSITIVE_INFINITY,
+        maxLiquidityStress: gateConfig.maxLiquidityStress,
+        dailyPnlPct,
+        dailyLossStopPct: gateConfig.dailyLossStopPct,
+      });
+      if (liquidity?.status !== 'FRESH' || !safety.allowed) {
+        this.deps.logger.warn('micro_burst_live_entry_denied', {
+          symbol: request.symbol,
+          reason: liquidity?.status !== 'FRESH' ? 'LIQUIDITY_DATA_NOT_FRESH' : safety.reason,
+        });
+        return false;
+      }
+
+      const availableBalance = Math.max(
+        0,
+        Math.min(walletBalance, account.availableBalance ?? walletBalance),
+      );
+      const estimatedMargin = availableBalance * request.positionFraction;
+      const exposure = await this.readAegisPortfolioExposure();
+      const portfolio = AegisPortfolioRiskGuard.evaluate({
+        symbol: request.symbol,
+        side: request.side,
+        currentOpenPositions: exposure.openPositions,
+        currentLongPositions: exposure.longPositions,
+        currentShortPositions: exposure.shortPositions,
+        walletBalance: account.walletBalance,
+        equityTotal: account.equityTotal,
+        currentMarginUsed: exposure.marginUsed,
+        currentNotional: exposure.notional,
+        newTradeEstimatedMargin: estimatedMargin,
+        newTradeEstimatedNotional:
+          estimatedMargin * Math.min(request.leverage, MICRO_BURST_LIVE_LEVERAGE_CAP),
+        config: this.runtimeConfig.getAegisPortfolioRiskConfig(),
+      });
+      if (!portfolio.allowed) {
+        this.deps.logger.warn('micro_burst_live_entry_denied', {
+          symbol: request.symbol,
+          reason: portfolio.reason,
+          ...portfolio.metadata,
+        });
+        return false;
+      }
+
+      const tradeId = generateStrategyTradeId('MICRO_BURST_V1', request.symbol);
+      const leverage = Math.min(request.leverage, MICRO_BURST_LIVE_LEVERAGE_CAP);
+      const execution = await this.sharedStrategyExecution.execute(
+        createMicroBurstExecutionIntent({
+          identity: this.microBurstIdentity,
+          symbol: request.symbol,
+          side: request.side,
+          leverage,
+          positionFraction: request.positionFraction,
+          stopInvalidationPrice: request.structuralStopPrice,
+          targetPrice: request.destinationPrice,
+          requestedAt: request.requestedAt,
+          tradeId,
+          signalId: request.signalId,
+        }),
+      );
+      if (execution.status !== 'OPENED') {
+        const executionMetadata = execution.metadata as Record<string, unknown>;
+        if (
+          executionMetadata.positionStillOpen === true ||
+          typeof executionMetadata.emergencyCloseError === 'string'
+        ) {
+          symbolState.set({
+            marketOpenAmbiguous: true,
+            marketOpenClientOrderId: undefined,
+          });
+        }
+        this.deps.logger.warn('micro_burst_live_entry_not_opened', {
+          symbol: request.symbol,
+          side: request.side,
+          tradeId,
+          status: execution.status,
+          reason: execution.reason,
+        });
+        return false;
+      }
+
+      const metadata = execution.metadata as Record<string, unknown>;
+      symbolState.set({
+        mode: request.side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+        positionOwner: 'BOT',
+        tradeOrigin: 'BOT',
+        ownershipStatus: 'VERIFIED',
+        eligibleForBotMetrics: true,
+        metricsExclusionReason: null,
+        lastSide: request.side,
+        lastEntryPrice: execution.entryPrice,
+        lastLeverage: execution.leverage,
+        lastActualLeverage: execution.leverage,
+        lastRequestedLeverage: leverage,
+        lastEntryAt: execution.openedAt,
+        lastTradeId: tradeId,
+        lastOrderId: execution.orderId,
+        lastStrategy: 'MICRO_BURST_V1',
+        lastStrategyVersion: this.microBurstIdentity.strategyVersion,
+        lastStrategyHash: this.microBurstIdentity.strategyHash,
+        lastConfigHash: this.microBurstIdentity.configHash,
+        lastCodeCommitSha: this.microBurstIdentity.codeCommitSha,
+        lastStrategyFreezeState: this.microBurstIdentity.freezeState,
+        lastEntryQty: execution.quantity,
+        lastEntryMargin: this.finiteNumber(metadata.marginUsed)
+          ? Number(metadata.marginUsed)
+          : undefined,
+        lastPositionFraction: execution.positionFraction,
+        lastStopPrice: this.finiteNumber(metadata.stopPrice)
+          ? Number(metadata.stopPrice)
+          : request.structuralStopPrice,
+        lastTakeProfitRoe: undefined,
+        lastTrailingActivationRoe: undefined,
+        lastTrailingCallbackRoe: undefined,
+        lastMaxHoldMs: undefined,
+        bracketsAttached: true,
+        lastBracketStatus: 'OK',
+        breakEvenArmed: false,
+        breakEvenExecuted: false,
+        peakRoe: 0,
+        lowestRoe: 0,
+        lastPeakPrice: execution.entryPrice,
+        microBurstStructuralStopPrice: request.structuralStopPrice,
+        microBurstDestinationPrice: request.destinationPrice,
+        microBurstPeakPrice: execution.entryPrice,
+        microBurstTroughPrice: execution.entryPrice,
+        microBurstExitState: undefined,
+        microBurstPnlUnverified: false,
+        microBurstPnlUnverifiedAt: undefined,
+      });
+      this.riskSession.recordConfirmedOpen({
+        strategyId: 'MICRO_BURST_V1',
+        openedAt: execution.openedAt,
+      });
+      await this.historyLogger.logTradeOpen({
+        ...VERIFIED_AEGIS_TRADE_OWNERSHIP,
+        trade_id: tradeId,
+        portfolio_session_id: getPortfolioSessionId(),
+        symbol: request.symbol,
+        strategy: 'MICRO_BURST_V1',
+        strategy_version: this.microBurstIdentity.strategyVersion,
+        strategy_hash: this.microBurstIdentity.strategyHash,
+        config_hash: this.microBurstIdentity.configHash,
+        code_commit_sha: this.microBurstIdentity.codeCommitSha,
+        mode: 'MICRO_BURST_LIVE',
+        side: request.side,
+        opened_at: new Date(execution.openedAt).toISOString(),
+        entry_price: execution.entryPrice,
+        quantity: execution.quantity,
+        leverage: execution.leverage,
+        position_fraction: execution.positionFraction,
+        margin_estimated: this.finiteNumber(metadata.marginUsed)
+          ? Number(metadata.marginUsed)
+          : undefined,
+        notional_estimated: execution.entryPrice * execution.quantity,
+        sl_price: this.finiteNumber(metadata.stopPrice)
+          ? Number(metadata.stopPrice)
+          : request.structuralStopPrice,
+        brackets_confirmed: true,
+        status: 'OPEN',
+        metadata: {
+          intelligentExit: true,
+          trailingEnabled: false,
+          destinationPrice: request.destinationPrice,
+          decisionDiagnostics: request.diagnostics,
+        },
+      });
+      this.deps.logger.warn('micro_burst_live_entry_opened', {
+        symbol: request.symbol,
+        side: request.side,
+        tradeId,
+        leverage: execution.leverage,
+        trailingEnabled: false,
+      });
+      return true;
+    } finally {
+      this.entryInFlightSymbols.delete(request.symbol);
+      this.entryInFlight = false;
+    }
+  }
+
+  private async lookForEntryWithLock(symbol: string): Promise<void> {
+    if (this.entryInFlight || this.entryInFlightSymbols.has(symbol)) return;
+    this.entryInFlight = true;
+    this.entryInFlightSymbols.add(symbol);
+    try {
+      await this.lookForEntry(symbol);
+    } finally {
+      this.entryInFlightSymbols.delete(symbol);
+      this.entryInFlight = false;
     }
   }
 
@@ -1106,6 +1538,7 @@ export class TradingService {
     if (ownership.status !== 'OWNED' && ownership.status !== 'LEGACY_MIGRATABLE') return null;
     if (ownership.strategyId === 'AEGIS_TURBO') return this.aegisStrategyIdentity;
     if (ownership.strategyId === 'MOMENTUM_RIDE') return this.momentumStrategyIdentity;
+    if (ownership.strategyId === 'MICRO_BURST_V1') return this.microBurstIdentity;
     return null;
   }
 
@@ -1136,11 +1569,75 @@ export class TradingService {
       return;
     }
 
-    const routed = await this.positionManagerRouter.route(identity, {
-      symbol,
-      botState,
-      symbolState,
-    });
+    let managementContext: Record<string, unknown> = { symbol, botState, symbolState };
+    if (identity.strategyId === 'MICRO_BURST_V1') {
+      const market = this.strategyRuntimeCoordinator.readMicroBurstExitMarket(
+        symbol,
+        botState.lastEntryAt,
+      );
+      const side = botState.lastSide;
+      const entryPrice = botState.lastEntryPrice;
+      const structuralStop = botState.microBurstStructuralStopPrice ?? botState.lastStopPrice;
+      const destination = botState.microBurstDestinationPrice;
+      if (
+        !market ||
+        !side ||
+        !entryPrice ||
+        !structuralStop ||
+        !destination ||
+        market.observedAtMs < (botState.lastEntryAt ?? 0)
+      ) {
+        this.deps.logger.warn('micro_burst_live_exit_context_unavailable', {
+          symbol,
+          tradeId: botState.lastTradeId,
+        });
+        return;
+      }
+      const peakPrice = Math.max(botState.microBurstPeakPrice ?? entryPrice, market.currentPrice);
+      const troughPrice = Math.min(
+        botState.microBurstTroughPrice ?? entryPrice,
+        market.currentPrice,
+      );
+      const leverage = botState.lastActualLeverage ?? botState.lastLeverage ?? 1;
+      const priceReturn =
+        side === 'LONG'
+          ? (market.currentPrice - entryPrice) / entryPrice
+          : (entryPrice - market.currentPrice) / entryPrice;
+      symbolState.set({
+        microBurstPeakPrice: peakPrice,
+        microBurstTroughPrice: troughPrice,
+        peakRoe: Math.max(botState.peakRoe ?? 0, priceReturn * leverage),
+        lowestRoe: Math.min(botState.lowestRoe ?? 0, priceReturn * leverage),
+      });
+      managementContext = {
+        symbol,
+        botState: symbolState.get(),
+        symbolState,
+        strategyMode: 'LIVE',
+        side,
+        exitContext: {
+          unrealizedRoe: priceReturn * leverage,
+          priceReturn,
+          currentPrice: market.currentPrice,
+          entryPrice,
+          peakPrice,
+          troughPrice,
+          structuralInvalidationPrice: structuralStop,
+          destinationPrice: destination,
+          currentStopPrice: botState.lastStopPrice ?? null,
+          timeInTradeMs: Math.max(0, market.observedAtMs - (botState.lastEntryAt ?? 0)),
+          observedAtMs: market.observedAtMs,
+          momentumDecayFlag: false,
+          anomalyExitFlag: false,
+          currentBookPressure: market.currentBookPressure,
+          currentBtcContext: market.currentBtcContext,
+          marketEvidence: market.marketEvidence,
+          leverage,
+        },
+      };
+    }
+
+    const routed = await this.positionManagerRouter.route(identity, managementContext as any);
     if (routed.status === 'RECOVERY_REQUIRED') {
       this.deps.logger.error('strategy_position_manager_recovery_required', {
         symbol,
@@ -1156,10 +1653,12 @@ export class TradingService {
     if (!tradeId) return undefined;
     if (tradeId.startsWith('MOMENTUM-RIDE-')) return 'MOMENTUM_RIDE';
     if (tradeId.startsWith('AEGIS-TURBO-')) return 'AEGIS_TURBO';
+    if (tradeId.startsWith('MICRO-BURST-V1-')) return 'MICRO_BURST_V1';
     return undefined;
   }
 
   private strategyIdentity(strategy: AegisResearchStrategy): StrategyIdentity {
+    if (strategy === 'MICRO_BURST_V1') return this.microBurstIdentity;
     return strategy === 'MOMENTUM_RIDE'
       ? this.momentumStrategyIdentity
       : this.aegisStrategyIdentity;
@@ -1169,6 +1668,7 @@ export class TradingService {
     const fromTrade = this.strategyFromTradeId(tradeId);
     if (fromTrade) return fromTrade;
     const stateStrategy = this.stateForSymbol(symbol).get().lastStrategy;
+    if (stateStrategy === 'MICRO_BURST_V1') return 'MICRO_BURST_V1';
     return stateStrategy === 'MOMENTUM_RIDE' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
   }
 
@@ -1931,7 +2431,7 @@ export class TradingService {
     side: Side,
     reason: string,
     botState: BotState,
-    exit?: { exitPrice?: number; finalRoe?: number; pnl?: number },
+    exit?: { exitPrice?: number; finalRoe?: number; pnl?: number; pnlEstimated?: boolean },
   ): Promise<void> {
     const { exchange, notifier, logger } = this.deps;
     if (!this.isVerifiedBotOwnedState(botState)) {
@@ -1969,7 +2469,11 @@ export class TradingService {
     const margin = this.entryMargin(botState);
     const pnlStr = pnl === undefined ? 'UNKNOWN (exact close unavailable)' : formatSignedUsd(pnl);
     const closeStrategy: AegisResearchStrategy =
-      botState.lastStrategy === 'MOMENTUM_RIDE' ? 'MOMENTUM_RIDE' : 'AEGIS_TURBO';
+      botState.lastStrategy === 'MICRO_BURST_V1'
+        ? 'MICRO_BURST_V1'
+        : botState.lastStrategy === 'MOMENTUM_RIDE'
+          ? 'MOMENTUM_RIDE'
+          : 'AEGIS_TURBO';
     const closeIdentity = this.strategyIdentity(closeStrategy);
     const tradeId =
       botState.lastTradeId ??
@@ -2006,7 +2510,12 @@ export class TradingService {
       status: 'CLOSED',
       metadata: {
         estimated: pnl === undefined,
-        pnl_status: pnl === undefined ? 'UNKNOWN_EXACT_CLOSE_UNAVAILABLE' : 'EXACT_SUPPLIED',
+        pnl_status:
+          pnl === undefined
+            ? 'UNKNOWN_EXACT_CLOSE_UNAVAILABLE'
+            : exit?.pnlEstimated
+              ? 'ESTIMATED_FROM_MARK_PRICE'
+              : 'EXACT_SUPPLIED',
         mark_price_close_reference: true,
         exit_type: exitType.canonicalExitType,
         canonical_exit_type: exitType.canonicalExitType,
@@ -2017,7 +2526,7 @@ export class TradingService {
       },
     });
     const closedAt = Date.now();
-    if (pnl !== undefined) {
+    if (pnl !== undefined && exit?.pnlEstimated !== true) {
       this.riskSession.recordStrategyClose({
         strategyId: closeStrategy,
         symbol,
@@ -2027,7 +2536,7 @@ export class TradingService {
         reason,
       });
     }
-    if (pnl !== undefined && this.deps.strategyLossStateRegistry) {
+    if (pnl !== undefined && exit?.pnlEstimated !== true && this.deps.strategyLossStateRegistry) {
       const lossStrategyId =
         botState.positionOwner === 'EXTERNAL' ||
         botState.tradeOrigin === 'MANUAL_EXTERNAL' ||
@@ -2048,7 +2557,7 @@ export class TradingService {
         });
       }
     }
-    if (closeStrategy === 'AEGIS_TURBO' && pnl !== undefined) {
+    if (closeStrategy === 'AEGIS_TURBO' && pnl !== undefined && exit?.pnlEstimated !== true) {
       await this.riskSession.recordAegisLossOutcome({
         strategyId: closeStrategy,
         symbol,

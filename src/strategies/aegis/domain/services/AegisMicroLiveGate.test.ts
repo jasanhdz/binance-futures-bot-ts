@@ -330,7 +330,7 @@ describe('AegisMicroLiveGate', () => {
       allowed: true,
       side: 'LONG',
       reason: 'allowed_current_brain_canonical_live',
-      leverage: 15,
+      leverage: 20,
       positionFraction: 0.08,
     });
   });
@@ -425,7 +425,7 @@ describe('AegisMicroLiveGate', () => {
       },
       undefined,
       {
-      leverage: 20,
+        leverage: 20,
         entryThreshold: 0.5,
         hardStopRoe: -0.15,
         tpRoe: 0.25,
@@ -439,7 +439,7 @@ describe('AegisMicroLiveGate', () => {
       liveEnabled: true,
       allowShort: false,
       minScore: 0.5,
-      leverageCap: 15,
+      leverageCap: 20,
       positionFractionCap: 0.1,
       maxTradesPerDay: 2,
       maxConsecutiveLosses: 2,

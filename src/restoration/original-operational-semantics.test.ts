@@ -53,11 +53,11 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': '76f5bebf670a84cbb82d5d75c77403c0903280c29eefb01ef4fab7be932e82e0',
+  'regime_config.live.yaml': 'cec46bb83aa041f33f91cbd66fde066a6432c0dd0d4b2ab8df8e17f220481391',
   // Phases 2-6: entry, exit, Momentum, position protection, and risk session are extracted
   // while this digest and behavior tests bind the owner-authorized result.
   'src/app/services/TradingService.ts':
-    '2c51db86e4dbb5d950bd41767da8c81eee2a29e3ac83e1a0fd81466b89830e06',
+    '8c90999425903bf980abed2622dba8c377c452eea99b9e260f887e2427cb1a7c',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':
@@ -74,7 +74,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/strategies/aegis/domain/services/AegisEntryQualityGate.ts':
     'a3703fb5739eb59715ade631befa0a4ed08871b0e7c7e652effbfd003ec9f18f',
   'src/strategies/aegis/domain/services/AegisMicroLiveGate.ts':
-    '97c00e8a511a7adc417e344515723dc108232d400e98707a9d6fe21f8aaab07c',
+    '0b4369d31cb890d89839cba6291723cd30e8af4d939ededfdc8a5795204fce14',
   'src/strategies/aegis/domain/services/AegisProbeMode.ts':
     'f16c3b1f2328acaa49aa8081eb624ab96f8d16114dcc5dd89cd419dcca50926b',
   'src/strategies/aegis/domain/services/AegisRegimeGuard.ts':

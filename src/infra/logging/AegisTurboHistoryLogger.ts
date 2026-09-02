@@ -15,7 +15,10 @@ import { Logger } from '../../app/ports/Logger';
 import path from 'path';
 
 export type AegisTurboVotes = StrategyVotes;
-export type AegisResearchStrategy = Extract<StrategyId, 'AEGIS_TURBO' | 'MOMENTUM_RIDE'>;
+export type AegisResearchStrategy = Extract<
+  StrategyId,
+  'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST_V1'
+>;
 export type StrategyProvenanceFields = GenericStrategyProvenanceFields;
 export type AegisTradeOwnershipFields = StrategyTradeOwnershipFields;
 export type AegisTurboSignalHistoryInput = StrategySignalHistoryInput;
@@ -39,7 +42,12 @@ export function generateStrategyTradeId(
   symbol: string,
   timestamp: Date = new Date(),
 ): string {
-  const prefix = strategy === 'MOMENTUM_RIDE' ? 'MOMENTUM-RIDE' : 'AEGIS-TURBO';
+  const prefix =
+    strategy === 'MOMENTUM_RIDE'
+      ? 'MOMENTUM-RIDE'
+      : strategy === 'MICRO_BURST_V1'
+        ? 'MICRO-BURST-V1'
+        : 'AEGIS-TURBO';
   return `${prefix}-${safeToken(symbol)}-${formatIdTimestamp(timestamp)}`;
 }
 

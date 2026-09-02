@@ -23,6 +23,7 @@ export function resolveStrategyOwnership(state: BotState): StrategyOwnershipReso
   }
   if (state.lastTradeId?.startsWith('MOMENTUM-RIDE-')) evidence.add('MOMENTUM_RIDE');
   if (state.lastTradeId?.startsWith('AEGIS-TURBO-')) evidence.add('AEGIS_TURBO');
+  if (state.lastTradeId?.startsWith('MICRO-BURST-V1-')) evidence.add('MICRO_BURST_V1');
 
   const strategyIds = [...evidence];
   if (strategyIds.length > 1) return { status: 'AMBIGUOUS', strategyIds };

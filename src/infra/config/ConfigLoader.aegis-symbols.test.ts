@@ -138,12 +138,12 @@ symbols:
     ).toBe(true);
   });
 
-  it('returns the typed live MicroBurst SHADOW configuration', () => {
+  it('returns the typed live MicroBurst LIVE configuration', () => {
     const config = new NinjaConfigManager(path.resolve(process.cwd(), 'regime_config.live.yaml'));
 
     expect(config.getMicroBurstConfig()).toMatchObject({
       enabled: true,
-      mode: 'SHADOW',
+      mode: 'LIVE',
       symbols: { ETHUSDT: { enabled: true } },
       prospectiveValidation: { enabled: false },
       marketArchive: { enabled: false },

@@ -17,7 +17,7 @@ describe('TradingService Aegis integration', () => {
   it.each([
     ['OFF', 'OFF'],
     ['SHADOW', 'SHADOW'],
-    ['LIVE', 'OFF'],
+    ['LIVE', 'LIVE'],
   ] as const)(
     'registers MicroBurst exactly once with the effective %s mode',
     (configuredMode, effectiveMode) => {

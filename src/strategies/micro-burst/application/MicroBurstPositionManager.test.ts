@@ -157,4 +157,143 @@ describe('MicroBurstPositionManager correctness boundary', () => {
     });
     expect(core.manage).not.toHaveBeenCalled();
   });
+
+  it('applies a confirmed LIVE close through the injected execution boundary', async () => {
+    const close = vi.fn(async () => true);
+    const moveStop = vi.fn(async () => true);
+    const manager = new MicroBurstPositionManager(lifecycle(), undefined, { close, moveStop });
+    const context = {
+      ...managementContext(),
+      strategyMode: 'LIVE' as const,
+      symbolState: {
+        set: vi.fn(),
+      } as unknown as MicroBurstPositionManagementContext['symbolState'],
+    };
+
+    const result = await manager.manage(createMicroBurstV1Identity(), context);
+
+    expect(result).toMatchObject({
+      decision: 'CLOSE_MARKET',
+      reason: 'TARGET',
+      diagnostics: {
+        actionApplied: true,
+        authorityReason: 'MICRO_BURST_V1_LIVE',
+      },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(moveStop).not.toHaveBeenCalled();
+  });
+
+  it('applies break-even through the LIVE execution boundary without trailing', async () => {
+    const close = vi.fn(async () => true);
+    const moveStop = vi.fn(async () => true);
+    const manager = new MicroBurstPositionManager(lifecycle(), undefined, { close, moveStop });
+    const context = {
+      ...managementContext({
+        currentPrice: 100.9,
+        peakPrice: 101,
+        troughPrice: 100,
+        destinationPrice: 102,
+      }),
+      strategyMode: 'LIVE' as const,
+      symbolState: {
+        set: vi.fn(),
+      } as unknown as MicroBurstPositionManagementContext['symbolState'],
+    };
+
+    const result = await manager.manage(createMicroBurstV1Identity(), context);
+
+    expect(result).toMatchObject({
+      decision: 'MOVE_STOP',
+      reason: 'BREAK_EVEN',
+      diagnostics: { actionApplied: true, authorityReason: 'MICRO_BURST_V1_LIVE' },
+    });
+    expect(moveStop).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({ requestedStopPrice: 100 }),
+    );
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('restores valid persisted hysteresis and ignores malformed state', async () => {
+    const firstSet = vi.fn();
+    const firstManager = new MicroBurstPositionManager(lifecycle());
+    const riskContext = managementContext({
+      currentPrice: 100.5,
+      peakPrice: 100.7,
+      troughPrice: 100,
+      structuralInvalidationPrice: 99,
+      destinationPrice: 102,
+      currentStopPrice: 100,
+      timeInTradeMs: 20_000,
+      observedAtMs: 20_000,
+      currentBookPressure: {
+        spreadBps: 1,
+        signedTopOfBookImbalance: -0.3,
+        topOfBookImbalance: 0.3,
+        imbalanceSlope: -0.08,
+        temporalAbsorptionDetected: false,
+        temporalSweepDetected: false,
+        staticBidConcentration: false,
+        staticAskConcentration: false,
+        anomalyFlag: false,
+        status: 'HEALTHY',
+      },
+      marketEvidence: {
+        observedAtMs: 20_000,
+        shortHorizonReturnBps: -2,
+        mediumHorizonReturnBps: 2,
+        priceSampleCount: 30,
+        buyTakerVolume: 20,
+        sellTakerVolume: 80,
+        takerTradeCount: 100,
+        takerFlowWindowComplete: true,
+        takerFlowGapFree: true,
+      },
+    });
+    riskContext.symbolState = { set: firstSet } as unknown as typeof riskContext.symbolState;
+    await firstManager.manage(createMicroBurstV1Identity(), riskContext);
+    const persisted = firstSet.mock.calls[firstSet.mock.calls.length - 1]?.[0]?.microBurstExitState;
+
+    const restoredManager = new MicroBurstPositionManager(lifecycle());
+    const restoredContext = managementContext({
+      ...riskContext.exitContext,
+      timeInTradeMs: 21_000,
+      observedAtMs: 21_000,
+      marketEvidence: { ...riskContext.exitContext.marketEvidence!, observedAtMs: 21_000 },
+    });
+    restoredContext.botState.microBurstExitState = persisted;
+    restoredContext.symbolState = { set: vi.fn() } as unknown as typeof restoredContext.symbolState;
+    await restoredManager.manage(createMicroBurstV1Identity(), restoredContext);
+    const restoredCalls = (restoredContext.symbolState.set as any).mock.calls;
+    expect(restoredCalls[restoredCalls.length - 1][0].microBurstExitState).toMatchObject({
+      consecutiveRiskObservations: 2,
+      riskStartedAtMs: 20_000,
+    });
+
+    const malformedManager = new MicroBurstPositionManager(lifecycle());
+    const malformedContext = managementContext({
+      ...riskContext.exitContext,
+      timeInTradeMs: 21_000,
+      observedAtMs: 21_000,
+    });
+    malformedContext.botState.microBurstExitState = {
+      schemaVersion: 1,
+      phase: 'EXIT_CONFIRMED',
+      riskStartedAtMs: 20_000,
+      lastObservedAtMs: 20_000,
+      consecutiveRiskObservations: 2,
+      evidenceFamilies: ['TIME_DECAY'],
+      confirmedDecision: { action: 'HOLD', reason: 'HOLD', diagnostics: {} },
+    };
+    malformedContext.symbolState = {
+      set: vi.fn(),
+    } as unknown as typeof malformedContext.symbolState;
+    await malformedManager.manage(createMicroBurstV1Identity(), malformedContext);
+    const malformedCalls = (malformedContext.symbolState.set as any).mock.calls;
+    expect(malformedCalls[malformedCalls.length - 1][0].microBurstExitState).toMatchObject({
+      consecutiveRiskObservations: 1,
+      riskStartedAtMs: 21_000,
+    });
+  });
 });
