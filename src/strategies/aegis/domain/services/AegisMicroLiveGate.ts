@@ -25,6 +25,8 @@ export interface AegisMicroLiveGateConfig {
   trailingCallbackRoe: number;
   requireBrackets?: boolean;
   closeIfBracketFails?: boolean;
+  microBannedSymbols?: string[];
+  shortAllowedRegimes?: string[];
 }
 
 export interface AegisMicroLiveGateContext {
@@ -67,7 +69,7 @@ export interface AegisMicroLiveGateDecision {
   liquidityStressInputVersion?: typeof LIQUIDITY_STRESS_INPUT_VERSION;
 }
 
-const DEFAULT_LEVERAGE = 15;
+const DEFAULT_LEVERAGE = 20;
 const DEFAULT_POSITION_FRACTION = 0.08;
 const DEFAULT_MIN_SCORE = 0.5;
 const DEFAULT_MAX_TRADES_PER_DAY = 2;
@@ -171,6 +173,10 @@ export function shouldEnterAegisTurboMicroLive(
     return buildDecision(ctx, config, 'trading_mode_not_turbo_micro_live');
   }
 
+  if (config.microBannedSymbols?.includes(ctx.symbol)) {
+    return buildDecision(ctx, config, 'micro_banned_symbol');
+  }
+
   if (config.liveEnabled !== true) {
     return buildDecision(ctx, config, 'aegis_live_disabled');
   }
@@ -228,6 +234,9 @@ export function shouldEnterStackingMomentumLive(
   if (config.tradingMode !== 'AEGIS_TURBO_MICRO_LIVE')
     return buildDecision(ctx, config, 'trading_mode_not_turbo_micro_live');
   if (config.liveEnabled !== true) return buildDecision(ctx, config, 'aegis_live_disabled');
+  if (config.microBannedSymbols?.includes(ctx.symbol)) {
+    return buildDecision(ctx, config, 'micro_banned_symbol');
+  }
   if (config.yamlEnabled === false) return buildDecision(ctx, config, 'aegis_turbo_yaml_disabled');
   if (config.yamlEnabled === true && config.yamlLiveEnabled !== true)
     return buildDecision(ctx, config, 'aegis_turbo_yaml_live_disabled');
@@ -297,5 +306,8 @@ export function buildAegisMicroLiveGateConfigFromEnv(
     ),
     requireBrackets: yamlTurbo.require_brackets ?? true,
     closeIfBracketFails: yamlTurbo.close_if_bracket_fails ?? true,
+    microBannedSymbols: Array.isArray(yamlTurbo.micro_banned_symbols)
+      ? yamlTurbo.micro_banned_symbols
+      : [],
   };
 }

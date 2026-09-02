@@ -721,7 +721,7 @@ export class AegisEntryWorkflow {
         signalId,
         tradeId,
         gate: effectiveGate,
-        executed: true,
+        executed: false,
         metadata: {
           decision_enforcement_reason: decisionEnforcement?.reason,
           cleanEntryGuard: cleanEntryMetadata,
@@ -834,6 +834,57 @@ export class AegisEntryWorkflow {
         });
       }
       // ═══════════════════════════════════════════════════════════════
+
+      // SHORT REGIME FILTER: Only allow SHORT in trending/breakout regimes
+      const shortBlockedRegimes = ['CHOP', 'EXHAUSTION', 'RISK_OFF', 'HIGH_VOL_RISK', 'UNKNOWN'];
+      const regimeCtx = entryDecision.metadata?.regimeContext as
+        | Record<string, unknown>
+        | undefined;
+      const regimeLabel = regimeCtx?.label as string | undefined;
+      if (side === 'SHORT' && regimeLabel && shortBlockedRegimes.includes(regimeLabel)) {
+        await this.deps.logAegisTradeEvent(symbol, 'SHORT_REGIME_BLOCKED', {
+          tradeId,
+          reason: `short_regime_${regimeLabel.toLowerCase()}`,
+          metadata: {
+            symbol,
+            side,
+            regime: regimeLabel,
+            confidence: regimeCtx?.confidence,
+            entryDecision: entryDecision.finalDecision,
+            finalReason: entryDecision.finalReason,
+          },
+        });
+        logger.warn('short_regime_blocked', {
+          symbol,
+          side,
+          regime: regimeLabel,
+          confidence: regimeCtx?.confidence,
+        });
+        return;
+      }
+
+      await this.deps.logAegisTurboSignal(symbol, signal, {
+        signalId,
+        tradeId,
+        gate: effectiveGate,
+        executed: true,
+        metadata: {
+          decision_enforcement_reason: decisionEnforcement?.reason,
+          cleanEntryGuard: cleanEntryMetadata,
+          setup_grade: decisionMetadata?.setupGrade,
+          is_a_plus: decisionMetadata?.aPlus,
+          decision_brain_decision: decisionMetadata?.decisionBrainDecision,
+          entry_quality_recommendation: decisionMetadata?.entryQualityRecommendation,
+          event_risk_mode: decisionMetadata?.eventRiskMode,
+          event_risk_reason: decisionMetadata?.eventRiskReason,
+          event_risk_would_block: decisionMetadata?.eventRiskWouldBlock,
+          probeMode: probeModeDecision?.metadata,
+          entryPolicy: entryDecision.metadata,
+          e4_decision: e4Decision,
+          e4_score: e4GuardResult?.metadata?.score,
+          e4_threshold: e4GuardResult?.metadata?.threshold,
+        },
+      });
 
       await this.deps.logAegisTradeEvent(symbol, 'ORDER_SUBMITTED', {
         tradeId,

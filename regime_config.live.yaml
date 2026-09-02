@@ -32,7 +32,7 @@ TRADING:
 
 micro_burst:
   enabled: true
-  mode: SHADOW
+  mode: LIVE
   symbols:
     ETHUSDT:
       enabled: true
@@ -65,7 +65,7 @@ REGIMES:
     tp_roe: 0.50
     be_roe: 0.08
     trailing_step: 0.015
-    trailing_activation_roe: 0.15
+    trailing_activation_roe: 0.10
     trailing_callback_roe: 0.08
     max_trade_duration_ms: 28800000
     use_exit_agent: false
@@ -441,7 +441,7 @@ aegis:
       hard_stop_roe: -0.40
       take_profit_roe: 0.50
       break_even_roe: 0.08
-      trailing_activation_roe: 0.15
+      trailing_activation_roe: 0.10
       trailing_callback_roe: 0.08
       max_hold_ms: 28800000
     safety_caps:
@@ -600,6 +600,13 @@ aegis:
     enabled: true
     live_enabled: true
     allow_short: true
+    # Symbols banned from Micro execution. Aegis can still decide, but Micro
+    # will not execute trades for these symbols. Remove from list to re-enable.
+    micro_banned_symbols:
+      - ADAUSDT
+      - DOGEUSDT
+      - AVAXUSDT
+      - BTCUSDT
     # Broad entry-risk consensus is observation-only. Entry quality, event risk,
     # decision brain and clean entry are one causal chain, not independent votes.
     # Live enforcement is limited to a CRITICAL LONG assessment corroborated by

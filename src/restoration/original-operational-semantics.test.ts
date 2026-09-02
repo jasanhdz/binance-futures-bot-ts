@@ -53,7 +53,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': '2d6cca27e6c0d8efad5c78957e7ce9772d2ea7dd396731251298dc46ee6b2165',
+  'regime_config.live.yaml': '76f5bebf670a84cbb82d5d75c77403c0903280c29eefb01ef4fab7be932e82e0',
   // Phases 2-6: entry, exit, Momentum, position protection, and risk session are extracted
   // while this digest and behavior tests bind the owner-authorized result.
   'src/app/services/TradingService.ts':
@@ -74,7 +74,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/strategies/aegis/domain/services/AegisEntryQualityGate.ts':
     'a3703fb5739eb59715ade631befa0a4ed08871b0e7c7e652effbfd003ec9f18f',
   'src/strategies/aegis/domain/services/AegisMicroLiveGate.ts':
-    '7ea25e0988fd311a9e8241323ccdfdcc0962828b0ee4dfe152722abdd66d3a14',
+    '97c00e8a511a7adc417e344515723dc108232d400e98707a9d6fe21f8aaab07c',
   'src/strategies/aegis/domain/services/AegisProbeMode.ts':
     'f16c3b1f2328acaa49aa8081eb624ab96f8d16114dcc5dd89cd419dcca50926b',
   'src/strategies/aegis/domain/services/AegisRegimeGuard.ts':

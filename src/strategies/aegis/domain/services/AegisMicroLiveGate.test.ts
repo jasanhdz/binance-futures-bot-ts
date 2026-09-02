@@ -365,7 +365,7 @@ describe('AegisMicroLiveGate', () => {
   it('caps leverage at the configured YAML limit', () => {
     const decision = shouldEnterAegisTurboMicroLive(baseCtx(), baseConfig());
 
-    expect(decision.leverage).toBe(15);
+    expect(decision.leverage).toBe(20);
   });
 
   it('uses the configured YAML position fraction cap', () => {
@@ -425,7 +425,7 @@ describe('AegisMicroLiveGate', () => {
       },
       undefined,
       {
-        leverage: 15,
+      leverage: 20,
         entryThreshold: 0.5,
         hardStopRoe: -0.15,
         tpRoe: 0.25,
@@ -454,6 +454,7 @@ describe('AegisMicroLiveGate', () => {
       yamlLiveEnabled: false,
       requireBrackets: true,
       closeIfBracketFails: true,
+      microBannedSymbols: [],
     });
   });
 });
