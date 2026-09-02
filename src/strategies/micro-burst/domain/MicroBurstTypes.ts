@@ -25,7 +25,7 @@ export type MicroBurstExitReason =
   | 'BTC_REVERSAL'
   | 'EARLY_FAILURE'
   | 'TARGET'
-  | 'TRAILING'
+  | 'INTELLIGENT_EXIT'
   | 'BREAK_EVEN'
   | 'MAX_HOLD'
   | 'HOLD';
@@ -215,6 +215,22 @@ export interface MicroBurstEntryDecision {
 
 // ── Exit ─────────────────────────────────────────────────────
 
+/**
+ * Causal, transport-qualified evidence available to the Micro Burst exit engine.
+ * Returns are raw market-direction basis points: positive means price increased.
+ */
+export interface MicroBurstExitMarketEvidence {
+  observedAtMs: number;
+  shortHorizonReturnBps: number | null;
+  mediumHorizonReturnBps: number | null;
+  priceSampleCount: number;
+  buyTakerVolume: number;
+  sellTakerVolume: number;
+  takerTradeCount: number;
+  takerFlowWindowComplete: boolean;
+  takerFlowGapFree: boolean;
+}
+
 export interface MicroBurstExitContext {
   /** Current unrealized ROE (decimal: 0.10 = 10%). */
   unrealizedRoe: number;
@@ -232,10 +248,13 @@ export interface MicroBurstExitContext {
   destinationPrice: number;
   currentStopPrice: number | null;
   timeInTradeMs: number;
+  /** Local observation time. Required by the stateful engine; legacy callers may omit it. */
+  observedAtMs?: number;
   momentumDecayFlag: boolean;
   anomalyExitFlag: boolean;
   currentBookPressure: BookPressureSignal | null;
   currentBtcContext: BtcContext | null;
+  marketEvidence?: MicroBurstExitMarketEvidence | null;
   /** Diagnostic only. It must not affect structural price exits. */
   leverage: number;
 }
@@ -288,8 +307,20 @@ export interface MicroBurstConfig {
   exitImmediateAdverseBps: number;
   exitMaxHoldMs: number;
   exitBreakEvenActivationBps: number;
-  exitTrailingActivationBps: number;
-  exitTrailingCallbackBps: number;
+  /** Minimum age before the evidence-based exit may arm. */
+  exitIntelligenceMinHoldMs: number;
+  /** Risk must remain qualified for this long before closing. */
+  exitIntelligenceConfirmationMs: number;
+  /** A longer observation gap starts a new confirmation window. */
+  exitIntelligenceMaxObservationGapMs: number;
+  exitIntelligenceMinEvidenceFamilies: number;
+  exitIntelligenceScoreThreshold: number;
+  exitMomentumReversalBps: number;
+  exitFlowReversalRatio: number;
+  exitFlowMinTrades: number;
+  exitBookReversalImbalance: number;
+  exitBookReversalSlope: number;
+  exitStructuralExhaustionProgress: number;
   maxLeverageHardCap: number;
 }
 
@@ -323,8 +354,17 @@ export function defaultMicroBurstConfig(): MicroBurstConfig {
     exitImmediateAdverseBps: 10,
     exitMaxHoldMs: 300_000,
     exitBreakEvenActivationBps: 10,
-    exitTrailingActivationBps: 15,
-    exitTrailingCallbackBps: 5,
+    exitIntelligenceMinHoldMs: 15_000,
+    exitIntelligenceConfirmationMs: 3_000,
+    exitIntelligenceMaxObservationGapMs: 15_000,
+    exitIntelligenceMinEvidenceFamilies: 2,
+    exitIntelligenceScoreThreshold: 3,
+    exitMomentumReversalBps: 1,
+    exitFlowReversalRatio: 0.15,
+    exitFlowMinTrades: 20,
+    exitBookReversalImbalance: 0.15,
+    exitBookReversalSlope: 0.05,
+    exitStructuralExhaustionProgress: 0.75,
     maxLeverageHardCap: 50,
   };
 }

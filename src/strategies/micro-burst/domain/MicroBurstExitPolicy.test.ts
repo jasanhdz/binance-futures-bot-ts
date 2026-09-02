@@ -136,17 +136,17 @@ describe.each([
 });
 
 describe('MicroBurstExitPolicy profit protection and priority', () => {
-  it('calculates exact LONG callback from peak and closes via software trailing', () => {
+  it('does not close LONG from a peak callback alone', () => {
     const decision = evaluateMicroBurstExit(
       makeExitContext({ currentPrice: 100.9, peakPrice: 101, troughPrice: 100 }),
       config,
       'LONG',
     );
-    expect(decision).toMatchObject({ action: 'CLOSE_MARKET', reason: 'TRAILING' });
-    expect(decision.diagnostics.callbackBps).toBeCloseTo(((101 - 100.9) / 101) * 10_000);
+    expect(decision).toMatchObject({ action: 'MOVE_STOP', reason: 'BREAK_EVEN' });
+    expect(decision.diagnostics).not.toHaveProperty('callbackBps');
   });
 
-  it('calculates exact SHORT callback from trough, never peak', () => {
+  it('does not close SHORT from a trough callback alone', () => {
     const decision = evaluateMicroBurstExit(
       makeExitContext({
         currentPrice: 99.6,
@@ -158,8 +158,8 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
       config,
       'SHORT',
     );
-    expect(decision).toMatchObject({ action: 'CLOSE_MARKET', reason: 'TRAILING' });
-    expect(decision.diagnostics.callbackBps).toBeCloseTo(((99.6 - 99.5) / 99.5) * 10_000);
+    expect(decision).toMatchObject({ action: 'MOVE_STOP', reason: 'BREAK_EVEN' });
+    expect(decision.diagnostics).not.toHaveProperty('callbackBps');
   });
 
   it('does not repeat LONG break-even when current stop is entry or better', () => {
@@ -214,7 +214,7 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
       'BTC_REVERSAL',
     ],
     [
-      'target beats trailing',
+      'target beats intelligent evidence',
       makeExitContext({ currentPrice: 102, peakPrice: 103 }),
       'LONG',
       'TARGET',

@@ -1,7 +1,7 @@
 import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import * as crypto from 'crypto';
 
-export const MICRO_BURST_V1_VERSION = '0.6.0-precohort-correctness';
+export const MICRO_BURST_V1_VERSION = '0.7.0-intelligent-exit';
 
 export const MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED = true;
 export const MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false;

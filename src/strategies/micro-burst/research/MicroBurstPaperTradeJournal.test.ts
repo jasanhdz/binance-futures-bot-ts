@@ -32,7 +32,6 @@ function position(tradeId: string, symbol: string) {
     peakPrice: 101,
     troughPrice: 101,
     breakEvenArmed: false,
-    trailingActivated: false,
     lastObservedAtMs: 1_000,
     cohortId: 'C',
     codeCommitSha: 'S',
