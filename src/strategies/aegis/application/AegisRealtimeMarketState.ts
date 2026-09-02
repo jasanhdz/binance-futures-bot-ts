@@ -3,6 +3,7 @@ import type { SharedMarketDataRuntime } from '../../../app/services/SharedMarket
 import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
 import type { AggTradeLease } from '../../../core/market-data/AggTradeDataPlane';
 import type { CandleLease } from '../../../core/market-data/CandleDataPlane';
+import type { CandleDataPlane } from '../../../core/market-data/CandleDataPlane';
 import type { SynchronizedOrderBook } from '../../../core/market-data/SynchronizedOrderBook';
 import type { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
 import { LiquidityVoidDetector } from '../../../app/services/LiquidityVoidDetector';
@@ -315,28 +316,131 @@ export class AegisRealtimeMarketState {
     this.lastDepthObservation.clear();
   }
 
+  /** DIAGNOSTIC: returns per-symbol freshness info for all canonical symbols */
+  getDiagnostics(): Record<string, {
+    candlePlane: ReturnType<CandleDataPlane['getDiagnostics']>;
+    buildMarketContextWouldSucceed: boolean;
+    buildMarketContextRejectReason?: string;
+  }> {
+    const result: Record<string, any> = {};
+    for (const sym of AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS) {
+      const candleDiag = this.deps.sharedMarketData.candleDataPlane.getDiagnostics(sym, '5m');
+      const { wouldSucceed, rejectReason } = this.diagnoseBuildMarketContext(sym);
+      result[sym] = {
+        candlePlane: candleDiag,
+        buildMarketContextWouldSucceed: wouldSucceed,
+        buildMarketContextRejectReason: rejectReason,
+      };
+    }
+    return result;
+  }
+
+  private diagnoseBuildMarketContext(rawSymbol: string): { wouldSucceed: boolean; rejectReason?: string } {
+    const symbol = rawSymbol.toUpperCase();
+    const now = this.deps.clock.now();
+    const realtime = this.read(symbol);
+    if (realtime.status !== 'FRESH') return { wouldSucceed: false, rejectReason: `REALTIME_STATUS_${realtime.status}` };
+    if (realtime.observedAtMs === undefined) return { wouldSucceed: false, rejectReason: 'NO_OBSERVED_AT' };
+    if (realtime.ageMs === undefined) return { wouldSucceed: false, rejectReason: 'NO_AGE' };
+    if (realtime.bestBid === undefined) return { wouldSucceed: false, rejectReason: 'NO_BEST_BID' };
+    if (realtime.bestAsk === undefined) return { wouldSucceed: false, rejectReason: 'NO_BEST_ASK' };
+    if (realtime.midPrice === undefined) return { wouldSucceed: false, rejectReason: 'NO_MID_PRICE' };
+    if (realtime.aggTradeAgeMs === undefined) return { wouldSucceed: false, rejectReason: 'NO_AGG_TRADE_AGE' };
+
+    const book = this.deps.sharedMarketData.orderBookDataPlane.get(symbol);
+    const agg = this.deps.sharedMarketData.aggTradeDataPlane.get(symbol);
+    if (!book || !agg) return { wouldSucceed: false, rejectReason: 'NO_BOOK_OR_AGG' };
+    const bookState = book.getState();
+    if (bookState.health !== 'HEALTHY') return { wouldSucceed: false, rejectReason: `BOOK_HEALTH_${bookState.health}` };
+    if (!bookState.bids.length || !bookState.asks.length) return { wouldSucceed: false, rejectReason: 'EMPTY_BOOK' };
+
+    const flow = agg.getTakerFlow(this.takerFlowWindowMs);
+    if (!flow.gapFree) return { wouldSucceed: false, rejectReason: 'AGG_TRADE_GAP' };
+    if (flow.tradeCount <= 0) return { wouldSucceed: false, rejectReason: 'NO_TRADES' };
+    if (flow.eventWatermarkMs === null) return { wouldSucceed: false, rejectReason: 'NO_EVENT_WATERMARK' };
+
+    for (const universeSymbol of AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS) {
+      const series = this.readFreshCandleSeriesWithReason(universeSymbol, 320);
+      if (!series.ok) return { wouldSucceed: false, rejectReason: `CANDLE_${universeSymbol}:${series.reason}` };
+    }
+
+    const liquidity = this.detectorFor(symbol).getLiquidityStressStatus(now, this.freshnessMs);
+    if (liquidity.status !== 'FRESH') return { wouldSucceed: false, rejectReason: `LIQUIDITY_STATUS_${liquidity.status}` };
+    if (liquidity.lastReceivedAtMs === undefined) return { wouldSucceed: false, rejectReason: 'NO_LIQUIDITY_OBSERVED' };
+    if (liquidity.receiveAgeMs === undefined) return { wouldSucceed: false, rejectReason: 'NO_LIQUIDITY_AGE' };
+
+    return { wouldSucceed: true };
+  }
+
+  private readFreshCandleSeriesWithReason(symbol: string, limit: number): { ok: true; series: AegisCandleSeriesV1 } | { ok: false; reason: string } {
+    const snapshot = this.deps.sharedMarketData.candleDataPlane.read(symbol, '5m', limit);
+
+    const routeHealthy = this.deps.sharedMarketData.candleDataPlane.isRouteHealthy();
+    if (!routeHealthy) return { ok: false, reason: 'ROUTE_UNHEALTHY' };
+
+    const seriesInfo = this.deps.sharedMarketData.candleDataPlane.isSeriesComplete(symbol, '5m', 96);
+    if (!seriesInfo.complete) return { ok: false, reason: seriesInfo.reason };
+
+    const now = this.deps.clock.now();
+    const observedAtMs = snapshot.observedAtMs ?? now;
+    const ageMs = snapshot.ageMs ?? 0;
+
+    // Filter out open candles: only include candles where closeTime <= now
+    const closedCandles = snapshot.candles.filter((c) => c.closeTime <= now);
+
+    return {
+      ok: true,
+      series: Object.freeze({
+        source: snapshot.source ?? 'WEBSOCKET',
+        status: snapshot.status,
+        observedAtMs,
+        ageMs,
+        websocketObservedAtMs: snapshot.websocketObservedAtMs,
+        restFallbackCount: snapshot.restFallbackCount,
+        candles: Object.freeze(closedCandles.map((candle) => Object.freeze({ ...candle }))),
+      }),
+    };
+  }
+
   private readFreshCandleSeries(symbol: string, limit: number): AegisCandleSeriesV1 | null {
     const snapshot = this.deps.sharedMarketData.candleDataPlane.read(symbol, '5m', limit);
-    // REST may seed or recover the cache, but inference waits for a subsequent
-    // live kline observation so the source is explicitly WebSocket again.
-    if (
-      snapshot.status !== 'FRESH' ||
-      snapshot.source !== 'WEBSOCKET' ||
-      snapshot.observedAtMs === undefined ||
-      snapshot.ageMs === undefined ||
-      snapshot.websocketObservedAtMs === undefined ||
-      snapshot.candles.length < 96
-    ) {
-      return null;
-    }
+
+    // SEPARATED CHECKS:
+    // 1. Transport health: the WebSocket route must be alive (any symbol received events recently)
+    // 2. Data completeness: the series must have 96+ closed candles, aligned, from WebSocket
+    // 3. Strategic freshness: the observedAtMs age check is ONLY for the strategic symbol,
+    //    NOT for every universe symbol. A quiet symbol with complete data should not invalidate context.
+
+    const routeHealthy = this.deps.sharedMarketData.candleDataPlane.isRouteHealthy();
+    const seriesInfo = this.deps.sharedMarketData.candleDataPlane.isSeriesComplete(symbol, '5m', 96);
+
+    // FAIL-CLOSED: route must be healthy
+    if (!routeHealthy) return null;
+
+    // FAIL-CLOSED: series must be complete (96+ closed candles, aligned, no gaps, source WEBSOCKET)
+    if (!seriesInfo.complete) return null;
+
+    // The data is valid: route is alive, series is complete and aligned.
+    // observedAtMs age is NOT checked here — a quiet symbol with valid closed candles
+    // should not invalidate the entire context. The strategic symbol's freshness
+    // is checked separately in buildMarketContext() via this.read(symbol).
+
+    // Use observedAtMs from the snapshot if available, otherwise compute from last closed candle
+    const now = this.deps.clock.now();
+    const observedAtMs = snapshot.observedAtMs ?? now;
+    const ageMs = snapshot.ageMs ?? 0;
+
+    // Filter out open candles: only include candles where closeTime <= now
+    const closedCandles = snapshot.candles.filter((c) => c.closeTime <= now);
+
     return Object.freeze({
-      source: snapshot.source,
+      source: snapshot.source ?? 'WEBSOCKET',
       status: snapshot.status,
-      observedAtMs: snapshot.observedAtMs,
-      ageMs: snapshot.ageMs,
+      observedAtMs,
+      ageMs,
       websocketObservedAtMs: snapshot.websocketObservedAtMs,
       restFallbackCount: snapshot.restFallbackCount,
-      candles: Object.freeze(snapshot.candles.map((candle) => Object.freeze({ ...candle }))),
+      candles: Object.freeze(closedCandles.map((candle) => Object.freeze({ ...candle }))),
     });
   }
 
