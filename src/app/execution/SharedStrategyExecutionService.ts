@@ -367,7 +367,12 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         try {
           // Algo orders can take a short time to appear in the open-orders read model.
           // Do not emergency-close a position until that read has been retried.
-          for (const delayMs of [0, ...(this.config.protectionVerificationDelaysMs ?? [])]) {
+          for (const delayMs of [
+            0,
+            ...(this.config.protectionVerificationDelaysMs ??
+              DEFAULT_CONFIG.protectionVerificationDelaysMs ??
+              []),
+          ]) {
             if (delayMs > 0) await sleep(delayMs);
             closeOrders = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
             hasStop = closeOrders.some((order) =>
@@ -417,35 +422,57 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         (intent.protection.requireStop && !hasStop) ||
         (intent.protection.requireTakeProfit && !hasTakeProfit)
       ) {
-        failureStage = 'PROTECTION';
-        const recovery = intent.protection.closeIfProtectionFails
-          ? await this.attemptEmergencyClose(
-              intent,
-              openedQuantity,
-              openedSideMode,
-              intent.failureCloseReasons?.protection ?? 'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
-            )
-          : { quantity: openedQuantity, sideMode: openedSideMode, positionStillOpen: true };
-        return failed(intent, 'BRACKETS_FAILED', {
-          ...baseMetadata,
-          failureStage,
-          orderId: order.orderId,
-          entryPrice,
-          quantity: recovery.quantity,
-          sideMode: recovery.sideMode,
-          stopPrice,
-          takeProfitPrice,
-          ...stopAuditMetadata,
-          stopOk,
-          takeProfitOk,
-          hasStop,
-          hasTakeProfit,
-          ...(stopSource === 'STRUCTURAL_PRICE' && intent.protection.requireStop && !hasStop
-            ? { reasonDetail: 'structural_stop_verification_failed' }
-            : {}),
-          emergencyCloseError: recovery.emergencyCloseError,
-          positionStillOpen: recovery.positionStillOpen,
-        });
+        const protectionPlacementAcknowledged =
+          intent.protection.requireStop &&
+          intent.protection.requireTakeProfit &&
+          stopOk &&
+          takeProfitOk;
+        if (protectionPlacementAcknowledged) {
+          // Binance acknowledged both mutations. Its Algo-order listing is eventually
+          // consistent, so do not close a protected position on that readback alone.
+          this.logger.warn('shared_strategy_protection_visibility_pending', {
+            ...baseMetadata,
+            symbol: intent.symbol,
+            side: intent.side,
+            hasStop,
+            hasTakeProfit,
+            stopOk,
+            takeProfitOk,
+          });
+          hasStop = hasStop || stopOk;
+          hasTakeProfit = hasTakeProfit || takeProfitOk;
+        } else {
+          failureStage = 'PROTECTION';
+          const recovery = intent.protection.closeIfProtectionFails
+            ? await this.attemptEmergencyClose(
+                intent,
+                openedQuantity,
+                openedSideMode,
+                intent.failureCloseReasons?.protection ??
+                  'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
+              )
+            : { quantity: openedQuantity, sideMode: openedSideMode, positionStillOpen: true };
+          return failed(intent, 'BRACKETS_FAILED', {
+            ...baseMetadata,
+            failureStage,
+            orderId: order.orderId,
+            entryPrice,
+            quantity: recovery.quantity,
+            sideMode: recovery.sideMode,
+            stopPrice,
+            takeProfitPrice,
+            ...stopAuditMetadata,
+            stopOk,
+            takeProfitOk,
+            hasStop,
+            hasTakeProfit,
+            ...(stopSource === 'STRUCTURAL_PRICE' && intent.protection.requireStop && !hasStop
+              ? { reasonDetail: 'structural_stop_verification_failed' }
+              : {}),
+            emergencyCloseError: recovery.emergencyCloseError,
+            positionStillOpen: recovery.positionStillOpen,
+          });
+        }
       }
 
       const openedAt = await this.exchange.getServerTime();

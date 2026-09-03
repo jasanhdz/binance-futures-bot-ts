@@ -472,7 +472,7 @@ function prettyLine(level: Level, msg: string, ctx?: any) {
 
     case 'aegis_bracket_validation_failed': {
       const s = ctx?.symbol ? color.info(String(ctx.symbol).padEnd(8)) : '';
-      return `${color.gray(t)} 🚨 AegisBracketFail ${s} side=${ctx?.side ?? '—'} hasSL=${ctx?.hasSL} hasTP=${ctx?.hasTP}`;
+      return `${color.gray(t)} 🚨 AegisBracketFail ${s} side=${ctx?.side ?? '—'} hasSL=${ctx?.hasStop ?? ctx?.hasSL} hasTP=${ctx?.hasTakeProfit ?? ctx?.hasTP}`;
     }
 
     case 'aegis_entry_error_closed': {

@@ -1,4 +1,5 @@
 export class TelegramService {
+  private static readonly MAX_MESSAGE_LENGTH = 3900;
   static getAlertBotToken(): string {
     return this.ALERT_BOT_TOKEN;
   }
@@ -33,7 +34,11 @@ export class TelegramService {
 
     const url = `https://api.telegram.org/bot${token}/sendMessage`;
 
-    const finalMessage = this.formatForTelegram(message);
+    const formattedMessage = this.formatForTelegram(message);
+    const messageTooLong = formattedMessage.length > this.MAX_MESSAGE_LENGTH;
+    const finalMessage = messageTooLong
+      ? `${message.slice(0, this.MAX_MESSAGE_LENGTH - 16)}\n[message truncated]`
+      : formattedMessage;
 
     try {
       const controller = new AbortController();
@@ -45,7 +50,7 @@ export class TelegramService {
         body: JSON.stringify({
           chat_id: this.CHAT_ID,
           text: finalMessage,
-          parse_mode: 'HTML',
+          ...(messageTooLong ? {} : { parse_mode: 'HTML' }),
         }),
         signal: controller.signal,
       });
@@ -90,7 +95,7 @@ export class TelegramService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
-          text: this.formatForTelegram(message),
+          text: message.slice(0, this.MAX_MESSAGE_LENGTH),
           parse_mode: 'HTML',
         }),
         signal: controller.signal,

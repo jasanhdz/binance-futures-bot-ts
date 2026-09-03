@@ -348,7 +348,9 @@ describe('SharedStrategyExecutionService protection policy', () => {
         owner: 'BOT',
       },
     ];
-    vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValueOnce([]).mockResolvedValueOnce(brackets);
+    vi.mocked(exchange.listCloseOrdersForSide)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(brackets);
 
     const result = await service.execute(
       intent({
@@ -365,6 +367,28 @@ describe('SharedStrategyExecutionService protection policy', () => {
     expect(result).toMatchObject({ status: 'OPENED' });
     expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
     expect(exchange.listCloseOrdersForSide).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an opened position when Binance acknowledges brackets but delays their listing', async () => {
+    vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValue([]);
+
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        takeProfitRoe: 0.4,
+        protection: {
+          requireStop: true,
+          requireTakeProfit: true,
+          closeIfProtectionFails: true,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: 'OPENED',
+      metadata: { hasStop: true, hasTakeProfit: true },
+    });
+    expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
   });
 
   it('rereads after a post-open failure, verifies flat, and cancels only bot protections', async () => {
