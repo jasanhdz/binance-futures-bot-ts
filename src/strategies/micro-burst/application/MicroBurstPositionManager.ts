@@ -12,6 +12,7 @@ import {
   defaultMicroBurstConfig,
 } from '../domain/MicroBurstTypes';
 import { isMicroBurstExitEngineState, MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
+import { MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
 
 export interface MicroBurstPositionManagementContext extends StrategyPositionLifecycleContext {
   strategyMode: 'OFF' | 'LIVE';
@@ -61,6 +62,7 @@ export class MicroBurstPositionManager
     _lifecycle: StrategyPositionLifecycleCore,
     config?: Partial<MicroBurstConfig>,
     private readonly execution?: MicroBurstPositionManagerExecution,
+    private readonly liveAuthorityEnabled = MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
   ) {
     this.config = { ...defaultMicroBurstConfig(), ...config };
   }
@@ -101,7 +103,12 @@ export class MicroBurstPositionManager
         context.symbolState.set({ microBurstExitState: engineState });
       }
       let actionApplied = false;
-      if (hasExitContext && context.strategyMode === 'LIVE' && this.execution) {
+      if (
+        hasExitContext &&
+        context.strategyMode === 'LIVE' &&
+        this.execution &&
+        this.liveAuthorityEnabled
+      ) {
         if (exitDecision.action === 'CLOSE_MARKET') {
           actionApplied = await this.execution.close(context, exitDecision);
           if (actionApplied) {
@@ -124,9 +131,9 @@ export class MicroBurstPositionManager
           actionApplied,
           authorityReason:
             hasExitContext && context.strategyMode === 'LIVE'
-              ? this.execution
+              ? this.execution && this.liveAuthorityEnabled
                 ? 'MICRO_BURST_V1_LIVE'
-                : 'LIVE_EXECUTION_PORT_MISSING'
+                : 'LIVE_AUTHORITY_DISABLED_OR_EXECUTION_PORT_MISSING'
               : 'MICRO_BURST_V1_OFF',
           lifecycleApplied: actionApplied,
         },

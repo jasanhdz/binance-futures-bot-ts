@@ -128,7 +128,8 @@ describe('MicroBurstShadowPolicyAdapter', () => {
       entryDecisionPrice: 100,
       entryExecutablePrice: 100,
       entryPrice: 100,
-      stop: 100,
+      initialStructuralStop: 99,
+      stop: 100.16,
       destination: 102,
       state: 'MANAGING',
       lastObservedAtMs: 0,
@@ -171,11 +172,24 @@ describe('MicroBurstShadowPolicyAdapter', () => {
       },
     });
 
-    expect(adapter.evaluateLifecycle(position, observation(20_000)).action).toBe('HOLD');
-    expect(adapter.evaluateLifecycle(position, observation(21_000)).action).toBe('HOLD');
-    expect(adapter.evaluateLifecycle(position, observation(23_000))).toMatchObject({
-      action: 'CLOSE',
-      reason: 'INTELLIGENT_EXIT',
-    });
+    const armed = adapter.evaluateLifecycle(position, observation(20_000));
+    expect(armed.action).toBe('HOLD');
+    const recoveredPosition: ShadowPosition = {
+      ...position,
+      latestManagementDecision: {
+        action: armed.action,
+        reason: armed.reason,
+        observedAtMs: 20_000,
+        diagnostics: armed.diagnostics,
+      },
+    };
+    const restoredAdapter = new MicroBurstShadowPolicyAdapter(defaultMicroBurstConfig());
+    expect(restoredAdapter.evaluateLifecycle(recoveredPosition, observation(23_000))).toMatchObject(
+      {
+        action: 'CLOSE',
+        reason: 'INTELLIGENT_EXIT',
+        diagnostics: { confirmationElapsedMs: 3_000 },
+      },
+    );
   });
 });

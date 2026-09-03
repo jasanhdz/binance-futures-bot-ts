@@ -73,6 +73,12 @@ export class MicroBurstShadowEvaluator {
 
       const strategyContext: MicroBurstStrategyContext = {
         ...context,
+        config: {
+          ...this.runtimeConfig.exitPolicy,
+          ...(symConfig.btcConflictThresholdBps !== undefined
+            ? { btcConflictThresholdBps: symConfig.btcConflictThresholdBps }
+            : {}),
+        },
       };
 
       const envelope: StrategyDecisionEnvelope = await this.deps.strategyRouter.evaluate(

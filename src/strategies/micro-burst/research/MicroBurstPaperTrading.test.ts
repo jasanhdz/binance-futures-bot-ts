@@ -120,7 +120,7 @@ describe('MicroBurst paper trading lifecycle', () => {
       observedAtMs: 1_500,
       quote: quote(),
     });
-    expect(managed?.position.currentStop).toBe(101);
+    expect(managed?.position.currentStop).toBeCloseTo(101.1616, 8);
     const uncertain = paper.manage('ETHUSDT', { currentPrice: 95, observedAtMs: 1_600 });
     expect(uncertain?.position.state).toBe('DATA_UNCERTAIN');
     expect(paper.getPosition('ETHUSDT')?.state).toBe('DATA_UNCERTAIN');

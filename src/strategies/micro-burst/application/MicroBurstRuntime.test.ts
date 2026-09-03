@@ -364,7 +364,7 @@ describe('MicroBurstRuntime', () => {
     (runtime as any).shadowEvaluator = {
       evaluate: async () => ({
         strategyId: 'MICRO_BURST_V1',
-        strategyVersion: '0.7.0-intelligent-exit',
+        strategyVersion: '0.8.0-expected-continuation-shadow',
         symbol: 'ETHUSDT',
         snapshotAtMs: 1_000,
         decision: 'ENTRY_INTENT',

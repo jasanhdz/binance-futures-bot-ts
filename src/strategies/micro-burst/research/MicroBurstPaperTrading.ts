@@ -4,7 +4,10 @@ import {
   MicroBurstConfig,
 } from '../domain/MicroBurstTypes';
 import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
-import { MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
+import {
+  classifyMicroBurstStopExitReason,
+  MicroBurstExitEngine,
+} from '../domain/MicroBurstExitPolicy';
 import { decimalReturnToBps } from '../domain/MicroBurstUnits';
 import { DEFAULT_COST_SCENARIOS } from './MicroBurstOutcomeTypes';
 
@@ -256,7 +259,7 @@ export class MicroBurstPaperTrading {
     if (stopTouched) {
       decision = {
         action: 'CLOSE_MARKET',
-        reason: position.breakEvenArmed ? 'BREAK_EVEN' : 'HARD_INVALIDATION',
+        reason: classifyMicroBurstStopExitReason(position.currentStop, position.entryPrice, side),
         diagnostics: { virtualStop: true },
       };
     } else {

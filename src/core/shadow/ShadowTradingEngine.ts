@@ -116,6 +116,7 @@ export class ShadowTradingEngine {
       entryDecisionPrice: intent.referencePrice,
       entryExecutablePrice: entryPrice,
       entryPrice,
+      initialStructuralStop: intent.structuralStop,
       stop: intent.structuralStop,
       destination: intent.destination,
       leverage: intent.leverage,
@@ -173,13 +174,22 @@ export class ShadowTradingEngine {
       maeBps: excursionBps(current.side, current.entryPrice, peakPrice, troughPrice, false),
     };
     const decision: ShadowPolicyDecision = policy.evaluateLifecycle(nextBase, observation);
+    const managedBase = {
+      ...nextBase,
+      latestManagementDecision: {
+        action: decision.action,
+        reason: decision.reason,
+        observedAtMs: observation.receivedAtMs,
+        diagnostics: decision.diagnostics,
+      },
+    };
     if (decision.action === 'MOVE_STOP') {
       if (!Number.isFinite(decision.stop) || decision.stop <= 0) return current;
       const improves =
         current.stop === undefined ||
         (current.side === 'LONG' ? decision.stop >= current.stop : decision.stop <= current.stop);
       if (!improves) return current;
-      const next = { ...nextBase, stop: decision.stop };
+      const next = { ...managedBase, stop: decision.stop };
       if (!this.persistCanonical(next)) return current;
       this.positions.set(serialized, next);
       this.pendingCheckpoints.delete(serialized);
@@ -189,18 +199,18 @@ export class ShadowTradingEngine {
       return next;
     }
     if (decision.action !== 'CLOSE') {
-      this.pendingCheckpoints.set(serialized, nextBase);
+      this.pendingCheckpoints.set(serialized, managedBase);
       const materialChange =
-        nextBase.peakPrice !== current.peakPrice ||
-        nextBase.troughPrice !== current.troughPrice ||
-        nextBase.mfeBps !== current.mfeBps ||
-        nextBase.maeBps !== current.maeBps ||
+        managedBase.peakPrice !== current.peakPrice ||
+        managedBase.troughPrice !== current.troughPrice ||
+        managedBase.mfeBps !== current.mfeBps ||
+        managedBase.maeBps !== current.maeBps ||
         observation.receivedAtMs - current.lastObservedAtMs >= HOLD_CHECKPOINT_INTERVAL_MS;
       if (materialChange) {
-        if (!this.persistCanonical(nextBase)) return current;
+        if (!this.persistCanonical(managedBase)) return current;
         this.pendingCheckpoints.delete(serialized);
-        this.positions.set(serialized, nextBase);
-        return nextBase;
+        this.positions.set(serialized, managedBase);
+        return managedBase;
       }
       return current;
     }
@@ -210,7 +220,7 @@ export class ShadowTradingEngine {
       observation.receivedAtMs,
     );
     if (exitPrice === undefined) {
-      const uncertain = { ...nextBase, state: 'DATA_UNCERTAIN' as const };
+      const uncertain = { ...managedBase, state: 'DATA_UNCERTAIN' as const };
       if (!this.persistCanonical(uncertain)) return current;
       this.positions.set(serialized, uncertain);
       this.appendEventSafe(
@@ -225,7 +235,7 @@ export class ShadowTradingEngine {
     }
     const grossBps = signedReturnBps(current.side, current.entryPrice, exitPrice);
     const closed = {
-      ...nextBase,
+      ...managedBase,
       state: 'CLOSED' as const,
       closedAtMs: observation.exchangeTimeMs,
       closedReceivedAtMs: observation.receivedAtMs,
@@ -345,6 +355,9 @@ export class ShadowTradingEngine {
       state: position.state,
       reason,
       parentDecisionId: position.parentDecisionId,
+      metadata: position.latestManagementDecision
+        ? { latestManagementDecision: position.latestManagementDecision }
+        : undefined,
     };
   }
 }

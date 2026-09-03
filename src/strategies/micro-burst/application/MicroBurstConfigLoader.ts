@@ -1,4 +1,5 @@
 import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';
+import type { MicroBurstConfig } from '../domain/MicroBurstTypes';
 
 const DEFAULT_SYMBOLS: Record<string, MicroBurstSymbolConfig> = {};
 
@@ -9,6 +10,53 @@ const DEFAULT_CONFIG: MicroBurstRuntimeConfig = {
   prospectiveValidation: { enabled: false },
   marketArchive: { enabled: false },
 };
+
+const EXIT_POLICY_NUMBER_FIELDS = {
+  exit_proof_window_ms: 'exitProofWindowMs',
+  exit_min_proof_excursion_bps: 'exitMinProofExcursionBps',
+  exit_proof_extension_ms: 'exitProofExtensionMs',
+  exit_immediate_adverse_bps: 'exitImmediateAdverseBps',
+  exit_immediate_adverse_risk_fraction: 'exitImmediateAdverseRiskFraction',
+  exit_immediate_adverse_max_bps: 'exitImmediateAdverseMaxBps',
+  exit_max_hold_ms: 'exitMaxHoldMs',
+  exit_max_hold_extension_ms: 'exitMaxHoldExtensionMs',
+  exit_estimated_round_trip_cost_bps: 'exitEstimatedRoundTripCostBps',
+  exit_cost_cover_buffer_bps: 'exitCostCoverBufferBps',
+  exit_break_even_activation_bps: 'exitBreakEvenActivationBps',
+  exit_intelligence_min_hold_ms: 'exitIntelligenceMinHoldMs',
+  exit_intelligence_confirmation_ms: 'exitIntelligenceConfirmationMs',
+  exit_intelligence_max_observation_gap_ms: 'exitIntelligenceMaxObservationGapMs',
+  exit_intelligence_min_evidence_families: 'exitIntelligenceMinEvidenceFamilies',
+  exit_intelligence_score_threshold: 'exitIntelligenceScoreThreshold',
+  exit_continuation_support_threshold: 'exitContinuationSupportThreshold',
+  exit_intelligence_exit_pressure_threshold: 'exitIntelligenceExitPressureThreshold',
+  exit_winner_exit_pressure_threshold: 'exitWinnerExitPressureThreshold',
+  exit_momentum_reversal_bps: 'exitMomentumReversalBps',
+  exit_flow_reversal_ratio: 'exitFlowReversalRatio',
+  exit_flow_min_trades: 'exitFlowMinTrades',
+  exit_book_reversal_imbalance: 'exitBookReversalImbalance',
+  exit_book_reversal_slope: 'exitBookReversalSlope',
+  exit_structural_exhaustion_progress: 'exitStructuralExhaustionProgress',
+  exit_structural_lock_progress: 'exitStructuralLockProgress',
+  exit_protection_min_distance_bps: 'exitProtectionMinDistanceBps',
+} as const satisfies Record<string, keyof MicroBurstConfig>;
+
+function parseExitPolicy(raw: unknown): Partial<MicroBurstConfig> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const value = raw as Record<string, unknown>;
+  const parsed: Partial<MicroBurstConfig> = {};
+  for (const [yamlKey, configKey] of Object.entries(EXIT_POLICY_NUMBER_FIELDS) as Array<
+    [
+      keyof typeof EXIT_POLICY_NUMBER_FIELDS,
+      (typeof EXIT_POLICY_NUMBER_FIELDS)[keyof typeof EXIT_POLICY_NUMBER_FIELDS],
+    ]
+  >) {
+    const candidate = value[yamlKey] ?? value[configKey];
+    if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0)
+      (parsed as Record<string, unknown>)[configKey] = candidate;
+  }
+  return Object.keys(parsed).length > 0 ? parsed : undefined;
+}
 
 function parseSymbolConfig(raw: unknown): MicroBurstSymbolConfig {
   if (!raw || typeof raw !== 'object') {
@@ -63,6 +111,7 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
     enabled,
     mode,
     symbols,
+    exitPolicy: parseExitPolicy(mb.exit_policy ?? mb.exitPolicy),
     prospectiveValidation: parseProspectiveValidation(mb.prospective_validation),
     marketArchive: parseMarketArchive(mb.market_archive),
   };
@@ -102,11 +151,17 @@ function parseMarketArchive(raw: unknown): MicroBurstRuntimeConfig['marketArchiv
     rawDepthArchive: value.raw_depth_archive !== false,
     compression: value.compression === 'gzip' ? 'gzip' : 'gzip',
     maxActiveSegmentRecords:
-      typeof value.max_active_segment_records === 'number' ? value.max_active_segment_records : undefined,
+      typeof value.max_active_segment_records === 'number'
+        ? value.max_active_segment_records
+        : undefined,
     maxActiveSegmentBytes:
-      typeof value.max_active_segment_bytes === 'number' ? value.max_active_segment_bytes : undefined,
+      typeof value.max_active_segment_bytes === 'number'
+        ? value.max_active_segment_bytes
+        : undefined,
     maxActiveSegmentDurationMs:
-      typeof value.max_active_segment_duration_ms === 'number' ? value.max_active_segment_duration_ms : undefined,
+      typeof value.max_active_segment_duration_ms === 'number'
+        ? value.max_active_segment_duration_ms
+        : undefined,
     durabilityFlushIntervalMs:
       typeof value.durability_flush_interval_ms === 'number'
         ? value.durability_flush_interval_ms
@@ -156,6 +211,7 @@ export function mergeMicroBurstConfigs(
     enabled: override.enabled ?? base.enabled,
     mode: override.mode ?? base.mode,
     symbols,
+    exitPolicy: { ...base.exitPolicy, ...override.exitPolicy },
     prospectiveValidation: {
       ...base.prospectiveValidation,
       ...override.prospectiveValidation,

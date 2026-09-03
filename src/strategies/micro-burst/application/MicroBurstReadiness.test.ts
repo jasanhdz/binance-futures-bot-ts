@@ -33,8 +33,11 @@ const complete: MicroBurstReadinessInput = {
 };
 
 describe('Micro Burst readiness', () => {
-  it('reports explicit LIVE authority when the release kill switch is enabled', () => {
-    expect(assessMicroBurstReadiness({ ...complete, mode: 'LIVE' }).liveAuthority).toBe(true);
+  it('denies LIVE authority while the candidate awaits black-box validation', () => {
+    const result = assessMicroBurstReadiness({ ...complete, mode: 'LIVE' });
+    expect(result.liveAuthority).toBe(false);
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContain('LIVEFLAGS_NOT_READY');
   });
 
   it('is complete only when every requested check is evidenced', () => {

@@ -139,7 +139,11 @@ export interface HorizonOutcome {
 
 export type CounterfactualExitReason =
   | 'HARD_INVALIDATION'
+  | 'ANOMALY'
+  | 'BTC_REVERSAL'
   | 'TARGET'
+  | 'INTELLIGENT_EXIT'
+  | 'PROFIT_LOCK'
   | 'BREAK_EVEN'
   | 'EARLY_FAILURE'
   | 'MAX_HOLD'

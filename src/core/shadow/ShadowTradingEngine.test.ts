@@ -309,4 +309,34 @@ describe('ShadowTradingEngine', () => {
     );
     expect(journal.positionWrites).toBe(writesAfterOpen + 1);
   });
+
+  it('persists policy diagnostics on the canonical position and lifecycle event', () => {
+    const journal = new MemoryJournal();
+    const policy: ShadowStrategyPolicy = {
+      strategyId: 'MOMENTUM_RIDE',
+      evaluateLifecycle: () => ({
+        action: 'MOVE_STOP',
+        stop: 95,
+        reason: 'PROFIT_LOCK',
+        diagnostics: { exitPolicyVersion: 'EXPECTED_CONTINUATION_V2', exitPressure: 0.25 },
+      }),
+    };
+    const engine = new ShadowTradingEngine(journal, new Map([['MOMENTUM_RIDE', policy]] as const));
+    engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'LONG'), quote);
+    const managed = engine.manage(
+      { strategyId: 'MOMENTUM_RIDE', symbol: 'BTCUSDT' },
+      { exchangeTimeMs: 2, receivedAtMs: 2_000, currentPrice: 101, marketDataQuality: 'HEALTHY' },
+    );
+
+    expect(managed?.latestManagementDecision).toMatchObject({
+      action: 'MOVE_STOP',
+      reason: 'PROFIT_LOCK',
+      diagnostics: { exitPolicyVersion: 'EXPECTED_CONTINUATION_V2', exitPressure: 0.25 },
+    });
+    expect(journal.events[journal.events.length - 1]?.metadata).toMatchObject({
+      latestManagementDecision: {
+        diagnostics: { exitPolicyVersion: 'EXPECTED_CONTINUATION_V2', exitPressure: 0.25 },
+      },
+    });
+  });
 });

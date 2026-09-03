@@ -56,7 +56,7 @@ function longRiskContext(
     troughPrice: 100,
     structuralInvalidationPrice: 99,
     destinationPrice: 102,
-    currentStopPrice: 100,
+    currentStopPrice: 100.16,
     timeInTradeMs: observedAtMs,
     observedAtMs,
     momentumDecayFlag: false,
@@ -82,6 +82,7 @@ function shortRiskContext(observedAtMs: number): MicroBurstExitContext {
     troughPrice: 99.3,
     structuralInvalidationPrice: 101,
     destinationPrice: 98,
+    currentStopPrice: 99.84,
     currentBookPressure: healthyBook({
       signedTopOfBookImbalance: 0.3,
       topOfBookImbalance: 0.3,
@@ -135,6 +136,7 @@ describe('MicroBurst intelligent exit evidence', () => {
     const context = longRiskContext(20_000, {
       currentPrice: 101.6,
       peakPrice: 101.6,
+      currentStopPrice: 100.7,
       currentBookPressure: healthyBook(),
       marketEvidence: marketEvidence(20_000, {
         shortHorizonReturnBps: 2,

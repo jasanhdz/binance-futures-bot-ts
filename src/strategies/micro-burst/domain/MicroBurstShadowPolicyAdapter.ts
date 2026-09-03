@@ -1,4 +1,8 @@
-import { MicroBurstExitEngine } from './MicroBurstExitPolicy';
+import {
+  classifyMicroBurstStopExitReason,
+  isMicroBurstExitEngineState,
+  MicroBurstExitEngine,
+} from './MicroBurstExitPolicy';
 import { MicroBurstConfig, MicroBurstExitContext } from './MicroBurstTypes';
 import {
   ShadowManagementObservation,
@@ -23,6 +27,11 @@ export class MicroBurstShadowPolicyAdapter implements ShadowStrategyPolicy {
     if (previousTradeId && previousTradeId !== position.tradeId) {
       this.exitEngine.forget(previousTradeId);
     }
+    if (!previousTradeId) {
+      const persistedState = position.latestManagementDecision?.diagnostics?.exitEngineState;
+      if (isMicroBurstExitEngineState(persistedState))
+        this.exitEngine.restore(position.tradeId, persistedState);
+    }
     this.activeTradeBySymbol.set(position.symbol, position.tradeId);
     const context = observation.strategyContext as
       | {
@@ -40,7 +49,11 @@ export class MicroBurstShadowPolicyAdapter implements ShadowStrategyPolicy {
     if (stopTouched)
       return {
         action: 'CLOSE',
-        reason: position.stop === position.entryPrice ? 'BREAK_EVEN' : 'HARD_INVALIDATION',
+        reason: classifyMicroBurstStopExitReason(
+          position.stop as number,
+          position.entryPrice,
+          position.side,
+        ),
       };
     const decision = this.exitEngine.evaluate(
       position.tradeId,
@@ -54,7 +67,7 @@ export class MicroBurstShadowPolicyAdapter implements ShadowStrategyPolicy {
         entryPrice: position.entryPrice,
         peakPrice: position.peakPrice,
         troughPrice: position.troughPrice,
-        structuralInvalidationPrice: position.stop ?? 0,
+        structuralInvalidationPrice: position.initialStructuralStop ?? position.stop ?? 0,
         destinationPrice: position.destination ?? 0,
         currentStopPrice: position.stop ?? null,
         timeInTradeMs: Math.max(0, observation.receivedAtMs - position.openedReceivedAtMs),
@@ -69,15 +82,19 @@ export class MicroBurstShadowPolicyAdapter implements ShadowStrategyPolicy {
       this.config,
       position.side,
     );
+    const diagnostics = {
+      ...decision.diagnostics,
+      exitEngineState: this.exitEngine.getState(position.tradeId),
+    };
     if (decision.action === 'MOVE_STOP' && decision.requestedStopPrice !== undefined)
       return {
         action: 'MOVE_STOP',
         stop: decision.requestedStopPrice,
         reason: decision.reason,
-        diagnostics: decision.diagnostics,
+        diagnostics,
       };
     if (decision.action === 'CLOSE_MARKET')
-      return { action: 'CLOSE', reason: decision.reason, diagnostics: decision.diagnostics };
-    return { action: 'HOLD', reason: decision.reason, diagnostics: decision.diagnostics };
+      return { action: 'CLOSE', reason: decision.reason, diagnostics };
+    return { action: 'HOLD', reason: decision.reason, diagnostics };
   }
 }

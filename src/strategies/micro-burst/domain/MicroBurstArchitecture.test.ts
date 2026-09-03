@@ -19,9 +19,9 @@ function getDomainProductionFiles(): string[] {
 }
 
 describe('Micro Burst architecture boundaries', () => {
-  it('enables SHADOW and explicit LIVE authority', () => {
+  it('enables SHADOW and denies LIVE authority for the unfrozen candidate', () => {
     expect(MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED).toBe(true);
-    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
+    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(false);
   });
 
   it('disables legacy ProfitGuardian, break-even and trailing lifecycle mechanics', () => {
@@ -41,6 +41,7 @@ describe('Micro Burst architecture boundaries', () => {
     const activeExitSource = [
       'MicroBurstTypes.ts',
       'MicroBurstExitPolicy.ts',
+      'MicroBurstExitIntelligence.ts',
       '../research/MicroBurstPaperTrading.ts',
     ]
       .map((name) => readFileSync(resolve(strategyDir, name), 'utf8'))

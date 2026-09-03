@@ -1363,7 +1363,7 @@ describe('TradingService Aegis live execution', () => {
     expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(0);
   });
 
-  it('quarantines Micro Burst after a close without verified realized PnL', async () => {
+  it('quarantines an unverified close and denies new LIVE entry for the shadow candidate', async () => {
     const microBurst = {
       enabled: true,
       mode: 'LIVE',
@@ -1418,17 +1418,11 @@ describe('TradingService Aegis live execution', () => {
       expect.objectContaining({ tradeId: 'MICRO-BURST-V1-QUARANTINE' }),
     );
 
-    const approvedCommit = 'a'.repeat(40);
-    (service as any).microBurstIdentity.codeCommitSha = approvedCommit;
-    (service as any).runtimeConfig.getMicroBurstProvenance = () => ({
-      codeCommitSha: approvedCommit,
-      configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
-    });
     const opened = await (service as any).openMicroBurstLivePosition({
       symbol: 'ETHUSDT',
       side: 'LONG',
       signalId: 'signal-after-unverified-close',
-      strategyVersion: '0.7.0-intelligent-exit',
+      strategyVersion: '0.8.0-expected-continuation-shadow',
       requestedAt: Date.now(),
       leverage: 20,
       positionFraction: 0.01,
@@ -1439,9 +1433,9 @@ describe('TradingService Aegis live execution', () => {
 
     expect(opened).toBe(false);
     expect(exchange.hasOpenPosition).not.toHaveBeenCalled();
-    expect(logger.error).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledWith(
       'micro_burst_live_entry_denied',
-      expect.objectContaining({ reason: 'PREVIOUS_CLOSE_PNL_UNVERIFIED' }),
+      expect.objectContaining({ reason: 'LIVE_AUTHORITY_NOT_ENABLED' }),
     );
   });
 

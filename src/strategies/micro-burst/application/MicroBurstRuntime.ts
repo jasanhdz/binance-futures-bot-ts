@@ -275,7 +275,10 @@ export class MicroBurstRuntime {
         'logs/micro-burst/shadow/trades',
         'logs/micro-burst/shadow/trade-events',
       );
-    const microBurstConfig: MicroBurstConfig = defaultMicroBurstConfig();
+    const microBurstConfig: MicroBurstConfig = {
+      ...defaultMicroBurstConfig(),
+      ...config.exitPolicy,
+    };
     const costScenarios = new Map([
       [
         'MICRO_BURST_V1' as const,
@@ -952,6 +955,9 @@ export class MicroBurstRuntime {
   private managePaperTrade(symbol: string, event: AggTradeEvent): void {
     if (!this.paperOpenSymbols.has(symbol)) return;
     const state = this.symbolStates.get(symbol);
+    const openPosition = this.shadowEngine
+      .getOpenPositions()
+      .find((position) => position.strategyId === 'MICRO_BURST_V1' && position.symbol === symbol);
     const snapshot = state?.book.getSnapshot();
     const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
     const currentBookPressure = snapshot
@@ -968,7 +974,9 @@ export class MicroBurstRuntime {
         strategyContext: {
           currentBookPressure,
           currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
-          marketEvidence: state ? buildExitMarketEvidence(state.aggTradeBuffer) : null,
+          marketEvidence: state
+            ? buildExitMarketEvidence(state.aggTradeBuffer, openPosition?.openedAtMs)
+            : null,
           anomalyExitFlag: false,
         },
       },

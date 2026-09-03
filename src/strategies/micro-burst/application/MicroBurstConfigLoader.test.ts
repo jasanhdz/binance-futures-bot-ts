@@ -45,6 +45,28 @@ describe('MicroBurstConfigLoader', () => {
     expect(config.symbols.BTCUSDT.enabled).toBe(true);
   });
 
+  it('parses deterministic exit-policy overrides and ignores invalid values', () => {
+    const config = parseMicroBurstConfig({
+      micro_burst: {
+        enabled: true,
+        mode: 'SHADOW',
+        exit_policy: {
+          exit_estimated_round_trip_cost_bps: 16,
+          exit_winner_exit_pressure_threshold: 0.8,
+          exit_proof_extension_ms: 45_000,
+          exit_max_hold_ms: Number.NaN,
+          unknown_field: 123,
+        },
+      },
+    });
+
+    expect(config.exitPolicy).toEqual({
+      exitEstimatedRoundTripCostBps: 16,
+      exitWinnerExitPressureThreshold: 0.8,
+      exitProofExtensionMs: 45_000,
+    });
+  });
+
   it('defaults mode to OFF for unknown values', () => {
     const config = parseMicroBurstConfig({
       micro_burst: { enabled: true, mode: 'INVALID' },
@@ -72,12 +94,14 @@ describe('MicroBurstConfigLoader', () => {
       enabled: true,
       mode: 'SHADOW',
       symbols: { ETHUSDT: { enabled: true } },
+      exitPolicy: { exitProofExtensionMs: 20_000 },
     });
 
     expect(merged.enabled).toBe(true);
     expect(merged.mode).toBe('SHADOW');
     expect(merged.symbols.BTCUSDT.enabled).toBe(true);
     expect(merged.symbols.ETHUSDT.enabled).toBe(true);
+    expect(merged.exitPolicy?.exitProofExtensionMs).toBe(20_000);
   });
 
   it('isMicroBurstShadowMode returns true only when enabled+SHADOW', () => {

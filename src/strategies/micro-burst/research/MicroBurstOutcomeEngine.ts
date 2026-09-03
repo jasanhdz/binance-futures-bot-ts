@@ -23,7 +23,10 @@ import {
   MicroBurstExitDecision,
   defaultMicroBurstConfig,
 } from '../domain/MicroBurstTypes';
-import { MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
+import {
+  classifyMicroBurstStopExitReason,
+  MicroBurstExitEngine,
+} from '../domain/MicroBurstExitPolicy';
 
 // ── Constants ──────────────────────────────────────────────
 
@@ -380,10 +383,7 @@ export function simulateDynamicExit(
     const decision: MicroBurstExitDecision = stopTouched
       ? {
           action: 'CLOSE_MARKET' as const,
-          reason:
-            currentStopPrice === entryPrice
-              ? ('BREAK_EVEN' as const)
-              : ('HARD_INVALIDATION' as const),
+          reason: classifyMicroBurstStopExitReason(currentStopPrice, entryPrice, side),
           diagnostics: {},
         }
       : exitEngine.evaluate(

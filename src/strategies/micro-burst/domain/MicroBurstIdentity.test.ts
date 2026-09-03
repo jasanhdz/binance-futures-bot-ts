@@ -1,93 +1,35 @@
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import { hasLiveAuthority } from '../../../core/strategy/StrategyIdentity';
-import { parseMicroBurstConfig } from '../application/MicroBurstConfigLoader';
 import {
   createMicroBurstV1Identity,
   hasMicroBurstV1LiveAuthority,
-  MICRO_BURST_V1_APPROVED_COMMIT,
   MICRO_BURST_V1_CONFIG_SHA256,
+  MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
   MICRO_BURST_V1_STRATEGY_SHA256,
+  MICRO_BURST_V1_VERSION,
 } from './MicroBurstIdentity';
 
-interface FreezeManifest {
-  freezeState: string;
-  approvedCommit: string;
-  strategySha256: string;
-  configFile: string;
-  configFileSha256: string;
-  effectiveConfigSha256: string;
-  componentFiles: Record<string, string>;
-}
-
-const repoRoot = resolve(__dirname, '../../../..');
-const sha256 = (path: string): string =>
-  createHash('sha256')
-    .update(readFileSync(resolve(repoRoot, path)))
-    .digest('hex');
-const stable = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, child]) => `${JSON.stringify(key)}:${stable(child)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-};
-
-describe('Micro Burst LIVE freeze identity', () => {
-  it('binds LIVE authority to the approved code and configuration manifest', () => {
-    const manifest = JSON.parse(
-      readFileSync(resolve(repoRoot, 'config/micro-burst-live-freeze-v0.7.0.json'), 'utf8'),
-    ) as FreezeManifest;
-    const componentDigestInput = Object.entries(manifest.componentFiles)
-      .map(([path, expected]) => {
-        expect(sha256(path), path).toBe(expected);
-        return `${expected}  ${path}\n`;
-      })
-      .join('');
-    const strategyHash = createHash('sha256').update(componentDigestInput).digest('hex');
-
-    expect(manifest.freezeState).toBe('FROZEN_LIVE');
-    expect(manifest.approvedCommit).toBe(MICRO_BURST_V1_APPROVED_COMMIT);
-    expect(manifest.approvedCommit).toMatch(/^[a-f0-9]{40}$/);
-    expect(strategyHash).toBe(manifest.strategySha256);
-    expect(sha256(manifest.configFile)).toBe(manifest.configFileSha256);
-    const yaml = load(readFileSync(resolve(repoRoot, manifest.configFile), 'utf8')) as {
-      micro_burst?: unknown;
-    };
-    const effectiveConfigHash = createHash('sha256')
-      .update(stable(parseMicroBurstConfig({ micro_burst: yaml.micro_burst })))
-      .digest('hex');
-    expect(effectiveConfigHash).toBe(manifest.effectiveConfigSha256);
-    expect(MICRO_BURST_V1_STRATEGY_SHA256).toBe(manifest.strategySha256);
-    expect(MICRO_BURST_V1_CONFIG_SHA256).toBe(manifest.effectiveConfigSha256);
-    expect(hasLiveAuthority(createMicroBurstV1Identity(), 'LIVE')).toBe(true);
+describe('Micro Burst Expected Continuation candidate identity', () => {
+  it('is explicitly unfrozen and SHADOW-only until black-box validation', () => {
+    const identity = createMicroBurstV1Identity();
+    expect(identity).toMatchObject({
+      strategyVersion: '0.8.0-expected-continuation-shadow',
+      freezeState: 'SHADOW_CANDIDATE',
+      codeCommitSha: 'PENDING_BLACK_BOX_VALIDATION',
+    });
+    expect(identity.strategyHash).toBeUndefined();
+    expect(identity.configHash).toBeUndefined();
+    expect(MICRO_BURST_V1_VERSION).toBe(identity.strategyVersion);
+    expect(MICRO_BURST_V1_STRATEGY_SHA256).toBe('UNFROZEN');
+    expect(MICRO_BURST_V1_CONFIG_SHA256).toBe('UNFROZEN');
+    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(false);
+    expect(hasLiveAuthority(identity, 'LIVE')).toBe(false);
   });
 
-  it('denies LIVE authority unless deployed commit and effective config match exactly', () => {
-    const approvedCommit = 'a'.repeat(40);
-    const identity = createMicroBurstV1Identity(approvedCommit);
-
-    expect(
-      hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, approvedCommit),
-    ).toBe(true);
-    expect(
-      hasMicroBurstV1LiveAuthority(identity, 'b'.repeat(64), approvedCommit),
-    ).toBe(false);
-    expect(
-      hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, 'b'.repeat(40)),
-    ).toBe(false);
-    expect(
-      hasMicroBurstV1LiveAuthority(
-        createMicroBurstV1Identity('PENDING_FREEZE_COMMIT'),
-        MICRO_BURST_V1_CONFIG_SHA256,
-        'PENDING_FREEZE_COMMIT',
-      ),
-    ).toBe(false);
+  it('denies LIVE even when callers supply plausible commit and config hashes', () => {
+    const commit = 'a'.repeat(40);
+    const identity = createMicroBurstV1Identity(commit);
+    expect(hasMicroBurstV1LiveAuthority(identity, 'b'.repeat(64), commit)).toBe(false);
+    expect(hasMicroBurstV1LiveAuthority(identity, 'c'.repeat(64), 'd'.repeat(40))).toBe(false);
   });
 });

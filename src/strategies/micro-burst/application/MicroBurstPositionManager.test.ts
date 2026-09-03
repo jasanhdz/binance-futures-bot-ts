@@ -111,7 +111,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
         troughPrice: 100,
         structuralInvalidationPrice: 99,
         destinationPrice: 102,
-        currentStopPrice: 100,
+        currentStopPrice: 100.16,
         timeInTradeMs: observedAtMs,
         observedAtMs,
         currentBookPressure: {
@@ -161,7 +161,12 @@ describe('MicroBurstPositionManager correctness boundary', () => {
   it('applies a confirmed LIVE close through the injected execution boundary', async () => {
     const close = vi.fn(async () => true);
     const moveStop = vi.fn(async () => true);
-    const manager = new MicroBurstPositionManager(lifecycle(), undefined, { close, moveStop });
+    const manager = new MicroBurstPositionManager(
+      lifecycle(),
+      undefined,
+      { close, moveStop },
+      true,
+    );
     const context = {
       ...managementContext(),
       strategyMode: 'LIVE' as const,
@@ -184,10 +189,15 @@ describe('MicroBurstPositionManager correctness boundary', () => {
     expect(moveStop).not.toHaveBeenCalled();
   });
 
-  it('applies break-even through the LIVE execution boundary without trailing', async () => {
+  it('applies the cost-aware profit lock through the LIVE boundary without trailing', async () => {
     const close = vi.fn(async () => true);
     const moveStop = vi.fn(async () => true);
-    const manager = new MicroBurstPositionManager(lifecycle(), undefined, { close, moveStop });
+    const manager = new MicroBurstPositionManager(
+      lifecycle(),
+      undefined,
+      { close, moveStop },
+      true,
+    );
     const context = {
       ...managementContext({
         currentPrice: 100.9,
@@ -205,14 +215,38 @@ describe('MicroBurstPositionManager correctness boundary', () => {
 
     expect(result).toMatchObject({
       decision: 'MOVE_STOP',
-      reason: 'BREAK_EVEN',
+      reason: 'PROFIT_LOCK',
       diagnostics: { actionApplied: true, authorityReason: 'MICRO_BURST_V1_LIVE' },
     });
-    expect(moveStop).toHaveBeenCalledWith(
-      context,
-      expect.objectContaining({ requestedStopPrice: 100 }),
-    );
+    expect(moveStop).toHaveBeenCalledOnce();
+    const moveStopCall = (moveStop as any).mock.calls[0];
+    expect(moveStopCall[0]).toBe(context);
+    expect(moveStopCall[1].requestedStopPrice).toBeCloseTo(100.16, 10);
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it('returns the LIVE decision but does not mutate when candidate authority is disabled', async () => {
+    const close = vi.fn(async () => true);
+    const moveStop = vi.fn(async () => true);
+    const manager = new MicroBurstPositionManager(lifecycle(), undefined, { close, moveStop });
+    const context = {
+      ...managementContext(),
+      strategyMode: 'LIVE' as const,
+      symbolState: {
+        set: vi.fn(),
+      } as unknown as MicroBurstPositionManagementContext['symbolState'],
+    };
+
+    expect(await manager.manage(createMicroBurstV1Identity(), context)).toMatchObject({
+      decision: 'CLOSE_MARKET',
+      reason: 'TARGET',
+      diagnostics: {
+        actionApplied: false,
+        authorityReason: 'LIVE_AUTHORITY_DISABLED_OR_EXECUTION_PORT_MISSING',
+      },
+    });
+    expect(close).not.toHaveBeenCalled();
+    expect(moveStop).not.toHaveBeenCalled();
   });
 
   it('restores valid persisted hysteresis and ignores malformed state', async () => {
@@ -224,7 +258,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       troughPrice: 100,
       structuralInvalidationPrice: 99,
       destinationPrice: 102,
-      currentStopPrice: 100,
+      currentStopPrice: 100.16,
       timeInTradeMs: 20_000,
       observedAtMs: 20_000,
       currentBookPressure: {

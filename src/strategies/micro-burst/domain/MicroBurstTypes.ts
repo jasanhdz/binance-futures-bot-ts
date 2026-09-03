@@ -26,6 +26,7 @@ export type MicroBurstExitReason =
   | 'EARLY_FAILURE'
   | 'TARGET'
   | 'INTELLIGENT_EXIT'
+  | 'PROFIT_LOCK'
   | 'BREAK_EVEN'
   | 'MAX_HOLD'
   | 'HOLD';
@@ -304,8 +305,20 @@ export interface MicroBurstConfig {
   };
   exitProofWindowMs: number;
   exitMinProofExcursionBps: number;
+  /** One bounded grace period when independent sources still support continuation. */
+  exitProofExtensionMs: number;
   exitImmediateAdverseBps: number;
+  /** Fraction of entry-to-structural-stop risk used by the adaptive early-failure floor. */
+  exitImmediateAdverseRiskFraction: number;
+  /** Upper bound for the adaptive early-failure threshold. */
+  exitImmediateAdverseMaxBps: number;
   exitMaxHoldMs: number;
+  /** One bounded extension for profitable trades with strong continuation. */
+  exitMaxHoldExtensionMs: number;
+  /** Gross price-return cost estimate used only for exit utility/protection. */
+  exitEstimatedRoundTripCostBps: number;
+  /** Additional bps protected above estimated costs. */
+  exitCostCoverBufferBps: number;
   exitBreakEvenActivationBps: number;
   /** Minimum age before the evidence-based exit may arm. */
   exitIntelligenceMinHoldMs: number;
@@ -315,12 +328,22 @@ export interface MicroBurstConfig {
   exitIntelligenceMaxObservationGapMs: number;
   exitIntelligenceMinEvidenceFamilies: number;
   exitIntelligenceScoreThreshold: number;
+  /** Minimum normalized continuation support required for a bounded time extension. */
+  exitContinuationSupportThreshold: number;
+  /** Minimum normalized adverse pressure required to arm an intelligent exit. */
+  exitIntelligenceExitPressureThreshold: number;
+  /** Profitable trades require stronger pressure before an intelligent exit can arm. */
+  exitWinnerExitPressureThreshold: number;
   exitMomentumReversalBps: number;
   exitFlowReversalRatio: number;
   exitFlowMinTrades: number;
   exitBookReversalImbalance: number;
   exitBookReversalSlope: number;
   exitStructuralExhaustionProgress: number;
+  /** Fraction of the entry-to-destination path protected at the structural milestone. */
+  exitStructuralLockProgress: number;
+  /** Minimum current-price distance required before requesting a protective stop. */
+  exitProtectionMinDistanceBps: number;
   maxLeverageHardCap: number;
 }
 
@@ -351,20 +374,31 @@ export function defaultMicroBurstConfig(): MicroBurstConfig {
     },
     exitProofWindowMs: 60_000,
     exitMinProofExcursionBps: 5,
+    exitProofExtensionMs: 30_000,
     exitImmediateAdverseBps: 10,
+    exitImmediateAdverseRiskFraction: 0.5,
+    exitImmediateAdverseMaxBps: 18,
     exitMaxHoldMs: 300_000,
-    exitBreakEvenActivationBps: 10,
+    exitMaxHoldExtensionMs: 60_000,
+    exitEstimatedRoundTripCostBps: 14,
+    exitCostCoverBufferBps: 2,
+    exitBreakEvenActivationBps: 24,
     exitIntelligenceMinHoldMs: 15_000,
     exitIntelligenceConfirmationMs: 3_000,
     exitIntelligenceMaxObservationGapMs: 15_000,
     exitIntelligenceMinEvidenceFamilies: 2,
     exitIntelligenceScoreThreshold: 3,
+    exitContinuationSupportThreshold: 0.6,
+    exitIntelligenceExitPressureThreshold: 0.6,
+    exitWinnerExitPressureThreshold: 0.72,
     exitMomentumReversalBps: 1,
     exitFlowReversalRatio: 0.15,
     exitFlowMinTrades: 20,
     exitBookReversalImbalance: 0.15,
     exitBookReversalSlope: 0.05,
     exitStructuralExhaustionProgress: 0.75,
+    exitStructuralLockProgress: 0.35,
+    exitProtectionMinDistanceBps: 2,
     maxLeverageHardCap: 50,
   };
 }

@@ -77,6 +77,8 @@ export interface ShadowPosition {
   readonly entryDecisionPrice: number;
   readonly entryExecutablePrice: number;
   readonly entryPrice: number;
+  /** Immutable entry invalidation; `stop` may later become a profit lock. */
+  readonly initialStructuralStop?: number;
   readonly stop?: number;
   readonly destination?: number;
   readonly leverage?: number;
@@ -95,6 +97,13 @@ export interface ShadowPosition {
   readonly netBpsByCostScenario?: Record<string, number>;
   readonly provenance: ShadowProvenance;
   readonly diagnostics?: Record<string, unknown>;
+  /** Latest policy assessment persisted for deterministic black-box attribution. */
+  readonly latestManagementDecision?: {
+    readonly action: ShadowPolicyDecision['action'];
+    readonly reason?: string;
+    readonly observedAtMs: number;
+    readonly diagnostics?: Record<string, unknown>;
+  };
 }
 
 export interface ShadowTradeEvent {

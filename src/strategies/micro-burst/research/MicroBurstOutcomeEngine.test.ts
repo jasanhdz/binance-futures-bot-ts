@@ -419,7 +419,7 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
     expect(result?.counterfactualExitReason).toBe('TARGET');
   });
 
-  it('closes a LONG on a later break-even touch and ignores later prices', () => {
+  it('closes a LONG on a later cost-aware profit-lock touch and ignores later prices', () => {
     const config = {
       ...defaultMicroBurstConfig(),
       exitBreakEvenActivationBps: 10,
@@ -428,17 +428,17 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
       makeSignal(),
       79000,
       [
-        { eventTime: 1_001_000, price: 79100 },
-        { eventTime: 1_002_000, price: 79000 },
+        { eventTime: 1_001_000, price: 79200 },
+        { eventTime: 1_002_000, price: 79120 },
         { eventTime: 1_003_000, price: 80000 },
       ],
       config,
     );
-    expect(result?.counterfactualExitReason).toBe('BREAK_EVEN');
-    expect(result?.counterfactualExitPrice).toBe(79000);
+    expect(result?.counterfactualExitReason).toBe('PROFIT_LOCK');
+    expect(result?.counterfactualExitPrice).toBe(79120);
   });
 
-  it('closes a SHORT on a later break-even touch', () => {
+  it('closes a SHORT on a later cost-aware profit-lock touch', () => {
     const config = {
       ...defaultMicroBurstConfig(),
       exitBreakEvenActivationBps: 10,
@@ -447,12 +447,12 @@ describe('MicroBurstOutcomeEngine dynamic exit simulation', () => {
       makeShortSignal(),
       79000,
       [
-        { eventTime: 1_001_000, price: 78900 },
-        { eventTime: 1_002_000, price: 79000 },
+        { eventTime: 1_001_000, price: 78800 },
+        { eventTime: 1_002_000, price: 78900 },
       ],
       config,
     );
-    expect(result?.counterfactualExitReason).toBe('BREAK_EVEN');
+    expect(result?.counterfactualExitReason).toBe('PROFIT_LOCK');
   });
 });
 

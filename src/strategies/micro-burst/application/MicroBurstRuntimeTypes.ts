@@ -1,3 +1,5 @@
+import type { MicroBurstConfig } from '../domain/MicroBurstTypes';
+
 export interface MicroBurstSymbolConfig {
   enabled: boolean;
   btcConflictThresholdBps?: number;
@@ -9,6 +11,8 @@ export interface MicroBurstRuntimeConfig {
   enabled: boolean;
   mode: 'OFF' | 'SHADOW' | 'LIVE';
   symbols: Record<string, MicroBurstSymbolConfig>;
+  /** Shared domain-policy overrides used by entry, SHADOW, replay and LIVE management. */
+  exitPolicy?: Partial<MicroBurstConfig>;
   prospectiveValidation?: {
     enabled: boolean;
     cohortId?: string;

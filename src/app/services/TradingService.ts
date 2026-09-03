@@ -90,7 +90,10 @@ import {
   hasMicroBurstV1LiveAuthority,
 } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 import type { MicroBurstRuntimeReadiness } from '../../strategies/micro-burst/application/MicroBurstRuntime';
-import type { MicroBurstLiveEntryRequest } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
+import type {
+  MicroBurstLiveEntryRequest,
+  MicroBurstRuntimeConfig,
+} from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import { createMicroBurstExecutionIntent } from '../../strategies/micro-burst/domain/MicroBurstExecutionIntentFactory';
 import {
   parseMicroBurstConfig,
@@ -430,7 +433,7 @@ export class TradingService {
     this.momentumStrategyRouter.register(
       new MomentumRideStrategy(this.momentumStrategyIdentity, momentumRuntimeMode),
     );
-    const mbConfig = this.runtimeConfig.getMicroBurstConfig();
+    const mbConfig = this.getMicroBurstCandidateConfig();
     this.microBurstStrategyRouter.register(
       new MicroBurstStrategy(
         this.microBurstIdentity,
@@ -439,6 +442,7 @@ export class TradingService {
           : isMicroBurstShadowMode(mbConfig)
             ? 'SHADOW'
             : 'OFF',
+        mbConfig.exitPolicy,
       ),
     );
     this.strategyRuntimeCoordinator = new StrategyRuntimeCoordinator({
@@ -613,7 +617,7 @@ export class TradingService {
       new MomentumRidePositionManager(this.positionLifecycleCore),
     );
     this.positionManagerRouter.register(
-      new MicroBurstPositionManager(this.positionLifecycleCore, undefined, {
+      new MicroBurstPositionManager(this.positionLifecycleCore, mbConfig.exitPolicy, {
         close: async (context, decision) => {
           const closeStartedAt = Date.now();
           const position = await this.deps.exchange.readActivePosition(
@@ -1171,7 +1175,7 @@ export class TradingService {
 
     this.isRunning = true;
 
-    const mbConfig = this.runtimeConfig.getMicroBurstConfig();
+    const mbConfig = this.getMicroBurstCandidateConfig();
     await this.strategyRuntimeCoordinator.start({
       symbols: startupSymbols,
       microBurstConfig: mbConfig,
@@ -1267,7 +1271,7 @@ export class TradingService {
   }
 
   private async openMicroBurstLivePosition(request: MicroBurstLiveEntryRequest): Promise<boolean> {
-    const config = this.runtimeConfig.getMicroBurstConfig();
+    const config = this.getMicroBurstCandidateConfig();
     const provenance = this.runtimeConfig.getMicroBurstProvenance(config);
     if (
       !config.enabled ||
@@ -1519,6 +1523,13 @@ export class TradingService {
       this.entryInFlightSymbols.delete(request.symbol);
       this.entryInFlight = false;
     }
+  }
+
+  private getMicroBurstCandidateConfig(): MicroBurstRuntimeConfig {
+    const configured = this.runtimeConfig.getMicroBurstConfig();
+    if (configured.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED !== true)
+      return { ...configured, mode: 'SHADOW' };
+    return configured;
   }
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {

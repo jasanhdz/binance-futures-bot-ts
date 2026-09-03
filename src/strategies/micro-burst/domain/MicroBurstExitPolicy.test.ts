@@ -121,11 +121,11 @@ describe.each([
     ).not.toBe('EARLY_FAILURE');
   });
 
-  it('fails immediately on adverse threshold breach', () => {
+  it('does not exit from historical MAE without current independent corroboration', () => {
     const context = proofContext(15_000);
     if (side === 'LONG') context.troughPrice = adversePrice;
     else context.peakPrice = adversePrice;
-    expect(evaluateMicroBurstExit(context, config, side).reason).toBe('EARLY_FAILURE');
+    expect(evaluateMicroBurstExit(context, config, side).reason).toBe('HOLD');
   });
 
   it('takes target during proof window', () => {
@@ -142,7 +142,7 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
       config,
       'LONG',
     );
-    expect(decision).toMatchObject({ action: 'MOVE_STOP', reason: 'BREAK_EVEN' });
+    expect(decision).toMatchObject({ action: 'MOVE_STOP', reason: 'PROFIT_LOCK' });
     expect(decision.diagnostics).not.toHaveProperty('callbackBps');
   });
 
@@ -158,23 +158,23 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
       config,
       'SHORT',
     );
-    expect(decision).toMatchObject({ action: 'MOVE_STOP', reason: 'BREAK_EVEN' });
+    expect(decision).toMatchObject({ action: 'MOVE_STOP', reason: 'PROFIT_LOCK' });
     expect(decision.diagnostics).not.toHaveProperty('callbackBps');
   });
 
-  it('does not repeat LONG break-even when current stop is entry or better', () => {
-    for (const currentStopPrice of [100, 100.2]) {
+  it('does not repeat LONG profit protection when current stop already covers costs', () => {
+    for (const currentStopPrice of [100.16, 100.2]) {
       const decision = evaluateMicroBurstExit(
         makeExitContext({ currentPrice: 100.12, peakPrice: 100.12, currentStopPrice }),
         config,
         'LONG',
       );
-      expect(decision.reason).not.toBe('BREAK_EVEN');
+      expect(decision.reason).not.toBe('PROFIT_LOCK');
     }
   });
 
-  it('does not repeat SHORT break-even when current stop is entry or better', () => {
-    for (const currentStopPrice of [100, 99.8]) {
+  it('does not repeat SHORT profit protection when current stop already covers costs', () => {
+    for (const currentStopPrice of [99.84, 99.8]) {
       const decision = evaluateMicroBurstExit(
         makeExitContext({
           currentPrice: 99.88,
@@ -186,7 +186,7 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
         config,
         'SHORT',
       );
-      expect(decision.reason).not.toBe('BREAK_EVEN');
+      expect(decision.reason).not.toBe('PROFIT_LOCK');
     }
   });
 
@@ -204,14 +204,14 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
       'ANOMALY',
     ],
     [
-      'BTC reversal beats target',
+      'target is not preempted by a BTC flag after price reaches destination',
       makeExitContext({
         currentPrice: 102,
         peakPrice: 102,
         currentBtcContext: makeBtcContext({ conflictFlag: true, direction: 'SHORT' }),
       }),
       'LONG',
-      'BTC_REVERSAL',
+      'TARGET',
     ],
     [
       'target beats intelligent evidence',
@@ -232,10 +232,10 @@ describe('MicroBurstExitPolicy profit protection and priority', () => {
       'EARLY_FAILURE',
     ],
     [
-      'break-even beats max hold once',
+      'sub-cost profit does not defer max hold',
       makeExitContext({ currentPrice: 100.12, peakPrice: 100.12, timeInTradeMs: 999_999 }),
       'LONG',
-      'BREAK_EVEN',
+      'MAX_HOLD',
     ],
   ] as const)('%s', (_name, context, side, reason) => {
     expect(evaluateMicroBurstExit(context, config, side).reason).toBe(reason);
