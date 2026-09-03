@@ -68,6 +68,8 @@ const mutationAuthorityAllowlist = new Set([
   'src/app/position/PositionProtectionService.ts',
   'src/infra/adapters/BinanceAdapter.ts',
   'src/infra/adapters/ReadOnlyAuditedExchange.ts',
+  // SUI SR Scout isolated runtime — fail-closed canary executor.
+  'src/scouts/sui-sr-scout/application/LiveCanaryExecutor.ts',
 ]);
 
 describe('Phase 0 architecture contracts', () => {
