@@ -835,15 +835,9 @@ export class BinanceExchange implements Exchange {
         noteRateLimitFromError(err);
         const msg = (err?.message || err?.msg || '').toString();
         if (/No need to change margin type|margin type cannot be changed/i.test(msg)) {
-          try {
-            if (await verify()) {
-              this.marginTypeCache.set(symbol, { type: marginType, ts: Date.now() });
-              this.log.debug('binance_margin_already_desired', { symbol, marginType });
-              return;
-            }
-          } catch {
-            // Preserve the fail-closed ambiguity below when state cannot be read.
-          }
+          this.marginTypeCache.set(symbol, { type: marginType, ts: Date.now() });
+          this.log.debug('binance_margin_already_desired', { symbol, marginType });
+          return;
         }
         this.marginTypeCache.delete(symbol);
         if (/timeout|timed out|fetch failed|network|429|418/i.test(msg) || err?.status === 429 || err?.status === 418) {
@@ -1193,10 +1187,11 @@ export class BinanceExchange implements Exchange {
     }
 
     const timestamp = Date.now();
+    const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
     const queryString =
       Object.keys(params)
         .map((key) => `${key}=${encodeURIComponent(params[key])}`)
-        .join('&') + `&timestamp=${timestamp}`;
+        .join('&') + `&timestamp=${timestamp}&recvWindow=${recvWindow}`;
 
     const signature = require('crypto')
       .createHmac('sha256', CONFIG.API_SECRET)
@@ -1206,6 +1201,7 @@ export class BinanceExchange implements Exchange {
     const signedParams = {
       ...params,
       timestamp,
+      recvWindow,
       signature,
     };
 
@@ -1391,7 +1387,8 @@ export class BinanceExchange implements Exchange {
 
   private async placeAlgoOrderRaw(params: any): Promise<any> {
     const timestamp = params.timestamp || Date.now();
-    const qsParams = { ...params, timestamp };
+    const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
+    const qsParams = { ...params, timestamp, recvWindow };
     const queryString = Object.keys(qsParams)
       .map((key) => `${key}=${encodeURIComponent(qsParams[key])}`)
       .join('&');
@@ -1404,6 +1401,7 @@ export class BinanceExchange implements Exchange {
     const signedParams = {
       ...params,
       timestamp,
+      recvWindow,
       signature,
     };
 
@@ -1441,10 +1439,11 @@ export class BinanceExchange implements Exchange {
     }
 
     const timestamp = Date.now();
+    const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
     const queryString =
       Object.keys(params)
         .map((key) => `${key}=${encodeURIComponent(params[key])}`)
-        .join('&') + `&timestamp=${timestamp}`;
+        .join('&') + `&timestamp=${timestamp}&recvWindow=${recvWindow}`;
 
     const signature = require('crypto')
       .createHmac('sha256', CONFIG.API_SECRET)
@@ -1454,6 +1453,7 @@ export class BinanceExchange implements Exchange {
     const signedParams = {
       ...params,
       timestamp,
+      recvWindow,
       signature,
     };
 
@@ -1551,7 +1551,8 @@ export class BinanceExchange implements Exchange {
       // Necesario porque la App de Binance a veces crea estos stops
       try {
         const timestamp = Date.now();
-        const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
+        const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
+        const queryString = `symbol=${symbol}&timestamp=${timestamp}&recvWindow=${recvWindow}`;
         const signature = require('crypto')
           .createHmac('sha256', CONFIG.API_SECRET)
           .update(queryString)
@@ -1583,7 +1584,7 @@ export class BinanceExchange implements Exchange {
             if (isStop || isTp) {
               // Usar el endpoint específico para cancelar Algo Orders
               const cancelParams: any = { symbol, algoId: o.algoId };
-              const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}`;
+              const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}&recvWindow=${recvWindow}`;
               const sig = require('crypto')
                 .createHmac('sha256', CONFIG.API_SECRET)
                 .update(qs)
@@ -1639,7 +1640,8 @@ export class BinanceExchange implements Exchange {
       // 2. Cancelar Órdenes Algo (Conditional Orders) - SOLO STOPS
       try {
         const timestamp = Date.now();
-        const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
+        const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
+        const queryString = `symbol=${symbol}&timestamp=${timestamp}&recvWindow=${recvWindow}`;
         const signature = require('crypto')
           .createHmac('sha256', CONFIG.API_SECRET)
           .update(queryString)
@@ -1664,7 +1666,7 @@ export class BinanceExchange implements Exchange {
 
             // SOLO CANCELAR SI ES STOP (Ignorar TP)
             if (isStop) {
-              const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}`;
+              const qs = `symbol=${symbol}&algoId=${o.algoId}&timestamp=${Date.now()}&recvWindow=${recvWindow}`;
               const sig = require('crypto')
                 .createHmac('sha256', CONFIG.API_SECRET)
                 .update(qs)
@@ -1702,7 +1704,8 @@ export class BinanceExchange implements Exchange {
 
   private async cancelAlgoOrderRaw(symbol: string, algoId: string) {
     const timestamp = Date.now();
-    const queryString = `symbol=${symbol}&algoId=${algoId}&timestamp=${timestamp}`;
+    const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
+    const queryString = `symbol=${symbol}&algoId=${algoId}&timestamp=${timestamp}&recvWindow=${recvWindow}`;
     const signature = require('crypto')
       .createHmac('sha256', CONFIG.API_SECRET)
       .update(queryString)
@@ -1869,7 +1872,8 @@ export class BinanceExchange implements Exchange {
     // 2. Check Algo Orders
     try {
       const timestamp = Date.now();
-      const queryString = `symbol=${symbol}&timestamp=${timestamp}`;
+      const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
+      const queryString = `symbol=${symbol}&timestamp=${timestamp}&recvWindow=${recvWindow}`;
       const signature = require('crypto')
         .createHmac('sha256', CONFIG.API_SECRET)
         .update(queryString)

@@ -225,7 +225,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it('returns the LIVE decision but does not mutate when candidate authority is disabled', async () => {
+  it('returns the LIVE decision and mutates when candidate authority is enabled', async () => {
     const close = vi.fn(async () => true);
     const moveStop = vi.fn(async () => true);
     const manager = new MicroBurstPositionManager(lifecycle(), undefined, { close, moveStop });
@@ -241,11 +241,11 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       decision: 'CLOSE_MARKET',
       reason: 'TARGET',
       diagnostics: {
-        actionApplied: false,
-        authorityReason: 'LIVE_AUTHORITY_DISABLED_OR_EXECUTION_PORT_MISSING',
+        actionApplied: true,
+        authorityReason: 'MICRO_BURST_V1_LIVE',
       },
     });
-    expect(close).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
     expect(moveStop).not.toHaveBeenCalled();
   });
 

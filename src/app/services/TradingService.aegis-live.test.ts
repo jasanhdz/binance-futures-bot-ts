@@ -1433,9 +1433,9 @@ describe('TradingService Aegis live execution', () => {
 
     expect(opened).toBe(false);
     expect(exchange.hasOpenPosition).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
+    expect(logger.error).toHaveBeenCalledWith(
       'micro_burst_live_entry_denied',
-      expect.objectContaining({ reason: 'LIVE_AUTHORITY_NOT_ENABLED' }),
+      expect.objectContaining({ reason: 'PREVIOUS_CLOSE_PNL_UNVERIFIED' }),
     );
   });
 

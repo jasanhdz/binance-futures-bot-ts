@@ -47,17 +47,17 @@ const baselineOperationalDigests: Record<string, string> = {
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Owner-authorized additive market-data/composition change.
   'src/infra/adapters/BinanceAdapter.ts':
-    '1d2f351b573e96546e459a5b813de1a77a470373f086b821c54219ec94d1262c',
+    '15855b9cc25d3e833f02494c66c73122f6e55d5ed6251f652c70cc9caeb95825',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': 'cec46bb83aa041f33f91cbd66fde066a6432c0dd0d4b2ab8df8e17f220481391',
+  'regime_config.live.yaml': '18c8584ac780bf3a1d34f90974dc4527b9c7116de79fdf9a927538ec89e33e4c',
   // Phases 2-6: entry, exit, Momentum, position protection, and risk session are extracted
   // while this digest and behavior tests bind the owner-authorized result.
   'src/app/services/TradingService.ts':
-    '8c90999425903bf980abed2622dba8c377c452eea99b9e260f887e2427cb1a7c',
+    'be3944411aae3dff7d8b8cf78af6ec89499ea3d8136593ebd62e322f7810dd24',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

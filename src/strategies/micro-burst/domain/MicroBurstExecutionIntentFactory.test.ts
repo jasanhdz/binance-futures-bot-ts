@@ -32,7 +32,7 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
       protection: {
         requireStop: true,
         requireTakeProfit: false,
-        closeIfProtectionFails: true,
+        closeIfProtectionFails: false,
       },
     });
     expect(first.stopRoe).toBeUndefined();

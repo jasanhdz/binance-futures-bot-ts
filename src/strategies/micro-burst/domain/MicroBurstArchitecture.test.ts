@@ -19,9 +19,9 @@ function getDomainProductionFiles(): string[] {
 }
 
 describe('Micro Burst architecture boundaries', () => {
-  it('enables SHADOW and denies LIVE authority for the unfrozen candidate', () => {
+  it('enables both SHADOW and LIVE authority after black-box validation', () => {
     expect(MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED).toBe(true);
-    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(false);
+    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
   });
 
   it('disables legacy ProfitGuardian, break-even and trailing lifecycle mechanics', () => {

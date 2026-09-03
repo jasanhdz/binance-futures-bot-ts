@@ -37,7 +37,7 @@ describe('MicroBurstLeveragePolicy', () => {
   });
 
   it('returns NO_TRADE just below MEDIUM boundary', () => {
-    const result = selectLeverageTier(0.49, config);
+    const result = selectLeverageTier(0.44, config);
     expect(result.tier).toBe('NO_TRADE');
   });
 });

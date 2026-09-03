@@ -369,8 +369,8 @@ export function defaultMicroBurstConfig(): MicroBurstConfig {
     bookFreshnessMaxMs: 30_000,
     btcFreshnessMaxMs: 60_000,
     leverageTiers: {
-      high: { minConfirmation: 0.75, leverage: 40, positionFraction: 0.09 },
-      medium: { minConfirmation: 0.5, leverage: 20, positionFraction: 0.05 },
+      high: { minConfirmation: 0.65, leverage: 40, positionFraction: 0.09 },
+      medium: { minConfirmation: 0.45, leverage: 20, positionFraction: 0.05 },
     },
     exitProofWindowMs: 60_000,
     exitMinProofExcursionBps: 5,

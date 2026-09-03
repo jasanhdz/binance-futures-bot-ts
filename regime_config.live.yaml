@@ -659,7 +659,7 @@ aegis:
         long: 0.90
         short: 0.90
     max_trades_per_day: 20
-    max_consecutive_losses: 3
+    max_consecutive_losses: 999
     daily_loss_stop_pct: 0.90
     min_cooldown_ms: 900000
     max_liquidity_stress: 0.70

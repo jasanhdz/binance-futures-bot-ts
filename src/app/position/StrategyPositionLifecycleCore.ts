@@ -298,7 +298,15 @@ export class StrategyPositionLifecycleCore {
         }
       } else {
         symbolState.set({ lastEntryQty: position.qtyAbs });
-        if (!botState.lastEntryAt) symbolState.set({ lastEntryAt: Date.now() });
+        if (!botState.lastEntryAt) {
+          symbolState.set({
+            lastEntryAt: Date.now(),
+            lastTrailStop: undefined,
+            lastBreakEvenStop: undefined,
+            lastStopPrice: undefined,
+            highestRatchetStop: undefined,
+          });
+        }
         if (requireBrackets) {
           try {
             const brackets = await this.ports.ensureBrackets(

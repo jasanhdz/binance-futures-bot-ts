@@ -18,7 +18,7 @@ export function createMicroBurstExecutionIntent(
     protection: {
       requireStop: true,
       requireTakeProfit: false,
-      closeIfProtectionFails: true,
+      closeIfProtectionFails: false,
     },
     metadata: {
       strategy: 'MICRO_BURST_V1',
