@@ -26,7 +26,8 @@
     "audit:long-risk-shadow": "ts-node scripts/aegis/audit_long_risk_shadow.ts",
     "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts",
     "micro-burst:analyze-shadow": "ts-node scripts/micro-burst-analyze-shadow.ts",
-    "micro-burst:analyze-generic-shadow": "ts-node scripts/micro-burst-analyze-generic-shadow.ts"
+    "micro-burst:analyze-generic-shadow": "ts-node scripts/micro-burst-analyze-generic-shadow.ts",
+    "sui-sr-scout:live": "SUI_SR_SCOUT_ENABLED=1 SUI_SR_SCOUT_EXECUTION_MODE=LIVE_CANARY SUI_SR_SCOUT_LIVE_ENABLED=1 SUI_SR_SCOUT_SYMBOL=SUIUSDT SUI_SR_SCOUT_CONTEXT_SYMBOL=BTCUSDT SUI_SR_SCOUT_MAX_OPEN_POSITIONS=1 SUI_SR_SCOUT_MAX_LEVERAGE=40 SUI_SR_SCOUT_MAX_RISK_PER_TRADE_BPS=50 SUI_SR_SCOUT_MAX_DAILY_LOSS_BPS=150 SUI_SR_SCOUT_COOLDOWN_AFTER_STOP_MS=10800000 SUI_SR_SCOUT_CANARY_MARGIN_FRACTION=0.9 SUI_SR_SCOUT_KILL_SWITCH=0 ts-node src/scouts/sui-sr-scout/main.ts"
   },
   "dependencies": {
     "axios": "^1.20.0",
