@@ -549,6 +549,8 @@ describe('SUI SR Scout — Live canary executor', () => {
     const mockPort: OrderPort = {
       marketOpen: vi.fn(),
       placeStopClose: vi.fn(),
+      placeTpClose: vi.fn(),
+      cancelCloseOrdersForSide: vi.fn(),
       cancelOrderById: vi.fn(),
       closeSideMarketSafe: vi.fn(),
       hasOpenPosition: vi.fn(),
@@ -586,6 +588,8 @@ describe('SUI SR Scout — Live canary executor', () => {
     const mockPort: OrderPort = {
       marketOpen: vi.fn(),
       placeStopClose: vi.fn(),
+      placeTpClose: vi.fn(),
+      cancelCloseOrdersForSide: vi.fn(),
       cancelOrderById: vi.fn(),
       closeSideMarketSafe: vi.fn(),
       hasOpenPosition: vi.fn(),

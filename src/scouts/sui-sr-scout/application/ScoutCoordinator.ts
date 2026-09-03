@@ -266,7 +266,32 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
       // Observation is intentionally incapable of reaching the order port.
       if (config.executionMode === 'OBSERVE') return;
       executor
-        .execute(finalDecision, candidate, featureVector, config)
+        .execute(finalDecision, candidate, featureVector, config, {
+          decisionId,
+          feedHealthy,
+          opposingZone: activeZones
+            .filter(
+              (zone) =>
+                !zone.broken &&
+                ((finalDecision === 'ALLOW_REJECTION_LONG' &&
+                  zone.side === 'RESISTANCE' &&
+                  zone.low > candidate.priceAtEvent) ||
+                  (finalDecision === 'ALLOW_REJECTION_SHORT' &&
+                    zone.side === 'SUPPORT' &&
+                    zone.high < candidate.priceAtEvent)),
+            )
+            .sort(
+              (a, b) =>
+                Math.min(
+                  Math.abs(a.low - candidate.priceAtEvent),
+                  Math.abs(a.high - candidate.priceAtEvent),
+                ) -
+                Math.min(
+                  Math.abs(b.low - candidate.priceAtEvent),
+                  Math.abs(b.high - candidate.priceAtEvent),
+                ),
+            )[0],
+        })
         .then((orderResult) => {
           if (orderResult) {
             openPositionCount++;

@@ -14,8 +14,34 @@ SUI_SR_SCOUT_KILL_SWITCH=1 \
 ts-node src/scouts/sui-sr-scout/main.ts
 ```
 
-The entrypoint rejects `LIVE_CANARY` in this phase. It supplies no order port
-to the coordinator, and observation decisions never invoke the executor.
+Observation mode supplies no order port to the coordinator, and observation
+decisions never invoke the executor.
+
+## Live canary (explicit opt-in)
+
+`LIVE_CANARY` remains disabled by default. It is the only mode that receives
+the narrow SUI order port; BTC is always context-only and cannot be ordered.
+Do not run this command until an owner explicitly authorizes a real canary:
+
+```bash
+SUI_SR_SCOUT_EXECUTION_MODE=LIVE_CANARY \
+SUI_SR_SCOUT_LIVE_ENABLED=1 \
+SUI_SR_SCOUT_SYMBOL=SUIUSDT \
+SUI_SR_SCOUT_CONTEXT_SYMBOL=BTCUSDT \
+SUI_SR_SCOUT_MAX_OPEN_POSITIONS=1 \
+SUI_SR_SCOUT_MAX_LEVERAGE=10 \
+SUI_SR_SCOUT_MAX_RISK_PER_TRADE_BPS=50 \
+SUI_SR_SCOUT_MAX_DAILY_LOSS_BPS=150 \
+SUI_SR_SCOUT_COOLDOWN_AFTER_STOP_MS=10800000 \
+SUI_SR_SCOUT_KILL_SWITCH=0 \
+ts-node src/scouts/sui-sr-scout/main.ts
+```
+
+The runner rejects missing mandatory limits. It sizes from fixed available
+margin and the S/R-derived stop, requires a structural target net of at least
+1.5R after configured costs, confirms a reduce-only stop before take profit,
+and emergency-closes plus locks further entries on protection failure. The
+default time stop is 15 minutes.
 
 ## Market readiness
 

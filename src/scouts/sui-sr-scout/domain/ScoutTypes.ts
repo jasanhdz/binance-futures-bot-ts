@@ -169,6 +169,14 @@ export interface SuiSrScoutConfig {
   readonly breakConfirmationCandles: number;
   readonly btcAggressiveThreshold: number;
   readonly killSwitch: boolean;
+  /** Portion of available USDT that may be committed as isolated initial margin. */
+  readonly canaryMarginFraction?: number;
+  /** Distance beyond the structural zone used for the protective stop. */
+  readonly structuralStopBufferBps?: number;
+  /** Conservative per-fill fee and slippage estimate used in net-R validation. */
+  readonly feeSlippageBps?: number;
+  /** Maximum lifetime for a canary position; enforcement is owned by the caller. */
+  readonly canaryTimeStopMs?: number;
 }
 
 // ── Health ────────────────────────────────────────────────────────

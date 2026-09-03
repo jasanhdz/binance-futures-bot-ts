@@ -42,12 +42,7 @@ async function main(): Promise<void> {
     maxQuoteNotional: config.maxQuoteNotional,
   });
 
-  if (config.executionMode !== 'OBSERVE' || config.liveEnabled) {
-    throw new Error('This Scout phase is observation-only; LIVE_CANARY is intentionally disabled');
-  }
-
-  const orderPort: OrderPort | null = null;
-  const executor = createLiveCanaryExecutor(consoleLogger, orderPort);
+  const isLiveCanary = config.executionMode === 'LIVE_CANARY' && config.liveEnabled;
   const journal = createAsyncEvidenceJournal(consoleLogger);
   const model = createRuleBaselineModel();
 
@@ -59,9 +54,10 @@ async function main(): Promise<void> {
     breakConfirmationCandles: config.breakConfirmationCandles,
   });
 
-  // BinanceExchange is used only through its public market-data and read-only account ports.
-  // No TradingService, legacy strategy, or order mutation capability is passed to the coordinator.
+  // This is the only process that can receive the narrow canary order port.
+  // No TradingService, legacy strategy, or broader exchange capability is passed to the coordinator.
   const exchange = new BinanceExchange(consoleLogger);
+  const executor = createLiveCanaryExecutor(consoleLogger, isLiveCanary ? exchange : null);
   const marketData = createScoutMarketDataRuntime(
     config,
     consoleLogger,

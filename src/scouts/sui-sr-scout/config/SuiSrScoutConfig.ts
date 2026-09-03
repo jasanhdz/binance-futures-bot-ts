@@ -25,7 +25,6 @@ function envExecutionMode(key: string, fallback: ExecutionMode): ExecutionMode {
 }
 
 const REQUIRED_LIVE_KEYS = [
-  'SUI_SR_SCOUT_MAX_QUOTE_NOTIONAL',
   'SUI_SR_SCOUT_MAX_LEVERAGE',
   'SUI_SR_SCOUT_MAX_RISK_PER_TRADE_BPS',
   'SUI_SR_SCOUT_MAX_DAILY_LOSS_BPS',
@@ -78,6 +77,10 @@ export function loadSuiSrScoutConfig(): SuiSrScoutConfig {
     breakConfirmationCandles: envNum('SUI_SR_SCOUT_BREAK_CONFIRM_CANDLES', 2),
     btcAggressiveThreshold: envNum('SUI_SR_SCOUT_BTC_AGGRESSIVE_THRESHOLD', 0.65),
     killSwitch: envBool('SUI_SR_SCOUT_KILL_SWITCH', true),
+    canaryMarginFraction: envNum('SUI_SR_SCOUT_CANARY_MARGIN_FRACTION', 0.01),
+    structuralStopBufferBps: envNum('SUI_SR_SCOUT_STRUCTURAL_STOP_BUFFER_BPS', 10),
+    feeSlippageBps: envNum('SUI_SR_SCOUT_FEE_SLIPPAGE_BPS', 10),
+    canaryTimeStopMs: envNum('SUI_SR_SCOUT_TIME_STOP_MS', 15 * 60 * 1000),
   };
 }
 
@@ -100,6 +103,9 @@ export function validateConfig(cfg: SuiSrScoutConfig): string[] {
   }
   if (cfg.minNetRMultiple <= 0) {
     errors.push('minNetRMultiple must be > 0');
+  }
+  if ((cfg.canaryMarginFraction ?? 0.01) <= 0 || (cfg.canaryMarginFraction ?? 0.01) > 1) {
+    errors.push('canaryMarginFraction must be in (0, 1]');
   }
   return errors;
 }
