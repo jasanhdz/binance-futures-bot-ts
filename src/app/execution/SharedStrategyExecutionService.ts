@@ -16,6 +16,7 @@ export interface SharedStrategyExecutionConfig {
   feeBufferPct: number;
   confirmationAttempts: number;
   confirmationDelaysMs: number[];
+  protectionVerificationDelaysMs?: number[];
   maxMarketOpenAttempts: number;
   marketOpenAmbiguityDelaysMs?: number[];
   isMarketOpenAmbiguous?: (symbol: string) => boolean;
@@ -27,6 +28,7 @@ const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
   feeBufferPct: 0.05,
   confirmationAttempts: 3,
   confirmationDelaysMs: [300, 500, 1000],
+  protectionVerificationDelaysMs: [500, 1000, 2000],
   maxMarketOpenAttempts: 6,
   marketOpenAmbiguityDelaysMs: [150, 300, 600, 1000],
 };
@@ -359,9 +361,28 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       }
 
       let closeOrders: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>> = [];
+      let hasStop = false;
+      let hasTakeProfit = false;
       if (intent.protection.requireStop || intent.protection.requireTakeProfit) {
         try {
-          closeOrders = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
+          // Algo orders can take a short time to appear in the open-orders read model.
+          // Do not emergency-close a position until that read has been retried.
+          for (const delayMs of [0, ...(this.config.protectionVerificationDelaysMs ?? [])]) {
+            if (delayMs > 0) await sleep(delayMs);
+            closeOrders = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
+            hasStop = closeOrders.some((order) =>
+              exactBracket(order, 'STOP', stopPrice, intent, filters),
+            );
+            hasTakeProfit = closeOrders.some((order) =>
+              exactBracket(order, 'TAKE_PROFIT', takeProfitPrice, intent, filters),
+            );
+            if (
+              (!intent.protection.requireStop || hasStop) &&
+              (!intent.protection.requireTakeProfit || hasTakeProfit)
+            ) {
+              break;
+            }
+          }
         } catch (error) {
           failureStage = 'PROTECTION';
           const recovery = intent.protection.closeIfProtectionFails
@@ -392,12 +413,6 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           });
         }
       }
-      const hasStop = closeOrders.some((order) =>
-        exactBracket(order, 'STOP', stopPrice, intent, filters),
-      );
-      const hasTakeProfit = closeOrders.some((order) =>
-        exactBracket(order, 'TAKE_PROFIT', takeProfitPrice, intent, filters),
-      );
       if (
         (intent.protection.requireStop && !hasStop) ||
         (intent.protection.requireTakeProfit && !hasTakeProfit)

@@ -105,6 +105,7 @@ describe('SharedStrategyExecutionService protection policy', () => {
         feeBufferPct: 0,
         confirmationAttempts: 1,
         confirmationDelaysMs: [0],
+        protectionVerificationDelaysMs: [0],
         maxMarketOpenAttempts: 2,
         marketOpenAmbiguityDelaysMs: [0, 0, 0, 0],
       },
@@ -322,6 +323,48 @@ describe('SharedStrategyExecutionService protection policy', () => {
       'LONG',
       'SHARED_EXECUTION_PROTECTION_VERIFY_FAILED',
     );
+  });
+
+  it('keeps an opened position when Algo brackets appear on a verification retry', async () => {
+    const brackets: Awaited<ReturnType<Exchange['listCloseOrdersForSide']>> = [
+      {
+        orderId: 'sl',
+        type: 'STOP_MARKET',
+        stopPrice: 99,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+        owner: 'BOT',
+      },
+      {
+        orderId: 'tp',
+        type: 'TAKE_PROFIT_MARKET',
+        stopPrice: 102,
+        side: 'SELL',
+        positionSide: 'BOTH',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+        owner: 'BOT',
+      },
+    ];
+    vi.mocked(exchange.listCloseOrdersForSide).mockResolvedValueOnce([]).mockResolvedValueOnce(brackets);
+
+    const result = await service.execute(
+      intent({
+        stopRoe: -0.2,
+        takeProfitRoe: 0.4,
+        protection: {
+          requireStop: true,
+          requireTakeProfit: true,
+          closeIfProtectionFails: true,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ status: 'OPENED' });
+    expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+    expect(exchange.listCloseOrdersForSide).toHaveBeenCalledTimes(2);
   });
 
   it('rereads after a post-open failure, verifies flat, and cancels only bot protections', async () => {
