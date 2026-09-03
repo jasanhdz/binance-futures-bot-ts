@@ -227,6 +227,8 @@ export class TradingService {
   private stopPromise: Promise<void> | null = null;
   private readonly entryInFlightSymbols = new Set<string>();
   private entryInFlight = false;
+  private readonly microBurstEntryInFlightSymbols = new Set<string>();
+  private microBurstEntryInFlight = false;
 
   constructor(
     private deps: TradingServiceDeps,
@@ -1297,9 +1299,18 @@ export class TradingService {
       return false;
     }
 
-    if (this.entryInFlight || this.entryInFlightSymbols.has(request.symbol)) return false;
-    this.entryInFlight = true;
-    this.entryInFlightSymbols.add(request.symbol);
+    if (
+      this.microBurstEntryInFlight ||
+      this.microBurstEntryInFlightSymbols.has(request.symbol)
+    ) {
+      this.deps.logger.warn('micro_burst_live_entry_denied', {
+        symbol: request.symbol,
+        reason: 'MICRO_BURST_ENTRY_IN_FLIGHT',
+      });
+      return false;
+    }
+    this.microBurstEntryInFlight = true;
+    this.microBurstEntryInFlightSymbols.add(request.symbol);
     try {
       const symbolState = this.stateForSymbol(request.symbol);
       if (symbolState.get().microBurstPnlUnverified === true) {
@@ -1520,8 +1531,8 @@ export class TradingService {
       });
       return true;
     } finally {
-      this.entryInFlightSymbols.delete(request.symbol);
-      this.entryInFlight = false;
+      this.microBurstEntryInFlightSymbols.delete(request.symbol);
+      this.microBurstEntryInFlight = false;
     }
   }
 

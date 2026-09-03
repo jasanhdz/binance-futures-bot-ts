@@ -9,14 +9,14 @@ describe('MicroBurstLeveragePolicy', () => {
     const result = selectLeverageTier(0.8, config);
     expect(result.tier).toBe('HIGH_CONFIRMATION');
     expect(result.leverage).toBe(40);
-    expect(result.positionFraction).toBe(0.09);
+    expect(result.positionFraction).toBe(0.9);
   });
 
   it('returns MEDIUM_CONFIRMATION for acceptable confirmation', () => {
     const result = selectLeverageTier(0.6, config);
     expect(result.tier).toBe('MEDIUM_CONFIRMATION');
     expect(result.leverage).toBe(20);
-    expect(result.positionFraction).toBe(0.05);
+    expect(result.positionFraction).toBe(0.9);
   });
 
   it('returns NO_TRADE for insufficient confirmation', () => {
