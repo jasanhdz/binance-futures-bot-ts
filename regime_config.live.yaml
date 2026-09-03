@@ -36,6 +36,26 @@ micro_burst:
   symbols:
     ETHUSDT:
       enabled: true
+    BTCUSDT:
+      enabled: true
+    SOLUSDT:
+      enabled: true
+    BNBUSDT:
+      enabled: true
+    XRPUSDT:
+      enabled: true
+    DOGEUSDT:
+      enabled: true
+    ADAUSDT:
+      enabled: true
+    AVAXUSDT:
+      enabled: true
+    LINKUSDT:
+      enabled: true
+    SUIUSDT:
+      enabled: true
+    LTCUSDT:
+      enabled: true
   prospective_validation:
     enabled: false
     horizons_ms: [15000, 30000, 60000, 120000, 300000]
