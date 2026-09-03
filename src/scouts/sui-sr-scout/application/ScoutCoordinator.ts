@@ -11,7 +11,7 @@ import type {
 } from '../domain/ScoutTypes';
 import { TRADEABLE_SYMBOL, FEATURE_SCHEMA_VERSION } from '../domain/ScoutTypes';
 import type { MarketDataRuntime } from '../market/ScoutMarketDataRuntime';
-import type { ThreeMinuteCandleBuilder, BuiltCandle } from '../market/ThreeMinuteCandleBuilder';
+import type { ThreeMinuteCandleBuilder } from '../market/ThreeMinuteCandleBuilder';
 import type { LevelDetector } from '../domain/LevelDetector';
 import type { FeatureVectorBuilder } from '../domain/FeatureVector';
 import type { BreakRiskPolicy } from '../domain/BreakRiskPolicy';
@@ -20,14 +20,34 @@ import type { RiskPolicy } from '../domain/RiskPolicy';
 import type { LiveCanaryExecutor } from './LiveCanaryExecutor';
 import type { AsyncEvidenceJournal } from './AsyncEvidenceJournal';
 import type { ModelArtifact } from '../domain/ScoutTypes';
+import type { ScoutStateReconciler } from './ScoutStateReconciler';
 
 let decisionIdCounter = 0;
 function nextDecisionId(): string {
   return `dec_${++decisionIdCounter}_${Date.now().toString(36)}`;
 }
 
+function calculateAtr(
+  candles: ReadonlyArray<{ high: number; low: number; close: number }>,
+  period: number,
+): number {
+  if (candles.length < 2) return 0;
+  const values: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    values.push(
+      Math.max(
+        candles[i].high - candles[i].low,
+        Math.abs(candles[i].high - candles[i - 1].close),
+        Math.abs(candles[i].low - candles[i - 1].close),
+      ),
+    );
+  }
+  const sample = values.slice(-period);
+  return sample.reduce((total, value) => total + value, 0) / sample.length;
+}
+
 export interface ScoutCoordinator {
-  start(): void;
+  start(): Promise<void>;
   stop(): void;
   getHealth(): ScoutHealth;
   getActiveZones(): SrZone[];
@@ -46,6 +66,7 @@ export interface ScoutCoordinatorDeps {
   readonly executor: LiveCanaryExecutor;
   readonly journal: AsyncEvidenceJournal;
   readonly model: ModelArtifact;
+  readonly reconciler: ScoutStateReconciler;
 }
 
 export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordinator {
@@ -62,11 +83,14 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
     executor,
     journal,
     model,
+    reconciler,
   } = deps;
 
   let running = false;
+  let notReady = false;
   let startedAtMs = 0;
   let tickTimer: ReturnType<typeof setInterval> | null = null;
+  let reconciliationTimer: ReturnType<typeof setInterval> | null = null;
   let activeZones: SrZone[] = [];
   let openPositionCount = 0;
   let consecutiveLosses = 0;
@@ -85,7 +109,8 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
 
     const suiHealth = marketData.getHealth(config.symbol);
     const btcHealth = marketData.getHealth(config.contextSymbol);
-    const feedHealthy = suiHealth.feed === 'HEALTHY' && btcHealth.feed === 'HEALTHY';
+    const feedHealthy =
+      marketData.isReady() && suiHealth.feed === 'HEALTHY' && btcHealth.feed === 'HEALTHY';
 
     if (!feedHealthy) {
       logger.debug('scout_tick_feed_unhealthy', {
@@ -114,7 +139,7 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
     const currentPrice = suiCandles1m[suiCandles1m.length - 1]?.close ?? 0;
     if (currentPrice <= 0) return;
 
-    const atr = candleBuilder.getAtr('3m', 14);
+    const atr = calculateAtr(suiCandles3m, 14);
     if (atr <= 0) return;
 
     activeZones = levelDetector.updateZones(
@@ -133,13 +158,13 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
       suiCandles1m.slice(-240),
       suiCandles3m.slice(-240),
       suiState.aggTrades.items().slice(-900),
-      suiState.depthBids.items().slice(-60),
-      suiState.depthAsks.items().slice(-60),
+      suiState.depth.items().slice(-60),
+      suiState.depth.items().slice(-60),
       btcCandles1m.slice(-120),
       btcCandles3m.slice(-120),
       btcState.aggTrades.items().slice(-600),
-      0,
-      0,
+      suiState.futures,
+      activeZones,
       Date.now(),
     );
 
@@ -163,8 +188,8 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
         suiCandles1m.slice(-10),
         suiCandles3m.slice(-10),
         suiState.aggTrades.items().slice(-300),
-        suiState.depthBids.items().slice(-10),
-        suiState.depthAsks.items().slice(-10),
+        suiState.depth.items().slice(-10),
+        suiState.depth.items().slice(-10),
       );
 
       if (decisionResult.decision === 'NO_TRADE') {
@@ -173,6 +198,7 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
       } else {
         const riskCheck = riskPolicy.checkAllGates(candidate, featureVector, config, {
           feedHealthy,
+          positionStateKnown: reconciler.getState().status !== 'UNKNOWN',
           openPositionCount,
           consecutiveLosses,
           dailyLossBps,
@@ -237,6 +263,8 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
         modelScore: modelPrediction.probability,
       });
 
+      // Observation is intentionally incapable of reaching the order port.
+      if (config.executionMode === 'OBSERVE') return;
       executor
         .execute(finalDecision, candidate, featureVector, config)
         .then((orderResult) => {
@@ -253,18 +281,34 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
   }
 
   return {
-    start(): void {
+    async start(): Promise<void> {
       if (running) return;
-      running = true;
       startedAtMs = Date.now();
-
-      marketData.start({
+      const warmup = await marketData.start({
         onCandle: (event) => {
           candleBuilder.onCandle(event);
         },
       });
+      if (!warmup.ready) {
+        notReady = true;
+        logger.error('scout_coordinator_not_ready', { reason: warmup.failureReason });
+        return;
+      }
+      const seededCandles = marketData.getState(config.symbol).candles3m.items();
+      const seededAtr = calculateAtr(seededCandles, 14);
+      const pivots = levelDetector.detectPivots(seededCandles);
+      activeZones = levelDetector.clusterZones(pivots, seededAtr, 0.001);
+      await reconciler.reconcile().then((state) => {
+        openPositionCount = state.openPositionCount;
+      });
+      running = true;
 
       tickTimer = setInterval(processTick, config.tickIntervalMs);
+      reconciliationTimer = setInterval(() => {
+        void reconciler.reconcile().then((state) => {
+          openPositionCount = state.openPositionCount;
+        });
+      }, 10_000);
 
       logger.info('scout_coordinator_started', {
         symbol: config.symbol,
@@ -280,6 +324,10 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
         clearInterval(tickTimer);
         tickTimer = null;
       }
+      if (reconciliationTimer) {
+        clearInterval(reconciliationTimer);
+        reconciliationTimer = null;
+      }
       marketData.stop();
       journal.flush().catch(() => {});
       logger.info('scout_coordinator_stopped');
@@ -287,16 +335,17 @@ export function createScoutCoordinator(deps: ScoutCoordinatorDeps): ScoutCoordin
 
     getHealth(): ScoutHealth {
       return {
-        processState: running ? 'RUNNING' : 'STOPPED',
+        processState: running ? 'RUNNING' : notReady ? 'NOT_READY' : 'STOPPED',
         symbols: marketData.getAllHealth(),
-        activePosition: openPositionCount > 0,
-        activeOrders: 0,
+        activePosition: reconciler.getState().status === 'CONFIRMED_OPEN',
+        activeOrders: reconciler.getState().openOrderCount,
         modelArtifactId: model.id,
         modelSchemaVersion: model.featureSchemaVersion,
         decisionsByOutcome,
         killSwitch: config.killSwitch,
         uptimeMs: Date.now() - startedAtMs,
         startedAtMs,
+        warmup: marketData.getWarmupStatus(),
       };
     },
 

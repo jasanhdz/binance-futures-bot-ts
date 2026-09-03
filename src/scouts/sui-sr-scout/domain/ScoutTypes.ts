@@ -33,6 +33,14 @@ export interface FeatureVector {
   readonly book: BookFeatures;
   readonly futures: FuturesContextFeatures;
   readonly btcContext: BtcContextFeatures;
+  /** Explicit missing/stale inputs; a decision may not silently treat these as zero. */
+  readonly unavailableFeatures: readonly FeatureUnavailableReason[];
+}
+
+export interface FeatureUnavailableReason {
+  readonly feature: string;
+  readonly reason: 'MISSING' | 'STALE' | 'UNSUPPORTED';
+  readonly observedAtMs: number | null;
 }
 
 export interface LevelGeometryFeatures {
@@ -48,8 +56,8 @@ export interface LevelGeometryFeatures {
   readonly distanceAtr: number;
   readonly bodyWickRatio: number;
   readonly closeLocation: number;
-  readonly compressionBefore: number;
-  readonly reclaimBeyond: boolean;
+  readonly compressionBefore: number | null;
+  readonly reclaimBeyond: boolean | null;
   readonly roomToTargetTicks: number;
   readonly roomToOpposingTicks: number;
 }
@@ -92,10 +100,12 @@ export interface BookFeatures {
 }
 
 export interface FuturesContextFeatures {
-  readonly fundingRate: number;
-  readonly fundingTimestamp: number;
-  readonly openInterestChange3m: number;
-  readonly basisPct: number;
+  readonly fundingRate: number | null;
+  readonly fundingTimestamp: number | null;
+  readonly openInterestChange3m: number | null;
+  readonly openInterestTimestamp: number | null;
+  readonly basisPct: number | null;
+  readonly basisTimestamp: number | null;
 }
 
 export interface BtcContextFeatures {
@@ -171,10 +181,12 @@ export interface SymbolHealth {
   readonly gapCount: number;
   readonly outOfOrderCount: number;
   readonly lastCandleTime: number;
+  readonly reconnectionCount: number;
+  readonly ready: boolean;
 }
 
 export interface ScoutHealth {
-  readonly processState: 'STARTING' | 'RUNNING' | 'STOPPING' | 'STOPPED';
+  readonly processState: 'STARTING' | 'NOT_READY' | 'RUNNING' | 'STOPPING' | 'STOPPED';
   readonly symbols: Record<ScoutSymbol, SymbolHealth>;
   readonly activePosition: boolean;
   readonly activeOrders: number;
@@ -184,6 +196,24 @@ export interface ScoutHealth {
   readonly killSwitch: boolean;
   readonly uptimeMs: number;
   readonly startedAtMs: number;
+  readonly warmup: WarmupStatus;
+}
+
+export interface WarmupStatus {
+  readonly ready: boolean;
+  readonly completedAtMs: number | null;
+  readonly failureReason: string | null;
+  readonly candles1m: Record<ScoutSymbol, number>;
+  readonly candles3m: Record<ScoutSymbol, number>;
+}
+
+export interface ScoutPositionState {
+  readonly status: 'CONFIRMED_FLAT' | 'CONFIRMED_OPEN' | 'UNKNOWN' | 'UNPROTECTED' | 'PARTIAL_FILL';
+  readonly checkedAtMs: number;
+  readonly openPositionCount: number;
+  readonly openOrderCount: number;
+  readonly stopConfirmed: boolean;
+  readonly reason: string | null;
 }
 
 // ── Evidence journal ──────────────────────────────────────────────

@@ -14,6 +14,7 @@
     "audit:usdm-readonly": "node -r dotenv/config dist/tooling/audit/binance-usdm-readonly/binance-usdm-readonly-audit.js",
     "audit:usdm-readonly:static": "node dist/tooling/audit/binance-usdm-readonly/binance-usdm-readonly-static-safety.js",
     "market-data:phase-s-soak": "ts-node scripts/shared-market-data-phase-s-soak.ts",
+    "sui-sr-scout:observe-soak": "SUI_SR_SCOUT_ENABLED=1 SUI_SR_SCOUT_EXECUTION_MODE=OBSERVE SUI_SR_SCOUT_LIVE_ENABLED=0 SUI_SR_SCOUT_KILL_SWITCH=1 ts-node scripts/sui-sr-scout-observe-soak.ts",
     "analyze:aegis-turbo": "ts-node src/app/analysis/AegisTurboHistoryAnalyzer.ts",
     "audit:regime-guard": "ts-node scripts/aegis/audit_regime_guard.ts",
     "audit:regime-detector": "ts-node scripts/aegis/audit_regime_detector_deep.ts",

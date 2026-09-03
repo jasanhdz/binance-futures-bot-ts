@@ -17,6 +17,7 @@ export interface RiskPolicy {
     config: SuiSrScoutConfig,
     state: {
       feedHealthy: boolean;
+      positionStateKnown?: boolean;
       openPositionCount: number;
       consecutiveLosses: number;
       dailyLossBps: number;
@@ -48,6 +49,11 @@ export function createRiskPolicy(): RiskPolicy {
 
       if (!state.feedHealthy) {
         reasons.push('feed_unhealthy');
+        return { allowed: false, reasons };
+      }
+
+      if (state.positionStateKnown === false) {
+        reasons.push('position_or_order_state_unknown');
         return { allowed: false, reasons };
       }
 

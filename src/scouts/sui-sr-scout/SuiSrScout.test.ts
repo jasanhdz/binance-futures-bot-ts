@@ -173,7 +173,9 @@ function makeFeatureVector(overrides: Partial<FeatureVector> = {}): FeatureVecto
       fundingRate: 0.0001,
       fundingTimestamp: Date.now(),
       openInterestChange3m: 0,
+      openInterestTimestamp: Date.now(),
       basisPct: 0,
+      basisTimestamp: Date.now(),
     },
     btcContext: {
       return1m: 0,
@@ -185,6 +187,7 @@ function makeFeatureVector(overrides: Partial<FeatureVector> = {}): FeatureVecto
       aggressiveAgainstTrade: false,
       timestamp: Date.now(),
     },
+    unavailableFeatures: [],
     ...overrides,
   };
 }
@@ -407,6 +410,25 @@ describe('SUI SR Scout — Decision policy', () => {
     const result = policy.evaluate(event, fv, [], [], [], [], []);
     expect(result.decision).toBe('BLOCK_BREAKOUT_RISK');
     expect(result.reasons).toContain('btc_aggressive_against_trade');
+  });
+
+  it('returns NO_TRADE when a critical feature is missing rather than substituting zero', () => {
+    const policy = createDecisionPolicy({ minNetRMultiple: 1.5, btcAggressiveThreshold: 0.65 });
+    const result = policy.evaluate(
+      makeEvent(),
+      makeFeatureVector({
+        unavailableFeatures: [
+          { feature: 'funding_missing', reason: 'MISSING', observedAtMs: null },
+        ],
+      }),
+      [],
+      [],
+      [],
+      [],
+      [],
+    );
+    expect(result.decision).toBe('NO_TRADE');
+    expect(result.reasons).toContain('critical_feature_funding_missing_missing');
   });
 });
 

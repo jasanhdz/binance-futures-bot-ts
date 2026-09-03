@@ -11,14 +11,11 @@ import { createRuleBaselineModel } from './ml/RuleBaselineModel';
 import { createLiveCanaryExecutor } from './application/LiveCanaryExecutor';
 import { createAsyncEvidenceJournal } from './application/AsyncEvidenceJournal';
 import { createScoutCoordinator } from './application/ScoutCoordinator';
+import { createScoutStateReconciler } from './application/ScoutStateReconciler';
+import { createBinanceScoutMarketDataSource } from './market/BinanceScoutMarketDataSource';
 import type { Logger } from '../../app/ports/Logger';
-import type {
-  RawCandleEvent,
-  RawAggTradeEvent,
-  RawDepthEvent,
-  MarketDataCallbacks,
-} from './market/ScoutMarketDataRuntime';
 import type { OrderPort } from './application/LiveCanaryExecutor';
+import { BinanceExchange } from '../../infra/adapters/BinanceAdapter';
 
 const consoleLogger: Logger = {
   debug: (msg, ctx) => console.debug(`[SCOUT:DEBUG] ${msg}`, ctx ?? ''),
@@ -26,20 +23,6 @@ const consoleLogger: Logger = {
   warn: (msg, ctx) => console.warn(`[SCOUT:WARN] ${msg}`, ctx ?? ''),
   error: (msg, ctx) => console.error(`[SCOUT:ERROR] ${msg}`, ctx ?? ''),
 };
-
-function createWsSubscribeFunction(): (
-  symbol: string,
-  interval: string,
-  callbacks: MarketDataCallbacks,
-) => (() => void)[] {
-  return (symbol: string, interval: string, callbacks: MarketDataCallbacks) => {
-    const unsubs: (() => void)[] = [];
-    console.log(
-      `[SCOUT] Would subscribe to ${symbol} ${interval} (WS not connected in this build)`,
-    );
-    return unsubs;
-  };
-}
 
 async function main(): Promise<void> {
   const config = loadSuiSrScoutConfig();
@@ -59,8 +42,8 @@ async function main(): Promise<void> {
     maxQuoteNotional: config.maxQuoteNotional,
   });
 
-  if (config.executionMode === 'LIVE_CANARY' && config.liveEnabled) {
-    console.warn('[SCOUT] ⚠ LIVE CANARY MODE ENABLED — REAL CAPITAL AT RISK');
+  if (config.executionMode !== 'OBSERVE' || config.liveEnabled) {
+    throw new Error('This Scout phase is observation-only; LIVE_CANARY is intentionally disabled');
   }
 
   const orderPort: OrderPort | null = null;
@@ -76,8 +59,14 @@ async function main(): Promise<void> {
     breakConfirmationCandles: config.breakConfirmationCandles,
   });
 
-  const wsSubscribe = createWsSubscribeFunction();
-  const marketData = createScoutMarketDataRuntime(config, consoleLogger, wsSubscribe);
+  // BinanceExchange is used only through its public market-data and read-only account ports.
+  // No TradingService, legacy strategy, or order mutation capability is passed to the coordinator.
+  const exchange = new BinanceExchange(consoleLogger);
+  const marketData = createScoutMarketDataRuntime(
+    config,
+    consoleLogger,
+    createBinanceScoutMarketDataSource(exchange),
+  );
 
   const featureVectorBuilder = createFeatureVectorBuilder();
   const breakRiskPolicy = createBreakRiskPolicy();
@@ -100,9 +89,10 @@ async function main(): Promise<void> {
     executor,
     journal,
     model,
+    reconciler: createScoutStateReconciler(exchange),
   });
 
-  coordinator.start();
+  await coordinator.start();
 
   const shutdown = async (): Promise<void> => {
     console.log('[SCOUT] Shutting down...');

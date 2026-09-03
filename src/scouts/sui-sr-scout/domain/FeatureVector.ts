@@ -6,6 +6,7 @@ import type {
   BookFeatures,
   FuturesContextFeatures,
   BtcContextFeatures,
+  FeatureUnavailableReason,
   LevelCandidateEvent,
   SrZone,
   ScoutSymbol,
@@ -13,7 +14,7 @@ import type {
 import { FEATURE_SCHEMA_VERSION } from './ScoutTypes';
 import type { BuiltCandle } from '../market/ThreeMinuteCandleBuilder';
 import type { RawAggTradeEvent, RawDepthEvent } from '../market/ScoutMarketDataRuntime';
-import { RingBuffer } from '../market/ScoutMarketDataRuntime';
+import type { ScoutFuturesContext } from '../market/ScoutMarketDataRuntime';
 
 export interface FeatureVectorBuilder {
   build(
@@ -26,8 +27,8 @@ export interface FeatureVectorBuilder {
     btcCandles1m: BuiltCandle[],
     btcCandles3m: BuiltCandle[],
     btcAggTrades: RawAggTradeEvent[],
-    fundingRate: number,
-    openInterestChange: number,
+    futuresContext: ScoutFuturesContext,
+    zones: SrZone[],
     nowMs: number,
   ): FeatureVector;
 }
@@ -142,8 +143,12 @@ function buildLevelGeometry(
     distanceAtr,
     bodyWickRatio,
     closeLocation,
-    compressionBefore: 0,
-    reclaimBeyond: false,
+    compressionBefore: null,
+    reclaimBeyond: currentCandle3m
+      ? zone.side === 'SUPPORT'
+        ? currentCandle3m.low <= zone.low && currentCandle3m.close >= zone.high
+        : currentCandle3m.high >= zone.high && currentCandle3m.close <= zone.low
+      : null,
     roomToTargetTicks: opposing
       ? Math.abs((opposing.low + opposing.high) / 2 - currentPrice) / tickSize
       : 100,
@@ -303,30 +308,67 @@ export function createFeatureVectorBuilder(): FeatureVectorBuilder {
       btcCandles1m,
       btcCandles3m,
       btcAggTrades,
-      fundingRate,
-      openInterestChange,
+      futuresContext,
+      zones,
       nowMs,
     ): FeatureVector {
       const currentPrice = event.priceAtEvent;
       const atr = calcAtr(candles3m, 14);
       const currentCandle3m = candles3m[candles3m.length - 1];
       const proposedSide = event.zone.side === 'SUPPORT' ? 'LONG' : 'SHORT';
+      const unavailableFeatures: FeatureUnavailableReason[] = [];
+      const ranges = candles3m.map((c) => c.high - c.low);
+      const compressionBefore =
+        ranges.length >= 20
+          ? sma(ranges.slice(-5), 5) / Math.max(sma(ranges.slice(-20), 20), Number.EPSILON)
+          : null;
+      if (compressionBefore === null)
+        unavailableFeatures.push({
+          feature: 'compressionBefore',
+          reason: 'MISSING',
+          observedAtMs: null,
+        });
+      for (const unavailable of futuresContext.unavailable) {
+        unavailableFeatures.push({
+          feature: unavailable,
+          reason: unavailable.includes('unsupported') ? 'UNSUPPORTED' : 'MISSING',
+          observedAtMs: unavailable.includes('funding')
+            ? futuresContext.fundingObservedAtMs
+            : futuresContext.markPriceObservedAtMs,
+        });
+      }
+      if (
+        futuresContext.fundingObservedAtMs !== null &&
+        nowMs - futuresContext.fundingObservedAtMs > 60 * 60_000
+      ) {
+        unavailableFeatures.push({
+          feature: 'fundingRate',
+          reason: 'STALE',
+          observedAtMs: futuresContext.fundingObservedAtMs,
+        });
+      }
 
       return {
         schemaVersion: FEATURE_SCHEMA_VERSION,
         symbol: 'SUIUSDT',
         timestamp: nowMs,
-        level: buildLevelGeometry(event, currentCandle3m, currentPrice, atr, [event.zone]),
+        level: {
+          ...buildLevelGeometry(event, currentCandle3m, currentPrice, atr, zones),
+          compressionBefore,
+        },
         price: buildPriceVolatility(candles1m, candles3m),
         flow: buildOrderFlow(aggTrades, nowMs),
         book: buildBookFeatures(depthBids, depthAsks),
         futures: {
-          fundingRate,
-          fundingTimestamp: nowMs,
-          openInterestChange3m: openInterestChange,
-          basisPct: 0,
+          fundingRate: futuresContext.fundingRate,
+          fundingTimestamp: futuresContext.fundingObservedAtMs,
+          openInterestChange3m: null,
+          openInterestTimestamp: null,
+          basisPct: null,
+          basisTimestamp: null,
         },
         btcContext: buildBtcContext(btcCandles1m, btcCandles3m, btcAggTrades, nowMs, proposedSide),
+        unavailableFeatures,
       };
     },
   };

@@ -99,6 +99,26 @@ export function createDecisionPolicy(config: {
       const zone = event.zone;
       const btc = featureVector.btcContext;
 
+      const criticalMissing = featureVector.unavailableFeatures.filter((feature) =>
+        ['compressionBefore', 'funding_missing', 'mark_price_missing'].includes(feature.feature),
+      );
+      if (criticalMissing.length > 0) {
+        reasons.push(
+          ...criticalMissing.map(
+            (feature) => `critical_feature_${feature.feature}_${feature.reason.toLowerCase()}`,
+          ),
+        );
+        return { decision: 'NO_TRADE', reasons };
+      }
+
+      if (
+        featureVector.level.compressionBefore === null ||
+        featureVector.level.reclaimBeyond === null
+      ) {
+        reasons.push('level_structure_incomplete');
+        return { decision: 'NO_TRADE', reasons };
+      }
+
       if (featureVector.level.zoneScore < 0.4) {
         reasons.push('zone_score_too_low');
         return { decision: 'NO_TRADE', reasons };
@@ -115,7 +135,7 @@ export function createDecisionPolicy(config: {
       }
 
       const rejectionPattern = hasRejectionPattern(recentCandles3m, zone.side);
-      if (!rejectionPattern) {
+      if (!rejectionPattern || !featureVector.level.reclaimBeyond) {
         reasons.push('no_rejection_pattern');
         return { decision: 'NO_TRADE', reasons };
       }
