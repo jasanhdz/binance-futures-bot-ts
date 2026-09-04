@@ -1525,8 +1525,8 @@ export class MicroBurstRuntime {
       mutationAttempts: health.mutationAttempts,
       forwardedMutations: health.forwardedMutations,
       opportunitySamplerTickMs: health.opportunitySamples.tickDurationMs,
-      opportunitySamples: health.opportunitySamples,
-      symbolMetrics: health.symbolMetrics,
+      opportunitySamplesJson: JSON.stringify(health.opportunitySamples),
+      symbolMetricsJson: JSON.stringify(health.symbolMetrics),
     });
   }
 
