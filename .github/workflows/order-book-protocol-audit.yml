@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   audit:
@@ -89,3 +89,15 @@ jobs:
           path: order-book-protocol-audit.json
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Persist latest successful audit in branch
+        if: success()
+        run: |
+          mkdir -p docs/audits/runtime
+          cp order-book-protocol-audit.json docs/audits/runtime/order-book-protocol-audit-latest.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/audits/runtime/order-book-protocol-audit-latest.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'record latest order book protocol audit'
+          git push origin HEAD:feature/micro-opportunity-model-v1
