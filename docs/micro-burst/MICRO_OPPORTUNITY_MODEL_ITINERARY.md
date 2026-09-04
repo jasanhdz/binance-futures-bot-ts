@@ -44,7 +44,7 @@
 
 ## C — Split Micro state into Slow State and Fast State
 
-**Status:** `IN_PROGRESS`  
+**Status:** `DONE`  
 **Priority:** P0  
 **Goal:** Keep structural/candle context slow while exposing event-driven market context independently.
 
@@ -72,7 +72,7 @@
 
 ## D — Implement `MicroBurstFastMarketState`
 
-**Status:** `TODO`  
+**Status:** `DONE`  
 **Priority:** P0  
 **Goal:** Maintain a deterministic per-symbol in-memory state from shared market data.
 
@@ -95,7 +95,7 @@
 
 ## E — Add high-frequency research sampling independent of the 5 s strategy loop
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`  
 **Priority:** P0  
 **Goal:** Collect causal opportunity snapshots without changing the existing LIVE evaluation cadence.
 
@@ -111,7 +111,7 @@
 
 ## F — Freeze `OpportunityFeatureVectorV1`
 
-**Status:** `TODO`  
+**Status:** `DONE`  
 **Priority:** P0  
 **Goal:** Define the exact causal feature contract shared by offline training and TypeScript inference.
 
@@ -133,7 +133,7 @@
 
 ## G — Capture continuous market states, not only Micro entries
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`  
 **Priority:** P0  
 **Goal:** Remove entry-selection bias from the predictive dataset.
 
@@ -150,7 +150,7 @@
 
 ## H — Generate counterfactual LONG/SHORT MFE/MAE labels
 
-**Status:** `TODO`  
+**Status:** `DONE`  
 **Priority:** P0  
 **Goal:** Label every valid T0 state in both orientations.
 
@@ -173,7 +173,7 @@
 
 ## I — Add economic/net opportunity labels
 
-**Status:** `TODO`  
+**Status:** `DONE`  
 **Priority:** P0  
 **Goal:** Train/evaluate on exploitable movement rather than gross movement alone.
 
@@ -193,7 +193,7 @@
 
 ## J — Leakage/causality audit
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`  
 **Priority:** P0  
 **Goal:** Prove features are available at T0 and labels are strictly future-only.
 
@@ -210,7 +210,7 @@
 
 ## K — Dataset quality audit
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`  
 **Priority:** P0  
 **Goal:** Quantify whether the archive can support model claims.
 
@@ -476,3 +476,6 @@
 - 2026-09-03 — A acknowledged as completed pre-existing baseline.
 - 2026-09-03 — B completed: preregistration frozen before model fitting.
 - 2026-09-03 — C started: slow/fast market-state separation.
+- 2026-09-04 — `322de68`: Fast State test corrected to exercise an actually missing book; continuous sampler hardened against input/sink failures and re-entry, and now records both counterfactual orientations plus population metadata. Build and focused Micro Opportunity/Fast State tests passed (12/12).
+- 2026-09-04 — `d55c95c`: Causality audit now rejects future closed-candle/state watermarks and label-shaped feature fields; quality report exposes validity, exclusions, coverage, populations, missingness, gaps, duplication pressure, and label distributions. Focused tests passed (14/14 at commit time).
+- 2026-09-04 — Real archive inspection: `m3_2_5_final/20260827T193200Z/research.sqlite` has 24 market-data segments but 0 signals, 0 outcomes, and no continuous Opportunity samples. No causal TRAIN/VALIDATION/HOLDOUT can be built; dataset-dependent stages remain blocked/in progress and HOLDOUT stays sealed.

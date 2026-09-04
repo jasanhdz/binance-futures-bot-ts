@@ -10,7 +10,10 @@ import {
   buildOpportunityDatasetManifestV1,
   splitOpportunityDataset,
 } from './MicroOpportunityDatasetGovernance';
-import { buildMicroOpportunityResearchSample } from './MicroOpportunityResearchSampler';
+import {
+  buildMicroOpportunityResearchSample,
+  MicroOpportunityResearchSampler,
+} from './MicroOpportunityResearchSampler';
 import type { MicroOpportunityLabeledSample } from './MicroOpportunityTypes';
 
 const T0 = 1_700_000_000_000;
@@ -220,5 +223,28 @@ describe('Micro Opportunity research contract', () => {
     expect(report.orientations).toEqual({ LONG: 1, SHORT: 1 });
     expect(report.labelDistributions.LONG.valid).toBe(3);
     expect(report.labelDistributions.SHORT.valid).toBe(3);
+  });
+
+  it('keeps sampling observational and survives sink/input failures', () => {
+    let now = T0;
+    const persisted: string[] = [];
+    const sampler = new MicroOpportunityResearchSampler(
+      ['SOLUSDT', 'BTCUSDT'],
+      () => now,
+      (symbol, sampledAtMs) => {
+        if (symbol === 'BTCUSDT') throw new Error('reader unavailable');
+        return { symbol, sampledAtMs, slow: slow(), fast: fast() };
+      },
+      { append: (value) => {
+        persisted.push(value.sampleId);
+        throw new Error('storage unavailable');
+      } },
+    );
+    sampler.tick();
+    now += 1_000;
+    sampler.tick();
+    expect(persisted).toHaveLength(2);
+    expect(sampler.getHealth()).toMatchObject({ sampled: 2, persisted: 0, sinkErrors: 2, inputErrors: 2, running: false });
+    sampler.stop();
   });
 });
