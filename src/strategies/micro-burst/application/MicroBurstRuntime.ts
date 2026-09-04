@@ -828,9 +828,11 @@ export class MicroBurstRuntime {
     const t0 = this.deps.clock.now();
 
     try {
+      const evaluationSnapshotAtMs =
+        snapshotAtMs ?? (this.candleDataPlane ? this.deps.clock.now() : await this.deps.exchange.getServerTime());
       const result = await this.shadowEvaluator.evaluate({
         symbol,
-        snapshotAtMs,
+        snapshotAtMs: evaluationSnapshotAtMs,
       });
       state.latestDecision = {
         decision: result.decision,
@@ -1472,7 +1474,10 @@ export class MicroBurstRuntime {
     this.evaluationTimer = setInterval(async () => {
       if (!this.running) return;
       // A slow candle read for one symbol must not starve the other enabled symbols.
-      await Promise.all([...this.symbolStates.keys()].map((symbol) => this.evaluateSymbol(symbol)));
+      const snapshotAtMs = this.deps.clock.now();
+      await Promise.all(
+        [...this.symbolStates.keys()].map((symbol) => this.evaluateSymbol(symbol, snapshotAtMs)),
+      );
     }, this.evaluationIntervalMs);
   }
 

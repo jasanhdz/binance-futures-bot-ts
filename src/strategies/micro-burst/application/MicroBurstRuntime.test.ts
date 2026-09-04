@@ -114,6 +114,8 @@ describe('MicroBurstRuntime', () => {
     const exchangeGetCandles = vi.fn(async () => [] as Candle[]);
     (deps.exchange as any).getCandles = exchangeGetCandles;
     const now = Date.now();
+    const exchangeGetServerTime = vi.fn(async () => now);
+    (deps.exchange as any).getServerTime = exchangeGetServerTime;
     const fetch = vi.fn(async (_symbol: string, interval: string, limit: number) => {
       const duration = interval === '1m' ? 60_000 : interval === '3m' ? 180_000 : 300_000;
       return Array.from({ length: limit }, (_, index) => {
@@ -141,9 +143,11 @@ describe('MicroBurstRuntime', () => {
     await runtime.start();
     await new Promise((resolve) => setTimeout(resolve, 10));
     exchangeGetCandles.mockClear();
-    await runtime.evaluateSymbol('ETHUSDT', now);
+    exchangeGetServerTime.mockClear();
+    await runtime.evaluateSymbol('ETHUSDT');
 
     expect(exchangeGetCandles).not.toHaveBeenCalled();
+    expect(exchangeGetServerTime).not.toHaveBeenCalled();
     expect(runtime.getHealth().symbolMetrics.ETHUSDT).toMatchObject({
       candleCacheHit: 3,
       candleUnavailable: 0,
