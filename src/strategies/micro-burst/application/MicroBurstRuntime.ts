@@ -112,7 +112,13 @@ export interface MicroBurstRuntimeHealth {
   archiveFileCount: number | null;
   archiveRetentionAgeMs: number | null;
   archiveRetentionWarning: boolean | null;
-  opportunitySamples: { sampled: number; persisted: number; persistenceRejected: number; sinkErrors: number };
+  opportunitySamples: {
+    sampled: number;
+    persisted: number;
+    persistenceRejected: number;
+    sinkErrors: number;
+    tickDurationMs: { p50: number; p95: number; p99: number };
+  };
   storageErrors: number;
   mutationAttempts: number;
   forwardedMutations: number;
@@ -1002,14 +1008,24 @@ export class MicroBurstRuntime {
       archiveFileCount: archiveHealth?.archiveFileCount ?? null,
       archiveRetentionAgeMs: archiveHealth?.archiveRetentionAgeMs ?? null,
       archiveRetentionWarning: archiveHealth?.retentionWarning ?? null,
-      opportunitySamples: this.opportunitySampler
-        ? {
-            sampled: this.opportunitySampler.getHealth().sampled,
-            persisted: this.opportunitySampler.getHealth().persisted,
-            persistenceRejected: this.opportunitySampler.getHealth().persistenceRejected,
-            sinkErrors: this.opportunitySampler.getHealth().sinkErrors,
-          }
-        : { sampled: 0, persisted: 0, persistenceRejected: 0, sinkErrors: 0 },
+      opportunitySamples: (() => {
+        const samplerHealth = this.opportunitySampler?.getHealth();
+        return samplerHealth
+          ? {
+              sampled: samplerHealth.sampled,
+              persisted: samplerHealth.persisted,
+              persistenceRejected: samplerHealth.persistenceRejected,
+              sinkErrors: samplerHealth.sinkErrors,
+              tickDurationMs: samplerHealth.tickDurationMs,
+            }
+          : {
+              sampled: 0,
+              persisted: 0,
+              persistenceRejected: 0,
+              sinkErrors: 0,
+              tickDurationMs: { p50: 0, p95: 0, p99: 0 },
+            };
+      })(),
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       mutationAttempts: mutationAudit.totalMutationAttempts,
       forwardedMutations: mutationAudit.forwardedMutationCalls,
@@ -1305,10 +1321,8 @@ export class MicroBurstRuntime {
   private startEvaluationLoop(): void {
     this.evaluationTimer = setInterval(async () => {
       if (!this.running) return;
-      for (const symbol of this.symbolStates.keys()) {
-        if (!this.running) break;
-        await this.evaluateSymbol(symbol);
-      }
+      // A slow candle read for one symbol must not starve the other enabled symbols.
+      await Promise.all([...this.symbolStates.keys()].map((symbol) => this.evaluateSymbol(symbol)));
     }, this.evaluationIntervalMs);
   }
 
@@ -1348,6 +1362,7 @@ export class MicroBurstRuntime {
       storageErrors: health.storageErrors,
       mutationAttempts: health.mutationAttempts,
       forwardedMutations: health.forwardedMutations,
+      opportunitySamplerTickMs: health.opportunitySamples.tickDurationMs,
     });
   }
 

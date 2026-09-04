@@ -38,6 +38,7 @@ export interface MicroOpportunitySamplerHealth {
   readonly persistenceRejected: number;
   readonly sinkErrors: number;
   readonly inputErrors: number;
+  readonly tickDurationMs: Readonly<{ p50: number; p95: number; p99: number }>;
 }
 
 /**
@@ -102,6 +103,7 @@ export class MicroOpportunityResearchSampler {
   private sinkErrors = 0;
   private inputErrors = 0;
   private inTick = false;
+  private readonly tickDurationsMs: number[] = [];
 
   constructor(
     private readonly symbols: readonly string[],
@@ -129,6 +131,7 @@ export class MicroOpportunityResearchSampler {
     if (this.inTick) return;
     this.inTick = true;
     const sampledAtMs = this.now();
+    const startedAtMs = Date.now();
     try {
       for (const symbol of this.symbols) {
         let input: MicroOpportunitySampleInput;
@@ -157,6 +160,8 @@ export class MicroOpportunityResearchSampler {
         }
       }
     } finally {
+      this.tickDurationsMs.push(Math.max(0, Date.now() - startedAtMs));
+      if (this.tickDurationsMs.length > 256) this.tickDurationsMs.shift();
       this.inTick = false;
       try {
         this.afterTick?.();
@@ -176,6 +181,14 @@ export class MicroOpportunityResearchSampler {
       persistenceRejected: this.persistenceRejected,
       sinkErrors: this.sinkErrors,
       inputErrors: this.inputErrors,
+      tickDurationMs: percentileSummary(this.tickDurationsMs),
     };
   }
+}
+
+function percentileSummary(values: readonly number[]): { p50: number; p95: number; p99: number } {
+  if (values.length === 0) return { p50: 0, p95: 0, p99: 0 };
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (fraction: number): number => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
+  return { p50: at(0.5), p95: at(0.95), p99: at(0.99) };
 }

@@ -193,7 +193,7 @@
 
 ## J — Leakage/causality audit
 
-**Status:** `BLOCKED — no Opportunity samples in active LIVE archive`
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Prove features are available at T0 and labels are strictly future-only.
 
@@ -206,11 +206,13 @@
 
 **Gate:** Any leakage failure blocks training.
 
+**Evidence (2026-09-04):** Formal audit over 3,952 labeled live samples found zero future-field, schema, duplicate, or label-in-feature violations.
+
 ---
 
 ## K — Dataset quality audit
 
-**Status:** `BLOCKED — no Opportunity samples in active LIVE archive`
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Quantify whether the archive can support model claims.
 
@@ -221,6 +223,8 @@
 - Outcome distributions and tails.
 
 **Gate:** Invalid samples are explicitly excluded with reason codes.
+
+**Evidence (2026-09-04):** Formal report over 3,952 labeled samples found 0 governance exclusions and 0 duplicate pressure, but quality remains insufficient for training: 149 stale/book-gap rows, 2 aggTrade-gap rows, and 11,133 missing feature values.
 
 ---
 
@@ -449,6 +453,7 @@
 - **2026-09-04:** M/N/O/U/V/W infrastructure prepared without changing LIVE authority. Added deterministic offline JSONL loading and baseline/evaluation scaffolding, optional Logistic Regression/LightGBM artifact writers with metadata hashes, local in-memory inference with schema/hash and stale fail-closed checks, percentile benchmark summaries, and a shadow dual-run record explicitly marked `STABLE_MICRO_ONLY`.
 - **2026-09-04:** P/Q contract tests cover schema drift, stale/invalid model output, `NO_TRADE` rejection, probability rejection, and preservation of Micro LONG/SHORT direction.
 - **Evidence status:** M, N, O, P, Q, U, V, W remain `IN_PROGRESS`; no stage is marked `DONE` because prospective labeled samples and measured runtime evidence are still required. L, R, S, T, X, Y, Z remain blocked.
+- **Correction pending rollout (2026-09-04):** Parallel per-symbol evaluation prevents slow candle reads from starving `latestSlowState`; sampler tick duration p50/p95/p99 telemetry was added. PM2 is intentionally still on the prior build, so post-change coverage/overhead cannot yet be claimed.
 
 **Entry V1 promotion**
 - Expand symbols progressively.
