@@ -1,0 +1,91 @@
+name: Order Book Protocol Audit
+
+on:
+  push:
+    branches:
+      - feature/micro-opportunity-model-v1
+    paths:
+      - '.github/workflows/order-book-protocol-audit.yml'
+      - 'scripts/order-book-protocol-audit.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ORDER_BOOK_AUDIT_SYMBOLS: 'BTCUSDT,ETHUSDT'
+      ORDER_BOOK_AUDIT_PRE_SNAPSHOT_MS: '750'
+      ORDER_BOOK_AUDIT_POST_SNAPSHOT_MS: '4000'
+      ORDER_BOOK_AUDIT_SNAPSHOT_LIMIT: '1000'
+      ORDER_BOOK_AUDIT_OUTPUT: 'order-book-protocol-audit.json'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Capture runner public IP before Tailscale
+        run: |
+          echo -n 'GitHub runner public IP: '
+          curl --fail --silent --show-error --max-time 15 https://api.ipify.org
+          echo
+
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-phase-s
+          version: latest
+
+      - name: Route traffic through iPhone exit node
+        run: |
+          sudo -E tailscale status
+          timeout 3m sudo -E tailscale set --exit-node=iphone-15-pro-max --exit-node-allow-lan-access=true
+          sleep 5
+          EXIT_ONLINE="$(sudo -E tailscale status --json | jq -r '.ExitNodeStatus.Online // false')"
+          if [ "$EXIT_ONLINE" != "true" ]; then
+            echo 'ERROR: iphone-15-pro-max is not active as exit node.'
+            exit 1
+          fi
+
+      - name: Verify Binance Futures public access
+        run: |
+          echo -n 'Public IP through iPhone: '
+          curl --fail --silent --show-error --max-time 15 https://api.ipify.org
+          echo
+          curl --fail --silent --show-error --max-time 20 https://fapi.binance.com/fapi/v1/time
+          echo
+
+      - name: Run read-only protocol audit
+        run: npx ts-node scripts/order-book-protocol-audit.ts
+
+      - name: Disable exit node
+        if: always()
+        run: |
+          if command -v tailscale >/dev/null 2>&1; then
+            sudo -E tailscale set --exit-node= || true
+          fi
+
+      - name: Upload protocol audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order-book-protocol-audit-${{ github.sha }}
+          path: order-book-protocol-audit.json
+          if-no-files-found: warn
+          retention-days: 7
