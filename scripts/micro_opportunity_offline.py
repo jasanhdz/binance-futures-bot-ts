@@ -74,6 +74,20 @@ def baseline_probability(row: dict[str, Any]) -> float:
     return 1 / (1 + math.exp(-3 * score))
 
 
+def baseline_candidates(row: dict[str, Any]) -> dict[str, float]:
+    features = row["features"]
+    momentum = float(features.get("momentumStrength") or 0)
+    flow = float(features.get("takerImbalance") or 0)
+    book = float(features.get("signedBookImbalance") or 0)
+    room = float(features.get("corridorWidthBps") or 0)
+    return {
+        "momentum_threshold": float(momentum >= 0.5),
+        "flow_book_threshold": float(flow >= 0.2 and book >= 0.1),
+        "room_risk_score": float(room >= 20 and float(features.get("spreadBps") or 999) <= 5),
+        "combined_score": baseline_probability(row),
+    }
+
+
 def score_rows(rows: list[dict[str, Any]], scorer: Any) -> dict[str, float]:
     if not rows:
         return {"count": 0, "accuracy": 0, "mean_net_bps": 0}
@@ -136,7 +150,10 @@ def evaluate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     train, test = temporal_split(rows)
     result: dict[str, Any] = {"rows": len(rows), "train": len(train), "test": len(test), "costs_bps": COSTS_BPS}
     result["stable_micro_baseline"] = score_rows(test, lambda row: 1.0 if row.get("population") == "ENTRY_INTENT" else 0.0)
-    result["threshold_baseline"] = score_rows(test, baseline_probability)
+    result["non_ml_baselines"] = {
+        name: score_rows(test, lambda row, candidate=name: baseline_candidates(row)[candidate])
+        for name in ("momentum_threshold", "flow_book_threshold", "room_risk_score", "combined_score")
+    }
     result["slices"] = {key: {value: score_rows([row for row in test if row.get(key) == value], baseline_probability) for value in sorted({row.get(key) for row in test if row.get(key) is not None})} for key in ("symbol", "orientation", "microRegime")}
     result["bootstrap_ci_net_bps"] = {str(cost): bootstrap_ci([row["_mfe"] - cost for row in test]) for cost in COSTS_BPS}
     result["feature_hash"] = hashlib.sha256("\n".join(sorted(test[0]["features"])).encode()).hexdigest() if test else None
