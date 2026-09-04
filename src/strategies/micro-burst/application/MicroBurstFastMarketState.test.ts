@@ -25,6 +25,8 @@ function trades(stepMs = 250): AggTradeEvent[] {
 }
 
 function reader(events: AggTradeEvent[], quality: Partial<ReturnType<MicroBurstFastTradeReader['getTakerFlow']>> = {}): MicroBurstFastTradeReader {
+  const first = events.length > 0 ? events[0] : undefined;
+  const last = events.length > 0 ? events[events.length - 1] : undefined;
   return {
     getRecent: () => events,
     getTakerFlow: (requestedWindowMs = 10_000) => ({
@@ -35,9 +37,9 @@ function reader(events: AggTradeEvent[], quality: Partial<ReturnType<MicroBurstF
       requestedWindowMs,
       observedWindowMs: 12_000,
       observedSampleCount: events.length,
-      eventWatermarkMs: events.at(-1)?.eventTime ?? null,
+      eventWatermarkMs: last?.eventTime ?? null,
       capacityTruncated: false,
-      coverageStartedAtMs: events.at(0)?.eventTime ?? null,
+      coverageStartedAtMs: first?.eventTime ?? null,
       windowComplete: true,
       gapFree: true,
       ...quality,
