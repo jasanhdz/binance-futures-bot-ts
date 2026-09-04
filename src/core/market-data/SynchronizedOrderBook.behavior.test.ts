@@ -76,7 +76,7 @@ async function startAndBridge(
 }
 
 describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
-  it('drops buffered events with u < snapshot lastUpdateId and bridges with U <= lastUpdateId + 1 <= u', async () => {
+  it('drops buffered events with u < snapshot lastUpdateId and bridges with U <= lastUpdateId <= u', async () => {
     let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
     const source = new Promise<BinanceDepthSnapshot>((resolve) => {
       resolveSnapshot = resolve;
@@ -86,14 +86,15 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     const book = new SynchronizedOrderBook(SYMBOL, d);
     book.start();
     d.diffSource.emit(diff(95, 99, 94));
-    d.diffSource.emit(diff(100, 100, 99, { bids: [['100', '99']] }));
-    d.diffSource.emit(diff(99, 102, 100, { bids: [['100', '12']] }));
+    d.diffSource.emit(diff(98, 100, 97, { bids: [['100', '99']] }));
+    d.diffSource.emit(diff(101, 102, 100, { bids: [['100', '12']] }));
+    d.diffSource.emit(diff(103, 104, 102));
     resolveSnapshot(snapshot(100));
-    await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(102));
+    await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(104));
     expect(book.getState().bids[0].qty).toBe(12);
   });
 
-  it('discards an event ending at the snapshot ID because it is already represented', async () => {
+  it('accepts an event ending at the snapshot ID as the Futures bridge', async () => {
     let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
     const source = new Promise<BinanceDepthSnapshot>((resolve) => {
       resolveSnapshot = resolve;
@@ -105,9 +106,9 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.diffSource.emit(diff(99, 100, 98, { bids: [['100', '99']] }));
 
     resolveSnapshot(snapshot(100));
-    await vi.waitFor(() => expect(book.getState().health).toBe('UNSYNCED'));
+    await vi.waitFor(() => expect(book.getState().health).toBe('HEALTHY'));
     expect(book.getState().lastUpdateId).toBe(100);
-    expect(book.getState().bids[0].qty).toBe(10);
+    expect(book.getState().bids[0].qty).toBe(99);
   });
 
   it('requires the first remaining buffered event to be the snapshot bridge', async () => {
@@ -136,6 +137,8 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     d.snapshotSource.getSnapshot.mockReturnValueOnce(oldSnapshot);
     const book = new SynchronizedOrderBook(SYMBOL, d);
     book.start();
+    d.diffSource.emit(diff(100, 101, 99));
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(1));
     book.stop();
     book.start();
     d.diffSource.emit(diff(200, 201, 200));
@@ -151,12 +154,9 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     const d = deps();
     const book = new SynchronizedOrderBook(SYMBOL, d);
     book.start();
-    d.diffSource.emit(diff(101, 101, 100));
+    d.diffSource.emit(diff(100, 101, 99));
     await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(101));
-    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledWith(
-      SYMBOL,
-      ORDER_BOOK_SNAPSHOT_DEPTH,
-    );
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledWith(SYMBOL, ORDER_BOOK_SNAPSHOT_DEPTH);
   });
 
   it('accepts non-contiguous u values when pu chains to the preceding u', async () => {
@@ -332,15 +332,21 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     const book = new SynchronizedOrderBook(SYMBOL, d, 1);
     book.start();
     d.diffSource.emit(diff(101, 101, 100));
+    await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(1));
     d.diffSource.emit(diff(102, 102, 101));
     resolveSnapshot(snapshot(100));
     await vi.waitFor(() => expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2));
+    expect(book.getAuditMetrics()).toMatchObject({
+      bufferHighWaterMark: 1,
+      overflowCount: 1,
+    });
   });
 
   it('fails closed and retries an empty snapshot without exposing pressure features', async () => {
     const d = deps([{ ...snapshot(100), bids: [] }, snapshot(200)]);
     const book = new SynchronizedOrderBook(SYMBOL, d);
     book.start();
+    d.diffSource.emit(diff(100, 101, 99));
 
     await vi.waitFor(() => expect(book.getState().health).toBe('ANOMALOUS'));
     expect(book.getState().bids).toEqual([]);

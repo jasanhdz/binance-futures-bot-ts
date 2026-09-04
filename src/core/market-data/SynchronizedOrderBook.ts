@@ -88,6 +88,17 @@ export interface SynchronizedOrderBookDeps {
   getServerTime?: () => Promise<number>;
 }
 
+export interface SynchronizedOrderBookAuditMetrics {
+  readonly bufferSize: number;
+  readonly bufferHighWaterMark: number;
+  readonly staleCount: number;
+  readonly overflowCount: number;
+  readonly predecessorMismatchCount: number;
+  readonly bridgeAcceptedCount: number;
+  readonly bridgeRejectedCount: number;
+  readonly lastBridge: { U: number; u: number; pu: number } | null;
+}
+
 export class SynchronizedOrderBook implements OrderBookPort {
   private readonly bidBook = new Map<number, number>();
   private readonly askBook = new Map<number, number>();
@@ -106,6 +117,13 @@ export class SynchronizedOrderBook implements OrderBookPort {
   private temporalHistory: TemporalOrderBookObservation[] = [];
   private diffUnsubscribe: (() => void) | null = null;
   private lifecycleGeneration = 0;
+  private bufferHighWaterMark = 0;
+  private staleCount = 0;
+  private overflowCount = 0;
+  private predecessorMismatchCount = 0;
+  private bridgeAcceptedCount = 0;
+  private bridgeRejectedCount = 0;
+  private lastBridge: { U: number; u: number; pu: number } | null = null;
 
   constructor(
     private readonly symbol: string,
@@ -120,7 +138,6 @@ export class SynchronizedOrderBook implements OrderBookPort {
     this.diffUnsubscribe = this.deps.diffSource.onDiff(this.symbol, (event) =>
       this.handleDiff(event),
     );
-    this.syncFromSnapshot();
   }
 
   stop(): void {
@@ -157,9 +174,23 @@ export class SynchronizedOrderBook implements OrderBookPort {
       this.deps.clock.now() - this.observedAtMs > this.staleThresholdMs
     ) {
       this.health = 'STALE';
+      this.staleCount++;
       this.syncFromSnapshot();
     }
     return this.health;
+  }
+
+  getAuditMetrics(): SynchronizedOrderBookAuditMetrics {
+    return {
+      bufferSize: this.diffBuffer.length,
+      bufferHighWaterMark: this.bufferHighWaterMark,
+      staleCount: this.staleCount,
+      overflowCount: this.overflowCount,
+      predecessorMismatchCount: this.predecessorMismatchCount,
+      bridgeAcceptedCount: this.bridgeAcceptedCount,
+      bridgeRejectedCount: this.bridgeRejectedCount,
+      lastBridge: this.lastBridge,
+    };
   }
 
   getSnapshot(): OrderBookSnapshot | undefined {
@@ -185,13 +216,18 @@ export class SynchronizedOrderBook implements OrderBookPort {
       this.desync('malformed diff-depth event');
       return;
     }
-    if (this.isSyncing || this.health === 'UNAVAILABLE' || this.health === 'ANOMALOUS') {
+    if (this.isSyncing) {
       this.buffer(event);
+      return;
+    }
+    if (this.health === 'UNAVAILABLE' || this.health === 'ANOMALOUS') {
+      this.buffer(event);
+      if (!this.resyncTimer) this.scheduleResync();
       return;
     }
     if (this.health === 'UNSYNCED' || this.health === 'STALE') {
       this.buffer(event);
-      if (!this.resyncTimer) this.syncFromSnapshot();
+      if (!this.resyncTimer) this.scheduleResync();
       return;
     }
     if (this.health !== 'HEALTHY') return;
@@ -205,10 +241,12 @@ export class SynchronizedOrderBook implements OrderBookPort {
 
   private buffer(event: BinanceDepthDiffEvent): void {
     if (this.diffBuffer.length >= this.maxDiffBuffer) {
+      this.overflowCount++;
       this.desync('diff-depth buffer overflow');
       return;
     }
     this.diffBuffer.push(event);
+    this.bufferHighWaterMark = Math.max(this.bufferHighWaterMark, this.diffBuffer.length);
   }
 
   private async syncFromSnapshot(): Promise<void> {
@@ -232,20 +270,23 @@ export class SynchronizedOrderBook implements OrderBookPort {
       this.temporalHistory = [];
 
       const snapshotUpdateId = this.lastUpdateId;
-      const buffered = this.diffBuffer.filter((event) => event.u >= snapshotUpdateId + 1);
+      const buffered = this.diffBuffer.filter((event) => event.u >= snapshotUpdateId);
       this.diffBuffer = [];
       if (!buffered.length) {
+        this.bridgeRejectedCount++;
         this.health = 'UNSYNCED';
         return;
       }
       {
         const first = buffered[0];
-        // Binance's bridge includes the first update after the snapshot. The
-        // snapshot itself is already applied, so the boundary is +1.
-        if (!(first.U <= this.lastUpdateId + 1 && this.lastUpdateId + 1 <= first.u)) {
+        this.lastBridge = { U: first.U, u: first.u, pu: first.pu };
+        // USDⓈ-M Futures accepts the first event spanning the snapshot ID.
+        if (!(first.U <= this.lastUpdateId && this.lastUpdateId <= first.u)) {
+          this.bridgeRejectedCount++;
           this.desync('snapshot bridge missing');
           return;
         }
+        this.bridgeAcceptedCount++;
         this.apply(first);
         if (this.health !== 'HEALTHY') return;
         for (let index = 1; index < buffered.length; index++) {
@@ -337,6 +378,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
   }
 
   private invalidate(health: OrderBookHealth, reason: string): void {
+    if (reason.includes('predecessor mismatch')) this.predecessorMismatchCount++;
     const alreadyRecovering = this.resyncRequested || this.resyncTimer !== null;
     if (!alreadyRecovering) this.gapCount++;
     this.health = health;
