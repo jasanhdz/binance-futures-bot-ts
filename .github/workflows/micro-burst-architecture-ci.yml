@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - work/micro-burst-rider-v1-20260826
+      - feature/micro-opportunity-model-v1
   pull_request:
     branches:
       - work/ts-multisymbol-momentum-20260826
+      - work/micro-burst-rider-v1-20260826
 
 jobs:
   build-and-test:
