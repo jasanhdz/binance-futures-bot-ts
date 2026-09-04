@@ -7,6 +7,7 @@ import {
   buildMicroBurstContext,
   MicroBurstContextBuilderDeps,
 } from '../domain/MicroBurstContextBuilder';
+import type { MicroBurstContext } from '../domain/MicroBurstTypes';
 import { MicroBurstDuplicateSignalGuard } from '../domain/MicroBurstDuplicateSignalGuard';
 import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';
 import {
@@ -28,6 +29,7 @@ interface ShadowEvaluatorDeps {
   logger: Logger;
   clock: Clock;
   getServerTime(): Promise<number>;
+  onContext?: (context: MicroBurstContext) => void;
 }
 
 export class MicroBurstShadowEvaluator {
@@ -70,6 +72,7 @@ export class MicroBurstShadowEvaluator {
             ? { btcConflictThresholdBps: symConfig.btcConflictThresholdBps }
             : undefined,
       });
+      this.deps.onContext?.(context);
 
       const strategyContext: MicroBurstStrategyContext = {
         ...context,

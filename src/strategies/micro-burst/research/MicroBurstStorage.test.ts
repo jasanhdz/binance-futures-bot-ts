@@ -36,6 +36,25 @@ afterEach(() => {
 });
 
 describe('MicroBurstStorage', () => {
+  it('persists Opportunity samples idempotently and records deferred labels', () => {
+    const { storage } = createStorage();
+    const sample = {
+      sampleId: 'opportunity-sample-1',
+      symbol: 'BTCUSDT',
+      sampledAtMs: 100,
+      schemaVersion: 1,
+      featureSchemaVersion: 'MICRO_OPPORTUNITY_FEATURE_V1',
+      featureSchemaHash: 'hash',
+      features: {},
+    } as any;
+    expect(storage.persistOpportunitySample(sample)).toBe(true);
+    expect(storage.persistOpportunitySample(sample)).toBe(true);
+    expect(storage.countOpportunitySamples()).toBe(1);
+    expect(storage.persistOpportunityLabels('opportunity-sample-1', { 10_000: { valid: true } } as any)).toBe(true);
+    expect(storage.countOpportunityLabeledSamples()).toBe(1);
+    storage.close();
+  });
+
   it('migrates legacy gap rows without relabeling them as a reliable feed gap', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-migration-'));
     temporaryDirectories.push(root);

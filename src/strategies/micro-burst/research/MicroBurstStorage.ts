@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { compareTrades, tradeIdentity } from './MicroBurstTradeHistoryStore';
 import { ProspectiveOutcomeRecord } from './MicroBurstOutcomeTypes';
 import { GapKind, MarketDataFeed } from '../../../core/market-data/NormalizedMarketEvents';
+import type { MicroOpportunityHorizonLabel, MicroOpportunityResearchSample } from './MicroOpportunityTypes';
 
 export interface MicroBurstStorageOptions {
   databasePath: string;
@@ -222,6 +223,7 @@ export class MicroBurstStorage {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('synchronous = NORMAL');
       this.createSchema();
+      this.migrateOpportunitySamplesSchema();
       this.recoverArchive();
     } catch (error) {
       this.markFailure(error);
@@ -257,6 +259,51 @@ export class MicroBurstStorage {
         )
         .run(symbol, eventTimeMs, JSON.stringify(features), this.now());
     });
+  }
+
+  persistOpportunitySample(sample: MicroOpportunityResearchSample): boolean {
+    return this.safe(() => {
+      this.db
+        .prepare(
+          `INSERT INTO micro_opportunity_samples (sample_id, symbol, sampled_at_ms, schema_version, feature_schema_version, feature_schema_hash, sample_json, label_json, created_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?) ON CONFLICT(sample_id) DO NOTHING`,
+        )
+        .run(
+          sample.sampleId,
+          sample.symbol,
+          sample.sampledAtMs,
+          sample.schemaVersion,
+          sample.featureSchemaVersion,
+          sample.featureSchemaHash,
+          JSON.stringify(sample),
+          this.now(),
+        );
+    });
+  }
+
+  persistOpportunityLabels(
+    sampleId: string,
+    labels: Readonly<Record<number, MicroOpportunityHorizonLabel>>,
+  ): boolean {
+    return this.safe(() => {
+      this.db
+        .prepare('UPDATE micro_opportunity_samples SET label_json = ? WHERE sample_id = ?')
+        .run(JSON.stringify(labels), sampleId);
+    });
+  }
+
+  countOpportunitySamples(): number {
+    return this.safeValue(
+      () => (this.db.prepare('SELECT COUNT(*) AS count FROM micro_opportunity_samples').get() as { count: number }).count,
+      0,
+    );
+  }
+
+  countOpportunityLabeledSamples(): number {
+    return this.safeValue(
+      () => (this.db.prepare('SELECT COUNT(*) AS count FROM micro_opportunity_samples WHERE label_json IS NOT NULL').get() as { count: number }).count,
+      0,
+    );
   }
 
   persistSignal(snapshot: {
@@ -1474,7 +1521,8 @@ export class MicroBurstStorage {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS market_data_segments (file_path TEXT PRIMARY KEY, segment_id TEXT, data_type TEXT NOT NULL, symbol TEXT NOT NULL, hour_start_ms INTEGER NOT NULL, record_count INTEGER NOT NULL, first_event_time_ms INTEGER NOT NULL, last_event_time_ms INTEGER NOT NULL, checksum TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS book_checkpoints (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS book_features (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, features_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+       CREATE TABLE IF NOT EXISTS book_features (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, features_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+       CREATE TABLE IF NOT EXISTS micro_opportunity_samples (sample_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, sampled_at_ms INTEGER NOT NULL, schema_version INTEGER NOT NULL, feature_schema_version TEXT NOT NULL, feature_schema_hash TEXT NOT NULL, sample_json TEXT NOT NULL, label_json TEXT, created_at_ms INTEGER NOT NULL);
        CREATE TABLE IF NOT EXISTS micro_burst_signals (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT, signal_at_ms INTEGER NOT NULL, cohort_id TEXT, episode_id TEXT, snapshot_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
        CREATE TABLE IF NOT EXISTS micro_burst_outcomes (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT, signal_at_ms INTEGER, completed_at_ms INTEGER NOT NULL, cohort_id TEXT, episode_id TEXT, outcome_json TEXT NOT NULL, journal_status TEXT NOT NULL DEFAULT 'PENDING', created_at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS micro_burst_pending_outcomes (signal_id TEXT PRIMARY KEY, status TEXT NOT NULL, state_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
@@ -1533,6 +1581,14 @@ export class MicroBurstStorage {
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_segments_segment_id ON market_data_segments(segment_id) WHERE segment_id IS NOT NULL`,
     );
+  }
+
+  private migrateOpportunitySamplesSchema(): void {
+    try {
+      this.db.prepare('ALTER TABLE micro_opportunity_samples ADD COLUMN label_json TEXT').run();
+    } catch (error) {
+      if (!String(error).includes('duplicate column name')) throw error;
+    }
   }
 }
 

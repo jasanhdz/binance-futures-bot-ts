@@ -52,6 +52,15 @@ import type {
   MarketSnapshotEvidenceSink,
 } from '../../../core/blackbox/StrategyDecisionBlackBox';
 import { createMicroBurstBlackBoxObservation } from './MicroBurstBlackBoxObservation';
+import { MicroBurstFastMarketState } from './MicroBurstFastMarketState';
+import { projectMicroBurstSlowMarketState, type MicroBurstSlowMarketState } from '../domain/MicroBurstMarketState';
+import {
+  MicroOpportunityResearchSampler,
+  MICRO_OPPORTUNITY_RESEARCH_SAMPLE_INTERVAL_MS,
+} from '../research/MicroOpportunityResearchSampler';
+import type { MicroOpportunityDecisionMetadata } from '../research/MicroOpportunityTypes';
+import { labelMicroOpportunitySample } from '../research/MicroOpportunityLabeler';
+import type { MicroOpportunityResearchSample } from '../research/MicroOpportunityTypes';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -103,6 +112,7 @@ export interface MicroBurstRuntimeHealth {
   archiveFileCount: number | null;
   archiveRetentionAgeMs: number | null;
   archiveRetentionWarning: boolean | null;
+  opportunitySamples: { sampled: number; persisted: number; persistenceRejected: number; sinkErrors: number };
   storageErrors: number;
   mutationAttempts: number;
   forwardedMutations: number;
@@ -137,6 +147,8 @@ interface SymbolRuntimeState {
   duplicateSignalCount: number;
   invalidContextCount: number;
   bookResyncCount: number;
+  latestSlowState: MicroBurstSlowMarketState | null;
+  latestDecision: MicroOpportunityDecisionMetadata;
 }
 
 export interface MicroBurstRuntimeDeps {
@@ -184,6 +196,8 @@ export interface MicroBurstRuntimeDeps {
       [key: string]: unknown;
     }): boolean;
     persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
+    persistOpportunitySample?(sample: import('../research/MicroOpportunityTypes').MicroOpportunityResearchSample): boolean;
+    persistOpportunityLabels?(sampleId: string, labels: Record<number, unknown>): boolean;
     hasAggTradeGap?(symbol: string, fromMs: number, toMs: number): boolean;
     flush?(): boolean | Promise<boolean>;
     close?(): boolean | void | Promise<boolean | void>;
@@ -260,6 +274,8 @@ export class MicroBurstRuntime {
   private paperPersistenceError: string | null = null;
   private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
   private aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
+  private opportunitySampler: MicroOpportunityResearchSampler | null = null;
+  private readonly pendingOpportunitySamples = new Map<string, MicroOpportunityResearchSample>();
 
   constructor(
     private readonly deps: MicroBurstRuntimeDeps,
@@ -504,6 +520,14 @@ export class MicroBurstRuntime {
         duplicateSignalCount: 0,
         invalidContextCount: 0,
         bookResyncCount: 0,
+        latestSlowState: null,
+        latestDecision: {
+          decision: 'UNKNOWN',
+          side: null,
+          reason: null,
+          confidence: null,
+          uniqueCandidateId: null,
+        },
       };
       this.symbolStates.set(symbol, state);
 
@@ -579,11 +603,46 @@ export class MicroBurstRuntime {
         logger,
         clock,
         getServerTime: () => exchange.getServerTime(),
+        onContext: (context) => {
+          const state = this.symbolStates.get(context.symbol);
+          if (state) state.latestSlowState = projectMicroBurstSlowMarketState(context);
+        },
       },
       this.config,
     );
 
     this.startEvaluationLoop();
+    this.opportunitySampler = new MicroOpportunityResearchSampler(
+      enabledSymbols,
+      () => this.deps.clock.now(),
+      (symbol, sampledAtMs) => {
+        const state = this.symbolStates.get(symbol);
+        const fast = state
+          ? new MicroBurstFastMarketState(symbol, {
+              trades: state.aggTradeBuffer,
+              book: state.book,
+              clock: this.deps.clock,
+            }).read()
+          : null;
+        return {
+          symbol,
+          sampledAtMs,
+          slow: state?.latestSlowState ?? null,
+          fast,
+          stableMicroDecision: state?.latestDecision,
+        };
+      },
+      {
+        append: (sample) => {
+          const persisted = this.deps.marketStorage?.persistOpportunitySample?.(sample) ?? false;
+          if (persisted) this.pendingOpportunitySamples.set(sample.sampleId, sample);
+          return persisted;
+        },
+      },
+      MICRO_OPPORTUNITY_RESEARCH_SAMPLE_INTERVAL_MS,
+      () => this.labelPendingOpportunitySamples(),
+    );
+    this.opportunitySampler.start();
     this.startHealthReporting();
 
     logger.info('micro_burst_runtime_started', {
@@ -597,6 +656,10 @@ export class MicroBurstRuntime {
     this.deps.strategyRouter.setObservationHook(undefined);
     if (this.stopPromise) return this.stopPromise;
     this.running = false;
+
+    this.opportunitySampler?.stop();
+    this.opportunitySampler = null;
+    this.pendingOpportunitySamples.clear();
 
     if (this.evaluationTimer) {
       clearInterval(this.evaluationTimer);
@@ -677,6 +740,13 @@ export class MicroBurstRuntime {
         symbol,
         snapshotAtMs,
       });
+      state.latestDecision = {
+        decision: result.decision,
+        side: result.side ?? null,
+        reason: typeof result.diagnostics?.reason === 'string' ? result.diagnostics.reason : null,
+        confidence: result.confidence,
+        uniqueCandidateId: result.wouldEnter && !result.duplicateSuppressed ? result.shadowSignalId : null,
+      };
 
       let paperSuppressed = false;
       if (
@@ -932,6 +1002,14 @@ export class MicroBurstRuntime {
       archiveFileCount: archiveHealth?.archiveFileCount ?? null,
       archiveRetentionAgeMs: archiveHealth?.archiveRetentionAgeMs ?? null,
       archiveRetentionWarning: archiveHealth?.retentionWarning ?? null,
+      opportunitySamples: this.opportunitySampler
+        ? {
+            sampled: this.opportunitySampler.getHealth().sampled,
+            persisted: this.opportunitySampler.getHealth().persisted,
+            persistenceRejected: this.opportunitySampler.getHealth().persistenceRejected,
+            sinkErrors: this.opportunitySampler.getHealth().sinkErrors,
+          }
+        : { sampled: 0, persisted: 0, persistenceRejected: 0, sinkErrors: 0 },
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       mutationAttempts: mutationAudit.totalMutationAttempts,
       forwardedMutations: mutationAudit.forwardedMutationCalls,
@@ -1009,6 +1087,31 @@ export class MicroBurstRuntime {
       currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
       marketEvidence: buildExitMarketEvidence(state.aggTradeBuffer, sinceMs),
     };
+  }
+
+  /** Deterministic smoke/soak hook; production uses the sampler's 1 s timer. */
+  sampleOpportunityNow(): void {
+    this.labelPendingOpportunitySamples();
+    this.opportunitySampler?.tick();
+  }
+
+  private labelPendingOpportunitySamples(): void {
+    const storage = this.deps.marketStorage;
+    if (!storage?.persistOpportunityLabels) return;
+    for (const [sampleId, sample] of this.pendingOpportunitySamples) {
+      const state = this.symbolStates.get(sample.symbol);
+      if (!state) continue;
+      const flow = state.aggTradeBuffer.getTakerFlow(60_000);
+      const labeled = labelMicroOpportunitySample(sample, {
+        trades: state.aggTradeBuffer.getRecent(60_000),
+        watermarkMs: flow.eventWatermarkMs ?? 0,
+        hasAggTradeGap: (fromMs, toMs) =>
+          this.deps.marketStorage?.hasAggTradeGap?.(sample.symbol, fromMs, toMs) ?? false,
+      });
+      if (Object.values(labeled.labels).some((label) => !label.valid)) continue;
+      if (storage.persistOpportunityLabels(sampleId, labeled.labels as Record<number, unknown>))
+        this.pendingOpportunitySamples.delete(sampleId);
+    }
   }
 
   private paperQuote(

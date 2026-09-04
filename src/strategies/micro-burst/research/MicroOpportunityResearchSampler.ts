@@ -109,6 +109,7 @@ export class MicroOpportunityResearchSampler {
     private readonly readInput: (symbol: string, sampledAtMs: number) => MicroOpportunitySampleInput,
     private readonly sink: MicroOpportunitySampleSink,
     private readonly intervalMs = MICRO_OPPORTUNITY_RESEARCH_SAMPLE_INTERVAL_MS,
+    private readonly afterTick?: () => void,
   ) {}
 
   start(): void {
@@ -157,6 +158,11 @@ export class MicroOpportunityResearchSampler {
       }
     } finally {
       this.inTick = false;
+      try {
+        this.afterTick?.();
+      } catch {
+        this.inputErrors++;
+      }
     }
   }
 
