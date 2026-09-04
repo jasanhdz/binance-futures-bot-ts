@@ -627,6 +627,7 @@ aegis:
       - DOGEUSDT
       - AVAXUSDT
       - BTCUSDT
+      - ETHUSDT
     # Broad entry-risk consensus is observation-only. Entry quality, event risk,
     # decision brain and clean entry are one causal chain, not independent votes.
     # Live enforcement is limited to a CRITICAL LONG assessment corroborated by

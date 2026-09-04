@@ -1476,6 +1476,34 @@ describe('TradingService Aegis live execution', () => {
     );
   });
 
+  it('blocks Micro LIVE opening for a blacklisted symbol while leaving collection config independent', async () => {
+    const { exchange, logger, service } = makeHarness({
+      yaml: yamlTurbo({ micro_banned_symbols: ['ETHUSDT'] }),
+      symbolModes: { ETHUSDT: 'LIVE' },
+      microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+    });
+
+    const opened = await (service as any).openMicroBurstLivePosition({
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      signalId: 'blacklisted-eth',
+      strategyVersion: '0.8.0-expected-continuation-live',
+      requestedAt: Date.now(),
+      leverage: 20,
+      positionFraction: 0.01,
+      structuralStopPrice: 2970,
+      destinationPrice: 3030,
+      diagnostics: {},
+    });
+
+    expect(opened).toBe(false);
+    expect(exchange.hasOpenPosition).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'micro_burst_live_entry_denied',
+      expect.objectContaining({ symbol: 'ETHUSDT', reason: 'MICRO_BANNED_SYMBOL' }),
+    );
+  });
+
   it('adopts a startup manual position with its exchange leverage and preserves existing brackets', async () => {
     const { exchange, historyLogger, logger, service, symbolStores } = makeHarness({
       symbolStates: { ETHUSDT: { mode: 'IDLE' } },

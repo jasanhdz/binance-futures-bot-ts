@@ -1299,6 +1299,15 @@ export class TradingService {
       return false;
     }
 
+    const gateConfig = this.runtimeConfig.getAegisTurboGateConfig(request.symbol);
+    if (gateConfig.microBannedSymbols?.includes(request.symbol)) {
+      this.deps.logger.warn('micro_burst_live_entry_denied', {
+        symbol: request.symbol,
+        reason: 'MICRO_BANNED_SYMBOL',
+      });
+      return false;
+    }
+
     if (
       this.microBurstEntryInFlight ||
       this.microBurstEntryInFlightSymbols.has(request.symbol)
@@ -1340,8 +1349,7 @@ export class TradingService {
           : undefined;
       this.riskSession.setDailyPnlPct(dailyPnlPct);
       const risk = this.riskSession.strategySnapshot('MICRO_BURST_V1', request.requestedAt);
-      const gateConfig = this.runtimeConfig.getAegisTurboGateConfig(request.symbol);
-      const liquidity = this.detector[request.symbol]?.getLiquidityStressStatus(
+    const liquidity = this.detector[request.symbol]?.getLiquidityStressStatus(
         request.requestedAt,
         LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
       );
