@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-09-04T06:17:11.821Z",
+  "readOnly": true,
+  "endpoint": "USD-M Futures production public market data",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "snapshotLimit": 1000,
+  "preSnapshotBufferMs": 750,
+  "postSnapshotObserveMs": 4000,
+  "durationMs": 5567,
+  "audits": [
+    {
+      "symbol": "BTCUSDT",
+      "snapshotLastUpdateId": 11471598355390,
+      "snapshotLatencyMs": 814,
+      "totalEvents": 55,
+      "eventsBufferedBeforeSnapshotResponse": 16,
+      "eventRatePerSecond": 9.88,
+      "officialBridge": {
+        "index": 16,
+        "U": 11471598354435,
+        "u": 11471598359692,
+        "pu": 11471598354377
+      },
+      "currentPlusOneBridge": {
+        "index": 16,
+        "U": 11471598354435,
+        "u": 11471598359692,
+        "pu": 11471598354377
+      },
+      "bridgeSelectionDiffers": false,
+      "officialChainPuMismatches": 0,
+      "currentChainPuMismatches": 0,
+      "firstOfficialChainMismatch": null,
+      "firstCurrentChainMismatch": null
+    },
+    {
+      "symbol": "ETHUSDT",
+      "snapshotLastUpdateId": 11471598355528,
+      "snapshotLatencyMs": 797,
+      "totalEvents": 55,
+      "eventsBufferedBeforeSnapshotResponse": 16,
+      "eventRatePerSecond": 9.88,
+      "officialBridge": {
+        "index": 16,
+        "U": 11471598354266,
+        "u": 11471598359527,
+        "pu": 11471598354237
+      },
+      "currentPlusOneBridge": {
+        "index": 16,
+        "U": 11471598354266,
+        "u": 11471598359527,
+        "pu": 11471598354237
+      },
+      "bridgeSelectionDiffers": false,
+      "officialChainPuMismatches": 0,
+      "currentChainPuMismatches": 0,
+      "firstOfficialChainMismatch": null,
+      "firstCurrentChainMismatch": null
+    }
+  ]
+}
