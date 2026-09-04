@@ -95,7 +95,7 @@
 
 ## E — Add high-frequency research sampling independent of the 5 s strategy loop
 
-**Status:** `IN_PROGRESS`  
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Collect causal opportunity snapshots without changing the existing LIVE evaluation cadence.
 
@@ -133,7 +133,7 @@
 
 ## G — Capture continuous market states, not only Micro entries
 
-**Status:** `IN_PROGRESS`  
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Remove entry-selection bias from the predictive dataset.
 
@@ -226,7 +226,7 @@
 
 ## L — Version and freeze the official dataset
 
-**Status:** `TODO`  
+**Status:** `BLOCKED — requires sufficient prospective labeled data`
 **Priority:** P0  
 **Goal:** Produce a reproducible immutable dataset manifest.
 
@@ -243,7 +243,7 @@
 
 ## M — Non-ML baselines
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Establish how much improvement simple deterministic rules can achieve.
 
@@ -258,7 +258,7 @@
 
 ## N — Train Opportunity Model V1 offline in Python
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P1  
 **Goal:** Fit interpretable tabular baselines before sequential/deep models.
 
@@ -278,7 +278,7 @@
 
 ## O — Generalization/stability evaluation
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Require stable performance rather than one pooled mean.
 
@@ -293,7 +293,7 @@
 
 ## P — Define Opportunity Score/policy inputs
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P1  
 **Goal:** Convert calibrated predictions into a small auditable contract.
 
@@ -308,7 +308,7 @@
 
 ## Q — Integrate an entry gate without changing direction authority
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P1  
 **Goal:** Micro keeps LONG/SHORT authority; Opportunity V1 may only allow/reject an otherwise valid entry.
 
@@ -326,7 +326,7 @@
 
 ## R — Historical Black Box A/B replay
 
-**Status:** `TODO`  
+**Status:** `BLOCKED — requires dataset and model evidence`
 **Priority:** P0  
 **Goal:** Compare the exact same candidate population.
 
@@ -346,7 +346,7 @@
 
 ## S — Rejection/error analysis
 
-**Status:** `TODO`  
+**Status:** `BLOCKED — requires dataset and model evidence`
 **Priority:** P0  
 **Goal:** Understand *why* the gate improves/degrades outcomes.
 
@@ -361,7 +361,7 @@
 
 ## T — Freeze candidate and open VALIDATION once
 
-**Status:** `TODO`  
+**Status:** `BLOCKED — requires validated candidate evidence`
 **Priority:** P0  
 **Goal:** Prevent iterative overfitting to validation.
 
@@ -371,7 +371,7 @@
 
 ## U — Local TypeScript inference runtime
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P1  
 **Goal:** Keep inference inside the trading process; Python remains offline-only.
 
@@ -386,7 +386,7 @@
 
 ## V — Runtime latency/resource benchmark
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Measure rather than assume latency benefit.
 
@@ -401,7 +401,7 @@
 
 ## W — Real-time shadow dual-run
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`
 **Priority:** P0  
 **Goal:** Observe model decisions prospectively with zero execution authority.
 
@@ -415,7 +415,7 @@
 
 ## X — Prospective shadow A/B validation
 
-**Status:** `TODO`  
+**Status:** `BLOCKED — requires prospective samples and frozen model`
 **Priority:** P0  
 **Goal:** Confirm historical gains survive fresh data, real timing, and real data quality.
 
@@ -425,7 +425,7 @@
 
 ## Y — Minimal fail-closed LIVE canary
 
-**Status:** `TODO`  
+**Status:** `BLOCKED — requires X gate`
 **Priority:** P0  
 **Goal:** Tiny controlled deployment only after X passes.
 
@@ -440,9 +440,15 @@
 
 ## Z — Production promotion + Opportunity Exit V2 research
 
-**Status:** `TODO`  
+**Status:** `BLOCKED — requires LIVE canary evidence`
 **Priority:** P1  
 **Goal:** Promote only after LIVE evidence, then separately research remaining opportunity for exits.
+
+## Infrastructure Progress Log
+
+- **2026-09-04:** M/N/O/U/V/W infrastructure prepared without changing LIVE authority. Added deterministic offline JSONL loading and baseline/evaluation scaffolding, optional Logistic Regression/LightGBM artifact writers with metadata hashes, local in-memory inference with schema/hash and stale fail-closed checks, percentile benchmark summaries, and a shadow dual-run record explicitly marked `STABLE_MICRO_ONLY`.
+- **2026-09-04:** P/Q contract tests cover schema drift, stale/invalid model output, `NO_TRADE` rejection, probability rejection, and preservation of Micro LONG/SHORT direction.
+- **Evidence status:** M, N, O, P, Q, U, V, W remain `IN_PROGRESS`; no stage is marked `DONE` because prospective labeled samples and measured runtime evidence are still required. L, R, S, T, X, Y, Z remain blocked.
 
 **Entry V1 promotion**
 - Expand symbols progressively.
