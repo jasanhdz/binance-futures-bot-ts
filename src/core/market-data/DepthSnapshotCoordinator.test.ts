@@ -5,16 +5,46 @@ function testClock(offset = 1_000_000_000_000) {
   let current = Date.now() + offset;
   return {
     clock: { now: () => current },
-    sleep: async (ms: number) => { current += ms; },
+    sleep: async (ms: number) => {
+      current += ms;
+    },
   };
 }
 
 describe('DepthSnapshotCoordinator', () => {
+  it('forwards the requested REST depth and coalesces only identical depth requests', async () => {
+    const time = testClock();
+    const calls: Array<[string, number]> = [];
+    const coordinator = new DepthSnapshotCoordinator(
+      async (symbol, levels) => {
+        calls.push([symbol, levels]);
+        return { symbol, levels };
+      },
+      {},
+      { ...time, jitterMs: 0 },
+    );
+
+    await expect(coordinator.request('ETHUSDT', 100)).resolves.toMatchObject({ levels: 100 });
+    await expect(coordinator.request('ETHUSDT', 500)).resolves.toMatchObject({ levels: 500 });
+    await expect(coordinator.request('ETHUSDT', 1_000)).resolves.toMatchObject({ levels: 1_000 });
+
+    expect(calls).toEqual([
+      ['ETHUSDT', 100],
+      ['ETHUSDT', 500],
+      ['ETHUSDT', 1_000],
+    ]);
+    expect(coordinator.getMetrics()).toMatchObject({ totalWeight: 35, maxWeightPerMinute: 35 });
+    coordinator.close();
+  });
+
   it('coalesces same-symbol requests and staggers weighted startup snapshots', async () => {
     const time = testClock();
     const calls: string[] = [];
     const coordinator = new DepthSnapshotCoordinator(
-      async (symbol) => { calls.push(symbol); return { symbol }; },
+      async (symbol) => {
+        calls.push(symbol);
+        return { symbol };
+      },
       {},
       { ...time, jitterMs: 0 },
     );
@@ -24,8 +54,18 @@ describe('DepthSnapshotCoordinator', () => {
     const all = await Promise.all([
       sameA,
       sameB,
-      ...['BTCUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'SUIUSDT', 'LTCUSDT']
-        .map((symbol) => coordinator.request(symbol)),
+      ...[
+        'BTCUSDT',
+        'SOLUSDT',
+        'BNBUSDT',
+        'XRPUSDT',
+        'DOGEUSDT',
+        'ADAUSDT',
+        'AVAXUSDT',
+        'LINKUSDT',
+        'SUIUSDT',
+        'LTCUSDT',
+      ].map((symbol) => coordinator.request(symbol)),
     ]);
 
     expect(all).toHaveLength(12);
@@ -45,7 +85,10 @@ describe('DepthSnapshotCoordinator', () => {
     const time = testClock();
     let calls = 0;
     const coordinator = new DepthSnapshotCoordinator(
-      async () => { calls++; throw { status: 429, response: { headers: { 'retry-after': '10' } } }; },
+      async () => {
+        calls++;
+        throw { status: 429, response: { headers: { 'retry-after': '10' } } };
+      },
       {},
       { ...time, jitterMs: 0 },
     );
@@ -65,7 +108,10 @@ describe('DepthSnapshotCoordinator', () => {
     const time = testClock(3_000_000_000_000);
     let calls = 0;
     const coordinator = new DepthSnapshotCoordinator(
-      async () => { calls++; throw new Error('Way too many requests; IP banned until ' + (time.clock.now() + 20_000)); },
+      async () => {
+        calls++;
+        throw new Error('Way too many requests; IP banned until ' + (time.clock.now() + 20_000));
+      },
       {},
       { ...time, jitterMs: 0 },
     );
@@ -84,7 +130,10 @@ describe('DepthSnapshotCoordinator', () => {
     const time = testClock(4_000_000_000_000);
     let calls = 0;
     const coordinator = new DepthSnapshotCoordinator(
-      async () => { calls++; throw new Error('snapshot failed'); },
+      async () => {
+        calls++;
+        throw new Error('snapshot failed');
+      },
       {},
       { ...time, jitterMs: 0 },
     );
@@ -110,7 +159,13 @@ describe('DepthSnapshotCoordinator', () => {
         return { symbol };
       },
       {},
-      { clock: { now: () => current }, sleep: async (ms) => { current += ms; }, jitterMs: 0 },
+      {
+        clock: { now: () => current },
+        sleep: async (ms) => {
+          current += ms;
+        },
+        jitterMs: 0,
+      },
     );
 
     const requests = ['ETHUSDT', 'BTCUSDT', 'SOLUSDT'].map((symbol) => coordinator.request(symbol));

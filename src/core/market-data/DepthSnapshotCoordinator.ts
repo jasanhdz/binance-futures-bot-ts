@@ -1,4 +1,8 @@
-import { isRateLimited, noteRateLimitUntil, parseRateLimitError } from '../../infra/adapters/rate-limit';
+import {
+  isRateLimited,
+  noteRateLimitUntil,
+  parseRateLimitError,
+} from '../../infra/adapters/rate-limit';
 
 export interface DepthSnapshotCoordinatorOptions {
   clock?: { now(): number };
@@ -29,11 +33,20 @@ export interface DepthSnapshotCoordinatorMetrics {
   maxWeightPerMinute: number;
   circuitBreakerActivations: number;
   requestsExecutedDuringBan: number;
+  queueDepth: number;
+  queueHighWaterMark: number;
+  inflightCount: number;
   symbols: Record<string, DepthSnapshotSymbolMetrics>;
 }
 
 const DEFAULT_WEIGHT_PER_SNAPSHOT = 20;
 const DEFAULT_WINDOW_MS = 60_000;
+
+function weightForLevels(levels: number): number {
+  if (levels <= 100) return 5;
+  if (levels <= 500) return 10;
+  return DEFAULT_WEIGHT_PER_SNAPSHOT;
+}
 
 /** Global, weighted and fail-closed scheduler for public depth snapshots. */
 export class DepthSnapshotCoordinator<T> {
@@ -82,14 +95,23 @@ export class DepthSnapshotCoordinator<T> {
       maxWeightPerMinute: 0,
       circuitBreakerActivations: 0,
       requestsExecutedDuringBan: 0,
+      queueDepth: 0,
+      queueHighWaterMark: 0,
+      inflightCount: 0,
       symbols: {},
     };
   }
 
   request(symbol: string, levels = 1_000): Promise<T> {
     const key = symbol.toUpperCase();
+    const requestKey = `${key}:${levels}`;
     this.metrics.requests++;
-    const symbolMetrics = this.metrics.symbols[key] ??= { requests: 0, coalesced: 0, successes: 0, failures: 0 };
+    const symbolMetrics = (this.metrics.symbols[key] ??= {
+      requests: 0,
+      coalesced: 0,
+      successes: 0,
+      failures: 0,
+    });
     symbolMetrics.requests++;
     if (this.closed) {
       this.metrics.blocked++;
@@ -99,19 +121,25 @@ export class DepthSnapshotCoordinator<T> {
       this.metrics.blocked++;
       return Promise.reject(new Error('DEPTH_SNAPSHOT_CIRCUIT_OPEN'));
     }
-    const existing = this.pending.get(key);
+    const existing = this.pending.get(requestKey);
     if (existing) {
       this.metrics.coalesced++;
       symbolMetrics.coalesced++;
       return new Promise<T>((resolve, reject) => existing.push({ resolve, reject }));
     }
-    const promise = new Promise<T>((resolve, reject) => this.pending.set(key, [{ resolve, reject }]));
-    this.queue.push(key);
+    const promise = new Promise<T>((resolve, reject) =>
+      this.pending.set(requestKey, [{ resolve, reject }]),
+    );
+    this.queue.push(requestKey);
+    this.metrics.queueDepth = this.queue.length;
+    this.metrics.queueHighWaterMark = Math.max(this.metrics.queueHighWaterMark, this.queue.length);
     this.schedulePump();
     return promise;
   }
 
-  getCircuitUntil(): number { return this.circuitUntil; }
+  getCircuitUntil(): number {
+    return this.circuitUntil;
+  }
   getWeightUsed(now = this.now()): number {
     this.prune(now);
     return this.recent.reduce((total, item) => total + item.weight, 0);
@@ -120,7 +148,11 @@ export class DepthSnapshotCoordinator<T> {
   getMetrics(): DepthSnapshotCoordinatorMetrics {
     return {
       ...this.metrics,
-      symbols: Object.fromEntries(Object.entries(this.metrics.symbols).map(([symbol, metrics]) => [symbol, { ...metrics }])),
+      queueDepth: this.queue.length,
+      inflightCount: this.inflight.size,
+      symbols: Object.fromEntries(
+        Object.entries(this.metrics.symbols).map(([symbol, metrics]) => [symbol, { ...metrics }]),
+      ),
     };
   }
 
@@ -157,39 +189,55 @@ export class DepthSnapshotCoordinator<T> {
         await this.sleep(this.nextDispatchAt - now);
         continue;
       }
-      const waitForBudget = this.getWeightUsed(now) + DEFAULT_WEIGHT_PER_SNAPSHOT > this.maxWeightPerMinute
-        ? Math.max(1, this.recent[0].at + DEFAULT_WINDOW_MS - now)
-        : 0;
-      if (waitForBudget) {
-        await this.sleep(waitForBudget);
-        continue;
-      }
-      const eligibleIndex = this.queue.findIndex((queuedSymbol) =>
-        (this.nextAllowedBySymbol.get(queuedSymbol) ?? 0) <= now,
+      const eligibleIndex = this.queue.findIndex(
+        (queuedSymbol) => (this.nextAllowedBySymbol.get(queuedSymbol) ?? 0) <= now,
       );
       if (eligibleIndex < 0) {
-        const nextAllowed = Math.min(...this.queue.map((queuedSymbol) =>
-          this.nextAllowedBySymbol.get(queuedSymbol) ?? now,
-        ));
+        const nextAllowed = Math.min(
+          ...this.queue.map((queuedSymbol) => this.nextAllowedBySymbol.get(queuedSymbol) ?? now),
+        );
         await this.sleep(Math.max(1, nextAllowed - now));
         continue;
       }
-      const symbol = this.queue.splice(eligibleIndex, 1)[0];
-      const entries = this.pending.get(symbol);
+      const requestKey = this.queue.splice(eligibleIndex, 1)[0];
+      this.metrics.queueDepth = this.queue.length;
+      const separator = requestKey.lastIndexOf(':');
+      const symbol = requestKey.slice(0, separator);
+      const levels = Number(requestKey.slice(separator + 1));
+      const requestWeight = weightForLevels(levels);
+      const waitForBudget =
+        this.getWeightUsed(now) + requestWeight > this.maxWeightPerMinute
+          ? Math.max(1, this.recent[0].at + DEFAULT_WINDOW_MS - now)
+          : 0;
+      if (waitForBudget) {
+        this.queue.splice(eligibleIndex, 0, requestKey);
+        this.metrics.queueDepth = this.queue.length;
+        await this.sleep(waitForBudget);
+        continue;
+      }
+      const entries = this.pending.get(requestKey);
       if (!entries) continue;
-      this.inflight.add(symbol);
-      this.recent.push({ at: now, weight: DEFAULT_WEIGHT_PER_SNAPSHOT });
-      this.metrics.totalWeight += DEFAULT_WEIGHT_PER_SNAPSHOT;
-      this.metrics.maxWeightPerMinute = Math.max(this.metrics.maxWeightPerMinute, this.getWeightUsed(now));
+      this.inflight.add(requestKey);
+      this.recent.push({ at: now, weight: requestWeight });
+      this.metrics.totalWeight += requestWeight;
+      this.metrics.maxWeightPerMinute = Math.max(
+        this.metrics.maxWeightPerMinute,
+        this.getWeightUsed(now),
+      );
       if (isRateLimited(now) || now < this.circuitUntil) this.metrics.requestsExecutedDuringBan++;
-      this.nextDispatchAt = now + (DEFAULT_WEIGHT_PER_SNAPSHOT * DEFAULT_WINDOW_MS) / this.maxWeightPerMinute;
-      void this.run(symbol, entries);
+      this.nextDispatchAt = now + (requestWeight * DEFAULT_WINDOW_MS) / this.maxWeightPerMinute;
+      void this.run(requestKey, symbol, levels, entries);
     }
   }
 
-  private async run(symbol: string, entries: Pending<T>[]): Promise<void> {
+  private async run(
+    requestKey: string,
+    symbol: string,
+    levels: number,
+    entries: Pending<T>[],
+  ): Promise<void> {
     try {
-      const value = await this.fetch(symbol, 1_000);
+      const value = await this.fetch(symbol, levels);
       this.metrics.successes++;
       this.metrics.symbols[symbol].successes++;
       for (const entry of entries) entry.resolve(value);
@@ -207,7 +255,10 @@ export class DepthSnapshotCoordinator<T> {
         if (this.circuitUntil <= this.now()) this.metrics.circuitBreakerActivations++;
         this.circuitUntil = Math.max(this.circuitUntil, until + this.jitter());
         this.scheduleCircuitWake();
-        this.logger.warn?.('depth_snapshot_rate_limit_circuit_open', { status: details.status, banUntil: until });
+        this.logger.warn?.('depth_snapshot_rate_limit_circuit_open', {
+          status: details.status,
+          banUntil: until,
+        });
       }
       this.stableEvents = 0;
       this.globalFailureStreak++;
@@ -218,8 +269,9 @@ export class DepthSnapshotCoordinator<T> {
       this.nextAllowedBySymbol.set(symbol, this.now() + this.backoff(failures));
       for (const entry of entries) entry.reject(error);
     } finally {
-      this.pending.delete(symbol);
-      this.inflight.delete(symbol);
+      this.pending.delete(requestKey);
+      this.inflight.delete(requestKey);
+      this.metrics.queueDepth = this.queue.length;
       this.schedulePump();
     }
   }
