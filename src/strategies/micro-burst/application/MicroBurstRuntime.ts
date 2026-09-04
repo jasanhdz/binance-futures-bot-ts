@@ -45,6 +45,8 @@ import { OrderBookDataPlane } from '../../../core/market-data/OrderBookDataPlane
 import type { OrderBookLease } from '../../../core/market-data/OrderBookDataPlane';
 import { AggTradeDataPlane } from '../../../core/market-data/AggTradeDataPlane';
 import type { AggTradeLease } from '../../../core/market-data/AggTradeDataPlane';
+import { CandleDataPlane } from '../../../core/market-data/CandleDataPlane';
+import type { CandleLease } from '../../../core/market-data/CandleDataPlane';
 import { ComposedBenchmarkMarketDataPort } from '../../../core/market-data/BenchmarkMarketData';
 import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
 import type {
@@ -53,7 +55,10 @@ import type {
 } from '../../../core/blackbox/StrategyDecisionBlackBox';
 import { createMicroBurstBlackBoxObservation } from './MicroBurstBlackBoxObservation';
 import { MicroBurstFastMarketState } from './MicroBurstFastMarketState';
-import { projectMicroBurstSlowMarketState, type MicroBurstSlowMarketState } from '../domain/MicroBurstMarketState';
+import {
+  projectMicroBurstSlowMarketState,
+  type MicroBurstSlowMarketState,
+} from '../domain/MicroBurstMarketState';
 import {
   MicroOpportunityResearchSampler,
   MICRO_OPPORTUNITY_RESEARCH_SAMPLE_INTERVAL_MS,
@@ -61,6 +66,7 @@ import {
 import type { MicroOpportunityDecisionMetadata } from '../research/MicroOpportunityTypes';
 import { labelMicroOpportunitySample } from '../research/MicroOpportunityLabeler';
 import type { MicroOpportunityResearchSample } from '../research/MicroOpportunityTypes';
+import type { MicroOpportunitySampleOutcome } from '../research/MicroOpportunityResearchSampler';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -118,7 +124,12 @@ export interface MicroBurstRuntimeHealth {
     persistenceRejected: number;
     sinkErrors: number;
     tickDurationMs: { p50: number; p95: number; p99: number };
+    bySymbol: Record<
+      string,
+      { attempts: number; persisted: number; skipReasons: Record<string, number> }
+    >;
   };
+  symbolMetrics: Record<string, Record<string, unknown>>;
   storageErrors: number;
   mutationAttempts: number;
   forwardedMutations: number;
@@ -149,6 +160,19 @@ interface SymbolRuntimeState {
   evaluationInFlight: boolean;
   lastEvaluationAt: number;
   evaluationCount: number;
+  evaluationScheduled: number;
+  evaluationStarted: number;
+  evaluationCompleted: number;
+  evaluationFailed: number;
+  candleCacheHit: number;
+  candleUnavailable: number;
+  candleStale: number;
+  latestSlowStatePublished: number;
+  latestSlowStatePublishedAt: number | null;
+  opportunitySamplerAttempts: number;
+  opportunityPersisted: number;
+  opportunitySkipReasons: Record<string, number>;
+  evaluationDurationsMs: number[];
   uniqueSignalCount: number;
   duplicateSignalCount: number;
   invalidContextCount: number;
@@ -202,7 +226,9 @@ export interface MicroBurstRuntimeDeps {
       [key: string]: unknown;
     }): boolean;
     persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean;
-    persistOpportunitySample?(sample: import('../research/MicroOpportunityTypes').MicroOpportunityResearchSample): boolean;
+    persistOpportunitySample?(
+      sample: import('../research/MicroOpportunityTypes').MicroOpportunityResearchSample,
+    ): boolean;
     persistOpportunityLabels?(sampleId: string, labels: Record<number, unknown>): boolean;
     hasAggTradeGap?(symbol: string, fromMs: number, toMs: number): boolean;
     flush?(): boolean | Promise<boolean>;
@@ -247,6 +273,8 @@ export interface MicroBurstRuntimeDeps {
   orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
   /** @deprecated Isolated-test fallback only. Production injects app-owned shared planes. */
   aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
+  /** App-owned shared candle state used by the production evaluation path. */
+  candleDataPlane?: CandleDataPlane;
   blackBox?: {
     decisionSink: DecisionEvidenceSink;
     marketSnapshotSink: MarketSnapshotEvidenceSink;
@@ -280,6 +308,8 @@ export class MicroBurstRuntime {
   private paperPersistenceError: string | null = null;
   private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
   private aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
+  private candleDataPlane?: CandleDataPlane;
+  private readonly candleLeases: CandleLease[] = [];
   private opportunitySampler: MicroOpportunityResearchSampler | null = null;
   private readonly pendingOpportunitySamples = new Map<string, MicroOpportunityResearchSample>();
 
@@ -364,6 +394,31 @@ export class MicroBurstRuntime {
     const clock = this.deps.clock;
     const logger = this.deps.logger;
     const exchange = this.deps.exchange;
+
+    this.candleDataPlane = this.deps.candleDataPlane;
+    if (this.candleDataPlane) {
+      for (const symbol of enabledSymbols) {
+        for (const interval of ['1m', '3m', '5m'] as const) {
+          this.candleLeases.push(this.candleDataPlane.acquire(symbol, interval));
+        }
+      }
+      const warmupResults = await Promise.allSettled(
+        enabledSymbols.flatMap((symbol) =>
+          (['1m', '3m', '5m'] as const).map((interval) =>
+            this.candleDataPlane!.ensureWarm(
+              symbol,
+              interval,
+              interval === '1m' ? 100 : interval === '3m' ? 80 : 60,
+            ),
+          ),
+        ),
+      );
+      for (const result of warmupResults) {
+        if (result.status === 'rejected') {
+          logger.warn('micro_burst_candle_warmup_failed', { error: String(result.reason) });
+        }
+      }
+    }
 
     const candleProvider = new MarketDataCandleProvider(exchange, clock);
     const benchmarkData = new ComposedBenchmarkMarketDataPort({
@@ -522,6 +577,19 @@ export class MicroBurstRuntime {
         evaluationInFlight: false,
         lastEvaluationAt: 0,
         evaluationCount: 0,
+        evaluationScheduled: 0,
+        evaluationStarted: 0,
+        evaluationCompleted: 0,
+        evaluationFailed: 0,
+        candleCacheHit: 0,
+        candleUnavailable: 0,
+        candleStale: 0,
+        latestSlowStatePublished: 0,
+        latestSlowStatePublishedAt: null,
+        opportunitySamplerAttempts: 0,
+        opportunityPersisted: 0,
+        opportunitySkipReasons: {},
+        evaluationDurationsMs: [],
         uniqueSignalCount: 0,
         duplicateSignalCount: 0,
         invalidContextCount: 0,
@@ -542,7 +610,15 @@ export class MicroBurstRuntime {
 
     const contextBuilderDeps: MicroBurstContextBuilderDeps = {
       candles: {
-        getCandles: (sym, interval, limit) => exchange.getCandles(sym, interval, limit),
+        getCandles: async (sym, interval, limit) => {
+          if (!this.candleDataPlane) return exchange.getCandles(sym, interval, limit);
+          const snapshot = this.candleDataPlane.read(sym, interval, limit);
+          const state = this.symbolStates.get(sym);
+          if (snapshot.status === 'FRESH') state && state.candleCacheHit++;
+          else if (snapshot.status === 'STALE') state && state.candleStale++;
+          else state && state.candleUnavailable++;
+          return snapshot.status === 'FRESH' ? [...snapshot.candles] : [];
+        },
       },
       btc: this.btcProvider,
       book: {
@@ -611,7 +687,11 @@ export class MicroBurstRuntime {
         getServerTime: () => exchange.getServerTime(),
         onContext: (context) => {
           const state = this.symbolStates.get(context.symbol);
-          if (state) state.latestSlowState = projectMicroBurstSlowMarketState(context);
+          if (state) {
+            state.latestSlowState = projectMicroBurstSlowMarketState(context);
+            state.latestSlowStatePublished++;
+            state.latestSlowStatePublishedAt = this.deps.clock.now();
+          }
         },
       },
       this.config,
@@ -647,6 +727,7 @@ export class MicroBurstRuntime {
       },
       MICRO_OPPORTUNITY_RESEARCH_SAMPLE_INTERVAL_MS,
       () => this.labelPendingOpportunitySamples(),
+      (symbol, outcome) => this.recordOpportunityOutcome(symbol, outcome),
     );
     this.opportunitySampler.start();
     this.startHealthReporting();
@@ -682,6 +763,9 @@ export class MicroBurstRuntime {
       state.aggTradeBuffer.clear();
       state.evaluationInFlight = false;
     }
+    for (const lease of this.candleLeases) lease.release();
+    this.candleLeases.length = 0;
+    this.candleDataPlane = undefined;
     this.symbolStates.clear();
 
     if (this.btcProvider) {
@@ -735,10 +819,12 @@ export class MicroBurstRuntime {
   ): Promise<MicroBurstShadowEvaluationResult | null> {
     const state = this.symbolStates.get(symbol);
     if (!state || !this.shadowEvaluator) return null;
+    state.evaluationScheduled++;
     if (state.evaluationInFlight) return null;
     if (!this.running) return null;
 
     state.evaluationInFlight = true;
+    state.evaluationStarted++;
     const t0 = this.deps.clock.now();
 
     try {
@@ -751,7 +837,8 @@ export class MicroBurstRuntime {
         side: result.side ?? null,
         reason: typeof result.diagnostics?.reason === 'string' ? result.diagnostics.reason : null,
         confidence: result.confidence,
-        uniqueCandidateId: result.wouldEnter && !result.duplicateSuppressed ? result.shadowSignalId : null,
+        uniqueCandidateId:
+          result.wouldEnter && !result.duplicateSuppressed ? result.shadowSignalId : null,
       };
 
       let paperSuppressed = false;
@@ -835,6 +922,7 @@ export class MicroBurstRuntime {
       }
 
       state.evaluationCount++;
+      state.evaluationCompleted++;
       state.lastEvaluationAt = t0;
       this.totalEvaluations++;
 
@@ -951,12 +1039,15 @@ export class MicroBurstRuntime {
 
       return result;
     } catch (err) {
+      state.evaluationFailed++;
       this.deps.logger.error('micro_burst_runtime_evaluation_error', {
         symbol,
         error: String(err),
       });
       return null;
     } finally {
+      state.evaluationDurationsMs.push(Math.max(0, this.deps.clock.now() - t0));
+      if (state.evaluationDurationsMs.length > 256) state.evaluationDurationsMs.shift();
       state.evaluationInFlight = false;
     }
   }
@@ -1017,6 +1108,7 @@ export class MicroBurstRuntime {
               persistenceRejected: samplerHealth.persistenceRejected,
               sinkErrors: samplerHealth.sinkErrors,
               tickDurationMs: samplerHealth.tickDurationMs,
+              bySymbol: this.getOpportunityHealthBySymbol(),
             }
           : {
               sampled: 0,
@@ -1024,8 +1116,10 @@ export class MicroBurstRuntime {
               persistenceRejected: 0,
               sinkErrors: 0,
               tickDurationMs: { p50: 0, p95: 0, p99: 0 },
+              bySymbol: this.getOpportunityHealthBySymbol(),
             };
       })(),
+      symbolMetrics: this.getSymbolMetrics(),
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       mutationAttempts: mutationAudit.totalMutationAttempts,
       forwardedMutations: mutationAudit.forwardedMutationCalls,
@@ -1128,6 +1222,62 @@ export class MicroBurstRuntime {
       if (storage.persistOpportunityLabels(sampleId, labeled.labels as Record<number, unknown>))
         this.pendingOpportunitySamples.delete(sampleId);
     }
+  }
+
+  private recordOpportunityOutcome(symbol: string, outcome: MicroOpportunitySampleOutcome): void {
+    const state = this.symbolStates.get(symbol);
+    if (!state) return;
+    state.opportunitySamplerAttempts++;
+    if (outcome === 'persisted') state.opportunityPersisted++;
+    else {
+      state.opportunitySkipReasons[outcome] = (state.opportunitySkipReasons[outcome] ?? 0) + 1;
+    }
+  }
+
+  private getOpportunityHealthBySymbol(): Record<
+    string,
+    {
+      attempts: number;
+      persisted: number;
+      skipReasons: Record<string, number>;
+    }
+  > {
+    return Object.fromEntries(
+      [...this.symbolStates.entries()].map(([symbol, state]) => [
+        symbol,
+        {
+          attempts: state.opportunitySamplerAttempts,
+          persisted: state.opportunityPersisted,
+          skipReasons: { ...state.opportunitySkipReasons },
+        },
+      ]),
+    );
+  }
+
+  private getSymbolMetrics(): Record<string, Record<string, unknown>> {
+    return Object.fromEntries(
+      [...this.symbolStates.entries()].map(([symbol, state]) => [
+        symbol,
+        {
+          evaluationScheduled: state.evaluationScheduled,
+          evaluationStarted: state.evaluationStarted,
+          evaluationCompleted: state.evaluationCompleted,
+          evaluationFailed: state.evaluationFailed,
+          evaluationDurationMs: MicroBurstRuntime.percentileSummary(state.evaluationDurationsMs),
+          candleCacheHit: state.candleCacheHit,
+          candleUnavailable: state.candleUnavailable,
+          candleStale: state.candleStale,
+          latestSlowStatePublished: state.latestSlowStatePublished,
+          latestSlowStateAge:
+            state.latestSlowStatePublishedAt === null
+              ? null
+              : Math.max(0, this.deps.clock.now() - state.latestSlowStatePublishedAt),
+          opportunitySamplerAttempt: state.opportunitySamplerAttempts,
+          opportunityPersisted: state.opportunityPersisted,
+          skipReasons: { ...state.opportunitySkipReasons },
+        },
+      ]),
+    );
   }
 
   private paperQuote(
@@ -1324,6 +1474,18 @@ export class MicroBurstRuntime {
       // A slow candle read for one symbol must not starve the other enabled symbols.
       await Promise.all([...this.symbolStates.keys()].map((symbol) => this.evaluateSymbol(symbol)));
     }, this.evaluationIntervalMs);
+  }
+
+  private static percentileSummary(values: readonly number[]): {
+    p50: number;
+    p95: number;
+    p99: number;
+  } {
+    if (values.length === 0) return { p50: 0, p95: 0, p99: 0 };
+    const sorted = [...values].sort((a, b) => a - b);
+    const at = (fraction: number): number =>
+      sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
+    return { p50: at(0.5), p95: at(0.95), p99: at(0.99) };
   }
 
   private startHealthReporting(): void {

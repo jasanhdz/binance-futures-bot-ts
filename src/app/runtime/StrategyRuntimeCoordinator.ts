@@ -338,6 +338,7 @@ export class StrategyRuntimeCoordinator {
           strategyRouter: this.deps.microBurstStrategyRouter,
           orderBookDataPlane: this.sharedMarketDataRuntime.orderBookDataPlane,
           aggTradeDataPlane: this.sharedMarketDataRuntime.aggTradeDataPlane,
+          candleDataPlane: this.sharedMarketDataRuntime.candleDataPlane,
           blackBox: {
             decisionSink: this.deps.decisionSink,
             marketSnapshotSink: this.deps.marketSnapshotSink,

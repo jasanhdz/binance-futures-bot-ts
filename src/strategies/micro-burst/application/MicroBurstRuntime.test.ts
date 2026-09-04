@@ -7,6 +7,8 @@ import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
 import { Exchange } from '../../../app/ports/Exchange';
 import { ShadowJournal } from '../../../core/shadow/ShadowTradeJournal';
 import { ShadowPosition, ShadowTradeEvent } from '../../../core/shadow/ShadowTradingTypes';
+import { CandleDataPlane } from '../../../core/market-data/CandleDataPlane';
+import type { Candle } from '../../../core/types';
 
 function makeConfig(overrides: Partial<MicroBurstRuntimeConfig> = {}): MicroBurstRuntimeConfig {
   return {
@@ -106,6 +108,49 @@ describe('MicroBurstRuntime', () => {
     expect(runtime.getHealth().running).toBe(true);
     await runtime.stop();
     expect(runtime.getHealth().running).toBe(false);
+  });
+
+  it('uses shared candle snapshots without REST calls during evaluation', async () => {
+    const exchangeGetCandles = vi.fn(async () => [] as Candle[]);
+    (deps.exchange as any).getCandles = exchangeGetCandles;
+    const now = Date.now();
+    const fetch = vi.fn(async (_symbol: string, interval: string, limit: number) => {
+      const duration = interval === '1m' ? 60_000 : interval === '3m' ? 180_000 : 300_000;
+      return Array.from({ length: limit }, (_, index) => {
+        const openTime = now - (limit - index) * duration;
+        return {
+          openTime,
+          timestamp: openTime,
+          open: 99,
+          high: 101,
+          low: 98,
+          close: 100,
+          volume: 10,
+          buyVolume: 6,
+          closeTime: openTime + duration - 1,
+        };
+      });
+    });
+    deps.candleDataPlane = new CandleDataPlane({
+      clock: { now: () => now },
+      fetch,
+      subscribe: () => () => {},
+    });
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+
+    await runtime.start();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    exchangeGetCandles.mockClear();
+    await runtime.evaluateSymbol('ETHUSDT', now);
+
+    expect(exchangeGetCandles).not.toHaveBeenCalled();
+    expect(runtime.getHealth().symbolMetrics.ETHUSDT).toMatchObject({
+      candleCacheHit: 3,
+      candleUnavailable: 0,
+      candleStale: 0,
+      latestSlowStatePublished: 1,
+    });
+    await runtime.stop();
   });
 
   it('double start is idempotent', async () => {

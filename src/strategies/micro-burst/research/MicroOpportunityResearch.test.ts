@@ -228,6 +228,7 @@ describe('Micro Opportunity research contract', () => {
   it('keeps sampling observational and survives sink/input failures', () => {
     let now = T0;
     const persisted: string[] = [];
+    const outcomes: string[] = [];
     const sampler = new MicroOpportunityResearchSampler(
       ['SOLUSDT', 'BTCUSDT'],
       () => now,
@@ -239,11 +240,20 @@ describe('Micro Opportunity research contract', () => {
         persisted.push(value.sampleId);
         throw new Error('storage unavailable');
       } },
+      1_000,
+      undefined,
+      (symbol, outcome) => outcomes.push(`${symbol}:${outcome}`),
     );
     sampler.tick();
     now += 1_000;
     sampler.tick();
     expect(persisted).toHaveLength(2);
+    expect(outcomes).toEqual([
+      'SOLUSDT:sink_error',
+      'BTCUSDT:input_error',
+      'SOLUSDT:sink_error',
+      'BTCUSDT:input_error',
+    ]);
     expect(sampler.getHealth()).toMatchObject({ sampled: 2, persisted: 0, sinkErrors: 2, inputErrors: 2, running: false });
     sampler.stop();
   });

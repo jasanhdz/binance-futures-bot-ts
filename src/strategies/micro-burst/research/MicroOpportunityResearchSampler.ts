@@ -41,6 +41,15 @@ export interface MicroOpportunitySamplerHealth {
   readonly tickDurationMs: Readonly<{ p50: number; p95: number; p99: number }>;
 }
 
+export type MicroOpportunitySampleOutcome =
+  | 'persisted'
+  | 'persistence_rejected'
+  | 'no_slow_state'
+  | 'no_fast_price'
+  | 'invalid_or_future_state'
+  | 'input_error'
+  | 'sink_error';
+
 /**
  * Creates a causal research sample from the latest already-owned slow and fast state.
  * It does not call the exchange, mutate strategy decisions, or await persistence.
@@ -51,7 +60,8 @@ export function buildMicroOpportunityResearchSample(
   if (!input.slow || !input.fast || input.fast.lastPrice === null) return null;
   if (input.slow.snapshotAtMs > input.sampledAtMs || input.fast.observedAtMs > input.sampledAtMs)
     return null;
-  if (input.fast.lastTradeAtMs !== null && input.fast.lastTradeAtMs > input.sampledAtMs) return null;
+  if (input.fast.lastTradeAtMs !== null && input.fast.lastTradeAtMs > input.sampledAtMs)
+    return null;
 
   const decision: MicroOpportunityDecisionMetadata = input.stableMicroDecision ?? {
     decision: 'UNKNOWN',
@@ -63,7 +73,9 @@ export function buildMicroOpportunityResearchSample(
   const population = populationForDecision(decision);
   const sampleId = crypto
     .createHash('sha256')
-    .update(`${input.symbol}\u0000${input.sampledAtMs}\u0000${MICRO_OPPORTUNITY_FEATURE_SCHEMA_HASH}`)
+    .update(
+      `${input.symbol}\u0000${input.sampledAtMs}\u0000${MICRO_OPPORTUNITY_FEATURE_SCHEMA_HASH}`,
+    )
     .digest('hex');
 
   return Object.freeze({
@@ -83,7 +95,9 @@ export function buildMicroOpportunityResearchSample(
   });
 }
 
-function populationForDecision(decision: MicroOpportunityDecisionMetadata): MicroOpportunityPopulation {
+function populationForDecision(
+  decision: MicroOpportunityDecisionMetadata,
+): MicroOpportunityPopulation {
   if (decision.decision === 'ENTRY_INTENT') return 'ENTRY_INTENT';
   if (decision.decision === 'NO_TRADE') return 'NO_TRADE';
   return decision.decision === 'UNKNOWN' ? 'UNCLEAR' : 'NEUTRAL';
@@ -108,10 +122,14 @@ export class MicroOpportunityResearchSampler {
   constructor(
     private readonly symbols: readonly string[],
     private readonly now: () => number,
-    private readonly readInput: (symbol: string, sampledAtMs: number) => MicroOpportunitySampleInput,
+    private readonly readInput: (
+      symbol: string,
+      sampledAtMs: number,
+    ) => MicroOpportunitySampleInput,
     private readonly sink: MicroOpportunitySampleSink,
     private readonly intervalMs = MICRO_OPPORTUNITY_RESEARCH_SAMPLE_INTERVAL_MS,
     private readonly afterTick?: () => void,
+    private readonly afterSymbol?: (symbol: string, outcome: MicroOpportunitySampleOutcome) => void,
   ) {}
 
   start(): void {
@@ -139,24 +157,36 @@ export class MicroOpportunityResearchSampler {
           input = this.readInput(symbol, sampledAtMs);
         } catch {
           this.inputErrors++;
+          this.notifySymbol(symbol, 'input_error');
           continue;
         }
         if (!input.slow) {
           this.skippedNoSlowState++;
+          this.notifySymbol(symbol, 'no_slow_state');
           continue;
         }
         if (!input.fast || input.fast.lastPrice === null) {
           this.skippedNoFastPrice++;
+          this.notifySymbol(symbol, 'no_fast_price');
           continue;
         }
         const sample = buildMicroOpportunityResearchSample(input);
-        if (!sample) continue;
+        if (!sample) {
+          this.notifySymbol(symbol, 'invalid_or_future_state');
+          continue;
+        }
         this.sampled++;
         try {
-          if (this.sink.append(sample)) this.persisted++;
-          else this.persistenceRejected++;
+          if (this.sink.append(sample)) {
+            this.persisted++;
+            this.notifySymbol(symbol, 'persisted');
+          } else {
+            this.persistenceRejected++;
+            this.notifySymbol(symbol, 'persistence_rejected');
+          }
         } catch {
           this.sinkErrors++;
+          this.notifySymbol(symbol, 'sink_error');
         }
       }
     } finally {
@@ -168,6 +198,14 @@ export class MicroOpportunityResearchSampler {
       } catch {
         this.inputErrors++;
       }
+    }
+  }
+
+  private notifySymbol(symbol: string, outcome: MicroOpportunitySampleOutcome): void {
+    try {
+      this.afterSymbol?.(symbol, outcome);
+    } catch {
+      this.inputErrors++;
     }
   }
 
@@ -189,6 +227,7 @@ export class MicroOpportunityResearchSampler {
 function percentileSummary(values: readonly number[]): { p50: number; p95: number; p99: number } {
   if (values.length === 0) return { p50: 0, p95: 0, p99: 0 };
   const sorted = [...values].sort((a, b) => a - b);
-  const at = (fraction: number): number => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
+  const at = (fraction: number): number =>
+    sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
   return { p50: at(0.5), p95: at(0.95), p99: at(0.99) };
 }
