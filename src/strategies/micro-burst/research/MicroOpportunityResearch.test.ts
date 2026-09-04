@@ -6,6 +6,7 @@ import { MICRO_OPPORTUNITY_FEATURE_SCHEMA_HASH } from './MicroOpportunityFeature
 import { labelMicroOpportunitySample } from './MicroOpportunityLabeler';
 import {
   auditOpportunitySampleCausality,
+  auditOpportunityDatasetQuality,
   buildOpportunityDatasetManifestV1,
   splitOpportunityDataset,
 } from './MicroOpportunityDatasetGovernance';
@@ -148,6 +149,19 @@ describe('Micro Opportunity research contract', () => {
     expect(buildMicroOpportunityResearchSample({ symbol: 'SOLUSDT', sampledAtMs: T0, slow: slow(), fast: futureFast })).toBeNull();
   });
 
+  it('rejects deliberately contaminated feature provenance and label fields', () => {
+    const contaminated = {
+      ...sample(),
+      slow: { ...slow(), snapshotAtMs: T0 + 1 },
+      features: { ...sample().features, leakedMfeBps: 12 },
+    } as any;
+    const audit = auditOpportunitySampleCausality([contaminated]);
+    expect(audit.valid).toBe(false);
+    expect(audit.reasons[contaminated.sampleId]).toEqual(
+      expect.arrayContaining(['SLOW_STATE_FROM_FUTURE', 'LABEL_IN_FEATURE_VECTOR']),
+    );
+  });
+
   it('labels LONG and SHORT counterfactual MFE/MAE on the same T0 state', () => {
     const labeled = labelMicroOpportunitySample(sample(), {
       trades: futureTrades(),
@@ -192,5 +206,19 @@ describe('Micro Opportunity research contract', () => {
     expect(manifest.rowCounts.total).toBe(20);
     expect(manifest.featureSchemaHash).toBe(MICRO_OPPORTUNITY_FEATURE_SCHEMA_HASH);
     expect(manifest.manifestHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('reports continuous populations, quality exclusions and both label orientations', () => {
+    const labeled = labelMicroOpportunitySample(sample(), {
+      trades: futureTrades(),
+      watermarkMs: T0 + 60_000,
+      hasAggTradeGap: () => false,
+    });
+    const report = auditOpportunityDatasetQuality([{ sample: sample(), labels: labeled.labels }]);
+    expect(report.validSamples).toBe(1);
+    expect(report.entryIntentCount).toBe(0);
+    expect(report.orientations).toEqual({ LONG: 1, SHORT: 1 });
+    expect(report.labelDistributions.LONG.valid).toBe(3);
+    expect(report.labelDistributions.SHORT.valid).toBe(3);
   });
 });

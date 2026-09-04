@@ -21,7 +21,21 @@ export interface OpportunityCausalityAuditResult {
 
 export interface OpportunityDatasetQualityReport {
   readonly totalSamples: number;
+  readonly validSamples: number;
+  readonly excludedSamples: number;
+  readonly exclusionReasonCounts: Readonly<Record<string, number>>;
   readonly symbols: Readonly<Record<string, number>>;
+  readonly dateCoverage: { firstSampleAtMs: number | null; lastSampleAtMs: number | null };
+  readonly regimeCoverage: Readonly<Record<string, number>>;
+  readonly orientations: Readonly<Record<'LONG' | 'SHORT', number>>;
+  readonly entryIntentCount: number;
+  readonly noTradeCount: number;
+  readonly missingFeatureCount: number;
+  readonly staleFastStateCount: number;
+  readonly bookGapCount: number;
+  readonly aggTradeGapCount: number;
+  readonly duplicatePressure: number;
+  readonly labelDistributions: Readonly<Record<'LONG' | 'SHORT', { valid: number; meanMfeBps: number | null; meanMaeBps: number | null }>>;
   readonly decisions: Readonly<Record<string, number>>;
   readonly duplicateSampleIds: number;
   readonly invalidFeatureSamples: number;
@@ -97,6 +111,15 @@ export function auditOpportunitySampleCausality(
       sampleReasons.push('NEGATIVE_TRADE_AGE');
     if (sample.fast.dataQuality.bookAgeMs !== null && sample.fast.dataQuality.bookAgeMs < 0)
       sampleReasons.push('NEGATIVE_BOOK_AGE');
+    if (
+      sample.slow.dataQuality.latestClosed1mAt > sample.sampledAtMs ||
+      sample.slow.dataQuality.latestClosed3mAt > sample.sampledAtMs ||
+      sample.slow.dataQuality.latestClosed5mAt > sample.sampledAtMs
+    ) sampleReasons.push('OPEN_CANDLE_FROM_FUTURE');
+    if (sample.fast.dataQuality.eventWatermarkMs !== null && sample.fast.dataQuality.eventWatermarkMs > sample.sampledAtMs)
+      sampleReasons.push('FAST_WATERMARK_FROM_FUTURE');
+    if (Object.keys(sample.features).some((key) => /mfe|mae|label|horizon/i.test(key)))
+      sampleReasons.push('LABEL_IN_FEATURE_VECTOR');
     if (!Number.isFinite(sample.referencePrice) || sample.referencePrice <= 0)
       sampleReasons.push('INVALID_REFERENCE_PRICE');
     if (sampleReasons.length) reasons[sample.sampleId] = sampleReasons;
@@ -113,6 +136,19 @@ export function auditOpportunityDatasetQuality(
   const seen = new Set<string>();
   let duplicateSampleIds = 0;
   let invalidFeatureSamples = 0;
+  let missingFeatureCount = 0;
+  let staleFastStateCount = 0;
+  let bookGapCount = 0;
+  let aggTradeGapCount = 0;
+  let firstSampleAtMs: number | null = null;
+  let lastSampleAtMs: number | null = null;
+  let entryIntentCount = 0;
+  let noTradeCount = 0;
+  const exclusionReasonCounts: Record<string, number> = {};
+  const regimeCoverage: Record<string, number> = {};
+  const orientations = { LONG: 0, SHORT: 0 };
+  const mfe: Record<'LONG' | 'SHORT', number[]> = { LONG: [], SHORT: [] };
+  const mae: Record<'LONG' | 'SHORT', number[]> = { LONG: [], SHORT: [] };
   const horizonValidity = Object.fromEntries(
     MICRO_OPPORTUNITY_HORIZONS_MS.map((horizon) => [
       horizon,
@@ -127,7 +163,22 @@ export function auditOpportunityDatasetQuality(
       (decisions[sample.stableMicroDecision.decision] ?? 0) + 1;
     if (seen.has(sample.sampleId)) duplicateSampleIds++;
     seen.add(sample.sampleId);
-    if (!auditOpportunitySampleCausality([sample]).valid) invalidFeatureSamples++;
+    const causality = auditOpportunitySampleCausality([sample]);
+    if (!causality.valid) {
+      invalidFeatureSamples++;
+      for (const reason of causality.reasons[sample.sampleId] ?? [])
+        exclusionReasonCounts[reason] = (exclusionReasonCounts[reason] ?? 0) + 1;
+    }
+    firstSampleAtMs = firstSampleAtMs === null ? sample.sampledAtMs : Math.min(firstSampleAtMs, sample.sampledAtMs);
+    lastSampleAtMs = lastSampleAtMs === null ? sample.sampledAtMs : Math.max(lastSampleAtMs, sample.sampledAtMs);
+    regimeCoverage[sample.slow.microRegime] = (regimeCoverage[sample.slow.microRegime] ?? 0) + 1;
+    if (sample.population === 'ENTRY_INTENT') entryIntentCount++;
+    if (sample.population === 'NO_TRADE') noTradeCount++;
+    if (sample.fast.dataQuality.tradeAgeMs === null || sample.fast.dataQuality.bookAgeMs === null) staleFastStateCount++;
+    if (!sample.fast.dataQuality.gapFree) aggTradeGapCount++;
+    if (sample.fast.dataQuality.bookStatus !== 'HEALTHY') bookGapCount++;
+    missingFeatureCount += Object.values(sample.features).filter((value) => value === null).length;
+    for (const orientation of ['LONG', 'SHORT'] as const) orientations[orientation]++;
     for (const horizon of MICRO_OPPORTUNITY_HORIZONS_MS) {
       const label = row.labels[horizon];
       const bucket = horizonValidity[horizon] as {
@@ -141,17 +192,55 @@ export function auditOpportunityDatasetQuality(
         const reason = label.invalidReason ?? 'UNKNOWN';
         bucket.invalidReasons[reason] = (bucket.invalidReasons[reason] ?? 0) + 1;
       }
+      if (label.valid) {
+        for (const orientation of ['LONG', 'SHORT'] as const) {
+          const outcome = orientation === 'LONG' ? label.long : label.short;
+          if (outcome) {
+            mfe[orientation].push(outcome.mfeBps);
+            mae[orientation].push(outcome.maeBps);
+          }
+        }
+      }
     }
   }
 
   return {
     totalSamples: rows.length,
+    validSamples: rows.length - invalidFeatureSamples,
+    excludedSamples: invalidFeatureSamples,
+    exclusionReasonCounts,
     symbols,
+    dateCoverage: { firstSampleAtMs, lastSampleAtMs },
+    regimeCoverage,
+    orientations,
+    entryIntentCount,
+    noTradeCount,
+    missingFeatureCount,
+    staleFastStateCount,
+    bookGapCount,
+    aggTradeGapCount,
+    duplicatePressure: rows.length === 0 ? 0 : duplicateSampleIds / rows.length,
+    labelDistributions: {
+      LONG: labelDistribution(mfe.LONG, mae.LONG),
+      SHORT: labelDistribution(mfe.SHORT, mae.SHORT),
+    },
     decisions,
     duplicateSampleIds,
     invalidFeatureSamples,
     horizonValidity,
   };
+}
+
+function labelDistribution(mfe: readonly number[], mae: readonly number[]) {
+  return {
+    valid: Math.min(mfe.length, mae.length),
+    meanMfeBps: mean(mfe),
+    meanMaeBps: mean(mae),
+  };
+}
+
+function mean(values: readonly number[]): number | null {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 }
 
 /** Chronological 60/20/20 split with a 60 s purge around both boundaries. */
