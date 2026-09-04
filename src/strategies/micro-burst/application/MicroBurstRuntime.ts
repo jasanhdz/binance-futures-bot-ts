@@ -707,7 +707,8 @@ export class MicroBurstRuntime {
           ? new MicroBurstFastMarketState(symbol, {
               trades: state.aggTradeBuffer,
               book: state.book,
-              clock: this.deps.clock,
+              // Keep the fast snapshot causal to the sampler tick timestamp.
+              clock: { now: () => sampledAtMs },
             }).read()
           : null;
         return {
