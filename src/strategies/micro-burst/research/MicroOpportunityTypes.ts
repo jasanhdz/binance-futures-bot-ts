@@ -7,6 +7,8 @@ export const MICRO_OPPORTUNITY_SAMPLE_SCHEMA_VERSION = 1 as const;
 export const MICRO_OPPORTUNITY_HORIZONS_MS = [10_000, 30_000, 60_000] as const;
 
 export type MicroOpportunityHorizonMs = (typeof MICRO_OPPORTUNITY_HORIZONS_MS)[number];
+export type MicroOpportunityOrientation = 'LONG' | 'SHORT';
+export type MicroOpportunityPopulation = 'ENTRY_INTENT' | 'NO_TRADE' | 'NEUTRAL' | 'UNCLEAR';
 
 export interface OpportunityFeatureVectorV1 {
   readonly priceReturn250msBps: number | null;
@@ -71,6 +73,9 @@ export interface MicroOpportunityResearchSample {
   readonly features: OpportunityFeatureVectorV1;
   /** Research metadata only. It is excluded from the V1 model feature list. */
   readonly stableMicroDecision: MicroOpportunityDecisionMetadata;
+  /** Both orientations are labelable for every valid continuous state. */
+  readonly candidateOrientations: readonly MicroOpportunityOrientation[];
+  readonly population: MicroOpportunityPopulation;
 }
 
 export interface OpportunityOrientationOutcome {

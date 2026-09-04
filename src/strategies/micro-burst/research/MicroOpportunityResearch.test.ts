@@ -118,8 +118,29 @@ describe('Micro Opportunity research contract', () => {
     expect(result.features.distanceToSupportBps).toBeCloseTo(200);
     expect(result.features.distanceToResistanceBps).toBeCloseTo(500);
     expect(result.stableMicroDecision.decision).toBe('UNKNOWN');
+    expect(result.population).toBe('UNCLEAR');
+    expect(result.candidateOrientations).toEqual(['LONG', 'SHORT']);
     expect('decision' in result.features).toBe(false);
     expect(auditOpportunitySampleCausality([result]).valid).toBe(true);
+  });
+
+  it('captures NO_TRADE continuously without requiring an order or shadow trade', () => {
+    const result = buildMicroOpportunityResearchSample({
+      symbol: 'SOLUSDT',
+      sampledAtMs: T0,
+      slow: slow(),
+      fast: fast(),
+      stableMicroDecision: {
+        decision: 'NO_TRADE',
+        side: null,
+        reason: 'insufficient_room',
+        confidence: 0.2,
+        uniqueCandidateId: null,
+      },
+    })!;
+    expect(result.population).toBe('NO_TRADE');
+    expect(result.stableMicroDecision.uniqueCandidateId).toBeNull();
+    expect(result.candidateOrientations).toEqual(['LONG', 'SHORT']);
   });
 
   it('rejects sample construction if a fast observation is from the future', () => {

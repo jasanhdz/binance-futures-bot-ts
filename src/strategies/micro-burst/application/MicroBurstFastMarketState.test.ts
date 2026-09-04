@@ -65,10 +65,10 @@ function book(overrides: Partial<OrderBookSnapshot> = {}): OrderBookSnapshot {
   };
 }
 
-function state(events = trades(), bookSnapshot: OrderBookSnapshot | undefined = book(), quality = {}) {
+function state(events = trades(), bookSnapshot: OrderBookSnapshot | null = book(), quality = {}) {
   return new MicroBurstFastMarketState('SOLUSDT', {
     trades: reader(events, quality),
-    book: { getSnapshot: () => bookSnapshot },
+    book: { getSnapshot: () => bookSnapshot ?? undefined },
     clock: { now: () => NOW },
   });
 }
@@ -138,7 +138,7 @@ describe('MicroBurstFastMarketState', () => {
   });
 
   it('surfaces missing book and aggTrade continuity as explicit quality state', () => {
-    const snapshot = state(trades(), undefined, {
+    const snapshot = state(trades(), null, {
       gapFree: false,
       windowComplete: false,
       capacityTruncated: true,
@@ -154,7 +154,7 @@ describe('MicroBurstFastMarketState', () => {
   });
 
   it('returns an explicit empty snapshot when no trades have arrived', () => {
-    const snapshot = state([], undefined, {
+    const snapshot = state([], null, {
       windowComplete: false,
     }).read();
 

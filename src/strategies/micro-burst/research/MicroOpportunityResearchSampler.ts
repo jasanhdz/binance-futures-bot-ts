@@ -9,6 +9,8 @@ import {
   MICRO_OPPORTUNITY_FEATURE_SCHEMA_VERSION,
   MICRO_OPPORTUNITY_SAMPLE_SCHEMA_VERSION,
   type MicroOpportunityDecisionMetadata,
+  type MicroOpportunityOrientation,
+  type MicroOpportunityPopulation,
   type MicroOpportunityResearchSample,
 } from './MicroOpportunityTypes';
 
@@ -35,6 +37,7 @@ export interface MicroOpportunitySamplerHealth {
   readonly skippedNoFastPrice: number;
   readonly persistenceRejected: number;
   readonly sinkErrors: number;
+  readonly inputErrors: number;
 }
 
 /**
@@ -56,6 +59,7 @@ export function buildMicroOpportunityResearchSample(
     confidence: null,
     uniqueCandidateId: null,
   };
+  const population = populationForDecision(decision);
   const sampleId = crypto
     .createHash('sha256')
     .update(`${input.symbol}\u0000${input.sampledAtMs}\u0000${MICRO_OPPORTUNITY_FEATURE_SCHEMA_HASH}`)
@@ -73,7 +77,15 @@ export function buildMicroOpportunityResearchSample(
     fast: input.fast,
     features: buildOpportunityFeatureVectorV1(input.slow, input.fast),
     stableMicroDecision: decision,
+    candidateOrientations: Object.freeze(['LONG', 'SHORT'] as MicroOpportunityOrientation[]),
+    population,
   });
+}
+
+function populationForDecision(decision: MicroOpportunityDecisionMetadata): MicroOpportunityPopulation {
+  if (decision.decision === 'ENTRY_INTENT') return 'ENTRY_INTENT';
+  if (decision.decision === 'NO_TRADE') return 'NO_TRADE';
+  return decision.decision === 'UNKNOWN' ? 'UNCLEAR' : 'NEUTRAL';
 }
 
 /**
@@ -88,6 +100,8 @@ export class MicroOpportunityResearchSampler {
   private skippedNoFastPrice = 0;
   private persistenceRejected = 0;
   private sinkErrors = 0;
+  private inputErrors = 0;
+  private inTick = false;
 
   constructor(
     private readonly symbols: readonly string[],
@@ -111,26 +125,38 @@ export class MicroOpportunityResearchSampler {
 
   /** Exposed for deterministic tests/replay; production timer calls the same path. */
   tick(): void {
+    if (this.inTick) return;
+    this.inTick = true;
     const sampledAtMs = this.now();
-    for (const symbol of this.symbols) {
-      const input = this.readInput(symbol, sampledAtMs);
-      if (!input.slow) {
-        this.skippedNoSlowState++;
-        continue;
+    try {
+      for (const symbol of this.symbols) {
+        let input: MicroOpportunitySampleInput;
+        try {
+          input = this.readInput(symbol, sampledAtMs);
+        } catch {
+          this.inputErrors++;
+          continue;
+        }
+        if (!input.slow) {
+          this.skippedNoSlowState++;
+          continue;
+        }
+        if (!input.fast || input.fast.lastPrice === null) {
+          this.skippedNoFastPrice++;
+          continue;
+        }
+        const sample = buildMicroOpportunityResearchSample(input);
+        if (!sample) continue;
+        this.sampled++;
+        try {
+          if (this.sink.append(sample)) this.persisted++;
+          else this.persistenceRejected++;
+        } catch {
+          this.sinkErrors++;
+        }
       }
-      if (!input.fast || input.fast.lastPrice === null) {
-        this.skippedNoFastPrice++;
-        continue;
-      }
-      const sample = buildMicroOpportunityResearchSample(input);
-      if (!sample) continue;
-      this.sampled++;
-      try {
-        if (this.sink.append(sample)) this.persisted++;
-        else this.persistenceRejected++;
-      } catch {
-        this.sinkErrors++;
-      }
+    } finally {
+      this.inTick = false;
     }
   }
 
@@ -143,6 +169,7 @@ export class MicroOpportunityResearchSampler {
       skippedNoFastPrice: this.skippedNoFastPrice,
       persistenceRejected: this.persistenceRejected,
       sinkErrors: this.sinkErrors,
+      inputErrors: this.inputErrors,
     };
   }
 }
