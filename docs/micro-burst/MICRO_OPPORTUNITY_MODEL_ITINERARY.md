@@ -193,7 +193,7 @@
 
 ## J — Leakage/causality audit
 
-**Status:** `IN_PROGRESS`  
+**Status:** `BLOCKED — no Opportunity samples in active LIVE archive`
 **Priority:** P0  
 **Goal:** Prove features are available at T0 and labels are strictly future-only.
 
@@ -210,7 +210,7 @@
 
 ## K — Dataset quality audit
 
-**Status:** `IN_PROGRESS`  
+**Status:** `BLOCKED — no Opportunity samples in active LIVE archive`
 **Priority:** P0  
 **Goal:** Quantify whether the archive can support model claims.
 
@@ -480,3 +480,4 @@
 - 2026-09-04 — `d55c95c`: Causality audit now rejects future closed-candle/state watermarks and label-shaped feature fields; quality report exposes validity, exclusions, coverage, populations, missingness, gaps, duplication pressure, and label distributions. Focused tests passed (14/14 at commit time).
 - 2026-09-04 — Real archive inspection: `m3_2_5_final/20260827T193200Z/research.sqlite` has 24 market-data segments but 0 signals, 0 outcomes, and no continuous Opportunity samples. No causal TRAIN/VALIDATION/HOLDOUT can be built; dataset-dependent stages remain blocked/in progress and HOLDOUT stays sealed.
 - 2026-09-04 — `a853352`: connected the observational 1 s sampler to the runtime's shared aggTrade/order-book planes, persisted idempotent samples with feature schema/hash and provenance metadata, and added deferred 10/30/60 s label persistence after future watermark coverage. Build and focused runtime/storage/research tests passed (76/76). A real soak was not claimed: the available archive still has 0 Opportunity samples, so E/G remain `IN_PROGRESS` and J/K cannot pass their real-data gates.
+- 2026-09-04 — LIVE verification: PM2 process `01-Trading-Bot` is online with `liveExecution=true`, 11 symbols, and normal Micro activity; it was not restarted or modified. Its loaded artifact predates the sampler integration and the tracked LIVE config had archive/prospective collection disabled. Active SQLite `data/micro-burst/micro_burst_research.sqlite` has 74 market-data segments but no `micro_opportunity_samples` table, so samples/labels are 0. Archive and prospective collection are now enabled in configuration for the next authorized rollout; no E/G/J/K DONE claim is made.

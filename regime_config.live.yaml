@@ -57,11 +57,11 @@ micro_burst:
     LTCUSDT:
       enabled: true
   prospective_validation:
-    enabled: false
+    enabled: true
     horizons_ms: [15000, 30000, 60000, 120000, 300000]
     conservative_entry_slippage_bps: 5
   market_archive:
-    enabled: false
+    enabled: true
     root_dir: data/micro-burst/market-data
     sqlite_path: data/micro-burst/micro_burst_research.sqlite
     trade_retention_ms: 600000
