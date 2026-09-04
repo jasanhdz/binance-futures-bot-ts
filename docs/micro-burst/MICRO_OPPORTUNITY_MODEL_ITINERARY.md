@@ -23,7 +23,7 @@
 
 ## B — Scientific experiment contract / preregistration
 
-**Status:** `IN_PROGRESS`  
+**Status:** `DONE`  
 **Priority:** P0  
 **Goal:** Define the hypothesis, labels, splits, costs, metrics, decision gates, and sealed-holdout rules before model fitting.
 
@@ -35,15 +35,16 @@
 - Strict temporal TRAIN → VALIDATION → sealed HOLDOUT.
 - Acceptance/rejection rules fixed before opening HOLDOUT.
 
-**Gate**
-- No metric/threshold may be selected using HOLDOUT.
-- Same population, entry timestamp, feature schema, costs, latency assumptions, and outcome definition must be used in A/B comparisons.
+**Gate evidence**
+- Preregistration frozen on 2026-09-03 before model fitting.
+- Primary economic gate fixed at +2.0 paired net bps/candidate under `cost_14`, with positive blocked-bootstrap lower CI bound and stability/stress gates.
+- HOLDOUT remains sealed until candidate/model/schema/policy freeze.
 
 ---
 
 ## C — Split Micro state into Slow State and Fast State
 
-**Status:** `TODO`  
+**Status:** `IN_PROGRESS`  
 **Priority:** P0  
 **Goal:** Keep structural/candle context slow while exposing event-driven market context independently.
 
@@ -473,4 +474,5 @@
 
 - 2026-09-03 — Branch created from stable Micro Burst branch.
 - 2026-09-03 — A acknowledged as completed pre-existing baseline.
-- 2026-09-03 — B started; preregistration is the next required artifact.
+- 2026-09-03 — B completed: preregistration frozen before model fitting.
+- 2026-09-03 — C started: slow/fast market-state separation.
