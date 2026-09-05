@@ -6,6 +6,8 @@
 - Rama única: `work/micro-burst-rider-v1-20260826`. No crear otra rama.
 - Baseline histórico auditado: `05b233963d7897dccb9912f82b76895270eeb3b0`.
 - Referencia publicada verificada del journal: `7d4c1605f2559c51b3f4d4e4f79002191734588a`.
+- Bloque datos/sizing PUBLICADO: `a24c437f018573afe4484cbd42960e26943f3dbc`, SHA remoto
+  confirmado tras push normal. Build y 2.206 tests propios PASS; no despliegue.
 - Leer primero `SAFETY_DATA_SIZING_INTEGRATION.md` para el bloque posterior y sus
   efectos de seguridad/paridad. `SAFETY_JOURNAL_19F4678_FIX.md` describe correcciones publicadas del almacenamiento
   del journal y limites de integracion. `SAFETY_RECONCILIATION_LEDGER_FIX.md` conserva

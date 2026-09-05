@@ -8,8 +8,10 @@
   personalmente sus diffs y los consumidores actuales; no se revirtio trabajo previo.
 - Este bloque es publicable, no completa safety ni fase 9. No integra el journal al
   protocolo de mutaciones, recovery, reservas de exposicion o contabilidad universal.
-- PUBLICACION de este incremento: pendiente de verificar el push. Se registrara el
-  SHA remoto del codigo en el seguimiento documental, sin inventar un hash autocircular.
+- PUBLICACION: PUBLICADO, codigo en `a24c437f018573afe4484cbd42960e26943f3dbc`.
+  Push normal desde 7d4c160; `git ls-remote origin refs/heads/work/micro-burst-rider-v1-20260826`
+  devolvio exactamente ese SHA. Este seguimiento posterior solo cambia documentacion.
+- URL: https://github.com/jasanhdz/binance-futures-bot-ts/commit/a24c437f018573afe4484cbd42960e26943f3dbc
 - DESPLIEGUE: NO_AUTORIZADO. VALIDACION_REAL: PENDIENTE_DATOS/PENDIENTE_OPERADOR.
 
 ## Flujos integrados
@@ -75,6 +77,9 @@
 - `npm run build`: PASS.
 - `npm run test:safety`: ultima ejecucion completa PASS, 182 archivos / 2.160 tests
   principales + 1 archivo / 46 tests ConfigLoader = 183 archivos / 2.206 tests.
+- La ultima corrida incluye enforcement consumiendo RegimeAuthority y una segunda
+  recepcion del mismo snapshot BTC sin renovar frescura. Dos corridas globales finales
+  consecutivas PASS; el codigo publicado corresponde a la ultima, no a una corrida anterior.
 - Se ejecutaron fixtures de Shared (39), TradingService simulado (122), CandleIntegrity
   (29), sizing (31), Micro builder (12), BTC Micro (23), context adapter (24), y suites
   indirectas/arquitectura. Journal: 264 tests de regresion, sin nueva integracion.
