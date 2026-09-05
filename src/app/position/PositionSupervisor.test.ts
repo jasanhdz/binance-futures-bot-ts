@@ -96,6 +96,165 @@ const STOP_VISIBLE = [
   },
 ];
 
+describe('PositionSupervisor stop replacement identity', () => {
+  function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
+    const state = makeState({
+      mode: side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+      lastSide: side,
+      lastStopPrice: side === 'LONG' ? 0.9 : 2,
+    });
+    const store = mockStore(state);
+    const exchange = mockExchange({
+      readActivePosition: vi.fn().mockResolvedValue(makePosition()),
+    });
+    const supervisor = new PositionSupervisor(
+      defaultDeps({
+        exchange,
+        resolveOwner: (candidate) => (candidate.positionOwner === 'AEGIS' ? 'AEGIS' : 'MICRO'),
+      }),
+    );
+    return {
+      state,
+      store,
+      exchange,
+      supervisor,
+      run: () => supervisor.supervise('XRPUSDT', state, store),
+    };
+  }
+
+  it.each(['before-save', 'during-flush'] as const)(
+    'does not act on the old LONG after replacement %s',
+    async (stage) => {
+      const f = fixture();
+      const replacement = makeState({
+        mode: 'SHORT_RIDE',
+        lastSide: 'SHORT',
+        lastTradeId: 'T2',
+        lastStopPrice: 2,
+        microStopSubmission: { attemptedAt: 456, stopPrice: 2, tradeId: 'T2' },
+      });
+      if (stage === 'before-save') {
+        const filters = await f.exchange.getSymbolFilters('XRPUSDT', 20);
+        vi.mocked(f.exchange.getSymbolFilters).mockImplementationOnce(async () => {
+          f.store.set(replacement);
+          return filters;
+        });
+      } else {
+        vi.spyOn(f.store, 'flush').mockImplementationOnce(async () => {
+          f.store.set(replacement);
+        });
+      }
+      expect((await f.run()).status).toBe('UNKNOWN');
+      expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+      expect(f.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+      expect(f.store.get()).toMatchObject({ ...replacement, microProtectionBlocked: true });
+    },
+  );
+
+  it.each<Partial<BotState>>([
+    { lastTradeId: 'T2' },
+    { lastSide: 'SHORT' },
+    { mode: 'SHORT_RIDE' },
+    { positionOwner: 'AEGIS' },
+  ])('revalidates each identity component after flush: %j', async (patch) => {
+    const f = fixture();
+    vi.spyOn(f.store, 'flush').mockImplementationOnce(async () => {
+      f.store.set(patch);
+    });
+    expect((await f.run()).reason).toBe('POSITION_IDENTITY_CHANGED');
+    expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+    expect(f.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+    expect(f.store.get()).toMatchObject(patch);
+  });
+
+  it('captures the input identity even when a caller mutates its original state during flush', async () => {
+    const f = fixture();
+    vi.spyOn(f.store, 'flush').mockImplementationOnce(async () => {
+      Object.assign(f.state, { lastTradeId: 'T2', lastSide: 'SHORT', mode: 'SHORT_RIDE' });
+      f.store.set(f.state);
+    });
+    expect((await f.run()).status).toBe('UNKNOWN');
+    expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('never overwrites an attempt recorded by another writer while market data was awaited', async () => {
+    const f = fixture();
+    const pending = { attemptedAt: 123, stopPrice: 0.8, tradeId: 'T1' };
+    vi.mocked(f.exchange.getMarkPrice).mockImplementationOnce(async () => {
+      f.store.set({ microStopSubmission: pending });
+      return 1.5;
+    });
+    expect((await f.run()).reason).toBe('STOP_SUBMISSION_ALREADY_RECORDED');
+    expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+    expect(f.store.get().microStopSubmission).toEqual(pending);
+  });
+
+  it.each(['removed', 'mutated'] as const)(
+    'does not send when the persisted stop attempt is %s',
+    async (change) => {
+      const f = fixture();
+      vi.spyOn(f.store, 'flush').mockImplementationOnce(async () => {
+        if (change === 'removed') f.store.set({ microStopSubmission: undefined });
+        else f.store.get().microStopSubmission!.stopPrice = 0.8;
+      });
+      expect((await f.run()).reason).toBe('STOP_SUBMISSION_CHANGED');
+      expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+      expect(f.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps an unsent attempt quarantined after a failed flush rather than authorizing retransmission', async () => {
+    const f = fixture();
+    vi.spyOn(f.store, 'flush').mockRejectedValueOnce(new Error('disk failed'));
+    expect((await f.run()).reason).toContain('MUTATION_PERSIST_FAILED');
+    expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+    const attempt = f.store.get().microStopSubmission;
+    expect(attempt).toBeDefined();
+    expect((await f.supervisor.supervise('XRPUSDT', f.store.get(), f.store)).status).toBe(
+      'CONFIRMATION_PENDING',
+    );
+    expect(f.store.get().microStopSubmission).toEqual(attempt);
+    expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'persists and sends exactly once when %s identity is unchanged',
+    async (side) => {
+      const f = fixture(side);
+      let durable: BotState | undefined;
+      vi.spyOn(f.store, 'flush').mockImplementation(async () => {
+        durable = f.store.get();
+      });
+      vi.mocked(f.exchange.placeStopClose).mockImplementation(async (symbol, sentSide, stop) => {
+        expect(durable).toMatchObject({
+          lastTradeId: 'T1',
+          lastSide: side,
+          microProtectionBlocked: true,
+          microStopSubmission: { tradeId: 'T1', stopPrice: stop },
+        });
+        expect(symbol).toBe('XRPUSDT');
+        expect(sentSide).toBe(side);
+        vi.mocked(f.exchange.listCloseOrdersForSide).mockResolvedValue([
+          {
+            orderId: 'S1',
+            type: 'STOP_MARKET',
+            stopPrice: stop,
+            closePosition: true,
+            owner: 'BOT',
+            side: side === 'LONG' ? 'SELL' : 'BUY',
+            positionSide: 'BOTH',
+          },
+        ]);
+        return true;
+      });
+      expect((await f.run()).status).toBe('PROTECTED');
+      expect(f.exchange.placeStopClose).toHaveBeenCalledTimes(1);
+      expect(f.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+      expect(f.exchange.placeTpClose).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('PositionSupervisor', () => {
   it('returns UNKNOWN when supervision is already in flight for symbol', async () => {
     const deps = defaultDeps();

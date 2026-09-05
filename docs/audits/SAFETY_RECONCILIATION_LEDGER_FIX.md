@@ -4,10 +4,11 @@
 
 - Fecha: 2026-09-05. Rama: `work/micro-burst-rider-v1-20260826`.
 - Base local: `59653b1365c90733563d128bd91576a660abcac3`.
-- Este registro describe cambios locales posteriores a esa base, no un commit publicado.
-- Remoto consultado durante el bloque: `d72b8c51a82ac1d0c22b451b5c2a0b52a1302a32`.
-- No se integraron ni sobrescribieron las historias divergidas: el remoto conserva
-  el traspaso documental y el local contiene `9d85f1b` y `59653b1`.
+- Bloque publicado en `8306846`, incluido en el merge `d341225b80bf5e1917c34d363d9c5f538b801db5`.
+- Publicacion comprobada personalmente consultando la rama remota: `d341225`.
+  El merge conserva tanto las correcciones como el traspaso documental de `d72b8c5`.
+- R1-R4 de `CHAT_CONTINUITY_389A6FF.md` estan corregidos. Ese traspaso conserva
+  evidencia historica, no una lista vigente de esos cuatro fallos.
 - No se ejecuto el bot, testnet operativo, LIVE, despliegue ni orden real. No se
   cambiaron configuracion, presupuesto, manifiestos, aprobaciones o credenciales.
 
@@ -59,7 +60,7 @@ Archivos: `src/core/risk/RiskLedger.ts` y su test adyacente.
   UTC. `netPnl` verificado es el valor economico suministrado por el reconciliador;
   este modulo no verifica fills ni convierte comisiones.
 
-## Pruebas propias
+## Pruebas propias del bloque publicado
 
 Comando final ejecutado por el agente coordinador sobre el arbol editado:
 
@@ -101,5 +102,44 @@ Este bloque no sustituye esos componentes ni convierte modulos aislados en garan
 operativas. Tampoco resuelve fencing multihost, respuestas perdidas de cierre o
 reenvios entre ciclos: requieren journal por operacion e integracion posterior.
 
-IMPLEMENTACION: bloque local corregido. PUBLICACION: LOCAL, sin nuevo commit/push.
+IMPLEMENTACION: bloque corregido. PUBLICACION: PUBLICADO, `8306846` incluido en `d341225`.
 VALIDACION_REAL: PENDIENTE_DATOS/PENDIENTE_OPERADOR. DESPLIEGUE: NO_AUTORIZADO.
+
+## Seguimiento posterior a d341225
+
+Dos casos adicionales reportados por la auditoria del usuario se contrastaron con
+el codigo y se corrigieron localmente. No reabren los cuatro casos anteriores.
+
+- Reposicion: usa la misma barrera de identidad/persistencia que las otras mutaciones,
+  guarda el intento junto al bloqueo y revalida identidad tras el flush y al volver
+  de la barrera, inmediatamente antes de invocar el exchange. Si cambia operacion,
+  lado, modo, propietario o registro del intento, devuelve UNKNOWN sin enviar stop.
+  Tampoco pisa un intento aparecido mientras se esperaban datos de mercado.
+- Migracion: la importacion legacy sin version rechaza historia del dia actual como
+  ambigua, incluso si su valor coincide con dailyPnl. Historia solo de dias anteriores
+  conserva dailyPnl una vez. `version: 1` declara agregados cuyo historico incluye hoy
+  y exige igualdad con dailyPnl explicito. `version: 2` es el snapshot exportado con
+  outcomes y legacyBaseline normalizado (historia del baseline solo de dias anteriores).
+  Snapshots sin version publicados en d341225 siguen admitidos si evidencia y totales
+  son consistentes; no se normaliza silenciosamente un baseline con PnL duplicado.
+- La proteccion ante escritores concurrentes aqui es local y basada en snapshots;
+  no es fencing entre hosts ni una transaccion con el exchange. Journal e integracion
+  siguen siendo las siguientes dependencias, sin cambios en este seguimiento.
+
+PUBLICACION DEL SEGUIMIENTO: LOCAL, no incluido todavia en d341225.
+
+### Validacion propia del seguimiento
+
+- `npm run test:safety`: build PASS; 182 archivos y 1.862 tests principales PASS;
+  ConfigLoader separado: 1 archivo y 46 tests PASS. Total: 1.908, cero fallos.
+- Supervisor: 102 tests; ledger nuevo: 68 tests. Incremento: 22 regresiones sobre
+  los 1.886 del bloque anterior, que se conservan como resultado historico propio.
+- Casos de reposicion: cambio antes del guardado o durante flush, cada componente
+  de identidad, mutacion del input original, intento concurrente, registro borrado
+  o alterado, fallo de disco y envio unico con identidad estable LONG/SHORT.
+- Casos de migracion: historia ambigua (cero/ganancia/perdida), contrato explicito,
+  valores inconsistentes, versiones invalidas, compatibilidad de snapshots d341225,
+  no mutacion del input, rollover, cierres tardios y reconstruccion JSON.
+- Estos resultados fueron ejecutados por el coordinador sobre los cambios locales;
+  no se atribuyen al merge d341225 ni a una ejecucion de la auditoria del usuario.
+- Formato TypeScript y `git diff --check` comprobados al finalizar.

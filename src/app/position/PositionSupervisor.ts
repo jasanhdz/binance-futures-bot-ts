@@ -75,7 +75,7 @@ export class PositionSupervisor {
     }
     this.inFlight.add(symbol);
     try {
-      return await this.superviseOnce(symbol, state, store);
+      return await this.superviseOnce(symbol, { ...state }, store);
     } finally {
       this.inFlight.delete(symbol);
     }
@@ -279,30 +279,42 @@ export class PositionSupervisor {
       });
     }
 
-    // 5f. Persist intent before sending (crash-safe).
-    // If no store or flush fails, block: do not send without durable intent.
-    if (!store?.flush) {
-      return this.persistStatus(store, {
-        status: 'UNKNOWN',
-        owner,
-        reason: 'NO_STORE_FOR_PERSISTENCE',
-      });
-    }
+    // Use the same identity/persistence barrier as cancellations and emergency closes.
+    const submission = {
+      attemptedAt: this.deps.now?.() ?? Date.now(),
+      stopPrice: effectiveStop,
+      tradeId: state.lastTradeId,
+    };
+    const blocked = await this.persistMutationBlock(state, owner, store, submission);
+    if (blocked) return blocked;
     try {
-      store.set({
-        microProtectionBlocked: true,
-        microStopSubmission: {
-          attemptedAt: this.deps.now?.() ?? Date.now(),
-          stopPrice: effectiveStop,
-          tradeId: state.lastTradeId,
-        },
-      });
-      await store.flush();
+      // Recheck after the awaited barrier, immediately before invoking the exchange.
+      const current = store!.get();
+      if (!this.matchesPositionIdentity(state, owner, current)) {
+        return this.persistStatus(store, {
+          status: 'UNKNOWN',
+          owner,
+          reason: 'POSITION_IDENTITY_CHANGED',
+        });
+      }
+      const persisted = current.microStopSubmission;
+      if (
+        !persisted ||
+        persisted.tradeId !== submission.tradeId ||
+        persisted.attemptedAt !== submission.attemptedAt ||
+        persisted.stopPrice !== submission.stopPrice
+      ) {
+        return this.persistStatus(store, {
+          status: 'UNKNOWN',
+          owner,
+          reason: 'STOP_SUBMISSION_CHANGED',
+        });
+      }
     } catch (error) {
       return this.persistStatus(store, {
         status: 'UNKNOWN',
         owner,
-        reason: `STOP_PERSIST_FAILED:${String(error)}`,
+        reason: `STOP_STATE_READ_FAILED:${String(error)}`,
       });
     }
 
@@ -680,6 +692,7 @@ export class PositionSupervisor {
     state: BotState,
     owner: PositionOwner,
     store?: StateStore,
+    submission?: NonNullable<BotState['microStopSubmission']>,
   ): Promise<SupervisionResult | undefined> {
     if (!store?.flush) {
       return this.persistStatus(store, {
@@ -690,29 +703,27 @@ export class PositionSupervisor {
     }
     try {
       const current = store.get();
-      if (
-        !state.lastTradeId ||
-        !state.lastSide ||
-        current.lastTradeId !== state.lastTradeId ||
-        current.lastSide !== state.lastSide ||
-        current.mode !== state.mode ||
-        this.deps.resolveOwner(current) !== owner
-      ) {
+      if (!this.matchesPositionIdentity(state, owner, current)) {
         return this.persistStatus(store, {
           status: 'UNKNOWN',
           owner,
           reason: 'POSITION_IDENTITY_INVALID',
         });
       }
-      store.set({ microProtectionBlocked: true });
+      if (submission && current.microStopSubmission !== undefined) {
+        return this.persistStatus(store, {
+          status: 'UNKNOWN',
+          owner,
+          reason: 'STOP_SUBMISSION_ALREADY_RECORDED',
+        });
+      }
+      store.set({
+        microProtectionBlocked: true,
+        ...(submission ? { microStopSubmission: { ...submission } } : {}),
+      });
       await store.flush();
       const persisted = store.get();
-      if (
-        persisted.lastTradeId !== state.lastTradeId ||
-        persisted.lastSide !== state.lastSide ||
-        persisted.mode !== state.mode ||
-        this.deps.resolveOwner(persisted) !== owner
-      ) {
+      if (!this.matchesPositionIdentity(state, owner, persisted)) {
         return this.persistStatus(store, {
           status: 'UNKNOWN',
           owner,
@@ -722,6 +733,22 @@ export class PositionSupervisor {
     } catch (error) {
       return { status: 'UNKNOWN', owner, reason: `MUTATION_PERSIST_FAILED:${String(error)}` };
     }
+  }
+
+  private matchesPositionIdentity(
+    state: BotState,
+    owner: PositionOwner,
+    current: BotState,
+  ): boolean {
+    return (
+      typeof state.lastTradeId === 'string' &&
+      state.lastTradeId.trim().length > 0 &&
+      (state.lastSide === 'LONG' || state.lastSide === 'SHORT') &&
+      current.lastTradeId === state.lastTradeId &&
+      current.lastSide === state.lastSide &&
+      current.mode === state.mode &&
+      this.deps.resolveOwner(current) === owner
+    );
   }
 
   private async persistStatus(

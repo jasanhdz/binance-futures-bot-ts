@@ -261,6 +261,134 @@ describe('RiskLedger evidence and recovery contracts', () => {
   const restart = (ledger: RiskLedger): RiskLedger =>
     new RiskLedger(JSON.parse(JSON.stringify(ledger.getState())));
 
+  it.each([0, 5, -5])(
+    'rejects unversioned current-day aggregate history even when equal (%s)',
+    (pnl) => {
+      expect(
+        () =>
+          new RiskLedger({
+            dayKey: todayKey,
+            dailyPnl: pnl,
+            historicalPnl: { [todayKey]: pnl },
+          }),
+      ).toThrow('Ambiguous current-day baseline history');
+    },
+  );
+
+  it('imports explicit total history once and preserves rollover and late closes after restart', () => {
+    const input = {
+      version: 1 as const,
+      dayKey: yesterdayKey,
+      dailyPnl: 5,
+      peakDailyPnl: 5,
+      historicalPnl: { '2026-09-03': -7, [yesterdayKey]: 5 },
+    };
+    let ledger = new RiskLedger(input);
+    expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(5);
+    expect(ledger.getState()).toMatchObject({ version: 2, dailyPnl: 5 });
+    expect(ledger.getState().legacyBaseline!.historicalPnl).toEqual({ '2026-09-03': -7 });
+    expect(input.historicalPnl[yesterdayKey]).toBe(5);
+    const imported = ledger.getState();
+    ledger = restart(ledger);
+    expect(ledger.getState()).toEqual(imported);
+    expect(
+      ledger.applyTradeClose(makeOutcome({ tradeId: 'next', closedAtMs: today, netPnl: 3 })),
+    ).toBe(true);
+    ledger = restart(ledger);
+    const late = makeOutcome({ tradeId: 'late', closedAtMs: yesterday + 1, netPnl: -2 });
+    expect(ledger.applyTradeClose(late)).toBe(true);
+    ledger = restart(ledger);
+    expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(3);
+    expect(ledger.getHistoricalPnl('2026-09-03')).toBe(-7);
+    expect(ledger.getState()).toMatchObject({ dailyPnl: 3, tradesToday: 1 });
+    expect(ledger.applyTradeClose(late)).toBe(false);
+  });
+
+  it('rejects conflicting or incomplete explicit total imports', () => {
+    for (const historicalPnl of [{ [todayKey]: 10 }, { [yesterdayKey]: 5 }]) {
+      expect(
+        () => new RiskLedger({ version: 1, dayKey: todayKey, dailyPnl: 5, historicalPnl }),
+      ).toThrow('Version 1 history must include today and match dailyPnl');
+    }
+    expect(
+      () =>
+        new RiskLedger({
+          version: 1,
+          dayKey: todayKey,
+          historicalPnl: { [todayKey]: 0 },
+        }),
+    ).toThrow(RangeError);
+  });
+
+  it('accepts prior-day-only legacy history without inventing missing ordinary PnL', () => {
+    const ledger = new RiskLedger({
+      dayKey: todayKey,
+      dailyPnl: 5,
+      historicalPnl: { [yesterdayKey]: -2 },
+    });
+    expect(ledger.getState().historicalPnl).toEqual({ [yesterdayKey]: -2, [todayKey]: 5 });
+    expect(restart(ledger).getState()).toEqual(ledger.getState());
+  });
+
+  it.each<Record<string, number>>([{}, { '2026-09-05': 0 }])(
+    'restores published unversioned evidence with baseline history %j',
+    (history) => {
+      // Literal d341225 snapshot: baseline 5 plus one evidenced close of 2.
+      const snapshot = {
+        dayKey: todayKey,
+        tradesToday: 2,
+        strategyTradesToday: { MICRO_BURST_V1: 2 },
+        consecutiveLosses: 0,
+        dailyPnl: 7,
+        peakDailyPnl: 7,
+        historicalPnl: { [yesterdayKey]: -3, [todayKey]: 7 },
+        closedTradeIds: ['old', 'T1'],
+        appliedKeys: [`close:old:${today - 1}`, `close:T1:${today}`],
+        outcomes: [makeOutcome({ closedAtMs: today, netPnl: 2, revision: 1 })],
+        legacyBaseline: {
+          dayKey: todayKey,
+          tradesToday: 1,
+          strategyTradesToday: { MICRO_BURST_V1: 1 },
+          consecutiveLosses: 0,
+          dailyPnl: 5,
+          peakDailyPnl: 5,
+          historicalPnl: { [yesterdayKey]: -3, ...history },
+        },
+      };
+      const ledger = new RiskLedger(snapshot);
+      expect(ledger.getState()).toMatchObject({ version: 2, dailyPnl: 7 });
+      expect(ledger.getHistoricalPnl(todayKey)).toBe(7);
+      expect(ledger.getState().legacyBaseline!.historicalPnl).toEqual({ [yesterdayKey]: -3 });
+      expect(restart(ledger).getState()).toEqual(ledger.getState());
+      expect(ledger.applyTradeClose(snapshot.outcomes[0])).toBe(false);
+      // Even totals consistent with the old double-counting bug must not be preserved.
+      snapshot.legacyBaseline.historicalPnl[todayKey] = 5;
+      snapshot.historicalPnl[todayKey] = 12;
+      expect(() => new RiskLedger(snapshot)).toThrow('Ambiguous current-day baseline history');
+    },
+  );
+
+  it('validates versions, evidence pairing and the modern baseline contract', () => {
+    const snapshot = new RiskLedger({ dayKey: todayKey }).getState();
+    for (const version of [0, 3, '2', null]) {
+      expect(() => new RiskLedger({ ...snapshot, version: version as 2 })).toThrow(
+        'Unsupported risk state version',
+      );
+    }
+    for (const version of [undefined, 2] as const) {
+      expect(() => new RiskLedger({ ...snapshot, version, outcomes: undefined })).toThrow(
+        RangeError,
+      );
+      expect(() => new RiskLedger({ ...snapshot, version, legacyBaseline: undefined })).toThrow(
+        RangeError,
+      );
+    }
+    expect(() => new RiskLedger({ version: 2 })).toThrow(RangeError);
+    expect(() => new RiskLedger({ ...snapshot, version: 1 })).toThrow(RangeError);
+    snapshot.legacyBaseline!.historicalPnl[todayKey] = 0;
+    expect(() => new RiskLedger(snapshot)).toThrow('Ambiguous current-day baseline history');
+  });
+
   it('archives ordinary PnL at rollover and adds late economics exactly once after JSON restart', () => {
     let ledger = new RiskLedger({ dayKey: yesterdayKey });
     const ordinary = makeOutcome({ tradeId: 'ordinary', closedAtMs: yesterday, netPnl: 10 });

@@ -2,6 +2,17 @@
 
 ## Referencia vigente del traspaso
 
+- Publicacion comprobada en la rama remota: `d341225`, que incluye `8306846`.
+- R1-R4 corregidos, no pendientes. Resultado propio del bloque: build PASS,
+  1.840 + 46 = 1.886 tests. No es una nueva ejecucion del merge documental.
+- Estado y pruebas del seguimiento posterior en `SAFETY_RECONCILIATION_LEDGER_FIX.md`.
+- Seguimiento local posterior a d341225, ejecucion propia: `npm run test:safety`
+  PASS, build y 1.862 + 46 = 1.908 tests; identidad de reposicion y migracion legacy
+  versionada corregidas con 22 regresiones nuevas. Aun no publicado.
+- Las cifras y reproducciones inferiores corresponden a sus commits historicos.
+
+## Referencia historica de 389a6ff
+
 - Último código auditado/publicado: `389a6ff2cc6953b4628d3ab37a96a5054a1c5171`.
 - Auditoría propia dirigida sobre ese código: cuatro fallos reproducidos, R1–R4 en
   `CHAT_CONTINUITY_389A6FF.md`. Caso anterior de sizing rechazado correctamente.

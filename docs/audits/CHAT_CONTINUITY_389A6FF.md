@@ -1,5 +1,14 @@
 # Prompt de continuidad integral — Aegis/Micro, revisión hasta 389a6ff
 
+## Actualizacion posterior: d341225
+
+R1-R4 descritos como abiertos mas abajo son evidencia historica de 389a6ff:
+quedaron corregidos en el bloque publicado mediante `8306846` y el merge `d341225`.
+No volver a presentarlos como pendientes. Leer primero
+`SAFETY_RECONCILIATION_LEDGER_FIX.md` para publicacion verificada, pruebas del bloque
+y seguimiento de identidad en reposicion y migracion legacy. Journal, integracion
+y el resto de fases siguen pendientes; no hay aprobacion de despliegue.
+
 Copia este documento completo en el nuevo chat o adjúntalo y pide que se lea íntegro.
 Es un traspaso técnico y de decisiones. No es una certificación de seguridad ni rentabilidad.
 

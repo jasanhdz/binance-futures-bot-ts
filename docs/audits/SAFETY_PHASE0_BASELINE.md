@@ -1,6 +1,12 @@
 # Fase 0: baseline y contratos
 
-## Actualización de referencia: 389a6ff
+## Referencia posterior: d341225
+
+Publicacion verificada de las correcciones R1-R4 mediante `8306846` y `d341225`.
+Ver `SAFETY_RECONCILIATION_LEDGER_FIX.md` para pruebas y seguimiento. Los fallos
+de 389a6ff citados abajo ya no son pendientes; los limites de integracion permanecen.
+
+## Actualización historica de referencia: 389a6ff
 
 Código auditado: `389a6ff2cc6953b4628d3ab37a96a5054a1c5171`, rama micro.
 Leer `CHAT_CONTINUITY_389A6FF.md` antes de usar los baselines históricos inferiores.

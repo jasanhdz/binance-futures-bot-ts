@@ -5,9 +5,10 @@
 - Repositorio: `jasanhdz/binance-futures-bot-ts`.
 - Rama única: `work/micro-burst-rider-v1-20260826`. No crear otra rama.
 - Baseline histórico auditado: `05b233963d7897dccb9912f82b76895270eeb3b0`.
-- Último código auditado: `389a6ff2cc6953b4628d3ab37a96a5054a1c5171`.
-- Leer primero `CHAT_CONTINUITY_389A6FF.md`: historial, cuatro reproducciones abiertas,
-  estado real de fases y orden inmediato. Las tablas de c5d4f60 inferiores son históricas.
+- Referencia publicada verificada: `d341225b80bf5e1917c34d363d9c5f538b801db5`.
+- Leer primero `SAFETY_RECONCILIATION_LEDGER_FIX.md`: R1-R4 corregidos, pruebas y
+  seguimiento actual. `CHAT_CONTINUITY_389A6FF.md` conserva el historial tecnico.
+  Las tablas de c5d4f60 y los hallazgos de 389a6ff inferiores son historicos.
 - Este documento acompaña un incremento PARCIAL de seguridad, no certifica todas las fases.
 - El usuario pide completar el código de TODAS las fases y crear sus tests desde un
   entorno virtual, con commits y publicación incremental. No esperar datasets para programar.
@@ -22,7 +23,7 @@
 
 ## Estado entregado (no confundir incrementos con fases completas)
 
-### Estado auditado en 389a6ff — referencia actual
+### Estado auditado en 389a6ff — referencia historica
 
 - Las fases NO están completas salvo refactor: módulos nuevos siguen sin integración
   runtime comprobada; journal durable, contabilidad, régimen y replay siguen parciales.

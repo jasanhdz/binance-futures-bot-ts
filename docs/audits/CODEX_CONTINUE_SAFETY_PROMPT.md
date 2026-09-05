@@ -1,6 +1,13 @@
 # Prompt completo: terminar el endurecimiento de Micro/Aegis en entorno virtual
 
-## Actualización de continuidad hasta 389a6ff
+## Referencia posterior: d341225
+
+El bloque publicado en `8306846`, integrado mediante `d341225`, corrige R1-R4.
+Leer `SAFETY_RECONCILIATION_LEDGER_FIX.md` para evidencia y seguimiento actual.
+Las reproducciones abiertas de 389a6ff inferiores son historicas; no reiniciar esas
+correcciones ni declarar completas las fases. Journal e integracion siguen pendientes.
+
+## Actualización historica de continuidad hasta 389a6ff
 
 Leer primero docs/audits/CHAT_CONTINUITY_389A6FF.md. Es el prompt autónomo para el nuevo
 chat y actualiza los hallazgos/estado sobre estas instrucciones originales. Código

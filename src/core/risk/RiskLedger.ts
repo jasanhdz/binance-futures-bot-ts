@@ -24,11 +24,18 @@ export interface LegacyRiskBaseline {
   consecutiveLosses: number;
   dailyPnl: number;
   peakDailyPnl: number;
-  /** Total known PnL by UTC day, not just late closes. */
+  /** Baseline: prior days only, with dailyPnl separate. Snapshot: totals including today. */
   historicalPnl: Record<string, number>;
 }
 
 export interface DailyRiskState extends LegacyRiskBaseline {
+  /**
+   * 1: aggregate import only; history must include dayKey and equal dailyPnl there.
+   * 2: replayable snapshot; requires outcomes + legacyBaseline (prior-day history only).
+   * Absent: legacy aggregates exclude today (older history may be late-only), or
+   * published d341225 evidence snapshots. Unknown versions are rejected.
+   */
+  version?: 1 | 2;
   /** All known closed identities, retained across rollover. */
   closedTradeIds: string[];
   /** Legacy timestamp keys, retained for existing persistence consumers. */
@@ -58,7 +65,14 @@ export class RiskLedger {
   private state: DailyRiskState;
 
   constructor(initial: Partial<DailyRiskState> = {}) {
-    const baseline = initial.legacyBaseline ?? {
+    if (initial.version !== undefined && initial.version !== 1 && initial.version !== 2) {
+      throw new RangeError('Unsupported risk state version');
+    }
+    const hasEvidence = initial.outcomes !== undefined || initial.legacyBaseline !== undefined;
+    if (initial.version === 1 && hasEvidence) {
+      throw new RangeError('Version 1 requires aggregates without outcome evidence');
+    }
+    const sourceBaseline = initial.legacyBaseline ?? {
       dayKey: initial.dayKey ?? dayKeyFromDate(Date.now()),
       tradesToday: initial.tradesToday ?? 0,
       strategyTradesToday: initial.strategyTradesToday ?? {},
@@ -69,12 +83,32 @@ export class RiskLedger {
     };
     // Evidence-bearing snapshots must carry their baseline, not reimport totals.
     if (
-      (initial.outcomes !== undefined || initial.legacyBaseline !== undefined) &&
+      (hasEvidence || initial.version === 2) &&
       (!Array.isArray(initial.outcomes) || !initial.legacyBaseline)
     ) {
       throw new RangeError('Outcome snapshots require an evidence array and legacyBaseline');
     }
-    validateBaseline(baseline);
+    validateBaseline(sourceBaseline);
+    const baseline = copyBaseline(sourceBaseline);
+    const hasCurrentHistory = Object.prototype.hasOwnProperty.call(
+      baseline.historicalPnl,
+      baseline.dayKey,
+    );
+    if (initial.version === 1) {
+      if (
+        !hasCurrentHistory ||
+        initial.dailyPnl === undefined ||
+        baseline.historicalPnl[baseline.dayKey] !== baseline.dailyPnl
+      ) {
+        throw new RangeError('Version 1 history must include today and match dailyPnl');
+      }
+    } else if (hasCurrentHistory) {
+      // d341225 could retain a harmless zero, but nonzero values double-counted PnL.
+      if (!hasEvidence || initial.version === 2 || baseline.historicalPnl[baseline.dayKey] !== 0) {
+        throw new RangeError('Ambiguous current-day baseline history');
+      }
+    }
+    delete baseline.historicalPnl[baseline.dayKey];
     if (initial.legacyBaseline) {
       validateBaseline({ ...baseline, ...initial });
     }
@@ -137,6 +171,7 @@ export class RiskLedger {
 
   getState(): DailyRiskState {
     return {
+      version: 2,
       ...copyBaseline(this.state),
       appliedKeys: [...this.state.appliedKeys],
       closedTradeIds: [...this.state.closedTradeIds],
@@ -231,10 +266,7 @@ function rebuild(state: DailyRiskState): DailyRiskState {
   state.peakDailyPnl = sameDay ? baseline.peakDailyPnl : 0;
   state.consecutiveLosses = baseline.consecutiveLosses;
   state.historicalPnl = { ...baseline.historicalPnl };
-  state.historicalPnl[baseline.dayKey] = add(
-    state.historicalPnl[baseline.dayKey] ?? 0,
-    baseline.dailyPnl,
-  );
+  state.historicalPnl[baseline.dayKey] = baseline.dailyPnl;
   const chronological = [...state.outcomes!].sort(
     (a, b) =>
       a.closedAtMs - b.closedAtMs || (a.tradeId < b.tradeId ? -1 : a.tradeId > b.tradeId ? 1 : 0),
