@@ -75,6 +75,8 @@ describe('PositionProtectionService', () => {
     const { service, exchange } = fixture();
     exchange.listCloseOrdersForSide
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99, closePosition: true } as any,
       ]);
@@ -98,6 +100,50 @@ describe('PositionProtectionService', () => {
         lastStopPrice: 101,
       }),
     ).rejects.toThrow('MICRO_STOP_CONFIRMATION_PENDING');
+    expect(exchange.placeTpClose).not.toHaveBeenCalled();
+  });
+
+  it('retries bounded confirmation when the exchange lists the stop late', async () => {
+    const { service, exchange } = fixture();
+    exchange.listCloseOrdersForSide
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { orderId: 'late-sl', type: 'STOP_MARKET', stopPrice: 99, closePosition: true } as any,
+      ]);
+
+    await service.ensureMicroStop('ETHUSDT', {
+      mode: 'LONG_RIDE',
+      lastSide: 'LONG',
+      lastStopPrice: 99,
+    });
+
+    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99);
+    expect(exchange.listCloseOrdersForSide).toHaveBeenCalledTimes(5);
+  });
+
+  it('does not count an explicitly unknown-owner stop as Micro protection', async () => {
+    const { service, exchange } = fixture();
+    exchange.listCloseOrdersForSide.mockResolvedValue([
+      {
+        orderId: 'foreign-sl',
+        type: 'STOP_MARKET',
+        stopPrice: 99,
+        closePosition: true,
+        owner: 'UNKNOWN',
+      } as any,
+    ]);
+
+    await expect(
+      service.ensureMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 99,
+      }),
+    ).rejects.toThrow('MICRO_STOP_CONFIRMATION_PENDING');
+    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99);
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
   });
 

@@ -18,6 +18,9 @@ type SafeStopMoveSkipReason =
   | 'missing_quantity'
   | 'exchange_error';
 
+const MICRO_STOP_CONFIRMATION_ATTEMPTS = 3;
+const MICRO_STOP_CONFIRMATION_DELAY_MS = 25;
+
 export interface PositionProtectionServiceDeps {
   exchange: TradingExchangePort;
   logger: Logger;
@@ -44,9 +47,19 @@ export class PositionProtectionService {
       order.stopPrice > 0 &&
       (!order.positionSide || order.positionSide === 'BOTH' || order.positionSide === side) &&
       (!order.side || order.side === (side === 'LONG' ? 'SELL' : 'BUY')) &&
+      order.owner !== 'UNKNOWN' &&
       (order.closePosition === true ||
         (order.reduceOnly === true && Number(order.quantity) >= position.qtyAbs));
-    if ((await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition)) return;
+    const hasConfirmedStop = async (): Promise<boolean> => {
+      for (let attempt = 0; attempt < MICRO_STOP_CONFIRMATION_ATTEMPTS; attempt++) {
+        if ((await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition)) return true;
+        if (attempt < MICRO_STOP_CONFIRMATION_ATTEMPTS - 1) {
+          await new Promise((resolve) => setTimeout(resolve, MICRO_STOP_CONFIRMATION_DELAY_MS));
+        }
+      }
+      return false;
+    };
+    if (await hasConfirmedStop()) return;
     const remembered = [state.lastStopPrice, state.microBurstStructuralStopPrice].filter(
       (price): price is number => typeof price === 'number' && Number.isFinite(price) && price > 0,
     );
@@ -55,7 +68,7 @@ export class PositionProtectionService {
     const filters = await exchange.getSymbolFilters(symbol, position.leverage);
     const placed = await exchange.placeStopClose(symbol, side, this.roundPrice(stopPrice, filters));
     if (!placed) throw new Error('MICRO_STOP_REJECTED');
-    if (!(await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition)) {
+    if (!(await hasConfirmedStop())) {
       throw new Error('MICRO_STOP_CONFIRMATION_PENDING');
     }
     this.deps.logger.info('micro_stop_restored', {
