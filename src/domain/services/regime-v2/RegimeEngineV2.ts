@@ -16,10 +16,10 @@ const MIN_HISTORY = 120;
 export class RegimeEngineV2 {
   static evaluate(input: RegimeEngineV2EvaluateInput): RegimeEngineV2Decision {
     const symbol = input.symbol.toUpperCase();
-    const candles = input.candles.filter(validCandle);
+    const candles = normalizeCandles(input.candles);
     const current = candles[candles.length - 1];
     const timestamp = current ? candleDate(current).toISOString() : new Date(0).toISOString();
-    if (candles.length < MIN_HISTORY || !current) {
+    if (candles.length < MIN_HISTORY || !current || !hasRegularFiveMinuteCadence(candles)) {
       return decision({
         symbol,
         timestamp,
@@ -32,8 +32,12 @@ export class RegimeEngineV2 {
         marketConfirmationState: classifyMarketConfirmation('NONE', input.market),
         market: input.market,
         transitionRisk: 'HIGH',
-        transitionReasons: ['insufficient_history'],
-        reasons: ['insufficient_history'],
+        transitionReasons: [
+          candles.length < MIN_HISTORY ? 'insufficient_history' : 'invalid_candle_timeline',
+        ],
+        reasons: [
+          candles.length < MIN_HISTORY ? 'insufficient_history' : 'invalid_candle_timeline',
+        ],
       });
     }
 
@@ -813,9 +817,45 @@ function emptyScores(): RegimeEngineV2Scores {
 }
 
 function validCandle(candle: RegimeEngineV2InputCandle): boolean {
-  return [candle.open, candle.high, candle.low, candle.close, candle.volume].every((value) =>
-    Number.isFinite(value),
+  return (
+    [candle.open, candle.high, candle.low, candle.close, candle.volume].every(Number.isFinite) &&
+    candle.open > 0 &&
+    candle.high >= Math.max(candle.open, candle.close) &&
+    candle.low <= Math.min(candle.open, candle.close) &&
+    candle.volume >= 0
   );
+}
+
+function normalizeCandles(input: RegimeEngineV2InputCandle[]): RegimeEngineV2InputCandle[] {
+  const valid = input
+    .filter(validCandle)
+    .slice()
+    .sort((a, b) => candleDate(a).getTime() - candleDate(b).getTime());
+  const deduped: RegimeEngineV2InputCandle[] = [];
+  for (const candle of valid) {
+    const previous = deduped[deduped.length - 1];
+    if (previous && candleDate(previous).getTime() === candleDate(candle).getTime()) {
+      deduped[deduped.length - 1] = candle;
+    } else {
+      deduped.push(candle);
+    }
+  }
+  return deduped;
+}
+
+function hasRegularFiveMinuteCadence(candles: RegimeEngineV2InputCandle[]): boolean {
+  for (let index = 1; index < candles.length; index += 1) {
+    const previous = candleDate(candles[index - 1]).getTime();
+    const current = candleDate(candles[index]).getTime();
+    if (
+      !Number.isFinite(previous) ||
+      !Number.isFinite(current) ||
+      current - previous !== 5 * 60_000
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function candleDate(candle: RegimeEngineV2InputCandle): Date {

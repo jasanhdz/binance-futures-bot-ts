@@ -79,6 +79,8 @@ export type RegimeEngineV2MomentumPattern = {
 
 export type RegimeEngineV2Outcome = {
   horizonMinutes: number;
+  complete?: boolean;
+  incompleteReason?: 'missing_future_data';
   grossForwardReturnRoe?: number;
   forwardReturnRoe?: number;
   mfeRoe?: number;
@@ -378,7 +380,7 @@ export function buildRegimeEngineV2AuditSamples(
     const decision = RegimeEngineV2.evaluate({
       symbol,
       candles: candles.slice(start, index + 1),
-      market: marketContext(symbol, index, decisionFor),
+      market: marketContext(symbol, index, decisionFor, candlesBySymbol),
     });
     symbolCache.set(index, decision);
     decisionCache.set(symbol, symbolCache);
@@ -510,10 +512,19 @@ function marketContext(
   symbol: string,
   index: number,
   decisionFor: (symbol: string, index: number) => RegimeEngineV2Decision | undefined,
+  candlesBySymbol: Map<string, RegimeEngineV2InputCandle[]>,
 ): RegimeEngineV2MarketContext | undefined {
   if (symbol === 'BTCUSDT') return undefined;
-  const btc = symbol === 'BTCUSDT' ? undefined : decisionFor('BTCUSDT', index);
-  const eth = symbol === 'ETHUSDT' ? undefined : decisionFor('ETHUSDT', index);
+  // Context must be aligned by candle timestamp, never by array position.
+  const targetTimestamp = candlesBySymbol.get(symbol)?.[index]?.timestamp;
+  const btc =
+    targetTimestamp !== undefined
+      ? decisionForAtTimestamp('BTCUSDT', targetTimestamp, decisionFor, candlesBySymbol)
+      : undefined;
+  const eth =
+    targetTimestamp && symbol !== 'ETHUSDT'
+      ? decisionForAtTimestamp('ETHUSDT', targetTimestamp, decisionFor, candlesBySymbol)
+      : undefined;
   return {
     btc: btc
       ? {
@@ -533,6 +544,18 @@ function marketContext(
             }
           : undefined,
   };
+}
+
+function decisionForAtTimestamp(
+  symbol: string,
+  timestamp: number,
+  decisionFor: (symbol: string, index: number) => RegimeEngineV2Decision | undefined,
+  candlesBySymbol: Map<string, RegimeEngineV2InputCandle[]>,
+): RegimeEngineV2Decision | undefined {
+  const index = (candlesBySymbol.get(symbol) ?? []).findIndex(
+    (candle) => candle.timestamp === timestamp,
+  );
+  return index < 0 ? undefined : decisionFor(symbol, index);
 }
 
 function actionFromEnv(env: RegimeEngineV2MomentumEnvironment): 'LONG' | 'SHORT' | 'HOLD' {
@@ -750,7 +773,9 @@ export function calculateRegimeEngineV2Outcome(
   if (!entry || entry.close <= 0) return { horizonMinutes };
   const endMs = (entry.timestamp ?? 0) + horizonMinutes * 60_000;
   const future = candles.slice(index + 1).filter((candle) => (candle.timestamp ?? 0) <= endMs);
-  if (future.length === 0) return { horizonMinutes };
+  if (future.length === 0 || (future[future.length - 1].timestamp ?? 0) < endMs) {
+    return { horizonMinutes, complete: false, incompleteReason: 'missing_future_data' };
+  }
   const futureHigh = max(future.map((candle) => candle.high));
   const futureLow = min(future.map((candle) => candle.low));
   const lastClose = future[future.length - 1].close;
@@ -773,6 +798,7 @@ export function calculateRegimeEngineV2Outcome(
   const netForwardReturnRoe = forwardReturnRoe - totalCostRoe;
   return {
     horizonMinutes,
+    complete: true,
     grossForwardReturnRoe: round(forwardReturnRoe),
     forwardReturnRoe: round(netForwardReturnRoe),
     mfeRoe: round(netMfeRoe),

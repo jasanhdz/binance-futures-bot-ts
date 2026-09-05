@@ -83,7 +83,7 @@ describe('regimeEngineV2AuditCore', () => {
       0,
       'LONG',
       20,
-      15,
+      10,
       testDecision('BREAKOUT_UP_EARLY'),
     );
     const shortOutcome = calculateRegimeEngineV2Outcome(
@@ -91,12 +91,43 @@ describe('regimeEngineV2AuditCore', () => {
       0,
       'SHORT',
       20,
-      15,
+      10,
       testDecision('BREAKOUT_DOWN_EARLY'),
     );
 
     expect(longOutcome.mfeRoe).toBeGreaterThan(0);
     expect(shortOutcome.maeRoe).toBeLessThan(0);
+  });
+
+  it('marks horizons incomplete when future candles do not cover the horizon', () => {
+    const candles = datedCandles().slice(0, 130);
+    const result = calculateRegimeEngineV2Outcome(
+      candles,
+      125,
+      'LONG',
+      20,
+      120,
+      testDecision('MOMENTUM_UP_EARLY'),
+    );
+    expect(result.complete).toBe(false);
+    expect(result.incompleteReason).toBe('missing_future_data');
+    expect(result.forwardReturnRoe).toBeUndefined();
+  });
+
+  it('aligns BTC context by timestamp instead of array position', () => {
+    const eth = datedCandles();
+    const btc = datedCandles().map((row) => ({
+      ...row,
+      timestamp: row.timestamp! + 24 * 60 * 60_000,
+    }));
+    const result = buildRegimeEngineV2AuditSamples(
+      new Map([
+        ['ETHUSDT', eth],
+        ['BTCUSDT', btc],
+      ]),
+      { symbols: ['ETHUSDT'], sampleEvery: 20, maxSamplesPerSymbol: 1 },
+    );
+    expect(result.samples[0]?.decision.marketConfirmation.btc).toBeUndefined();
   });
 
   it('does not use future candles for offline momentum pattern detection', () => {

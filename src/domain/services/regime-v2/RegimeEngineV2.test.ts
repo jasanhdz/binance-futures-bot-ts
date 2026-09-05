@@ -13,6 +13,26 @@ describe('RegimeEngineV2', () => {
     expect(result.momentumEnvironment).toBe('UNKNOWN');
   });
 
+  it('returns UNKNOWN for an irregular candle timeline', () => {
+    const candles = Array.from({ length: 140 }, (_, index) =>
+      candle(index, 100, 100.4, 99.6, 100 + Math.sin(index) * 0.1, 100),
+    );
+    candles[80] = { ...candles[80], timestamp: candles[79].timestamp! + 10 * 60_000 };
+    const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+    expect(result.technicalRegime).toBe('UNKNOWN');
+    expect(result.reasons).toContain('invalid_candle_timeline');
+  });
+
+  it('rejects invalid OHLCV rows instead of treating them as valid history', () => {
+    const candles = Array.from({ length: 140 }, (_, index) =>
+      candle(index, 100, 100.4, 99.6, 100 + Math.sin(index) * 0.1, 100),
+    );
+    candles[80] = { ...candles[80], volume: -1 };
+    const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
+    expect(result.technicalRegime).toBe('UNKNOWN');
+    expect(result.reasons).toContain('invalid_candle_timeline');
+  });
+
   it('classifies CHOP with low movement mixed structure', () => {
     const candles = Array.from({ length: 140 }, (_, index) => {
       const base = 100 + Math.sin(index / 2) * 0.12;

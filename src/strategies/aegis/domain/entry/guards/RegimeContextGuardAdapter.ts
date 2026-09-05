@@ -273,16 +273,27 @@ function calculateSimpleAdx(
   candles: Array<{ high: number; low: number; close: number }>,
 ): number | undefined {
   if (candles.length < 3) return undefined;
-  const values: number[] = [];
+  let plusDmSum = 0;
+  let minusDmSum = 0;
+  let trueRangeSum = 0;
   for (let index = 1; index < candles.length; index += 1) {
     const upMove = candles[index].high - candles[index - 1].high;
     const downMove = candles[index - 1].low - candles[index].low;
     const plusDm = upMove > downMove && upMove > 0 ? upMove : 0;
     const minusDm = downMove > upMove && downMove > 0 ? downMove : 0;
-    const denom = plusDm + minusDm;
-    if (denom > 0) values.push((Math.abs(plusDm - minusDm) / denom) * 100);
+    plusDmSum += plusDm;
+    minusDmSum += minusDm;
+    trueRangeSum += Math.max(
+      candles[index].high - candles[index].low,
+      Math.abs(candles[index].high - candles[index - 1].close),
+      Math.abs(candles[index].low - candles[index - 1].close),
+    );
   }
-  return round(average(values));
+  if (trueRangeSum <= 0) return undefined;
+  const plusDi = (plusDmSum / trueRangeSum) * 100;
+  const minusDi = (minusDmSum / trueRangeSum) * 100;
+  const denominator = plusDi + minusDi;
+  return denominator > 0 ? round((Math.abs(plusDi - minusDi) / denominator) * 100) : 0;
 }
 
 function average(values: number[]): number | undefined {

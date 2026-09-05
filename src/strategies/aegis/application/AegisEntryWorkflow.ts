@@ -835,21 +835,27 @@ export class AegisEntryWorkflow {
       }
       // ═══════════════════════════════════════════════════════════════
 
-      // SHORT REGIME FILTER: Only allow SHORT in trending/breakout regimes
-      const shortBlockedRegimes = ['CHOP', 'EXHAUSTION', 'RISK_OFF', 'HIGH_VOL_RISK', 'UNKNOWN'];
-      const regimeCtx = entryDecision.metadata?.regimeContext as
+      // SHORT regime protection is sourced from the canonical regime guard
+      // decision. Do not maintain a second hard-coded label list here.
+      const regimeDecision = entryDecision.metadata?.regime as Record<string, unknown> | undefined;
+      const regimeContext = entryDecision.metadata?.regimeContext as
         | Record<string, unknown>
         | undefined;
-      const regimeLabel = regimeCtx?.label as string | undefined;
-      if (side === 'SHORT' && regimeLabel && shortBlockedRegimes.includes(regimeLabel)) {
+      const regimeLabel =
+        (regimeDecision?.regime as string | undefined) ??
+        (regimeContext?.label as string | undefined);
+      const regimeWouldBlock = regimeDecision?.wouldBlock === true;
+      if (side === 'SHORT' && regimeWouldBlock && regimeLabel) {
         await this.deps.logAegisTradeEvent(symbol, 'SHORT_REGIME_BLOCKED', {
           tradeId,
-          reason: `short_regime_${regimeLabel.toLowerCase()}`,
+          reason: String(regimeDecision?.reason ?? `short_regime_${regimeLabel.toLowerCase()}`),
           metadata: {
             symbol,
             side,
             regime: regimeLabel,
-            confidence: regimeCtx?.confidence,
+            confidence: regimeDecision?.confidence ?? regimeContext?.confidence,
+            regimeReason: regimeDecision?.reason,
+            regimeSource: regimeDecision?.source,
             entryDecision: entryDecision.finalDecision,
             finalReason: entryDecision.finalReason,
           },
@@ -858,7 +864,8 @@ export class AegisEntryWorkflow {
           symbol,
           side,
           regime: regimeLabel,
-          confidence: regimeCtx?.confidence,
+          confidence: regimeDecision?.confidence ?? regimeContext?.confidence,
+          reason: regimeDecision?.reason,
         });
         return;
       }

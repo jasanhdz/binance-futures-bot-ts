@@ -220,4 +220,23 @@ describe('RegimeContextGuardAdapter', () => {
     expect(result.regimeContext?.label).toBe('CHOP');
     expect(result.regimeContext?.momentumLongAllowed).toBe(false);
   });
+
+  it('calcula ADX agregado y no confunde oscilación con ADX 100', () => {
+    const base = context();
+    const candles = Array.from({ length: 25 }, (_, index) => {
+      const center = 1 + (index % 2 === 0 ? 0.01 : -0.01);
+      return { open: center, high: center + 0.02, low: center - 0.02, close: center, volume: 100 };
+    });
+    const result = RegimeContextGuardAdapter.evaluate(
+      context({
+        entryQuality: {
+          ...base.entryQuality,
+          ruleGate: { ...base.entryQuality.ruleGate, recentCandles: candles },
+        },
+      }),
+      { enabled: true, mode: 'SHADOW' },
+    );
+    expect(result.regimeContext?.indicators.adx).toBeDefined();
+    expect(result.regimeContext?.indicators.adx).toBeLessThan(100);
+  });
 });
