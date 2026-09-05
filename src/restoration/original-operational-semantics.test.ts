@@ -34,8 +34,6 @@ const baselineOperationalDigests: Record<string, string> = {
   'src/app/ports/Exchange.ts': 'a90246d4ac1c015c6a6d6ba5f8d00fa09bda601360227928fc77c6e6f65d84f5',
   'src/infra/config/environment.ts':
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
-  'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
-    'acf0dcf1583c9b72bef06ffaeb932abe04a3f9ea803220f725cec97d733b8b2d',
   'src/domain/services/ProfitGuardian.ts':
     'f95512ac4ecd82449dff30a1f63441f7297e57adf8b58ca32d8cca5409aa62fd',
   'src/infra/logging/FsStateStore.ts':
@@ -58,7 +56,11 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/app/services/TradingService.ts':
-    '3784bf174f6104156eed3bd73af7f7bd5d03a21158dbc2fc247576eab9df5e60',
+    '5bd394ca2767f7d1776cbb797de24cb0eed4f84785b32131b97a77f1b4073eb3',
+  // Phase 2: reject invalid exposure measurements before portfolio admission.
+  // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
+  'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
+    'a521cee72a5ecacbfb1edb57daa0b872a4a97a3597a27025050f7c7ef06a14cc',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

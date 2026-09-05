@@ -74,6 +74,27 @@ describe('TradingService shared safety contracts', () => {
     });
   });
 
+  it('distinguishes absent margin from invalid isolated margin', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.getLiveAegisSymbols = () => ['ETHUSDT'];
+    service.deps = {
+      exchange: {
+        readActivePosition: vi.fn().mockResolvedValue({
+          sideMode: 'BOTH',
+          qtyAbs: 2,
+          entryPrice: 100,
+          leverage: 10,
+          isolatedMargin: Number.NaN,
+        }),
+        getMarkPrice: vi.fn().mockResolvedValue(100),
+      },
+    };
+
+    await expect(service.readAegisPortfolioExposure()).rejects.toThrow(
+      'EXPOSURE_INVALID_ISOLATED_MARGIN:ETHUSDT:LONG',
+    );
+  });
+
   it('does not admit Aegis/Momentum while the shared entry reservation is held', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.entryInFlight = true;

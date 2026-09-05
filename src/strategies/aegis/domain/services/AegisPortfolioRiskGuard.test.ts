@@ -105,4 +105,19 @@ describe('AegisPortfolioRiskGuard', () => {
       notionalToEquity: 3,
     });
   });
+
+  it('fails closed for non-finite or negative portfolio measurements', () => {
+    for (const overrides of [
+      { currentMarginUsed: Number.NaN },
+      { currentNotional: Number.POSITIVE_INFINITY },
+      { newTradeEstimatedMargin: -1 },
+      { equityTotal: Number.NaN },
+    ]) {
+      const decision = AegisPortfolioRiskGuard.evaluate(input(overrides));
+      expect(decision).toMatchObject({
+        allowed: false,
+        reason: 'invalid_portfolio_measurement',
+      });
+    }
+  });
 });

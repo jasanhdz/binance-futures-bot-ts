@@ -2251,12 +2251,17 @@ export class TradingService {
           throw new Error(`EXPOSURE_INVALID_MARK_PRICE:${symbol}`);
         }
         const positionMargin =
-          position.isolatedMargin ??
-          (position.entryPrice > 0 && position.leverage > 0 && position.qtyAbs > 0
-            ? (position.entryPrice * position.qtyAbs) / position.leverage
-            : 0);
+          position.isolatedMargin !== undefined
+            ? position.isolatedMargin
+            : (position.entryPrice * position.qtyAbs) / position.leverage;
+        if (!Number.isFinite(positionMargin) || positionMargin < 0) {
+          throw new Error(`EXPOSURE_INVALID_ISOLATED_MARGIN:${symbol}:${side}`);
+        }
         marginUsed += positionMargin;
         notional += markPrice * position.qtyAbs;
+        if (!Number.isFinite(marginUsed) || !Number.isFinite(notional)) {
+          throw new Error(`EXPOSURE_INVALID_TOTALS:${symbol}`);
+        }
       }
     }
 

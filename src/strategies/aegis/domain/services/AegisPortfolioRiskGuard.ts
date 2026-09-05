@@ -2,6 +2,7 @@ import { Side } from '../../../../core/types';
 
 export type AegisPortfolioRiskReason =
   | 'portfolio_risk_disabled'
+  | 'invalid_portfolio_measurement'
   | 'max_open_positions_reached'
   | 'max_same_direction_positions_reached'
   | 'max_margin_used_pct_reached'
@@ -48,6 +49,28 @@ function finiteLimit(value: unknown): number | undefined {
 export class AegisPortfolioRiskGuard {
   static evaluate(input: AegisPortfolioRiskInput): AegisPortfolioRiskDecision {
     const config = input.config || {};
+    const measurements = [
+      input.currentOpenPositions,
+      input.currentLongPositions,
+      input.currentShortPositions,
+      input.currentMarginUsed,
+      input.currentNotional,
+      input.newTradeEstimatedMargin,
+      input.newTradeEstimatedNotional,
+    ];
+    if (
+      measurements.some((value) => !finiteNumber(value) || value < 0) ||
+      (input.walletBalance !== undefined &&
+        (!finiteNumber(input.walletBalance) || input.walletBalance < 0)) ||
+      (input.equityTotal !== undefined &&
+        (!finiteNumber(input.equityTotal) || input.equityTotal < 0))
+    ) {
+      return {
+        allowed: false,
+        reason: 'invalid_portfolio_measurement',
+        metadata: { symbol: input.symbol, side: input.side, input },
+      };
+    }
     const sameDirectionPositions =
       input.side === 'LONG' ? input.currentLongPositions : input.currentShortPositions;
     const equityBase =
