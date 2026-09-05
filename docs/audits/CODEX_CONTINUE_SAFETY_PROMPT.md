@@ -1,5 +1,14 @@
 # Prompt completo: terminar el endurecimiento de Micro/Aegis en entorno virtual
 
+## Actualización de continuidad hasta 389a6ff
+
+Leer primero docs/audits/CHAT_CONTINUITY_389A6FF.md. Es el prompt autónomo para el nuevo
+chat y actualiza los hallazgos/estado sobre estas instrucciones originales. Código
+auditado: 389a6ff2cc6953b4628d3ab37a96a5054a1c5171; no retroceder a c5d4f60/f81a956.
+R1–R4 siguen reproducidos: IDLE al reaparecer, timeout→vacío tratado como ausencia,
+supervivientes BOT ignorados y PnL atrasado cargado al día actual. Journal e integración
+siguen pendientes. No aceptar el reporte histórico de “sólo falta fase 9”.
+
 Actúa como ingeniero responsable de completar la implementación de TODAS las fases 0–10
 de mi bot. No te limites a auditar, proponer un plan o resolver un único bug. Implementa
 los pendientes, crea los tests necesarios, actualiza el traspaso y publica bloques
@@ -9,7 +18,7 @@ coherentes en GitHub. Nosotros revisaremos los incrementos conforme avances.
 
 Repositorio: https://github.com/jasanhdz/binance-futures-bot-ts
 Rama única: work/micro-burst-rider-v1-20260826. No crear nuevas ramas.
-Último commit de código validado: c5d4f60311e75fa838a41eeac039c1495d9f644b.
+Baseline histórico de código validado por la sesión: c5d4f60311e75fa838a41eeac039c1495d9f644b.
 Incremento anterior: fbc7f19e3bac96ac5008e587d6b2ed57702dd4b1.
 Puede haber commits documentales o nuevas correcciones posteriores: intégralos y revisa
 sus diffs. No vuelvas la rama al SHA antiguo ni sobrescribas avances.

@@ -5,7 +5,9 @@
 - Repositorio: `jasanhdz/binance-futures-bot-ts`.
 - Rama única: `work/micro-burst-rider-v1-20260826`. No crear otra rama.
 - Baseline histórico auditado: `05b233963d7897dccb9912f82b76895270eeb3b0`.
-- Punto de continuación de código: `c5d4f60311e75fa838a41eeac039c1495d9f644b`.
+- Último código auditado: `389a6ff2cc6953b4628d3ab37a96a5054a1c5171`.
+- Leer primero `CHAT_CONTINUITY_389A6FF.md`: historial, cuatro reproducciones abiertas,
+  estado real de fases y orden inmediato. Las tablas de c5d4f60 inferiores son históricas.
 - Este documento acompaña un incremento PARCIAL de seguridad, no certifica todas las fases.
 - El usuario pide completar el código de TODAS las fases y crear sus tests desde un
   entorno virtual, con commits y publicación incremental. No esperar datasets para programar.
@@ -19,6 +21,28 @@
 - No borrar trabajo local, no `git reset --hard`, no force push, no aprobar modelos mediante hashes inventados.
 
 ## Estado entregado (no confundir incrementos con fases completas)
+
+### Estado auditado en 389a6ff — referencia actual
+
+- Las fases NO están completas salvo refactor: módulos nuevos siguen sin integración
+  runtime comprobada; journal durable, contabilidad, régimen y replay siguen parciales.
+- R1: reaparecimiento todavía produce RECOVERY_REQUIRED con mode IDLE por callers que
+  omiten preservePositionState. Quitar transición a IDLE del helper general.
+- R2: timeout seguido de lista vacía borra lastError y permite reposición. Conservar
+  incertidumbre de la ventana salvo evidencia positiva de stop.
+- R3: post-cancel se consultan órdenes pero se cuentan NO BOT; un BOT superviviente
+  no bloquea finalización. Exigir verificación de limpieza propia y tratar errores.
+- R4: cierre atrasado no aumenta tradesToday, pero añade PnL de ayer a dailyPnl actual.
+  Atribuir por fecha económica, no por recepción.
+- Mejoras verificadas: el caso de sizing maxLoss tras redondeo ya se rechaza; contrato
+  de frescura separa historial y última vela. Falta validación/integración integral.
+- FileBackedExecutionJournal sigue sin cargar archivo, máquina por símbolo y escritura
+  no atómica. No integrar antes de resolver reinicio, segunda operación y fallos de disco.
+- Prioridad: R1–R4, journal, integración vertical de cuenta/ejecución/protección/contabilidad,
+  después completar 5–10. Detalle y pseudocódigo en CHAT_CONTINUITY_389A6FF.md.
+- Auditoría dirigida: sin cambios de código ni nueva ejecución de suite completa.
+  Usuario reportó build PASS y grupo principal 182 archivos/1.728 tests; 46 adicionales
+  de ConfigLoader deben verificarse antes de afirmar total propio de 1.774.
 
 ### Contrato de continuación virtual — prevalece sobre notas históricas inferiores
 

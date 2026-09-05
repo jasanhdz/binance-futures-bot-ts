@@ -1,5 +1,14 @@
 # Fase 0: baseline y contratos
 
+## Actualización de referencia: 389a6ff
+
+Código auditado: `389a6ff2cc6953b4628d3ab37a96a5054a1c5171`, rama micro.
+Leer `CHAT_CONTINUITY_389A6FF.md` antes de usar los baselines históricos inferiores.
+Hay cuatro fallos abiertos reproducidos y módulos nuevos todavía sin integración runtime.
+No asumir fases 1–8/10 completas ni usar el total de tests como certificación.
+Última auditoría propia: casos sintéticos dirigidos; no se repitió suite completa.
+Build y 1.728 tests principales son reporte del usuario; ver SAFETY_HANDOFF_VALIDATION.md.
+
 ## Evidencia capturada
 
 - Checkout: `6ea9c364b6f69b623babf92e43dcdc92ac84f8ef`.
@@ -10,7 +19,7 @@
 - Validación previa a esta modificación: build PASS, 1.548/1.548 tests del grupo principal,
   46/46 tests del grupo `ConfigLoader`, y `git diff --check` PASS.
 
-## Baseline vigente del traspaso
+## Baseline histórico del traspaso c5d4f60
 
 - Código validado/publicado: `c5d4f60311e75fa838a41eeac039c1495d9f644b`.
 - Rama: `work/micro-burst-rider-v1-20260826`.
