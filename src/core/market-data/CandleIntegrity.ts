@@ -61,7 +61,7 @@ export function validateCandleFreshness(
     rejectIncompleteLast?: boolean;
   } = {},
 ): CandleFreshnessResult {
-  const maxAgeMs = options.maxAgeMs ?? 24 * 60 * 60 * 1000;
+  const maxAgeMs = options.maxAgeMs ?? 6 * 60 * 60 * 1000; // 6 hours default (was 24h)
   const maxFutureSkewMs = options.maxFutureSkewMs ?? 60_000;
   const rejectIncomplete = options.rejectIncompleteLast ?? true;
 

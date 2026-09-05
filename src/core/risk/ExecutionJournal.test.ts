@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { InMemoryExecutionJournal, isValidTransition } from './ExecutionJournal';
+import { describe, expect, it, vi } from 'vitest';
+import { InMemoryExecutionJournal, FileBackedExecutionJournal, isValidTransition } from './ExecutionJournal';
 
 describe('InMemoryExecutionJournal', () => {
   it('appends and reads entries in order', async () => {
@@ -39,17 +39,22 @@ describe('InMemoryExecutionJournal', () => {
     const journal = new InMemoryExecutionJournal();
     await journal.append({ id: '1', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PREPARED', timestampMs: 1000 });
     await journal.append({ id: '2', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'SUBMITTED', timestampMs: 2000 });
-    await journal.append({ id: '3', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PREPARED', timestampMs: 3000 });
+    // Use UNKNOWN (valid from SUBMITTED) for a second event of same type.
+    await journal.append({ id: '3', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'UNKNOWN', timestampMs: 3000 });
 
-    const prepared = await journal.readByEvent('XRPUSDT', 'PREPARED');
-    expect(prepared).toHaveLength(2);
-    expect(prepared.every((e) => e.event === 'PREPARED')).toBe(true);
+    const submitted = await journal.readByEvent('XRPUSDT', 'SUBMITTED');
+    expect(submitted).toHaveLength(1);
+    expect(submitted.every((e) => e.event === 'SUBMITTED')).toBe(true);
   });
 
-  it('tracks submitted client order ids', async () => {
+  it('tracks submitted client order ids only on SUBMITTED event', async () => {
     const journal = new InMemoryExecutionJournal();
+    // PREPARED with clientOrderId should NOT mark as submitted.
+    await journal.append({ id: '1', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PREPARED', timestampMs: 1000, clientOrderId: 'C1' });
     expect(await journal.isSubmitted('C1')).toBe(false);
-    await journal.append({ id: '1', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'SUBMITTED', timestampMs: 1000, clientOrderId: 'C1' });
+
+    // SUBMITTED with clientOrderId should mark as submitted.
+    await journal.append({ id: '2', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'SUBMITTED', timestampMs: 2000, clientOrderId: 'C1' });
     expect(await journal.isSubmitted('C1')).toBe(true);
     expect(await journal.isSubmitted('C2')).toBe(false);
   });
@@ -108,5 +113,72 @@ describe('isValidTransition', () => {
     expect(isValidTransition('PREPARED', 'CLOSED')).toBe(false);
     expect(isValidTransition('SUBMITTED', 'PROTECTED')).toBe(false);
     expect(isValidTransition('CLOSED', 'UNKNOWN')).toBe(false);
+  });
+});
+
+describe('InMemoryExecutionJournal transition enforcement', () => {
+  it('throws on invalid transition', async () => {
+    const journal = new InMemoryExecutionJournal();
+    await journal.append({ id: '1', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PREPARED', timestampMs: 1000 });
+    await journal.append({ id: '2', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'SUBMITTED', timestampMs: 2000 });
+
+    // Cannot jump from SUBMITTED to CLOSED.
+    await expect(
+      journal.append({ id: '3', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'CLOSED', timestampMs: 3000 }),
+    ).rejects.toThrow('Invalid transition: SUBMITTED -> CLOSED');
+  });
+
+  it('allows valid transitions', async () => {
+    const journal = new InMemoryExecutionJournal();
+    await journal.append({ id: '1', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PREPARED', timestampMs: 1000 });
+    await journal.append({ id: '2', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'SUBMITTED', timestampMs: 2000 });
+    await journal.append({ id: '3', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'OPEN_CONFIRMED', timestampMs: 3000 });
+    await journal.append({ id: '4', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PROTECTED', timestampMs: 4000 });
+    await journal.append({ id: '5', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'CLOSE_PENDING', timestampMs: 5000 });
+    await journal.append({ id: '6', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'CLOSED', timestampMs: 6000 });
+
+    const entries = await journal.read('XRPUSDT');
+    expect(entries).toHaveLength(6);
+    expect(entries.map((e) => e.event)).toEqual([
+      'PREPARED', 'SUBMITTED', 'OPEN_CONFIRMED', 'PROTECTED', 'CLOSE_PENDING', 'CLOSED',
+    ]);
+  });
+});
+
+describe('FileBackedExecutionJournal', () => {
+  it('persists to file and restores on read', async () => {
+    const fs = {
+      writeFileSync: vi.fn(),
+      readFileSync: vi.fn().mockReturnValue('[]'),
+    };
+    const journal = new FileBackedExecutionJournal('/tmp/test-journal.json', fs as any);
+
+    await journal.append({ id: '1', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PREPARED', timestampMs: 1000 });
+    await journal.append({ id: '2', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'SUBMITTED', timestampMs: 2000, clientOrderId: 'C1' });
+
+    // File was written.
+    expect(fs.writeFileSync).toHaveBeenCalled();
+    const writtenData = JSON.parse(fs.writeFileSync.mock.calls[fs.writeFileSync.mock.calls.length - 1][1]);
+    expect(writtenData).toHaveLength(2);
+    expect(writtenData[0].event).toBe('PREPARED');
+    expect(writtenData[1].event).toBe('SUBMITTED');
+
+    // Read works.
+    const entries = await journal.read('XRPUSDT');
+    expect(entries).toHaveLength(2);
+  });
+
+  it('enforces transitions like InMemory', async () => {
+    const fs = {
+      writeFileSync: vi.fn(),
+      readFileSync: vi.fn().mockReturnValue('[]'),
+    };
+    const journal = new FileBackedExecutionJournal('/tmp/test-journal.json', fs as any);
+
+    await journal.append({ id: '1', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'PREPARED', timestampMs: 1000 });
+
+    await expect(
+      journal.append({ id: '2', symbol: 'XRPUSDT', side: 'LONG', strategyId: 'MICRO', event: 'CLOSED', timestampMs: 2000 }),
+    ).rejects.toThrow('Invalid transition: PREPARED -> CLOSED');
   });
 });

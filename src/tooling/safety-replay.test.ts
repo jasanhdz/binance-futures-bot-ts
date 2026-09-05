@@ -89,7 +89,7 @@ describe('computeReplayMetrics', () => {
     expect(metrics.sizingValidRate).toBe(0.5);
   });
 
-  it('excludes INCOMPLETE episodes from completed count', () => {
+  it('excludes INCOMPLETE episodes from completed count and returns INSUFFICIENT_DATA', () => {
     const episodes = [
       makeEpisode({ episodeId: 'EP-1', outcome: 'WIN', netPnl: 10 }),
       makeEpisode({ episodeId: 'EP-2', outcome: 'INCOMPLETE', closedAtMs: undefined, netPnl: undefined }),
@@ -97,6 +97,16 @@ describe('computeReplayMetrics', () => {
     const metrics = computeReplayMetrics(episodes);
     expect(metrics.totalEpisodes).toBe(2);
     expect(metrics.completedEpisodes).toBe(1);
+    expect(metrics.status).toBe('INSUFFICIENT_DATA');
+  });
+
+  it('returns VALIDATED_MECHANICS when all episodes are completed', () => {
+    const episodes = [
+      makeEpisode({ episodeId: 'EP-1', outcome: 'WIN', netPnl: 10 }),
+      makeEpisode({ episodeId: 'EP-2', outcome: 'LOSS', netPnl: -5 }),
+    ];
+    const metrics = computeReplayMetrics(episodes);
+    expect(metrics.status).toBe('VALIDATED_MECHANICS');
   });
 
   it('handles all BREAKEVEN episodes', () => {

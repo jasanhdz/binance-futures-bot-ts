@@ -115,20 +115,29 @@ export async function buildAccountExposureSnapshot(
     pendingOrders = [];
   }
 
-  // 4. Reservations.
-  const reservations = deps.getReservations().filter(
+  // 4. Reservations — filter invalid and degrade snapshot if any were discarded.
+  const allReservations = deps.getReservations();
+  const validReservations = allReservations.filter(
     (r) => Number.isFinite(r.notionalEstimate) && r.notionalEstimate >= 0,
   );
+  if (validReservations.length < allReservations.length) {
+    reasons.push('invalid_reservations_filtered');
+  }
+  const reservations = validReservations;
 
   // 5. Compute totals.
   const totalExposureNotional = positions.reduce(
     (sum, p) => sum + p.qtyAbs * p.entryPrice,
     0,
   );
+  // Use availableBalance (actual margin available for new positions) when present;
+  // fall back to walletBalance + unrealizedPnl only if availableBalance is absent.
+  const availableBalance = account.availableBalance;
   const walletBalance = account.walletBalance ?? 0;
   const unrealizedPnl = account.unrealizedPnlTotal ?? 0;
+  const baseMargin = availableBalance !== undefined ? availableBalance : walletBalance + unrealizedPnl;
   const reservedNotional = reservations.reduce((sum, r) => sum + r.notionalEstimate, 0);
-  const availableMargin = walletBalance + unrealizedPnl - reservedNotional;
+  const availableMargin = baseMargin - reservedNotional;
 
   const completeness: SnapshotCompleteness =
     reasons.length === 0 ? 'COMPLETE' : reasons.some((r) => r.includes('error')) ? 'UNKNOWN' : 'PARTIAL';

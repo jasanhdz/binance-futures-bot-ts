@@ -129,10 +129,12 @@ describe('PositionSupervisor', () => {
         .mockResolvedValue(STOP_VISIBLE), // After placement: stop visible
       placeStopClose: vi.fn().mockResolvedValue(true),
     });
+    const store = mockStore();
     const supervisor = new PositionSupervisor(defaultDeps({ exchange }));
-    const result = await supervisor.supervise('XRPUSDT', makeState({ lastStopPrice: 0.9 }));
+    const result = await supervisor.supervise('XRPUSDT', makeState({ lastStopPrice: 0.9 }), store);
     expect(result.status).toBe('PROTECTED');
     expect(exchange.placeStopClose).toHaveBeenCalledOnce();
+    expect(store.flushed).toBe(true);
   });
 
   it('returns RECOVERY_REQUIRED when stop would trigger immediately', async () => {
@@ -189,29 +191,36 @@ describe('PositionSupervisor', () => {
     const exchange = mockExchange({
       readActivePosition: vi.fn()
         .mockResolvedValueOnce(makePosition()) // superviseOnce: position exists
-        .mockResolvedValue(null), // attemptEmergencyClose post-close: flat
-      listCloseOrdersForSide: vi.fn().mockResolvedValue([]),
+        .mockResolvedValue(null) // attemptEmergencyClose post-close: flat (2 observations)
+        .mockResolvedValue(null),
+      listCloseOrdersForSide: vi.fn()
+        .mockResolvedValue([]) // no stop
+        .mockResolvedValue([]), // surviving orders after emergency close
       placeStopClose: vi.fn().mockResolvedValue(false), // Rejected
       closeSideMarketSafe: vi.fn().mockResolvedValue(undefined),
     });
+    const store = mockStore();
     const supervisor = new PositionSupervisor(defaultDeps({ exchange }));
-    const result = await supervisor.supervise('XRPUSDT', makeState({ lastStopPrice: 0.9 }));
+    const result = await supervisor.supervise('XRPUSDT', makeState({ lastStopPrice: 0.9 }), store);
     expect(result.status).toBe('MISSING');
     expect(result.reason).toContain('EMERGENCY_CLOSE_CONFIRMED');
     expect(exchange.closeSideMarketSafe).toHaveBeenCalledOnce();
+    expect(store.flushed).toBe(true);
   });
 
   it('returns EMERGENCY_CLOSE_FAILED when close also fails', async () => {
     const exchange = mockExchange({
       readActivePosition: vi.fn()
         .mockResolvedValueOnce(makePosition()) // superviseOnce: position exists
-        .mockResolvedValue(makePosition()), // attemptEmergencyClose post-close: still there
+        .mockResolvedValueOnce(makePosition()) // emergency close post-check attempt 1: still there
+        .mockResolvedValue(makePosition()), // emergency close post-check attempt 2: still there
       listCloseOrdersForSide: vi.fn().mockResolvedValue([]),
       placeStopClose: vi.fn().mockResolvedValue(false),
       closeSideMarketSafe: vi.fn().mockRejectedValue(new Error('close_failed')),
     });
+    const store = mockStore();
     const supervisor = new PositionSupervisor(defaultDeps({ exchange }));
-    const result = await supervisor.supervise('XRPUSDT', makeState({ lastStopPrice: 0.9 }));
+    const result = await supervisor.supervise('XRPUSDT', makeState({ lastStopPrice: 0.9 }), store);
     expect(result.status).toBe('EMERGENCY_CLOSE_FAILED');
     expect(result.reason).toContain('EMERGENCY_CLOSE_FAILED');
   });
@@ -248,12 +257,59 @@ describe('PositionSupervisor', () => {
     expect(result.reason).toBe('PREVIOUS_SUBMISSION_NOT_CONFIRMED');
   });
 
-  it('returns RECOVERY_REQUIRED when previous submission exceeds timeout', async () => {
+  it('returns RECOVERY_REQUIRED when position reappears during flat reconciliation', async () => {
+    const exchange = mockExchange({
+      readActivePosition: vi.fn()
+        .mockResolvedValueOnce(null) // protectWithRetries: flat → enters reconcileFlat
+        .mockResolvedValueOnce(null) // Flat observation 1: flat
+        .mockResolvedValueOnce(makePosition()) // Flat observation 2: reappeared
+        .mockResolvedValue(makePosition()), // Any further calls
+    });
+    const store = mockStore();
+    const supervisor = new PositionSupervisor(defaultDeps({ exchange }));
+    const result = await supervisor.supervise('XRPUSDT', makeState(), store);
+    expect(result.status).toBe('RECOVERY_REQUIRED');
+    expect(result.reason).toBe('POSITION_REAPPEARED');
+  });
+
+  it('returns RECOVERY_REQUIRED when position reappears post-cleanup', async () => {
+    const exchange = mockExchange({
+      readActivePosition: vi.fn()
+        .mockResolvedValueOnce(null) // protectWithRetries: flat → enters reconcileFlat
+        .mockResolvedValueOnce(null) // Flat observation 1: flat
+        .mockResolvedValueOnce(null) // Flat observation 2: flat
+        .mockResolvedValueOnce(makePosition()), // Final flat check: reappeared
+      listCloseOrdersForSide: vi.fn().mockResolvedValue([
+        { orderId: 'BOT1', type: 'STOP_MARKET', stopPrice: 0.9, owner: 'BOT' },
+      ]),
+      cancelOrderById: vi.fn().mockResolvedValue(undefined),
+    });
+    const store = mockStore();
+    const supervisor = new PositionSupervisor(defaultDeps({ exchange }));
+    const result = await supervisor.supervise('XRPUSDT', makeState(), store);
+    expect(result.status).toBe('RECOVERY_REQUIRED');
+    expect(result.reason).toBe('POSITION_REAPPEARED_POST_CLEANUP');
+  });
+
+  it('returns UNKNOWN when no store is provided and persistence is required', async () => {
+    const exchange = mockExchange({
+      readActivePosition: vi.fn().mockResolvedValue(makePosition()),
+      listCloseOrdersForSide: vi.fn().mockResolvedValue([]),
+      getMarkPrice: vi.fn().mockResolvedValue(2.0),
+    });
+    const supervisor = new PositionSupervisor(defaultDeps({ exchange }));
+    // No store provided → persistence guard blocks before sending to exchange.
+    const result = await supervisor.supervise('XRPUSDT', makeState({ lastStopPrice: 0.9 }));
+    expect(result.status).toBe('UNKNOWN');
+    expect(result.reason).toBe('NO_STORE_FOR_PERSISTENCE');
+  });
+
+  it('returns RECOVERY_REQUIRED on stop recovery timeout (emergency close persists first)', async () => {
     const exchange = mockExchange({
       readActivePosition: vi.fn()
         .mockResolvedValueOnce(makePosition()) // superviseOnce: position exists
-        .mockResolvedValue(null), // attemptEmergencyClose post-close: flat
-      listCloseOrdersForSide: vi.fn().mockResolvedValue([]), // No stop
+        .mockResolvedValue(null), // emergency close post-check: flat
+      listCloseOrdersForSide: vi.fn().mockResolvedValue([]),
       closeSideMarketSafe: vi.fn().mockResolvedValue(undefined),
     });
 
@@ -265,10 +321,13 @@ describe('PositionSupervisor', () => {
         tradeId: 'T1',
       },
     });
+    const store = mockStore();
     const supervisor = new PositionSupervisor(defaultDeps({ exchange }));
-    const result = await supervisor.supervise('XRPUSDT', state);
+    const result = await supervisor.supervise('XRPUSDT', state, store);
     expect(result.status).toBe('MISSING');
     expect(result.reason).toContain('EMERGENCY_CLOSE_CONFIRMED_STOP_RECOVERY_TIMEOUT');
+    // Verify that RECOVERY_REQUIRED was persisted before the emergency close.
+    expect(store.flushed).toBe(true);
   });
 
   it('confirms brackets exist for Aegis positions', async () => {

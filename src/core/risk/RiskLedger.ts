@@ -23,6 +23,8 @@ export interface DailyRiskState {
   dailyPnl: number;
   peakDailyPnl: number;
   closedTradeIds: string[];
+  /** Idempotency keys that have been applied, for persistence across restarts. */
+  appliedKeys: string[];
 }
 
 export interface RiskLedgerEntry {
@@ -52,24 +54,38 @@ export class RiskLedger {
       dailyPnl: initial?.dailyPnl ?? 0,
       peakDailyPnl: initial?.peakDailyPnl ?? 0,
       closedTradeIds: initial?.closedTradeIds ?? [],
+      appliedKeys: initial?.appliedKeys ?? [],
     };
+    // Restore applied set from persisted keys.
+    for (const key of this.state.appliedKeys) {
+      this.applied.add(key);
+    }
   }
 
   getState(): DailyRiskState {
-    return { ...this.state, closedTradeIds: [...this.state.closedTradeIds] };
+    return {
+      ...this.state,
+      closedTradeIds: [...this.state.closedTradeIds],
+      appliedKeys: [...this.applied],
+    };
   }
 
   /**
    * Apply a trade close event idempotently.
-   * Returns true if this is the first application, false if already applied.
+   * Only verified outcomes are applied; unverified outcomes are rejected.
+   * Returns true if this is the first application, false if already applied or rejected.
    */
   applyTradeClose(outcome: TradeOutcome): boolean {
+    // Reject unverified outcomes: do not pollute risk state.
+    if (!outcome.verified) return false;
+
     const idempotencyKey = `close:${outcome.tradeId}:${outcome.closedAtMs}`;
     if (this.applied.has(idempotencyKey)) return false;
 
-    // Day rollover check.
+    // Day rollover check: only roll forward, never backward.
+    // A late close from a previous day does NOT reset today's counters.
     const tradeDay = dayKeyFromDate(outcome.closedAtMs);
-    if (tradeDay !== this.state.dayKey) {
+    if (tradeDay > this.state.dayKey) {
       this.resetDay(tradeDay);
     }
 
@@ -107,7 +123,16 @@ export class RiskLedger {
   }
 
   /**
+   * Get all applied idempotency keys for persistence.
+   */
+  getAppliedKeys(): string[] {
+    return [...this.applied];
+  }
+
+  /**
    * Reconstruct applied set from persisted state (for restart recovery).
+   * This is now handled automatically by the constructor from appliedKeys.
+   * This method is kept for backward compatibility.
    */
   restoreApplied(idempotencyKeys: string[]): void {
     for (const key of idempotencyKeys) {

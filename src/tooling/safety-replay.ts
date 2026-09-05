@@ -102,6 +102,7 @@ export function computeReplayMetrics(episodes: ReplayEpisode[]): ReplayMetrics {
   const sizingValid = episodes.filter((e) => e.sizingValid).length;
   const sizingValidRate = sizingValid / episodes.length;
 
+  const hasIncomplete = episodes.some((e) => e.outcome === 'INCOMPLETE');
   return {
     totalEpisodes: episodes.length,
     completedEpisodes: completed.length,
@@ -112,7 +113,7 @@ export function computeReplayMetrics(episodes: ReplayEpisode[]): ReplayMetrics {
     regimeAllowRate,
     sizingValidRate,
     dataSource: 'SYNTHETIC',
-    status: 'VALIDATED_MECHANICS',
+    status: hasIncomplete ? 'INSUFFICIENT_DATA' : 'VALIDATED_MECHANICS',
   };
 }
 

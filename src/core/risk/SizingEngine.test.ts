@@ -7,6 +7,7 @@ function baseInput(overrides: Partial<SizingInput> = {}): SizingInput {
     riskFraction: 0.02,
     entryPrice: 1.0,
     stopPrice: 0.95,
+    side: 'LONG',
     leverage: 20,
     feeBufferPct: 0.001,
     minNotional: 5,
@@ -61,7 +62,8 @@ describe('calculateSizing', () => {
   it('rejects when stop equals entry', () => {
     const result = calculateSizing(baseInput({ stopPrice: 1.0 }));
     expect(result.valid).toBe(false);
-    expect(result.reason).toBe('STOP_EQUALS_ENTRY');
+    // Stop at entry is caught by geometry check (stop above/equals entry for LONG).
+    expect(result.reason).toBe('STOP_ABOVE_ENTRY_FOR_LONG');
   });
 
   it('rejects invalid balance', () => {
@@ -86,11 +88,38 @@ describe('calculateSizing', () => {
 
   it('handles SHORT side correctly', () => {
     const result = calculateSizing(baseInput({
+      side: 'SHORT',
       entryPrice: 1.0,
       stopPrice: 1.05, // Stop above entry for SHORT
     }));
     expect(result.valid).toBe(true);
     expect(result.quantity).toBeGreaterThan(0);
+  });
+
+  it('rejects LONG with stop above entry', () => {
+    const result = calculateSizing(baseInput({
+      side: 'LONG',
+      entryPrice: 1.0,
+      stopPrice: 1.05,
+    }));
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('STOP_ABOVE_ENTRY_FOR_LONG');
+  });
+
+  it('rejects SHORT with stop below entry', () => {
+    const result = calculateSizing(baseInput({
+      side: 'SHORT',
+      entryPrice: 1.0,
+      stopPrice: 0.95,
+    }));
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('STOP_BELOW_ENTRY_FOR_SHORT');
+  });
+
+  it('rejects invalid side', () => {
+    const result = calculateSizing(baseInput({ side: 'UP' as any }));
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('INVALID_SIDE');
   });
 
   it('calculates correct maxLoss for different risk fractions', () => {
@@ -118,5 +147,53 @@ describe('calculateSizing', () => {
     expect(result.valid).toBe(true);
     const decimals = result.quantity.toString().split('.')[1]?.length ?? 0;
     expect(decimals).toBeLessThanOrEqual(3);
+  });
+
+  it('does not inflate quantity via precision rounding', () => {
+    // With stepSize=10 and qtyPrecision=0, rounding must not increase quantity.
+    const result = calculateSizing(baseInput({
+      balance: 1000,
+      riskFraction: 0.02,
+      entryPrice: 1.0,
+      stopPrice: 0.999,
+      leverage: 20,
+      stepSize: 10,
+      qtyPrecision: 0,
+    }));
+    expect(result.valid).toBe(true);
+    // Quantity should be multiple of 10.
+    expect(result.quantity % 10).toBe(0);
+  });
+
+  it('rejects when quantity exceeds maxNotional after rounding', () => {
+    const result = calculateSizing(baseInput({
+      balance: 100000,
+      riskFraction: 0.5,
+      entryPrice: 1.0,
+      stopPrice: 0.99,
+      leverage: 125,
+      maxNotional: 100,
+      stepSize: 1,
+      qtyPrecision: 0,
+    }));
+    // Should be capped by maxNotional.
+    expect(result.valid).toBe(true);
+    expect(result.notional).toBeLessThanOrEqual(100 * 1.0001);
+  });
+
+  it('rejects when quantity exceeds margin after rounding', () => {
+    const result = calculateSizing(baseInput({
+      balance: 10,
+      riskFraction: 0.5,
+      entryPrice: 1.0,
+      stopPrice: 0.99,
+      leverage: 20,
+      maxNotional: 100000,
+      stepSize: 1,
+      qtyPrecision: 0,
+    }));
+    // Should be capped by margin (10 * 20 = 200).
+    expect(result.valid).toBe(true);
+    expect(result.notional).toBeLessThanOrEqual(200 * 1.0001);
   });
 });

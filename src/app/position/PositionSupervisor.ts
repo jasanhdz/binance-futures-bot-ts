@@ -259,24 +259,30 @@ export class PositionSupervisor {
     }
 
     // 5f. Persist intent before sending (crash-safe).
-    if (store?.flush) {
-      try {
-        store.set({
-          microProtectionBlocked: true,
-          microStopSubmission: {
-            attemptedAt: this.deps.now?.() ?? Date.now(),
-            stopPrice: effectiveStop,
-            tradeId: state.lastTradeId,
-          },
-        });
-        await store.flush();
-      } catch (error) {
-        return this.persistStatus(store, {
-          status: 'UNKNOWN',
-          owner,
-          reason: `STOP_PERSIST_FAILED:${String(error)}`,
-        });
-      }
+    // If no store or flush fails, block: do not send without durable intent.
+    if (!store?.flush) {
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: 'NO_STORE_FOR_PERSISTENCE',
+      });
+    }
+    try {
+      store.set({
+        microProtectionBlocked: true,
+        microStopSubmission: {
+          attemptedAt: this.deps.now?.() ?? Date.now(),
+          stopPrice: effectiveStop,
+          tradeId: state.lastTradeId,
+        },
+      });
+      await store.flush();
+    } catch (error) {
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: `STOP_PERSIST_FAILED:${String(error)}`,
+      });
     }
 
     // 5g. Place stop.
@@ -390,7 +396,12 @@ export class PositionSupervisor {
       const side = state.lastSide ?? 'LONG';
       try {
         if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) {
-          return this.persistStatus(store, { status: 'PROTECTED', owner, reason: 'POSITION_REAPPEARED' });
+          // Position reappeared: persist RECOVERY_REQUIRED, do NOT claim PROTECTED.
+          return this.persistStatus(store, {
+            status: 'RECOVERY_REQUIRED',
+            owner,
+            reason: 'POSITION_REAPPEARED',
+          });
         }
       } catch {
         confirmedFlat = false;
@@ -401,22 +412,40 @@ export class PositionSupervisor {
       return this.persistStatus(store, { status: 'UNKNOWN', owner, reason: 'FLAT_READ_ERROR' });
     }
 
-    // Clean only BOT orders.
+    // Clean only BOT orders and verify survivors.
     const side = state.lastSide ?? 'LONG';
     const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    const cancelledIds: string[] = [];
     for (const order of orders) {
       if (order.owner === 'BOT') {
         try {
           await this.deps.exchange.cancelOrderById(symbol, order.orderId);
+          cancelledIds.push(order.orderId);
         } catch {
-          // Best-effort cleanup; a failed cancel does not block flat confirmation.
+          // Best-effort cleanup; track failures but do not block flat confirmation.
         }
       }
     }
 
+    // Verify surviving orders after cleanup (those not cancelled and not BOT).
+    const survivingNonBot = orders.filter(
+      (o) => o.owner !== 'BOT' && !cancelledIds.includes(o.orderId),
+    );
+    if (survivingNonBot.length > 0) {
+      // Non-BOT orders still exist; this is informational only, not blocking.
+      this.deps.logger.info('position_supervisor_surviving_orders', {
+        symbol,
+        survivingOrders: survivingNonBot.length,
+      });
+    }
+
     // Final flat check.
     if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) {
-      return this.persistStatus(store, { status: 'PROTECTED', owner, reason: 'POSITION_REAPPEARED_POST_CLEANUP' });
+      return this.persistStatus(store, {
+        status: 'RECOVERY_REQUIRED',
+        owner,
+        reason: 'POSITION_REAPPEARED_POST_CLEANUP',
+      });
     }
 
     // Persist flat state: IDLE, no protection, PnL unverified.
@@ -450,6 +479,14 @@ export class PositionSupervisor {
     store?: StateStore,
   ): Promise<SupervisionResult> {
     this.deps.logger.warn('position_supervisor_emergency_close', { symbol, side, owner, reason });
+
+    // Persist RECOVERY_REQUIRED before attempting close (crash-safe).
+    await this.persistStatus(store, {
+      status: 'RECOVERY_REQUIRED',
+      owner,
+      reason: `EMERGENCY_CLOSE_ATTEMPTING:${reason}`,
+    });
+
     try {
       await this.deps.exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, reason);
     } catch (error) {
@@ -460,14 +497,44 @@ export class PositionSupervisor {
       });
     }
 
-    // Confirm flat after emergency close.
-    const postClose = await this.deps.exchange.readActivePosition(symbol, side);
-    if (postClose !== null && postClose.qtyAbs > 0) {
+    // Confirm flat after emergency close: two observations.
+    let confirmedFlat = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        await (this.deps.wait?.(500) ?? new Promise((r) => setTimeout(r, 500)));
+      }
+      try {
+        const postClose = await this.deps.exchange.readActivePosition(symbol, side);
+        if (postClose === null || postClose.qtyAbs <= 0) {
+          confirmedFlat = true;
+          break;
+        }
+      } catch {
+        // Transient read error: retry once, then treat as uncertain.
+      }
+    }
+
+    if (!confirmedFlat) {
       return this.persistStatus(store, {
         status: 'RECOVERY_REQUIRED',
         owner,
-        reason: 'EMERGENCY_CLOSE_POSITION_REMAINING',
+        reason: 'EMERGENCY_CLOSE_CONFIRMATION_FAILED',
       });
+    }
+
+    // Verify surviving orders after emergency close.
+    try {
+      const survivingOrders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+      const botOrders = survivingOrders.filter((o) => o.owner === 'BOT');
+      for (const order of botOrders) {
+        try {
+          await this.deps.exchange.cancelOrderById(symbol, order.orderId);
+        } catch {
+          // Best-effort; flat is confirmed regardless.
+        }
+      }
+    } catch {
+      // Best-effort order cleanup.
     }
 
     // Persist flat state.

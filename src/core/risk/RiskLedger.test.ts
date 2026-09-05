@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { RiskLedger, TradeOutcome } from './RiskLedger';
 
+function dayKeyFromDate(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
 function makeOutcome(overrides: Partial<TradeOutcome> = {}): TradeOutcome {
   return {
     tradeId: 'T1',
@@ -33,6 +38,16 @@ describe('RiskLedger', () => {
     expect(state.strategyTradesToday['MICRO_BURST_V1']).toBe(1);
   });
 
+  it('rejects unverified outcomes without applying', () => {
+    const ledger = new RiskLedger();
+    const applied = ledger.applyTradeClose(makeOutcome({ verified: false }));
+    expect(applied).toBe(false);
+
+    const state = ledger.getState();
+    expect(state.tradesToday).toBe(0);
+    expect(state.dailyPnl).toBe(0);
+  });
+
   it('returns false when applying duplicate close', () => {
     const ledger = new RiskLedger();
     const outcome = makeOutcome();
@@ -63,21 +78,37 @@ describe('RiskLedger', () => {
     expect(ledger.getState().peakDailyPnl).toBeCloseTo(25); // 10 - 5 + 20 = 25.
   });
 
-  it('rolls over day and resets counters', () => {
-    const ledger = new RiskLedger({ dayKey: '2026-09-04' });
-    ledger.applyTradeClose(makeOutcome({ tradeId: 'T1', netPnl: 10, closedAtMs: 1_756_934_400_000 }));
+  it('rolls over day forward but not backward', () => {
+    // Use timestamps that are clearly in sequence.
+    const day1Ms = 1_757_000_000_000; // Some day
+    const day2Ms = day1Ms + 86_400_000; // Next day
+    const day0Ms = day1Ms - 1000; // Just before day1
+
+    const ledger = new RiskLedger({ dayKey: dayKeyFromDate(day1Ms) });
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'T1', netPnl: 10, closedAtMs: day1Ms }));
     expect(ledger.getState().tradesToday).toBe(1);
 
-    // Apply trade on next day (+1 day in ms).
+    // Apply trade on next day: rolls forward.
     const nextDay = ledger.applyTradeClose(
-      makeOutcome({ tradeId: 'T2', netPnl: 5, closedAtMs: 1_756_934_400_000 + 86_400_000 }),
+      makeOutcome({ tradeId: 'T2', netPnl: 5, closedAtMs: day2Ms }),
     );
     expect(nextDay).toBe(true);
     const state = ledger.getState();
-    expect(state.dayKey).not.toBe('2026-09-04'); // Day rolled over.
+    expect(state.dayKey).toBe(dayKeyFromDate(day2Ms));
     expect(state.tradesToday).toBe(1); // Reset.
     expect(state.dailyPnl).toBeCloseTo(5); // Reset.
     expect(state.consecutiveLosses).toBe(0); // Reset.
+
+    // Apply late trade from previous day: does NOT roll backward.
+    const lateTrade = ledger.applyTradeClose(
+      makeOutcome({ tradeId: 'T3', netPnl: 3, closedAtMs: day0Ms }),
+    );
+    expect(lateTrade).toBe(true);
+    const stateAfterLate = ledger.getState();
+    // Day key stays on day2 (forward-only rollover).
+    expect(stateAfterLate.dayKey).toBe(dayKeyFromDate(day2Ms));
+    // Late trade PnL is added to current day's totals.
+    expect(stateAfterLate.dailyPnl).toBeCloseTo(5 + 3);
   });
 
   it('isApplied checks idempotency', () => {
@@ -94,6 +125,38 @@ describe('RiskLedger', () => {
     expect(ledger.isApplied('T1', 1000)).toBe(true);
     expect(ledger.isApplied('T2', 2000)).toBe(true);
     expect(ledger.getState().tradesToday).toBe(0); // No state change from restore.
+  });
+
+  it('persists applied keys in state and restores on construction', () => {
+    const ledger1 = new RiskLedger();
+    ledger1.applyTradeClose(makeOutcome({ tradeId: 'T1', closedAtMs: 1000 }));
+    ledger1.applyTradeClose(makeOutcome({ tradeId: 'T2', closedAtMs: 2000 }));
+
+    // Get state with applied keys.
+    const state = ledger1.getState();
+    expect(state.appliedKeys).toHaveLength(2);
+    expect(state.appliedKeys).toContain('close:T1:1000');
+    expect(state.appliedKeys).toContain('close:T2:2000');
+
+    // Reconstruct with only appliedKeys (new day, fresh counters).
+    const ledger2 = new RiskLedger({ appliedKeys: state.appliedKeys });
+    expect(ledger2.isApplied('T1', 1000)).toBe(true);
+    expect(ledger2.isApplied('T2', 2000)).toBe(true);
+    // Re-applying same trades returns false (idempotent).
+    expect(ledger2.applyTradeClose(makeOutcome({ tradeId: 'T1', closedAtMs: 1000 }))).toBe(false);
+    // Fresh counters: no new trades counted.
+    expect(ledger2.getState().tradesToday).toBe(0);
+  });
+
+  it('returns independent state copies including appliedKeys', () => {
+    const ledger = new RiskLedger();
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'T1', netPnl: 10 }));
+    const s1 = ledger.getState();
+    const s2 = ledger.getState();
+    s1.tradesToday = 999;
+    s1.appliedKeys.push('fake');
+    expect(ledger.getState().tradesToday).toBe(1);
+    expect(ledger.getState().appliedKeys).toHaveLength(1);
   });
 
   it('tracks closed trade ids', () => {

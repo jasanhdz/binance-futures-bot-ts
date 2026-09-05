@@ -7,6 +7,8 @@ export interface SizingInput {
   entryPrice: number;
   /** Stop loss price. */
   stopPrice: number;
+  /** Side: LONG or SHORT. Validates that stop is on correct side. */
+  side: 'LONG' | 'SHORT';
   /** Leverage. */
   leverage: number;
   /** Fee buffer percentage (e.g., 0.001 for 0.1%). */
@@ -49,11 +51,12 @@ export interface SizingResult {
  *   - qty * entryPrice >= minNotional
  *   - notional <= maxNotional
  *   - notional <= balance * leverage
- *   - Geometry: entry and stop must be on correct sides, no zero/negative distance
+ *   - Geometry: stop must be below entry for LONG, above for SHORT
+ *   - All limits re-checked after final rounding
  */
 export function calculateSizing(input: SizingInput): SizingResult {
   const {
-    balance, riskFraction, entryPrice, stopPrice, leverage,
+    balance, riskFraction, entryPrice, stopPrice, side, leverage,
     feeBufferPct, minNotional, maxNotional, stepSize, qtyPrecision,
   } = input;
 
@@ -69,6 +72,9 @@ export function calculateSizing(input: SizingInput): SizingResult {
   }
   if (!Number.isFinite(stopPrice) || stopPrice <= 0) {
     return invalid('INVALID_STOP_PRICE');
+  }
+  if (side !== 'LONG' && side !== 'SHORT') {
+    return invalid('INVALID_SIDE');
   }
   if (!Number.isFinite(leverage) || leverage <= 0) {
     return invalid('INVALID_LEVERAGE');
@@ -86,7 +92,14 @@ export function calculateSizing(input: SizingInput): SizingResult {
     return invalid('INVALID_STEP_SIZE');
   }
 
-  // Geometry: entry and stop must be on correct sides.
+  // Geometry: stop must be on correct side for the given direction.
+  if (side === 'LONG' && stopPrice >= entryPrice) {
+    return invalid('STOP_ABOVE_ENTRY_FOR_LONG');
+  }
+  if (side === 'SHORT' && stopPrice <= entryPrice) {
+    return invalid('STOP_BELOW_ENTRY_FOR_SHORT');
+  }
+
   const distance = Math.abs(entryPrice - stopPrice);
   if (distance <= 0) {
     return invalid('STOP_EQUALS_ENTRY');
@@ -113,22 +126,34 @@ export function calculateSizing(input: SizingInput): SizingResult {
   // Take the minimum.
   const uncappedQty = Math.min(rawQtyFromRisk, rawQtyFromNotional, rawQtyFromMargin);
 
-  // Round down to stepSize.
-  const scale = 10 ** qtyPrecision;
-  const quantity = Math.floor(uncappedQty / stepSize) * stepSize;
-  const roundedQty = Number(quantity.toFixed(qtyPrecision));
+  // Round down to stepSize FIRST, then apply precision.
+  // Precision must not inflate quantity after stepSize rounding.
+  let quantity = Math.floor(uncappedQty / stepSize) * stepSize;
+  quantity = Number(quantity.toFixed(qtyPrecision));
+
+  // Re-check all limits after final rounding.
+  const notional = quantity * entryPrice;
+
+  // Notional must not exceed maxNotional after rounding.
+  if (notional > maxNotional * 1.0001) {
+    return invalid('EXCEEDS_MAX_NOTIONAL_AFTER_ROUNDING');
+  }
+
+  // Notional must not exceed balance * leverage after rounding.
+  if (notional > balance * leverage * 1.0001) {
+    return invalid('EXCEEDS_MARGIN_AFTER_ROUNDING');
+  }
 
   // Check minimum notional.
-  const notional = roundedQty * entryPrice;
   if (notional < minNotional) {
     return invalid('BELOW_MIN_NOTIONAL');
   }
 
   // Final max loss.
-  const maxLoss = roundedQty * riskPerUnit;
+  const maxLoss = quantity * riskPerUnit;
 
   return {
-    quantity: roundedQty,
+    quantity,
     notional,
     riskPerUnit,
     maxLoss,

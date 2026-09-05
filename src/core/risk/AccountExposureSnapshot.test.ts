@@ -42,7 +42,8 @@ describe('buildAccountExposureSnapshot', () => {
     expect(snapshot.completeness).toBe('COMPLETE');
     expect(snapshot.positions).toEqual([]);
     expect(snapshot.totalExposureNotional).toBe(0);
-    expect(snapshot.availableMargin).toBe(1050); // 1000 + 50 - 0
+    // Uses availableBalance (800) when present, not walletBalance + PnL.
+    expect(snapshot.availableMargin).toBe(800);
   });
 
   it('computes total exposure from positions', async () => {
@@ -120,7 +121,8 @@ describe('buildAccountExposureSnapshot', () => {
       ]),
     });
     const snapshot = await buildAccountExposureSnapshot(deps);
-    expect(snapshot.availableMargin).toBeCloseTo(1050 - 200);
+    // availableBalance (800) - reserved (200) = 600.
+    expect(snapshot.availableMargin).toBeCloseTo(600);
     expect(snapshot.reservations).toHaveLength(1);
   });
 
@@ -144,6 +146,58 @@ describe('buildAccountExposureSnapshot', () => {
     const snapshot = await buildAccountExposureSnapshot(deps);
     expect(snapshot.pendingOrders).toHaveLength(1);
     expect(snapshot.pendingOrders[0].orderId).toBe('S1');
+  });
+
+  it('uses availableBalance for margin when present', async () => {
+    const deps = mockDeps({
+      getAccountSnapshot: vi.fn().mockResolvedValue({
+        walletBalance: 100,
+        availableBalance: 1,
+        unrealizedPnlTotal: 50,
+      }),
+    });
+    const snapshot = await buildAccountExposureSnapshot(deps);
+    // availableBalance (1) takes precedence over walletBalance + PnL (150).
+    expect(snapshot.availableMargin).toBe(1);
+  });
+
+  it('falls back to walletBalance + unrealizedPnl when availableBalance absent', async () => {
+    const deps = mockDeps({
+      getAccountSnapshot: vi.fn().mockResolvedValue({
+        walletBalance: 100,
+        unrealizedPnlTotal: 50,
+        // availableBalance is undefined.
+      }),
+    });
+    const snapshot = await buildAccountExposureSnapshot(deps);
+    expect(snapshot.availableMargin).toBe(150); // 100 + 50
+  });
+
+  it('degrades to PARTIAL when NaN reservations are filtered', async () => {
+    const deps = mockDeps({
+      getReservations: vi.fn().mockReturnValue([
+        { symbol: 'ETHUSDT', reservedBy: 'r1', notionalEstimate: NaN, timestampMs: 1_000 },
+        { symbol: 'BTCUSDT', reservedBy: 'r2', notionalEstimate: 100, timestampMs: 2_000 },
+      ]),
+    });
+    const snapshot = await buildAccountExposureSnapshot(deps);
+    expect(snapshot.completeness).toBe('PARTIAL');
+    expect(snapshot.incompleteReason).toContain('invalid_reservations_filtered');
+    expect(snapshot.reservations).toHaveLength(1);
+    expect(snapshot.reservations[0].symbol).toBe('BTCUSDT');
+  });
+
+  it('denies admission when availableBalance is low even with high walletBalance', async () => {
+    const deps = mockDeps({
+      getAccountSnapshot: vi.fn().mockResolvedValue({
+        walletBalance: 1000,
+        availableBalance: 5,
+      }),
+    });
+    const snapshot = await buildAccountExposureSnapshot(deps);
+    const result = shouldDenyAdmission(snapshot, 'XRPUSDT', 10);
+    expect(result.denied).toBe(true);
+    expect(result.reason).toBe('INSUFFICIENT_MARGIN');
   });
 });
 
