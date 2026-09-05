@@ -11,6 +11,69 @@ describe('TradingService shared safety contracts', () => {
     await expect(service.readAegisPortfolioExposure()).rejects.toThrow('timeout');
   });
 
+  it('does not downgrade an invalid mark price to entry price', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.getLiveAegisSymbols = () => ['ETHUSDT'];
+    service.deps = {
+      exchange: {
+        readActivePosition: vi.fn().mockResolvedValue({
+          sideMode: 'BOTH',
+          qtyAbs: 1,
+          entryPrice: 100,
+          leverage: 10,
+        }),
+        getMarkPrice: vi.fn().mockResolvedValue(Number.NaN),
+      },
+    };
+
+    await expect(service.readAegisPortfolioExposure()).rejects.toThrow(
+      'EXPOSURE_INVALID_MARK_PRICE:ETHUSDT',
+    );
+  });
+
+  it('rejects non-finite position quantities before counting exposure', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.getLiveAegisSymbols = () => ['ETHUSDT'];
+    service.deps = {
+      exchange: {
+        readActivePosition: vi.fn().mockResolvedValue({
+          sideMode: 'BOTH',
+          qtyAbs: Number.NaN,
+          entryPrice: 100,
+          leverage: 10,
+        }),
+      },
+    };
+
+    await expect(service.readAegisPortfolioExposure()).rejects.toThrow(
+      'EXPOSURE_INVALID_POSITION:ETHUSDT:LONG',
+    );
+  });
+
+  it('counts a BOTH position once when both side probes return it', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.getLiveAegisSymbols = () => ['ETHUSDT'];
+    service.deps = {
+      exchange: {
+        readActivePosition: vi.fn().mockResolvedValue({
+          sideMode: 'BOTH',
+          qtyAbs: 2,
+          entryPrice: 100,
+          leverage: 10,
+        }),
+        getMarkPrice: vi.fn().mockResolvedValue(105),
+      },
+    };
+
+    await expect(service.readAegisPortfolioExposure()).resolves.toEqual({
+      openPositions: 1,
+      longPositions: 1,
+      shortPositions: 0,
+      marginUsed: 20,
+      notional: 210,
+    });
+  });
+
   it('does not admit Aegis/Momentum while the shared entry reservation is held', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.entryInFlight = true;

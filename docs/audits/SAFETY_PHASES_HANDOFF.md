@@ -141,6 +141,8 @@ Archivos: `TradingService.ts`, `SharedStrategyExecutionService.ts`, `SharedEntry
 - [ ] Revalidar posición y exposición dentro de la reserva, justo antes de enviar.
 - [ ] Snapshot de cuenta completo: no limitarlo a símbolos habilitados, no duplicar BOTH en hedge.
 - [ ] Representar COMPLETE/PARTIAL/UNKNOWN y rechazar datos no finitos. Error no significa cero.
+      El snapshot Aegis ahora rechaza posiciones y mark prices inválidos; aún no representa
+      estado COMPLETE/PARTIAL/UNKNOWN ni consulta inventario global de cuenta.
 - [ ] Reservar margen/riesgo de intenciones pendientes entre símbolos; evitar sobreasignación.
 - [ ] Definir exclusión entre procesos o impedir segundo escritor sobre misma cuenta/estado.
 

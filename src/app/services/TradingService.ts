@@ -2185,6 +2185,7 @@ export class TradingService {
     let notional = 0;
 
     for (const symbol of this.getLiveAegisSymbols()) {
+      let countedBothPosition = false;
       for (const side of ['LONG', 'SHORT'] as Side[]) {
         // Unknown exposure must abort admission, never become a flat account.
         const position = await this.deps.exchange.readActivePosition(symbol, side);
@@ -2198,19 +2199,34 @@ export class TradingService {
         ) {
           continue;
         }
+        if (position.sideMode === 'BOTH') {
+          if (countedBothPosition) continue;
+          countedBothPosition = true;
+        }
+        if (
+          !Number.isFinite(position.qtyAbs) ||
+          position.qtyAbs <= 0 ||
+          !Number.isFinite(position.entryPrice) ||
+          position.entryPrice <= 0 ||
+          !Number.isFinite(position.leverage) ||
+          position.leverage <= 0
+        ) {
+          throw new Error(`EXPOSURE_INVALID_POSITION:${symbol}:${side}`);
+        }
         openPositions++;
         if (side === 'LONG') longPositions++;
         if (side === 'SHORT') shortPositions++;
-        const markPrice = await this.deps.exchange
-          .getMarkPrice(symbol)
-          .catch(() => position.entryPrice);
+        const markPrice = await this.deps.exchange.getMarkPrice(symbol);
+        if (!Number.isFinite(markPrice) || markPrice <= 0) {
+          throw new Error(`EXPOSURE_INVALID_MARK_PRICE:${symbol}`);
+        }
         const positionMargin =
           position.isolatedMargin ??
           (position.entryPrice > 0 && position.leverage > 0 && position.qtyAbs > 0
             ? (position.entryPrice * position.qtyAbs) / position.leverage
             : 0);
         marginUsed += positionMargin;
-        notional += (markPrice || position.entryPrice || 0) * position.qtyAbs;
+        notional += markPrice * position.qtyAbs;
       }
     }
 
