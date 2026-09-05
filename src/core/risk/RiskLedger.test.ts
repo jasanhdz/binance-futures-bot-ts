@@ -112,8 +112,10 @@ describe('RiskLedger', () => {
     const stateAfterLate = ledger.getState();
     // Day key stays on day2 (forward-only rollover).
     expect(stateAfterLate.dayKey).toBe(dayKeyFromDate(day2Ms));
-    // Late trade PnL is added to current day's totals.
-    expect(stateAfterLate.dailyPnl).toBeCloseTo(5 + 3);
+    // Late trade PnL is NOT added to current day's PnL (belongs to its own day).
+    expect(stateAfterLate.dailyPnl).toBeCloseTo(5);
+    // But the trade is tracked for idempotency.
+    expect(stateAfterLate.closedTradeIds).toContain('T3');
   });
 
   it('isApplied checks idempotency', () => {
@@ -193,5 +195,23 @@ describe('RiskLedger', () => {
     const s2 = ledger.getState();
     s1.tradesToday = 999;
     expect(ledger.getState().tradesToday).toBe(1); // Not affected.
+  });
+
+  it('late close does NOT add to dailyPnl', () => {
+    // Create ledger on day2, apply a day1 trade.
+    const day1Ms = 1_757_000_000_000;
+    const day2Ms = day1Ms + 86_400_000;
+    const ledger = new RiskLedger({ dayKey: dayKeyFromDate(day2Ms) });
+    // Apply today's trade: pnl = 10.
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'T1', netPnl: 10, closedAtMs: day2Ms }));
+    expect(ledger.getState().dailyPnl).toBeCloseTo(10);
+
+    // Apply yesterday's loss: should NOT affect dailyPnl.
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'T2', netPnl: -25, closedAtMs: day1Ms }));
+    const state = ledger.getState();
+    expect(state.dailyPnl).toBeCloseTo(10); // Unchanged by yesterday's loss.
+    expect(state.tradesToday).toBe(1); // Late trade not counted.
+    expect(state.consecutiveLosses).toBe(0); // Late loss not counted.
+    expect(state.closedTradeIds).toEqual(['T1', 'T2']); // But tracked for idempotency.
   });
 });

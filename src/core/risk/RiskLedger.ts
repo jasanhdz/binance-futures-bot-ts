@@ -112,12 +112,10 @@ export class RiskLedger {
       this.state.strategyTradesToday[outcome.strategyId] =
         (this.state.strategyTradesToday[outcome.strategyId] ?? 0) + 1;
     } else {
-      // Late close: only accumulate PnL (impacts current balance).
-      this.state.dailyPnl += outcome.netPnl;
-      if (this.state.dailyPnl > this.state.peakDailyPnl) {
-        this.state.peakDailyPnl = this.state.dailyPnl;
-      }
-      // Do NOT increment tradesToday or reset consecutiveLosses.
+      // Late close: belongs to a past day. Do NOT modify any current-day
+      // counters (dailyPnl, peakDailyPnl, tradesToday, consecutiveLosses,
+      // strategyTradesToday). Only track the tradeId for idempotency.
+      // The PnL is not attributed to today — it belonged to its own day.
     }
 
     // Track closed trade (always, regardless of timeliness).
