@@ -176,6 +176,8 @@ es material de referencia: no asumir que ya protege el runtime.
 - [ ] Persistir intención/identidad/clientOrderId ANTES del envío y transiciones después.
 - [ ] Seguimiento explícito de promesas de entradas, gestión y evaluaciones.
 - [ ] Apagar: bloquear admisiones, drenar tareas, reconciliar, flush, cerrar recursos.
+      `TradingService.stop()` ya cierra `acceptingEntries` antes de detener productores; aún no
+      drena promesas en curso con plazo explícito ni completa recovery/reconciliación.
 - [ ] Error de escritura debe impedir nuevas entradas; archivo atómico no es transacción exchange.
 - [ ] Recovery idempotente tras cada ventana de caída; conservar eventos no reconciliados.
 

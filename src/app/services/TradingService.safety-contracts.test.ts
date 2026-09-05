@@ -104,6 +104,16 @@ describe('TradingService shared safety contracts', () => {
     expect(service.lookForEntry).not.toHaveBeenCalled();
   });
 
+  it('does not admit new entries after shutdown begins', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.acceptingEntries = false;
+    service.lookForEntry = vi.fn();
+
+    await service.lookForEntryWithLock('ETHUSDT');
+
+    expect(service.lookForEntry).not.toHaveBeenCalled();
+  });
+
   it('releases the shared reservation after a failed strategy evaluation', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.entryInFlight = false;

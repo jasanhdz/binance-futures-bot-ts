@@ -178,6 +178,7 @@ export interface AegisRuntimeSnapshot {
 
 export class TradingService {
   private isRunning = false;
+  private acceptingEntries = true;
   private lastEntryBalance = INITIAL_BALANCE;
   private peakBalance = INITIAL_BALANCE;
   private lastErrorTime: Record<string, number> = {};
@@ -1181,6 +1182,7 @@ export class TradingService {
     }
 
     this.isRunning = true;
+    this.acceptingEntries = true;
 
     const mbConfig = this.getMicroBurstCandidateConfig();
     await this.strategyRuntimeCoordinator.start({
@@ -1205,6 +1207,7 @@ export class TradingService {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     this.isRunning = false;
+    this.acceptingEntries = false;
     this.deps.logger.info('Aegis bot stopped');
     if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
     this.stopPromise = (async () => {
@@ -1287,6 +1290,7 @@ export class TradingService {
   }
 
   private async openMicroBurstLivePosition(request: MicroBurstLiveEntryRequest): Promise<boolean> {
+    if (this.acceptingEntries === false) return false;
     const config = this.getMicroBurstCandidateConfig();
     const provenance = this.runtimeConfig.getMicroBurstProvenance(config);
     if (
@@ -1591,6 +1595,7 @@ export class TradingService {
   }
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {
+    if (this.acceptingEntries === false) return;
     if (this.entryInFlight || this.entryInFlightSymbols.has(symbol)) return;
     const reservation = this.acquireSharedEntryReservation(symbol);
     if (!reservation.acquired) return;

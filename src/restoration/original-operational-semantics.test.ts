@@ -56,7 +56,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/app/services/TradingService.ts':
-    '70dafb0e9727e3e9d581f394b6404681b1d80e03b226b3f99b1fe5c219164a32',
+    '755253ecd61c1f644e0308c9a43eedc469fa973ed36fa48d924e155398b52041',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
