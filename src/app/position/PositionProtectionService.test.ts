@@ -28,6 +28,7 @@ function fixture() {
       qtyPrecision: 3,
       minNotional: 5,
     })),
+    getMarkPrice: vi.fn(async () => 100),
     placeStopClose: vi.fn(async (_symbol, _side, stopPrice) => {
       orders.push({ orderId: `sl-${orders.length}`, type: 'STOP_MARKET', stopPrice });
       return true;
@@ -157,6 +158,42 @@ describe('PositionProtectionService', () => {
         lastStopPrice: 99,
       }),
     ).rejects.toThrow('timeout');
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Micro stop that would trigger immediately for either side', async () => {
+    const { service, exchange } = fixture();
+    await expect(
+      service.ensureMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 100,
+      }),
+    ).rejects.toThrow('MICRO_STOP_IMMEDIATE_TRIGGER_RISK');
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+
+    exchange.getMarkPrice.mockResolvedValue(100);
+    await expect(
+      service.ensureMicroStop('ETHUSDT', {
+        mode: 'SHORT_RIDE',
+        lastSide: 'SHORT',
+        lastStopPrice: 100,
+      }),
+    ).rejects.toThrow('MICRO_STOP_IMMEDIATE_TRIGGER_RISK');
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the current mark price is unavailable', async () => {
+    const { service, exchange } = fixture();
+    exchange.getMarkPrice.mockResolvedValue(Number.NaN);
+
+    await expect(
+      service.ensureMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 99,
+      }),
+    ).rejects.toThrow('MICRO_STOP_IMMEDIATE_TRIGGER_RISK');
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
   });
 

@@ -65,6 +65,17 @@ export class PositionProtectionService {
     );
     if (!remembered.length) throw new Error('MICRO_STOP_PRICE_UNKNOWN');
     const stopPrice = side === 'LONG' ? Math.max(...remembered) : Math.min(...remembered);
+    const markPrice = await exchange.getMarkPrice(symbol);
+    if (
+      this.wouldStopTriggerImmediately(
+        side,
+        stopPrice,
+        markPrice,
+        this.deps.getImmediateTriggerBufferPct(),
+      )
+    ) {
+      throw new Error('MICRO_STOP_IMMEDIATE_TRIGGER_RISK');
+    }
     const filters = await exchange.getSymbolFilters(symbol, position.leverage);
     const placed = await exchange.placeStopClose(symbol, side, this.roundPrice(stopPrice, filters));
     if (!placed) throw new Error('MICRO_STOP_REJECTED');

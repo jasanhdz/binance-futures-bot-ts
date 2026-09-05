@@ -102,6 +102,8 @@ Archivos: `src/app/position/{PositionProtectionService,PositionRecoveryService,S
 - [ ] Extraer un supervisor común de seguridad, separado de las decisiones de salida.
 - [ ] Revisar cobertura: cantidad, lado, posición hedge/one-way, tipo/estado de orden y trigger.
 - [ ] Validar stop contra precio vigente y filtros; no degradar un stop más protector existente.
+      Micro ahora rechaza precio ausente o stop con riesgo de trigger inmediato; la validación
+      completa de filtros y la protección existente siguen pendientes.
 - [ ] Confirmación con reintentos acotados: Micro reintenta la visibilidad del stop y rechaza
       órdenes explícitamente `UNKNOWN`; el estado duradero y supervisor común siguen pendientes.
 - [ ] Posición cerrada por stop/exchange/manual: reconciliar independientemente del contexto técnico.
