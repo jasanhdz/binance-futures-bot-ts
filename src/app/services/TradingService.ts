@@ -131,6 +131,10 @@ import { AegisExecutionCoordinator } from '../../strategies/aegis/application/Ae
 import { AegisExitManagementService } from '../../strategies/aegis/application/AegisExitManagementService';
 import { AegisProfitProtectionService } from '../../strategies/aegis/application/AegisProfitProtectionService';
 import { StrategyRiskSessionService } from '../risk/StrategyRiskSessionService';
+import {
+  SharedEntryReservation,
+  SharedEntryReservationResult,
+} from '../../core/risk/SharedEntryReservation';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -229,6 +233,7 @@ export class TradingService {
   private entryInFlight = false;
   private readonly microBurstEntryInFlightSymbols = new Set<string>();
   private microBurstEntryInFlight = false;
+  private readonly sharedEntryReservation = new SharedEntryReservation();
 
   constructor(
     private deps: TradingServiceDeps,
@@ -1319,6 +1324,14 @@ export class TradingService {
       });
       return false;
     }
+    const reservation = this.acquireSharedEntryReservation(request.symbol);
+    if (!reservation.acquired) {
+      this.deps.logger.warn('micro_burst_live_entry_denied', {
+        symbol: request.symbol,
+        reason: reservation.reason,
+      });
+      return false;
+    }
     this.microBurstEntryInFlight = true;
     this.entryInFlight = true;
     this.microBurstEntryInFlightSymbols.add(request.symbol);
@@ -1563,6 +1576,7 @@ export class TradingService {
       });
       return true;
     } finally {
+      reservation.release();
       this.microBurstEntryInFlightSymbols.delete(request.symbol);
       this.microBurstEntryInFlight = false;
       this.entryInFlight = false;
@@ -1578,14 +1592,22 @@ export class TradingService {
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {
     if (this.entryInFlight || this.entryInFlightSymbols.has(symbol)) return;
+    const reservation = this.acquireSharedEntryReservation(symbol);
+    if (!reservation.acquired) return;
     this.entryInFlight = true;
     this.entryInFlightSymbols.add(symbol);
     try {
       await this.lookForEntry(symbol);
     } finally {
+      reservation.release();
       this.entryInFlightSymbols.delete(symbol);
       this.entryInFlight = false;
     }
+  }
+
+  private acquireSharedEntryReservation(symbol: string): SharedEntryReservationResult {
+    if (!this.sharedEntryReservation) return { acquired: true, symbol, release: () => undefined };
+    return this.sharedEntryReservation.tryAcquire(symbol);
   }
 
   private strategyIdentityForState(botState: BotState): StrategyIdentity | null {

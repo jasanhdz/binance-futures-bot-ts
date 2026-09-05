@@ -139,6 +139,8 @@ Archivos: `TradingService.ts`, `SharedStrategyExecutionService.ts`, `SharedEntry
 `AegisPortfolioRiskGuard.ts`, coordinadores de entrada.
 
 - [ ] Convertir booleanos compartidos en una reserva explícita común con liberación garantizada.
+      Existe `SharedEntryReservation` local con lease idempotente y uso en admisión Micro/Aegis;
+      los booleanos legacy y la exclusión entre procesos siguen pendientes.
 - [ ] Revalidar posición y exposición dentro de la reserva, justo antes de enviar.
 - [ ] Snapshot de cuenta completo: no limitarlo a símbolos habilitados, no duplicar BOTH en hedge.
 - [ ] Representar COMPLETE/PARTIAL/UNKNOWN y rechazar datos no finitos. Error no significa cero.
