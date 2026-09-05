@@ -54,9 +54,10 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'regime_config.live.yaml': '18c8584ac780bf3a1d34f90974dc4527b9c7116de79fdf9a927538ec89e33e4c',
   // 2026-09 safety handoff: shared entry lock, unknown exposure propagation,
   // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
+  // Phase 3 increment: drain tracked entry/management work before shutdown flush.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/app/services/TradingService.ts':
-    '755253ecd61c1f644e0308c9a43eedc469fa973ed36fa48d924e155398b52041',
+    'befe1832f4da812bf5ca79049db45384c71c38f1d0da32b858568feacf2661f0',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

@@ -16,6 +16,29 @@
 
 ## Estado entregado (no confundir incrementos con fases completas)
 
+### Incremento local 2026-09-05 sobre `5c35190`
+
+- Fase 2: corregida liberación de reservas antiguas mediante token por lease y
+  liberación idempotente local. Regresiones cubren readquisición del mismo símbolo
+  y de otro símbolo. Sigue siendo exclusión dentro de un proceso, no reserva durable de riesgo.
+- Fase 1: la confirmación del stop ahora reintenta también errores de lectura dentro
+  del límite existente. Sólo evidencia positiva confirma protección; errores seguidos
+  de respuestas vacías conservan UNKNOWN sin enviar otro stop. No reintenta envíos.
+- Fase 3: entradas Micro/Aegis y gestión por símbolo quedan registradas como tareas;
+  stop cierra admisión, detiene productores, espera esas tareas y después hace flush.
+  No admite nuevos ticks durante el apagado. Conserva el timeout exterior de 15 s
+  del bootstrap: NO garantiza durabilidad si ese plazo vence o el proceso cae.
+- El digest de TradingService en restoration se actualiza como checkpoint de fuente,
+  no como autorización LIVE. No se modifican estrategias, presupuesto o manifiestos.
+- Verificación: `npm run test:safety` correcto, build y 1.575 + 46 = 1.621 pruebas
+  aprobadas. Ocho casos nuevos respecto al baseline. Las regresiones de lease fallaron
+  antes de la corrección; se conserva el test de adquisición síncrona del lock Micro.
+  Formato de archivos TypeScript modificados y `git diff --check` correctos.
+- Las fases 1, 2 y 3 siguen PARCIALES. Siguientes prioridades: recovery durable de
+  protección con plazo e identidad de orden; reconciliación independiente de MISSING;
+  journal previo al envío y recovery tras timeout/crash; exposición global y reservas
+  pendientes; contabilidad idempotente. Después continuar fases 5 a 10.
+
 - [x] Micro solicita cierre de emergencia si falla el stop obligatorio después de abrir.
 - [x] Si falla la recuperación y se informa posición abierta, se conserva identidad Micro, lado,
       stop y destino en el estado; se excluye de métricas y se mantiene bloqueo por ambigüedad.
@@ -38,8 +61,8 @@
 
 ### Limitaciones importantes del incremento
 
-1. `ensureMicroStop` hace una confirmación inmediata: si Binance demora el listado, deja
-   cuarentena conservadora. Falta plazo/reintentos y transición de recuperación explícita.
+1. `ensureMicroStop` hace confirmación con reintentos acotados de visibilidad y errores
+   de lectura. Falta plazo durable entre ciclos/reinicios y transición de recuperación explícita.
 2. El error de supervisión actualmente retorna antes de la salida inteligente. Diseñar en fase 1
    una vía de emergencia independiente: no dejar una posición abierta indefinidamente a base de alertas.
 3. Si la posición ya está cerrada, el supervisor retorna; falta reconciliar el cierre SIN esperar
@@ -139,7 +162,8 @@ Archivos: `TradingService.ts`, `SharedStrategyExecutionService.ts`, `SharedEntry
 `AegisPortfolioRiskGuard.ts`, coordinadores de entrada.
 
 - [ ] Convertir booleanos compartidos en una reserva explícita común con liberación garantizada.
-      Existe `SharedEntryReservation` local con lease idempotente y uso en admisión Micro/Aegis;
+      Existe `SharedEntryReservation` local con token por lease, liberación idempotente
+      y pruebas de release antiguo después de readquirir, con uso en admisión Micro/Aegis;
       los booleanos legacy y la exclusión entre procesos siguen pendientes.
 - [ ] Revalidar posición y exposición dentro de la reserva, justo antes de enviar.
 - [ ] Snapshot de cuenta completo: no limitarlo a símbolos habilitados, no duplicar BOTH en hedge.
@@ -176,8 +200,9 @@ es material de referencia: no asumir que ya protege el runtime.
 - [ ] Persistir intención/identidad/clientOrderId ANTES del envío y transiciones después.
 - [ ] Seguimiento explícito de promesas de entradas, gestión y evaluaciones.
 - [ ] Apagar: bloquear admisiones, drenar tareas, reconciliar, flush, cerrar recursos.
-      `TradingService.stop()` ya cierra `acceptingEntries` antes de detener productores; aún no
-      drena promesas en curso con plazo explícito ni completa recovery/reconciliación.
+      `TradingService.stop()` ya cierra `acceptingEntries` antes de detener productores y
+      espera tareas registradas de entrada/gestión antes de flush. El bootstrap limita
+      la espera a 15 s; falta persistir/reconciliar pendientes si vence y completar recovery.
 - [ ] Error de escritura debe impedir nuevas entradas; archivo atómico no es transacción exchange.
 - [ ] Recovery idempotente tras cada ventana de caída; conservar eventos no reconciliados.
 

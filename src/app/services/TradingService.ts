@@ -179,6 +179,8 @@ export interface AegisRuntimeSnapshot {
 export class TradingService {
   private isRunning = false;
   private acceptingEntries = true;
+  private runtimeStopping = false;
+  private activeRuntimeTasks = new Set<Promise<unknown>>();
   private lastEntryBalance = INITIAL_BALANCE;
   private peakBalance = INITIAL_BALANCE;
   private lastErrorTime: Record<string, number> = {};
@@ -1183,6 +1185,7 @@ export class TradingService {
 
     this.isRunning = true;
     this.acceptingEntries = true;
+    this.runtimeStopping = false;
 
     const mbConfig = this.getMicroBurstCandidateConfig();
     await this.strategyRuntimeCoordinator.start({
@@ -1208,10 +1211,16 @@ export class TradingService {
     if (this.stopPromise) return this.stopPromise;
     this.isRunning = false;
     this.acceptingEntries = false;
+    this.runtimeStopping = true;
     this.deps.logger.info('Aegis bot stopped');
     if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
     this.stopPromise = (async () => {
       await this.strategyRuntimeCoordinator.stop();
+      // Producers are stopped and admission is closed. Keep all stores open
+      // until previously admitted exchange work has finished updating state.
+      while (this.activeRuntimeTasks?.size) {
+        await Promise.allSettled([...this.activeRuntimeTasks]);
+      }
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
       await Promise.all([
         ...stores.map((store) => store.flush?.()),
@@ -1245,7 +1254,36 @@ export class TradingService {
     }
   }
 
+  private trackRuntimeTask<T>(operation: () => Promise<T>): Promise<T> {
+    this.activeRuntimeTasks ??= new Set();
+    let resolveTask!: (value: T | PromiseLike<T>) => void;
+    let rejectTask!: (reason: unknown) => void;
+    const task = new Promise<T>((resolve, reject) => {
+      resolveTask = resolve;
+      rejectTask = reject;
+    });
+    this.activeRuntimeTasks.add(task);
+    // Handle both outcomes without creating an unobserved rejected finally promise.
+    void task.then(
+      () => this.activeRuntimeTasks.delete(task),
+      () => this.activeRuntimeTasks.delete(task),
+    );
+    // Preserve synchronous admission/lock acquisition before the first await.
+    // Register first so even reentrant shutdown sees the operation in flight.
+    try {
+      resolveTask(operation());
+    } catch (error) {
+      rejectTask(error);
+    }
+    return task;
+  }
+
   private async processSymbol(symbol: string): Promise<void> {
+    if (this.runtimeStopping) return;
+    return this.trackRuntimeTask(() => this.processSymbolTask(symbol));
+  }
+
+  private async processSymbolTask(symbol: string): Promise<void> {
     this.lastAlivePulseMs = Date.now();
     const symbolState = this.stateForSymbol(symbol);
     const botState = symbolState.get();
@@ -1290,6 +1328,13 @@ export class TradingService {
   }
 
   private async openMicroBurstLivePosition(request: MicroBurstLiveEntryRequest): Promise<boolean> {
+    if (this.acceptingEntries === false) return false;
+    return this.trackRuntimeTask(() => this.openMicroBurstLivePositionTask(request));
+  }
+
+  private async openMicroBurstLivePositionTask(
+    request: MicroBurstLiveEntryRequest,
+  ): Promise<boolean> {
     if (this.acceptingEntries === false) return false;
     const config = this.getMicroBurstCandidateConfig();
     const provenance = this.runtimeConfig.getMicroBurstProvenance(config);
@@ -1595,6 +1640,11 @@ export class TradingService {
   }
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {
+    if (this.acceptingEntries === false) return;
+    return this.trackRuntimeTask(() => this.lookForEntryWithLockTask(symbol));
+  }
+
+  private async lookForEntryWithLockTask(symbol: string): Promise<void> {
     if (this.acceptingEntries === false) return;
     if (this.entryInFlight || this.entryInFlightSymbols.has(symbol)) return;
     const reservation = this.acquireSharedEntryReservation(symbol);

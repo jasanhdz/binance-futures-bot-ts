@@ -2,6 +2,59 @@ import { describe, expect, it, vi } from 'vitest';
 import { TradingService } from './TradingService';
 
 describe('TradingService shared safety contracts', () => {
+  it.each(['processSymbol', 'openMicroBurstLivePosition', 'lookForEntryWithLock'])(
+    'drains %s before flushing state and rejects new work during shutdown',
+    async (method) => {
+      const service = Object.create(TradingService.prototype) as any;
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const events: string[] = [];
+      const worker = vi.fn(async () => {
+        await pending;
+        events.push('state-updated');
+        return true;
+      });
+      service[`${method}Task`] = worker;
+      service.strategyRuntimeCoordinator = { stop: vi.fn(async () => undefined) };
+      service.symbolStateStores = new Map();
+      const flush = vi.fn(async () => {
+        events.push('flush');
+      });
+      service.deps = { state: { flush }, logger: { info: vi.fn() } };
+      const drain = vi.fn(async () => undefined);
+      service.decisionJsonlSink = { drain };
+      service.marketSnapshotEvidenceSink = { drain };
+      service.telemetryJsonlSink = { drain };
+      const argument = method === 'openMicroBurstLivePosition' ? { symbol: 'ETHUSDT' } : 'ETHUSDT';
+      const operation = service[method](argument);
+      await Promise.resolve();
+      const stopping = service.stop();
+      expect(service.stop()).toBe(stopping);
+      await Promise.resolve();
+      expect(flush).not.toHaveBeenCalled();
+      await service[method](argument);
+      expect(worker).toHaveBeenCalledTimes(1);
+      finish();
+      await operation;
+      await stopping;
+      expect(events).toEqual(['state-updated', 'flush']);
+      expect(service.activeRuntimeTasks.size).toBe(0);
+      expect(drain).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('removes failed runtime tasks while preserving rejection for the caller', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    await expect(
+      service.trackRuntimeTask(async () => {
+        throw new Error('failed');
+      }),
+    ).rejects.toThrow('failed');
+    expect(service.activeRuntimeTasks.size).toBe(0);
+  });
+
   it('propagates unknown portfolio exposure instead of returning zero', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.getLiveAegisSymbols = () => ['ETHUSDT'];

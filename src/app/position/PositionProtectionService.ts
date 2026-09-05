@@ -84,8 +84,9 @@ export class PositionProtectionService {
           if ((await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition))
             return true;
         } catch {
+          // Retry observation, never submission. Only positive stop evidence
+          // can resolve uncertainty during this confirmation window.
           confirmationReadUnknown = true;
-          return false;
         }
         if (attempt < attempts - 1) {
           const delay = delays[Math.min(attempt, delays.length - 1)] ?? 0;

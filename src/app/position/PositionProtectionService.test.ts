@@ -107,7 +107,7 @@ describe('PositionProtectionService', () => {
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
   });
 
-  it('classifies a transient close-order read failure as UNKNOWN without placing a stop', async () => {
+  it('classifies exhausted close-order read failures as UNKNOWN without placing a stop', async () => {
     const { service, exchange } = fixture();
     exchange.listCloseOrdersForSide.mockRejectedValue(new Error('temporary timeout'));
 
@@ -118,6 +118,42 @@ describe('PositionProtectionService', () => {
         lastStopPrice: 99,
       }),
     ).resolves.toEqual({ status: 'UNKNOWN', reason: 'CLOSE_ORDER_READ_FAILED' });
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+    expect(exchange.listCloseOrdersForSide).toHaveBeenCalledTimes(3);
+  });
+
+  it('recovers a transient read failure when a later read confirms protection', async () => {
+    const { service, exchange, wait } = fixture();
+    exchange.listCloseOrdersForSide
+      .mockRejectedValueOnce(new Error('temporary timeout'))
+      .mockResolvedValueOnce([
+        { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99, closePosition: true } as any,
+      ]);
+    await expect(
+      service.superviseMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 99,
+      }),
+    ).resolves.toEqual({ status: 'PROTECTED' });
+    expect(exchange.listCloseOrdersForSide).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('does not treat empty reads after a timeout as proof that placing another stop is safe', async () => {
+    const { service, exchange } = fixture();
+    exchange.listCloseOrdersForSide
+      .mockRejectedValueOnce(new Error('timeout'))
+      .mockResolvedValue([]);
+    await expect(
+      service.superviseMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 99,
+      }),
+    ).resolves.toEqual({ status: 'UNKNOWN', reason: 'CLOSE_ORDER_READ_FAILED' });
+    expect(exchange.listCloseOrdersForSide).toHaveBeenCalledTimes(3);
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
   });
 
