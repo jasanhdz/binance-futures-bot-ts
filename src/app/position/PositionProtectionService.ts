@@ -18,8 +18,18 @@ type SafeStopMoveSkipReason =
   | 'missing_quantity'
   | 'exchange_error';
 
-const MICRO_STOP_CONFIRMATION_ATTEMPTS = 3;
-const MICRO_STOP_CONFIRMATION_DELAY_MS = 25;
+export type MicroProtectionStatus =
+  | 'PROTECTED'
+  | 'UNKNOWN'
+  | 'MISSING'
+  | 'CONFIRMATION_PENDING'
+  | 'RECOVERY_REQUIRED';
+
+export interface MicroProtectionResult {
+  status: MicroProtectionStatus;
+  reason?: string;
+  stopPrice?: number;
+}
 
 export interface PositionProtectionServiceDeps {
   exchange: TradingExchangePort;
@@ -27,6 +37,9 @@ export interface PositionProtectionServiceDeps {
   getRegimeConfig(symbol: string): RegimeConfig | undefined;
   getImmediateTriggerBufferPct(): number;
   logTradeEvent(symbol: string, event: string, input?: LifecycleTradeEventInput): Promise<void>;
+  microStopConfirmationAttempts?: number;
+  microStopConfirmationDelaysMs?: readonly number[];
+  wait?: (delayMs: number) => Promise<void>;
 }
 
 export class PositionProtectionService {
@@ -34,11 +47,23 @@ export class PositionProtectionService {
 
   /** Micro owns its exit policy: restore only a full-position stop, never a TP/trailing. */
   async ensureMicroStop(symbol: string, state: BotState): Promise<void> {
+    const result = await this.superviseMicroStop(symbol, state);
+    if (result.status !== 'PROTECTED' && result.status !== 'MISSING') {
+      throw new Error(result.reason ?? `MICRO_STOP_${result.status}`);
+    }
+  }
+
+  async superviseMicroStop(symbol: string, state: BotState): Promise<MicroProtectionResult> {
     const side = state.lastSide;
-    if (!side) throw new Error('MICRO_STOP_SIDE_UNKNOWN');
+    if (!side) return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_SIDE_UNKNOWN' };
     const exchange = this.deps.exchange;
-    const position = await exchange.readActivePosition(symbol, side);
-    if (!position) return; // Closure accounting is a separate reconciliation concern.
+    let position: PositionInfo | null;
+    try {
+      position = await exchange.readActivePosition(symbol, side);
+    } catch (error) {
+      return { status: 'UNKNOWN', reason: `POSITION_READ_FAILED:${String(error)}` };
+    }
+    if (!position) return { status: 'MISSING' }; // Closure accounting is a separate reconciliation concern.
     const coversPosition = (
       order: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>>[number],
     ) =>
@@ -50,22 +75,42 @@ export class PositionProtectionService {
       order.owner !== 'UNKNOWN' &&
       (order.closePosition === true ||
         (order.reduceOnly === true && Number(order.quantity) >= position.qtyAbs));
+    let confirmationReadUnknown = false;
     const hasConfirmedStop = async (): Promise<boolean> => {
-      for (let attempt = 0; attempt < MICRO_STOP_CONFIRMATION_ATTEMPTS; attempt++) {
-        if ((await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition)) return true;
-        if (attempt < MICRO_STOP_CONFIRMATION_ATTEMPTS - 1) {
-          await new Promise((resolve) => setTimeout(resolve, MICRO_STOP_CONFIRMATION_DELAY_MS));
+      const attempts = Math.max(1, this.deps.microStopConfirmationAttempts ?? 3);
+      const delays = this.deps.microStopConfirmationDelaysMs ?? [250, 500];
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        try {
+          if ((await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition))
+            return true;
+        } catch {
+          confirmationReadUnknown = true;
+          return false;
+        }
+        if (attempt < attempts - 1) {
+          const delay = delays[Math.min(attempt, delays.length - 1)] ?? 0;
+          await (this.deps.wait?.(Math.max(0, delay)) ??
+            new Promise((resolve) => setTimeout(resolve, delay)));
         }
       }
       return false;
     };
-    if (await hasConfirmedStop()) return;
+    if (await hasConfirmedStop()) return { status: 'PROTECTED' };
+    if (confirmationReadUnknown) {
+      return { status: 'UNKNOWN', reason: 'CLOSE_ORDER_READ_FAILED' };
+    }
     const remembered = [state.lastStopPrice, state.microBurstStructuralStopPrice].filter(
       (price): price is number => typeof price === 'number' && Number.isFinite(price) && price > 0,
     );
-    if (!remembered.length) throw new Error('MICRO_STOP_PRICE_UNKNOWN');
+    if (!remembered.length)
+      return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_PRICE_UNKNOWN' };
     const stopPrice = side === 'LONG' ? Math.max(...remembered) : Math.min(...remembered);
-    const markPrice = await exchange.getMarkPrice(symbol);
+    let markPrice: number;
+    try {
+      markPrice = await exchange.getMarkPrice(symbol);
+    } catch (error) {
+      return { status: 'UNKNOWN', reason: `MARK_PRICE_READ_FAILED:${String(error)}` };
+    }
     if (
       this.wouldStopTriggerImmediately(
         side,
@@ -74,20 +119,53 @@ export class PositionProtectionService {
         this.deps.getImmediateTriggerBufferPct(),
       )
     ) {
-      throw new Error('MICRO_STOP_IMMEDIATE_TRIGGER_RISK');
+      return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_IMMEDIATE_TRIGGER_RISK' };
     }
-    const filters = await exchange.getSymbolFilters(symbol, position.leverage);
-    const placed = await exchange.placeStopClose(symbol, side, this.roundPrice(stopPrice, filters));
-    if (!placed) throw new Error('MICRO_STOP_REJECTED');
+    let filters: SymbolFilters;
+    try {
+      filters = await exchange.getSymbolFilters(symbol, position.leverage);
+    } catch (error) {
+      return { status: 'UNKNOWN', reason: `FILTER_READ_FAILED:${String(error)}` };
+    }
+    const effectiveStopPrice = this.roundStopPriceForSide(side, stopPrice, filters);
+    if (
+      this.wouldStopTriggerImmediately(
+        side,
+        effectiveStopPrice,
+        markPrice,
+        this.deps.getImmediateTriggerBufferPct(),
+      )
+    ) {
+      return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_INVALID_AFTER_ROUNDING' };
+    }
+    let placed: boolean;
+    try {
+      placed = await exchange.placeStopClose(symbol, side, effectiveStopPrice);
+    } catch (error) {
+      return {
+        status: 'RECOVERY_REQUIRED',
+        reason: `MICRO_STOP_PLACEMENT_FAILED:${String(error)}`,
+      };
+    }
+    if (!placed) return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_REJECTED' };
     if (!(await hasConfirmedStop())) {
-      throw new Error('MICRO_STOP_CONFIRMATION_PENDING');
+      if (confirmationReadUnknown) {
+        return {
+          status: 'UNKNOWN',
+          reason: 'CLOSE_ORDER_READ_FAILED',
+          stopPrice: effectiveStopPrice,
+        };
+      }
+      return { status: 'CONFIRMATION_PENDING', stopPrice: effectiveStopPrice };
     }
     this.deps.logger.info('micro_stop_restored', {
       symbol,
       side,
-      stopPrice,
+      requestedStopPrice: stopPrice,
+      effectiveStopPrice,
       tradeId: state.lastTradeId,
     });
+    return { status: 'PROTECTED', stopPrice: effectiveStopPrice };
   }
 
   roundQuantity(quantity: number, filters: SymbolFilters): number {
@@ -98,6 +176,14 @@ export class PositionProtectionService {
   roundPrice(price: number, filters: SymbolFilters): number {
     const precision = Number.isInteger(filters.pricePrecision) ? filters.pricePrecision : 2;
     return Number(price.toFixed(precision));
+  }
+
+  roundStopPriceForSide(side: Side, price: number, filters: SymbolFilters): number {
+    const tickSize = filters.tickSize;
+    if (!Number.isFinite(tickSize) || tickSize <= 0) return this.roundPrice(price, filters);
+    const ticks = price / tickSize;
+    const roundedTicks = side === 'LONG' ? Math.ceil(ticks - 1e-12) : Math.floor(ticks + 1e-12);
+    return Number((roundedTicks * tickSize).toFixed(filters.pricePrecision));
   }
 
   isBetterStop(side: Side, next: number, previous?: number): boolean {

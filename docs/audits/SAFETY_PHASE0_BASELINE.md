@@ -10,6 +10,13 @@
 - Validación previa a esta modificación: build PASS, 1.548/1.548 tests del grupo principal,
   46/46 tests del grupo `ConfigLoader`, y `git diff --check` PASS.
 
+## Baseline remoto actual
+
+- HEAD verificado: `c8244382aba8820a7112ae9499df754a8e4e081f`.
+- `npm run test:safety`: build PASS; grupo principal `174/174` archivos y `1557/1557` tests
+  PASS; grupo `ConfigLoader` `1/1` archivo y `46/46` tests PASS; `git diff --check` PASS.
+- Este resultado es baseline de revisión y no implica que las fases 1 o 2 estén cerradas.
+
 ## Matriz de autoridad
 
 | Propietario | Modo | Entrada nueva | Posición existente |

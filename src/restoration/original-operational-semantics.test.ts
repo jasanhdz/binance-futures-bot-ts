@@ -58,7 +58,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/app/services/TradingService.ts':
-    '97c8f4b3e74354354940ca764e5b1c166533faa454bcd1c89c1f33013d667bbf',
+    '3784bf174f6104156eed3bd73af7f7bd5d03a21158dbc2fc247576eab9df5e60',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

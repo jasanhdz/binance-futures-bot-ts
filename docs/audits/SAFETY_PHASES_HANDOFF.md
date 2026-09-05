@@ -105,12 +105,13 @@ Archivos: `src/app/position/{PositionProtectionService,PositionRecoveryService,S
       Micro ahora rechaza precio ausente o stop con riesgo de trigger inmediato; la validación
       completa de filtros y la protección existente siguen pendientes.
 - [ ] Confirmación con reintentos acotados: Micro reintenta la visibilidad del stop y rechaza
-      órdenes explícitamente `UNKNOWN`; el estado duradero y supervisor común siguen pendientes.
+      órdenes explícitamente `UNKNOWN`; los intentos y espera son inyectables. El estado duradero
+      y supervisor común siguen pendientes.
 - [ ] Posición cerrada por stop/exchange/manual: reconciliar independientemente del contexto técnico.
 - [ ] Fallo de protección: recuperar o cerrar con cantidades frescas; si el cierre falla, persistir
-      `RECOVERY_REQUIRED`, bloquear nuevas entradas y alertar. Micro ahora intenta un cierre único
-      con cantidad fresca y confirma flat antes de marcar PnL no verificado; estados durables y
-      recovery explícito siguen pendientes.
+      `RECOVERY_REQUIRED`, bloquear nuevas entradas y alertar. Micro separa UNKNOWN/MISSING/
+      CONFIRMATION_PENDING de RECOVERY_REQUIRED, limpia sólo órdenes propias tras flat confirmado
+      y marca PnL no verificado sin inventarlo; estados durables y recovery explícito siguen pendientes.
 - [ ] Supervisar posiciones aunque cambien símbolos/modos habilitados: recorrer también inventario
       persistido y cuenta, sin mutar símbolos SHADOW que solo heredan estado global ambiguo.
 

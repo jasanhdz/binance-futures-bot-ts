@@ -1627,7 +1627,28 @@ export class TradingService {
     let managementContext: Record<string, unknown> = { symbol, botState, symbolState };
     if (identity.strategyId === 'MICRO_BURST_V1') {
       try {
-        await this.positionProtection.ensureMicroStop(symbol, botState);
+        const protection = await this.positionProtection.superviseMicroStop(symbol, botState);
+        if (protection.status === 'PROTECTED' || protection.status === 'MISSING') {
+          if (protection.status === 'MISSING') {
+            this.deps.logger.warn('micro_position_missing_during_supervision', {
+              symbol,
+              tradeId: botState.lastTradeId,
+              reason: 'POSITION_FLAT_REQUIRES_INDEPENDENT_RECONCILIATION',
+            });
+          }
+        } else if (protection.status !== 'RECOVERY_REQUIRED') {
+          symbolState.set({ marketOpenAmbiguous: true, bracketsAttached: false });
+          this.deps.logger.warn('micro_stop_supervision_unknown', {
+            symbol,
+            tradeId: botState.lastTradeId,
+            status: protection.status,
+            reason: protection.reason,
+          });
+          await this.notifyError(symbol, 'MICRO STOP SUPERVISION UNKNOWN', protection.reason);
+          return;
+        } else {
+          throw new Error(protection.reason ?? 'MICRO_STOP_RECOVERY_REQUIRED');
+        }
       } catch (error) {
         symbolState.set({ marketOpenAmbiguous: true, bracketsAttached: false });
         this.deps.logger.error('micro_stop_recovery_pending', {
@@ -1651,6 +1672,15 @@ export class TradingService {
                 botState.lastSide,
               );
               if (!remaining) {
+                const closeOrders = await this.deps.exchange.listCloseOrdersForSide(
+                  symbol,
+                  botState.lastSide,
+                );
+                for (const order of closeOrders) {
+                  if (order.owner === 'BOT') {
+                    await this.deps.exchange.cancelOrderById(symbol, order.orderId);
+                  }
+                }
                 symbolState.set({
                   marketOpenAmbiguous: false,
                   microBurstPnlUnverified: true,

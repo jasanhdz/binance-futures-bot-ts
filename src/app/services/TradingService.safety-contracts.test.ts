@@ -98,8 +98,9 @@ describe('TradingService shared safety contracts', () => {
     const order: string[] = [];
     service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
     service.positionProtection = {
-      ensureMicroStop: vi.fn(async () => {
+      superviseMicroStop: vi.fn(async () => {
         order.push('stop');
+        return { status: 'PROTECTED' };
       }),
     };
     service.strategyRuntimeCoordinator = {
@@ -114,12 +115,38 @@ describe('TradingService shared safety contracts', () => {
     expect(order).toEqual(['stop', 'market']);
   });
 
+  it('does not emergency-close when Micro order visibility is temporarily unknown', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.positionProtection = {
+      superviseMicroStop: vi.fn().mockResolvedValue({
+        status: 'UNKNOWN',
+        reason: 'CLOSE_ORDER_READ_FAILED',
+      }),
+    };
+    service.deps = {
+      logger: { warn: vi.fn(), error: vi.fn() },
+      exchange: { closeSideMarketSafe: vi.fn() },
+    };
+    service.notifyError = vi.fn().mockResolvedValue(undefined);
+    const state = { mode: 'LONG_RIDE', lastStrategy: 'MICRO_BURST_V1' };
+    const store = { set: vi.fn() };
+
+    await service.managePositionByOwner('ETHUSDT', state, store);
+
+    expect(service.deps.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+    expect(store.set).toHaveBeenCalledWith({ marketOpenAmbiguous: true, bracketsAttached: false });
+  });
+
   it('attempts a fresh-quantity emergency close when Micro protection fails', async () => {
     const service = Object.create(TradingService.prototype) as any;
     const position = { sideMode: 'BOTH', qtyAbs: 2 };
     service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
     service.positionProtection = {
-      ensureMicroStop: vi.fn().mockRejectedValue(new Error('stop unavailable')),
+      superviseMicroStop: vi.fn().mockResolvedValue({
+        status: 'RECOVERY_REQUIRED',
+        reason: 'stop unavailable',
+      }),
     };
     service.strategyRuntimeCoordinator = { readMicroBurstExitMarket: vi.fn() };
     service.deps = {
@@ -128,6 +155,11 @@ describe('TradingService shared safety contracts', () => {
       exchange: {
         readActivePosition: vi.fn().mockResolvedValueOnce(position).mockResolvedValueOnce(null),
         closeSideMarketSafe: vi.fn().mockResolvedValue(undefined),
+        listCloseOrdersForSide: vi.fn().mockResolvedValue([
+          { orderId: 'micro-stop', owner: 'BOT' },
+          { orderId: 'foreign-stop', owner: 'UNKNOWN' },
+        ]),
+        cancelOrderById: vi.fn().mockResolvedValue(undefined),
       },
     };
     service.notifyError = vi.fn().mockResolvedValue(undefined);
@@ -149,6 +181,11 @@ describe('TradingService shared safety contracts', () => {
       'BOTH',
       'MICRO_STOP_RECOVERY_FAILED',
     );
+    expect(service.deps.exchange.cancelOrderById).toHaveBeenCalledWith('ETHUSDT', 'micro-stop');
+    expect(service.deps.exchange.cancelOrderById).not.toHaveBeenCalledWith(
+      'ETHUSDT',
+      'foreign-stop',
+    );
     expect(store.set).toHaveBeenCalledWith(
       expect.objectContaining({
         marketOpenAmbiguous: false,
@@ -161,7 +198,10 @@ describe('TradingService shared safety contracts', () => {
     const service = Object.create(TradingService.prototype) as any;
     service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
     service.positionProtection = {
-      ensureMicroStop: vi.fn().mockRejectedValue(new Error('stop unavailable')),
+      superviseMicroStop: vi.fn().mockResolvedValue({
+        status: 'RECOVERY_REQUIRED',
+        reason: 'stop unavailable',
+      }),
     };
     service.strategyRuntimeCoordinator = { readMicroBurstExitMarket: vi.fn() };
     service.deps = {
@@ -188,6 +228,38 @@ describe('TradingService shared safety contracts', () => {
     expect(store.set).toHaveBeenCalledWith({ marketOpenAmbiguous: true, bracketsAttached: false });
     expect(store.set).not.toHaveBeenCalledWith(
       expect.objectContaining({ marketOpenAmbiguous: false }),
+    );
+  });
+
+  it('keeps Micro ambiguous when emergency close leaves exposure open', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.positionProtection = {
+      superviseMicroStop: vi.fn().mockResolvedValue({
+        status: 'RECOVERY_REQUIRED',
+        reason: 'stop unavailable',
+      }),
+    };
+    service.deps = {
+      logger: { warn: vi.fn(), error: vi.fn() },
+      exchange: {
+        readActivePosition: vi.fn().mockResolvedValue({ sideMode: 'BOTH', qtyAbs: 1 }),
+        closeSideMarketSafe: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    service.notifyError = vi.fn().mockResolvedValue(undefined);
+    const state = {
+      mode: 'LONG_RIDE',
+      lastStrategy: 'MICRO_BURST_V1',
+      lastSide: 'LONG',
+    };
+    const store = { set: vi.fn() };
+
+    await service.managePositionByOwner('ETHUSDT', state, store);
+
+    expect(store.set).toHaveBeenCalledWith({ marketOpenAmbiguous: true, bracketsAttached: false });
+    expect(store.set).not.toHaveBeenCalledWith(
+      expect.objectContaining({ microBurstPnlUnverified: true }),
     );
   });
 });

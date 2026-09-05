@@ -54,14 +54,17 @@ function fixture() {
   };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const logTradeEvent = vi.fn(async () => undefined);
+  const wait = vi.fn(async () => undefined);
   const service = new PositionProtectionService({
     exchange: exchange as any,
     logger,
     getRegimeConfig: () => ({ hardStopRoe: -0.2, tpRoe: 0.3 }) as any,
     getImmediateTriggerBufferPct: () => 0.001,
     logTradeEvent,
+    microStopConfirmationDelaysMs: [0],
+    wait,
   });
-  return { service, exchange, logger, logTradeEvent, orders };
+  return { service, exchange, logger, logTradeEvent, orders, wait };
 }
 
 const position = {
@@ -104,8 +107,22 @@ describe('PositionProtectionService', () => {
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
   });
 
-  it('retries bounded confirmation when the exchange lists the stop late', async () => {
+  it('classifies a transient close-order read failure as UNKNOWN without placing a stop', async () => {
     const { service, exchange } = fixture();
+    exchange.listCloseOrdersForSide.mockRejectedValue(new Error('temporary timeout'));
+
+    await expect(
+      service.superviseMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 99,
+      }),
+    ).resolves.toEqual({ status: 'UNKNOWN', reason: 'CLOSE_ORDER_READ_FAILED' });
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('retries bounded confirmation when the exchange lists the stop late', async () => {
+    const { service, exchange, wait } = fixture();
     exchange.listCloseOrdersForSide
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -123,6 +140,8 @@ describe('PositionProtectionService', () => {
 
     expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99);
     expect(exchange.listCloseOrdersForSide).toHaveBeenCalledTimes(5);
+    expect(wait).toHaveBeenCalledTimes(3);
+    expect(wait).toHaveBeenCalledWith(0);
   });
 
   it('does not count an explicitly unknown-owner stop as Micro protection', async () => {
@@ -194,6 +213,59 @@ describe('PositionProtectionService', () => {
         lastStopPrice: 99,
       }),
     ).rejects.toThrow('MICRO_STOP_IMMEDIATE_TRIGGER_RISK');
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('rounds the submitted Micro stop to tickSize before final geometry validation', async () => {
+    const { service, exchange } = fixture();
+    exchange.getSymbolFilters.mockResolvedValue({
+      tickSize: 0.05,
+      stepSize: 0.001,
+      pricePrecision: 2,
+      qtyPrecision: 3,
+      minNotional: 5,
+    });
+    exchange.listCloseOrdersForSide
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99.05, closePosition: true } as any,
+      ]);
+
+    await service.ensureMicroStop('ETHUSDT', {
+      mode: 'LONG_RIDE',
+      lastSide: 'LONG',
+      lastStopPrice: 99.03,
+    });
+
+    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99.05);
+    expect(service.roundStopPriceForSide('LONG', 99.03, await exchange.getSymbolFilters())).toBe(
+      99.05,
+    );
+  });
+
+  it('rejects a stop that becomes immediately triggerable after tick rounding', async () => {
+    const { service, exchange } = fixture();
+    exchange.getSymbolFilters.mockResolvedValue({
+      tickSize: 0.05,
+      stepSize: 0.001,
+      pricePrecision: 2,
+      qtyPrecision: 3,
+      minNotional: 5,
+    });
+
+    await expect(
+      service.superviseMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 99.89,
+      }),
+    ).resolves.toMatchObject({
+      status: 'RECOVERY_REQUIRED',
+      reason: 'MICRO_STOP_INVALID_AFTER_ROUNDING',
+    });
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
   });
 
