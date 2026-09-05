@@ -66,6 +66,7 @@ const mutationAuthorityAllowlist = new Set([
   // Generic lifecycle mechanics may close a position but do not choose strategy policy.
   'src/app/position/StrategyPositionLifecycleCore.ts',
   'src/app/position/PositionProtectionService.ts',
+  'src/app/position/PositionSupervisor.ts',
   'src/infra/adapters/BinanceAdapter.ts',
   'src/infra/adapters/ReadOnlyAuditedExchange.ts',
 ]);
