@@ -835,40 +835,8 @@ export class AegisEntryWorkflow {
       }
       // ═══════════════════════════════════════════════════════════════
 
-      // SHORT regime protection is sourced from the canonical regime guard
-      // decision. Do not maintain a second hard-coded label list here.
-      const regimeDecision = entryDecision.metadata?.regime as Record<string, unknown> | undefined;
-      const regimeContext = entryDecision.metadata?.regimeContext as
-        | Record<string, unknown>
-        | undefined;
-      const regimeLabel =
-        (regimeDecision?.regime as string | undefined) ??
-        (regimeContext?.label as string | undefined);
-      const regimeWouldBlock = regimeDecision?.wouldBlock === true;
-      if (side === 'SHORT' && regimeWouldBlock && regimeLabel) {
-        await this.deps.logAegisTradeEvent(symbol, 'SHORT_REGIME_BLOCKED', {
-          tradeId,
-          reason: String(regimeDecision?.reason ?? `short_regime_${regimeLabel.toLowerCase()}`),
-          metadata: {
-            symbol,
-            side,
-            regime: regimeLabel,
-            confidence: regimeDecision?.confidence ?? regimeContext?.confidence,
-            regimeReason: regimeDecision?.reason,
-            regimeSource: regimeDecision?.source,
-            entryDecision: entryDecision.finalDecision,
-            finalReason: entryDecision.finalReason,
-          },
-        });
-        logger.warn('short_regime_blocked', {
-          symbol,
-          side,
-          regime: regimeLabel,
-          confidence: regimeDecision?.confidence ?? regimeContext?.confidence,
-          reason: regimeDecision?.reason,
-        });
-        return;
-      }
+      // Regime enforcement belongs exclusively to AegisEntryGuardOrchestrator.
+      // In particular, SHADOW wouldBlock metadata must never veto execution here.
 
       await this.deps.logAegisTurboSignal(symbol, signal, {
         signalId,

@@ -27,14 +27,14 @@ const regimeContextConfig: AegisRegimeContextRuntimeConfig = {
 };
 
 function context(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext {
-  const candles = Array.from({ length: 25 }, (_, index) => {
+  const candles = Array.from({ length: 40 }, (_, index) => {
     const open = 1 + index * 0.01;
     return {
       open,
       high: open + 0.02,
       low: open - 0.005,
       close: open + 0.015,
-      volume: index === 24 ? 200 : 100,
+      volume: index === 39 ? 200 : 100,
     };
   });
   return {
@@ -145,6 +145,16 @@ function context(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext 
 }
 
 describe('RegimeContextGuardAdapter', () => {
+  it('does not claim momentum permission before ADX warmup', () => {
+    const base = context();
+    base.entryQuality.ruleGate.recentCandles = base.entryQuality.ruleGate.recentCandles!.slice(
+      0,
+      27,
+    );
+    const result = RegimeContextGuardAdapter.evaluate(base, { enabled: true, mode: 'SHADOW' });
+    expect(result.regimeContext?.indicators.adx).toBeUndefined();
+    expect(result.regimeContext?.momentumLongAllowed).toBe(false);
+  });
   it('OFF no evalua', () => {
     const result = RegimeContextGuardAdapter.evaluate(context(), { enabled: false, mode: 'OFF' });
     expect(result.guard.decision).toBe('NOT_APPLICABLE');
@@ -223,7 +233,7 @@ describe('RegimeContextGuardAdapter', () => {
 
   it('calcula ADX agregado y no confunde oscilación con ADX 100', () => {
     const base = context();
-    const candles = Array.from({ length: 25 }, (_, index) => {
+    const candles = Array.from({ length: 40 }, (_, index) => {
       const center = 1 + (index % 2 === 0 ? 0.01 : -0.01);
       return { open: center, high: center + 0.02, low: center - 0.02, close: center, volume: 100 };
     });

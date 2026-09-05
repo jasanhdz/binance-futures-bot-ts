@@ -1,3 +1,7 @@
+import {
+  validateRegimeCandles,
+  REGIME_CANDLE_MS,
+} from '../../domain/services/regime-v2/RegimeDataIntegrity';
 import { promises as fs } from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
@@ -80,7 +84,7 @@ export type RegimeEngineV2MomentumPattern = {
 export type RegimeEngineV2Outcome = {
   horizonMinutes: number;
   complete?: boolean;
-  incompleteReason?: 'missing_future_data';
+  incompleteReason?: 'missing_future_data' | 'invalid_candle_data' | 'invalid_horizon';
   grossForwardReturnRoe?: number;
   forwardReturnRoe?: number;
   mfeRoe?: number;
@@ -115,6 +119,8 @@ export type RegimeEngineV2MetricRow = {
   bucket: string;
   horizon: string;
   count: number;
+  candidateCount?: number;
+  incompleteCount?: number;
   avgForwardReturnRoe?: number;
   avgMfeRoe?: number;
   avgMaeRoe?: number;
@@ -769,13 +775,19 @@ export function calculateRegimeEngineV2Outcome(
   decision: RegimeEngineV2Decision,
   costs: { feeBps?: number; slippageBps?: number } = {},
 ): RegimeEngineV2Outcome {
-  const entry = candles[index];
-  if (!entry || entry.close <= 0) return { horizonMinutes };
-  const endMs = (entry.timestamp ?? 0) + horizonMinutes * 60_000;
-  const future = candles.slice(index + 1).filter((candle) => (candle.timestamp ?? 0) <= endMs);
-  if (future.length === 0 || (future[future.length - 1].timestamp ?? 0) < endMs) {
+  const count = (horizonMinutes * 60_000) / REGIME_CANDLE_MS;
+  if (!Number.isInteger(count) || count <= 0 || !Number.isInteger(index) || index < 0) {
+    return { horizonMinutes, complete: false, incompleteReason: 'invalid_horizon' };
+  }
+  const window = candles.slice(index, index + count + 1);
+  if (validateRegimeCandles(window)) {
+    return { horizonMinutes, complete: false, incompleteReason: 'invalid_candle_data' };
+  }
+  if (window.length !== count + 1) {
     return { horizonMinutes, complete: false, incompleteReason: 'missing_future_data' };
   }
+  const entry = window[0];
+  const future = window.slice(1);
   const futureHigh = max(future.map((candle) => candle.high));
   const futureLow = min(future.map((candle) => candle.low));
   const lastClose = future[future.length - 1].close;
@@ -921,13 +933,17 @@ function metricRow(
   samples: RegimeEngineV2AuditSample[],
   horizon: '15m' | '30m' | '60m' | '120m',
 ): RegimeEngineV2MetricRow {
-  const outcomes = samples.map((sample) => sample.outcomes[horizon]);
+  const outcomes = samples
+    .map((sample) => sample.outcomes[horizon])
+    .filter((outcome) => outcome.complete === true);
   const avgMfe = avg(outcomes.map((outcome) => outcome.mfeRoe).filter(isNumber));
   const avgMae = avg(outcomes.map((outcome) => outcome.maeRoe).filter(isNumber));
   return {
     bucket,
     horizon,
-    count: samples.length,
+    count: outcomes.length,
+    candidateCount: samples.length,
+    incompleteCount: samples.length - outcomes.length,
     avgForwardReturnRoe: round(
       avg(outcomes.map((outcome) => outcome.forwardReturnRoe).filter(isNumber)),
     ),
@@ -941,7 +957,12 @@ function metricRow(
     hit8BeforeMinus5Rate: hitRate(outcomes.map((outcome) => outcome.hit8BeforeMinus5)),
     hit10BeforeMinus8Rate: hitRate(outcomes.map((outcome) => outcome.hit10BeforeMinus8)),
     p90MaeRoe: round(
-      percentile(outcomes.map((outcome) => Math.abs(outcome.maeRoe ?? 0)).filter(isNumber), 0.9),
+      percentile(
+        outcomes
+          .map((outcome) => (isNumber(outcome.maeRoe) ? Math.abs(outcome.maeRoe) : undefined))
+          .filter(isNumber),
+        0.9,
+      ),
     ),
     avgTimeTo8Minutes: round(
       avg(outcomes.map((outcome) => outcome.timeTo8Minutes).filter(isNumber)),
@@ -967,10 +988,16 @@ function buildWalkForward(samples: RegimeEngineV2AuditSample[]): RegimeEngineV2W
     const testFrom = trainTo;
     const testTo = testFrom + testDays * dayMs();
     const train = samples.filter(
-      (sample) => sample.timestampMs >= trainFrom && sample.timestampMs < trainTo,
+      (sample) =>
+        sample.timestampMs >= trainFrom &&
+        sample.timestampMs + 60 * 60_000 < trainTo &&
+        sample.outcomes['60m'].complete === true,
     );
     const test = samples.filter(
-      (sample) => sample.timestampMs >= testFrom && sample.timestampMs < testTo,
+      (sample) =>
+        sample.timestampMs >= testFrom &&
+        sample.timestampMs + 60 * 60_000 < testTo &&
+        sample.outcomes['60m'].complete === true,
     );
     for (const bucket of directionalEnvironmentBuckets()) {
       const trainBucket = train.filter((sample) => sample.directionalEnvironment === bucket);
@@ -1007,7 +1034,9 @@ function buildEnvironmentDiagnostics(
   return directionalEnvironmentBuckets()
     .map((bucket) => {
       const group = samples.filter((sample) => sample.directionalEnvironment === bucket);
-      const outcomes60 = group.map((sample) => sample.outcomes['60m']);
+      const outcomes60 = group
+        .map((sample) => sample.outcomes['60m'])
+        .filter((outcome) => outcome.complete === true);
       return {
         bucket,
         count: group.length,
@@ -1021,7 +1050,9 @@ function buildEnvironmentDiagnostics(
         ),
         p90MaeRoe: round(
           percentile(
-            outcomes60.map((outcome) => Math.abs(outcome.maeRoe ?? 0)).filter(isNumber),
+            outcomes60
+              .map((outcome) => (isNumber(outcome.maeRoe) ? Math.abs(outcome.maeRoe) : undefined))
+              .filter(isNumber),
             0.9,
           ),
         ),

@@ -1,3 +1,5 @@
+import { validateRegimeCandles, candleTime } from './RegimeDataIntegrity';
+import { wilderAdxSeries } from './WilderAdx';
 import {
   RegimeEngineV2Decision,
   RegimeEngineV2Direction,
@@ -16,10 +18,14 @@ const MIN_HISTORY = 120;
 export class RegimeEngineV2 {
   static evaluate(input: RegimeEngineV2EvaluateInput): RegimeEngineV2Decision {
     const symbol = input.symbol.toUpperCase();
-    const candles = normalizeCandles(input.candles);
+    const candles = input.candles;
+    const integrityReason = validateRegimeCandles(candles);
     const current = candles[candles.length - 1];
-    const timestamp = current ? candleDate(current).toISOString() : new Date(0).toISOString();
-    if (candles.length < MIN_HISTORY || !current || !hasRegularFiveMinuteCadence(candles)) {
+    const time = current ? candleTime(current) : NaN;
+    const timestamp = Number.isFinite(new Date(time).getTime())
+      ? new Date(time).toISOString()
+      : new Date(0).toISOString();
+    if (candles.length < MIN_HISTORY || !current || integrityReason !== undefined) {
       return decision({
         symbol,
         timestamp,
@@ -32,12 +38,8 @@ export class RegimeEngineV2 {
         marketConfirmationState: classifyMarketConfirmation('NONE', input.market),
         market: input.market,
         transitionRisk: 'HIGH',
-        transitionReasons: [
-          candles.length < MIN_HISTORY ? 'insufficient_history' : 'invalid_candle_timeline',
-        ],
-        reasons: [
-          candles.length < MIN_HISTORY ? 'insufficient_history' : 'invalid_candle_timeline',
-        ],
+        transitionReasons: [integrityReason ?? 'insufficient_history'],
+        reasons: [integrityReason ?? 'insufficient_history'],
       });
     }
 
@@ -95,7 +97,7 @@ function calculateIndicators(candles: RegimeEngineV2InputCandle[]): RegimeEngine
   const ema7Series = emaSeries(closes, 7);
   const ema25Series = emaSeries(closes, 25);
   const ema99Series = emaSeries(closes, 99);
-  const adxSeries = calculateAdxSeries(candles, 14);
+  const adxSeries = wilderAdxSeries(candles, 14);
   const atrSeriesValues = atrSeries(candles, 14);
   const bollingerWidths = rollingBollingerWidth(closes, 20);
   const ema7 = last(ema7Series);
@@ -816,52 +818,6 @@ function emptyScores(): RegimeEngineV2Scores {
   };
 }
 
-function validCandle(candle: RegimeEngineV2InputCandle): boolean {
-  return (
-    [candle.open, candle.high, candle.low, candle.close, candle.volume].every(Number.isFinite) &&
-    candle.open > 0 &&
-    candle.high >= Math.max(candle.open, candle.close) &&
-    candle.low <= Math.min(candle.open, candle.close) &&
-    candle.volume >= 0
-  );
-}
-
-function normalizeCandles(input: RegimeEngineV2InputCandle[]): RegimeEngineV2InputCandle[] {
-  const valid = input
-    .filter(validCandle)
-    .slice()
-    .sort((a, b) => candleDate(a).getTime() - candleDate(b).getTime());
-  const deduped: RegimeEngineV2InputCandle[] = [];
-  for (const candle of valid) {
-    const previous = deduped[deduped.length - 1];
-    if (previous && candleDate(previous).getTime() === candleDate(candle).getTime()) {
-      deduped[deduped.length - 1] = candle;
-    } else {
-      deduped.push(candle);
-    }
-  }
-  return deduped;
-}
-
-function hasRegularFiveMinuteCadence(candles: RegimeEngineV2InputCandle[]): boolean {
-  for (let index = 1; index < candles.length; index += 1) {
-    const previous = candleDate(candles[index - 1]).getTime();
-    const current = candleDate(candles[index]).getTime();
-    if (
-      !Number.isFinite(previous) ||
-      !Number.isFinite(current) ||
-      current - previous !== 5 * 60_000
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function candleDate(candle: RegimeEngineV2InputCandle): Date {
-  return new Date(candle.timestamp ?? candle.openTime ?? 0);
-}
-
 function normalizeDirection(value?: string): RegimeEngineV2Direction {
   const normalized = String(value || '').toUpperCase();
   if (normalized === 'LONG' || normalized === 'SHORT') return normalized;
@@ -894,38 +850,6 @@ function atrSeries(candles: RegimeEngineV2InputCandle[], period: number): number
     );
   }
   return wilderSeries(trs, period);
-}
-
-function calculateAdxSeries(candles: RegimeEngineV2InputCandle[], period: number): number[] {
-  if (candles.length < period + 2) return [];
-  const plusDm: number[] = [];
-  const minusDm: number[] = [];
-  const tr: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    const current = candles[i];
-    const previous = candles[i - 1];
-    const upMove = current.high - previous.high;
-    const downMove = previous.low - current.low;
-    plusDm.push(upMove > downMove && upMove > 0 ? upMove : 0);
-    minusDm.push(downMove > upMove && downMove > 0 ? downMove : 0);
-    tr.push(
-      Math.max(
-        current.high - current.low,
-        Math.abs(current.high - previous.close),
-        Math.abs(current.low - previous.close),
-      ),
-    );
-  }
-  const atr = wilderSeries(tr, period);
-  const plus = wilderSeries(plusDm, period);
-  const minus = wilderSeries(minusDm, period);
-  const dx: number[] = [];
-  for (let i = 0; i < atr.length; i++) {
-    const plusDi = atr[i] > 0 ? (plus[i] / atr[i]) * 100 : 0;
-    const minusDi = atr[i] > 0 ? (minus[i] / atr[i]) * 100 : 0;
-    dx.push(plusDi + minusDi > 0 ? (Math.abs(plusDi - minusDi) / (plusDi + minusDi)) * 100 : 0);
-  }
-  return wilderSeries(dx, period);
 }
 
 function wilderSeries(values: number[], period: number): number[] {

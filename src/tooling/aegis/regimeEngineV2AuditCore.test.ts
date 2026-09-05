@@ -13,6 +13,54 @@ import {
 } from './regimeEngineV2AuditCore';
 
 describe('regimeEngineV2AuditCore', () => {
+  it('excludes incomplete horizons from metric counts and MAE percentiles', () => {
+    const report = buildRegimeEngineV2AuditReport(
+      new Map([['BTCUSDT', datedCandles().slice(0, 122)]]),
+      { symbols: ['BTCUSDT'], sampleEvery: 1, writeReports: false },
+    );
+    for (const row of report.byMomentumEnvironment) {
+      expect(row.count).toBe(0);
+      expect(row.incompleteCount).toBe(row.candidateCount);
+      expect(row.p90MaeRoe).toBeUndefined();
+      expect(row.avgForwardReturnRoe).toBeUndefined();
+    }
+    expect(report.byMomentumEnvironment.length).toBeGreaterThan(0);
+  });
+  it.each(['gap', 'duplicate', 'reverse', 'invalid', 'nan_timestamp'])(
+    'does not mark a %s horizon complete',
+    (kind) => {
+      let rows = datedCandles().slice(0, 25);
+      if (kind === 'gap') rows = [rows[0], rows[24]];
+      if (kind === 'duplicate') rows[12] = { ...rows[11] };
+      if (kind === 'reverse') rows.reverse();
+      if (kind === 'invalid') rows[24].volume = -1;
+      if (kind === 'nan_timestamp') rows[24].timestamp = NaN;
+      const result = calculateRegimeEngineV2Outcome(
+        rows,
+        0,
+        'LONG',
+        20,
+        120,
+        testDecision('MOMENTUM_UP_EARLY'),
+      );
+      expect(result.complete).toBe(false);
+      expect(result.forwardReturnRoe).toBeUndefined();
+      expect(result.mfeRoe).toBeUndefined();
+      expect(result.hit5BeforeMinus5).toBeUndefined();
+    },
+  );
+  it('accepts an exactly complete contiguous horizon', () => {
+    const result = calculateRegimeEngineV2Outcome(
+      datedCandles().slice(0, 25),
+      0,
+      'SHORT',
+      20,
+      120,
+      testDecision('MOMENTUM_DOWN_EARLY'),
+    );
+    expect(result.complete).toBe(true);
+    expect(Number.isFinite(result.forwardReturnRoe)).toBe(true);
+  });
   it('groups samples by momentumEnvironment', () => {
     const candlesBySymbol = new Map<string, RegimeEngineV2InputCandle[]>([
       ['BTCUSDT', testCandles('UP', 190)],

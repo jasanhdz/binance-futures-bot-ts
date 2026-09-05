@@ -3205,6 +3205,44 @@ describe('TradingService Aegis live execution', () => {
     );
   });
 
+  it.each(['OFF', 'SHADOW', 'ENFORCE'] as const)(
+    'Regime SHORT %s respects enforcement before exchange mutations',
+    async (mode) => {
+      const { exchange, service, historyLogger } = makeHarness({
+        symbols: ['BTCUSDT'],
+        symbolModes: { BTCUSDT: 'LIVE' },
+        signal: shortSignal('BTCUSDT', 0.94, 3),
+        yaml: yamlTurbo({ allow_short: true }),
+        regimeGuard: regimeGuardConfig({ mode, blockWhen: ['UNKNOWN', 'MOMENTUM_DOWN', 'CHOP'] }),
+        entryPolicy: entryPolicyWithRegime(mode),
+        shortGate: {
+          enabled: false,
+          block_symbols: [],
+          position_fraction_multiplier: 1,
+          max_leverage: 10,
+        },
+      });
+      await service.tick('BTCUSDT');
+      if (mode === 'ENFORCE') {
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'ENTRY_POLICY_DECISION',
+            metadata: expect.objectContaining({
+              finalDecision: 'DENY',
+              regime: expect.objectContaining({ enforced: true, wouldBlock: true }),
+            }),
+          }),
+        );
+      } else {
+        expect(exchange.marketOpen).toHaveBeenCalled();
+      }
+    },
+  );
+
   it('Regime ENFORCE deny blocks before exchange mutation and records ENTRY_POLICY_DECISION', async () => {
     const { exchange, historyLogger, service } = makeHarness({
       symbols: ['ADAUSDT'],

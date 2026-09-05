@@ -1,3 +1,4 @@
+import { wilderAdxSeries } from '../../../../../domain/services/regime-v2/WilderAdx';
 import {
   AegisEntryContext,
   AegisEntryGuardPolicy,
@@ -144,7 +145,7 @@ function buildRegimeContext(
       : indicators.atrPercentile !== undefined && indicators.atrPercentile >= 0.9
         ? indicators.atrPercentile
         : 0.2;
-  const adxOk = indicators.adx === undefined || indicators.adx >= thresholds.minAdxForMomentum;
+  const adxOk = indicators.adx !== undefined && indicators.adx >= thresholds.minAdxForMomentum;
   const chopOk =
     indicators.choppiness === undefined ||
     indicators.choppiness <= thresholds.maxChoppinessForMomentum;
@@ -205,7 +206,8 @@ function buildIndicators(
       : undefined;
   const bollingerWidth = calculateBollingerWidth(candles.slice(-20).map((candle) => candle.close));
   const choppiness = calculateChoppiness(candles.slice(-14));
-  const adx = calculateSimpleAdx(candles.slice(-15));
+  const adxValues = wilderAdxSeries(candles);
+  const adx = round(adxValues[adxValues.length - 1]);
 
   return {
     emaFast,
@@ -267,33 +269,6 @@ function calculateChoppiness(
   const range = high - low;
   if (range <= 0 || trSum <= 0) return undefined;
   return round((100 * Math.log10(trSum / range)) / Math.log10(candles.length));
-}
-
-function calculateSimpleAdx(
-  candles: Array<{ high: number; low: number; close: number }>,
-): number | undefined {
-  if (candles.length < 3) return undefined;
-  let plusDmSum = 0;
-  let minusDmSum = 0;
-  let trueRangeSum = 0;
-  for (let index = 1; index < candles.length; index += 1) {
-    const upMove = candles[index].high - candles[index - 1].high;
-    const downMove = candles[index - 1].low - candles[index].low;
-    const plusDm = upMove > downMove && upMove > 0 ? upMove : 0;
-    const minusDm = downMove > upMove && downMove > 0 ? downMove : 0;
-    plusDmSum += plusDm;
-    minusDmSum += minusDm;
-    trueRangeSum += Math.max(
-      candles[index].high - candles[index].low,
-      Math.abs(candles[index].high - candles[index - 1].close),
-      Math.abs(candles[index].low - candles[index - 1].close),
-    );
-  }
-  if (trueRangeSum <= 0) return undefined;
-  const plusDi = (plusDmSum / trueRangeSum) * 100;
-  const minusDi = (minusDmSum / trueRangeSum) * 100;
-  const denominator = plusDi + minusDi;
-  return denominator > 0 ? round((Math.abs(plusDi - minusDi) / denominator) * 100) : 0;
 }
 
 function average(values: number[]): number | undefined {

@@ -60,12 +60,39 @@ export class RegimeGuardAdapter {
       };
     }
 
+    if (!context.regime?.config) {
+      const enforced = isGuardEnforced(policy);
+      const decision: AegisRegimeDecision = {
+        regime: 'UNKNOWN',
+        confidence: 0,
+        allowed: false,
+        wouldBlock: true,
+        reason: 'regime_unknown_block',
+        source: 'HYBRID_HEURISTIC',
+        metadata: {
+          reasonCode: 'regime_context_missing',
+          confidenceKind: 'HEURISTIC_NOT_PROBABILITY',
+        },
+      };
+      return {
+        decision,
+        guard: {
+          name: 'regime',
+          enabled: true,
+          mode: policy.mode,
+          decision: enforced ? 'DENY' : 'SHADOW_DENY',
+          reason: 'regime_context_missing',
+          enforced,
+          wouldBlock: true,
+          metadata: { ...decision.metadata, regime: 'UNKNOWN', confidence: 0, wouldBlock: true },
+        },
+      };
+    }
+
     const decision = AegisRegimeGuard.evaluate({
       symbol: context.symbol,
       side: context.side,
-      // Without canonical regime context, do not infer a CHOP/alignment label
-      // from partial event-risk fields; the fail-closed result must be UNKNOWN.
-      isAltSymbol: context.regime ? context.eventRisk.isAltSymbol : false,
+      isAltSymbol: context.eventRisk.isAltSymbol,
       turboScore: context.turboScore,
       votes: context.votes,
       setupGrade: context.setupGrade,

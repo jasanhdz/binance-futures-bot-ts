@@ -3,6 +3,32 @@ import { RegimeEngineV2 } from './RegimeEngineV2';
 import { RegimeEngineV2InputCandle } from './RegimeEngineV2.types';
 
 describe('RegimeEngineV2', () => {
+  it.each([
+    'last_invalid',
+    'first_invalid',
+    'nan_time',
+    'missing_time',
+    'duplicate',
+    'reverse',
+    'gap',
+    'negative_low',
+  ])('rejects %s without repairing input or throwing', (kind) => {
+    const rows = Array.from({ length: 140 }, (_, i) => candle(i, 100, 101, 99, 100, 100));
+    if (kind === 'last_invalid') rows[139].volume = -1;
+    if (kind === 'first_invalid') rows[0].volume = -1;
+    if (kind === 'nan_time') rows[139].timestamp = NaN;
+    if (kind === 'missing_time') delete rows[139].timestamp;
+    if (kind === 'duplicate') rows.push({ ...rows[139] });
+    if (kind === 'reverse') rows.reverse();
+    if (kind === 'gap') rows.splice(80, 1);
+    if (kind === 'negative_low') rows[139].low = -1;
+    const before = JSON.stringify(rows);
+    const result = RegimeEngineV2.evaluate({ symbol: 'DOGEUSDT', candles: rows });
+    expect(result.technicalRegime).toBe('UNKNOWN');
+    expect(result.momentumEnvironment).toBe('UNKNOWN');
+    expect(result.reasons[0]).toMatch(/^invalid_candle_/);
+    expect(JSON.stringify(rows)).toBe(before);
+  });
   it('returns UNKNOWN when there is not enough history', () => {
     const result = RegimeEngineV2.evaluate({
       symbol: 'ETHUSDT',
@@ -30,7 +56,7 @@ describe('RegimeEngineV2', () => {
     candles[80] = { ...candles[80], volume: -1 };
     const result = RegimeEngineV2.evaluate({ symbol: 'ETHUSDT', candles });
     expect(result.technicalRegime).toBe('UNKNOWN');
-    expect(result.reasons).toContain('invalid_candle_timeline');
+    expect(result.reasons).toContain('invalid_candle_ohlcv');
   });
 
   it('classifies CHOP with low movement mixed structure', () => {
