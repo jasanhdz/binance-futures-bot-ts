@@ -123,6 +123,42 @@ describe('SharedStrategyExecutionService protection policy', () => {
     expect(exchange.listCloseOrdersForSide).not.toHaveBeenCalled();
   });
 
+  it('executes the existing 0.9 margin fraction through shared sizing', async () => {
+    const result = await service.execute(intent({ positionFraction: 0.9 }));
+    expect(result.status).toBe('OPENED');
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 18, expect.any(String));
+  });
+
+  it('does not send when exchange precision is incompatible with its quantity step', async () => {
+    vi.mocked(exchange.getSymbolFilters).mockResolvedValue({
+      tickSize: 0.01,
+      pricePrecision: 2,
+      stepSize: 0.006,
+      qtyPrecision: 2,
+      minNotional: 5,
+    });
+    const result = await service.execute(intent());
+    expect(result).toMatchObject({
+      reason: 'INVALID_SIZE',
+      metadata: { sizingReason: 'INVALID_QUANTITY_FILTERS' },
+    });
+    expect(exchange.marketOpen).not.toHaveBeenCalled();
+  });
+
+  it('floors the notional cap on a nondecimal step before sending', async () => {
+    vi.mocked(exchange.getSymbolFilters).mockResolvedValue({
+      tickSize: 0.01,
+      pricePrecision: 2,
+      stepSize: 0.025,
+      qtyPrecision: 3,
+      minNotional: 5,
+      notionalCap: 193,
+    });
+    const result = await service.execute(intent());
+    expect(result.status).toBe('OPENED');
+    expect(exchange.marketOpen).toHaveBeenCalledWith('ETHUSDT', 'LONG', 1.925, expect.any(String));
+  });
+
   it('emergency-closes a Micro entry when its mandatory structural stop is rejected', async () => {
     vi.mocked(exchange.placeStopClose).mockRejectedValue(new Error('stop rejected'));
     const result = await service.execute(

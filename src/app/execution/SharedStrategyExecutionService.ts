@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { calculateMarginBudgetSizing, roundQuantityDown } from '../../core/risk/SizingEngine';
 import {
   PositionInfo,
   SymbolFilters,
@@ -134,19 +135,23 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       const markPrice = await this.exchange.getMarkPrice(intent.symbol);
       const filters = await this.exchange.getSymbolFilters(intent.symbol, intent.leverage);
       const requestedNotional = effectiveWallet * intent.positionFraction * intent.leverage;
-      const cappedNotional =
-        finite(filters.notionalCap) && Number(filters.notionalCap) > 0
-          ? Math.min(requestedNotional, Number(filters.notionalCap))
-          : requestedNotional;
-      let quantity = roundQuantity(cappedNotional / markPrice, filters);
+      const sizing = calculateMarginBudgetSizing({
+        marginBudget: effectiveWallet * intent.positionFraction,
+        entryPrice: markPrice,
+        leverage: intent.leverage,
+        ...filters,
+        maxNotional: filters.notionalCap,
+      });
+      let quantity = sizing.quantity;
 
-      if (!finite(quantity) || quantity <= 0 || quantity * markPrice < filters.minNotional) {
+      if (!sizing.valid) {
         return denied(intent, 'INVALID_SIZE', {
           ...baseMetadata,
           wallet,
           availableWallet,
           requestedNotional,
           minNotional: filters.minNotional,
+          sizingReason: sizing.reason,
         });
       }
 
@@ -191,27 +196,22 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           const refreshedAvailable = finite(refreshed.availableBalance)
             ? Math.max(0, Number(refreshed.availableBalance))
             : undefined;
-          const balanceLimitedQuantity =
-            refreshedAvailable === undefined
-              ? quantity
-              : roundQuantity(
-                  Math.min(
-                    refreshedAvailable *
-                      (1 - clamp(this.config.feeBufferPct, 0, 0.5)) *
-                      intent.positionFraction *
-                      intent.leverage,
-                    finite(filters.notionalCap) && Number(filters.notionalCap) > 0
-                      ? Number(filters.notionalCap)
-                      : Number.POSITIVE_INFINITY,
-                  ) / markPrice,
-                  filters,
-                );
-          const reducedQuantity = roundQuantity(quantity * 0.9, filters);
-          const nextQuantity = roundQuantity(
-            Math.min(reducedQuantity, balanceLimitedQuantity),
-            filters,
-          );
+          const retrySizing = calculateMarginBudgetSizing({
+            marginBudget:
+              refreshedAvailable === undefined
+                ? effectiveWallet * intent.positionFraction
+                : refreshedAvailable *
+                  (1 - clamp(this.config.feeBufferPct, 0, 0.5)) *
+                  intent.positionFraction,
+            entryPrice: markPrice,
+            leverage: intent.leverage,
+            ...filters,
+            maxNotional: filters.notionalCap,
+            maxQuantity: quantity * 0.9,
+          });
+          const nextQuantity = retrySizing.quantity;
           const canRetry =
+            retrySizing.valid &&
             nextQuantity > 0 &&
             nextQuantity < quantity &&
             nextQuantity * markPrice >= filters.minNotional;
@@ -771,13 +771,7 @@ function failed(
 }
 
 function roundQuantity(quantity: number, filters: SymbolFilters): number {
-  if (!finite(quantity) || quantity <= 0) return 0;
-  const step =
-    finite(filters.stepSize) && filters.stepSize > 0
-      ? filters.stepSize
-      : 10 ** -filters.qtyPrecision;
-  const stepped = Math.floor(quantity / step) * step;
-  return Number(stepped.toFixed(filters.qtyPrecision));
+  return roundQuantityDown(quantity, filters);
 }
 
 function roundPrice(price: number, filters: SymbolFilters): number {

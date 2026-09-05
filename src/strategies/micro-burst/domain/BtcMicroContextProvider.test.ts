@@ -1,15 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BtcMicroContextProvider } from './BtcMicroContextProvider';
-import type { BtcCandleObservation } from './MicroBurstBtcTypes';
+import type { Candle } from '../../../core/types';
 
 const NOW_MS = 1_700_000_000_000;
 
-function makeCandle(close: number, closeTime: number, openTime?: number): BtcCandleObservation {
-  return { close, closeTime, openTime: openTime ?? closeTime - 60_000 };
+function makeCandle(close: number, closeTime: number, openTime?: number): Candle {
+  return {
+    close,
+    closeTime,
+    openTime: openTime ?? closeTime - 59_999,
+    timestamp: openTime ?? closeTime - 59_999,
+    open: close,
+    high: close + 1,
+    low: close - 1,
+    volume: 100,
+    buyVolume: 50,
+  };
 }
 
-function makeCandles(count: number, startMs: number, basePrice = 60000): BtcCandleObservation[] {
-  const candles: BtcCandleObservation[] = [];
+function makeCandles(count: number, startMs: number, basePrice = 60000): Candle[] {
+  const candles: Candle[] = [];
   for (let i = 0; i < count; i++) {
     const closeTime = startMs + i * 60_000;
     candles.push(makeCandle(basePrice + i * 10, closeTime));
@@ -17,7 +27,7 @@ function makeCandles(count: number, startMs: number, basePrice = 60000): BtcCand
   return candles;
 }
 
-function makeSeries(candles: BtcCandleObservation[], exchangeSnapshotTimeMs = NOW_MS) {
+function makeSeries(candles: Candle[], exchangeSnapshotTimeMs = NOW_MS) {
   return {
     symbol: 'BTCUSDT',
     interval: '1m',
@@ -32,7 +42,7 @@ function makeSeries(candles: BtcCandleObservation[], exchangeSnapshotTimeMs = NO
   };
 }
 
-function createDeps(candles: BtcCandleObservation[]) {
+function createDeps(candles: Candle[]) {
   const getCandles = vi.fn().mockResolvedValue(candles);
   return {
     getCandles,
@@ -47,6 +57,41 @@ function createDeps(candles: BtcCandleObservation[]) {
 }
 
 describe('BtcMicroContextProvider', () => {
+  it.each(['gap', 'volume', 'stale', 'reversed'])(
+    'invalidates a previous context on a %s refresh',
+    async (kind) => {
+      const candles = makeCandles(8, NOW_MS - 420_000);
+      const deps = createDeps(candles);
+      const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => NOW_MS });
+      await provider.pollCandles();
+      expect(provider.getBtcContext()).toBeDefined();
+      const invalid = candles.map((c) => ({ ...c }));
+      if (kind === 'gap') invalid.splice(1, 1);
+      if (kind === 'volume') invalid[0].volume = -1;
+      if (kind === 'reversed') invalid.reverse();
+      if (kind === 'stale')
+        for (const c of invalid) {
+          c.openTime -= 180_000;
+          c.timestamp -= 180_000;
+          c.closeTime -= 180_000;
+        }
+      deps.getCandles.mockResolvedValue(invalid);
+      await provider.pollCandles();
+      expect(provider.getBtcContext()).toBeUndefined();
+      expect(provider.getBufferedCandles()).toEqual([]);
+    },
+  );
+
+  it('does not renew event freshness merely by receiving an old snapshot again', async () => {
+    let localNow = NOW_MS;
+    const deps = createDeps(makeCandles(6, NOW_MS - 360_000));
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => localNow });
+    await provider.pollCandles();
+    expect(provider.getBtcContext()).toBeDefined();
+    localNow += 60_001;
+    await provider.pollCandles();
+    expect(provider.getBtcContext()).toBeUndefined();
+  });
   it('returns undefined when insufficient candles', async () => {
     const deps = createDeps(makeCandles(3, NOW_MS - 300_000));
     const clock = { now: vi.fn(() => NOW_MS) };
@@ -201,7 +246,7 @@ describe('BtcMicroContextProvider', () => {
     expect(provider.getBtcContext()).toBeUndefined();
   });
 
-  it('deduplicates candles by closeTime', async () => {
+  it('rejects duplicate raw candles rather than choosing the last value', async () => {
     const candle1 = makeCandle(60000, NOW_MS - 60_000);
     const candle2 = makeCandle(60010, NOW_MS - 60_000);
     const deps = createDeps([candle1, candle2]);
@@ -212,8 +257,11 @@ describe('BtcMicroContextProvider', () => {
 
     const buffered = provider.getBufferedCandles();
     const atSameTime = buffered.filter((c) => c.closeTime === NOW_MS - 60_000);
-    expect(atSameTime).toHaveLength(1);
-    expect(atSameTime[0].close).toBe(60010);
+    expect(atSameTime).toHaveLength(0);
+    expect(provider.getBtcContext()).toBeUndefined();
+    expect(deps.logger.warn).toHaveBeenCalledWith('btc_candle_integrity_rejected', {
+      reasons: ['invalid_cadence'],
+    });
   });
 
   it('uses exchange snapshot time, not local clock skew, for causal candle selection', async () => {
@@ -251,7 +299,7 @@ describe('BtcMicroContextProvider', () => {
     const deps = {
       getCandles: vi.fn().mockImplementation(
         () =>
-          new Promise<BtcCandleObservation[]>((resolve) => {
+          new Promise<Candle[]>((resolve) => {
             resolveFirstPoll = (series) => resolve(series.candles);
           }),
       ),
@@ -315,11 +363,11 @@ describe('BtcMicroContextProvider', () => {
   });
 
   it('discards an in-flight result after stop', async () => {
-    let resolvePoll: ((candles: BtcCandleObservation[]) => void) | undefined;
+    let resolvePoll: ((candles: Candle[]) => void) | undefined;
     const deps = {
       getCandles: vi.fn().mockImplementation(
         () =>
-          new Promise<BtcCandleObservation[]>((resolve) => {
+          new Promise<Candle[]>((resolve) => {
             resolvePoll = resolve;
           }),
       ),

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_AEGIS_REGIME_GUARD_CONFIG } from '../../services/AegisRegimeGuard';
 import { AegisEntryContext, AegisRegimeContextRuntimeConfig } from '../AegisEntryDecisionTypes';
 import { RegimeContextGuardAdapter } from './RegimeContextGuardAdapter';
+import { AegisLongRiskShadowGuardAdapter } from './AegisLongRiskShadowGuardAdapter';
+import { RegimeGuardAdapter } from './RegimeGuardAdapter';
 
 const regimeContextConfig: AegisRegimeContextRuntimeConfig = {
   enabled: true,
@@ -26,10 +28,17 @@ const regimeContextConfig: AegisRegimeContextRuntimeConfig = {
   },
 };
 
+const now = 1_800_000_000_000;
+function times(index: number, count = 40): { openTime: number; closeTime: number } {
+  const closeTime = now - (count - index - 1) * 300_000;
+  return { openTime: closeTime - 299_999, closeTime };
+}
+
 function context(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext {
   const candles = Array.from({ length: 40 }, (_, index) => {
     const open = 1 + index * 0.01;
     return {
+      ...times(index),
       open,
       high: open + 0.02,
       low: open - 0.005,
@@ -138,19 +147,165 @@ function context(overrides: Partial<AegisEntryContext> = {}): AegisEntryContext 
       openPositionsCount: 0,
       openProbePositions: 0,
       sameSymbolPositionExists: false,
-      timestamp: Date.now(),
+      timestamp: now,
     },
     ...overrides,
   };
 }
 
 describe('RegimeContextGuardAdapter', () => {
+  it.each(['OFF', 'SHADOW', 'ENFORCE'] as const)(
+    'keeps legacy authority and UNKNOWN snapshot policy in %s',
+    (mode) => {
+      for (const age of [undefined, NaN, Infinity, -1, 1_000_000]) {
+        const base = context();
+        base.regime!.snapshotAgeSeconds = age;
+        base.regime!.config = { ...base.regime!.config, blockWhen: ['UNKNOWN'] };
+        const legacy = RegimeGuardAdapter.evaluate(base, { enabled: true, mode });
+        expect(legacy.guard.decision).toBe(
+          mode === 'OFF' ? 'NOT_APPLICABLE' : mode === 'SHADOW' ? 'SHADOW_DENY' : 'DENY',
+        );
+        if (mode !== 'OFF') {
+          expect(legacy.decision?.regime).toBe('UNKNOWN');
+          expect(legacy.guard.metadata.authority).toMatchObject({
+            source: 'LEGACY',
+            role: mode === 'ENFORCE' ? 'AUTHORITATIVE' : 'INFORMATIONAL',
+          });
+        }
+        const informational = RegimeContextGuardAdapter.evaluate(base, { enabled: true, mode });
+        expect(informational.guard.wouldBlock).toBe(false);
+        if (mode !== 'OFF') expect(informational.regimeContext?.label).toBe('UNKNOWN');
+      }
+    },
+  );
+
+  it.each([NaN, Infinity, -0.1, 1.1])(
+    'rejects invalid auxiliary percentile %s',
+    (atrPercentile) => {
+      const base = context();
+      base.entryQuality.ruleGate.atrPercentile = atrPercentile;
+      const result = RegimeContextGuardAdapter.evaluate(base, { enabled: true, mode: 'SHADOW' });
+      expect(result.regimeContext).toMatchObject({
+        label: 'UNKNOWN',
+        indicators: {},
+        dataQuality: { valid: false, reasons: ['invalid_atr_percentile'] },
+      });
+    },
+  );
+  it('uses configured EMA windows and EMA slope, with a fixed EMA25 consumer feature', () => {
+    const base = context();
+    base.regime = {
+      ...base.regime!,
+      contextConfig: {
+        ...regimeContextConfig,
+        indicators: { ...regimeContextConfig.indicators, emaFast: 3, emaMid: 5, emaSlow: 10 },
+      },
+    };
+    const result = RegimeContextGuardAdapter.evaluate(base, { enabled: true, mode: 'SHADOW' });
+    const values = result.regimeContext!.indicators;
+    expect(values.emaFast).toBeCloseTo(1.395);
+    expect(values.emaMid).toBeCloseTo(1.385);
+    expect(values.emaSlow).toBeCloseTo(1.36);
+    expect(values.ema25).toBeCloseTo(1.285);
+    expect(values.emaFastSlope).toBeCloseTo(0.01 / 1.385);
+    expect(values.emaFastSlope).not.toBeCloseTo(0.01 / 1.395, 6);
+    expect(result.guard.metadata.authority).toMatchObject({
+      source: 'LEGACY',
+      role: 'INFORMATIONAL',
+    });
+    base.regimeContext = result.regimeContext;
+    base.entryQuality.ruleGate.currentPrice = 1.3;
+    const longRisk = AegisLongRiskShadowGuardAdapter.evaluate({
+      context: base,
+      policy: { enabled: true, mode: 'SHADOW' },
+      guards: {},
+    });
+    expect(longRisk.metadata.longRiskShadow).toMatchObject({
+      marketWeakness: { belowEma25: false },
+    });
+  });
+
+  it('warms EMA99 with real history and honors configured non-EMA windows', () => {
+    const base = context();
+    base.entryQuality.ruleGate.recentCandles = Array.from({ length: 120 }, (_, index) => {
+      const close = 10 + index * 0.01 + Math.sin(index) * 0.02;
+      return {
+        ...times(index, 120),
+        open: close,
+        high: close + 0.1 + index * 0.001,
+        low: close - 0.1,
+        close,
+        volume: 100 + index,
+      };
+    });
+    const original = RegimeContextGuardAdapter.evaluate(base, {
+      enabled: true,
+      mode: 'SHADOW',
+    }).regimeContext!;
+    expect(original.indicators.emaSlow).toBeDefined();
+    expect(original.indicators.emaSlowSlope).toBeDefined();
+    base.regime = {
+      ...base.regime!,
+      contextConfig: {
+        ...regimeContextConfig,
+        indicators: {
+          ...regimeContextConfig.indicators,
+          atrWindow: 5,
+          volumeWindow: 5,
+          bollingerWindow: 5,
+          adxWindow: 5,
+          choppinessWindow: 5,
+        },
+      },
+    };
+    const changed = RegimeContextGuardAdapter.evaluate(base, {
+      enabled: true,
+      mode: 'SHADOW',
+    }).regimeContext!;
+    for (const key of ['atrPct', 'volumeRatio', 'bollingerWidth', 'adx', 'choppiness'] as const) {
+      expect(changed.indicators[key]).toBeDefined();
+      expect(changed.indicators[key]).not.toBe(original.indicators[key]);
+    }
+    expect(changed.indicators.ema25).toBe(original.indicators.ema25);
+  });
+
+  it.each(['SHADOW', 'ENFORCE'] as const)(
+    'invalid candles become UNKNOWN without a context veto in %s',
+    (mode) => {
+      const base = context();
+      base.entryQuality.ruleGate.recentCandles![2].volume = -1;
+      const result = RegimeContextGuardAdapter.evaluate(base, { enabled: true, mode });
+      expect(result.regimeContext).toMatchObject({
+        label: 'UNKNOWN',
+        confidence: 0,
+        momentumLongAllowed: false,
+        momentumShortAllowed: false,
+        indicators: {},
+        dataQuality: { valid: false, reasons: ['invalid_ohlcv'] },
+      });
+      expect(result.guard.decision).toBe('ALLOW');
+      expect(result.guard.wouldBlock).toBe(false);
+    },
+  );
+
+  it.each(['invalid_timestamp', 'invalid_cadence', 'last_candle_stale', 'last_candle_incomplete'])(
+    'rejects %s before indicators',
+    (reason) => {
+      const base = context();
+      const candles = base.entryQuality.ruleGate.recentCandles!;
+      if (reason === 'invalid_timestamp') delete candles[0].openTime;
+      if (reason === 'invalid_cadence') candles.splice(3, 1);
+      if (reason === 'last_candle_stale') base.operational.timestamp += 300_001;
+      if (reason === 'last_candle_incomplete') base.operational.timestamp -= 1;
+      const result = RegimeContextGuardAdapter.evaluate(base, { enabled: true, mode: 'ENFORCE' });
+      expect(result.regimeContext?.label).toBe('UNKNOWN');
+      expect(result.regimeContext?.indicators).toEqual({});
+      expect(result.regimeContext?.dataQuality?.reasons).toContain(reason);
+    },
+  );
   it('does not claim momentum permission before ADX warmup', () => {
     const base = context();
-    base.entryQuality.ruleGate.recentCandles = base.entryQuality.ruleGate.recentCandles!.slice(
-      0,
-      27,
-    );
+    base.entryQuality.ruleGate.recentCandles = base.entryQuality.ruleGate.recentCandles!.slice(-27);
     const result = RegimeContextGuardAdapter.evaluate(base, { enabled: true, mode: 'SHADOW' });
     expect(result.regimeContext?.indicators.adx).toBeUndefined();
     expect(result.regimeContext?.momentumLongAllowed).toBe(false);
@@ -235,7 +390,14 @@ describe('RegimeContextGuardAdapter', () => {
     const base = context();
     const candles = Array.from({ length: 40 }, (_, index) => {
       const center = 1 + (index % 2 === 0 ? 0.01 : -0.01);
-      return { open: center, high: center + 0.02, low: center - 0.02, close: center, volume: 100 };
+      return {
+        ...times(index),
+        open: center,
+        high: center + 0.02,
+        low: center - 0.02,
+        close: center,
+        volume: 100,
+      };
     });
     const result = RegimeContextGuardAdapter.evaluate(
       context({

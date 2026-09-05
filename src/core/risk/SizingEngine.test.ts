@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { calculateSizing, SizingInput } from './SizingEngine';
+import {
+  calculateMarginBudgetSizing,
+  roundQuantityDown,
+  calculateSizing,
+  SizingInput,
+} from './SizingEngine';
 
 function baseInput(overrides: Partial<SizingInput> = {}): SizingInput {
   return {
@@ -19,6 +24,69 @@ function baseInput(overrides: Partial<SizingInput> = {}): SizingInput {
 }
 
 describe('calculateSizing', () => {
+  it('keeps allocated margin separate from an explicit loss budget', () => {
+    const input = {
+      marginBudget: 100 * 0.9,
+      entryPrice: 100,
+      leverage: 20,
+      minNotional: 5,
+      stepSize: 0.001,
+      qtyPrecision: 3,
+    };
+    expect(calculateMarginBudgetSizing(input)).toMatchObject({
+      valid: true,
+      quantity: 18,
+      marginRequired: 90,
+    });
+    expect(calculateMarginBudgetSizing({ ...input, lossBudget: 2, riskPerUnit: 1 })).toMatchObject({
+      valid: true,
+      quantity: 2,
+      maxLoss: 2,
+    });
+  });
+
+  it.each([0.025, 0.05, 0.2, 2.5])(
+    'floors non-power-of-ten step %s without exceeding caps',
+    (stepSize) => {
+      const result = calculateMarginBudgetSizing({
+        marginBudget: 100,
+        entryPrice: 3,
+        leverage: 2,
+        minNotional: 1,
+        maxNotional: 19.99,
+        maxQuantity: 6.33,
+        maxQty: 6.31,
+        lossBudget: 12.6,
+        riskPerUnit: 2,
+        stepSize,
+        qtyPrecision: 3,
+      });
+      expect(result.valid).toBe(true);
+      expect(result.quantity).toBeLessThanOrEqual(6.3);
+      expect(result.quantity / stepSize).toBeCloseTo(Math.round(result.quantity / stepSize));
+      expect(result.notional).toBeLessThanOrEqual(19.99);
+      expect(result.maxLoss).toBeLessThanOrEqual(12.6);
+    },
+  );
+
+  it('rejects incompatible precision rather than rounding a stepped amount up', () => {
+    expect(roundQuantityDown(0.019, { stepSize: 0.006, qtyPrecision: 2 })).toBeNaN();
+    expect(roundQuantityDown(0.019, { stepSize: 0.006, qtyPrecision: 3 })).toBe(0.018);
+  });
+
+  it.each([NaN, Infinity, 0, -1])('rejects an invalid supplied cap %s', (maxNotional) => {
+    expect(
+      calculateMarginBudgetSizing({
+        marginBudget: 90,
+        entryPrice: 100,
+        leverage: 20,
+        minNotional: 5,
+        stepSize: 0.001,
+        qtyPrecision: 3,
+        maxNotional,
+      }).valid,
+    ).toBe(false);
+  });
   it('calculates quantity from risk budget', () => {
     const result = calculateSizing(baseInput());
     expect(result.valid).toBe(true);
@@ -87,31 +155,37 @@ describe('calculateSizing', () => {
   });
 
   it('handles SHORT side correctly', () => {
-    const result = calculateSizing(baseInput({
-      side: 'SHORT',
-      entryPrice: 1.0,
-      stopPrice: 1.05, // Stop above entry for SHORT
-    }));
+    const result = calculateSizing(
+      baseInput({
+        side: 'SHORT',
+        entryPrice: 1.0,
+        stopPrice: 1.05, // Stop above entry for SHORT
+      }),
+    );
     expect(result.valid).toBe(true);
     expect(result.quantity).toBeGreaterThan(0);
   });
 
   it('rejects LONG with stop above entry', () => {
-    const result = calculateSizing(baseInput({
-      side: 'LONG',
-      entryPrice: 1.0,
-      stopPrice: 1.05,
-    }));
+    const result = calculateSizing(
+      baseInput({
+        side: 'LONG',
+        entryPrice: 1.0,
+        stopPrice: 1.05,
+      }),
+    );
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('STOP_ABOVE_ENTRY_FOR_LONG');
   });
 
   it('rejects SHORT with stop below entry', () => {
-    const result = calculateSizing(baseInput({
-      side: 'SHORT',
-      entryPrice: 1.0,
-      stopPrice: 0.95,
-    }));
+    const result = calculateSizing(
+      baseInput({
+        side: 'SHORT',
+        entryPrice: 1.0,
+        stopPrice: 0.95,
+      }),
+    );
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('STOP_BELOW_ENTRY_FOR_SHORT');
   });
@@ -130,17 +204,19 @@ describe('calculateSizing', () => {
 
   it('rejects when maxLoss exceeds budget after rounding', () => {
     // With stepSize=10, the rounded-up quantity may push maxLoss above budget.
-    const result = calculateSizing(baseInput({
-      balance: 10,
-      riskFraction: 0.01,
-      entryPrice: 1.0,
-      stopPrice: 0.999,
-      leverage: 20,
-      stepSize: 10,
-      qtyPrecision: 0,
-      minNotional: 5,
-      maxNotional: 10000,
-    }));
+    const result = calculateSizing(
+      baseInput({
+        balance: 10,
+        riskFraction: 0.01,
+        entryPrice: 1.0,
+        stopPrice: 0.999,
+        leverage: 20,
+        stepSize: 10,
+        qtyPrecision: 0,
+        minNotional: 5,
+        maxNotional: 10000,
+      }),
+    );
     // Budget: 10 * 0.01 = 0.1. riskPerUnit ≈ 0.001 + 0.002 = 0.003
     // rawQty ≈ 0.1 / 0.003 ≈ 33, rounded to stepSize 10 → 30
     // maxLoss = 30 * 0.003 = 0.09. Should be valid.
@@ -165,47 +241,53 @@ describe('calculateSizing', () => {
 
   it('does not inflate quantity via precision rounding', () => {
     // With stepSize=10 and qtyPrecision=0, rounding must not increase quantity.
-    const result = calculateSizing(baseInput({
-      balance: 1000,
-      riskFraction: 0.02,
-      entryPrice: 1.0,
-      stopPrice: 0.999,
-      leverage: 20,
-      stepSize: 10,
-      qtyPrecision: 0,
-    }));
+    const result = calculateSizing(
+      baseInput({
+        balance: 1000,
+        riskFraction: 0.02,
+        entryPrice: 1.0,
+        stopPrice: 0.999,
+        leverage: 20,
+        stepSize: 10,
+        qtyPrecision: 0,
+      }),
+    );
     expect(result.valid).toBe(true);
     // Quantity should be multiple of 10.
     expect(result.quantity % 10).toBe(0);
   });
 
   it('rejects when quantity exceeds maxNotional after rounding', () => {
-    const result = calculateSizing(baseInput({
-      balance: 100000,
-      riskFraction: 0.5,
-      entryPrice: 1.0,
-      stopPrice: 0.99,
-      leverage: 125,
-      maxNotional: 100,
-      stepSize: 1,
-      qtyPrecision: 0,
-    }));
+    const result = calculateSizing(
+      baseInput({
+        balance: 100000,
+        riskFraction: 0.5,
+        entryPrice: 1.0,
+        stopPrice: 0.99,
+        leverage: 125,
+        maxNotional: 100,
+        stepSize: 1,
+        qtyPrecision: 0,
+      }),
+    );
     // Should be capped by maxNotional.
     expect(result.valid).toBe(true);
     expect(result.notional).toBeLessThanOrEqual(100 * 1.0001);
   });
 
   it('rejects when quantity exceeds margin after rounding', () => {
-    const result = calculateSizing(baseInput({
-      balance: 10,
-      riskFraction: 0.5,
-      entryPrice: 1.0,
-      stopPrice: 0.99,
-      leverage: 20,
-      maxNotional: 100000,
-      stepSize: 1,
-      qtyPrecision: 0,
-    }));
+    const result = calculateSizing(
+      baseInput({
+        balance: 10,
+        riskFraction: 0.5,
+        entryPrice: 1.0,
+        stopPrice: 0.99,
+        leverage: 20,
+        maxNotional: 100000,
+        stepSize: 1,
+        qtyPrecision: 0,
+      }),
+    );
     // Should be capped by margin (10 * 20 = 200).
     expect(result.valid).toBe(true);
     expect(result.notional).toBeLessThanOrEqual(200 * 1.0001);

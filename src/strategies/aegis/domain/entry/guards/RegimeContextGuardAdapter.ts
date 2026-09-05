@@ -1,4 +1,6 @@
 import { wilderAdxSeries } from '../../../../../domain/services/regime-v2/WilderAdx';
+import { validateDataQuality } from '../../../../../core/market-data/CandleIntegrity';
+import { REGIME_CONTEXT_AUTHORITY } from '../../../../../core/risk/RegimeAuthority';
 import {
   AegisEntryContext,
   AegisEntryGuardPolicy,
@@ -30,7 +32,39 @@ export class RegimeContextGuardAdapter {
       return { guard: guardDisabledResult('regime_context', 'regime_context_disabled') };
     }
 
-    const indicators = buildIndicators(context, config.indicators.volumeWindow);
+    const timeframe = /^(\d+)(m|h)$/.exec(config.timeframe);
+    const intervalMs = timeframe
+      ? Number(timeframe[1]) * (timeframe[2] === 'h' ? 3_600_000 : 60_000)
+      : NaN;
+    const quality = validateDataQuality(
+      context.entryQuality.ruleGate.recentCandles ?? [],
+      intervalMs,
+      context.operational.timestamp,
+      {
+        maxAgeMs: Number.MAX_SAFE_INTEGER,
+        maxLastCandleAgeMs: intervalMs,
+        ageReference: 'CLOSE_TIME',
+        maxFutureSkewMs: 0,
+      },
+    );
+    quality.reasons.push(...(context.entryQuality.ruleGate.candleDataQualityReasons ?? []));
+    const atrPercentile = context.entryQuality.ruleGate.atrPercentile;
+    if (
+      atrPercentile !== undefined &&
+      (!Number.isFinite(atrPercentile) || atrPercentile < 0 || atrPercentile > 1)
+    )
+      quality.reasons.push('invalid_atr_percentile');
+    if (
+      Object.values(config.indicators).some((window) => !Number.isSafeInteger(window) || window < 2)
+    )
+      quality.reasons.push('invalid_indicator_window');
+    quality.valid = quality.reasons.length === 0;
+    let indicators = quality.valid ? buildIndicators(context, config.indicators) : {};
+    if (Object.values(indicators).some((value) => value !== undefined && !Number.isFinite(value))) {
+      quality.valid = false;
+      quality.reasons.push('nonfinite_indicator');
+      indicators = {};
+    }
     const hasEnoughData =
       indicators.volumeRatio !== undefined ||
       indicators.emaFast !== undefined ||
@@ -87,12 +121,14 @@ export class RegimeContextGuardAdapter {
     });
 
     const regimeContext = buildRegimeContext(
-      decision.regime,
-      decision.confidence,
+      quality.valid ? decision.regime : 'UNKNOWN',
+      quality.valid ? decision.confidence : 0,
       indicators,
       config.thresholds,
-      [decision.reason],
+      quality.valid ? [decision.reason] : quality.reasons,
     );
+    regimeContext.indicatorWindows = { ...config.indicators };
+    regimeContext.dataQuality = quality;
 
     return {
       guard: {
@@ -105,6 +141,7 @@ export class RegimeContextGuardAdapter {
         enforced: isGuardEnforced(policy),
         metadata: {
           regimeContext,
+          authority: REGIME_CONTEXT_AUTHORITY,
           source: 'aegis_regime_guard_plus_indicators',
           technicalRegimePending: true,
           policyMode: policy.mode,
@@ -185,36 +222,70 @@ function buildRegimeContext(
 
 function buildIndicators(
   context: AegisEntryContext,
-  volumeWindow: number,
+  windows: AegisRegimeContextRuntimeConfig['indicators'],
 ): AegisRegimeContext['indicators'] {
   const candles = context.entryQuality.ruleGate.recentCandles ?? [];
   const latest = candles[candles.length - 1];
-  const previous = candles[candles.length - 2];
   const volumeHistory = candles
-    .slice(Math.max(0, candles.length - volumeWindow - 1), -1)
+    .slice(Math.max(0, candles.length - windows.volumeWindow - 1), -1)
     .map((candle) => candle.volume)
     .filter((value): value is number => isFiniteNumber(value));
-  const avgVolume = average(volumeHistory);
+  const avgVolume =
+    volumeHistory.length === windows.volumeWindow ? average(volumeHistory) : undefined;
   const volumeRatio =
     latest?.volume !== undefined && avgVolume && avgVolume > 0
       ? latest.volume / avgVolume
       : undefined;
-  const emaFast = context.entryQuality.ruleGate.emaFast;
-  const emaFastSlope =
-    previous && latest && previous.close > 0
-      ? (latest.close - previous.close) / previous.close
-      : undefined;
-  const bollingerWidth = calculateBollingerWidth(candles.slice(-20).map((candle) => candle.close));
-  const choppiness = calculateChoppiness(candles.slice(-14));
-  const adxValues = wilderAdxSeries(candles);
+  const ema = (period: number): { value?: number; slope?: number } => {
+    if (candles.length < period) return {};
+    let value = candles.slice(0, period).reduce((sum, c) => sum + c.close, 0) / period;
+    let previous: number | undefined;
+    for (const c of candles.slice(period)) {
+      previous = value;
+      value += ((c.close - value) * 2) / (period + 1);
+    }
+    return { value, slope: previous === undefined ? undefined : (value - previous) / previous };
+  };
+  const fast = ema(windows.emaFast),
+    mid = ema(windows.emaMid),
+    slow = ema(windows.emaSlow);
+  const bollingerWidth =
+    candles.length < windows.bollingerWindow
+      ? undefined
+      : calculateBollingerWidth(
+          candles.slice(-windows.bollingerWindow).map((candle) => candle.close),
+        );
+  const choppiness =
+    candles.length < windows.choppinessWindow
+      ? undefined
+      : calculateChoppiness(candles.slice(-windows.choppinessWindow));
+  const adxValues = wilderAdxSeries(candles, windows.adxWindow);
   const adx = round(adxValues[adxValues.length - 1]);
+  const ranges = candles
+    .slice(1)
+    .map((c, i) =>
+      Math.max(
+        c.high - c.low,
+        Math.abs(c.high - candles[i].close),
+        Math.abs(c.low - candles[i].close),
+      ),
+    );
+  let atr =
+    ranges.length < windows.atrWindow ? undefined : average(ranges.slice(0, windows.atrWindow));
+  if (atr !== undefined) {
+    for (const range of ranges.slice(windows.atrWindow))
+      atr = (atr * (windows.atrWindow - 1) + range) / windows.atrWindow;
+  }
 
   return {
-    emaFast,
-    emaMid: undefined,
-    emaSlow: undefined,
-    emaFastSlope,
-    atrPct: context.entryQuality.ruleGate.atrPct,
+    emaFast: fast.value,
+    emaMid: mid.value,
+    emaSlow: slow.value,
+    emaFastSlope: fast.slope,
+    emaMidSlope: mid.slope,
+    emaSlowSlope: slow.slope,
+    ema25: ema(25).value,
+    atrPct: atr === undefined || !latest ? undefined : atr / latest.close,
     atrPercentile: context.entryQuality.ruleGate.atrPercentile,
     volumeRatio,
     bollingerWidth,
@@ -242,7 +313,7 @@ function inferTrendDirection(
 }
 
 function calculateBollingerWidth(values: number[]): number | undefined {
-  if (values.length < 20) return undefined;
+  if (values.length < 2) return undefined;
   const mean = average(values);
   if (!mean) return undefined;
   const variance = average(values.map((value) => (value - mean) ** 2));
@@ -253,7 +324,7 @@ function calculateBollingerWidth(values: number[]): number | undefined {
 function calculateChoppiness(
   candles: Array<{ high: number; low: number; close: number }>,
 ): number | undefined {
-  if (candles.length < 14) return undefined;
+  if (candles.length < 2) return undefined;
   let trSum = 0;
   for (let index = 1; index < candles.length; index += 1) {
     const current = candles[index];

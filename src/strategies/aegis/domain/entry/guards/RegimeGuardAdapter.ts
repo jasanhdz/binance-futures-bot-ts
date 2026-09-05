@@ -1,9 +1,9 @@
+import { REGIME_AUTHORITY, modeAuthorityRole } from '../../../../../core/risk/RegimeAuthority';
 import {
   AegisEntryContext,
   AegisEntryGuardPolicy,
   AegisEntryGuardResult,
   guardDisabledResult,
-  isGuardEnforced,
 } from '../AegisEntryDecisionTypes';
 import {
   AegisRegimeDecision,
@@ -60,8 +60,12 @@ export class RegimeGuardAdapter {
       };
     }
 
+    const authority = {
+      ...REGIME_AUTHORITY.LEGACY,
+      role: modeAuthorityRole(policy.mode === 'ENFORCE' ? 'ENFORCE' : 'SHADOW'),
+    };
+    const enforced = authority.role === 'AUTHORITATIVE';
     if (!context.regime?.config) {
-      const enforced = isGuardEnforced(policy);
       const decision: AegisRegimeDecision = {
         regime: 'UNKNOWN',
         confidence: 0,
@@ -84,7 +88,13 @@ export class RegimeGuardAdapter {
           reason: 'regime_context_missing',
           enforced,
           wouldBlock: true,
-          metadata: { ...decision.metadata, regime: 'UNKNOWN', confidence: 0, wouldBlock: true },
+          metadata: {
+            ...decision.metadata,
+            authority,
+            regime: 'UNKNOWN',
+            confidence: 0,
+            wouldBlock: true,
+          },
         },
       };
     }
@@ -116,7 +126,6 @@ export class RegimeGuardAdapter {
         mode: policy.mode === 'ENFORCE' ? 'ENFORCE' : 'SHADOW',
       },
     });
-    const enforced = isGuardEnforced(policy);
     const wouldBlock = decision.wouldBlock === true || decision.allowed !== true;
     const guard: AegisEntryGuardResult = {
       name: 'regime',
@@ -128,6 +137,7 @@ export class RegimeGuardAdapter {
       enforced,
       metadata: {
         ...decision.metadata,
+        authority,
         regime: decision.regime,
         confidence: decision.confidence,
         source: decision.source,

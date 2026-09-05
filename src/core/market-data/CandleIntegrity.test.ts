@@ -4,6 +4,7 @@ import {
   validateCandleFreshness,
   validateCrossSymbolConsistency,
   validateDataQuality,
+  prepareClosedCandles,
 } from './CandleIntegrity';
 import type { Candle } from '../types';
 
@@ -20,6 +21,33 @@ const make = (openTimeMs: number): Candle => ({
 });
 
 describe('candle integrity', () => {
+  it('removes only a validated forming tail and accepts an inclusive close', () => {
+    const candles = [make(0), make(60_000), make(120_000)];
+    expect(prepareClosedCandles(candles, 60_000, 120_000, 60_000)).toEqual({
+      candles: candles.slice(0, 2),
+      reasons: [],
+    });
+    expect(prepareClosedCandles(candles.slice(0, 2), 60_000, 119_999, 60_000)).toEqual({
+      candles: candles.slice(0, 2),
+      reasons: [],
+    });
+    expect(candles).toHaveLength(3);
+  });
+
+  it('rejects a malformed forming tail before filtering it out', () => {
+    const candles = [make(0), { ...make(60_000), volume: -1 }];
+    expect(prepareClosedCandles(candles, 60_000, 60_000, 60_000)).toEqual({
+      candles: [],
+      reasons: ['invalid_ohlcv'],
+    });
+  });
+
+  it.each([NaN, Infinity, -1])('rejects invalid freshness limit %s', (maxLastCandleAgeMs) => {
+    expect(validateCandleFreshness([make(0)], 60_000, 60_000, { maxLastCandleAgeMs })).toEqual({
+      valid: false,
+      reason: 'invalid_freshness_limit',
+    });
+  });
   it('accepts contiguous original candles', () =>
     expect(validateCandleSequence([make(0), make(60_000)], 60_000)).toBeUndefined());
   it.each([
@@ -75,7 +103,9 @@ describe('candle freshness', () => {
   it('rejects candle that is too old', () => {
     const old = make(nowMs - 48 * 60 * 60 * 1000);
     const candles = [old, make(nowMs - 60_000)];
-    const result = validateCandleFreshness(candles, intervalMs, nowMs, { maxAgeMs: 24 * 60 * 60 * 1000 });
+    const result = validateCandleFreshness(candles, intervalMs, nowMs, {
+      maxAgeMs: 24 * 60 * 60 * 1000,
+    });
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('candle_too_old');
     expect(result.invalidIndex).toBe(0);
@@ -92,7 +122,10 @@ describe('candle freshness', () => {
 
   it('rejects last candle if incomplete (opened less than one interval ago)', () => {
     const lastOpen = nowMs - 30_000;
-    const candles = [make(nowMs - 90_000), { ...make(lastOpen / 60_000), openTime: lastOpen, closeTime: lastOpen + 59_999 }];
+    const candles = [
+      make(nowMs - 90_000),
+      { ...make(lastOpen / 60_000), openTime: lastOpen, closeTime: lastOpen + 59_999 },
+    ];
     const result = validateCandleFreshness(candles, intervalMs, nowMs);
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('last_candle_incomplete');
@@ -100,7 +133,10 @@ describe('candle freshness', () => {
 
   it('accepts last candle when rejectIncompleteLast is false', () => {
     const lastOpen = nowMs - 30_000;
-    const candles = [make(nowMs - 90_000), { ...make(lastOpen / 60_000), openTime: lastOpen, closeTime: lastOpen + 59_999 }];
+    const candles = [
+      make(nowMs - 90_000),
+      { ...make(lastOpen / 60_000), openTime: lastOpen, closeTime: lastOpen + 59_999 },
+    ];
     expect(
       validateCandleFreshness(candles, intervalMs, nowMs, { rejectIncompleteLast: false }),
     ).toEqual({ valid: true });
@@ -152,7 +188,14 @@ describe('data quality (combined)', () => {
   });
 
   it('collects multiple failure reasons', () => {
-    const bad = { ...make(0), close: NaN, volume: -1, openTime: nowMs + 900_000, closeTime: nowMs + 960_000 - 1, timestamp: nowMs + 900_000 };
+    const bad = {
+      ...make(0),
+      close: NaN,
+      volume: -1,
+      openTime: nowMs + 900_000,
+      closeTime: nowMs + 960_000 - 1,
+      timestamp: nowMs + 900_000,
+    };
     const result = validateDataQuality([bad], intervalMs, nowMs, { minCandles: 3 });
     expect(result.valid).toBe(false);
     expect(result.reasons.length).toBeGreaterThanOrEqual(2);

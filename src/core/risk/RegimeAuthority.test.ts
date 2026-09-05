@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   REGIME_AUTHORITY,
+  REGIME_CONTEXT_AUTHORITY,
   modeAuthorityRole,
   isHeuristicConfidence,
   regimeContextIsInformational,
@@ -35,46 +36,13 @@ describe('RegimeAuthority', () => {
     expect(isHeuristicConfidence(1.1)).toBe(false);
   });
 
-  it('regimeContextIsInformational for OFF/SHADOW mode', () => {
-    const offDecision = {
-      regime: 'MOMENTUM_UP' as const,
-      confidence: 0.8,
-      allowed: true,
-      wouldBlock: false,
-      reason: 'regime_trade_allowed' as const,
-      source: 'HYBRID_HEURISTIC' as const,
-      metadata: { mode: 'OFF' },
-    };
-    expect(regimeContextIsInformational(offDecision)).toBe(true);
-
-    const shadowDecision = { ...offDecision, metadata: { mode: 'SHADOW' } };
-    expect(regimeContextIsInformational(shadowDecision)).toBe(true);
-  });
-
-  it('regimeContextIsInformational when blocked', () => {
-    const blocked = {
-      regime: 'RISK_OFF' as const,
-      confidence: 0.9,
-      allowed: false,
-      wouldBlock: true,
-      reason: 'regime_risk_off_block' as const,
-      source: 'HYBRID_HEURISTIC' as const,
-      metadata: { mode: 'ENFORCE' },
-    };
-    expect(regimeContextIsInformational(blocked)).toBe(true);
-  });
-
-  it('regimeContextIsInformational returns false for ENFORCE allowed', () => {
-    const allowed = {
-      regime: 'MOMENTUM_UP' as const,
-      confidence: 0.8,
-      allowed: true,
-      wouldBlock: false,
-      reason: 'regime_trade_allowed' as const,
-      source: 'HYBRID_HEURISTIC' as const,
-      metadata: { mode: 'ENFORCE' },
-    };
-    expect(regimeContextIsInformational(allowed)).toBe(false);
+  it('context authority is informational independently of policy or decision', () => {
+    expect(REGIME_CONTEXT_AUTHORITY).toEqual({
+      source: 'LEGACY',
+      role: 'INFORMATIONAL',
+      confidenceKind: 'HEURISTIC_NOT_PROBABILITY',
+    });
+    expect(regimeContextIsInformational()).toBe(true);
   });
 
   it('engineV2HasAuthority always returns false', () => {

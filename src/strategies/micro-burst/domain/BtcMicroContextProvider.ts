@@ -1,6 +1,7 @@
 import { Side } from '../../../core/types';
 import { Logger } from '../../../app/ports/Logger';
 import type { BenchmarkMarketData } from '../../../core/market-data/BenchmarkMarketData';
+import { prepareClosedCandles } from '../../../core/market-data/CandleIntegrity';
 import { BtcContext } from './MicroBurstTypes';
 import type { BtcCandleObservation, BtcReturnSet } from './MicroBurstBtcTypes';
 
@@ -39,6 +40,7 @@ export class BtcMicroContextProvider {
   private readonly candleBuffer: BtcCandleObservation[] = [];
   private lastObservationMs = 0;
   private lastReceivedAtMs = 0;
+  private lastEventAgeMs = 0;
   private lastDirection: Side | 'NEUTRAL' = 'NEUTRAL';
   private lastRet1m = 0;
   private lastRet3m = 0;
@@ -90,36 +92,39 @@ export class BtcMicroContextProvider {
       const series = await this.deps.benchmark.candles.getSeries('1m', 60);
       if (lifecycleVersion !== this.lifecycleVersion) return;
       const localReceivedAtMs = this.clock.now();
+      // A rejected refresh must not leave the previous assessment looking current.
+      this.lastObservationMs = 0;
+      this.candleBuffer.length = 0;
       if (series.health !== 'HEALTHY') return;
       if (series.symbol !== this.btcSymbol.toUpperCase()) return;
       const exchangeSnapshotTimeMs = series.exchangeSnapshotTimeMs;
       if (lifecycleVersion !== this.lifecycleVersion) return;
       if (exchangeSnapshotTimeMs === null || !Number.isFinite(exchangeSnapshotTimeMs)) return;
 
-      for (const candle of series.candles) {
+      const prepared = prepareClosedCandles(
+        series.candles,
+        60_000,
+        exchangeSnapshotTimeMs,
+        this.staleThresholdMs,
+      );
+      if (prepared.reasons.length > 0) {
+        this.deps.logger.warn('btc_candle_integrity_rejected', { reasons: prepared.reasons });
+        return;
+      }
+      for (const candle of prepared.candles.slice(-this.maxBufferSize)) {
         const obs: BtcCandleObservation = {
           close: candle.close,
           closeTime: candle.closeTime,
           openTime: candle.openTime,
         };
-        const existing = this.candleBuffer.find((c) => c.closeTime === obs.closeTime);
-        if (!existing) {
-          this.candleBuffer.push(obs);
-        } else {
-          existing.close = obs.close;
-        }
-      }
-
-      this.candleBuffer.sort((a, b) => a.closeTime - b.closeTime);
-
-      while (this.candleBuffer.length > this.maxBufferSize) {
-        this.candleBuffer.shift();
+        this.candleBuffer.push(obs);
       }
 
       const returns = this.computeReturns(exchangeSnapshotTimeMs);
       if (returns) {
         this.lastObservationMs = returns.observedAtMs;
         this.lastReceivedAtMs = localReceivedAtMs;
+        this.lastEventAgeMs = exchangeSnapshotTimeMs - returns.observedAtMs;
         this.lastDirection = returns.direction;
         this.lastRet1m = returns.ret1m;
         this.lastRet3m = returns.ret3m;
@@ -140,7 +145,14 @@ export class BtcMicroContextProvider {
     if (this.lastObservationMs === 0) return undefined;
 
     const now = this.clock.now();
-    if (Math.max(0, now - this.lastReceivedAtMs) > this.staleThresholdMs) return undefined;
+    const receivedAge = now - this.lastReceivedAtMs;
+    if (
+      !Number.isFinite(receivedAge) ||
+      receivedAge < 0 ||
+      Math.max(now - this.lastObservationMs, receivedAge + this.lastEventAgeMs) >
+        this.staleThresholdMs
+    )
+      return undefined;
 
     return {
       ret1m: this.lastRet1m,

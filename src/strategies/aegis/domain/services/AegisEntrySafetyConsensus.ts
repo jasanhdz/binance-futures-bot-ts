@@ -1,8 +1,5 @@
 import { Side } from '../../../../core/types';
-import {
-  AegisEntryDecisionResult,
-  AegisEntryGuardResult,
-} from '../entry/AegisEntryDecisionTypes';
+import { AegisEntryDecisionResult, AegisEntryGuardResult } from '../entry/AegisEntryDecisionTypes';
 
 type SafetyMode = 'OFF' | 'SHADOW' | 'ENFORCE';
 
@@ -51,6 +48,7 @@ function longRiskLevel(result: AegisEntryDecisionResult): string | undefined {
 
 function hasValidRegimeData(result: AegisEntryDecisionResult): boolean {
   const context = result.decisions.regimeContext;
+  if (context?.dataQuality?.valid === false || context?.label === 'UNKNOWN') return false;
   if (!context || context.trendDirection === 'UNKNOWN' || context.volatilityState === 'UNKNOWN')
     return false;
   const finiteIndicators = Object.values(context.indicators ?? {}).filter(

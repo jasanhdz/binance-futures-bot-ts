@@ -17,7 +17,7 @@
  * 3. SHADOW mode evaluates but does not block; decisions are logged.
  * 4. ENFORCE mode blocks entries when regime conditions are not met.
  * 5. A stale snapshot (exceeding maxSnapshotAgeSeconds) is treated as
- *    UNKNOWN and blocked in ENFORCE mode.
+ *    UNKNOWN; ENFORCE blocking still follows the legacy blockWhen configuration.
  * 6. regime_context metadata is informational; it does not by itself
  *    authorize or deny entries. Authority comes from regime guard mode.
  * 7. BTC/ETH alignment is required for alt symbols unless explicitly
@@ -46,9 +46,16 @@ export const REGIME_AUTHORITY: Record<RegimeAuthoritySource, RegimeAuthorityMapp
   ENGINE_V2: {
     source: 'ENGINE_V2',
     role: 'INFORMATIONAL',
-    description: 'RegimeEngineV2: OHLCV-first momentum environment detector. Offline/analysis only.',
+    description:
+      'RegimeEngineV2: OHLCV-first momentum environment detector. Offline/analysis only.',
   },
 };
+
+export const REGIME_CONTEXT_AUTHORITY = {
+  source: 'LEGACY',
+  role: 'INFORMATIONAL',
+  confidenceKind: 'HEURISTIC_NOT_PROBABILITY',
+} as const;
 
 /** Map mode to authority role. */
 export function modeAuthorityRole(mode: 'OFF' | 'SHADOW' | 'ENFORCE'): RegimeAuthorityRole {
@@ -59,7 +66,7 @@ export function modeAuthorityRole(mode: 'OFF' | 'SHADOW' | 'ENFORCE'): RegimeAut
 
 /**
  * Assert that a confidence value is heuristic, not probability.
- * This is a documentation guard; the value is always clamped to [0, 1].
+ * Only checks the range; it neither clamps nor establishes calibration.
  */
 export function isHeuristicConfidence(value: number): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
@@ -70,11 +77,8 @@ export function isHeuristicConfidence(value: number): boolean {
  * independently authorize entries. Context is informational; authority
  * comes from the regime guard decision.
  */
-export function regimeContextIsInformational(
-  decision: { allowed: boolean; metadata: { mode?: string } },
-): boolean {
-  // In OFF/SHADOW, context is informational.
-  return decision.metadata.mode === 'OFF' || decision.metadata.mode === 'SHADOW' || !decision.allowed;
+export function regimeContextIsInformational(): boolean {
+  return REGIME_CONTEXT_AUTHORITY.role === 'INFORMATIONAL';
 }
 
 /**

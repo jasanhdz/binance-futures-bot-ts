@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateAegisEntrySafetyConsensus } from './AegisEntrySafetyConsensus';
-import {
-  AegisEntryDecisionResult,
-  AegisEntryGuardResult,
-} from '../entry/AegisEntryDecisionTypes';
+import { AegisEntryDecisionResult, AegisEntryGuardResult } from '../entry/AegisEntryDecisionTypes';
 
 function guard(
   name: AegisEntryGuardResult['name'],
@@ -82,6 +79,38 @@ const derivedRiskChain = [
 ];
 
 describe('AegisEntrySafetyConsensus', () => {
+  it.each(['UNKNOWN', 'invalid_quality'])(
+    'does not mistake %s populated indicators for valid evidence',
+    (kind) => {
+      const entryDecision = decision(
+        [
+          ...derivedRiskChain,
+          guard('long_risk_shadow', true, { longRiskShadow: { riskLevel: 'CRITICAL' } }),
+        ],
+        true,
+      );
+      if (kind === 'UNKNOWN') entryDecision.decisions.regimeContext!.label = 'UNKNOWN';
+      else
+        entryDecision.decisions.regimeContext!.dataQuality = {
+          valid: false,
+          reasons: ['invalid_ohlcv'],
+        };
+      const result = evaluateAegisEntrySafetyConsensus({ side: 'LONG', config, entryDecision });
+      expect(result).toMatchObject({
+        allowed: true,
+        regimeDataValid: false,
+        criticalLongVetoWouldBlock: false,
+        riskFamilies: ['regime', 'quality_chain', 'critical_long'],
+      });
+      const enforced = evaluateAegisEntrySafetyConsensus({
+        side: 'LONG',
+        config: { ...config, mode: 'ENFORCE' },
+        entryDecision,
+      });
+      expect(enforced.allowed).toBe(false);
+      expect(enforced.reason).toBe('entry_safety_root_consensus_hard_block');
+    },
+  );
   it('counts correlated quality adapters as one root family and leaves SHORT in Shadow', () => {
     const result = evaluateAegisEntrySafetyConsensus({
       side: 'SHORT',

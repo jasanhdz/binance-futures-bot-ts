@@ -59,8 +59,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 3 increment: drain tracked entry/management work before shutdown flush.
   // Phase 1 follow-up: independent flat reconciliation and separate protection quarantine.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
+  // Data/sizing increment: validate original candles before tail selection and indicators.
   'src/app/services/TradingService.ts':
-    '44033225224936ff8f9ad0d7117642a75dc32819bc931041dd2f7fae58d85937',
+    'ebee73d41151dc78cbbed51d4db4089754bf1cad3a76857cc05b1f2d1b5a3d3b',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -85,13 +86,13 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/strategies/aegis/domain/services/AegisProbeMode.ts':
     'f16c3b1f2328acaa49aa8081eb624ab96f8d16114dcc5dd89cd419dcca50926b',
   'src/strategies/aegis/domain/services/AegisRegimeGuard.ts':
-    '45275cf077d32ec12535b428f1534181ed10cfaa1e702ddfb2045b66e320437a',
+    'c2b56af772b7e9c2b07bcb27218e75e94a9e5a9665ad9cdb16e674ed21e31cc6',
   'src/strategies/aegis/domain/services/AegisShortGate.ts':
     '5e2ad3ffd093575c60e1efcb500135d9e4fa5812b0b7747a86a359a76345f9b6',
   'src/strategies/aegis/domain/CurrentBrainCanonicalDecision.ts':
     'a32681b0c93eb9990ec942013196c213cb0487922e4045baa9ab13d2979b2bca',
   'src/strategies/aegis/domain/entry/AegisEntryDecisionTypes.ts':
-    'e65aa7c8da6f562ce01f6405fe3d8a1defc7e976ea9ecdd0e36d781d104b86f4',
+    'd9384d4a262b94f64b7ee39e2dbaca0efdf43c19911c324799ee51399fbbb296',
   'src/strategies/aegis/domain/entry/AegisEntryGuardOrchestrator.ts':
     '208dd77c73729451e41abbdb5c072baac1181b369f34ed72e80b89a9b4afe59a',
   'src/strategies/aegis/domain/entry/guards/ProbeModeGuardAdapter.ts':

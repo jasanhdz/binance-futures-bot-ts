@@ -1,3 +1,4 @@
+import { prepareClosedCandles } from '../../core/market-data/CandleIntegrity';
 import { Exchange, PositionInfo, SymbolFilters, USDTAccountSnapshot } from '../ports/Exchange';
 import { MLService } from '../ports/MLService';
 import { Logger } from '../ports/Logger';
@@ -401,7 +402,13 @@ export class TradingService {
         this.strategyRuntimeCoordinator.readMomentumCandles(symbol, limit),
       readRealtimeMarket: (symbol) =>
         this.strategyRuntimeCoordinator.readMomentumRealtimeMarket(symbol),
-      getCachedCandles: (symbol) => this.getCachedEntryQualityCandles(symbol),
+      getCachedCandles: (symbol) =>
+        prepareClosedCandles(
+          this.getCachedEntryQualityCandles(symbol),
+          300_000,
+          Date.now(),
+          300_000,
+        ).candles,
       getRestCandles: (symbol, interval, limit) =>
         this.deps.exchange.getCandles(symbol, interval, limit),
       isValidCandle: (candle) => this.isValidCandle(candle),
@@ -2385,30 +2392,24 @@ export class TradingService {
         ? sharedCandles
         : this.deps.exchange.getCachedCandles?.(symbol, '5m', 160);
     if (!Array.isArray(cachedCandles)) return [];
-    const now = Date.now();
-    const intervalMs = 5 * 60 * 1000;
-    return cachedCandles.filter((candle) => {
-      const openTime = this.finiteNumber(candle.openTime)
-        ? Number(candle.openTime)
-        : this.finiteNumber(candle.timestamp)
-          ? Number(candle.timestamp)
-          : undefined;
-      // Historical/test candles without a usable timestamp remain eligible. A
-      // known in-progress websocket candle must never drive a regime decision.
-      return openTime === undefined || openTime + intervalMs <= now;
-    });
+    return cachedCandles;
   }
 
   private buildEntryQualityMarketContext(symbol: string): {
     recentCandles: Candle[];
+    candleDataQualityReasons: string[];
     currentPrice?: number;
     emaFast?: number;
     atrPct?: number;
     atrPercentile?: number;
   } {
-    const recentCandles = this.getCachedEntryQualityCandles(symbol).filter((candle) =>
-      this.isValidCandle(candle),
+    const prepared = prepareClosedCandles(
+      this.getCachedEntryQualityCandles(symbol),
+      300_000,
+      Date.now(),
+      300_000,
     );
+    const recentCandles = prepared.candles;
     const currentPrice =
       recentCandles.length > 0 ? recentCandles[recentCandles.length - 1].close : undefined;
     const emaFast = this.calculateEmaFast(recentCandles, 9);
@@ -2419,6 +2420,7 @@ export class TradingService {
 
     return {
       recentCandles,
+      candleDataQualityReasons: prepared.reasons,
       currentPrice,
       emaFast,
       atrPct,

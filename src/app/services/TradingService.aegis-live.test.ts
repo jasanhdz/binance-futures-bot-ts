@@ -225,6 +225,7 @@ function signalWithRegimeContext(
     setupGrade?: string;
     btcAction?: string;
     ethAction?: string;
+    snapshotAgeSeconds?: number;
   } = {},
 ): AegisTradingSignal {
   const signal = validSignalWithDecisionBrain('ENTER_NOW');
@@ -258,7 +259,7 @@ function signalWithRegimeContext(
             score: 0.8,
             votes: { long: 3, short: 0, neutral: 0 },
           },
-          snapshot_age_seconds: 60,
+          snapshot_age_seconds: 'snapshotAgeSeconds' in input ? input.snapshotAgeSeconds : 60,
         } as any,
       },
     },
@@ -3379,6 +3380,35 @@ describe('TradingService Aegis live execution', () => {
     );
   });
 
+  it.each(['OFF', 'SHADOW', 'ENFORCE'] as const)(
+    'invalid regime snapshot reaches real admission with %s semantics',
+    async (mode) => {
+      const { service, exchange, historyLogger } = makeHarness({
+        signal: signalWithRegimeContext({ snapshotAgeSeconds: -1 }),
+        regimeGuard: regimeGuardConfig({ enabled: true, mode, blockWhen: ['UNKNOWN'] }),
+        entryPolicy: entryPolicyWithRegime(mode),
+      });
+      await service.tick('ETHUSDT');
+      if (mode === 'ENFORCE') {
+        expect(exchange.marketOpen).not.toHaveBeenCalled();
+        expect(exchange.setLeverage).not.toHaveBeenCalled();
+        expect(exchange.ensureMarginType).not.toHaveBeenCalled();
+        expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'ENTRY_POLICY_DECISION',
+            reason: 'regime_invalid_snapshot',
+          }),
+        );
+      } else
+        expect(exchange.marketOpen).toHaveBeenCalledWith(
+          'ETHUSDT',
+          'LONG',
+          0.01,
+          expect.any(String),
+        );
+    },
+  );
+
   it('in ENFORCE, ENTRY_QUALITY_GATE_DENIED prevents marketOpen', async () => {
     const { exchange, historyLogger, logger, service } = makeHarness({
       entryQuality: entryQualityConfig({
@@ -3636,8 +3666,9 @@ describe('TradingService Aegis live execution', () => {
   it('excludes an identifiable open 5m candle from technical entry context', () => {
     const now = 1_800_000_000_000;
     const closed = {
-      openTime: now - 10 * 60 * 1000,
-      timestamp: now - 10 * 60 * 1000,
+      openTime: now - 6 * 60 * 1000,
+      timestamp: now - 6 * 60 * 1000,
+      closeTime: now - 60 * 1000 - 1,
       open: 100,
       high: 101,
       low: 99,
@@ -3648,7 +3679,8 @@ describe('TradingService Aegis live execution', () => {
       ...closed,
       openTime: now - 60 * 1000,
       timestamp: now - 60 * 1000,
-      close: 200,
+      closeTime: now + 4 * 60 * 1000 - 1,
+      close: 100.8,
     };
     const { exchange, service } = makeHarness({ cachedCandles: [closed, open] });
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
@@ -3662,6 +3694,61 @@ describe('TradingService Aegis live execution', () => {
       nowSpy.mockRestore();
     }
   });
+
+  it.each(['ohlcv', 'timestamp', 'gap', 'forming_tail'])(
+    'preserves %s raw-data rejection through the typed entry context seam',
+    (kind) => {
+      const now = 1_800_000_000_000;
+      const candles = Array.from({ length: 40 }, (_, index) => {
+        const closeTime = now - (39 - index) * 300_000;
+        return {
+          openTime: closeTime - 299_999,
+          timestamp: closeTime - 299_999,
+          closeTime,
+          open: 100,
+          high: 101,
+          low: 99,
+          close: 100,
+          volume: 100,
+        };
+      });
+      if (kind === 'ohlcv') candles[0].volume = -1;
+      if (kind === 'timestamp') candles[0].openTime = NaN;
+      if (kind === 'gap') candles.splice(4, 1);
+      if (kind === 'forming_tail')
+        candles.push({
+          ...candles[39],
+          openTime: now + 1,
+          timestamp: now + 1,
+          closeTime: now + 300_000,
+          volume: -1,
+        });
+      const { service, exchange } = makeHarness({ cachedCandles: candles });
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const seam = service as unknown as {
+          buildEntryQualityMarketContext(symbol: string): {
+            recentCandles: unknown[];
+            candleDataQualityReasons: string[];
+            emaFast?: number;
+          };
+        };
+        const result = seam.buildEntryQualityMarketContext('ETHUSDT');
+        expect(result.recentCandles).toEqual([]);
+        expect(result.emaFast).toBeUndefined();
+        expect(result.candleDataQualityReasons).toContain(
+          kind === 'timestamp'
+            ? 'invalid_timestamp'
+            : kind === 'gap'
+              ? 'invalid_cadence'
+              : 'invalid_ohlcv',
+        );
+        expect(exchange.getCandles).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
 
   it('does not use model shadow entry_quality_model metadata to block marketOpen', async () => {
     const { exchange, service } = makeHarness({
@@ -5047,17 +5134,21 @@ describe('TradingService Aegis live execution', () => {
       2,
       'ETHUSDT',
       'LONG',
-      0.101,
+      0.102,
       clientOrderIds[1],
     );
     expect(exchange.marketOpen).toHaveBeenNthCalledWith(
       3,
       'ETHUSDT',
       'LONG',
-      0.09,
+      0.091,
       clientOrderIds[2],
     );
     expect(logger.warn).toHaveBeenCalledWith('shared_execution_quantity_retry', expect.any(Object));
+    // One exact floor per retry, without the legacy extra step lost to floating point.
+    const quantities = exchange.marketOpen.mock.calls.map((call: unknown[]) => Number(call[2]));
+    expect(quantities[1]).toBeLessThanOrEqual(quantities[0] * 0.9);
+    expect(quantities[2]).toBeLessThanOrEqual(quantities[1] * 0.9);
     expect(historyLogger.logTradeEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'ORDER_QUANTITY_ADJUSTED',

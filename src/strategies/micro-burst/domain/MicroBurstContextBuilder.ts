@@ -1,5 +1,8 @@
 import { Candle, Side } from '../../../core/types';
-import { validateCandleSequence } from '../../../core/market-data/CandleIntegrity';
+import {
+  prepareClosedCandles,
+  validateCandleSequence,
+} from '../../../core/market-data/CandleIntegrity';
 import {
   BtcContext,
   BtcDataStatus,
@@ -143,6 +146,17 @@ function getDataQuality(
   if (freshness5mMs > config.candleFreshness5mMaxMs) invalidReasons.push('stale_5m_candles');
   if (bookStatus !== 'HEALTHY') invalidReasons.push(`book_${bookStatus.toLowerCase()}`);
   if (btcStatus !== 'HEALTHY') invalidReasons.push(`btc_${btcStatus.toLowerCase()}`);
+  if (btcContext) {
+    const eventAge = snapshotAtMs - btcContext.observedAtMs;
+    if (!Number.isFinite(eventAge) || eventAge < 0) invalidReasons.push('btc_event_invalid');
+    else if (eventAge > config.btcFreshnessMaxMs) invalidReasons.push('btc_event_stale');
+    if (
+      ![btcContext.ret1m, btcContext.ret3m, btcContext.ret5m, btcContext.acceleration].every(
+        Number.isFinite,
+      )
+    )
+      invalidReasons.push('btc_invalid_returns');
+  }
   if (levelsAvailableAt !== null && levelsAvailableAt > snapshotAtMs)
     invalidReasons.push('future_support_resistance_level');
   if (aggTradeFlow && !aggTradeFlow.windowComplete)
@@ -216,10 +230,30 @@ export async function buildMicroBurstContext(
     candles3m: rawCandles3m,
     candles5m: rawCandles5m,
   };
+  const prepared = {
+    candles1m: prepareClosedCandles(
+      rawCandles1m,
+      60_000,
+      snapshotAtMs,
+      config.candleFreshness1mMaxMs,
+    ),
+    candles3m: prepareClosedCandles(
+      rawCandles3m,
+      180_000,
+      snapshotAtMs,
+      config.candleFreshness3mMaxMs,
+    ),
+    candles5m: prepareClosedCandles(
+      rawCandles5m,
+      300_000,
+      snapshotAtMs,
+      config.candleFreshness5mMaxMs,
+    ),
+  };
   const candles: MicroBurstCandleSet = {
-    candles1m: filterClosedCandles(rawCandles1m, snapshotAtMs),
-    candles3m: filterClosedCandles(rawCandles3m, snapshotAtMs),
-    candles5m: filterClosedCandles(rawCandles5m, snapshotAtMs),
+    candles1m: prepared.candles1m.candles,
+    candles3m: prepared.candles3m.candles,
+    candles5m: prepared.candles5m.candles,
   };
   const currentPrice = candles.candles1m[candles.candles1m.length - 1]?.close ?? 0;
   const decisionPrice: MicroBurstDecisionPrice = Object.freeze({
@@ -291,6 +325,13 @@ export async function buildMicroBurstContext(
     aggTradeFlow,
     localNowAtMs,
   );
+  for (const [key, value] of Object.entries(prepared)) {
+    for (const reason of value.reasons) {
+      const labeled = `${key.replace('candles', '')}_${reason}`;
+      if (!dataQuality.invalidReasons.includes(labeled)) dataQuality.invalidReasons.push(labeled);
+    }
+  }
+  dataQuality.contextValid = dataQuality.invalidReasons.length === 0;
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
     dataQuality.contextValid = false;
     dataQuality.invalidReasons.push('invalid_reference_price');

@@ -5,8 +5,9 @@
 - Repositorio: `jasanhdz/binance-futures-bot-ts`.
 - Rama única: `work/micro-burst-rider-v1-20260826`. No crear otra rama.
 - Baseline histórico auditado: `05b233963d7897dccb9912f82b76895270eeb3b0`.
-- Referencia publicada verificada: `19f4678359c7217273cb759c9cd030c2d4680a02`.
-- Leer primero `SAFETY_JOURNAL_19F4678_FIX.md`: correcciones locales del almacenamiento
+- Referencia publicada verificada del journal: `7d4c1605f2559c51b3f4d4e4f79002191734588a`.
+- Leer primero `SAFETY_DATA_SIZING_INTEGRATION.md` para el bloque posterior y sus
+  efectos de seguridad/paridad. `SAFETY_JOURNAL_19F4678_FIX.md` describe correcciones publicadas del almacenamiento
   del journal y limites de integracion. `SAFETY_RECONCILIATION_LEDGER_FIX.md` conserva
   R1-R4 y seguimiento publicados; `CHAT_CONTINUITY_389A6FF.md`, el historial tecnico.
   Las tablas de c5d4f60 y los hallazgos de 389a6ff inferiores son historicos.
@@ -27,11 +28,24 @@
 ### Journal posterior a 19f4678
 
 Los contratos auditados de persistencia, exclusion, validacion e identidad se
-corrigieron localmente con 264 tests del journal y regresion global de 2.156 tests.
+corrigieron y publicaron en 7d4c160 con 264 tests del journal y regresion global de 2.156 tests.
 Fase 3 sigue parcial: falta protocolo de mutaciones identificadas, recovery real,
 reservas y conexion al apagado. No es "solo integrar fase 9" ni un reemplazo directo
 de los servicios actuales. Ver `SAFETY_JOURNAL_19F4678_FIX.md` para schema, errores,
 compatibilidad y evidencia propia frente a resultados reportados.
+
+### Bloque datos/sizing posterior a 7d4c160
+
+Estado vigente de este incremento; no sustituye el inventario de pendientes inferior.
+Evidencia y publicacion: `SAFETY_DATA_SIZING_INTEGRATION.md`.
+
+| Area | Implementacion | Tests | Validacion real | Pendiente de fase |
+| --- | --- | --- | --- | --- |
+| Fase 5 | PARCIAL: validacion previa en Micro, BTC Micro y seam Aegis | EJECUTADOS_PASS, fixtures originales invalidos/cierre/frescura | PENDIENTE_DATOS | Proveedores restantes, inventario temporal completo y alineacion universal |
+| Fase 7 | PARCIAL: ventanas/EMA slope reales, legacy UNKNOWN, autoridad y consumidores indirectos | EJECUTADOS_PASS, modos y spies de admision | PENDIENTE_DATOS | Evaluacion comparativa, no migracion V2 |
+| Fase 8 | PARCIAL: SizingEngine consumido por Shared y retries, fraccion de margen 0.9 conservada | EJECUTADOS_PASS, caps estrictos y step/precision | PENDIENTE_OPERADOR | Presupuesto de perdida autorizado, quote/fill y reservas completas |
+| Fase 9 | PARCIAL: seam de contexto tipado y sizing comun consumido | EJECUTADOS_PASS, regresion y diferencias documentadas | NO_APLICA a extraccion; no autoriza despliegue | Extraccion integral de admision/supervision/contabilidad/shutdown |
+| Fases 1-4 | PARCIALES; journal publicado, sin integracion nueva en este bloque | Regresion tecnica | PENDIENTE_OPERADOR/DATOS | Mutaciones identificadas, recovery, exposure/reservas y ledger contable |
 
 ### Estado auditado en 389a6ff — referencia historica
 

@@ -2,9 +2,10 @@
 
 ## Referencia y alcance
 
-- Base local/remota verificada: `19f4678359c7217273cb759c9cd030c2d4680a02`.
-- Rama: `work/micro-burst-rider-v1-20260826`. Este seguimiento es LOCAL, posterior
-  a 19f4678, sin nuevo commit/push durante la implementacion.
+- Base historica: `19f4678359c7217273cb759c9cd030c2d4680a02`.
+- Rama: `work/micro-burst-rider-v1-20260826`. Este almacenamiento fue PUBLICADO en
+  `7d4c1605f2559c51b3f4d4e4f79002191734588a`, confirmado mediante fetch remoto
+  durante la continuacion de datos/sizing. Las referencias anteriores a LOCAL quedaron obsoletas.
 - 19f4678 incorporo JSONL y carga en constructor, pero la auditoria propia reprodujo
   fallos de lock, persistencia parcial/incierta, contadores, identidad y copias.
 - Este bloque corrige esos contratos en `src/core/risk/ExecutionJournal.ts` y su test.
@@ -127,7 +128,7 @@ No se cambiaron parametros, credenciales, modos LIVE, trailing o TP Micro.
 
 | Area | Implementacion | Integracion | Tests | Publicacion | Siguiente pendiente |
 | --- | --- | --- | --- | --- | --- |
-| Almacenamiento del journal | Contratos auditados corregidos | No runtime | EJECUTADOS_PASS | LOCAL posterior a 19f4678 | Protocolo de mutaciones y recovery con evidencia exchange |
+| Almacenamiento del journal | Contratos auditados corregidos | No runtime | EJECUTADOS_PASS | PUBLICADO 7d4c160 | Protocolo de mutaciones y recovery con evidencia exchange |
 | Fases 1/2/3/4 | Parciales | Servicios actuales conservados | Regresion global PASS | Sin nueva activacion | IDs/receipts/lookup, reservas, recovery antes de admision, cierre y contabilidad |
 | Fase 9 | No cerrada | Sin reemplazo masivo de TradingService | Sin nueva garantia de paridad | No aplica en este bloque | Consolidar arquitectura despues de integracion vertical probada |
 

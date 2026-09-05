@@ -36,7 +36,10 @@ function deps(overrides: Partial<AegisEntryContextBuilderDeps> = {}): AegisEntry
     readAegisRisk: () => ({ consecutiveLosses: 1, tradesToday: 3 }),
     stateForSymbol: () => ({ get: () => ({ mode: 'IDLE' }), set: vi.fn(), reset: vi.fn() }),
     hasOpenPosition: vi.fn().mockResolvedValue(false),
-    buildEntryQualityMarketContext: () => ({ candleCount: 160 }),
+    buildEntryQualityMarketContext: () => ({
+      recentCandles: [],
+      candleDataQualityReasons: ['empty_candles'],
+    }),
     getRegimeGuardConfig: () => ({}) as any,
     getRegimeContextConfig: () => ({}) as any,
     getCleanEntryConfig: () => ({}) as any,
@@ -48,40 +51,48 @@ function deps(overrides: Partial<AegisEntryContextBuilderDeps> = {}): AegisEntry
 }
 
 describe('AegisEntryContextBuilder', () => {
-  it('builds causal and operational context outside TradingService', async () => {
-    const builder = new AegisEntryContextBuilder(deps());
-    const context = await builder.build({
-      symbol: 'LINKUSDT',
-      side: 'LONG',
-      signal: {
-        action: 'LONG',
-        confidence: 0.8,
-        reason: 'test',
-        aegis: {
-          turbo: { raw: { action: 'LONG' }, gated: { action: 'LONG' } },
-          event_risk_auto: {
-            confidence: 0.9,
-            snapshot_timestamp_ms: 940_000,
-            btc_context: { action: 'LONG', score: 0.7 },
-            eth_context: { action: 'NEUTRAL', score: 0.4 },
+  it.each([
+    [{ snapshot_timestamp_ms: 940_000 }, 60],
+    [{ snapshot_timestamp_ms: 1_001_000 }, -1],
+    [{ snapshot_age_seconds: NaN, snapshot_timestamp_ms: 940_000 }, undefined],
+  ] as const)(
+    'builds causal context without repairing invalid age %j',
+    async (snapshot, expectedAge) => {
+      const builder = new AegisEntryContextBuilder(deps());
+      const context = await builder.build({
+        symbol: 'LINKUSDT',
+        side: 'LONG',
+        signal: {
+          action: 'LONG',
+          confidence: 0.8,
+          reason: 'test',
+          aegis: {
+            turbo: { raw: { action: 'LONG' }, gated: { action: 'LONG' } },
+            event_risk_auto: {
+              confidence: 0.9,
+              ...snapshot,
+              btc_context: { action: 'LONG', score: 0.7 },
+              eth_context: { action: 'NEUTRAL', score: 0.4 },
+            },
           },
-        },
-      } as any,
-      gate: { allowed: true, side: 'LONG', leverage: 10, positionFraction: 0.1 } as any,
-      baseGate: { allowed: true, side: 'LONG', leverage: 10, positionFraction: 0.2 } as any,
-    });
+        } as any,
+        gate: { allowed: true, side: 'LONG', leverage: 10, positionFraction: 0.1 } as any,
+        baseGate: { allowed: true, side: 'LONG', leverage: 10, positionFraction: 0.2 } as any,
+      });
 
-    expect(context.eventRisk.isAltSymbol).toBe(true);
-    expect(context.regime?.snapshotAgeSeconds).toBe(60);
-    expect(context.operational).toMatchObject({
-      consecutiveLosses: 1,
-      tradesToday: 3,
-      openPositionsCount: 2,
-      openMomentumPositions: 1,
-      recentStopLossMinutes: 1,
-      sameSymbolPositionExists: false,
-    });
-  });
+      expect(context.eventRisk.isAltSymbol).toBe(true);
+      expect(context.regime?.snapshotAgeSeconds).toBe(expectedAge);
+      expect(context.entryQuality.ruleGate.candleDataQualityReasons).toEqual(['empty_candles']);
+      expect(context.operational).toMatchObject({
+        consecutiveLosses: 1,
+        tradesToday: 3,
+        openPositionsCount: 2,
+        openMomentumPositions: 1,
+        recentStopLossMinutes: 1,
+        sameSymbolPositionExists: false,
+      });
+    },
+  );
 
   it('fails closed when exchange ownership cannot be read', async () => {
     const serviceDeps = deps({ hasOpenPosition: vi.fn().mockRejectedValue(new Error('offline')) });

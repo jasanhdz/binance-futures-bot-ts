@@ -41,7 +41,17 @@ export interface AegisEntryContextBuilderDeps {
   readAegisRisk(now: number): { consecutiveLosses: number; tradesToday: number };
   stateForSymbol(symbol: string): StateStore;
   hasOpenPosition(symbol: string): Promise<boolean>;
-  buildEntryQualityMarketContext(symbol: string): Record<string, unknown>;
+  buildEntryQualityMarketContext(
+    symbol: string,
+  ): Pick<
+    AegisEntryContext['entryQuality']['ruleGate'],
+    | 'recentCandles'
+    | 'candleDataQualityReasons'
+    | 'currentPrice'
+    | 'emaFast'
+    | 'atrPct'
+    | 'atrPercentile'
+  >;
   getRegimeGuardConfig(): AegisRegimeGuardConfig;
   getRegimeContextConfig(): AegisRegimeContextRuntimeConfig;
   getCleanEntryConfig(): AegisCleanEntryGuardRuntimeConfig;
@@ -214,14 +224,12 @@ export class AegisEntryContextBuilder {
     now: number,
   ): number | undefined {
     const direct = eventRiskAuto?.snapshot_age_seconds ?? eventRiskAuto?.snapshotAgeSeconds;
-    if (this.finite(direct) !== undefined) return Number(direct);
+    if (direct !== undefined) return this.finite(direct);
     const snapshotTs =
       eventRiskAuto?.snapshot_timestamp_ms ??
       eventRiskAuto?.snapshotTimestampMs ??
       eventRiskAuto?.generated_at_ms;
-    return this.finite(snapshotTs) === undefined
-      ? undefined
-      : Math.max(0, (now - Number(snapshotTs)) / 1000);
+    return this.finite(snapshotTs) === undefined ? undefined : (now - Number(snapshotTs)) / 1000;
   }
 
   private finite(value: unknown): number | undefined {

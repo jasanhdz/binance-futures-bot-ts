@@ -1,3 +1,131 @@
+export interface QuantityFilters {
+  stepSize: number;
+  qtyPrecision: number;
+  minNotional: number;
+  maxNotional?: number;
+  minQty?: number;
+  maxQty?: number;
+}
+
+export interface MarginBudgetSizingInput extends QuantityFilters {
+  /** Already allocated USDT margin, after the caller's existing capital haircut. */
+  marginBudget: number;
+  entryPrice: number;
+  leverage: number;
+  /** Optional retry ceiling; never increases an earlier approved quantity. */
+  maxQuantity?: number;
+  /** Explicit USDT loss budget; positionFraction is NOT a loss fraction. */
+  lossBudget?: number;
+  /** Stop distance plus explicitly supplied per-unit costs, not a capital haircut. */
+  riskPerUnit?: number;
+}
+
+export interface MarginBudgetSizingResult {
+  valid: boolean;
+  reason?: string;
+  quantity: number;
+  notional: number;
+  marginRequired: number;
+  maxLoss?: number;
+}
+
+/** Invalid/incompatible filters return NaN, never a fabricated executable zero. */
+export function roundQuantityDown(
+  quantity: number,
+  filters: Pick<QuantityFilters, 'stepSize' | 'qtyPrecision'>,
+): number {
+  const { stepSize, qtyPrecision } = filters;
+  if (
+    !Number.isFinite(quantity) ||
+    quantity < 0 ||
+    !Number.isFinite(stepSize) ||
+    stepSize <= 0 ||
+    !Number.isInteger(qtyPrecision) ||
+    qtyPrecision < 0 ||
+    qtyPrecision > 15
+  )
+    return NaN;
+  const scale = 10 ** qtyPrecision;
+  const scaledStep = stepSize * scale;
+  const step = Math.round(scaledStep);
+  if (
+    !Number.isSafeInteger(step) ||
+    step <= 0 ||
+    Math.abs(scaledStep - step) > Number.EPSILON * Math.abs(scaledStep) * 4
+  )
+    return NaN;
+  const units = Math.floor(quantity * scale);
+  if (!Number.isSafeInteger(units)) return NaN;
+  let stepped = Math.floor(units / step) * step;
+  if (stepped / scale > quantity) stepped -= step;
+  return stepped / scale;
+}
+
+export function calculateMarginBudgetSizing(
+  input: MarginBudgetSizingInput,
+): MarginBudgetSizingResult {
+  const fail = (reason: string): MarginBudgetSizingResult => ({
+    valid: false,
+    reason,
+    quantity: 0,
+    notional: 0,
+    marginRequired: 0,
+  });
+  if (!Number.isFinite(input.marginBudget) || input.marginBudget <= 0)
+    return fail('INVALID_MARGIN_BUDGET');
+  if (!Number.isFinite(input.entryPrice) || input.entryPrice <= 0)
+    return fail('INVALID_ENTRY_PRICE');
+  if (!Number.isFinite(input.leverage) || input.leverage <= 0) return fail('INVALID_LEVERAGE');
+  if (!Number.isFinite(input.minNotional) || input.minNotional < 0)
+    return fail('INVALID_MIN_NOTIONAL');
+  for (const value of [
+    input.maxNotional,
+    input.maxQty,
+    input.maxQuantity,
+    input.lossBudget,
+    input.riskPerUnit,
+  ]) {
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0))
+      return fail('INVALID_SIZING_CAP');
+  }
+  if (input.minQty !== undefined && (!Number.isFinite(input.minQty) || input.minQty < 0))
+    return fail('INVALID_MIN_QUANTITY');
+  if (input.lossBudget !== undefined && input.riskPerUnit === undefined)
+    return fail('MISSING_RISK_PER_UNIT');
+  const marginNotional = input.marginBudget * input.leverage;
+  if (!Number.isFinite(marginNotional)) return fail('NONFINITE_SIZING');
+  const ceiling = Math.min(
+    marginNotional / input.entryPrice,
+    input.maxNotional === undefined ? Infinity : input.maxNotional / input.entryPrice,
+    input.maxQty ?? Infinity,
+    input.maxQuantity ?? Infinity,
+    input.lossBudget === undefined ? Infinity : input.lossBudget / input.riskPerUnit!,
+  );
+  const quantity = roundQuantityDown(ceiling, input);
+  if (!Number.isFinite(quantity)) return fail('INVALID_QUANTITY_FILTERS');
+  if (quantity <= 0) return fail('ZERO_QUANTITY');
+  const notional = quantity * input.entryPrice;
+  const marginRequired = notional / input.leverage;
+  const maxLoss = input.riskPerUnit === undefined ? undefined : quantity * input.riskPerUnit;
+  if (
+    ![notional, marginRequired, ...(maxLoss === undefined ? [] : [maxLoss])].every(Number.isFinite)
+  )
+    return fail('NONFINITE_SIZING');
+  if (notional < input.minNotional) return fail('BELOW_MIN_NOTIONAL');
+  if (quantity < (input.minQty ?? 0)) return fail('BELOW_MIN_QUANTITY');
+  if (
+    quantity > ceiling ||
+    notional > marginNotional ||
+    marginRequired > input.marginBudget ||
+    (input.maxNotional !== undefined && notional > input.maxNotional) ||
+    (input.maxQty !== undefined && quantity > input.maxQty) ||
+    (input.maxQuantity !== undefined && quantity > input.maxQuantity) ||
+    (input.lossBudget !== undefined && maxLoss! > input.lossBudget)
+  )
+    return fail('EXCEEDS_CAP_AFTER_ROUNDING');
+  return { valid: true, quantity, notional, marginRequired, maxLoss };
+}
+
 export interface SizingInput {
   /** Account balance in USDT. */
   balance: number;
@@ -56,8 +184,17 @@ export interface SizingResult {
  */
 export function calculateSizing(input: SizingInput): SizingResult {
   const {
-    balance, riskFraction, entryPrice, stopPrice, side, leverage,
-    feeBufferPct, minNotional, maxNotional, stepSize, qtyPrecision,
+    balance,
+    riskFraction,
+    entryPrice,
+    stopPrice,
+    side,
+    leverage,
+    feeBufferPct,
+    minNotional,
+    maxNotional,
+    stepSize,
+    qtyPrecision,
   } = input;
 
   // Validate inputs.
@@ -111,58 +248,25 @@ export function calculateSizing(input: SizingInput): SizingResult {
     return invalid('RISK_PER_UNIT_ZERO');
   }
 
-  // Maximum loss budget.
-  const maxLossBudget = balance * riskFraction;
-
-  // Raw quantity from risk budget.
-  const rawQtyFromRisk = maxLossBudget / riskPerUnit;
-
-  // Cap by maxNotional.
-  const rawQtyFromNotional = maxNotional / entryPrice;
-
-  // Cap by available margin (balance * leverage / price).
-  const rawQtyFromMargin = (balance * leverage) / entryPrice;
-
-  // Take the minimum.
-  const uncappedQty = Math.min(rawQtyFromRisk, rawQtyFromNotional, rawQtyFromMargin);
-
-  // Round down to stepSize FIRST, then apply precision.
-  // Precision must not inflate quantity after stepSize rounding.
-  let quantity = Math.floor(uncappedQty / stepSize) * stepSize;
-  quantity = Number(quantity.toFixed(qtyPrecision));
-
-  // Re-check all limits after final rounding.
-  const notional = quantity * entryPrice;
-
-  // Notional must not exceed maxNotional after rounding.
-  if (notional > maxNotional * 1.0001) {
-    return invalid('EXCEEDS_MAX_NOTIONAL_AFTER_ROUNDING');
-  }
-
-  // Notional must not exceed balance * leverage after rounding.
-  if (notional > balance * leverage * 1.0001) {
-    return invalid('EXCEEDS_MARGIN_AFTER_ROUNDING');
-  }
-
-  // Check minimum notional.
-  if (notional < minNotional) {
-    return invalid('BELOW_MIN_NOTIONAL');
-  }
-
-  // Final max loss.
-  const maxLoss = quantity * riskPerUnit;
-
-  // Re-check maxLoss against budget after rounding (rounding can inflate loss).
-  if (maxLoss > maxLossBudget * 1.0001) {
-    return invalid('MAX_LOSS_EXCEEDS_BUDGET_AFTER_ROUNDING');
-  }
-
-  return {
-    quantity,
-    notional,
+  // Legacy loss-fraction API retains its economic meaning; both modes share sizing/rounding.
+  const sized = calculateMarginBudgetSizing({
+    marginBudget: balance,
+    entryPrice,
+    leverage,
+    minNotional,
+    maxNotional,
+    stepSize,
+    qtyPrecision,
+    lossBudget: balance * riskFraction,
     riskPerUnit,
-    maxLoss,
+  });
+  if (!sized.valid) return invalid(sized.reason!);
+  return {
     valid: true,
+    quantity: sized.quantity,
+    notional: sized.notional,
+    riskPerUnit,
+    maxLoss: sized.maxLoss!,
   };
 }
 

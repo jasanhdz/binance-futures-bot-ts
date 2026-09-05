@@ -36,6 +36,7 @@ export type AegisRegimeGuardReason =
   | 'regime_alt_short_btc_long_block'
   | 'regime_tail_risk_high'
   | 'regime_stale_snapshot'
+  | 'regime_invalid_snapshot'
   | 'regime_model_unavailable'
   | 'regime_invalid_source';
 
@@ -319,10 +320,18 @@ export class AegisRegimeGuard {
       );
     }
 
-    if (
-      finiteNumber(input.snapshotAgeSeconds) &&
-      input.snapshotAgeSeconds > config.maxSnapshotAgeSeconds
-    ) {
+    if (!finiteNumber(input.snapshotAgeSeconds) || input.snapshotAgeSeconds < 0) {
+      return decision(
+        { ...input, config },
+        'UNKNOWN',
+        0,
+        'regime_invalid_snapshot',
+        'HYBRID_HEURISTIC',
+        hasRegime(config, 'blockWhen', 'UNKNOWN'),
+      );
+    }
+
+    if (input.snapshotAgeSeconds > config.maxSnapshotAgeSeconds) {
       return decision(
         { ...input, config },
         'UNKNOWN',

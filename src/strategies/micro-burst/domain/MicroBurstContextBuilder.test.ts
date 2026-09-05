@@ -116,7 +116,8 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     });
     expect(context.dataQuality.freshness1mMs).toBe(0);
     expect(context.dataQuality.freshness3mMs).toBe(0);
-    expect(context.dataQuality.freshness5mMs).toBe(700_000);
+    expect(context.candles.candles5m).toEqual([]);
+    expect(context.dataQuality.invalidReasons).toContain('5m_last_candle_stale');
     expect(context.dataQuality.contextValid).toBe(false);
     expect(context.dataQuality.invalidReasons).toContain('stale_5m_candles');
   });
@@ -160,6 +161,8 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     expect(context.dataQuality.bookAgeMs).toBe(500_000);
     expect(context.dataQuality.btcAgeMs).toBe(1_000);
     expect(context.dataQuality.btcStatus).toBe('HEALTHY');
+    expect(context.dataQuality.invalidReasons).toContain('btc_event_stale');
+    expect(context.dataQuality.contextValid).toBe(false);
   });
 
   it('uses local time when the server snapshot trails local book receipt time', async () => {
@@ -194,7 +197,7 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     expect(context.dataQuality.invalidReasons).not.toContain('book_unsynced');
   });
 
-  it('ignores all 1m/3m/5m candles after snapshotAtMs', async () => {
+  it('rejects future history rather than manufacturing a healthy replay context', async () => {
     const historical = freshCandleSets();
     const withFuture = {
       '1m': [...historical['1m'], ...candlesEndingAt(30, 60_000, SNAPSHOT_AT_MS + 30 * 60_000)],
@@ -207,8 +210,12 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     const replay = await buildMicroBurstContext('ETHUSDT', depsWith(withFuture), {
       snapshotAtMs: SNAPSHOT_AT_MS,
     });
-    expect(replay).toEqual(baseline);
-    expect(replay.currentPrice).toBe(historical['1m'][historical['1m'].length - 1].close);
+    expect(baseline.dataQuality.contextValid).toBe(true);
+    expect(replay.dataQuality.contextValid).toBe(false);
+    expect(replay.candles).toEqual({ candles1m: [], candles3m: [], candles5m: [] });
+    expect(replay.dataQuality.invalidReasons).toEqual(
+      expect.arrayContaining(['1m_candle_in_future', '3m_candle_in_future', '5m_candle_in_future']),
+    );
     expect(replay.candles.candles1m.every((candle) => candle.closeTime <= SNAPSHOT_AT_MS)).toBe(
       true,
     );
@@ -220,4 +227,20 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     );
     expect(replay.levels.levels.every((level) => level.availableAtMs <= SNAPSHOT_AT_MS)).toBe(true);
   });
+
+  it.each(['gap', 'volume', 'timestamp'])(
+    'does not feed %s-corrupted raw candles to indicators',
+    async (corruption) => {
+      const sets = freshCandleSets();
+      if (corruption === 'gap') sets['5m'].splice(3, 1);
+      if (corruption === 'volume') sets['5m'][3].volume = -1;
+      if (corruption === 'timestamp') sets['5m'][3].closeTime = NaN;
+      const result = await buildMicroBurstContext('ETHUSDT', depsWith(sets), {
+        snapshotAtMs: SNAPSHOT_AT_MS,
+      });
+      expect(result.dataQuality.contextValid).toBe(false);
+      expect(result.candles.candles5m).toEqual([]);
+      expect(result.levels.levels).toEqual([]);
+    },
+  );
 });

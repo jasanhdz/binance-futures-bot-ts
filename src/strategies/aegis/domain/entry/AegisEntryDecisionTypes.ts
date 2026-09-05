@@ -21,10 +21,17 @@ import {
   AegisDecisionEnforcementDecision,
   AegisDecisionEnforcementRuntimeConfig,
 } from '../services/AegisDecisionEnforcement';
-import { AegisCleanEntryGuardConfig, AegisCleanEntryGuardOutput } from '../services/AegisCleanEntryGuard';
+import {
+  AegisCleanEntryGuardConfig,
+  AegisCleanEntryGuardOutput,
+} from '../services/AegisCleanEntryGuard';
 import { AegisProbeModeDecision, AegisProbeModeRuntimeConfig } from '../services/AegisProbeMode';
 import { AegisShortGateConfig, AegisShortGateDecision } from '../services/AegisShortGate';
-import { AegisRegimeDecision, AegisRegimeGuardConfig, AegisRegimeLabel } from '../services/AegisRegimeGuard';
+import {
+  AegisRegimeDecision,
+  AegisRegimeGuardConfig,
+  AegisRegimeLabel,
+} from '../services/AegisRegimeGuard';
 
 export type AegisEntryPolicyMode = 'OFF' | 'SHADOW' | 'ENFORCE' | 'ENFORCE_PROBE_LONG_CRITICAL';
 export type AegisEntryFinalDecision = 'ALLOW' | 'DENY' | 'WAIT_CONFIRMATION';
@@ -78,6 +85,10 @@ export interface AegisRegimeContextIndicators {
   emaMid?: number;
   emaSlow?: number;
   emaFastSlope?: number;
+  emaMidSlope?: number;
+  emaSlowSlope?: number;
+  /** Fixed EMA25 for consumers whose feature contract explicitly names 25 bars. */
+  ema25?: number;
   atrPct?: number;
   atrPercentile?: number;
   volumeRatio?: number;
@@ -98,6 +109,8 @@ export interface AegisRegimeContext {
   volumeState: AegisRegimeVolumeState;
   reasons: string[];
   indicators: AegisRegimeContextIndicators;
+  indicatorWindows?: AegisRegimeContextRuntimeConfig['indicators'];
+  dataQuality?: { valid: boolean; reasons: string[] };
 }
 
 export interface AegisRegimeContextRuntimeConfig {
@@ -201,7 +214,8 @@ export interface AegisEntryQualityRuleGateContext {
   enabled: boolean;
   mode: AegisEntryQualityGateMode;
   config: AegisEntryQualityGateConfig;
-  recentCandles?: AegisEntryQualityGateCandle[];
+  recentCandles?: (AegisEntryQualityGateCandle & { openTime?: number; closeTime?: number })[];
+  candleDataQualityReasons?: string[];
   currentPrice?: number;
   emaFast?: number;
   atrPct?: number;

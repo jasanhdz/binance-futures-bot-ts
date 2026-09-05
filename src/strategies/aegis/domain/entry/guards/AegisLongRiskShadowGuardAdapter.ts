@@ -298,7 +298,7 @@ function marketWeaknessFromContext(context: AegisEntryContext): AegisLongRiskSha
   const previous6 = candles[candles.length - 7];
   const previous12 = candles[candles.length - 13];
   const currentPrice = context.entryQuality.ruleGate.currentPrice ?? last?.close;
-  const ema25 = context.regimeContext?.indicators.emaMid;
+  const ema25 = context.regimeContext?.indicators.ema25;
   const range = last ? last.high - last.low : undefined;
   const avgVolume20 = average(
     candles
