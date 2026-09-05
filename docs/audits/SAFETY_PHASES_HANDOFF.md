@@ -16,6 +16,37 @@
 
 ## Estado entregado (no confundir incrementos con fases completas)
 
+### Segundo incremento 2026-09-05 sobre `fbc7f19`
+
+- La supervisión runtime Micro recibe su StateStore. Antes de enviar un stop de
+  reposición persiste y hace flush de `microStopSubmission`; si falla, no envía.
+  Una respuesta perdida devuelve UNKNOWN y el registro impide repetir el envío
+  en ciclos posteriores/reinicio. La supervisión por símbolo tiene exclusión local.
+- Se conserva el instante original: tras 30 s sin confirmación y con lecturas
+  de posición/órdenes disponibles se solicita recuperación explícita, no otro stop.
+  El plazo es inyectable. Un fallo de lectura sigue siendo UNKNOWN: no prueba
+  ausencia de stop ni autoriza por sí solo un cierre. El puerto aún no permite
+  correlacionar un clientOrderId propio de stop: ese trabajo sigue pendiente.
+- `microProtectionBlocked` es independiente de `marketOpenAmbiguous`. Confirmar
+  un stop no borra ambigüedad de entrada ni PnL pendiente. La admisión Micro/Aegis
+  consulta cuarentenas de los estados configurados/cargados antes de nuevas entradas.
+  No equivale todavía a consultar todo el inventario de cuenta o de disco.
+- MISSING se reconcilia antes de indicadores: dos lecturas flat, limpieza sólo de
+  órdenes BOT, verificación de supervivientes y nueva lectura de posición. El cierre
+  de emergencia reutiliza ese camino. Sólo null explícito cuenta como flat.
+- Tras confirmación se conserva identidad, se pasa a IDLE y se persiste PnL pendiente;
+  no se inventan fills/PnL ni se actualizan rachas. Una posición cerrada deja de ser
+  una posición local fantasma, pero sigue bloqueada la admisión por contabilidad.
+- FsStateStore valida y conserva el registro de stop. Los digests de fuente de
+  TradingService/FsStateStore se actualizan por estos contratos, sin autorizar LIVE.
+- Validación al final del bloque: `npm run test:safety` correcto; build y
+  1.590 + 46 = 1.636 pruebas aprobadas, 15 casos adicionales sobre `fbc7f19`.
+  Formato TypeScript y `git diff --check` correctos. No se ejecutó el runtime LIVE.
+- Pendientes prioritarios: journal de apertura/cierre con identidad estable; inventario
+  universal; supervisión independiente del scheduler de estrategia; reconciliación
+  contable idempotente; escritores múltiples y reservas de riesgo. No cerrar fases
+  1–4 ni activar producción basándose sólo en estos incrementos.
+
 ### Incremento local 2026-09-05 sobre `5c35190`
 
 - Fase 2: corregida liberación de reservas antiguas mediante token por lease y
@@ -61,12 +92,13 @@
 
 ### Limitaciones importantes del incremento
 
-1. `ensureMicroStop` hace confirmación con reintentos acotados de visibilidad y errores
-   de lectura. Falta plazo durable entre ciclos/reinicios y transición de recuperación explícita.
+1. La supervisión runtime hace confirmación acotada y persiste el intento de stop
+   con plazo entre ciclos/reinicios. Falta correlación por identidad de orden y un
+   journal general de recovery; UNKNOWN por lecturas fallidas no prueba ausencia de protección.
 2. El error de supervisión actualmente retorna antes de la salida inteligente. Diseñar en fase 1
    una vía de emergencia independiente: no dejar una posición abierta indefinidamente a base de alertas.
-3. Si la posición ya está cerrada, el supervisor retorna; falta reconciliar el cierre SIN esperar
-   una señal de salida. Nunca crear un cierre contable usando solamente el mark price.
+3. MISSING ya tiene reconciliación operativa independiente de la señal de salida;
+   la reconciliación contable de fills/costes sigue pendiente. Nunca inferir PnL del mark price.
 4. La ambigüedad no se borra automáticamente al reponer un stop. Es intencional: confirmar
    protección no prueba que una apertura ambigua o su contabilidad estén reconciliadas.
 5. El bloqueo compartido es local al proceso; no resuelve dos procesos o reinicios.
@@ -131,6 +163,8 @@ Archivos: `src/app/position/{PositionProtectionService,PositionRecoveryService,S
       órdenes explícitamente `UNKNOWN`; los intentos y espera son inyectables. El estado duradero
       y supervisor común siguen pendientes.
 - [ ] Posición cerrada por stop/exchange/manual: reconciliar independientemente del contexto técnico.
+      Micro ya reconcilia flat y órdenes propias sin indicadores y mantiene PnL pendiente;
+      falta extender el contrato a todas las estrategias e integrar contabilidad verificada.
 - [ ] Fallo de protección: recuperar o cerrar con cantidades frescas; si el cierre falla, persistir
       `RECOVERY_REQUIRED`, bloquear nuevas entradas y alertar. Micro separa UNKNOWN/MISSING/
       CONFIRMATION_PENDING de RECOVERY_REQUIRED, limpia sólo órdenes propias tras flat confirmado

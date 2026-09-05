@@ -148,6 +148,27 @@ function parseState(raw: string): BotState {
   }
   const dailyRisk = state.dailyRisk;
   if (
+    state.microProtectionBlocked !== undefined &&
+    typeof state.microProtectionBlocked !== 'boolean'
+  ) {
+    throw new Error('BOT_STATE_INVALID_MICRO_PROTECTION');
+  }
+  if (state.microStopSubmission !== undefined) {
+    const pending = state.microStopSubmission;
+    if (
+      !pending ||
+      typeof pending !== 'object' ||
+      Array.isArray(pending) ||
+      !Number.isFinite(pending.attemptedAt) ||
+      pending.attemptedAt < 0 ||
+      !Number.isFinite(pending.stopPrice) ||
+      pending.stopPrice <= 0 ||
+      (pending.tradeId !== undefined && typeof pending.tradeId !== 'string')
+    ) {
+      throw new Error('BOT_STATE_INVALID_MICRO_STOP_SUBMISSION');
+    }
+  }
+  if (
     dailyRisk !== undefined &&
     (!Number.isInteger(dailyRisk.dayKey) ||
       !Number.isInteger(dailyRisk.tradesToday) ||

@@ -36,8 +36,10 @@ const baselineOperationalDigests: Record<string, string> = {
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
   'src/domain/services/ProfitGuardian.ts':
     'f95512ac4ecd82449dff30a1f63441f7297e57adf8b58ca32d8cca5409aa62fd',
+  // Safety increment: reject malformed persisted Micro stop-submission records.
+  // Source checkpoint only; no production configuration or model approval change.
   'src/infra/logging/FsStateStore.ts':
-    'fed954908b5b5fb6c80079a8aadc6d01651cdab509abea7e2466984803c6ee07',
+    '42650ac1fe80e97b8c5b08a9f8ec292610cfa4d21a7eb25b116bd457a5808023',
 };
 
 // Phase 1 owner-authorized architecture checkpoint. These are operational
@@ -55,9 +57,10 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // 2026-09 safety handoff: shared entry lock, unknown exposure propagation,
   // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
   // Phase 3 increment: drain tracked entry/management work before shutdown flush.
+  // Phase 1 follow-up: independent flat reconciliation and separate protection quarantine.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/app/services/TradingService.ts':
-    'befe1832f4da812bf5ca79049db45384c71c38f1d0da32b858568feacf2661f0',
+    '44033225224936ff8f9ad0d7117642a75dc32819bc931041dd2f7fae58d85937',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

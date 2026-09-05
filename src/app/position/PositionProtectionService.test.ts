@@ -14,6 +14,7 @@ function stateStore(initial: Partial<BotState> = {}): StateStore {
     reset: () => {
       state = { mode: 'IDLE' } as BotState;
     },
+    flush: vi.fn(async () => undefined),
   };
 }
 
@@ -75,6 +76,117 @@ const position = {
 };
 
 describe('PositionProtectionService', () => {
+  it('never interprets undefined position data as confirmed flat', async () => {
+    const { service, exchange } = fixture();
+    exchange.readActivePosition.mockResolvedValue(undefined as any);
+    const store = stateStore({ lastSide: 'LONG' });
+    expect((await service.superviseMicroStop('ETHUSDT', store.get(), store)).status).toBe(
+      'UNKNOWN',
+    );
+    expect(await service.reconcileMissingMicroPosition('ETHUSDT', store)).toBe(false);
+    expect(store.get().mode).toBe('LONG_RIDE');
+    expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+  });
+  it('persists replacement intent before submission and does not resubmit on a later tick', async () => {
+    const { service, exchange } = fixture();
+    const store = stateStore({ lastSide: 'LONG', lastStopPrice: 99, lastTradeId: 'trade-1' });
+    const events: string[] = [];
+    store.flush = vi.fn(async () => {
+      events.push('persist');
+    });
+    exchange.placeStopClose.mockImplementation(async () => {
+      events.push('submit');
+      expect(store.get().microStopSubmission?.tradeId).toBe('trade-1');
+      throw new Error('response lost');
+    });
+    const first = await service.superviseMicroStop('ETHUSDT', store.get(), store);
+    expect(first.status).toBe('UNKNOWN');
+    expect(events).toEqual(['persist', 'submit']);
+    expect((await service.superviseMicroStop('ETHUSDT', store.get(), store)).status).toBe(
+      'CONFIRMATION_PENDING',
+    );
+    expect(exchange.placeStopClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not submit a replacement if persisting its intent fails', async () => {
+    const { service, exchange } = fixture();
+    const store = stateStore({ lastSide: 'LONG', lastStopPrice: 99 });
+    store.flush = vi.fn().mockRejectedValue(new Error('disk full'));
+    expect((await service.superviseMicroStop('ETHUSDT', store.get(), store)).status).toBe(
+      'UNKNOWN',
+    );
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('requests recovery after a persisted stop attempt expires without resubmitting', async () => {
+    const { service, exchange } = fixture();
+    const store = stateStore({
+      lastSide: 'LONG',
+      lastStopPrice: 99,
+      microStopSubmission: { attemptedAt: Date.now() - 60_000, stopPrice: 99 },
+    });
+    expect((await service.superviseMicroStop('ETHUSDT', store.get(), store)).status).toBe(
+      'RECOVERY_REQUIRED',
+    );
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('does not use a stop attempt from another trade to order recovery', async () => {
+    const { service, exchange } = fixture();
+    const store = stateStore({
+      lastSide: 'LONG',
+      lastTradeId: 'new',
+      microStopSubmission: { attemptedAt: 0, stopPrice: 99, tradeId: 'old' },
+    });
+    expect((await service.superviseMicroStop('ETHUSDT', store.get(), store)).status).toBe(
+      'UNKNOWN',
+    );
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('reconciles flat independently and preserves entry ambiguity while quarantining accounting', async () => {
+    const { service, exchange } = fixture();
+    exchange.readActivePosition.mockResolvedValue(null as any);
+    exchange.listCloseOrdersForSide
+      .mockResolvedValueOnce([
+        { orderId: 'bot', owner: 'BOT' } as any,
+        { orderId: 'external', owner: 'UNKNOWN' } as any,
+      ])
+      .mockResolvedValue([{ orderId: 'external', owner: 'UNKNOWN' } as any]);
+    const store = stateStore({ lastSide: 'LONG', marketOpenAmbiguous: true, lastTradeId: 't' });
+    expect(await service.reconcileMissingMicroPosition('ETHUSDT', store)).toBe(true);
+    expect(exchange.readActivePosition).toHaveBeenCalledTimes(3);
+    expect(exchange.cancelOrderById).toHaveBeenCalledExactlyOnceWith('ETHUSDT', 'bot');
+    expect(store.get()).toMatchObject({
+      mode: 'IDLE',
+      marketOpenAmbiguous: true,
+      microBurstPnlUnverified: true,
+      lastTradeId: 't',
+    });
+    expect(store.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not finalize a close when bot-owned close orders survive cancellation', async () => {
+    const { service, exchange } = fixture();
+    exchange.readActivePosition.mockResolvedValue(null as any);
+    exchange.listCloseOrdersForSide.mockResolvedValue([{ orderId: 'bot', owner: 'BOT' } as any]);
+    const store = stateStore({ lastSide: 'LONG' });
+    await expect(service.reconcileMissingMicroPosition('ETHUSDT', store)).rejects.toThrow(
+      'MICRO_BOT_CLOSE_ORDERS_REMAIN',
+    );
+    expect(store.get().mode).toBe('LONG_RIDE');
+  });
+
+  it('does not finalize a close if the position reappears during reconciliation', async () => {
+    const { service, exchange } = fixture();
+    exchange.readActivePosition
+      .mockResolvedValueOnce(null as any)
+      .mockResolvedValueOnce(null as any);
+    const store = stateStore({ lastSide: 'LONG' });
+    expect(await service.reconcileMissingMicroPosition('ETHUSDT', store)).toBe(false);
+    expect(store.get().mode).toBe('LONG_RIDE');
+  });
+
   it('restores and confirms the Micro stop without placing a TP', async () => {
     const { service, exchange } = fixture();
     exchange.listCloseOrdersForSide

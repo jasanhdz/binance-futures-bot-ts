@@ -1394,6 +1394,13 @@ export class TradingService {
         });
         return false;
       }
+      if (this.hasPendingMicroSafety()) {
+        this.deps.logger.warn('micro_burst_live_entry_denied', {
+          symbol: request.symbol,
+          reason: 'MICRO_SAFETY_RECONCILIATION_PENDING',
+        });
+        return false;
+      }
       const hasOpenPosition = await this.deps.exchange.hasOpenPosition(request.symbol, 'ANY');
       const walletBalance = await this.deps.exchange.getUSDTBalance();
       const account = await this.readEntryAccountSnapshot(walletBalance);
@@ -1646,6 +1653,7 @@ export class TradingService {
 
   private async lookForEntryWithLockTask(symbol: string): Promise<void> {
     if (this.acceptingEntries === false) return;
+    if (this.hasPendingMicroSafety()) return;
     if (this.entryInFlight || this.entryInFlightSymbols.has(symbol)) return;
     const reservation = this.acquireSharedEntryReservation(symbol);
     if (!reservation.acquired) return;
@@ -1663,6 +1671,22 @@ export class TradingService {
   private acquireSharedEntryReservation(symbol: string): SharedEntryReservationResult {
     if (!this.sharedEntryReservation) return { acquired: true, symbol, release: () => undefined };
     return this.sharedEntryReservation.tryAcquire(symbol);
+  }
+
+  private hasPendingMicroSafety(): boolean {
+    const stores = new Set<StateStore>(this.symbolStateStores?.values() ?? []);
+    if (this.deps?.state) {
+      stores.add(this.deps.state);
+      for (const symbol of this.config?.symbols ?? []) stores.add(this.stateForSymbol(symbol));
+    }
+    return [...stores].some((store) => {
+      const state = store.get();
+      return (
+        state.microProtectionBlocked === true ||
+        state.microStopSubmission !== undefined ||
+        state.microBurstPnlUnverified === true
+      );
+    });
   }
 
   private strategyIdentityForState(botState: BotState): StrategyIdentity | null {
@@ -1703,18 +1727,36 @@ export class TradingService {
 
     let managementContext: Record<string, unknown> = { symbol, botState, symbolState };
     if (identity.strategyId === 'MICRO_BURST_V1') {
+      let recoveryRequired = false;
       try {
-        const protection = await this.positionProtection.superviseMicroStop(symbol, botState);
-        if (protection.status === 'PROTECTED' || protection.status === 'MISSING') {
-          if (protection.status === 'MISSING') {
-            this.deps.logger.warn('micro_position_missing_during_supervision', {
-              symbol,
-              tradeId: botState.lastTradeId,
-              reason: 'POSITION_FLAT_REQUIRES_INDEPENDENT_RECONCILIATION',
-            });
-          }
+        const protection = await this.positionProtection.superviseMicroStop(
+          symbol,
+          botState,
+          symbolState,
+        );
+        if (protection.status === 'MISSING') {
+          symbolState.set({ microProtectionBlocked: true });
+          const reconciled = await this.positionProtection.reconcileMissingMicroPosition(
+            symbol,
+            symbolState,
+          );
+          this.deps.logger.warn('micro_position_missing_during_supervision', {
+            symbol,
+            tradeId: botState.lastTradeId,
+            reason: reconciled ? 'MICRO_FLAT_ACCOUNTING_PENDING' : 'MICRO_FLAT_NOT_CONFIRMED',
+          });
+          return;
+        } else if (protection.status === 'PROTECTED') {
+          // Stop evidence does not resolve an ambiguous entry or unverified PnL.
+          symbolState.set({
+            microProtectionBlocked: false,
+            microStopSubmission: undefined,
+            bracketsAttached: true,
+          });
+          await symbolState.flush?.();
         } else if (protection.status !== 'RECOVERY_REQUIRED') {
-          symbolState.set({ marketOpenAmbiguous: true, bracketsAttached: false });
+          symbolState.set({ microProtectionBlocked: true, bracketsAttached: false });
+          await symbolState.flush?.();
           this.deps.logger.warn('micro_stop_supervision_unknown', {
             symbol,
             tradeId: botState.lastTradeId,
@@ -1724,15 +1766,22 @@ export class TradingService {
           await this.notifyError(symbol, 'MICRO STOP SUPERVISION UNKNOWN', protection.reason);
           return;
         } else {
+          recoveryRequired = true;
           throw new Error(protection.reason ?? 'MICRO_STOP_RECOVERY_REQUIRED');
         }
       } catch (error) {
-        symbolState.set({ marketOpenAmbiguous: true, bracketsAttached: false });
+        symbolState.set({ microProtectionBlocked: true, bracketsAttached: false });
         this.deps.logger.error('micro_stop_recovery_pending', {
           symbol,
           tradeId: botState.lastTradeId,
           error: String(error),
         });
+        // Read, persistence and reconciliation failures are not proof that an
+        // emergency market close is required. Only the explicit verdict is.
+        if (!recoveryRequired) {
+          await this.notifyError(symbol, 'MICRO PROTECTION UNKNOWN', error);
+          return;
+        }
         try {
           if (botState.lastSide) {
             const position = await this.deps.exchange.readActivePosition(symbol, botState.lastSide);
@@ -1744,30 +1793,12 @@ export class TradingService {
                 position.sideMode,
                 'MICRO_STOP_RECOVERY_FAILED',
               );
-              const remaining = await this.deps.exchange.readActivePosition(
+            }
+            if (await this.positionProtection.reconcileMissingMicroPosition(symbol, symbolState)) {
+              this.deps.logger.warn('micro_stop_recovery_emergency_close_confirmed', {
                 symbol,
-                botState.lastSide,
-              );
-              if (!remaining) {
-                const closeOrders = await this.deps.exchange.listCloseOrdersForSide(
-                  symbol,
-                  botState.lastSide,
-                );
-                for (const order of closeOrders) {
-                  if (order.owner === 'BOT') {
-                    await this.deps.exchange.cancelOrderById(symbol, order.orderId);
-                  }
-                }
-                symbolState.set({
-                  marketOpenAmbiguous: false,
-                  microBurstPnlUnverified: true,
-                  microBurstPnlUnverifiedAt: Date.now(),
-                });
-                this.deps.logger.warn('micro_stop_recovery_emergency_close_confirmed', {
-                  symbol,
-                  tradeId: botState.lastTradeId,
-                });
-              }
+                tradeId: botState.lastTradeId,
+              });
             }
           }
         } catch (recoveryError) {

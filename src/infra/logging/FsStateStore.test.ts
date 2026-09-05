@@ -35,6 +35,30 @@ describe('FsStateStore', () => {
     });
   });
 
+  it('preserves the stop submission latch across a fresh store instance', async () => {
+    const state = new FsStateStore('default', 'test', directory);
+    const submission = { attemptedAt: 1234, stopPrice: 99, tradeId: 'micro-1' };
+    state.set({ microProtectionBlocked: true, microStopSubmission: submission });
+    await state.flush();
+    expect(new FsStateStore('default', 'test', directory).get()).toMatchObject({
+      microProtectionBlocked: true,
+      microStopSubmission: submission,
+    });
+  });
+
+  it.each([
+    { attemptedAt: -1, stopPrice: 99 },
+    { attemptedAt: 1234, stopPrice: 0 },
+    { attemptedAt: '1234', stopPrice: 99 },
+    null,
+  ])('rejects malformed persisted stop submission %j', async (microStopSubmission) => {
+    await fs.writeFile(
+      path.join(directory, 'state_TEST.json'),
+      JSON.stringify({ mode: 'LONG_RIDE', microStopSubmission }),
+    );
+    expect(() => new FsStateStore('default', 'test', directory)).toThrow('BOT_STATE_LOAD_FAILED');
+  });
+
   it('flushes pending writes and keeps child stores in the custom directory', async () => {
     const state = new FsStateStore('default', 'test', directory);
     const child = state.forSymbol?.('ethusdt');

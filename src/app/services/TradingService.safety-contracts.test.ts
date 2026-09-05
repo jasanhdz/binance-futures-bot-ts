@@ -1,7 +1,35 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TradingService } from './TradingService';
+import { PositionProtectionService } from '../position/PositionProtectionService';
 
 describe('TradingService shared safety contracts', () => {
+  it('blocks other strategies while any cached Micro position needs reconciliation', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.symbolStateStores = new Map([
+      ['ETHUSDT', { get: () => ({ microProtectionBlocked: true }) }],
+    ]);
+    service.lookForEntry = vi.fn();
+    await service.lookForEntryWithLock('BTCUSDT');
+    expect(service.lookForEntry).not.toHaveBeenCalled();
+  });
+
+  it('reconciles MISSING before and without asking for a technical exit context', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.positionProtection = {
+      superviseMicroStop: vi.fn().mockResolvedValue({ status: 'MISSING' }),
+      reconcileMissingMicroPosition: vi.fn().mockResolvedValue(true),
+    };
+    service.strategyRuntimeCoordinator = { readMicroBurstExitMarket: vi.fn() };
+    service.deps = { logger: { warn: vi.fn() } };
+    const store = { set: vi.fn() };
+    await service.managePositionByOwner('ETHUSDT', { lastStrategy: 'MICRO_BURST_V1' }, store);
+    expect(service.positionProtection.reconcileMissingMicroPosition).toHaveBeenCalledWith(
+      'ETHUSDT',
+      store,
+    );
+    expect(service.strategyRuntimeCoordinator.readMicroBurstExitMarket).not.toHaveBeenCalled();
+  });
   it.each(['processSymbol', 'openMicroBurstLivePosition', 'lookForEntryWithLock'])(
     'drains %s before flushing state and rejects new work during shutdown',
     async (method) => {
@@ -219,7 +247,10 @@ describe('TradingService shared safety contracts', () => {
     await service.managePositionByOwner('ETHUSDT', state, store);
 
     expect(service.deps.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
-    expect(store.set).toHaveBeenCalledWith({ marketOpenAmbiguous: true, bracketsAttached: false });
+    expect(store.set).toHaveBeenCalledWith({
+      microProtectionBlocked: true,
+      bracketsAttached: false,
+    });
   });
 
   it('attempts a fresh-quantity emergency close when Micro protection fails', async () => {
@@ -237,15 +268,24 @@ describe('TradingService shared safety contracts', () => {
       logger: { warn: vi.fn(), error: vi.fn() },
       notifier: { sendAlert: vi.fn().mockResolvedValue(undefined) },
       exchange: {
-        readActivePosition: vi.fn().mockResolvedValueOnce(position).mockResolvedValueOnce(null),
+        readActivePosition: vi.fn().mockResolvedValueOnce(position).mockResolvedValue(null),
         closeSideMarketSafe: vi.fn().mockResolvedValue(undefined),
-        listCloseOrdersForSide: vi.fn().mockResolvedValue([
-          { orderId: 'micro-stop', owner: 'BOT' },
-          { orderId: 'foreign-stop', owner: 'UNKNOWN' },
-        ]),
+        listCloseOrdersForSide: vi
+          .fn()
+          .mockResolvedValueOnce([
+            { orderId: 'micro-stop', owner: 'BOT' },
+            { orderId: 'foreign-stop', owner: 'UNKNOWN' },
+          ])
+          .mockResolvedValue([{ orderId: 'foreign-stop', owner: 'UNKNOWN' }]),
         cancelOrderById: vi.fn().mockResolvedValue(undefined),
       },
     };
+    service.positionProtection.reconcileMissingMicroPosition = (symbol: string, store: any) =>
+      PositionProtectionService.prototype.reconcileMissingMicroPosition.call(
+        { deps: { exchange: service.deps.exchange, wait: async () => undefined } } as any,
+        symbol,
+        store,
+      );
     service.notifyError = vi.fn().mockResolvedValue(undefined);
     const state = {
       mode: 'LONG_RIDE',
@@ -254,7 +294,7 @@ describe('TradingService shared safety contracts', () => {
       lastSide: 'LONG',
       lastTradeId: 'micro-1',
     };
-    const store = { get: () => state, set: vi.fn() };
+    const store = { get: () => state, set: vi.fn(), flush: vi.fn(async () => undefined) };
 
     await service.managePositionByOwner('ETHUSDT', state, store);
 
@@ -272,7 +312,7 @@ describe('TradingService shared safety contracts', () => {
     );
     expect(store.set).toHaveBeenCalledWith(
       expect.objectContaining({
-        marketOpenAmbiguous: false,
+        microProtectionBlocked: false,
         microBurstPnlUnverified: true,
       }),
     );
@@ -309,7 +349,10 @@ describe('TradingService shared safety contracts', () => {
 
     await service.managePositionByOwner('ETHUSDT', state, store);
 
-    expect(store.set).toHaveBeenCalledWith({ marketOpenAmbiguous: true, bracketsAttached: false });
+    expect(store.set).toHaveBeenCalledWith({
+      microProtectionBlocked: true,
+      bracketsAttached: false,
+    });
     expect(store.set).not.toHaveBeenCalledWith(
       expect.objectContaining({ marketOpenAmbiguous: false }),
     );
@@ -341,7 +384,10 @@ describe('TradingService shared safety contracts', () => {
 
     await service.managePositionByOwner('ETHUSDT', state, store);
 
-    expect(store.set).toHaveBeenCalledWith({ marketOpenAmbiguous: true, bracketsAttached: false });
+    expect(store.set).toHaveBeenCalledWith({
+      microProtectionBlocked: true,
+      bracketsAttached: false,
+    });
     expect(store.set).not.toHaveBeenCalledWith(
       expect.objectContaining({ microBurstPnlUnverified: true }),
     );

@@ -39,10 +39,13 @@ export interface PositionProtectionServiceDeps {
   logTradeEvent(symbol: string, event: string, input?: LifecycleTradeEventInput): Promise<void>;
   microStopConfirmationAttempts?: number;
   microStopConfirmationDelaysMs?: readonly number[];
+  microStopRecoveryTimeoutMs?: number;
+  now?: () => number;
   wait?: (delayMs: number) => Promise<void>;
 }
 
 export class PositionProtectionService {
+  private readonly microSupervisionInFlight = new Set<string>();
   constructor(private readonly deps: PositionProtectionServiceDeps) {}
 
   /** Micro owns its exit policy: restore only a full-position stop, never a TP/trailing. */
@@ -53,7 +56,27 @@ export class PositionProtectionService {
     }
   }
 
-  async superviseMicroStop(symbol: string, state: BotState): Promise<MicroProtectionResult> {
+  async superviseMicroStop(
+    symbol: string,
+    state: BotState,
+    store?: StateStore,
+  ): Promise<MicroProtectionResult> {
+    if (this.microSupervisionInFlight.has(symbol)) {
+      return { status: 'UNKNOWN', reason: 'MICRO_STOP_SUPERVISION_IN_FLIGHT' };
+    }
+    this.microSupervisionInFlight.add(symbol);
+    try {
+      return await this.superviseMicroStopOnce(symbol, store?.get() ?? state, store);
+    } finally {
+      this.microSupervisionInFlight.delete(symbol);
+    }
+  }
+
+  private async superviseMicroStopOnce(
+    symbol: string,
+    state: BotState,
+    store?: StateStore,
+  ): Promise<MicroProtectionResult> {
     const side = state.lastSide;
     if (!side) return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_SIDE_UNKNOWN' };
     const exchange = this.deps.exchange;
@@ -63,7 +86,15 @@ export class PositionProtectionService {
     } catch (error) {
       return { status: 'UNKNOWN', reason: `POSITION_READ_FAILED:${String(error)}` };
     }
-    if (!position) return { status: 'MISSING' }; // Closure accounting is a separate reconciliation concern.
+    if (position === null) return { status: 'MISSING' };
+    if (
+      !position ||
+      !Number.isFinite(position.qtyAbs) ||
+      position.qtyAbs <= 0 ||
+      !['BOTH', side].includes(position.sideMode)
+    ) {
+      return { status: 'UNKNOWN', reason: 'MICRO_POSITION_INVALID' };
+    }
     const coversPosition = (
       order: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>>[number],
     ) =>
@@ -99,6 +130,27 @@ export class PositionProtectionService {
     if (await hasConfirmedStop()) return { status: 'PROTECTED' };
     if (confirmationReadUnknown) {
       return { status: 'UNKNOWN', reason: 'CLOSE_ORDER_READ_FAILED' };
+    }
+    if (state.microStopSubmission) {
+      // A prior request may have reached the exchange even if its response was
+      // lost. Empty listings do not authorize another submission. Reconcile or
+      // recover explicitly; do not reset this latch on each supervision tick.
+      const elapsed = (this.deps.now?.() ?? Date.now()) - state.microStopSubmission.attemptedAt;
+      const timeout = this.deps.microStopRecoveryTimeoutMs ?? 30_000;
+      if (
+        !Number.isFinite(elapsed) ||
+        elapsed < 0 ||
+        !Number.isFinite(timeout) ||
+        timeout <= 0 ||
+        state.microStopSubmission.tradeId !== state.lastTradeId
+      ) {
+        return { status: 'UNKNOWN', reason: 'MICRO_STOP_SUBMISSION_CONTEXT_INVALID' };
+      }
+      return {
+        status: elapsed >= timeout ? 'RECOVERY_REQUIRED' : 'CONFIRMATION_PENDING',
+        reason: 'MICRO_STOP_PREVIOUS_SUBMISSION_NOT_CONFIRMED',
+        stopPrice: state.microStopSubmission.stopPrice,
+      };
     }
     const remembered = [state.lastStopPrice, state.microBurstStructuralStopPrice].filter(
       (price): price is number => typeof price === 'number' && Number.isFinite(price) && price > 0,
@@ -140,12 +192,28 @@ export class PositionProtectionService {
       return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_INVALID_AFTER_ROUNDING' };
     }
     let placed: boolean;
+    if (store) {
+      try {
+        if (!store.flush) throw new Error('MICRO_STOP_DURABLE_STORE_REQUIRED');
+        store.set({
+          microProtectionBlocked: true,
+          microStopSubmission: {
+            attemptedAt: this.deps.now?.() ?? Date.now(),
+            stopPrice: effectiveStopPrice,
+            tradeId: state.lastTradeId,
+          },
+        });
+        await store.flush();
+      } catch (error) {
+        return { status: 'UNKNOWN', reason: `MICRO_STOP_PERSIST_FAILED:${String(error)}` };
+      }
+    }
     try {
       placed = await exchange.placeStopClose(symbol, side, effectiveStopPrice);
     } catch (error) {
       return {
-        status: 'RECOVERY_REQUIRED',
-        reason: `MICRO_STOP_PLACEMENT_FAILED:${String(error)}`,
+        status: 'UNKNOWN',
+        reason: `MICRO_STOP_PLACEMENT_AMBIGUOUS:${String(error)}`,
       };
     }
     if (!placed) return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_REJECTED' };
@@ -167,6 +235,47 @@ export class PositionProtectionService {
       tradeId: state.lastTradeId,
     });
     return { status: 'PROTECTED', stopPrice: effectiveStopPrice };
+  }
+
+  /** No market context or guessed PnL: close state and accounting are independent. */
+  async reconcileMissingMicroPosition(symbol: string, store: StateStore): Promise<boolean> {
+    const state = store.get();
+    const side = state.lastSide;
+    if (!side) return false;
+    // Two independent flat observations, not an interpretation of a read error.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        await (this.deps.wait?.(300) ?? new Promise((resolve) => setTimeout(resolve, 300)));
+      }
+      if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) return false;
+    }
+    const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    for (const order of orders) {
+      if (order.owner === 'BOT') await this.deps.exchange.cancelOrderById(symbol, order.orderId);
+    }
+    const surviving = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    if (surviving.some((order) => order.owner === 'BOT')) {
+      throw new Error('MICRO_BOT_CLOSE_ORDERS_REMAIN');
+    }
+    // Detect a reopened position before changing local lifecycle state.
+    if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) return false;
+    if (!store.flush) throw new Error('MICRO_CLOSE_DURABLE_STORE_REQUIRED');
+    store.set({
+      mode: 'IDLE',
+      bracketsAttached: false,
+      microProtectionBlocked: false,
+      microStopSubmission: undefined,
+      microBurstExitState: undefined,
+      microBurstPnlUnverified: true,
+      microBurstPnlUnverifiedAt: state.microBurstPnlUnverifiedAt ?? this.deps.now?.() ?? Date.now(),
+      lastExitAt:
+        state.mode === 'IDLE' && state.lastExitAt !== undefined
+          ? state.lastExitAt
+          : (this.deps.now?.() ?? Date.now()),
+      lastExitReason: 'MICRO_FLAT_ACCOUNTING_PENDING',
+    });
+    await store.flush();
+    return true;
   }
 
   roundQuantity(quantity: number, filters: SymbolFilters): number {

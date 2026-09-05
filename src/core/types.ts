@@ -102,6 +102,14 @@ export type BotState = {
   /** Fail-closed quarantine until an operator reconciles an exact realized close PnL. */
   microBurstPnlUnverified?: boolean;
   microBurstPnlUnverifiedAt?: number;
+  /** Protection uncertainty is separate from an ambiguous entry submission. */
+  microProtectionBlocked?: boolean;
+  /** Persisted before sending a replacement stop; never blindly resubmit after restart. */
+  microStopSubmission?: {
+    attemptedAt: number;
+    stopPrice: number;
+    tradeId?: string;
+  };
 
   // Aegis Turbo / legacy lifecycle metadata
   lastStopRoe?: number;
