@@ -5,9 +5,10 @@
 - Repositorio: `jasanhdz/binance-futures-bot-ts`.
 - Rama única: `work/micro-burst-rider-v1-20260826`. No crear otra rama.
 - Baseline histórico auditado: `05b233963d7897dccb9912f82b76895270eeb3b0`.
-- Referencia publicada verificada: `d341225b80bf5e1917c34d363d9c5f538b801db5`.
-- Leer primero `SAFETY_RECONCILIATION_LEDGER_FIX.md`: R1-R4 corregidos, pruebas y
-  seguimiento actual. `CHAT_CONTINUITY_389A6FF.md` conserva el historial tecnico.
+- Referencia publicada verificada: `19f4678359c7217273cb759c9cd030c2d4680a02`.
+- Leer primero `SAFETY_JOURNAL_19F4678_FIX.md`: correcciones locales del almacenamiento
+  del journal y limites de integracion. `SAFETY_RECONCILIATION_LEDGER_FIX.md` conserva
+  R1-R4 y seguimiento publicados; `CHAT_CONTINUITY_389A6FF.md`, el historial tecnico.
   Las tablas de c5d4f60 y los hallazgos de 389a6ff inferiores son historicos.
 - Este documento acompaña un incremento PARCIAL de seguridad, no certifica todas las fases.
 - El usuario pide completar el código de TODAS las fases y crear sus tests desde un
@@ -22,6 +23,15 @@
 - No borrar trabajo local, no `git reset --hard`, no force push, no aprobar modelos mediante hashes inventados.
 
 ## Estado entregado (no confundir incrementos con fases completas)
+
+### Journal posterior a 19f4678
+
+Los contratos auditados de persistencia, exclusion, validacion e identidad se
+corrigieron localmente con 264 tests del journal y regresion global de 2.156 tests.
+Fase 3 sigue parcial: falta protocolo de mutaciones identificadas, recovery real,
+reservas y conexion al apagado. No es "solo integrar fase 9" ni un reemplazo directo
+de los servicios actuales. Ver `SAFETY_JOURNAL_19F4678_FIX.md` para schema, errores,
+compatibilidad y evidencia propia frente a resultados reportados.
 
 ### Estado auditado en 389a6ff — referencia historica
 

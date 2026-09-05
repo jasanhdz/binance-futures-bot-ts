@@ -126,7 +126,8 @@ el codigo y se corrigieron localmente. No reabren los cuatro casos anteriores.
   no es fencing entre hosts ni una transaccion con el exchange. Journal e integracion
   siguen siendo las siguientes dependencias, sin cambios en este seguimiento.
 
-PUBLICACION DEL SEGUIMIENTO: LOCAL, no incluido todavia en d341225.
+PUBLICACION DEL SEGUIMIENTO: PUBLICADO en `2966821`, descendiente de d341225.
+El almacenamiento del journal se reviso despues: ver `SAFETY_JOURNAL_19F4678_FIX.md`.
 
 ### Validacion propia del seguimiento
 

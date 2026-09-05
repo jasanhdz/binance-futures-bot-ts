@@ -2,13 +2,17 @@
 
 ## Referencia vigente del traspaso
 
-- Publicacion comprobada en la rama remota: `d341225`, que incluye `8306846`.
+- Base publicada comprobada en la rama remota: `19f4678`, que incluye `2966821`,
+  `d341225` y `8306846`. El journal de esa base requirio correcciones adicionales.
+- Seguimiento LOCAL del journal: `SAFETY_JOURNAL_19F4678_FIX.md`. Ejecucion propia
+  de `npm run test:safety`: build PASS, 2.110 + 46 = 2.156 tests PASS; journal 264.
+  Almacenamiento corregido, sin integracion runtime ni nueva publicacion todavia.
 - R1-R4 corregidos, no pendientes. Resultado propio del bloque: build PASS,
   1.840 + 46 = 1.886 tests. No es una nueva ejecucion del merge documental.
 - Estado y pruebas del seguimiento posterior en `SAFETY_RECONCILIATION_LEDGER_FIX.md`.
-- Seguimiento local posterior a d341225, ejecucion propia: `npm run test:safety`
+- Seguimiento publicado en 2966821, ejecucion propia previa: `npm run test:safety`
   PASS, build y 1.862 + 46 = 1.908 tests; identidad de reposicion y migracion legacy
-  versionada corregidas con 22 regresiones nuevas. Aun no publicado.
+  versionada corregidas con 22 regresiones nuevas.
 - Las cifras y reproducciones inferiores corresponden a sus commits historicos.
 
 ## Referencia historica de 389a6ff

@@ -1,9 +1,8 @@
 import fs from 'node:fs';
-import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { TextDecoder } from 'node:util';
 import { Side } from '../../core/types';
-
-// ─── Event types (per-operation transitions) ──────────────────────────────────
 
 export type JournalEventType =
   | 'PREPARED'
@@ -15,19 +14,16 @@ export type JournalEventType =
   | 'UNKNOWN'
   | 'RECOVERY_REQUIRED';
 
-// ─── Operation scope ──────────────────────────────────────────────────────────
-
 export interface OperationScope {
   account: string;
   environment: string;
 }
 
-// ─── Entry schema ─────────────────────────────────────────────────────────────
-
 export interface JournalEntry {
-  /** Unique per-append, not per-operation. */
+  schemaVersion: 1;
+  /** Globally unique event identity within this journal. */
   id: string;
-  /** Stable operation identifier across entries. */
+  /** Never reused, even after CLOSED; scope/symbol/side/strategy remain immutable. */
   operationId: string;
   scope: OperationScope;
   symbol: string;
@@ -43,473 +39,528 @@ export interface JournalEntry {
   leverage?: number;
   reason?: string;
   metadata?: Record<string, unknown>;
-  /** Per-operation monotonically increasing version. */
   version: number;
-  /** Global monotonic sequence across all operations. */
   sequence: number;
 }
 
-// ─── Public interface ─────────────────────────────────────────────────────────
+export type JournalInput = Omit<JournalEntry, 'schemaVersion' | 'version' | 'sequence'>;
+export interface InMemoryJournalEntry extends JournalEntry {}
 
 export interface ExecutionJournal {
-  append(entry: Omit<JournalEntry, 'version' | 'sequence'>): Promise<JournalEntry>;
+  append(entry: JournalInput): Promise<JournalEntry>;
   read(operationId: string): Promise<JournalEntry[]>;
   readLatest(operationId: string): Promise<JournalEntry | null>;
   readByEvent(operationId: string, event: JournalEventType): Promise<JournalEntry[]>;
-  /** List all non-terminal operation IDs. */
   listNonTerminal(): Promise<string[]>;
-  /** Check if a clientOrderId has already been submitted. */
+  /** Historical ACK index only. False NEVER authorizes sending a PREPARED request. */
   isSubmitted(clientOrderId: string): Promise<boolean>;
-  /** Flush pending writes to durable storage. */
   flush(): Promise<void>;
-  /** Close the journal, releasing resources. Blocks new appends. */
   close(): Promise<void>;
 }
 
-// ─── State machine ────────────────────────────────────────────────────────────
-
-const VALID_TRANSITIONS: Record<JournalEventType, JournalEventType[]> = {
-  PREPARED: ['SUBMITTED', 'UNKNOWN', 'RECOVERY_REQUIRED'],
-  SUBMITTED: ['OPEN_CONFIRMED', 'UNKNOWN', 'RECOVERY_REQUIRED'],
-  OPEN_CONFIRMED: ['PROTECTED', 'UNKNOWN', 'RECOVERY_REQUIRED'],
+// Transitions describe caller-supplied evidence, not permission to invoke an exchange.
+// In particular, an emergency close need not manufacture a PROTECTED event first.
+const VALID_TRANSITIONS: Record<JournalEventType, readonly JournalEventType[]> = {
+  PREPARED: ['SUBMITTED', 'UNKNOWN', 'RECOVERY_REQUIRED', 'CLOSE_PENDING'],
+  SUBMITTED: ['OPEN_CONFIRMED', 'UNKNOWN', 'RECOVERY_REQUIRED', 'CLOSE_PENDING'],
+  OPEN_CONFIRMED: ['PROTECTED', 'UNKNOWN', 'RECOVERY_REQUIRED', 'CLOSE_PENDING'],
   PROTECTED: ['CLOSE_PENDING', 'UNKNOWN', 'RECOVERY_REQUIRED'],
   CLOSE_PENDING: ['CLOSED', 'UNKNOWN', 'RECOVERY_REQUIRED'],
-  CLOSED: ['PREPARED'],
-  UNKNOWN: ['RECOVERY_REQUIRED', 'CLOSE_PENDING', 'CLOSED', 'PREPARED'],
-  RECOVERY_REQUIRED: ['CLOSE_PENDING', 'CLOSED', 'UNKNOWN', 'PREPARED'],
+  CLOSED: [],
+  UNKNOWN: ['RECOVERY_REQUIRED', 'CLOSE_PENDING', 'CLOSED', 'OPEN_CONFIRMED', 'PROTECTED'],
+  RECOVERY_REQUIRED: ['CLOSE_PENDING', 'CLOSED', 'UNKNOWN', 'OPEN_CONFIRMED', 'PROTECTED'],
 };
 
 export function isValidTransition(from: JournalEventType, to: JournalEventType): boolean {
-  return VALID_TRANSITIONS[from]?.includes(to) ?? false;
+  return (
+    Object.prototype.hasOwnProperty.call(VALID_TRANSITIONS, from) &&
+    VALID_TRANSITIONS[from].includes(to)
+  );
 }
 
-const TERMINAL = new Set<JournalEventType>(['CLOSED']);
+const INPUT_KEYS = new Set([
+  'id',
+  'operationId',
+  'scope',
+  'symbol',
+  'side',
+  'strategyId',
+  'event',
+  'timestampMs',
+  'clientOrderId',
+  'orderId',
+  'stopPrice',
+  'entryPrice',
+  'quantity',
+  'leverage',
+  'reason',
+  'metadata',
+]);
+const REQUEST_FIELDS = ['quantity', 'stopPrice', 'entryPrice', 'leverage', 'orderId'] as const;
 
-// ─── Validation helpers ───────────────────────────────────────────────────────
-
-function validateEntry(entry: JournalEntry): string | null {
-  if (!entry.id || typeof entry.id !== 'string') return 'INVALID_ID';
-  if (!entry.operationId || typeof entry.operationId !== 'string') return 'INVALID_OPERATION_ID';
-  if (!entry.scope || typeof entry.scope.account !== 'string' || typeof entry.scope.environment !== 'string')
-    return 'INVALID_SCOPE';
-  if (!entry.symbol || typeof entry.symbol !== 'string') return 'INVALID_SYMBOL';
-  if (entry.side !== 'LONG' && entry.side !== 'SHORT') return 'INVALID_SIDE';
-  if (!entry.strategyId || typeof entry.strategyId !== 'string') return 'INVALID_STRATEGY_ID';
-  if (!isValidEvent(entry.event)) return `INVALID_EVENT:${entry.event}`;
-  if (!Number.isFinite(entry.timestampMs) || entry.timestampMs < 0) return 'INVALID_TIMESTAMP';
-  if (!Number.isInteger(entry.version) || entry.version < 1) return 'INVALID_VERSION';
-  if (!Number.isInteger(entry.sequence) || entry.sequence < 1) return 'INVALID_SEQUENCE';
-  return null;
+function invalid(reason: string): never {
+  throw new Error(`ENTRY_INVALID:${reason}`);
 }
 
-function isValidEvent(e: string): e is JournalEventType {
-  return [
-    'PREPARED', 'SUBMITTED', 'OPEN_CONFIRMED', 'PROTECTED',
-    'CLOSE_PENDING', 'CLOSED', 'UNKNOWN', 'RECOVERY_REQUIRED',
-  ].includes(e);
+function identifier(value: unknown): asserts value is string {
+  if (
+    typeof value !== 'string' ||
+    !value ||
+    value.trim() !== value ||
+    /[\x00-\x1f\x7f]/.test(value)
+  ) {
+    invalid('IDENTIFIER');
+  }
 }
 
-// ─── In-memory execution journal (testing / virtual) ─────────────────────────
+function record(value: unknown): asserts value is Record<string, unknown> {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  )
+    invalid('OBJECT');
+}
 
-export interface InMemoryJournalEntry extends JournalEntry {}
+/** Canonical JSON without lossy coercions, getters, prototypes or shared references. */
+function jsonCopy(value: unknown, ancestors = new Set<object>()): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value === 0 ? 0 : value;
+  if (!value || typeof value !== 'object') invalid('NON_JSON_VALUE');
+  if (ancestors.has(value)) invalid('CYCLIC_VALUE');
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Reflect.ownKeys(value).length !== value.length + 1) invalid('ARRAY_PROPERTIES');
+      return Array.from({ length: value.length }, (_, index) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !('value' in descriptor)) invalid('ARRAY_VALUE');
+        return jsonCopy(descriptor.value, ancestors);
+      });
+    }
+    record(value);
+    if (Object.getOwnPropertySymbols(value).length) invalid('SYMBOL_KEY');
+    return Object.fromEntries(
+      Object.getOwnPropertyNames(value)
+        .sort()
+        .map((key) => {
+          const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+          if (!descriptor.enumerable || !('value' in descriptor)) invalid('PROPERTY_DESCRIPTOR');
+          return [key, jsonCopy(descriptor.value, ancestors)];
+        }),
+    );
+  } finally {
+    ancestors.delete(value);
+  }
+}
 
+function normalize(input: JournalInput): JournalInput {
+  record(input);
+  if (Object.getOwnPropertySymbols(input).length) invalid('SYMBOL_KEY');
+  const pairs: [string, unknown][] = [];
+  for (const key of Object.getOwnPropertyNames(input)) {
+    if (!INPUT_KEYS.has(key)) invalid(`UNKNOWN_FIELD:${key}`);
+    const descriptor = Object.getOwnPropertyDescriptor(input, key)!;
+    if (!descriptor.enumerable || !('value' in descriptor)) invalid('PROPERTY_DESCRIPTOR');
+    if (descriptor.value !== undefined) pairs.push([key, descriptor.value]);
+  }
+  const value = jsonCopy(Object.fromEntries(pairs)) as JournalInput;
+  for (const id of [value.id, value.operationId, value.symbol, value.strategyId]) identifier(id);
+  record(value.scope);
+  if (Object.keys(value.scope).some((key) => key !== 'account' && key !== 'environment'))
+    invalid('SCOPE');
+  identifier(value.scope.account);
+  identifier(value.scope.environment);
+  if (value.side !== 'LONG' && value.side !== 'SHORT') invalid('SIDE');
+  if (!Object.prototype.hasOwnProperty.call(VALID_TRANSITIONS, value.event)) invalid('EVENT');
+  if (
+    !Number.isSafeInteger(value.timestampMs) ||
+    value.timestampMs < 0 ||
+    value.timestampMs > 253402300799999
+  ) {
+    invalid('TIMESTAMP');
+  }
+  for (const key of ['clientOrderId', 'orderId'] as const) {
+    if (value[key] !== undefined) identifier(value[key]);
+  }
+  for (const key of ['quantity', 'stopPrice', 'entryPrice', 'leverage'] as const) {
+    if (value[key] !== undefined && (!Number.isFinite(value[key]) || value[key]! <= 0))
+      invalid(key);
+  }
+  if (value.reason !== undefined && typeof value.reason !== 'string') invalid('REASON');
+  if (value.metadata !== undefined) record(value.metadata);
+  return value;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function operationIdentity(entry: JournalInput): string {
+  return JSON.stringify([
+    entry.scope.account,
+    entry.scope.environment,
+    entry.symbol,
+    entry.side,
+    entry.strategyId,
+  ]);
+}
+
+/** One validation/index implementation for RAM, durable appends and replay. */
+class JournalIndex {
+  private readonly operations = new Map<string, JournalEntry[]>();
+  private readonly events = new Map<string, JournalEntry>();
+  private readonly requests = new Map<string, JournalInput>();
+  private readonly submitted = new Set<string>();
+  private sequence = 0;
+
+  prepare(input: JournalInput): { entry: JournalEntry; duplicate: boolean } {
+    const value = normalize(input);
+    const existing = this.events.get(value.id);
+    if (existing) {
+      const {
+        schemaVersion: _schema,
+        version: _version,
+        sequence: _sequence,
+        ...payload
+      } = existing;
+      if (JSON.stringify(jsonCopy(payload)) !== JSON.stringify(value))
+        throw new Error(`ID_CONFLICT:${value.id}`);
+      return { entry: existing, duplicate: true };
+    }
+    const history = this.operations.get(value.operationId);
+    if (history) {
+      if (operationIdentity(history[0]) !== operationIdentity(value))
+        throw new Error('OPERATION_IDENTITY_CONFLICT');
+      if (!isValidTransition(history[history.length - 1].event, value.event))
+        throw new Error('JOURNAL_TRANSITION_INVALID');
+    } else if (value.event !== 'PREPARED') {
+      throw new Error('JOURNAL_INITIAL_EVENT_INVALID');
+    }
+    if (value.clientOrderId) {
+      const request = this.requests.get(
+        JSON.stringify([value.scope.account, value.scope.environment, value.clientOrderId]),
+      );
+      if (
+        request &&
+        (request.operationId !== value.operationId ||
+          REQUEST_FIELDS.some(
+            (key) =>
+              request[key] !== undefined && value[key] !== undefined && request[key] !== value[key],
+          ))
+      ) {
+        throw new Error('CLIENT_ORDER_CONFLICT');
+      }
+    }
+    const version = (history?.length ?? 0) + 1;
+    const sequence = this.sequence + 1;
+    if (!Number.isSafeInteger(version) || !Number.isSafeInteger(sequence))
+      invalid('COUNTER_OVERFLOW');
+    return { entry: { ...value, schemaVersion: 1, version, sequence }, duplicate: false };
+  }
+
+  publish(entry: JournalEntry): void {
+    const history = this.operations.get(entry.operationId) ?? [];
+    history.push(entry);
+    this.operations.set(entry.operationId, history);
+    this.events.set(entry.id, entry);
+    this.sequence = entry.sequence;
+    if (entry.clientOrderId) {
+      const key = JSON.stringify([
+        entry.scope.account,
+        entry.scope.environment,
+        entry.clientOrderId,
+      ]);
+      this.requests.set(key, { ...this.requests.get(key), ...entry });
+      if (entry.event === 'SUBMITTED') this.submitted.add(entry.clientOrderId);
+    }
+  }
+
+  replay(raw: unknown): void {
+    record(raw);
+    if (raw.schemaVersion !== 1) throw new Error('JOURNAL_SCHEMA_UNSUPPORTED');
+    const { schemaVersion: _schema, version, sequence, ...payload } = raw;
+    const candidate = this.prepare(payload as unknown as JournalInput);
+    if (candidate.duplicate) throw new Error('JOURNAL_DUPLICATE_RECORD');
+    if (sequence !== candidate.entry.sequence) throw new Error('JOURNAL_SEQUENCE_GAP');
+    if (version !== candidate.entry.version) throw new Error('JOURNAL_VERSION_GAP');
+    this.publish(candidate.entry);
+  }
+
+  read(operationId: string): JournalEntry[] {
+    return clone(this.operations.get(operationId) ?? []);
+  }
+  nonTerminal(): string[] {
+    return [...this.operations]
+      .filter(([, entries]) => entries[entries.length - 1].event !== 'CLOSED')
+      .map(([id]) => id);
+  }
+  isSubmitted(clientOrderId: string): boolean {
+    return this.submitted.has(clientOrderId);
+  }
+}
+
+/** Synchronous linearization behind an async API; shares all data rules with disk. */
 export class InMemoryExecutionJournal implements ExecutionJournal {
-  private readonly entries = new Map<string, JournalEntry[]>();
-  private readonly submittedClientOrders = new Set<string>();
-  private readonly versions = new Map<string, number>();
-  private globalSequence = 0;
-  private closed = false;
+  protected readonly index = new JournalIndex();
+  protected closed = false;
 
-  async append(entry: Omit<JournalEntry, 'version' | 'sequence'>): Promise<JournalEntry> {
+  protected assertUsable(): void {
     if (this.closed) throw new Error('JOURNAL_CLOSED');
+  }
+  protected persist(_entry: JournalEntry): void {}
 
-    const key = entry.operationId;
-    const existingList = this.entries.get(key);
-
-    // Idempotent: same id + same content = return existing
-    if (existingList) {
-      const existing = existingList.find((e) => e.id === entry.id);
-      if (existing) {
-        if (existing.event !== entry.event || existing.operationId !== entry.operationId) {
-          throw new Error(`ID_CONFLICT:${entry.id}`);
-        }
-        return { ...existing };
-      }
+  async append(input: JournalInput): Promise<JournalEntry> {
+    this.assertUsable();
+    const candidate = this.index.prepare(input);
+    if (!candidate.duplicate) {
+      this.persist(candidate.entry);
+      this.index.publish(candidate.entry);
     }
-
-    // State machine transition
-    if (existingList && existingList.length > 0) {
-      const lastEvent = existingList[existingList.length - 1].event;
-      if (!isValidTransition(lastEvent, entry.event)) {
-        throw new Error(`Invalid transition: ${lastEvent} -> ${entry.event} for ${key}`);
-      }
-    }
-
-    // Version per operation
-    const currentVersion = this.versions.get(key) ?? 0;
-    const version = currentVersion + 1;
-    this.versions.set(key, version);
-
-    this.globalSequence++;
-    const full: JournalEntry = { ...entry, version, sequence: this.globalSequence };
-
-    // Defensive copy of metadata
-    if (full.metadata) {
-      full.metadata = { ...full.metadata };
-    }
-
-    const list = existingList ?? [];
-    list.push(full);
-    this.entries.set(key, list);
-
-    if (entry.event === 'SUBMITTED' && entry.clientOrderId) {
-      this.submittedClientOrders.add(entry.clientOrderId);
-    }
-
-    return { ...full, metadata: full.metadata ? { ...full.metadata } : undefined };
+    return clone(candidate.entry);
   }
 
   async read(operationId: string): Promise<JournalEntry[]> {
-    return (this.entries.get(operationId) ?? []).map((e) => ({
-      ...e,
-      metadata: e.metadata ? { ...e.metadata } : undefined,
-    }));
+    this.assertUsable();
+    return this.index.read(operationId);
   }
-
   async readLatest(operationId: string): Promise<JournalEntry | null> {
-    const list = this.entries.get(operationId);
-    if (!list || list.length === 0) return null;
-    const last = list[list.length - 1];
-    return { ...last, metadata: last.metadata ? { ...last.metadata } : undefined };
+    this.assertUsable();
+    const entries = this.index.read(operationId);
+    return entries[entries.length - 1] ?? null;
   }
-
   async readByEvent(operationId: string, event: JournalEventType): Promise<JournalEntry[]> {
-    return (this.entries.get(operationId) ?? [])
-      .filter((e) => e.event === event)
-      .map((e) => ({ ...e, metadata: e.metadata ? { ...e.metadata } : undefined }));
+    this.assertUsable();
+    return this.index.read(operationId).filter((entry) => entry.event === event);
   }
-
   async listNonTerminal(): Promise<string[]> {
-    const result: string[] = [];
-    for (const [opId, list] of this.entries) {
-      const lastEvent = list[list.length - 1]?.event;
-      if (lastEvent && !TERMINAL.has(lastEvent)) {
-        result.push(opId);
-      }
-    }
-    return result;
+    this.assertUsable();
+    return this.index.nonTerminal();
   }
-
   async isSubmitted(clientOrderId: string): Promise<boolean> {
-    return this.submittedClientOrders.has(clientOrderId);
+    this.assertUsable();
+    return this.index.isSubmitted(clientOrderId);
   }
-
   async flush(): Promise<void> {
-    // No-op for in-memory.
+    this.assertUsable();
   }
-
   async close(): Promise<void> {
     this.closed = true;
   }
 }
-
-// ─── File-backed execution journal (production) ──────────────────────────────
 
 /**
- * Append-only JSONL journal with per-operation state machines.
- *
- * Guarantees:
- * - Append-only: never truncates or overwrites existing lines.
- * - Atomic: writes to temp file, fsync, rename, fsync directory.
- * - Load-on-construction: validates schema, identities, transitions, sequences.
- * - Per-operation versioning: multiple operations per symbol supported.
- * - Idempotent append: same id + content = no-op; same id + different content = conflict.
- * - Defensive copies on all reads.
- * - Writer exclusion via lock file.
- * - Corruption: rejects and preserves bytes; does not silently truncate.
+ * Local-filesystem JSONL, schema 1. Requires an existing parent directory.
+ * Cooperative processes use an exclusive lock held BEFORE load, with no takeover.
+ * A complete write + file fsync precedes publication; new directory entries are
+ * synced too. Partial tails and old formats are rejected without changing bytes.
+ * Any I/O uncertainty poisons the instance, including reads, until close/reopen.
+ * Not multihost fencing, an exchange transaction, or automatic orphan-lock repair.
  */
-export class FileBackedExecutionJournal implements ExecutionJournal {
-  private readonly entries = new Map<string, JournalEntry[]>();
-  private readonly submittedClientOrders = new Set<string>();
-  private readonly versions = new Map<string, number>();
-  private globalSequence = 0;
-  private closed = false;
-  private dirty = false;
-
+export class FileBackedExecutionJournal extends InMemoryExecutionJournal {
+  private readonly io: typeof fs;
   private readonly filePath: string;
   private readonly lockPath: string;
-  private readonly tmpPath: string;
   private readonly dirPath: string;
-  private readonly fs: typeof import('node:fs');
-  private readonly fsPromises: typeof import('node:fs/promises');
-  private lockFd: number | null = null;
+  private readonly token = `${process.pid}:${randomUUID()}\n`;
+  private lockFd: number | undefined;
+  private lockIdentity: fs.Stats | undefined;
+  private dataFd: number | undefined;
+  private dataIdentity: fs.Stats | undefined;
+  private failure: Error | undefined;
 
-  constructor(filePath: string, fsModule?: typeof import('node:fs')) {
-    this.filePath = filePath;
-    this.lockPath = `${filePath}.lock`;
-    this.tmpPath = `${filePath}.tmp`;
-    this.dirPath = path.dirname(filePath);
-    this.fs = fsModule ?? fs;
-    this.fsPromises = fsModule ? (require('node:fs/promises') as typeof import('node:fs/promises')) : fsPromises;
-
-    this.loadExisting();
-    this.acquireLock();
-  }
-
-  async append(entry: Omit<JournalEntry, 'version' | 'sequence'>): Promise<JournalEntry> {
-    if (this.closed) throw new Error('JOURNAL_CLOSED');
-
-    const key = entry.operationId;
-    const existingList = this.entries.get(key);
-
-    // Idempotent: same id + same content = return existing
-    if (existingList) {
-      const existing = existingList.find((e) => e.id === entry.id);
-      if (existing) {
-        if (existing.event !== entry.event || existing.operationId !== entry.operationId) {
-          throw new Error(`ID_CONFLICT:${entry.id}`);
-        }
-        return { ...existing, metadata: existing.metadata ? { ...existing.metadata } : undefined };
-      }
-    }
-
-    // State machine transition (validate BEFORE version increment)
-    if (existingList && existingList.length > 0) {
-      const lastEvent = existingList[existingList.length - 1].event;
-      if (!isValidTransition(lastEvent, entry.event)) {
-        throw new Error(`Invalid transition: ${lastEvent} -> ${entry.event} for ${key}`);
-      }
-    }
-
-    // Version per operation (increment AFTER validation)
-    const currentVersion = this.versions.get(key) ?? 0;
-    const version = currentVersion + 1;
-    this.versions.set(key, version);
-
-    this.globalSequence++;
-    const full: JournalEntry = { ...entry, version, sequence: this.globalSequence };
-
-    // Defensive copy of metadata
-    if (full.metadata) {
-      full.metadata = { ...full.metadata };
-    }
-
-    // Validate the complete entry
-    const validationError = validateEntry(full);
-    if (validationError) {
-      throw new Error(`ENTRY_INVALID:${validationError}`);
-    }
-
-    // Persist BEFORE updating memory
-    const line = JSON.stringify(full) + '\n';
-    let writeSucceeded = false;
+  constructor(filePath: string, fsModule: typeof fs = fs) {
+    super();
+    this.io = fsModule;
+    if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('JOURNAL_PATH_INVALID');
+    this.dirPath = this.io.realpathSync(path.dirname(path.resolve(filePath)));
+    this.filePath = path.join(this.dirPath, path.basename(filePath));
+    this.lockPath = `${this.filePath}.lock`;
     try {
-      const fd = this.fs.openSync(this.filePath, 'a', 0o600);
-      try {
-        this.fs.writeSync(fd, line, undefined, 'utf8');
-        this.fs.fsyncSync(fd);
-      } finally {
-        this.fs.closeSync(fd);
-      }
-      writeSucceeded = true;
-    } catch (err) {
-      // Write failed: do NOT update memory state
-      throw new Error(`JOURNAL_PERSIST_FAILED:${String(err)}`);
-    }
-
-    // Only NOW update memory
-    const list = existingList ?? [];
-    list.push(full);
-    this.entries.set(key, list);
-
-    if (entry.event === 'SUBMITTED' && entry.clientOrderId) {
-      this.submittedClientOrders.add(entry.clientOrderId);
-    }
-
-    this.dirty = true;
-
-    return { ...full, metadata: full.metadata ? { ...full.metadata } : undefined };
-  }
-
-  async read(operationId: string): Promise<JournalEntry[]> {
-    return (this.entries.get(operationId) ?? []).map((e) => ({
-      ...e,
-      metadata: e.metadata ? { ...e.metadata } : undefined,
-    }));
-  }
-
-  async readLatest(operationId: string): Promise<JournalEntry | null> {
-    const list = this.entries.get(operationId);
-    if (!list || list.length === 0) return null;
-    const last = list[list.length - 1];
-    return { ...last, metadata: last.metadata ? { ...last.metadata } : undefined };
-  }
-
-  async readByEvent(operationId: string, event: JournalEventType): Promise<JournalEntry[]> {
-    return (this.entries.get(operationId) ?? [])
-      .filter((e) => e.event === event)
-      .map((e) => ({ ...e, metadata: e.metadata ? { ...e.metadata } : undefined }));
-  }
-
-  async listNonTerminal(): Promise<string[]> {
-    const result: string[] = [];
-    for (const [opId, list] of this.entries) {
-      const lastEvent = list[list.length - 1]?.event;
-      if (lastEvent && !TERMINAL.has(lastEvent)) {
-        result.push(opId);
-      }
-    }
-    return result;
-  }
-
-  async isSubmitted(clientOrderId: string): Promise<boolean> {
-    return this.submittedClientOrders.has(clientOrderId);
-  }
-
-  async flush(): Promise<void> {
-    if (this.closed) throw new Error('JOURNAL_CLOSED');
-    if (!this.dirty) return;
-    // JSONL is already durable after each append; flush is a no-op for consistency.
-    this.dirty = false;
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.releaseLock();
-    this.closed = true;
-  }
-
-  // ─── Private: load existing file ──────────────────────────────────────────
-
-  private loadExisting(): void {
-    if (!this.fs.existsSync(this.filePath)) return;
-
-    let raw: string;
-    try {
-      raw = this.fs.readFileSync(this.filePath, 'utf8');
-    } catch (err) {
-      throw new Error(`JOURNAL_LOAD_FAILED:${String(err)}`);
-    }
-
-    if (!raw.trim()) return;
-
-    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-    let expectedSequence = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      let parsed: JournalEntry;
-      try {
-        parsed = JSON.parse(lines[i]) as JournalEntry;
-      } catch {
-        throw new Error(`JOURNAL_CORRUPT_LINE:${i + 1}:${lines[i].slice(0, 80)}`);
-      }
-
-      const err = validateEntry(parsed);
-      if (err) {
-        throw new Error(`JOURNAL_INVALID_LINE:${i + 1}:${err}`);
-      }
-
-      // Sequence must be monotonically increasing
-      expectedSequence++;
-      if (parsed.sequence !== expectedSequence) {
-        throw new Error(
-          `JOURNAL_SEQUENCE_GAP:expected ${expectedSequence} got ${parsed.sequence} at line ${i + 1}`,
-        );
-      }
-
-      // Per-operation version must be monotonically increasing
-      const key = parsed.operationId;
-      const existingList = this.entries.get(key);
-      if (existingList && existingList.length > 0) {
-        const lastVersion = existingList[existingList.length - 1].version;
-        if (parsed.version !== lastVersion + 1) {
-          throw new Error(
-            `JOURNAL_VERSION_GAP:${key}:expected ${lastVersion + 1} got ${parsed.version} at line ${i + 1}`,
-          );
-        }
-        // Validate transition
-        const lastEvent = existingList[existingList.length - 1].event;
-        if (!isValidTransition(lastEvent, parsed.event)) {
-          throw new Error(
-            `JOURNAL_TRANSITION_INVALID:${lastEvent}->${parsed.event} at line ${i + 1}`,
-          );
-        }
-      } else if (parsed.version !== 1) {
-        throw new Error(
-          `JOURNAL_VERSION_GAP:${key}:expected 1 got ${parsed.version} at line ${i + 1}`,
-        );
-      }
-
-      // Defensive copy of metadata
-      if (parsed.metadata) {
-        parsed.metadata = { ...parsed.metadata };
-      }
-
-      const list = existingList ?? [];
-      list.push(parsed);
-      this.entries.set(key, list);
-      this.versions.set(key, parsed.version);
-
-      if (parsed.event === 'SUBMITTED' && parsed.clientOrderId) {
-        this.submittedClientOrders.add(parsed.clientOrderId);
-      }
-
-      this.globalSequence = parsed.sequence;
-    }
-  }
-
-  // ─── Private: writer lock ────────────────────────────────────────────────
-
-  private acquireLock(): void {
-    const dir = path.dirname(this.lockPath);
-    if (!this.fs.existsSync(dir)) {
-      this.fs.mkdirSync(dir, { recursive: true });
-    }
-
-    try {
-      this.lockFd = this.fs.openSync(this.lockPath, 'wx', 0o600); // exclusive create
-      const pid = String(process.pid);
-      this.fs.writeSync(this.lockFd, pid);
-      this.fs.fsyncSync(this.lockFd);
-      this.fs.closeSync(this.lockFd);
-      this.lockFd = null;
-    } catch {
-      // Lock file exists. Check if stale.
-      if (this.isStaleLock()) {
-        this.forceReleaseLock();
-        this.acquireLock();
-      } else {
+      this.lockFd = this.io.openSync(this.lockPath, 'wx', 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST')
         throw new Error('JOURNAL_WRITER_LOCKED');
-      }
+      throw new Error(`JOURNAL_LOCK_FAILED:${String(error)}`);
     }
-  }
-
-  private isStaleLock(): boolean {
     try {
-      const content = this.fs.readFileSync(this.lockPath, 'utf8').trim();
-      const pid = parseInt(content, 10);
-      if (!Number.isFinite(pid) || pid <= 0) return true;
-      // Check if process is still alive (Unix only)
+      this.lockIdentity = this.io.fstatSync(this.lockFd);
+      this.writeAll(this.lockFd, Buffer.from(this.token));
+      this.io.fsyncSync(this.lockFd);
+      this.syncDirectory();
+      this.assertLock();
+
+      let existing: fs.Stats | undefined;
       try {
-        process.kill(pid, 0);
-        return false; // Process exists
-      } catch {
-        return true; // Process doesn't exist
+        existing = this.io.lstatSync(this.filePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
-    } catch {
-      return true; // Can't read lock = stale
+      if (existing && (!existing.isFile() || existing.nlink !== 1))
+        throw new Error('JOURNAL_FILE_INVALID');
+      const flags =
+        this.io.constants.O_RDWR |
+        this.io.constants.O_APPEND |
+        this.io.constants.O_NOFOLLOW |
+        (existing ? 0 : this.io.constants.O_CREAT | this.io.constants.O_EXCL);
+      this.dataFd = this.io.openSync(this.filePath, flags, 0o600);
+      this.dataIdentity = this.io.fstatSync(this.dataFd);
+      this.assertFile();
+      // Also stabilizes complete bytes recovered after an earlier uncertain fsync.
+      this.io.fsyncSync(this.dataFd);
+      if (!existing) this.syncDirectory();
+      const bytes = this.io.readFileSync(this.dataFd);
+      let raw: string;
+      try {
+        raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      } catch {
+        throw new Error('JOURNAL_CORRUPT_UTF8');
+      }
+      if (raw.length) {
+        if (!raw.endsWith('\n')) throw new Error('JOURNAL_TRUNCATED');
+        for (const line of raw.slice(0, -1).split('\n')) {
+          let value: unknown;
+          try {
+            value = JSON.parse(line);
+          } catch {
+            throw new Error('JOURNAL_CORRUPT_LINE');
+          }
+          this.index.replay(value);
+        }
+      }
+      this.assertLock();
+    } catch (error) {
+      this.closed = true;
+      this.cleanup();
+      throw error;
     }
   }
 
-  private forceReleaseLock(): void {
+  private poison(error: unknown): Error {
+    this.failure ??= new Error(`JOURNAL_STORAGE_UNCERTAIN:${String(error)}`);
+    return this.failure;
+  }
+
+  protected override assertUsable(): void {
+    if (this.failure) throw this.failure;
+    super.assertUsable();
     try {
-      this.fs.unlinkSync(this.lockPath);
-    } catch {
-      // Best effort
+      this.assertLock();
+      this.assertFile();
+    } catch (error) {
+      throw this.poison(error);
     }
   }
 
-  private releaseLock(): void {
-    this.forceReleaseLock();
+  protected override persist(entry: JournalEntry): void {
+    try {
+      this.writeAll(this.dataFd!, Buffer.from(JSON.stringify(entry) + '\n', 'utf8'));
+      this.io.fsyncSync(this.dataFd!);
+      this.assertLock();
+      this.assertFile();
+    } catch (error) {
+      throw this.poison(error);
+    }
+  }
+
+  override async flush(): Promise<void> {
+    this.assertUsable();
+    try {
+      this.io.fsyncSync(this.dataFd!);
+    } catch (error) {
+      throw this.poison(error);
+    }
+  }
+
+  override async close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      this.cleanup();
+    }
+    if (this.failure) throw this.failure;
+  }
+
+  private writeAll(fd: number, bytes: Buffer): void {
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = this.io.writeSync(fd, bytes, offset, bytes.length - offset, null);
+      if (!Number.isSafeInteger(written) || written <= 0 || written > bytes.length - offset) {
+        throw new Error('JOURNAL_WRITE_PROGRESS_INVALID');
+      }
+      offset += written;
+    }
+  }
+
+  private syncDirectory(): void {
+    const fd = this.io.openSync(
+      this.dirPath,
+      this.io.constants.O_RDONLY | this.io.constants.O_DIRECTORY,
+    );
+    try {
+      this.io.fsyncSync(fd);
+    } finally {
+      this.io.closeSync(fd);
+    }
+  }
+
+  private sameFile(expected: fs.Stats | undefined, actual: fs.Stats): boolean {
+    return (
+      !!expected &&
+      actual.isFile() &&
+      actual.nlink === 1 &&
+      expected.dev === actual.dev &&
+      expected.ino === actual.ino
+    );
+  }
+
+  private assertLock(): void {
+    if (
+      !this.sameFile(this.lockIdentity, this.io.lstatSync(this.lockPath)) ||
+      this.io.readFileSync(this.lockPath, 'utf8') !== this.token
+    )
+      throw new Error('JOURNAL_LOCK_LOST');
+  }
+
+  private assertFile(): void {
+    if (
+      !this.sameFile(this.dataIdentity, this.io.lstatSync(this.filePath)) ||
+      !this.sameFile(this.dataIdentity, this.io.fstatSync(this.dataFd!))
+    )
+      throw new Error('JOURNAL_FILE_CHANGED');
+  }
+
+  /** Never unlink someone else's lock; failed data close leaves an orphan lock. */
+  private cleanup(): void {
+    let dataClosed = true;
+    if (this.dataFd !== undefined) {
+      try {
+        this.io.closeSync(this.dataFd);
+      } catch (error) {
+        dataClosed = false;
+        this.poison(error);
+      }
+      this.dataFd = undefined;
+    }
+    if (this.lockFd !== undefined) {
+      try {
+        // In constructor failure, the token may still be incomplete: inode ownership remains valid.
+        if (!this.sameFile(this.lockIdentity, this.io.lstatSync(this.lockPath)))
+          throw new Error('JOURNAL_LOCK_LOST');
+        if (dataClosed) {
+          if (!this.closed || this.dataIdentity) this.assertLock();
+          this.io.unlinkSync(this.lockPath);
+          this.syncDirectory();
+        }
+      } catch (error) {
+        this.poison(error);
+      }
+      try {
+        this.io.closeSync(this.lockFd);
+      } catch (error) {
+        this.poison(error);
+      }
+      this.lockFd = undefined;
+    }
   }
 }
