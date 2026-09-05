@@ -152,6 +152,11 @@ export function calculateSizing(input: SizingInput): SizingResult {
   // Final max loss.
   const maxLoss = quantity * riskPerUnit;
 
+  // Re-check maxLoss against budget after rounding (rounding can inflate loss).
+  if (maxLoss > maxLossBudget * 1.0001) {
+    return invalid('MAX_LOSS_EXCEEDS_BUDGET_AFTER_ROUNDING');
+  }
+
   return {
     quantity,
     notional,

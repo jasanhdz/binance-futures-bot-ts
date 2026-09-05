@@ -73,7 +73,9 @@ export class RiskLedger {
   /**
    * Apply a trade close event idempotently.
    * Only verified outcomes are applied; unverified outcomes are rejected.
-   * Returns true if this is the first application, false if already applied or rejected.
+   * Late closes (from a previous day) are attributed to their own day
+   * without resetting current day counters. Returns true if this is the
+   * first application, false if already applied or rejected.
    */
   applyTradeClose(outcome: TradeOutcome): boolean {
     // Reject unverified outcomes: do not pollute risk state.
@@ -82,34 +84,43 @@ export class RiskLedger {
     const idempotencyKey = `close:${outcome.tradeId}:${outcome.closedAtMs}`;
     if (this.applied.has(idempotencyKey)) return false;
 
-    // Day rollover check: only roll forward, never backward.
-    // A late close from a previous day does NOT reset today's counters.
     const tradeDay = dayKeyFromDate(outcome.closedAtMs);
+
+    // Day rollover: only roll forward, never backward.
     if (tradeDay > this.state.dayKey) {
       this.resetDay(tradeDay);
     }
 
     this.applied.add(idempotencyKey);
 
-    // Update daily PnL.
-    this.state.dailyPnl += outcome.netPnl;
-    if (this.state.dailyPnl > this.state.peakDailyPnl) {
-      this.state.peakDailyPnl = this.state.dailyPnl;
-    }
+    // Late closes from previous days: apply PnL but do NOT reset counters.
+    // The trade belongs to the past day; only the PnL impact carries forward.
+    const isLateClose = tradeDay < this.state.dayKey;
 
-    // Update consecutive losses.
-    if (outcome.netPnl < 0) {
-      this.state.consecutiveLosses += 1;
+    if (!isLateClose) {
+      // Same day: update all counters normally.
+      this.state.dailyPnl += outcome.netPnl;
+      if (this.state.dailyPnl > this.state.peakDailyPnl) {
+        this.state.peakDailyPnl = this.state.dailyPnl;
+      }
+      if (outcome.netPnl < 0) {
+        this.state.consecutiveLosses += 1;
+      } else {
+        this.state.consecutiveLosses = 0;
+      }
+      this.state.tradesToday += 1;
+      this.state.strategyTradesToday[outcome.strategyId] =
+        (this.state.strategyTradesToday[outcome.strategyId] ?? 0) + 1;
     } else {
-      this.state.consecutiveLosses = 0;
+      // Late close: only accumulate PnL (impacts current balance).
+      this.state.dailyPnl += outcome.netPnl;
+      if (this.state.dailyPnl > this.state.peakDailyPnl) {
+        this.state.peakDailyPnl = this.state.dailyPnl;
+      }
+      // Do NOT increment tradesToday or reset consecutiveLosses.
     }
 
-    // Update strategy trades.
-    this.state.tradesToday += 1;
-    this.state.strategyTradesToday[outcome.strategyId] =
-      (this.state.strategyTradesToday[outcome.strategyId] ?? 0) + 1;
-
-    // Track closed trade.
+    // Track closed trade (always, regardless of timeliness).
     this.state.closedTradeIds.push(outcome.tradeId);
 
     return true;

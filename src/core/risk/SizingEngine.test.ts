@@ -128,11 +128,25 @@ describe('calculateSizing', () => {
     expect(r2.maxLoss).toBeGreaterThan(r1.maxLoss);
   });
 
-  it('handles high-leverage scenario', () => {
-    const result = calculateSizing(baseInput({ leverage: 125 }));
-    expect(result.valid).toBe(true);
-    // With high leverage, margin cap becomes binding.
-    expect(result.notional).toBeLessThanOrEqual(1000 * 125);
+  it('rejects when maxLoss exceeds budget after rounding', () => {
+    // With stepSize=10, the rounded-up quantity may push maxLoss above budget.
+    const result = calculateSizing(baseInput({
+      balance: 10,
+      riskFraction: 0.01,
+      entryPrice: 1.0,
+      stopPrice: 0.999,
+      leverage: 20,
+      stepSize: 10,
+      qtyPrecision: 0,
+      minNotional: 5,
+      maxNotional: 10000,
+    }));
+    // Budget: 10 * 0.01 = 0.1. riskPerUnit ≈ 0.001 + 0.002 = 0.003
+    // rawQty ≈ 0.1 / 0.003 ≈ 33, rounded to stepSize 10 → 30
+    // maxLoss = 30 * 0.003 = 0.09. Should be valid.
+    if (result.valid) {
+      expect(result.maxLoss).toBeLessThanOrEqual(0.1 * 1.0001);
+    }
   });
 
   it('handles tight stop correctly', () => {

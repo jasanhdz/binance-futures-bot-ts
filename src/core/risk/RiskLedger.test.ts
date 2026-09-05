@@ -6,6 +6,11 @@ function dayKeyFromDate(ms: number): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
+function todayMs(): number {
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0);
+}
+
 function makeOutcome(overrides: Partial<TradeOutcome> = {}): TradeOutcome {
   return {
     tradeId: 'T1',
@@ -19,7 +24,7 @@ function makeOutcome(overrides: Partial<TradeOutcome> = {}): TradeOutcome {
     commissions: 0.5,
     funding: 0.1,
     netPnl: 9.4,
-    closedAtMs: 1_700_000_000_000,
+    closedAtMs: todayMs(),
     verified: true,
     ...overrides,
   };

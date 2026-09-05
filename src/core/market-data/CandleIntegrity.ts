@@ -40,6 +40,7 @@ export interface CandleFreshnessResult {
  * Validate freshness and temporal consistency of candle data.
  * - Rejects candles with timestamps in the future (beyond clock skew tolerance).
  * - Rejects candles that are too old relative to the most recent candle.
+ * - Rejects the last candle if its age exceeds maxLastCandleAgeMs (data staleness).
  * - Rejects duplicate openTimes.
  * - Rejects the last candle if it appears incomplete (openTime equals the latest).
  *
@@ -55,13 +56,16 @@ export function validateCandleFreshness(
   options: {
     /** Maximum allowed age of the oldest candle relative to nowMs. Default: 24h. */
     maxAgeMs?: number;
+    /** Maximum allowed age of the LAST candle relative to nowMs. Default: 30min. */
+    maxLastCandleAgeMs?: number;
     /** Maximum allowed future offset for a candle timestamp. Default: 60s. */
     maxFutureSkewMs?: number;
     /** If true, treat the last candle as potentially incomplete. Default: true. */
     rejectIncompleteLast?: boolean;
   } = {},
 ): CandleFreshnessResult {
-  const maxAgeMs = options.maxAgeMs ?? 6 * 60 * 60 * 1000; // 6 hours default (was 24h)
+  const maxAgeMs = options.maxAgeMs ?? 24 * 60 * 60 * 1000;
+  const maxLastCandleAgeMs = options.maxLastCandleAgeMs ?? 30 * 60 * 1000;
   const maxFutureSkewMs = options.maxFutureSkewMs ?? 60_000;
   const rejectIncomplete = options.rejectIncompleteLast ?? true;
 
@@ -89,6 +93,15 @@ export function validateCandleFreshness(
     if (i > 0 && c.openTime === candles[i - 1].openTime) {
       return { valid: false, reason: 'duplicate_open_time', invalidIndex: i };
     }
+  }
+
+  // Last candle freshness: data staleness check independent of history length.
+  // Even if maxAgeMs is large (allowing long history), the latest candle must
+  // be recent enough to be actionable for decisions.
+  const lastCandle = candles[candles.length - 1];
+  const lastCandleAge = nowMs - lastCandle.openTime;
+  if (lastCandleAge > maxLastCandleAgeMs) {
+    return { valid: false, reason: 'last_candle_stale', invalidIndex: candles.length - 1 };
   }
 
   // Incomplete last candle: if its openTime equals the latest, it may still be forming.
@@ -153,6 +166,7 @@ export function validateDataQuality(
   nowMs: number,
   options: {
     maxAgeMs?: number;
+    maxLastCandleAgeMs?: number;
     maxFutureSkewMs?: number;
     rejectIncompleteLast?: boolean;
     minCandles?: number;

@@ -5,6 +5,8 @@ import { StateStore } from '../ports/StateStore';
 
 export type PositionOwner = 'MICRO' | 'AEGIS' | 'MOMENTUM' | 'EXTERNAL' | 'UNKNOWN';
 
+export type StopCheckResult = 'CONFIRMED' | 'ABSENT' | 'UNKNOWN';
+
 export type ProtectionStatus =
   | 'PROTECTED'
   | 'UNKNOWN'
@@ -91,12 +93,13 @@ export class PositionSupervisor {
     const owner = this.deps.resolveOwner(state);
 
     // Unknown ownership: block new entries, persist RECOVERY_REQUIRED.
+    // Position state unknown → preserve current mode.
     if (owner === 'UNKNOWN') {
       return this.persistStatus(store, {
         status: 'RECOVERY_REQUIRED',
         owner,
         reason: 'OWNERSHIP_UNKNOWN',
-      });
+      }, true);
     }
 
     // External/manual: protect conservatively but never claim strategy authority.
@@ -120,7 +123,7 @@ export class PositionSupervisor {
         status: 'RECOVERY_REQUIRED',
         owner,
         reason: 'SIDE_UNKNOWN',
-      });
+      }, true);
     }
 
     // 1. Read position from exchange.
@@ -132,7 +135,7 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: `POSITION_READ_FAILED:${String(error)}`,
-      });
+      }, true);
     }
 
     // 2. Flat: reconcile and clear.
@@ -150,7 +153,7 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: 'POSITION_INVALID',
-      });
+      }, true);
     }
 
     // 4. Check if owner requires stop protection.
@@ -174,8 +177,17 @@ export class PositionSupervisor {
     const config = this.deps.getStopConfig(owner);
 
     // 5a. Check if stop already confirmed.
-    if (await this.hasConfirmedStop(symbol, side, position, config)) {
+    const stopCheck = await this.hasConfirmedStop(symbol, side, position, config);
+    if (stopCheck === 'CONFIRMED') {
       return this.persistStatus(store, { status: 'PROTECTED', owner });
+    }
+    if (stopCheck === 'UNKNOWN') {
+      // Could not determine stop status; persist and continue to avoid sending duplicate.
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: 'STOP_CHECK_AMBIGUOUS',
+      }, true);
     }
 
     // 5b. Check if there was a previous submission pending confirmation.
@@ -203,7 +215,7 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: 'SUBMISSION_CONTEXT_INVALID',
-      });
+      }, true);
     }
 
     // 5c. Find a remembered stop price from state.
@@ -215,7 +227,7 @@ export class PositionSupervisor {
         status: 'RECOVERY_REQUIRED',
         owner,
         reason: 'STOP_PRICE_UNKNOWN',
-      });
+      }, true);
     }
     const stopPrice = side === 'LONG' ? Math.max(...remembered) : Math.min(...remembered);
 
@@ -228,14 +240,14 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: `MARK_PRICE_READ_FAILED:${String(error)}`,
-      });
+      }, true);
     }
     if (this.wouldTriggerImmediately(side, stopPrice, markPrice, config.immediateTriggerBufferPct)) {
       return this.persistStatus(store, {
         status: 'RECOVERY_REQUIRED',
         owner,
         reason: 'STOP_IMMEDIATE_TRIGGER_RISK',
-      });
+      }, true);
     }
 
     // 5e. Get filters and round.
@@ -247,7 +259,7 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: `FILTER_READ_FAILED:${String(error)}`,
-      });
+      }, true);
     }
     const effectiveStop = this.roundStopPrice(side, stopPrice, filters);
     if (this.wouldTriggerImmediately(side, effectiveStop, markPrice, config.immediateTriggerBufferPct)) {
@@ -255,7 +267,7 @@ export class PositionSupervisor {
         status: 'RECOVERY_REQUIRED',
         owner,
         reason: 'STOP_INVALID_AFTER_ROUNDING',
-      });
+      }, true);
     }
 
     // 5f. Persist intent before sending (crash-safe).
@@ -265,7 +277,7 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: 'NO_STORE_FOR_PERSISTENCE',
-      });
+      }, true);
     }
     try {
       store.set({
@@ -282,7 +294,7 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: `STOP_PERSIST_FAILED:${String(error)}`,
-      });
+      }, true);
     }
 
     // 5g. Place stop.
@@ -294,17 +306,25 @@ export class PositionSupervisor {
         status: 'UNKNOWN',
         owner,
         reason: `STOP_PLACEMENT_AMBIGUOUS:${String(error)}`,
-      });
+      }, true);
     }
     if (!placed) {
       return this.attemptEmergencyClose(symbol, side, position, owner, 'STOP_REJECTED', store);
     }
 
     // 5h. Confirm placement.
-    const confirmed = await this.hasConfirmedStop(symbol, side, position, config);
-    if (confirmed) {
+    const confirmResult = await this.hasConfirmedStop(symbol, side, position, config);
+    if (confirmResult === 'CONFIRMED') {
       this.deps.logger.info('position_supervisor_stop_confirmed', { symbol, side, owner, effectiveStop });
       return this.persistStatus(store, { status: 'PROTECTED', owner, stopPrice: effectiveStop });
+    }
+    if (confirmResult === 'UNKNOWN') {
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: 'STOP_PLACEMENT_CONFIRMATION_AMBIGUOUS',
+        stopPrice: effectiveStop,
+      }, true);
     }
 
     return this.persistStatus(store, {
@@ -320,20 +340,25 @@ export class PositionSupervisor {
     side: Side,
     position: PositionInfo,
     config: { confirmationAttempts: number; confirmationDelaysMs: readonly number[] },
-  ): Promise<boolean> {
+  ): Promise<StopCheckResult> {
+    let lastError = false;
     for (let attempt = 0; attempt < config.confirmationAttempts; attempt++) {
       try {
         const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
-        if (orders.some((o) => this.coversPosition(o, side, position))) return true;
+        if (orders.some((o) => this.coversPosition(o, side, position))) return 'CONFIRMED';
+        // Confirmed absence: query succeeded, no matching stop found.
+        lastError = false;
       } catch {
-        // Retry observation only; never resubmit.
+        // Track that at least one query failed.
+        lastError = true;
       }
       if (attempt < config.confirmationAttempts - 1) {
         const delay = config.confirmationDelaysMs[Math.min(attempt, config.confirmationDelaysMs.length - 1)] ?? 0;
         await (this.deps.wait?.(Math.max(0, delay)) ?? new Promise((r) => setTimeout(r, delay)));
       }
     }
-    return false;
+    // If any query failed, we can't be sure the stop is absent.
+    return lastError ? 'UNKNOWN' : 'ABSENT';
   }
 
   private coversPosition(
@@ -412,30 +437,35 @@ export class PositionSupervisor {
       return this.persistStatus(store, { status: 'UNKNOWN', owner, reason: 'FLAT_READ_ERROR' });
     }
 
-    // Clean only BOT orders and verify survivors.
+    // Clean only BOT orders and verify survivors by re-consulting exchange.
     const side = state.lastSide ?? 'LONG';
-    const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    const preOrders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
     const cancelledIds: string[] = [];
-    for (const order of orders) {
+    for (const order of preOrders) {
       if (order.owner === 'BOT') {
         try {
           await this.deps.exchange.cancelOrderById(symbol, order.orderId);
           cancelledIds.push(order.orderId);
         } catch {
-          // Best-effort cleanup; track failures but do not block flat confirmation.
+          // Track failure but continue cleanup.
         }
       }
     }
 
-    // Verify surviving orders after cleanup (those not cancelled and not BOT).
-    const survivingNonBot = orders.filter(
-      (o) => o.owner !== 'BOT' && !cancelledIds.includes(o.orderId),
-    );
-    if (survivingNonBot.length > 0) {
-      // Non-BOT orders still exist; this is informational only, not blocking.
+    // Re-consult exchange to verify surviving orders (not cached list).
+    let survivingNonBot = 0;
+    try {
+      const postOrders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+      survivingNonBot = postOrders.filter(
+        (o) => o.owner !== 'BOT' && !cancelledIds.includes(o.orderId),
+      ).length;
+    } catch {
+      // If re-consult fails, we cannot verify survivors; log and continue.
+    }
+    if (survivingNonBot > 0) {
       this.deps.logger.info('position_supervisor_surviving_orders', {
         symbol,
-        survivingOrders: survivingNonBot.length,
+        survivingOrders: survivingNonBot,
       });
     }
 
@@ -481,11 +511,12 @@ export class PositionSupervisor {
     this.deps.logger.warn('position_supervisor_emergency_close', { symbol, side, owner, reason });
 
     // Persist RECOVERY_REQUIRED before attempting close (crash-safe).
+    // Position is still open → preserve mode.
     await this.persistStatus(store, {
       status: 'RECOVERY_REQUIRED',
       owner,
       reason: `EMERGENCY_CLOSE_ATTEMPTING:${reason}`,
-    });
+    }, true);
 
     try {
       await this.deps.exchange.closeSideMarketSafe(symbol, side, position.qtyAbs, position.sideMode, reason);
@@ -494,7 +525,7 @@ export class PositionSupervisor {
         status: 'EMERGENCY_CLOSE_FAILED',
         owner,
         reason: `EMERGENCY_CLOSE_FAILED:${String(error)}`,
-      });
+      }, true);
     }
 
     // Confirm flat after emergency close: two observations.
@@ -519,7 +550,7 @@ export class PositionSupervisor {
         status: 'RECOVERY_REQUIRED',
         owner,
         reason: 'EMERGENCY_CLOSE_CONFIRMATION_FAILED',
-      });
+      }, true);
     }
 
     // Verify surviving orders after emergency close.
@@ -558,13 +589,17 @@ export class PositionSupervisor {
   private async persistStatus(
     store: StateStore | undefined,
     result: SupervisionResult,
+    preservePositionState?: boolean,
   ): Promise<SupervisionResult> {
     if (store && result.status !== 'PROTECTED' && result.status !== 'MISSING') {
       const patch: Partial<BotState> = {};
       if (result.status === 'RECOVERY_REQUIRED' || result.status === 'UNKNOWN') {
         patch.microProtectionBlocked = true;
       }
-      if (result.status === 'RECOVERY_REQUIRED') {
+      // Only set IDLE when we've confirmed the position is flat.
+      // When preservePositionState is true (position is open but protection
+      // is uncertain), preserve the current mode to avoid losing track.
+      if (result.status === 'RECOVERY_REQUIRED' && !preservePositionState) {
         patch.mode = 'IDLE';
       }
       store.set(patch);
