@@ -1,5 +1,23 @@
 # Validación del incremento de seguridad
 
+## Referencia vigente del traspaso
+
+- Último commit de código validado y publicado: `c5d4f60311e75fa838a41eeac039c1495d9f644b`.
+- Incremento anterior: `fbc7f19e3bac96ac5008e587d6b2ed57702dd4b1`.
+- Rama única: `work/micro-burst-rider-v1-20260826`.
+- Última ejecución de `npm run test:safety`: build PASS; grupo principal 175 archivos,
+  1.590 tests PASS; ConfigLoader 1 archivo, 46 tests PASS. Total: 176 archivos,
+  **1.636 tests, 0 fallos**. Formato de TS modificados y `git diff --check`: PASS.
+- Este resultado pertenece al código de `c5d4f60`. Una actualización sólo documental
+  no constituye una nueva ejecución de la suite. Recontar tras cambios futuros.
+- No hubo runtime LIVE, órdenes, soak, replay histórico ni validación económica.
+- En entorno virtual: implementar código y crear tests sintéticos/deterministas;
+  ejecutar validación técnica al final de cada bloque, no tras cada edición.
+  Falta de datasets no impide esos tests. Las pruebas económicas quedan pendientes.
+- Usar `CODEX_CONTINUE_SAFETY_PROMPT.md` y `SAFETY_PHASES_HANDOFF.md` para continuar.
+
+## Registro histórico del primer incremento (no es el estado actual)
+
 Baseline: `05b233963d7897dccb9912f82b76895270eeb3b0`.
 Rama: `work/micro-burst-rider-v1-20260826`.
 Alcance: incremento parcial y traspaso; no aprobación de despliegue LIVE.

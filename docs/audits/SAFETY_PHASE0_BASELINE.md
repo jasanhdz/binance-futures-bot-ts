@@ -10,7 +10,17 @@
 - Validación previa a esta modificación: build PASS, 1.548/1.548 tests del grupo principal,
   46/46 tests del grupo `ConfigLoader`, y `git diff --check` PASS.
 
-## Baseline remoto actual
+## Baseline vigente del traspaso
+
+- Código validado/publicado: `c5d4f60311e75fa838a41eeac039c1495d9f644b`.
+- Rama: `work/micro-burst-rider-v1-20260826`.
+- Build y 1.590 + 46 = 1.636 tests PASS (176 archivos entre ambos grupos).
+- Fases 1/2/3/5/7 con incrementos parciales; fase 0 avanzada, sin evidencia del
+  supervisor externo. No hay certificación operativa ni económica.
+- El objetivo virtual actual es completar implementación y tests, manteniendo
+  separados los pendientes de datos reales, parámetros aprobados y despliegue.
+
+## Baseline histórico de revisión
 
 - HEAD verificado: `c8244382aba8820a7112ae9499df754a8e4e081f`.
 - `npm run test:safety`: build PASS; grupo principal `174/174` archivos y `1557/1557` tests
@@ -35,9 +45,12 @@ Micro no hereda TP ni trailing de Aegis.
 
 ## Supervisor externo
 
-No existe un supervisor de brackets versionado en este repositorio. No se ha podido verificar
-desde el checkout un proceso externo con propietario, frecuencia, símbolos, condiciones y
-evidencia operativa; por tanto no se cuenta como cobertura de seguridad.
+Sí existe supervisión interna versionada: `src/app/position/PositionProtectionService.ts`,
+integrada con `TradingService`. Esto no equivale todavía a supervisión universal independiente.
+El usuario también menciona un guard que repone brackets: no se ha podido verificar si existe
+un proceso externo adicional, su propietario, frecuencia, símbolos y evidencia operativa.
+No negar su existencia ni contar cobertura externa no verificada. Inspeccionar y reutilizar
+el código existente antes de crear otro supervisor. La evidencia de producción queda pendiente.
 
 ## Runner reproducible
 

@@ -4,9 +4,13 @@
 
 - Repositorio: `jasanhdz/binance-futures-bot-ts`.
 - Rama única: `work/micro-burst-rider-v1-20260826`. No crear otra rama.
-- Baseline auditado: `05b233963d7897dccb9912f82b76895270eeb3b0`.
+- Baseline histórico auditado: `05b233963d7897dccb9912f82b76895270eeb3b0`.
+- Punto de continuación de código: `c5d4f60311e75fa838a41eeac039c1495d9f644b`.
 - Este documento acompaña un incremento PARCIAL de seguridad, no certifica todas las fases.
-- El usuario pide continuar localmente, una fase verificable por vez, con commits y publicación.
+- El usuario pide completar el código de TODAS las fases y crear sus tests desde un
+  entorno virtual, con commits y publicación incremental. No esperar datasets para programar.
+- Agrupar implementación y creación de tests; ejecutar la validación técnica al FINAL
+  de cada bloque publicable y una regresión global final. No ejecutar replay/soak aquí.
 - Leer `AGENTS.md`, el diff del incremento y las implementaciones actuales antes de editar.
 - No iniciar `main.ts`, PM2, servicios LIVE, soak, órdenes Binance ni cambiar credenciales.
 - Publicar código NO autoriza desplegarlo. Preservar configuración LIVE, presupuesto y modos.
@@ -15,6 +19,40 @@
 - No borrar trabajo local, no `git reset --hard`, no force push, no aprobar modelos mediante hashes inventados.
 
 ## Estado entregado (no confundir incrementos con fases completas)
+
+### Contrato de continuación virtual — prevalece sobre notas históricas inferiores
+
+Leer también `CODEX_CONTINUE_SAFETY_PROMPT.md`. Finalizar implementación no significa
+aprobar económicamente, operacionalmente o para LIVE. Registrar por fase:
+
+- IMPLEMENTACION: PENDIENTE / PARCIAL / COMPLETA (con rutas y commit).
+- TESTS: CREADOS / EJECUTADOS_PASS / FALLIDOS / NO_EJECUTADOS (comando y resultado).
+- VALIDACION_REAL: PENDIENTE_DATOS / PENDIENTE_OPERADOR / NO_APLICA.
+- PUBLICACION: LOCAL / PUBLICADO (SHA remoto verificado). DESPLIEGUE: NO_AUTORIZADO.
+
+No usar un único check para ocultar esos estados. No llamar COMPLETA a implementación
+con stubs, TODO de lógica crítica o módulos sin cablear al runtime aplicable. En los
+componentes experimentales de fases 7/8, dejar el contrato probado y la activación
+pendiente de aprobación; no alterar silenciosamente la política LIVE.
+
+| Fase | Estado al partir de c5d4f60 | Trabajo que debe programarse ahora |
+| --- | --- | --- |
+| 0 | Avanzada | Corregir documentación y mantener runner reproducible; evidencia externa queda pendiente |
+| 1 | Parcial | Supervisor común, inventario completo, identidad de órdenes y recovery durable general |
+| 2 | Parcial | Snapshot completo, reservas de riesgo persistentes, revalidación y escritor único |
+| 3 | Parcial | Journal previo a aperturas/cierres, recovery al arrancar, fallos de disco/timeout de apagado |
+| 4 | Pendiente de completar | Fills atribuibles/paginados, costes verificables y ledger idempotente |
+| 5 | Parcial | Validación temprana común, cierre/frescura/cadencia y alineación temporal |
+| 6 | Pendiente | Identidad y hash efectivos, manifiesto no circular, no autoaprobación |
+| 7 | Parcial | Semántica real de indicadores y modos, paridad legacy/V2, autoridad única |
+| 8 | Pendiente | Motor parametrizado de riesgo/ejecución; presupuesto y activación quedan para el propietario |
+| 9 | Pendiente | Extracción de orquestación con paridad y puertos tipados |
+| 10 | Pendiente | Tooling de replay/evaluación completo y tests sintéticos; resultados económicos pendientes |
+
+Orden de implementación: 0; ciclo crítico 1/2/3 coordinado con prioridad al journal
+y reconciliación; 4; 5/6; 7/8; consolidación 9; tooling 10. La falta de datos o una
+aprobación de parámetros se registra sin bloquear otros trabajos independientes.
+Las dudas que impliquen permisos, pérdida de datos o política LIVE sí requieren consulta.
 
 ### Segundo incremento 2026-09-05 sobre `fbc7f19`
 
@@ -85,7 +123,7 @@
 - [x] Pruebas nuevas de stop, exclusión, error de exposición, orden de supervisión y velas.
 - [x] Reparaciones de fixtures anteriores: cuarentena alcanza su guard con provenance simulada;
       fallo de listado se distingue de retraso de visibilidad; tamaño predeterminado esperado 0.9.
-- [x] Se actualiza solamente el digest de fuente `TradingService` en la prueba de restauración,
+- [x] Se actualizan los digests de fuente `TradingService` y `FsStateStore` en restauración,
       con motivo explícito. No se cambia ningún manifiesto de aprobación LIVE.
 - [ ] Supervisión universal, recuperación durable y reconciliación externa: NO terminadas.
 - [ ] Resto de fases: seguir el checklist inferior; no marcar todo como resuelto.
@@ -160,8 +198,8 @@ Archivos: `src/app/position/{PositionProtectionService,PositionRecoveryService,S
       Micro ahora rechaza precio ausente o stop con riesgo de trigger inmediato; la validación
       completa de filtros y la protección existente siguen pendientes.
 - [ ] Confirmación con reintentos acotados: Micro reintenta la visibilidad del stop y rechaza
-      órdenes explícitamente `UNKNOWN`; los intentos y espera son inyectables. El estado duradero
-      y supervisor común siguen pendientes.
+      órdenes explícitamente `UNKNOWN`; intentos/espera son inyectables. Micro persiste el
+      intento antes de enviarlo; faltan identidad de orden, journal general y supervisor común.
 - [ ] Posición cerrada por stop/exchange/manual: reconciliar independientemente del contexto técnico.
       Micro ya reconcilia flat y órdenes propias sin indicadores y mantiene PnL pendiente;
       falta extender el contrato a todas las estrategias e integrar contabilidad verificada.
@@ -352,6 +390,10 @@ todos los modos con contexto ausente/inválido; spies marketOpen; razones origin
 
 ## Fase 8 — Presupuesto y geometría ejecutable
 
+En virtual implementar motor puro y adaptadores con presupuesto de fixtures. No elegir
+un presupuesto LIVE por el usuario ni reemplazar el default 0.9 sin aprobación. Registrar
+implementación completa y activación pendiente como estados separados cuando corresponda.
+
 Archivos: `MicroBurstEntryPolicy`, `MicroBurstLeveragePolicy`, intent factory, ejecución.
 
 - [ ] Pedir presupuesto autorizado de pérdida por trade/cuenta antes de cambiar exposición LIVE.
@@ -388,6 +430,11 @@ infraestructura ejecuta contratos, nunca decide dirección por su cuenta
 
 ## Fase 10 — Evidencia económica, no ajuste a ciegas
 
+Alcance virtual: terminar loaders con contratos/esquemas, CLI, replay causal, comparador,
+métricas, exportes y tests sintéticos. Sin datos reales devolver INSUFFICIENT_DATA o
+PENDING_REAL_DATA; no fabricar métricas ni declarar NO_EDGE sin evaluación válida.
+Es posible completar el tooling, no la evidencia económica real en este entorno.
+
 Archivos: tooling de régimen, `MicroBurstOutcomeEngine/Tracker`, blackbox, paper y analyzers.
 
 - [ ] Inventariar datos locales y cobertura; pedir ubicación si faltan. No inventar resultados.
@@ -411,12 +458,16 @@ emitir EVIDENCE_SUFFICIENT / INSUFFICIENT_DATA / NO_EDGE
 
 ## Entrega de cada fase
 
-1. Test que reproduce el problema, corrección pequeña, pruebas normales y adversariales.
-2. Build y regresión; no ocultar errores con skips, mocks permisivos o umbrales relajados.
+1. Implementar un bloque coherente y crear tests normales/adversariales sin ejecutarlos
+   tras cada edición. No dejar los tests de seguridad para una futura sesión indefinida.
+2. Al final del bloque: build, tests técnicos y regresión; no ocultar errores con skips,
+   mocks permisivos o umbrales relajados. No requieren datos reales ni credenciales.
 3. Actualizar checklist con evidencia, SHA y limitaciones; commits por responsabilidad.
 4. Fetch antes de push; push normal a Micro. Si hay divergencia, preservar cambios y resolver
    conscientemente; no encadenar merge/rebase/force como receta automática.
 5. Reportar por separado: implementado, probado, publicado, desplegado (este último NO autorizado).
 
-Orden recomendado local: completar 0/1/2, luego 3/4/5/6, después 7/8/9 y finalmente 10.
+Orden vigente: 0; ciclo crítico 1/2/3 con journal/reconciliación primero; 4; 5/6;
+7/8; consolidación 9 y tooling 10. La numeración identifica fases, no exige terminar
+un supervisor durable antes de programar el journal del que depende.
 Los puntos parciales ya escritos no justifican saltar las pruebas de aceptación de su fase.
