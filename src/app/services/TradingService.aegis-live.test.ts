@@ -1374,7 +1374,7 @@ describe('TradingService Aegis live execution', () => {
       },
     });
     vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
-      configHash: 'test-config',
+      configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
       codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
     });
     let rejectRead!: (error: Error) => void;
@@ -1463,7 +1463,7 @@ describe('TradingService Aegis live execution', () => {
 
     // Reach the quarantine check: do not let unrelated deployment provenance reject first.
     vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
-      configHash: 'test-config',
+      configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
       codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
     });
     const opened = await (service as any).openMicroBurstLivePosition({

@@ -50,4 +50,23 @@ describe('Micro Burst Expected Continuation candidate identity', () => {
     const identity = createMicroBurstV1Identity('a'.repeat(40));
     expect(hasMicroBurstV1LiveAuthority(identity, 'b'.repeat(64), 'c'.repeat(40))).toBe(false);
   });
+
+  it('denies LIVE when config hash does not match identity config hash', () => {
+    const commit = '56e4574fe629768524b3f129e4f45e55746c6550';
+    const identity = createMicroBurstV1Identity(commit);
+    expect(hasMicroBurstV1LiveAuthority(identity, 'wrong_hash', commit)).toBe(false);
+  });
+
+  it('denies LIVE when freeze state is not FROZEN_LIVE', () => {
+    const commit = '56e4574fe629768524b3f129e4f45e55746c6550';
+    const identity = createMicroBurstV1Identity(commit);
+    identity.freezeState = 'FROZEN_LIVE_CANDIDATE';
+    expect(hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, commit)).toBe(false);
+  });
+
+  it('denies LIVE when code commit SHA is empty', () => {
+    const identity = createMicroBurstV1Identity();
+    identity.codeCommitSha = '';
+    expect(hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, 'whatever')).toBe(false);
+  });
 });

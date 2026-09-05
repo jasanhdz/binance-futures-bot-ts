@@ -26,13 +26,17 @@ export function createMicroBurstV1Identity(
 
 export function hasMicroBurstV1LiveAuthority(
   identity: StrategyIdentity,
-  _effectiveConfigSha256: string,
+  effectiveConfigSha256: string,
   deployedCodeCommitSha: string,
 ): boolean {
+  const configMatches =
+    identity.configHash === `sha256:${effectiveConfigSha256}`;
+
   return Boolean(
     hasLiveAuthority(identity, 'LIVE') &&
       /^[a-f0-9]{40}$/i.test(identity.codeCommitSha) &&
-      deployedCodeCommitSha.toLowerCase() === identity.codeCommitSha.toLowerCase(),
+      deployedCodeCommitSha.toLowerCase() === identity.codeCommitSha.toLowerCase() &&
+      configMatches,
   );
 }
 
