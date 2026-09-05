@@ -2,6 +2,21 @@
 
 ## Referencia vigente del traspaso
 
+- Último código auditado/publicado: `389a6ff2cc6953b4628d3ab37a96a5054a1c5171`.
+- Auditoría propia dirigida sobre ese código: cuatro fallos reproducidos, R1–R4 en
+  `CHAT_CONTINUITY_389A6FF.md`. Caso anterior de sizing rechazado correctamente.
+- Usuario reportó para 389a6ff build PASS y 182 archivos/1.728 tests. Compatible con
+  grupo principal; con 46 ConfigLoader serían 183 archivos/1.774, pero la auditoría
+  NO repitió esa suite ni verificó una nueva ejecución del segundo grupo.
+- Para fa90c27 el usuario reportó 183 archivos/1.774 tests, build PASS.
+- Baseline propio histórico c5d4f60: build y 1.590 + 46 = 1.636 tests PASS.
+- No ejecutar de nuevo tests sólo por actualizar estos MD; no atribuir resultados
+  anteriores a este commit documental. Se verifica consistencia documental y diff.
+- No hay validación económica ni despliegue autorizado. Estado real por fase y detalles
+  en `CHAT_CONTINUITY_389A6FF.md`; la suite reportada no invalida las reproducciones.
+
+## Reporte histórico del agente hasta ecfde4a (no referencia vigente)
+
 - Último commit de código validado y publicado: `ecfde4a` (Phase 10 tooling).
 - Rama única: `work/micro-burst-rider-v1-20260826`.
 - Última ejecución completa: build PASS; suite principal 182 archivos,
@@ -16,10 +31,11 @@
 ## Registro histórico (no es el estado actual)
 
 ### Primer incremento: c5d4f60
-Baseline: 1.636 tests. Alcance: CandleIntegrity freshness, PositionSupervisor.
+Baseline propio: 1.636 tests. Alcance: protección Micro integrada, intento persistido
+de stop y reconciliación flat; no el nuevo PositionSupervisor añadido después.
 
 ### Segundo incremento: 03ec3ae
-Tests: 1.671 (+35). Alcance: AccountExposureSnapshot, ExecutionJournal, RiskLedger, SizingEngine.
+Tests reportados: 1.671 (+35). Alcance del commit: PositionSupervisor y funciones de frescura.
 
 ### Tercer incremento: 47992bf
 Tests: 1.726 (+90). Alcance: AccountExposureSnapshot, ExecutionJournal, RiskLedger, SizingEngine.
@@ -30,7 +46,7 @@ Tests: 1.735 (+99). Alcance: Phase 6 config hash verification, Phase 7 RegimeAut
 ### Quinto incremento: ecfde4a
 Tests: 1.753 (+117). Alcance: Phase 10 safety replay tooling.
 
-## Resultado vigente
+## Resultado reportado histórico de ecfde4a
 
 - `npm run build`: PASS.
 - Suite excluyendo `ConfigLoader.aegis-symbols.test.ts`, con `REGIME_CONFIG=regime_config.live.yaml`:
