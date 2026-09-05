@@ -102,7 +102,7 @@ describe('RiskLedger', () => {
     expect(state.dayKey).toBe(dayKeyFromDate(day2Ms));
     expect(state.tradesToday).toBe(1); // Reset.
     expect(state.dailyPnl).toBeCloseTo(5); // Reset.
-    expect(state.consecutiveLosses).toBe(0); // Reset.
+    expect(state.consecutiveLosses).toBe(0); // Latest chronological close is a win.
 
     // Apply late trade from previous day: does NOT roll backward.
     const lateTrade = ledger.applyTradeClose(
@@ -211,7 +211,7 @@ describe('RiskLedger', () => {
     const state = ledger.getState();
     expect(state.dailyPnl).toBeCloseTo(10); // Unchanged by yesterday's loss.
     expect(state.tradesToday).toBe(1); // Late trade not counted.
-    expect(state.consecutiveLosses).toBe(0); // Late loss not counted.
+    expect(state.consecutiveLosses).toBe(0); // Today's later win ends the global streak.
     expect(state.closedTradeIds).toEqual(['T1', 'T2']); // But tracked for idempotency.
   });
 
@@ -246,7 +246,394 @@ describe('RiskLedger', () => {
     expect(ledger2.getHistoricalPnl(dayKeyFromDate(day1Ms))).toBeCloseTo(-25);
     expect(ledger2.getState().dailyPnl).toBeCloseTo(10);
     // Re-applying same trades is idempotent.
-    expect(ledger2.applyTradeClose(makeOutcome({ tradeId: 'T2', netPnl: -25, closedAtMs: day1Ms }))).toBe(false);
+    expect(
+      ledger2.applyTradeClose(makeOutcome({ tradeId: 'T2', netPnl: -25, closedAtMs: day1Ms })),
+    ).toBe(false);
     expect(ledger2.getHistoricalPnl(dayKeyFromDate(day1Ms))).toBeCloseTo(-25);
+  });
+});
+
+describe('RiskLedger evidence and recovery contracts', () => {
+  const yesterday = Date.UTC(2026, 8, 4, 12);
+  const today = yesterday + 86_400_000;
+  const yesterdayKey = dayKeyFromDate(yesterday);
+  const todayKey = dayKeyFromDate(today);
+  const restart = (ledger: RiskLedger): RiskLedger =>
+    new RiskLedger(JSON.parse(JSON.stringify(ledger.getState())));
+
+  it('archives ordinary PnL at rollover and adds late economics exactly once after JSON restart', () => {
+    let ledger = new RiskLedger({ dayKey: yesterdayKey });
+    const ordinary = makeOutcome({ tradeId: 'ordinary', closedAtMs: yesterday, netPnl: 10 });
+    const current = makeOutcome({ tradeId: 'current', closedAtMs: today, netPnl: 5 });
+    const late = makeOutcome({ tradeId: 'late', closedAtMs: yesterday + 1, netPnl: -25 });
+    expect(ledger.applyTradeClose(ordinary)).toBe(true);
+    expect(ledger.applyTradeClose(current)).toBe(true);
+    expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(10);
+    ledger = restart(ledger);
+    expect(ledger.applyTradeClose(late)).toBe(true);
+    expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(-15);
+    expect(ledger.getHistoricalPnl(todayKey)).toBe(5);
+    expect(ledger.getState()).toMatchObject({ dailyPnl: 5, tradesToday: 1 });
+    const before = ledger.getState();
+    ledger = restart(ledger);
+    for (const outcome of [ordinary, current, late]) {
+      expect(ledger.applyTradeClose(outcome)).toBe(false);
+    }
+    expect(ledger.getState()).toEqual(before);
+  });
+
+  it('isolates input outcomes, snapshots and constructor maps/evidence', () => {
+    const ledger = new RiskLedger({ dayKey: todayKey });
+    const outcome = makeOutcome({ closedAtMs: today });
+    ledger.applyTradeClose(outcome);
+    const expected = ledger.getState();
+    outcome.netPnl = 999;
+    const snapshot = ledger.getState();
+    const recovered = new RiskLedger(snapshot);
+    snapshot.strategyTradesToday.MICRO_BURST_V1 = 999;
+    snapshot.historicalPnl[todayKey] = 999;
+    snapshot.appliedKeys.length = 0;
+    snapshot.closedTradeIds.length = 0;
+    snapshot.outcomes![0].netPnl = 999;
+    snapshot.legacyBaseline!.strategyTradesToday.injected = 999;
+    snapshot.legacyBaseline!.historicalPnl[yesterdayKey] = 999;
+    expect(ledger.getState()).toEqual(expected);
+    expect(recovered.getState()).toEqual(expected);
+    expect(recovered.applyTradeClose(makeOutcome({ closedAtMs: today }))).toBe(false);
+
+    const legacy = {
+      dayKey: todayKey,
+      strategyTradesToday: { strategy: 2 },
+      historicalPnl: { [yesterdayKey]: 7 },
+      appliedKeys: ['close:old:1000'],
+    };
+    const imported = new RiskLedger(legacy);
+    const before = imported.getState();
+    legacy.strategyTradesToday.strategy = 99;
+    legacy.historicalPnl[yesterdayKey] = 99;
+    legacy.appliedKeys.length = 0;
+    expect(imported.getState()).toEqual(before);
+  });
+
+  it('replays same-day late events chronologically for peaks and streaks', () => {
+    const events = [
+      makeOutcome({ tradeId: 'A', closedAtMs: today, netPnl: -20 }),
+      makeOutcome({ tradeId: 'B', closedAtMs: today + 1, netPnl: 10 }),
+      makeOutcome({ tradeId: 'C', closedAtMs: today + 2, netPnl: -5 }),
+    ];
+    for (const order of [
+      [1, 2, 0],
+      [2, 0, 1],
+      [0, 1, 2],
+    ]) {
+      let ledger = new RiskLedger({ dayKey: todayKey });
+      for (const index of order) {
+        ledger.applyTradeClose(events[index]);
+        ledger = restart(ledger);
+      }
+      expect(ledger.getState()).toMatchObject({
+        dailyPnl: -15,
+        peakDailyPnl: 0,
+        consecutiveLosses: 1,
+        tradesToday: 3,
+      });
+    }
+  });
+
+  it('breaks timestamp ties by tradeId and carries the global streak across rollover', () => {
+    const ledger = new RiskLedger({ dayKey: yesterdayKey });
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'B', closedAtMs: yesterday, netPnl: -4 }));
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'A', closedAtMs: yesterday, netPnl: 10 }));
+    expect(ledger.getState()).toMatchObject({ peakDailyPnl: 10, consecutiveLosses: 1 });
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'C', closedAtMs: today, netPnl: -2 }));
+    expect(ledger.getState()).toMatchObject({
+      dailyPnl: -2,
+      tradesToday: 1,
+      peakDailyPnl: 0,
+      consecutiveLosses: 2,
+    });
+    expect(restart(ledger).getState()).toEqual(ledger.getState());
+  });
+
+  it('rebuilds cross-midnight streaks for late evidence and corrections without changing daily counters', () => {
+    const midnight = Date.UTC(2026, 8, 5);
+    let ledger = new RiskLedger({ dayKey: yesterdayKey });
+    const first = makeOutcome({ tradeId: 'first', closedAtMs: midnight - 3, netPnl: -4 });
+    const current = makeOutcome({ tradeId: 'current', closedAtMs: midnight, netPnl: -2 });
+    ledger.applyTradeClose(first);
+    ledger.applyTradeClose(current);
+    expect(ledger.getState().consecutiveLosses).toBe(2);
+    const lateLoss = makeOutcome({ tradeId: 'late-loss', closedAtMs: midnight - 1, netPnl: -3 });
+    ledger.applyTradeClose(lateLoss);
+    expect(ledger.getState().consecutiveLosses).toBe(3);
+    ledger = restart(ledger);
+    const lateWin = makeOutcome({ tradeId: 'late-win', closedAtMs: midnight - 2, netPnl: 10 });
+    ledger.applyTradeClose(lateWin);
+    expect(ledger.getState().consecutiveLosses).toBe(2);
+    expect(ledger.applyTradeClose({ ...lateLoss, revision: 2, netPnl: 0 })).toBe(true);
+    expect(ledger.getState()).toMatchObject({
+      dayKey: todayKey,
+      dailyPnl: -2,
+      peakDailyPnl: 0,
+      tradesToday: 1,
+      consecutiveLosses: 1,
+    });
+    const expected = ledger.getState();
+    ledger = restart(ledger);
+    for (const outcome of [first, current, lateWin, { ...lateLoss, revision: 2, netPnl: 0 }]) {
+      expect(ledger.applyTradeClose(outcome)).toBe(false);
+    }
+    expect(ledger.getState()).toEqual(expected);
+  });
+
+  it('preserves a legacy streak under early evidence and extends it on later days', () => {
+    let ledger = new RiskLedger({ dayKey: yesterdayKey, consecutiveLosses: 7, dailyPnl: -10 });
+    ledger = new RiskLedger({ ...ledger.getState(), dayKey: todayKey, dailyPnl: 0 });
+    expect(ledger.getState()).toMatchObject({ consecutiveLosses: 7, dailyPnl: 0 });
+    expect(restart(ledger).getState()).toEqual(ledger.getState());
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'past', closedAtMs: yesterday, netPnl: -2 }));
+    expect(ledger.getState()).toMatchObject({ consecutiveLosses: 7, dailyPnl: 0, tradesToday: 0 });
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'current', closedAtMs: today, netPnl: -3 }));
+    expect(ledger.getState().consecutiveLosses).toBe(8);
+    const expected = ledger.getState();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      ledger = restart(ledger);
+      expect(ledger.getState()).toEqual(expected);
+      expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(-12);
+      expect(ledger.getHistoricalPnl(todayKey)).toBe(-3);
+      expect(ledger.getState().legacyBaseline!.consecutiveLosses).toBe(7);
+    }
+  });
+
+  it('requires explicit higher revisions and replaces economics, dates and strategies without double counting', () => {
+    let ledger = new RiskLedger({ dayKey: yesterdayKey });
+    const original = makeOutcome({ tradeId: 'stable:identity', closedAtMs: yesterday, netPnl: 10 });
+    ledger.applyTradeClose(original);
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'other', closedAtMs: today, netPnl: 5 }));
+    const correction = { ...original, closedAtMs: today + 1, netPnl: -25, strategyId: 'corrected' };
+    const before = ledger.getState();
+    expect(ledger.applyTradeClose(correction)).toBe(false);
+    expect(ledger.applyTradeClose({ ...correction, revision: 1 })).toBe(false);
+    expect(ledger.getState()).toEqual(before);
+    expect(ledger.applyTradeClose({ ...correction, revision: 2 })).toBe(true);
+    expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(0);
+    expect(ledger.getState()).toMatchObject({
+      dailyPnl: -20,
+      tradesToday: 2,
+      peakDailyPnl: 5,
+      consecutiveLosses: 1,
+      strategyTradesToday: { MICRO_BURST_V1: 1, corrected: 1 },
+    });
+    expect(ledger.getState().closedTradeIds).toEqual(['stable:identity', 'other']);
+    ledger = restart(ledger);
+    expect(ledger.applyTradeClose(original)).toBe(false);
+    expect(ledger.applyTradeClose({ ...correction, revision: 2 })).toBe(false);
+    expect(ledger.applyTradeClose({ ...original, revision: 3 })).toBe(true);
+    expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(10);
+    expect(ledger.getState()).toMatchObject({ dailyPnl: 5, tradesToday: 1, consecutiveLosses: 0 });
+    expect(ledger.getState().outcomes).toHaveLength(2);
+  });
+
+  it('does not clear legacy losses on an unorderable gain, but a later-day gain resets them', () => {
+    const ledger = new RiskLedger({ dayKey: yesterdayKey, consecutiveLosses: 7 });
+    ledger.applyTradeClose(
+      makeOutcome({ tradeId: 'early-win', closedAtMs: yesterday, netPnl: 10 }),
+    );
+    expect(ledger.getState().consecutiveLosses).toBe(7);
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'later-loss', closedAtMs: today, netPnl: -1 }));
+    expect(ledger.getState().consecutiveLosses).toBe(8);
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'later-win', closedAtMs: today + 1, netPnl: 2 }));
+    expect(ledger.getState().consecutiveLosses).toBe(0);
+    expect(restart(ledger).getState()).toEqual(ledger.getState());
+  });
+
+  it('preserves legacy baselines/keys without inventing evidence or extending unknown streaks', () => {
+    let ledger = new RiskLedger({
+      dayKey: yesterdayKey,
+      dailyPnl: 10,
+      peakDailyPnl: 15,
+      tradesToday: 3,
+      consecutiveLosses: 3,
+      strategyTradesToday: { old: 3 },
+      historicalPnl: { '2026-09-03': -7 },
+      appliedKeys: ['close:old:1000'],
+    });
+    expect(ledger.applyTradeClose(makeOutcome({ tradeId: 'old', closedAtMs: yesterday }))).toBe(
+      false,
+    );
+    expect(ledger.applyTradeClose(makeOutcome({ tradeId: 'old', revision: 2 }))).toBe(false);
+    expect(ledger.applyTradeClose(makeOutcome({ tradeId: 'unknown', revision: 2 }))).toBe(false);
+    ledger.applyTradeClose(makeOutcome({ closedAtMs: yesterday + 1, netPnl: -2 }));
+    expect(ledger.getState()).toMatchObject({
+      dailyPnl: 8,
+      peakDailyPnl: 15,
+      consecutiveLosses: 3,
+    });
+    ledger = restart(ledger);
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'next', closedAtMs: today, netPnl: 5 }));
+    ledger.applyTradeClose(
+      makeOutcome({ tradeId: 'late', closedAtMs: yesterday + 2, netPnl: -25 }),
+    );
+    ledger = restart(ledger);
+    expect(ledger.getHistoricalPnl(yesterdayKey)).toBe(-17);
+    expect(ledger.getHistoricalPnl('2026-09-03')).toBe(-7);
+    expect(ledger.getState().legacyBaseline!.consecutiveLosses).toBe(3);
+    expect(ledger.getAppliedKeys()).toContain('close:old:1000');
+  });
+
+  it.each([NaN, Infinity, -Infinity, -1, 0.5, 253402300800000, Number.MAX_VALUE])(
+    'rejects invalid timestamp %s atomically',
+    (closedAtMs) => {
+      const ledger = new RiskLedger({ dayKey: todayKey });
+      const before = ledger.getState();
+      expect(ledger.applyTradeClose(makeOutcome({ closedAtMs }))).toBe(false);
+      expect(ledger.getState()).toEqual(before);
+      expect(() => ledger.isApplied('T1', closedAtMs)).toThrow(RangeError);
+    },
+  );
+
+  it.each<Partial<TradeOutcome>>([
+    { tradeId: '' },
+    { tradeId: ' ' },
+    { tradeId: 'bad\nidentity' },
+    { tradeId: NaN as unknown as string },
+    { strategyId: '' },
+    { symbol: '' },
+    { side: 'INVALID' as 'LONG' },
+    { entryPrice: 0 },
+    { exitPrice: -1 },
+    { quantity: 0 },
+    { quantity: Infinity },
+    { entryPrice: NaN },
+    { exitPrice: Infinity },
+    { grossPnl: NaN },
+    { commissions: Infinity },
+    { funding: -Infinity },
+    { netPnl: NaN },
+    { revision: 0 },
+    { revision: -1 },
+    { revision: 1.5 },
+    { revision: NaN },
+    { revision: Number.MAX_SAFE_INTEGER + 1 },
+    { verified: false },
+  ])('rejects invalid evidence %j without mutation', (overrides) => {
+    const ledger = new RiskLedger({ dayKey: todayKey });
+    const before = ledger.getState();
+    expect(ledger.applyTradeClose(makeOutcome({ closedAtMs: today, ...overrides }))).toBe(false);
+    expect(ledger.getState()).toEqual(before);
+  });
+
+  it('accepts timestamp range endpoints and prototype-like identifiers safely', () => {
+    const ledger = new RiskLedger({ dayKey: '1970-01-01' });
+    expect(
+      ledger.applyTradeClose(
+        makeOutcome({ tradeId: '__proto__', strategyId: '__proto__', closedAtMs: 0 }),
+      ),
+    ).toBe(true);
+    expect(ledger.getState().strategyTradesToday['__proto__']).toBe(1);
+    expect(
+      ledger.applyTradeClose(makeOutcome({ tradeId: 'last', closedAtMs: 253402300799999 })),
+    ).toBe(true);
+    expect(restart(ledger).getState()).toEqual(ledger.getState());
+  });
+
+  it('rejects overflow in daily/history/revisions and rollover before committing any state', () => {
+    for (const dayKey of [yesterdayKey, todayKey]) {
+      const ledger = new RiskLedger({ dayKey });
+      const first = makeOutcome({ closedAtMs: yesterday, netPnl: Number.MAX_VALUE });
+      expect(ledger.applyTradeClose(first)).toBe(true);
+      const before = ledger.getState();
+      expect(ledger.applyTradeClose({ ...first, tradeId: 'overflow' })).toBe(false);
+      expect(ledger.getState()).toEqual(before);
+    }
+    const ledger = new RiskLedger({ dayKey: yesterdayKey });
+    ledger.applyTradeClose(
+      makeOutcome({ tradeId: 'A', closedAtMs: yesterday, netPnl: Number.MAX_VALUE }),
+    );
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'B', closedAtMs: yesterday + 1, netPnl: -1 }));
+    const before = ledger.getState();
+    expect(
+      ledger.applyTradeClose(
+        makeOutcome({
+          tradeId: 'B',
+          revision: 2,
+          closedAtMs: yesterday + 1,
+          netPnl: Number.MAX_VALUE,
+        }),
+      ),
+    ).toBe(false);
+    expect(ledger.getState()).toEqual(before);
+    expect(
+      ledger.applyTradeClose(
+        makeOutcome({ tradeId: 'future', closedAtMs: today, netPnl: Infinity }),
+      ),
+    ).toBe(false);
+    expect(ledger.getState()).toEqual(before);
+    expect(
+      ledger.applyTradeClose(
+        makeOutcome({ tradeId: 'B', revision: 2, closedAtMs: yesterday + 1, netPnl: -2 }),
+      ),
+    ).toBe(true);
+    const countLedger = new RiskLedger({ dayKey: todayKey, tradesToday: Number.MAX_SAFE_INTEGER });
+    const countBefore = countLedger.getState();
+    expect(countLedger.applyTradeClose(makeOutcome({ closedAtMs: today }))).toBe(false);
+    expect(countLedger.getState()).toEqual(countBefore);
+  });
+
+  it('validates imports and restores keys atomically', () => {
+    expect(() => new RiskLedger({ dailyPnl: NaN })).toThrow(RangeError);
+    expect(() => new RiskLedger({ dayKey: '2026-02-30' })).toThrow(RangeError);
+    expect(() => new RiskLedger({ historicalPnl: { [yesterdayKey]: Infinity } })).toThrow(
+      RangeError,
+    );
+    expect(() => new RiskLedger({ strategyTradesToday: { bad: NaN } })).toThrow(RangeError);
+    const ledger = new RiskLedger({ dayKey: todayKey });
+    const before = ledger.getState();
+    expect(() => ledger.restoreApplied(['close:valid:1000', 'close:bad:NaN'])).toThrow(RangeError);
+    expect(ledger.getState()).toEqual(before);
+    const snapshot = ledger.getState();
+    snapshot.outcomes!.push(makeOutcome({ closedAtMs: NaN }));
+    expect(() => new RiskLedger(snapshot)).toThrow(RangeError);
+    const duplicateEvidence = ledger.getState();
+    duplicateEvidence.outcomes = [
+      makeOutcome({ closedAtMs: today }),
+      makeOutcome({ closedAtMs: today + 1 }),
+    ];
+    expect(() => new RiskLedger(duplicateEvidence)).toThrow(RangeError);
+    expect(() => new RiskLedger({ outcomes: [] })).toThrow(RangeError);
+    const evidenceSnapshot = ledger.getState();
+    for (const invalid of [null, undefined, {}, '']) {
+      expect(
+        () =>
+          new RiskLedger({
+            ...evidenceSnapshot,
+            outcomes: invalid as unknown as TradeOutcome[],
+          }),
+      ).toThrow(RangeError);
+    }
+    const contaminatedSnapshot = ledger.getState();
+    contaminatedSnapshot.dailyPnl = NaN;
+    expect(() => new RiskLedger(contaminatedSnapshot)).toThrow(RangeError);
+    expect(
+      () =>
+        new RiskLedger({
+          dayKey: todayKey,
+          dailyPnl: Number.MAX_VALUE,
+          historicalPnl: { [todayKey]: Number.MAX_VALUE },
+        }),
+    ).toThrow(RangeError);
+  });
+
+  it('rejects missing or edited evidence instead of erasing economics while retaining applied keys', () => {
+    const ledger = new RiskLedger({ dayKey: todayKey });
+    const loss = makeOutcome({ closedAtMs: today, netPnl: -25 });
+    ledger.applyTradeClose(loss);
+    const snapshot = ledger.getState();
+    expect(() => new RiskLedger({ ...snapshot, outcomes: [] })).toThrow(RangeError);
+    expect(() => new RiskLedger({ ...snapshot, outcomes: [{ ...loss, netPnl: -1 }] })).toThrow(
+      RangeError,
+    );
+    expect(() => new RiskLedger({ ...snapshot, dailyPnl: 0 })).toThrow(RangeError);
+    expect(restart(ledger).getState()).toEqual(snapshot);
   });
 });
