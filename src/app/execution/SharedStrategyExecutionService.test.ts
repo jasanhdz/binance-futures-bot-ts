@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Exchange } from '../ports/Exchange';
 import { StrategyExecutionIntent } from '../../core/strategy/StrategyExecution';
 import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
+import { createMicroBurstExecutionIntent } from '../../strategies/micro-burst/domain/MicroBurstExecutionIntentFactory';
+import { createMicroBurstV1Identity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 
 const identity = {
   strategyId: 'AEGIS_TURBO' as const,
@@ -119,6 +121,31 @@ describe('SharedStrategyExecutionService protection policy', () => {
     expect(exchange.placeStopClose).not.toHaveBeenCalled();
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
     expect(exchange.listCloseOrdersForSide).not.toHaveBeenCalled();
+  });
+
+  it('emergency-closes a Micro entry when its mandatory structural stop is rejected', async () => {
+    vi.mocked(exchange.placeStopClose).mockRejectedValue(new Error('stop rejected'));
+    const result = await service.execute(
+      createMicroBurstExecutionIntent({
+        identity: createMicroBurstV1Identity(),
+        symbol: 'ETHUSDT',
+        side: 'LONG',
+        leverage: 20,
+        positionFraction: 0.1,
+        requestedAt: 1000,
+        tradeId: 'MICRO-BURST-V1-TEST',
+        stopInvalidationPrice: 99,
+        targetPrice: 102,
+      }),
+    );
+    expect(result).toMatchObject({
+      status: 'FAILED',
+      reason: 'BRACKETS_FAILED',
+      metadata: { positionStillOpen: false },
+    });
+    expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+    expect(exchange.closeSideMarketSafe).toHaveBeenCalledTimes(1);
+    expect(exchange.placeTpClose).not.toHaveBeenCalled();
   });
 
   it('uses a reconciled market fill after a lost open response without resubmitting', async () => {

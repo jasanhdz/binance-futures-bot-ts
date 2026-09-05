@@ -1363,6 +1363,49 @@ describe('TradingService Aegis live execution', () => {
     expect(service.getAegisRuntimeSnapshot().consecutiveLosses).toBe(0);
   });
 
+  it('Micro holds the shared entry lock across awaits and releases it on failure', async () => {
+    const { service, exchange } = makeHarness({
+      microBurst: {
+        enabled: true,
+        mode: 'LIVE',
+        symbols: { ETHUSDT: { enabled: true } },
+        prospectiveValidation: { enabled: false },
+        marketArchive: { enabled: false },
+      },
+    });
+    vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
+      configHash: 'test-config',
+      codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
+    });
+    let rejectRead!: (error: Error) => void;
+    vi.mocked(exchange.hasOpenPosition).mockImplementationOnce(
+      () =>
+        new Promise<boolean>((_, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    const entry = (service as any).openMicroBurstLivePosition({
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      signalId: 'concurrent',
+      requestedAt: Date.now(),
+      leverage: 20,
+      positionFraction: 0.01,
+      structuralStopPrice: 2970,
+      destinationPrice: 3030,
+      diagnostics: {},
+    });
+    expect((service as any).entryInFlight).toBe(true);
+    const competing = vi.spyOn(service as any, 'lookForEntry').mockResolvedValue(undefined);
+    await (service as any).lookForEntryWithLock('BTCUSDT');
+    expect(competing).not.toHaveBeenCalled();
+    const rejected = expect(entry).rejects.toThrow('account read failed');
+    rejectRead(new Error('account read failed'));
+    await rejected;
+    expect((service as any).entryInFlight).toBe(false);
+    expect((service as any).microBurstEntryInFlight).toBe(false);
+  });
+
   it('quarantines an unverified close and denies new LIVE entry for the shadow candidate', async () => {
     const microBurst = {
       enabled: true,
@@ -1418,6 +1461,11 @@ describe('TradingService Aegis live execution', () => {
       expect.objectContaining({ tradeId: 'MICRO-BURST-V1-QUARANTINE' }),
     );
 
+    // Reach the quarantine check: do not let unrelated deployment provenance reject first.
+    vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
+      configHash: 'test-config',
+      codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
+    });
     const opened = await (service as any).openMicroBurstLivePosition({
       symbol: 'ETHUSDT',
       side: 'LONG',
@@ -2732,7 +2780,7 @@ describe('TradingService Aegis live execution', () => {
     );
   });
 
-  it('closes immediately when bracket validation fails', async () => {
+  it('closes when bracket listing fails, distinct from acknowledged placement visibility lag', async () => {
     const { exchange, logger, service, state } = makeHarness({
       closeOrders: [],
       readActivePositionSequence: [
@@ -2743,6 +2791,9 @@ describe('TradingService Aegis live execution', () => {
       ],
     });
 
+    // Empty listing after accepted SL/TP has its own visibility-lag contract.
+    // This case tests a failed verification request, which must recover by closing.
+    vi.mocked(exchange.listCloseOrdersForSide).mockRejectedValueOnce(new Error('listing timeout'));
     await service.tick('ETHUSDT');
 
     expect(exchange.closeSideMarketSafe).toHaveBeenCalledWith(
@@ -2760,8 +2811,8 @@ describe('TradingService Aegis live execution', () => {
       }),
     );
     expect(logger.error).toHaveBeenCalledWith(
-      'aegis_bracket_validation_failed',
-      expect.any(Object),
+      'aegis_bracket_creation_failed',
+      expect.objectContaining({ error: 'Error: listing timeout' }),
     );
   });
 

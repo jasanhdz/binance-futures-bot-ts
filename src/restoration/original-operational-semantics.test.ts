@@ -54,10 +54,11 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'regime_config.live.yaml': '18c8584ac780bf3a1d34f90974dc4527b9c7116de79fdf9a927538ec89e33e4c',
-  // Phases 2-6: entry, exit, Momentum, position protection, and risk session are extracted
-  // while this digest and behavior tests bind the owner-authorized result.
+  // 2026-09 safety handoff: shared entry lock, unknown exposure propagation,
+  // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
+  // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/app/services/TradingService.ts':
-    'be3944411aae3dff7d8b8cf78af6ec89499ea3d8136593ebd62e322f7810dd24',
+    'a476468baea19e43f3ce3b64ee35d751a4a038c181a2381eba0865990814db12',
   'src/app/telegram/AegisBlocksReportService.ts':
     'b0941744ffa3911da4b9a56958dabbba4d0f9208ff0e040283c33bb25f9dd973',
   'src/app/telegram/TelegramCommandHandlers.ts':

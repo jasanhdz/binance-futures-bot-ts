@@ -1,4 +1,5 @@
 import { Candle, Side } from '../../../core/types';
+import { validateCandleSequence } from '../../../core/market-data/CandleIntegrity';
 import {
   BtcContext,
   BtcDataStatus,
@@ -121,6 +122,15 @@ function getDataQuality(
   const bookAgeMs = bookSnapshot ? localNowAtMs - bookSnapshot.observedAtMs : null;
   const btcAgeMs = btcContext ? localNowAtMs - btcContext.receivedAtMs : null;
   const invalidReasons: string[] = [];
+
+  for (const [label, values, interval] of [
+    ['1m', rawCandleSets.candles1m, 60_000],
+    ['3m', rawCandleSets.candles3m, 180_000],
+    ['5m', rawCandleSets.candles5m, 300_000],
+  ] as const) {
+    const problem = validateCandleSequence(values, interval);
+    if (problem) invalidReasons.push(`${label}_${problem}`);
+  }
 
   if (!isStrictlyOrdered(rawCandleSets.candles1m)) invalidReasons.push('invalid_1m_order');
   if (!isStrictlyOrdered(rawCandleSets.candles3m)) invalidReasons.push('invalid_3m_order');

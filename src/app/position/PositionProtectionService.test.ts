@@ -71,6 +71,59 @@ const position = {
 };
 
 describe('PositionProtectionService', () => {
+  it('restores and confirms the Micro stop without placing a TP', async () => {
+    const { service, exchange } = fixture();
+    exchange.listCloseOrdersForSide
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99, closePosition: true } as any,
+      ]);
+    await service.ensureMicroStop('ETHUSDT', {
+      mode: 'LONG_RIDE',
+      lastSide: 'LONG',
+      lastStopPrice: 99,
+      microBurstStructuralStopPrice: 98,
+    });
+    expect(exchange.placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99);
+    expect(exchange.placeTpClose).not.toHaveBeenCalled();
+  });
+
+  it('does not confuse an acknowledged Micro stop with a confirmed stop', async () => {
+    const { service, exchange } = fixture();
+    exchange.listCloseOrdersForSide.mockResolvedValue([]);
+    await expect(
+      service.ensureMicroStop('ETHUSDT', {
+        mode: 'SHORT_RIDE',
+        lastSide: 'SHORT',
+        lastStopPrice: 101,
+      }),
+    ).rejects.toThrow('MICRO_STOP_CONFIRMATION_PENDING');
+    expect(exchange.placeTpClose).not.toHaveBeenCalled();
+  });
+
+  it('does not place orders if the Micro position read fails', async () => {
+    const { service, exchange } = fixture();
+    exchange.readActivePosition.mockRejectedValue(new Error('timeout'));
+    await expect(
+      service.ensureMicroStop('ETHUSDT', {
+        mode: 'LONG_RIDE',
+        lastSide: 'LONG',
+        lastStopPrice: 99,
+      }),
+    ).rejects.toThrow('timeout');
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing full-position Micro stop and ignores unrelated TP', async () => {
+    const { service, exchange } = fixture();
+    exchange.listCloseOrdersForSide.mockResolvedValue([
+      { orderId: 'sl', type: 'STOP_MARKET', stopPrice: 99, closePosition: true } as any,
+    ]);
+    await service.ensureMicroStop('ETHUSDT', { mode: 'LONG_RIDE', lastSide: 'LONG' });
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+    expect(exchange.placeTpClose).not.toHaveBeenCalled();
+  });
+
   it('owns deterministic quantity, price, bracket and stop calculations', () => {
     const { service } = fixture();
     const filters = {

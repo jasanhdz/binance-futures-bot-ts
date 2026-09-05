@@ -30,7 +30,8 @@ describe('MicroBurstStrategy', () => {
     expect(result.diagnostics.riskToInvalidationBps).toBeGreaterThan(1);
     expect(result.diagnostics.rewardRisk).toBeGreaterThan(1);
     expect(result.diagnostics.leverage).toBe(40);
-    expect(result.diagnostics.positionFraction).toBe(0.09);
+    // Current approved defaults use 90%, not 9%; no sizing change in this test repair.
+    expect(result.diagnostics.positionFraction).toBe(0.9);
   });
 
   it('is deterministic for the same context', () => {

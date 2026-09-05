@@ -29,6 +29,43 @@ export interface PositionProtectionServiceDeps {
 export class PositionProtectionService {
   constructor(private readonly deps: PositionProtectionServiceDeps) {}
 
+  /** Micro owns its exit policy: restore only a full-position stop, never a TP/trailing. */
+  async ensureMicroStop(symbol: string, state: BotState): Promise<void> {
+    const side = state.lastSide;
+    if (!side) throw new Error('MICRO_STOP_SIDE_UNKNOWN');
+    const exchange = this.deps.exchange;
+    const position = await exchange.readActivePosition(symbol, side);
+    if (!position) return; // Closure accounting is a separate reconciliation concern.
+    const coversPosition = (
+      order: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>>[number],
+    ) =>
+      (order.type === 'STOP_MARKET' || order.type === 'STOP') &&
+      Number.isFinite(order.stopPrice) &&
+      order.stopPrice > 0 &&
+      (!order.positionSide || order.positionSide === 'BOTH' || order.positionSide === side) &&
+      (!order.side || order.side === (side === 'LONG' ? 'SELL' : 'BUY')) &&
+      (order.closePosition === true ||
+        (order.reduceOnly === true && Number(order.quantity) >= position.qtyAbs));
+    if ((await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition)) return;
+    const remembered = [state.lastStopPrice, state.microBurstStructuralStopPrice].filter(
+      (price): price is number => typeof price === 'number' && Number.isFinite(price) && price > 0,
+    );
+    if (!remembered.length) throw new Error('MICRO_STOP_PRICE_UNKNOWN');
+    const stopPrice = side === 'LONG' ? Math.max(...remembered) : Math.min(...remembered);
+    const filters = await exchange.getSymbolFilters(symbol, position.leverage);
+    const placed = await exchange.placeStopClose(symbol, side, this.roundPrice(stopPrice, filters));
+    if (!placed) throw new Error('MICRO_STOP_REJECTED');
+    if (!(await exchange.listCloseOrdersForSide(symbol, side)).some(coversPosition)) {
+      throw new Error('MICRO_STOP_CONFIRMATION_PENDING');
+    }
+    this.deps.logger.info('micro_stop_restored', {
+      symbol,
+      side,
+      stopPrice,
+      tradeId: state.lastTradeId,
+    });
+  }
+
   roundQuantity(quantity: number, filters: SymbolFilters): number {
     const scale = 10 ** filters.qtyPrecision;
     return Number((Math.floor(quantity * scale) / scale).toFixed(filters.qtyPrecision));

@@ -1244,6 +1244,15 @@ export class TradingService {
     const symbolMode = this.getSymbolMode(symbol);
 
     try {
+      // Entry mode never disables protection of an already managed position.
+      if (
+        botState.mode !== 'IDLE' &&
+        symbolMode !== 'LIVE' &&
+        (typeof this.deps.state.forSymbol === 'function' || this.config.symbols.length === 1)
+      ) {
+        await this.managePositionByOwner(symbol, botState, symbolState);
+        return;
+      }
       if (symbolMode === 'OFF') {
         return;
       }
@@ -1300,6 +1309,7 @@ export class TradingService {
     }
 
     if (
+      this.entryInFlight ||
       this.microBurstEntryInFlight ||
       this.microBurstEntryInFlightSymbols.has(request.symbol)
     ) {
@@ -1310,6 +1320,7 @@ export class TradingService {
       return false;
     }
     this.microBurstEntryInFlight = true;
+    this.entryInFlight = true;
     this.microBurstEntryInFlightSymbols.add(request.symbol);
     try {
       const symbolState = this.stateForSymbol(request.symbol);
@@ -1425,6 +1436,27 @@ export class TradingService {
             marketOpenAmbiguous: true,
             marketOpenClientOrderId: undefined,
           });
+          if (executionMetadata.positionStillOpen === true) {
+            // Preserve execution ownership even when emergency recovery fails.
+            symbolState.set({
+              mode: request.side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE',
+              positionOwner: 'BOT',
+              tradeOrigin: 'BOT',
+              ownershipStatus: 'VERIFIED',
+              eligibleForBotMetrics: false,
+              metricsExclusionReason: 'ENTRY_RECOVERY_PENDING',
+              lastStrategy: 'MICRO_BURST_V1',
+              lastTradeId: tradeId,
+              lastSide: request.side,
+              lastEntryPrice: Number(executionMetadata.entryPrice) || undefined,
+              lastEntryQty: Number(executionMetadata.quantity) || undefined,
+              lastEntryAt: request.requestedAt,
+              lastLeverage: leverage,
+              lastStopPrice: request.structuralStopPrice,
+              microBurstStructuralStopPrice: request.structuralStopPrice,
+              microBurstDestinationPrice: request.destinationPrice,
+            });
+          }
         }
         this.deps.logger.warn('micro_burst_live_entry_not_opened', {
           symbol: request.symbol,
@@ -1533,6 +1565,7 @@ export class TradingService {
     } finally {
       this.microBurstEntryInFlightSymbols.delete(request.symbol);
       this.microBurstEntryInFlight = false;
+      this.entryInFlight = false;
     }
   }
 
@@ -1593,6 +1626,18 @@ export class TradingService {
 
     let managementContext: Record<string, unknown> = { symbol, botState, symbolState };
     if (identity.strategyId === 'MICRO_BURST_V1') {
+      try {
+        await this.positionProtection.ensureMicroStop(symbol, botState);
+      } catch (error) {
+        symbolState.set({ marketOpenAmbiguous: true, bracketsAttached: false });
+        this.deps.logger.error('micro_stop_recovery_pending', {
+          symbol,
+          tradeId: botState.lastTradeId,
+          error: String(error),
+        });
+        await this.notifyError(symbol, 'MICRO STOP RECOVERY', error);
+        return;
+      }
       const market = this.strategyRuntimeCoordinator.readMicroBurstExitMarket(
         symbol,
         botState.lastEntryAt,
@@ -2106,9 +2151,8 @@ export class TradingService {
 
     for (const symbol of this.getLiveAegisSymbols()) {
       for (const side of ['LONG', 'SHORT'] as Side[]) {
-        const position = await this.deps.exchange
-          .readActivePosition(symbol, side)
-          .catch(() => null);
+        // Unknown exposure must abort admission, never become a flat account.
+        const position = await this.deps.exchange.readActivePosition(symbol, side);
         if (!position) continue;
         // Defensive adapter validation: a LONG object returned for a SHORT lookup
         // (or vice versa) must not be counted as a second position. Hedge-mode
