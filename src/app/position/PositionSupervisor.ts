@@ -476,10 +476,10 @@ export class PositionSupervisor {
       });
     }
 
-    // Block if any BOT orders survived (failed cancellation or reappeared).
-    const survivingBotOrders = postOrders.filter(
-      (o) => o.owner === 'BOT' && !cancelledIds.includes(o.orderId),
-    );
+    // Block if ANY BOT orders are visible post-consult.
+    // A cancellation acknowledgment is not proof of absence; only the
+    // exchange's current view of open orders is authoritative.
+    const survivingBotOrders = postOrders.filter((o) => o.owner === 'BOT');
     if (survivingBotOrders.length > 0 || failedCancellationIds.length > 0) {
       return this.persistStatus(store, {
         status: 'RECOVERY_REQUIRED',
@@ -540,6 +540,17 @@ export class PositionSupervisor {
   ): Promise<SupervisionResult> {
     this.deps.logger.warn('position_supervisor_emergency_close', { symbol, side, owner, reason });
 
+    // Block emergency close when no durable store: executing without
+    // persistence means a crash could leave the position open with no
+    // recovery record.
+    if (!store?.flush) {
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: `EMERGENCY_CLOSE_NO_STORE:${reason}`,
+      });
+    }
+
     // Persist RECOVERY_REQUIRED before attempting close (crash-safe).
     // Position is still open → preserve mode.
     await this.persistStatus(store, {
@@ -558,7 +569,7 @@ export class PositionSupervisor {
       });
     }
 
-    // Confirm flat after emergency close: two observations.
+    // Confirm flat after emergency close: two observations (same contract as reconcileFlat).
     let confirmedFlat = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) {
@@ -566,13 +577,21 @@ export class PositionSupervisor {
       }
       try {
         const postClose = await this.deps.exchange.readActivePosition(symbol, side);
-        if (postClose === null || postClose.qtyAbs <= 0) {
-          confirmedFlat = true;
-          break;
+        if (postClose !== null && postClose.qtyAbs > 0) {
+          // Position still open: definitive evidence, do not continue.
+          return this.persistStatus(store, {
+            status: 'RECOVERY_REQUIRED',
+            owner,
+            reason: 'EMERGENCY_CLOSE_POSITION_STILL_OPEN',
+          });
         }
+        // null or qtyAbs <= 0: treat as flat for this observation.
       } catch {
-        // Transient read error: retry once, then treat as uncertain.
+        // Transient read error: mark uncertain, but continue to second observation.
+        confirmedFlat = false;
+        continue;
       }
+      confirmedFlat = true;
     }
 
     if (!confirmedFlat) {
@@ -583,19 +602,69 @@ export class PositionSupervisor {
       });
     }
 
-    // Verify surviving orders after emergency close.
+    // Clean surviving BOT orders (same contract as reconcileFlat).
+    let preOrders;
     try {
-      const survivingOrders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
-      const botOrders = survivingOrders.filter((o) => o.owner === 'BOT');
-      for (const order of botOrders) {
+      preOrders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    } catch (error) {
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: `EMERGENCY_CLOSE_ORDER_LIST_FAILED:${String(error)}`,
+      });
+    }
+
+    const cancelledIds: string[] = [];
+    const failedCancellationIds: string[] = [];
+    for (const order of preOrders) {
+      if (order.owner === 'BOT') {
         try {
           await this.deps.exchange.cancelOrderById(symbol, order.orderId);
+          cancelledIds.push(order.orderId);
         } catch {
-          // Best-effort; flat is confirmed regardless.
+          failedCancellationIds.push(order.orderId);
         }
       }
-    } catch {
-      // Best-effort order cleanup.
+    }
+
+    // Re-consult exchange to verify survivors.
+    let postOrders;
+    try {
+      postOrders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    } catch (error) {
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: `EMERGENCY_CLOSE_ORDER_RECONSULT_FAILED:${String(error)}`,
+      });
+    }
+
+    // Block if ANY BOT orders are visible post-consult.
+    const survivingBotOrders = postOrders.filter((o) => o.owner === 'BOT');
+    if (survivingBotOrders.length > 0 || failedCancellationIds.length > 0) {
+      return this.persistStatus(store, {
+        status: 'RECOVERY_REQUIRED',
+        owner,
+        reason: `EMERGENCY_CLOSE_SURVIVING_BOT_ORDERS:${survivingBotOrders.length + failedCancellationIds.length}`,
+      });
+    }
+
+    // Final flat check after cleanup.
+    try {
+      const finalCheck = await this.deps.exchange.readActivePosition(symbol, side);
+      if (finalCheck !== null && finalCheck.qtyAbs > 0) {
+        return this.persistStatus(store, {
+          status: 'RECOVERY_REQUIRED',
+          owner,
+          reason: 'EMERGENCY_CLOSE_POSITION_REAPPEARED_POST_CLEANUP',
+        });
+      }
+    } catch (error) {
+      return this.persistStatus(store, {
+        status: 'UNKNOWN',
+        owner,
+        reason: `EMERGENCY_CLOSE_FINAL_CHECK_FAILED:${String(error)}`,
+      });
     }
 
     // Persist flat state.

@@ -214,4 +214,39 @@ describe('RiskLedger', () => {
     expect(state.consecutiveLosses).toBe(0); // Late loss not counted.
     expect(state.closedTradeIds).toEqual(['T1', 'T2']); // But tracked for idempotency.
   });
+
+  it('late close records PnL in historicalPnl by day', () => {
+    const day1Ms = 1_757_000_000_000;
+    const day2Ms = day1Ms + 86_400_000;
+    const ledger = new RiskLedger({ dayKey: dayKeyFromDate(day2Ms) });
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'T1', netPnl: 10, closedAtMs: day2Ms }));
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'T2', netPnl: -25, closedAtMs: day1Ms }));
+    ledger.applyTradeClose(makeOutcome({ tradeId: 'T3', netPnl: -5, closedAtMs: day1Ms }));
+
+    const state = ledger.getState();
+    // Today's PnL: only T1.
+    expect(state.dailyPnl).toBeCloseTo(10);
+    // Yesterday's cumulative: -25 + -5 = -30.
+    expect(state.historicalPnl[dayKeyFromDate(day1Ms)]).toBeCloseTo(-30);
+    // getHistoricalPnl accessor.
+    expect(ledger.getHistoricalPnl(dayKeyFromDate(day1Ms))).toBeCloseTo(-30);
+    expect(ledger.getHistoricalPnl('2099-01-01')).toBe(0);
+  });
+
+  it('historicalPnl survives reconstruction', () => {
+    const day1Ms = 1_757_000_000_000;
+    const day2Ms = day1Ms + 86_400_000;
+    const ledger1 = new RiskLedger({ dayKey: dayKeyFromDate(day2Ms) });
+    ledger1.applyTradeClose(makeOutcome({ tradeId: 'T1', netPnl: 10, closedAtMs: day2Ms }));
+    ledger1.applyTradeClose(makeOutcome({ tradeId: 'T2', netPnl: -25, closedAtMs: day1Ms }));
+
+    // Reconstruct from state.
+    const state = ledger1.getState();
+    const ledger2 = new RiskLedger(state);
+    expect(ledger2.getHistoricalPnl(dayKeyFromDate(day1Ms))).toBeCloseTo(-25);
+    expect(ledger2.getState().dailyPnl).toBeCloseTo(10);
+    // Re-applying same trades is idempotent.
+    expect(ledger2.applyTradeClose(makeOutcome({ tradeId: 'T2', netPnl: -25, closedAtMs: day1Ms }))).toBe(false);
+    expect(ledger2.getHistoricalPnl(dayKeyFromDate(day1Ms))).toBeCloseTo(-25);
+  });
 });

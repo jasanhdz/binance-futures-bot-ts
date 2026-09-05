@@ -25,6 +25,8 @@ export interface DailyRiskState {
   closedTradeIds: string[];
   /** Idempotency keys that have been applied, for persistence across restarts. */
   appliedKeys: string[];
+  /** Per-day PnL attribution for late closes. Key is dayKey, value is cumulative netPnl. */
+  historicalPnl: Record<string, number>;
 }
 
 export interface RiskLedgerEntry {
@@ -55,6 +57,7 @@ export class RiskLedger {
       peakDailyPnl: initial?.peakDailyPnl ?? 0,
       closedTradeIds: initial?.closedTradeIds ?? [],
       appliedKeys: initial?.appliedKeys ?? [],
+      historicalPnl: initial?.historicalPnl ?? {},
     };
     // Restore applied set from persisted keys.
     for (const key of this.state.appliedKeys) {
@@ -114,8 +117,10 @@ export class RiskLedger {
     } else {
       // Late close: belongs to a past day. Do NOT modify any current-day
       // counters (dailyPnl, peakDailyPnl, tradesToday, consecutiveLosses,
-      // strategyTradesToday). Only track the tradeId for idempotency.
-      // The PnL is not attributed to today — it belonged to its own day.
+      // strategyTradesToday). Record the PnL in historicalPnl keyed by
+      // the trade's own day for economic attribution.
+      this.state.historicalPnl[tradeDay] =
+        (this.state.historicalPnl[tradeDay] ?? 0) + outcome.netPnl;
     }
 
     // Track closed trade (always, regardless of timeliness).
@@ -136,6 +141,14 @@ export class RiskLedger {
    */
   getAppliedKeys(): string[] {
     return [...this.applied];
+  }
+
+  /**
+   * Get the cumulative PnL attributed to a specific day (for late closes).
+   * Returns 0 if no late closes have been recorded for that day.
+   */
+  getHistoricalPnl(dayKey: string): number {
+    return this.state.historicalPnl[dayKey] ?? 0;
   }
 
   /**
