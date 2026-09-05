@@ -74,12 +74,15 @@ Consultar `SAFETY_HANDOFF_VALIDATION.md` para resultados del incremento entregad
 Archivos: `vitest.config.ts`, `src/infra/config/ConfigLoader.ts`,
 `src/restoration/original-operational-semantics.test.ts`, bootstrap y `TradingService.ts`.
 
-- [ ] Capturar SHA, árbol, config efectiva SANITIZADA y todos los tests antes de modificar.
+- [x] Capturar SHA, árbol, config efectiva SANITIZADA y todos los tests antes de modificar. Ver
+      `SAFETY_PHASE0_BASELINE.md`.
 - [ ] Confirmar en local si existe supervisor externo de brackets no versionado aquí; documentar
       proceso, frecuencia, símbolos, condiciones y evidencia. No asumir existencia = cobertura.
-- [ ] Escribir matriz estrategia/modo/posición existente: quién puede abrir, cerrar y proteger.
-- [ ] Hacer pruebas independientes de variables/YAML privados sin cambiar precedencia de producción.
-- [ ] Conservar assertions de seguridad y justificar cada actualización de fixture/digest.
+- [x] Escribir matriz estrategia/modo/posición existente: quién puede abrir, cerrar y proteger.
+      Ver `SAFETY_PHASE0_BASELINE.md`.
+- [x] Hacer pruebas independientes de variables/YAML privados sin cambiar precedencia de producción.
+      `npm run test:safety` separa ambos grupos.
+- [x] Conservar assertions de seguridad y justificar cada actualización de fixture/digest.
 
 ```text
 para cada estrategia y modo:
@@ -88,7 +91,8 @@ para cada estrategia y modo:
     ejecutar contrato con exchange simulado y comprobar llamadas/prohibiciones
 ```
 
-Cierre: suite reproducible en checkout limpio y contratos escritos, no solo build verde.
+Cierre parcial: suite reproducible en checkout limpio y contratos escritos, no solo build verde.
+La confirmación de supervisor externo sigue bloqueada por falta de evidencia local.
 
 ## Fase 1 — Protección y ciclo de vida independiente
 

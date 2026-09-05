@@ -8,6 +8,7 @@
     "dev:testnet": "DOTENV_CONFIG_PATH=.env.testnet nodemon -r ts-node/register -r dotenv/config src/main.ts",
     "dev:prod": "DOTENV_CONFIG_PATH=.env nodemon -r ts-node/register -r dotenv/config src/main.ts",
     "build": "tsc -p tsconfig.json",
+    "test:safety": "bash scripts/run-safety-validation.sh",
     "start:testnet": "DOTENV_CONFIG_PATH=.env.testnet node -r dotenv/config dist/main.js",
     "start:prod": "DOTENV_CONFIG_PATH=.env node -r dotenv/config dist/main.js",
     "test": "vitest run",
