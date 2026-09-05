@@ -1635,6 +1635,41 @@ export class TradingService {
           tradeId: botState.lastTradeId,
           error: String(error),
         });
+        try {
+          if (botState.lastSide) {
+            const position = await this.deps.exchange.readActivePosition(symbol, botState.lastSide);
+            if (position) {
+              await this.deps.exchange.closeSideMarketSafe(
+                symbol,
+                botState.lastSide,
+                position.qtyAbs,
+                position.sideMode,
+                'MICRO_STOP_RECOVERY_FAILED',
+              );
+              const remaining = await this.deps.exchange.readActivePosition(
+                symbol,
+                botState.lastSide,
+              );
+              if (!remaining) {
+                symbolState.set({
+                  marketOpenAmbiguous: false,
+                  microBurstPnlUnverified: true,
+                  microBurstPnlUnverifiedAt: Date.now(),
+                });
+                this.deps.logger.warn('micro_stop_recovery_emergency_close_confirmed', {
+                  symbol,
+                  tradeId: botState.lastTradeId,
+                });
+              }
+            }
+          }
+        } catch (recoveryError) {
+          this.deps.logger.error('micro_stop_recovery_emergency_close_failed', {
+            symbol,
+            tradeId: botState.lastTradeId,
+            error: String(recoveryError),
+          });
+        }
         await this.notifyError(symbol, 'MICRO STOP RECOVERY', error);
         return;
       }

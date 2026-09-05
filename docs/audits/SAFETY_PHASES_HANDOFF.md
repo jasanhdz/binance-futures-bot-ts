@@ -106,7 +106,9 @@ Archivos: `src/app/position/{PositionProtectionService,PositionRecoveryService,S
       órdenes explícitamente `UNKNOWN`; el estado duradero y supervisor común siguen pendientes.
 - [ ] Posición cerrada por stop/exchange/manual: reconciliar independientemente del contexto técnico.
 - [ ] Fallo de protección: recuperar o cerrar con cantidades frescas; si el cierre falla, persistir
-      `RECOVERY_REQUIRED`, bloquear nuevas entradas y alertar. Mantener propiedad y razones originales.
+      `RECOVERY_REQUIRED`, bloquear nuevas entradas y alertar. Micro ahora intenta un cierre único
+      con cantidad fresca y confirma flat antes de marcar PnL no verificado; estados durables y
+      recovery explícito siguen pendientes.
 - [ ] Supervisar posiciones aunque cambien símbolos/modos habilitados: recorrer también inventario
       persistido y cuenta, sin mutar símbolos SHADOW que solo heredan estado global ambiguo.
 
