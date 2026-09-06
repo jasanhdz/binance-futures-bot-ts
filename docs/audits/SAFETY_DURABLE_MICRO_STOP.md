@@ -106,6 +106,32 @@ codificados no autorizan retry.
 
 ## Pendiente Exacto
 
+### Stop inicial Micro posterior a e5b980a
+
+SharedStrategyExecutionService recibe el mismo DurableStopCoordinator inyectado
+en TradingService y lo consume para el stop inicial Micro. Se persiste la solicitud
+con el parentTradeId y orderId de apertura antes del envio identificado. La reposicion
+posterior usa esa misma identidad, no crea otro intento si la respuesta se perdio.
+El precio estructural usa el mismo redondeo por lado/tick que el protector runtime.
+
+La identidad local se captura antes de esperar y se revalida antes de mutar; no se
+confunde el permiso de nuevas entradas con la obligacion de proteger una apertura
+ya ejecutada. Un resultado incierto conserva positionStillOpen y protectionPending
+y permite proyectar el orderId para recovery. No se traduce ese resultado booleano
+ambiguo en rechazo confirmado ni se solicita cierre legacy solo por esa incertidumbre.
+El cierre de emergencia por geometria invalida y las rutas previas no cubiertas
+siguen siendo contratos separados; no se afirma proteccion universal ni plazo de
+resolucion automatico para todos los errores.
+
+La observacion exacta del coordinador confirma el stop Micro sin exigir otro ACK
+de TP o repetir un listado eventual como autoridad alternativa. El caso perdido
+sin visibilidad sigue bloqueado. No se eligio un nuevo presupuesto ni se introdujo TP/trailing.
+
+Validacion propia: npm run test:safety PASS, build y 2.317 + 46 = 2.363 tests,
+189 archivos. Cuatro regresiones nuevas Shared + ambos coordinadores + journal real:
+confirmado, ACK perdido visible, ACK perdido oculto e identidad cambiada, todas con
+restart sin reenvio. La frontera de Aegis/Momentum, TP/cancelaciones/cierres permanece pendiente.
+
 ### Resolucion observacional posterior a 7035640
 
 TradingService ejecuta `reconcileClosed` al arrancar y periodicamente. No envia ni
@@ -139,7 +165,7 @@ cierre universal y la liberacion monetaria siguen separados de esta resolucion.
 | Area                                            | Estado                                                        |
 | ----------------------------------------------- | ------------------------------------------------------------- |
 | Reposicion Micro normal y recuperada            | Conectada al coordinador identificado; una mutacion por trade |
-| Stop inicial de Shared                          | Pendiente de usar este protocolo; conserva ruta previa        |
+| Stop inicial de Shared Micro                    | Conectado al mismo protocolo durable; Aegis/Momentum pendientes |
 | Brackets Aegis/Momentum y movimientos de stop   | Pendientes de journal identificado                            |
 | TP, cancelaciones, close inteligente/emergencia | Pendientes de protocolo durable universal                     |
 | Exposicion y reservas monetarias                | Pendientes de inventario y ledger runtime durable             |

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { DurableEntryCoordinator, definiteEntryRejectionCode } from './DurableEntryCoordinator';
+import type { DurableStopCoordinator } from './DurableStopCoordinator';
 import { calculateMarginBudgetSizing, roundQuantityDown } from '../../core/risk/SizingEngine';
 import {
   PositionInfo,
@@ -26,6 +27,9 @@ export interface SharedStrategyExecutionConfig {
   clearMarketOpenAmbiguity?: (symbol: string) => void;
   /** Required by production composition; omitted only by isolated unit harnesses. */
   entryCoordinator?: DurableEntryCoordinator;
+  stopCoordinator?: DurableStopCoordinator;
+  /** Captures ownership before awaits; entry permission is separate from protecting an opened position. */
+  captureProtectionIdentity?: (intent: StrategyExecutionIntent) => () => boolean;
   isEntryCurrent?: (intent: StrategyExecutionIntent) => boolean;
 }
 
@@ -52,6 +56,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
   ) {}
 
   async execute(intent: StrategyExecutionIntent): Promise<StrategyExecutionResult> {
+    const protectionIdentity = this.config.captureProtectionIdentity?.(intent) ?? (() => true);
     const baseMetadata = {
       strategyId: intent.identity.strategyId,
       strategyVersion: intent.identity.strategyVersion,
@@ -61,7 +66,8 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       requestedAt: intent.requestedAt,
       ...intent.metadata,
     };
-    const entryBlocked = this.config.entryCoordinator?.blockedReason();
+    const entryBlocked =
+      this.config.entryCoordinator?.blockedReason() ?? this.config.stopCoordinator?.blockedReason();
     if (entryBlocked)
       return denied(intent, 'SHARED_SAFETY_DENIED', {
         ...baseMetadata,
@@ -312,8 +318,19 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       openedQuantity = position.qtyAbs || quantity;
 
       const entryPrice = position.entryPrice > 0 ? position.entryPrice : order.avgPrice;
+      const durableMicroStop =
+        intent.identity.strategyId === 'MICRO_BURST_V1' && this.config.stopCoordinator;
       const stopPrice = hasStructuralStop
-        ? roundPrice(Number(intent.structuralStopPrice), filters)
+        ? durableMicroStop && Number.isFinite(filters.tickSize) && filters.tickSize > 0
+          ? Number(
+              (
+                (intent.side === 'LONG'
+                  ? Math.ceil(Number(intent.structuralStopPrice) / filters.tickSize - 1e-12)
+                  : Math.floor(Number(intent.structuralStopPrice) / filters.tickSize + 1e-12)) *
+                filters.tickSize
+              ).toFixed(filters.pricePrecision),
+            )
+          : roundPrice(Number(intent.structuralStopPrice), filters)
         : hasStopRoe
           ? roundPrice(
               bracketPrice(
@@ -361,7 +378,44 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           throw new Error('INVALID_STRUCTURAL_STOP_GEOMETRY');
         }
         if (stopPrice !== undefined) {
-          stopOk = await this.exchange.placeStopClose(intent.symbol, intent.side, stopPrice);
+          if (durableMicroStop) {
+            stopOk = await durableMicroStop.supervise(
+              {
+                symbol: intent.symbol,
+                side: intent.side,
+                positionSide: position.sideMode,
+                triggerPrice: stopPrice,
+                closePosition: true,
+                workingType: 'MARK_PRICE',
+                parentTradeId: intent.tradeId,
+                parentOrderId: order.orderId,
+                strategyId: intent.identity.strategyId,
+                positionQuantity: position.qtyAbs,
+                entryPrice,
+              },
+              protectionIdentity,
+              true,
+            );
+            if (!stopOk) {
+              // False includes lost receipts and storage uncertainty, not a proven rejection.
+              // Preserve ownership for recovery; no unjournaled emergency close on uncertainty alone.
+              return failed(intent, 'BRACKETS_FAILED', {
+                ...baseMetadata,
+                failureStage: 'PROTECTION',
+                orderId: order.orderId,
+                entryPrice,
+                quantity: position.qtyAbs,
+                sideMode: position.sideMode,
+                stopPrice,
+                stopOk: false,
+                positionStillOpen: true,
+                protectionPending: true,
+                reasonDetail: durableMicroStop.blockedReason() ?? 'INITIAL_STOP_UNCONFIRMED',
+              });
+            }
+          } else {
+            stopOk = await this.exchange.placeStopClose(intent.symbol, intent.side, stopPrice);
+          }
         }
         if (intent.protection.requireStop && !stopOk)
           throw new Error('SHARED_EXECUTION_STOP_REJECTED');
@@ -405,9 +459,9 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       }
 
       let closeOrders: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>> = [];
-      let hasStop = false;
+      let hasStop = Boolean(durableMicroStop && stopOk);
       let hasTakeProfit = false;
-      if (intent.protection.requireStop || intent.protection.requireTakeProfit) {
+      if ((!hasStop && intent.protection.requireStop) || intent.protection.requireTakeProfit) {
         try {
           // Algo orders can take a short time to appear in the open-orders read model.
           // Do not emergency-close a position until that read has been retried.
@@ -419,9 +473,9 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           ]) {
             if (delayMs > 0) await sleep(delayMs);
             closeOrders = await this.exchange.listCloseOrdersForSide(intent.symbol, intent.side);
-            hasStop = closeOrders.some((order) =>
-              exactBracket(order, 'STOP', stopPrice, intent, filters),
-            );
+            hasStop =
+              hasStop ||
+              closeOrders.some((order) => exactBracket(order, 'STOP', stopPrice, intent, filters));
             hasTakeProfit = closeOrders.some((order) =>
               exactBracket(order, 'TAKE_PROFIT', takeProfitPrice, intent, filters),
             );

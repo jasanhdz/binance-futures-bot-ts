@@ -2,6 +2,10 @@
 
 ## Referencia vigente del traspaso
 
+- Stop inicial Micro posterior a e5b980a: ejecucion propia npm run test:safety PASS,
+  build y 2.317 + 46 = 2.363 tests. Ver SAFETY_DURABLE_MICRO_STOP.md para alcance;
+  cierres/cancelaciones/otras estrategias y fase 9 siguen parciales.
+
 - Recovery Micro posterior a 5cdddf6: validacion propia `npm run test:safety` PASS,
   build y 2.242 + 46 = 2.288 tests (187 archivos entre grupos). Ver
   `SAFETY_MICRO_ENTRY_RECOVERY.md` para evidencia, integracion real y limites.

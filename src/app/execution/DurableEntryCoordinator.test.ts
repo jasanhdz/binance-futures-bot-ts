@@ -16,6 +16,7 @@ import {
   definiteEntryRejectionCode,
 } from './DurableEntryCoordinator';
 import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
+import { DurableStopCoordinator } from './DurableStopCoordinator';
 
 const scope = { account: 'fixture-primary', environment: 'fixture' };
 const order = { avgPrice: 100, orderId: '123' };
@@ -165,6 +166,102 @@ afterEach(async () => {
 });
 
 describe('durable entry aperture', () => {
+  it.each(['confirmed', 'lost-ack-visible', 'lost-ack-hidden', 'identity-changed'])(
+    'routes initial Micro stop through its durable journal: %s',
+    async (scenario) => {
+      const f = harness();
+      await f.coordinator.start();
+      const { exchange } = shared(f.coordinator);
+      const file = f.file + '.stops';
+      const journal = new FileBackedExecutionJournal(file);
+      let current = true;
+      let received: import('../ports/Exchange').IdentifiedStopRequest | undefined;
+      const send = vi.fn(async (request: import('../ports/Exchange').IdentifiedStopRequest) => {
+        expect(fs.readFileSync(file, 'utf8')).toContain('PREPARED');
+        received = request;
+        if (scenario.startsWith('lost-ack')) throw new Error('response lost');
+        return { clientOrderId: request.clientOrderId, orderId: 'stop-1' };
+      });
+      const lookup = vi.fn(async (request: import('../ports/Exchange').IdentifiedStopRequest) =>
+        received && scenario !== 'lost-ack-hidden'
+          ? { clientOrderId: request.clientOrderId, orderId: 'stop-1' }
+          : null,
+      );
+      const port = {
+        ...exchange,
+        sendStopCloseOnce: send,
+        readStopCloseByClientOrderId: lookup,
+      } as unknown as TradingExchangePort;
+      const stops = new DurableStopCoordinator({ scope, journal: () => journal, exchange: port });
+      exchange.listCloseOrdersForSide.mockResolvedValue([]);
+      if (scenario === 'identity-changed') {
+        const append = journal.append.bind(journal);
+        vi.spyOn(journal, 'append').mockImplementation(async (entry) => {
+          const saved = await append(entry);
+          if (entry.event === 'PREPARED') current = false;
+          return saved;
+        });
+      }
+      const service = new SharedStrategyExecutionService(port, logger, {
+        feeBufferPct: 0,
+        confirmationAttempts: 1,
+        confirmationDelaysMs: [0],
+        protectionVerificationDelaysMs: [0],
+        maxMarketOpenAttempts: 1,
+        entryCoordinator: f.coordinator,
+        stopCoordinator: stops,
+        captureProtectionIdentity: () => () => current,
+      });
+      try {
+        const result = await service.execute(intent());
+        expect(result.status).toBe(
+          scenario === 'confirmed' || scenario === 'lost-ack-visible' ? 'OPENED' : 'FAILED',
+        );
+        expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+        expect(send).toHaveBeenCalledTimes(scenario === 'identity-changed' ? 0 : 1);
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.placeTpClose).not.toHaveBeenCalled();
+        expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        if (result.status === 'FAILED')
+          expect(result.metadata).toMatchObject({
+            positionStillOpen: true,
+            protectionPending: true,
+            orderId: '123',
+          });
+        await stops.close();
+        const restarted = new DurableStopCoordinator({
+          scope,
+          journal: () => new FileBackedExecutionJournal(file),
+          exchange: port,
+        });
+        try {
+          await restarted.start();
+          await restarted.supervise(
+            {
+              symbol: 'ETHUSDT',
+              side: 'LONG',
+              positionSide: 'BOTH',
+              triggerPrice: 99,
+              closePosition: true,
+              workingType: 'MARK_PRICE',
+              parentTradeId: intent().tradeId,
+              parentOrderId: '123',
+              strategyId: 'MICRO_BURST_V1',
+              positionQuantity: 2,
+              entryPrice: 100,
+            },
+            () => true,
+            true,
+          );
+          expect(send).toHaveBeenCalledTimes(scenario === 'identity-changed' ? 0 : 1);
+        } finally {
+          await restarted.close();
+        }
+      } finally {
+        await stops.close();
+      }
+    },
+  );
   it.each(['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST_V1'] as const)(
     'routes %s intents through the same Shared mutation boundary',
     async (strategyId) => {

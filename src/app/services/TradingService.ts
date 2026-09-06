@@ -366,6 +366,22 @@ export class TradingService {
     this.sharedStrategyExecution = new TelemetryStrategyExecutionPort(
       new SharedStrategyExecutionService(deps.exchange, deps.logger, {
         entryCoordinator: deps.entryCoordinator,
+        stopCoordinator: deps.stopCoordinator,
+        captureProtectionIdentity: (intent) => {
+          const store = this.stateForSymbol(intent.symbol);
+          const previous = store.get();
+          return () => {
+            const current = store.get();
+            return (
+              current.lastTradeId === previous.lastTradeId &&
+              current.lastOrderId === previous.lastOrderId &&
+              current.lastSide === previous.lastSide &&
+              current.mode === previous.mode &&
+              current.positionOwner === previous.positionOwner &&
+              current.lastStrategy === previous.lastStrategy
+            );
+          };
+        },
         isEntryCurrent: (intent) =>
           this.acceptingEntries &&
           !deps.stopCoordinator?.blockedReason() &&
@@ -1611,6 +1627,10 @@ export class TradingService {
               metricsExclusionReason: 'ENTRY_RECOVERY_PENDING',
               lastStrategy: 'MICRO_BURST_V1',
               lastTradeId: tradeId,
+              lastOrderId:
+                typeof executionMetadata.orderId === 'string'
+                  ? executionMetadata.orderId
+                  : undefined,
               lastSide: request.side,
               lastEntryPrice: Number(executionMetadata.entryPrice) || undefined,
               lastEntryQty: Number(executionMetadata.quantity) || undefined,
