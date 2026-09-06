@@ -25,6 +25,12 @@ import { randomBytes } from 'node:crypto';
 
 type SharedRequestPriority = 'normal' | 'critical';
 
+function isBotProtectionId(value: unknown): boolean {
+  return (
+    typeof value === 'string' && (value.startsWith('se_') || /^bot_sl_[a-f0-9]{28}$/.test(value))
+  );
+}
+
 /** Exact decimal quantity comparison, without accepting a missing fill via float tolerance. */
 function quantityUnits(value: string | number): bigint | undefined {
   if (typeof value !== 'string' && typeof value !== 'number') return undefined;
@@ -1004,6 +1010,45 @@ export class BinanceExchange implements Exchange {
     };
   }
 
+  async readFreshActivePosition(symbol: string, sideHint: Side): Promise<PositionInfo | null> {
+    if (sideHint !== 'LONG' && sideHint !== 'SHORT') throw new Error('POSITION_SIDE_INVALID');
+    const rows = await this.enqueue(() => this.cli.futuresPositionRisk({ symbol }));
+    if (!Array.isArray(rows)) throw new Error('POSITION_SNAPSHOT_INVALID');
+    const candidates = rows.filter(
+      (row) =>
+        row.symbol === symbol && (row.positionSide === 'BOTH' || row.positionSide === sideHint),
+    );
+    if (candidates.length !== 1) throw new Error('POSITION_SNAPSHOT_INCOMPLETE');
+    const row = candidates[0];
+    if (
+      typeof row.positionAmt !== 'string' ||
+      !row.positionAmt.trim() ||
+      !Number.isFinite(Number(row.positionAmt))
+    ) {
+      throw new Error('POSITION_QUANTITY_INVALID');
+    }
+    const amount = Number(row.positionAmt);
+    if (
+      amount === 0 ||
+      (row.positionSide === 'BOTH' && (sideHint === 'LONG' ? amount < 0 : amount > 0))
+    )
+      return null;
+    if (
+      (sideHint === 'LONG' ? amount < 0 : amount > 0) ||
+      !Number.isFinite(Number(row.entryPrice)) ||
+      Number(row.entryPrice) <= 0 ||
+      !Number.isFinite(Number(row.leverage)) ||
+      Number(row.leverage) <= 0
+    )
+      throw new Error('POSITION_SNAPSHOT_INVALID');
+    return {
+      sideMode: row.positionSide,
+      qtyAbs: Math.abs(amount),
+      entryPrice: Number(row.entryPrice),
+      leverage: Number(row.leverage),
+    };
+  }
+
   async marketOpen(symbol: string, side: Side, quantity: number, clientOrderId?: string) {
     const hedge = await this.mutationHedgeMode();
 
@@ -1239,6 +1284,7 @@ export class BinanceExchange implements Exchange {
       request.triggerPrice <= 0 ||
       request.closePosition !== true ||
       request.workingType !== 'MARK_PRICE' ||
+      (request.side !== 'LONG' && request.side !== 'SHORT') ||
       !['BOTH', request.side].includes(request.positionSide)
     )
       throw new Error('STOP_REQUEST_INVALID');
@@ -1262,7 +1308,27 @@ export class BinanceExchange implements Exchange {
   async readStopCloseByClientOrderId(
     request: import('../../app/ports/Exchange').IdentifiedStopRequest,
   ): Promise<import('../../app/ports/Exchange').StopOrderReceipt | null> {
-    // Missing/cancelled/triggered and lookup errors remain uncertain; none authorize resend.
+    const order = await this.readStopCloseState(request);
+    return order?.status === 'NEW'
+      ? { clientOrderId: order.clientOrderId, orderId: order.orderId }
+      : null;
+  }
+
+  async readStopCloseState(
+    request: import('../../app/ports/Exchange').IdentifiedStopRequest,
+  ): Promise<import('../../app/ports/Exchange').StopOrderState | null> {
+    if (
+      !/^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
+      !Number.isFinite(request.triggerPrice) ||
+      request.triggerPrice <= 0 ||
+      request.closePosition !== true ||
+      request.workingType !== 'MARK_PRICE' ||
+      (request.side !== 'LONG' && request.side !== 'SHORT') ||
+      !['BOTH', request.side].includes(request.positionSide)
+    )
+      throw new Error('STOP_REQUEST_INVALID');
+    // Only NEW protection and definitive cancellation are interpreted. Not-found,
+    // triggered and unexpected statuses never authorize resubmission or retirement.
     const order = await this.enqueue(
       () => this.placeAlgoOrderRaw({ clientAlgoId: request.clientOrderId }, 'GET'),
       DEFAULT_REQUEST_WEIGHT,
@@ -1275,7 +1341,7 @@ export class BinanceExchange implements Exchange {
       !order.algoId ||
       (typeof order.algoId === 'number' && !Number.isSafeInteger(order.algoId)) ||
       !/^\d+$/.test(String(order.algoId)) ||
-      order.algoStatus !== 'NEW' ||
+      !['NEW', 'CANCELED'].includes(order.algoStatus) ||
       order.algoType !== 'CONDITIONAL' ||
       order.orderType !== 'STOP_MARKET' ||
       order.side !== (request.side === 'LONG' ? 'SELL' : 'BUY') ||
@@ -1285,7 +1351,11 @@ export class BinanceExchange implements Exchange {
       !(order.closePosition === true || order.closePosition === 'true')
     )
       return null;
-    return { clientOrderId: order.clientAlgoId, orderId: String(order.algoId) };
+    return {
+      clientOrderId: order.clientAlgoId,
+      orderId: String(order.algoId),
+      status: order.algoStatus,
+    };
   }
 
   async placeStopClose(
@@ -2138,10 +2208,9 @@ export class BinanceExchange implements Exchange {
           reduceOnly: isTrueish(o.reduceOnly),
           quantity: Number(o.origQty || o.quantity || 0),
           positionSide: o.positionSide || 'BOTH',
+          side: o.side,
           workingType: o.workingType,
-          owner: String(o.clientOrderId || o.origClientOrderId || o.clientAlgoId || '').startsWith(
-            'se_',
-          )
+          owner: isBotProtectionId(o.clientOrderId || o.origClientOrderId || o.clientAlgoId)
             ? 'BOT'
             : 'UNKNOWN',
         }));
@@ -2223,10 +2292,9 @@ export class BinanceExchange implements Exchange {
             reduceOnly: isTrueish(o.reduceOnly),
             quantity: Number(o.quantity || o.origQty || 0),
             positionSide: o.positionSide || 'BOTH',
+            side: o.side,
             workingType: o.workingType,
-            owner: String(
-              o.clientOrderId || o.origClientOrderId || o.clientAlgoId || '',
-            ).startsWith('se_')
+            owner: isBotProtectionId(o.clientOrderId || o.origClientOrderId || o.clientAlgoId)
               ? 'BOT'
               : 'UNKNOWN',
           }));

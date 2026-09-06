@@ -6,6 +6,17 @@ import type {
   OperationScope,
 } from '../../core/risk/ExecutionJournal';
 import type { IdentifiedStopRequest, TradingExchangePort } from '../ports/Exchange';
+import type { StateStore } from '../ports/StateStore';
+
+interface StopRetirement {
+  protocol: 'STOP_RETIREMENT_V1';
+  targetOperationId: string;
+  request: StopMutationRequest;
+  orderId: string;
+  status: 'CANCELED';
+  lastExitAt: number;
+  flatObservedAt: number[];
+}
 
 export interface StopMutationRequest extends IdentifiedStopRequest {
   protocol: 'STOP_MUTATION_V1';
@@ -35,6 +46,8 @@ export class DurableStopCoordinator {
   private readonly tasks = new Set<Promise<unknown>>();
   private readonly busy = new Set<string>();
   private readonly pending = new Set<string>();
+  private readonly retired = new Set<string>();
+  private retirementTask?: Promise<void>;
   private readonly scope: OperationScope;
 
   constructor(
@@ -42,6 +55,7 @@ export class DurableStopCoordinator {
       scope: OperationScope;
       journal: () => ExecutionJournal;
       exchange: TradingExchangePort;
+      wait?: (delayMs: number) => Promise<void>;
     },
   ) {
     this.scope = { ...deps.scope };
@@ -54,15 +68,36 @@ export class DurableStopCoordinator {
     return (this.startup ??= Promise.resolve().then(async () => {
       try {
         this.journal = this.deps.journal();
+        const original = new Map<string, JournalEntry[]>();
+        const retirements: JournalEntry[][] = [];
         for (const id of await this.journal.listOperations()) {
           const history = await this.journal.read(id);
-          const original = this.requestFrom(history[0]);
+          if (id.startsWith('stop-retirement:')) {
+            retirements.push(history);
+            continue;
+          }
+          const request = this.requestFrom(history[0]);
           for (const entry of history) {
-            if (JSON.stringify(this.requestFrom(entry)) !== JSON.stringify(original))
+            if (JSON.stringify(this.requestFrom(entry)) !== JSON.stringify(request))
               throw new Error('STOP_REQUEST_CHANGED');
           }
+          original.set(id, history);
           // Terminal mutation evidence is historical, not current position protection.
           this.pending.add(id);
+        }
+        for (const history of retirements) {
+          const target = history[0]?.metadata?.retirement as StopRetirement | undefined;
+          const source = target && original.get(target.targetOperationId);
+          if (!source) throw new Error('STOP_RETIREMENT_SOURCE_MISSING');
+          for (const entry of history) {
+            this.retirementFrom(entry, source);
+            if (JSON.stringify(entry.metadata) !== JSON.stringify(history[0].metadata))
+              throw new Error('STOP_RETIREMENT_CHANGED');
+          }
+          if (history[history.length - 1].event === 'CLOSED') {
+            this.retired.add(source[0].operationId);
+            this.pending.delete(source[0].operationId);
+          }
         }
       } catch (error) {
         this.failure = `STOP_JOURNAL_BLOCKED:${String(error)}`;
@@ -95,6 +130,7 @@ export class DurableStopCoordinator {
       .then(async () => {
         await this.start();
         if (this.failure || !samePosition()) return false;
+        if (this.retired.has(operationId)) return false;
         let latest = await this.journal!.readLatest(operationId);
         let request: StopMutationRequest;
         if (latest) {
@@ -219,6 +255,189 @@ export class DurableStopCoordinator {
       });
     this.tasks.add(task);
     return task;
+  }
+
+  /** Observation-only settlement. Does not send, cancel, change BotState or resolve PnL. */
+  reconcileClosed(stateForSymbol: (symbol: string) => StateStore): Promise<void> {
+    if (this.retirementTask) return this.retirementTask;
+    if (!this.journal || this.closing || this.failure) return Promise.resolve();
+    const task = Promise.resolve()
+      .then(async () => {
+        const inventory = await this.journal!.listOperations();
+        for (const id of new Set([
+          ...this.pending,
+          ...inventory.filter((key) => key.startsWith('stop:')),
+        ])) {
+          if (this.closing || this.failure) return;
+          if (this.retired.has(id)) continue;
+          if (this.busy.has(id)) continue;
+          this.busy.add(id);
+          try {
+            const history = await this.journal!.read(id);
+            if (!history.length) continue; // An unsubmitted legacy latch has no identified evidence.
+            const request = this.requestFrom(history[0]);
+            const store = stateForSymbol(request.symbol);
+            const lastExitAt = store.get().lastExitAt;
+            const sameClosed = () => {
+              const state = store.get();
+              return (
+                state.mode === 'IDLE' &&
+                state.positionOwner === 'BOT' &&
+                state.lastTradeId === request.parentTradeId &&
+                state.lastOrderId === request.parentOrderId &&
+                state.lastSide === request.side &&
+                state.lastStrategy === request.strategyId &&
+                Number.isSafeInteger(lastExitAt) &&
+                lastExitAt! >= history[0].timestampMs &&
+                lastExitAt! <= Date.now() &&
+                state.lastExitAt === lastExitAt
+              );
+            };
+            const exchange = this.deps.exchange;
+            if (!sameClosed()) continue;
+            this.pending.add(id);
+            if (!store.flush || !exchange.readFreshActivePosition || !exchange.readStopCloseState)
+              continue;
+            let proof: StopRetirement;
+            try {
+              // Confirm that the local operational close is durable, not merely an in-memory patch.
+              await store.flush();
+              if (!sameClosed()) continue;
+              const query = { ...request, scope: { ...request.scope } };
+              const observed = await exchange.readStopCloseState(query);
+              const last = history[history.length - 1];
+              if (
+                !observed ||
+                observed.status !== 'CANCELED' ||
+                observed.clientOrderId !== request.clientOrderId ||
+                !observed.orderId ||
+                (last.orderId && last.orderId !== observed.orderId)
+              )
+                continue;
+              const flatObservedAt: number[] = [];
+              if ((await exchange.readFreshActivePosition(request.symbol, request.side)) !== null)
+                continue;
+              flatObservedAt.push(Date.now());
+              await (this.deps.wait?.(300) ?? new Promise((resolve) => setTimeout(resolve, 300)));
+              if ((await exchange.readFreshActivePosition(request.symbol, request.side)) !== null)
+                continue;
+              flatObservedAt.push(Date.now());
+              const orders = await exchange.listCloseOrdersForSide(request.symbol, request.side);
+              if (!Array.isArray(orders) || orders.some((order) => order.owner === 'BOT')) continue;
+              if (
+                (await exchange.readFreshActivePosition(request.symbol, request.side)) !== null ||
+                !sameClosed()
+              )
+                continue;
+              flatObservedAt.push(Date.now());
+              proof = {
+                protocol: 'STOP_RETIREMENT_V1',
+                targetOperationId: id,
+                request,
+                orderId: observed.orderId,
+                status: 'CANCELED',
+                lastExitAt: lastExitAt!,
+                flatObservedAt,
+              };
+            } catch {
+              continue;
+            } // Unknown exchange/state evidence retains the block, without mutation.
+            const retirementId = id.replace(/^stop:/, 'stop-retirement:');
+            let retirement = await this.journal!.readLatest(retirementId);
+            if (retirement) {
+              proof = this.retirementFrom(retirement, history);
+            }
+            const append = async (event: JournalEventType) => {
+              const timestampMs = Date.now();
+              if (
+                proof.flatObservedAt.some(
+                  (time, index) =>
+                    time < proof.lastExitAt ||
+                    time > timestampMs ||
+                    (index > 0 && time < proof.flatObservedAt[index - 1]),
+                )
+              )
+                throw new Error('STOP_RETIREMENT_CLOCK_INVALID');
+              return this.journal!.append({
+                id: randomUUID(),
+                operationId: retirementId,
+                scope: request.scope,
+                symbol: request.symbol,
+                side: request.side,
+                strategyId: request.strategyId,
+                event,
+                timestampMs,
+                metadata: {
+                  journalOperationMeaning: 'STOP_RETIREMENT_NOT_ACCOUNTING',
+                  retirement: proof,
+                },
+              });
+            };
+            if (!sameClosed() || this.closing) continue;
+            if (!retirement) retirement = await append('PREPARED');
+            if (!sameClosed() || this.closing) continue;
+            if (retirement.event === 'PREPARED') retirement = await append('CLOSE_PENDING');
+            if (!sameClosed() || this.closing) continue;
+            if (retirement.event === 'CLOSE_PENDING') retirement = await append('CLOSED');
+            if (retirement.event === 'CLOSED' && sameClosed()) {
+              this.retired.add(id);
+              this.pending.delete(id);
+            }
+          } catch (error) {
+            this.failure ??= `STOP_RETIREMENT_JOURNAL_BLOCKED:${String(error)}`;
+          } finally {
+            this.busy.delete(id);
+          }
+        }
+      })
+      .catch((error) => {
+        this.failure ??= `STOP_RETIREMENT_JOURNAL_BLOCKED:${String(error)}`;
+      })
+      .finally(() => {
+        this.tasks.delete(task);
+        this.retirementTask = undefined;
+      });
+    this.retirementTask = task;
+    this.tasks.add(task);
+    return task;
+  }
+
+  private retirementFrom(entry: JournalEntry, source: JournalEntry[]): StopRetirement {
+    const proof = entry.metadata?.retirement as StopRetirement | undefined;
+    const request = this.requestFrom(source[0]);
+    const last = source[source.length - 1];
+    if (
+      !proof ||
+      proof.protocol !== 'STOP_RETIREMENT_V1' ||
+      proof.targetOperationId !== request.operationId ||
+      entry.operationId !== request.operationId.replace(/^stop:/, 'stop-retirement:') ||
+      entry.scope.account !== this.scope.account ||
+      entry.scope.environment !== this.scope.environment ||
+      entry.symbol !== request.symbol ||
+      entry.side !== request.side ||
+      entry.strategyId !== request.strategyId ||
+      entry.metadata?.journalOperationMeaning !== 'STOP_RETIREMENT_NOT_ACCOUNTING' ||
+      !['PREPARED', 'CLOSE_PENDING', 'CLOSED'].includes(entry.event) ||
+      JSON.stringify(proof.request) !== JSON.stringify(request) ||
+      proof.status !== 'CANCELED' ||
+      typeof proof.orderId !== 'string' ||
+      !proof.orderId.trim() ||
+      (last.orderId && proof.orderId !== last.orderId) ||
+      !Number.isSafeInteger(proof.lastExitAt) ||
+      proof.lastExitAt < source[0].timestampMs ||
+      !Array.isArray(proof.flatObservedAt) ||
+      proof.flatObservedAt.length !== 3 ||
+      proof.flatObservedAt.some(
+        (time, index) =>
+          !Number.isSafeInteger(time) ||
+          time < proof.lastExitAt ||
+          time > entry.timestampMs ||
+          (index > 0 && time < proof.flatObservedAt[index - 1]),
+      ) ||
+      entry.sequence <= last.sequence
+    )
+      throw new Error('STOP_RETIREMENT_INVALID');
+    return proof;
   }
 
   private requestFrom(entry: JournalEntry): StopMutationRequest {

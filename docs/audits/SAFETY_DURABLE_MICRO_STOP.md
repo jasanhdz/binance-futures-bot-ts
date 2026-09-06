@@ -106,6 +106,36 @@ codificados no autorizan retry.
 
 ## Pendiente Exacto
 
+### Resolucion observacional posterior a 7035640
+
+TradingService ejecuta `reconcileClosed` al arrancar y periodicamente. No envia ni
+cancela ordenes: solo resuelve una reserva de stop cuando el MISMO trade/orden/lado/
+estrategia tiene cierre operativo IDLE persistido y fecha valida, el lookup exacto
+del stop devuelve CANCELED, hay dos lecturas frescas flat y una final tras listar
+ordenes sin BOT supervivientes. Una orden ausente, NEW, disparada o estado desconocido
+no basta. Se preservan flags contables y ordenes ajenas.
+
+La evidencia queda en otra operacion del mismo archivo: `STOP_RETIREMENT_V1`, con
+PREPARED -> CLOSE_PENDING -> CLOSED. No se modifica ni reabre la mutacion original.
+El restart valida enlace, scope, identidad, orden, fechas y protocolo antes de excluir
+esa reserva historica. Una interrupcion parcial reobserva exchange antes de finalizar.
+Error de disco o cambio de identidad mantiene el bloqueo; shutdown drena estas tareas.
+
+El listado standard/algo reconoce tanto se_ legacy como bot_sl_ de formato exacto,
+y conserva side para comprobaciones de cobertura. readFreshActivePosition evita
+el cache de cuenta y rechaza snapshots incompletos/invalidos en vez de devolver flat.
+
+Validacion propia: npm run test:safety PASS, build y 2.309 + 46 = 2.355 tests,
+189 archivos entre grupos. Incluye 30 tests del coordinador de stops, 72 del adapter
+y prueba del arranque real con journal en filesystem. Una corrida previa tuvo el
+SQLITE_BUSY conocido y error I/O posterior en rate limiter; la siguiente corrida
+global paso sin cambios en ese modulo. No se afirma resuelta esa intermitencia.
+
+Limites: CANCELED significa cancelacion verificada, no stop ejecutado; TRIGGERED /
+FINISHED y fills de cierre siguen pendientes. La observacion no es una transaccion
+atomica con Binance ni contabilidad verificada. El protocolo de envio/cancelacion/
+cierre universal y la liberacion monetaria siguen separados de esta resolucion.
+
 | Area                                            | Estado                                                        |
 | ----------------------------------------------- | ------------------------------------------------------------- |
 | Reposicion Micro normal y recuperada            | Conectada al coordinador identificado; una mutacion por trade |

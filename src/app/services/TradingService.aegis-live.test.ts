@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { CONFIG } from '../../infra/config/environment';
 import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import { DEFAULT_AEGIS_CLEAN_ENTRY_GUARD_CONFIG } from '../../strategies/aegis/domain/services/AegisCleanEntryGuard';
@@ -18,9 +22,13 @@ import { AegisMomentumRideRuntimeConfig } from '../../strategies/aegis/domain/en
 import { E4TailRiskGuardAdapter } from '../../strategies/aegis/domain/entry/guards/E4TailRiskGuardAdapter';
 import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
-import { InMemoryExecutionJournal, type ExecutionJournal } from '../../core/risk/ExecutionJournal';
+import {
+  FileBackedExecutionJournal,
+  InMemoryExecutionJournal,
+  type ExecutionJournal,
+} from '../../core/risk/ExecutionJournal';
 import type { AegisRealtimeMarketSnapshot } from '../../strategies/aegis/application/AegisRealtimeMarketState';
-import type { RecoverableEntryPosition } from '../ports/Exchange';
+import type { RecoverableEntryPosition, TradingExchangePort } from '../ports/Exchange';
 
 const originalConfig = { ...CONFIG };
 
@@ -810,6 +818,12 @@ function makeHarness(
       .fn<() => Promise<RecoverableEntryPosition | null>>()
       .mockResolvedValue(null),
     readActivePosition,
+    readFreshActivePosition: vi
+      .fn<NonNullable<TradingExchangePort['readFreshActivePosition']>>()
+      .mockResolvedValue(null),
+    readStopCloseState: vi
+      .fn<NonNullable<TradingExchangePort['readStopCloseState']>>()
+      .mockResolvedValue(null),
     placeStopClose: options.placeStopCloseReject
       ? vi.fn().mockRejectedValue(new Error('stop failed'))
       : vi.fn().mockResolvedValue(true),
@@ -1212,6 +1226,104 @@ describe('TradingService Aegis live execution', () => {
 
   afterEach(() => {
     restoreConfig();
+  });
+
+  it('settles an already canceled stop at real startup without releasing accounting or sending orders', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'startup-stop-retirement-'));
+    const file = path.join(dir, 'journal.jsonl');
+    const journal = new FileBackedExecutionJournal(file);
+    const scope = { account: 'aegis-fixture', environment: 'fixture' };
+    const tradeId = 'MICRO-BURST-V1-closed';
+    const digest = createHash('sha256')
+      .update(JSON.stringify([scope.account, scope.environment, tradeId]))
+      .digest('hex');
+    const request = {
+      protocol: 'STOP_MUTATION_V1',
+      scope,
+      parentTradeId: tradeId,
+      parentOrderId: 'entry-1',
+      strategyId: 'MICRO_BURST_V1',
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      positionSide: 'LONG',
+      triggerPrice: 2970,
+      positionQuantity: 0.01,
+      entryPrice: 3000,
+      closePosition: true,
+      workingType: 'MARK_PRICE',
+      clientOrderId: `bot_sl_${digest.slice(0, 28)}`,
+      mutationId: `bot_sl_${digest.slice(0, 28)}`,
+      operationId: `stop:${digest}`,
+    };
+    const at = Date.now() - 1000;
+    for (const event of [
+      'PREPARED',
+      'SUBMITTED',
+      'OPEN_CONFIRMED',
+      'PROTECTED',
+      'CLOSE_PENDING',
+      'CLOSED',
+    ] as const) {
+      await journal.append({
+        id: `seed-${event}`,
+        operationId: request.operationId,
+        scope,
+        symbol: 'ETHUSDT',
+        side: 'LONG',
+        strategyId: 'MICRO_BURST_V1',
+        event,
+        timestampMs: at,
+        stopPrice: 2970,
+        quantity: 0.01,
+        entryPrice: 3000,
+        clientOrderId: request.clientOrderId,
+        orderId: event === 'PREPARED' ? undefined : '99',
+        metadata: {
+          journalOperationMeaning: 'STOP_MUTATION_NOT_TRADE',
+          terminalMeaning: 'STOP_OBSERVED_NOT_POSITION_FLAT',
+          request,
+        },
+      });
+    }
+    const { service, exchange, symbolStores } = makeHarness({
+      stopJournal: journal,
+      closeOrders: [],
+      readActivePositionSequence: [null],
+      symbolModes: { ETHUSDT: 'OFF' },
+      symbolStates: {
+        ETHUSDT: {
+          mode: 'IDLE',
+          positionOwner: 'BOT',
+          lastTradeId: tradeId,
+          lastOrderId: 'entry-1',
+          lastSide: 'LONG',
+          lastStrategy: 'MICRO_BURST_V1',
+          lastExitAt: Date.now(),
+          microBurstPnlUnverified: true,
+        },
+      },
+    });
+    const store = symbolStores.get('ETHUSDT');
+    store.flush = vi.fn(async () => {});
+    exchange.readStopCloseState.mockResolvedValue({
+      clientOrderId: request.clientOrderId,
+      orderId: '99',
+      status: 'CANCELED',
+    });
+    try {
+      await service.start(false);
+      expect(service.getAegisRuntimeSnapshot().stopMutationBlockedReason).toBeUndefined();
+      expect(exchange.readFreshActivePosition).toHaveBeenCalledTimes(3);
+      expect(store.flush).toHaveBeenCalled();
+      expect(store.get().microBurstPnlUnverified).toBe(true);
+      expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+      expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+      expect(exchange.marketOpen).not.toHaveBeenCalled();
+      expect((await journal.readLatest(`stop-retirement:${digest}`))?.event).toBe('CLOSED');
+    } finally {
+      await service.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([false, true])(

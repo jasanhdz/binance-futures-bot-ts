@@ -71,6 +71,8 @@ export interface ExchangeAccountReadPort {
   getSymbolFilters(symbol: string, leverage: number): Promise<SymbolFilters>;
   hasOpenPosition(symbol: string, side: 'LONG' | 'SHORT' | 'ANY'): Promise<boolean>;
   readActivePosition(symbol: string, sideHint: Side): Promise<PositionInfo | null>;
+  /** Uncached validated observation; absence is only represented by explicit null. */
+  readFreshActivePosition?(symbol: string, sideHint: Side): Promise<PositionInfo | null>;
   readMarketOpenByClientOrderId(
     symbol: string,
     clientOrderId: string,
@@ -113,6 +115,8 @@ export interface TradingExchangePort extends MarketDataPort, ExchangeAccountRead
   sendStopCloseOnce?(request: IdentifiedStopRequest): Promise<StopOrderReceipt>;
   /** Positive result requires exact identity and a currently NEW, BOT-owned covering stop. */
   readStopCloseByClientOrderId?(request: IdentifiedStopRequest): Promise<StopOrderReceipt | null>;
+  /** Exact identity; only NEW or definitively CANCELED are understood, all others unknown. */
+  readStopCloseState?(request: IdentifiedStopRequest): Promise<StopOrderState | null>;
   setLeverage(symbol: string, leverage: number): Promise<void>;
   ensureMarginType(symbol: string, marginType?: 'ISOLATED' | 'CROSSED'): Promise<void>;
   marketOpen(
@@ -152,6 +156,10 @@ export interface IdentifiedStopRequest {
 export interface StopOrderReceipt {
   clientOrderId: string;
   orderId: string;
+}
+
+export interface StopOrderState extends StopOrderReceipt {
+  status: 'NEW' | 'CANCELED';
 }
 
 export type {

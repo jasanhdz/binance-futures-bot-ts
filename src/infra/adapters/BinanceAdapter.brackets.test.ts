@@ -7,7 +7,7 @@ const mockClient = vi.hoisted(() => ({
   futuresOrder: vi.fn(() =>
     Promise.resolve({ orderId: 123, symbol: 'BTCUSDT', clientOrderId: 'se_client-order-123' }),
   ),
-  futuresOpenOrders: vi.fn(() => Promise.resolve([])),
+  futuresOpenOrders: vi.fn<() => Promise<Array<Record<string, unknown>>>>(async () => []),
   futuresGetOrder: vi.fn(() =>
     Promise.resolve({
       orderId: 123,
@@ -47,6 +47,57 @@ const logger = {
 };
 
 describe('BinanceExchange bracket placement', () => {
+  it.each([
+    ['se_legacy', 'BOT'],
+    ['bot_sl_' + 'a'.repeat(28), 'BOT'],
+    ['bot_sl_manual', 'UNKNOWN'],
+    ['bot_sl_' + 'a'.repeat(29), 'UNKNOWN'],
+    ['manual', 'UNKNOWN'],
+  ])('preserves side and recognizes protection ID %s as %s in both listings', async (id, owner) => {
+    mockClient.futuresOpenOrders.mockResolvedValueOnce([
+      {
+        orderId: 123,
+        type: 'STOP_MARKET',
+        stopPrice: '90',
+        side: 'SELL',
+        positionSide: 'LONG',
+        closePosition: true,
+        workingType: 'MARK_PRICE',
+        clientOrderId: id,
+      },
+    ]);
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            algoId: 456,
+            algoType: 'CONDITIONAL',
+            orderType: 'STOP_MARKET',
+            triggerPrice: '90',
+            side: 'SELL',
+            positionSide: 'LONG',
+            closePosition: true,
+            workingType: 'MARK_PRICE',
+            clientAlgoId: id,
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    try {
+      const orders = await new BinanceExchange(logger).listCloseOrdersForSide('BTCUSDT', 'LONG');
+      expect(orders).toHaveLength(2);
+      expect(orders).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ orderId: '123', side: 'SELL', owner }),
+          expect.objectContaining({ orderId: 'ALGO_456', side: 'SELL', owner }),
+        ]),
+      );
+      expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mockClient.futuresPing.mockResolvedValue({});
@@ -145,6 +196,108 @@ describe('BinanceExchange bracket placement', () => {
     } finally {
       fetch.mockRestore();
     }
+  });
+
+  it.each(['NEW', 'CANCELED', 'TRIGGERED', 'FINISHED', 'EXPIRED', 'UNKNOWN'])(
+    'exposes only explicitly understood conditional lifecycle %s',
+    async (status) => {
+      const request = {
+        symbol: 'BTCUSDT',
+        side: 'LONG' as const,
+        positionSide: 'BOTH' as const,
+        triggerPrice: 90,
+        closePosition: true as const,
+        workingType: 'MARK_PRICE' as const,
+        clientOrderId: `bot_sl_${'a'.repeat(28)}`,
+      };
+      const order = {
+        symbol: request.symbol,
+        clientAlgoId: request.clientOrderId,
+        algoId: 456,
+        algoStatus: status,
+        algoType: 'CONDITIONAL',
+        orderType: 'STOP_MARKET',
+        side: 'SELL',
+        positionSide: 'BOTH',
+        triggerPrice: '90',
+        workingType: 'MARK_PRICE',
+        closePosition: true,
+      };
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async () => new Response(JSON.stringify(order)));
+      try {
+        const exchange = new BinanceExchange(logger);
+        const observed = await exchange.readStopCloseState(request);
+        if (status === 'NEW' || status === 'CANCELED')
+          expect(observed).toEqual({
+            clientOrderId: request.clientOrderId,
+            orderId: '456',
+            status,
+          });
+        else expect(observed).toBeNull();
+        const protectedOrder = await exchange.readStopCloseByClientOrderId(request);
+        expect(protectedOrder !== null).toBe(status === 'NEW');
+        expect(fetch.mock.calls.every(([, options]) => options?.method === 'GET')).toBe(true);
+        expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
+
+  it('fresh position reads do not reuse cached account flat/open evidence', async () => {
+    const row = {
+      symbol: 'BTCUSDT',
+      positionSide: 'BOTH',
+      positionAmt: '0.02',
+      entryPrice: '100',
+      leverage: '20',
+      marginType: 'isolated',
+    };
+    mockClient.futuresAccountInfo.mockResolvedValueOnce({ positions: [row] });
+    const exchange = new BinanceExchange(logger);
+    expect(await exchange.readActivePosition('BTCUSDT', 'LONG')).toMatchObject({ qtyAbs: 0.02 });
+    const flat = { ...row, positionAmt: '0' };
+    mockClient.futuresPositionRisk.mockResolvedValueOnce([flat]);
+    expect(await exchange.readFreshActivePosition('BTCUSDT', 'LONG')).toBeNull();
+    mockClient.futuresPositionRisk.mockResolvedValueOnce([row]);
+    expect(await exchange.readFreshActivePosition('BTCUSDT', 'LONG')).toMatchObject({
+      qtyAbs: 0.02,
+    });
+    expect(mockClient.futuresPositionRisk).toHaveBeenCalledTimes(2);
+    expect(mockClient.futuresAccountInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'missing-row',
+    'duplicate-row',
+    'invalid-quantity',
+    'missing-quantity',
+    'invalid-price',
+    'invalid-leverage',
+  ])('rejects fresh position uncertainty %s instead of returning null', async (failure) => {
+    const row = {
+      symbol: 'BTCUSDT',
+      positionSide: 'BOTH',
+      positionAmt: '0.02',
+      entryPrice: '100',
+      leverage: '20',
+    };
+    const invalid = {
+      ...row,
+      ...(failure === 'invalid-quantity' ? { positionAmt: 'NaN' } : {}),
+      ...(failure === 'missing-quantity' ? { positionAmt: '' } : {}),
+      ...(failure === 'invalid-price' ? { entryPrice: '0' } : {}),
+      ...(failure === 'invalid-leverage' ? { leverage: 'NaN' } : {}),
+    };
+    mockClient.futuresPositionRisk.mockResolvedValueOnce(
+      failure === 'missing-row' ? [] : failure === 'duplicate-row' ? [row, row] : [invalid],
+    );
+    await expect(
+      new BinanceExchange(logger).readFreshActivePosition('BTCUSDT', 'LONG'),
+    ).rejects.toThrow();
+    expect(mockClient.futuresOrder).not.toHaveBeenCalled();
   });
 
   it.each([

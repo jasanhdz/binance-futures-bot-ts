@@ -1003,7 +1003,10 @@ export class TradingService {
     if (this.runtimeStopping) return;
     this.acceptingEntries = false;
     await this.deps.stopCoordinator?.start();
+    if (this.runtimeStopping) return;
     await this.deps.entryCoordinator?.start();
+    if (this.runtimeStopping) return;
+    await this.deps.stopCoordinator?.reconcileClosed((symbol) => this.stateForSymbol(symbol));
     if (this.runtimeStopping) return;
     const { logger, notifier, mlService, configManager, exchange } = this.deps;
     const manager = configManager as any;
@@ -1273,6 +1276,7 @@ export class TradingService {
 
     this.hardWatchdogTimer = setInterval(() => {
       void this.deps.entryCoordinator?.reconcile();
+      void this.deps.stopCoordinator?.reconcileClosed((symbol) => this.stateForSymbol(symbol));
       if (this.isRunning && Date.now() - this.lastAlivePulseMs > 180000) {
         this.deps.logger.error('system_deadlock_detected');
         process.exit(1);
