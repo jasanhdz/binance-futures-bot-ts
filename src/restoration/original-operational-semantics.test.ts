@@ -63,8 +63,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Data/sizing increment: validate original candles before tail selection and indicators.
   // Entry safety slice: inject coordinator, startup gate, periodic recovery and drained close.
   // Shutdown extraction: typed drain, preserve failures and close after all admitted work.
+  // Startup barrier: never reopen admission or close storage over initializing work.
   'src/app/services/TradingService.ts':
-    '038564780db5f3f9e72cbc48b7844fe05651d0667c95fe861a6f002ef6031412',
+    '167e9af801bc2ba716061c4eda429687fcf3a9a69a19d961bab929265921b4a6',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

@@ -6,6 +6,83 @@ import { InMemoryExecutionJournal } from '../../core/risk/ExecutionJournal';
 import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
 
 describe('TradingService shared safety contracts', () => {
+  it('starts only one loop when concurrent callers share initialization', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.initializeRuntime = vi.fn(async () => {});
+    service.runLoop = vi.fn(async () => {});
+    await Promise.all([service.start(), service.start(), service.start(false)]);
+    expect(service.initializeRuntime).toHaveBeenCalledTimes(1);
+    expect(service.runLoop).toHaveBeenCalledTimes(1);
+  });
+  it('waits for concurrent startup recovery before stopping producers and closing the journal', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.shutdown = new RuntimeShutdown();
+    let finish!: () => void;
+    const recovery = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const events: string[] = [];
+    service.deps = {
+      entryCoordinator: {
+        start: () => recovery,
+        close: async () => {
+          events.push('journal-close');
+        },
+      },
+      exchange: { getUSDTBalance: vi.fn() },
+      state: {
+        flush: async () => {
+          events.push('state-flush');
+        },
+      },
+      logger: { info: vi.fn() },
+    };
+    service.symbolStateStores = new Map();
+    service.strategyRuntimeCoordinator = {
+      stop: async () => {
+        events.push('producer-stop');
+      },
+    };
+    service.decisionJsonlSink =
+      service.marketSnapshotEvidenceSink =
+      service.telemetryJsonlSink =
+        { drain: async () => {} };
+    const starting = service.start(false);
+    await Promise.resolve();
+    const stopping = service.stop();
+    expect(service.acceptingEntries).toBe(false);
+    expect(events).toEqual([]);
+    finish();
+    await starting;
+    await stopping;
+    expect(events).toEqual(['producer-stop', 'state-flush', 'journal-close']);
+    expect(service.deps.exchange.getUSDTBalance).not.toHaveBeenCalled();
+    expect(service.acceptingEntries).toBe(false);
+    await expect(service.start(false)).rejects.toThrow('RUNTIME_STOPPING');
+  });
+
+  it('coalesces initialization and prevents queued startup after synchronous stop', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.shutdown = new RuntimeShutdown();
+    service.deps = {
+      entryCoordinator: { start: vi.fn(), close: vi.fn() },
+      state: { flush: vi.fn() },
+      logger: { info: vi.fn() },
+    };
+    service.symbolStateStores = new Map();
+    service.strategyRuntimeCoordinator = { stop: vi.fn() };
+    service.decisionJsonlSink =
+      service.marketSnapshotEvidenceSink =
+      service.telemetryJsonlSink =
+        { drain: vi.fn() };
+    const a = service.start(false);
+    const b = service.start(false);
+    await service.stop();
+    await Promise.all([a, b]);
+    expect(service.deps.entryCoordinator.start).not.toHaveBeenCalled();
+    expect(service.strategyRuntimeCoordinator.stop).toHaveBeenCalledTimes(1);
+    expect(service.deps.entryCoordinator.close).toHaveBeenCalledTimes(1);
+  });
   it('awaits the real entry recovery gate before startup can read the exchange', async () => {
     const service = Object.create(TradingService.prototype) as any;
     const coordinator = new DurableEntryCoordinator({

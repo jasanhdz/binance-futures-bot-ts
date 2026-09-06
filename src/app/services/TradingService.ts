@@ -952,9 +952,28 @@ export class TradingService {
     };
   }
 
+  private startupTask?: Promise<void>;
+  private loopTask?: Promise<void>;
+
   async start(startLoop = true): Promise<void> {
+    if (this.runtimeStopping) throw new Error('RUNTIME_STOPPING');
+    if (!this.startupTask) {
+      this.acceptingEntries = false;
+      // Publish before initialization callbacks so reentrant stop can await startup.
+      this.startupTask = Promise.resolve().then(() => this.initializeRuntime());
+    }
+    await this.startupTask;
+    if (startLoop && !this.runtimeStopping) {
+      this.loopTask ??= Promise.resolve().then(() => this.runLoop());
+      await this.loopTask;
+    }
+  }
+
+  private async initializeRuntime(): Promise<void> {
+    if (this.runtimeStopping) return;
     this.acceptingEntries = false;
     await this.deps.entryCoordinator?.start();
+    if (this.runtimeStopping) return;
     const { logger, notifier, mlService, configManager, exchange } = this.deps;
     const manager = configManager as any;
     if (typeof manager.validateSingleLiveAegisSymbol === 'function') {
@@ -1204,6 +1223,7 @@ export class TradingService {
       }
     }
 
+    if (this.runtimeStopping) return;
     this.isRunning = true;
     this.acceptingEntries = true;
     this.runtimeStopping = false;
@@ -1218,6 +1238,8 @@ export class TradingService {
           : undefined,
     });
 
+    if (this.runtimeStopping) return;
+
     this.hardWatchdogTimer = setInterval(() => {
       void this.deps.entryCoordinator?.reconcile();
       if (this.isRunning && Date.now() - this.lastAlivePulseMs > 180000) {
@@ -1225,8 +1247,6 @@ export class TradingService {
         process.exit(1);
       }
     }, 10000);
-
-    if (startLoop) await this.runLoop();
   }
 
   stop(): Promise<void> {
@@ -1238,7 +1258,12 @@ export class TradingService {
         if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
         this.deps.logger.info('Aegis bot stopped');
       },
-      stopProducers: () => this.strategyRuntimeCoordinator.stop(),
+      stopProducers: async () => {
+        // Initialization may still be adopting/protecting positions or starting a producer.
+        // Keep storage open and stop producers only after that work has settled.
+        await this.startupTask?.catch(() => undefined);
+        await this.strategyRuntimeCoordinator.stop();
+      },
       activeTasks: () => [...(this.activeRuntimeTasks ?? [])],
       flushResources: () => [
         ...[this.deps.state, ...this.symbolStateStores.values()].map(

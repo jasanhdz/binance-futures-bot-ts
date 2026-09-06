@@ -161,6 +161,21 @@ filesystem temporal y exchange simulado; sin ordenes reales ni cambios LIVE.
 
 ## Extraccion de apagado posterior a d249794
 
+### Barrera de arranque posterior a 68c383a
+
+TradingService comparte una unica Promise de inicializacion. Stop cierra admision
+sincronicamente y espera esa inicializacion antes de detener productores y cerrar
+almacenamiento. Si stop ocurre durante recovery o durante el arranque de productores,
+la continuacion no reactiva admision/watchdog/loop. Reiniciar una instancia detenida
+se rechaza explicitamente; requiere nueva instancia. No cancela a medias una mutacion
+ya iniciada durante adopcion: espera que termine antes del cierre del journal.
+
+Validacion propia: npm run test:safety PASS, build y 2.214 + 46 = 2.260 tests
+(186 archivos). Tres regresiones del lifecycle real de TradingService: recovery en
+curso al parar, stop sincrono antes de ejecutar inicializacion encolada y arranques
+concurrentes que comparten un unico loop (no solo inicializacion). No completa
+el cleanup del bootstrap exterior ni la recuperacion de posiciones sin estado local.
+
 - TradingService delega el orden de cierre a `src/app/runtime/RuntimeShutdown.ts`
   mediante puertos tipados: cerrar admision, detener productores, consultar tareas,
   obtener flushes/drains y cerrar coordinador de mutaciones. No duplica esa secuencia.
