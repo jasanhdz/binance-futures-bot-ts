@@ -3,6 +3,9 @@
 ## Alcance
 
 - Base: `73856b8`, rama `work/micro-burst-rider-v1-20260826`.
+- PUBLICACION: codigo publicado en `d249794bd9ba80c7c940c0796c10984af19236fb`,
+  comprobado con `git ls-remote` despues del push normal. Este registro posterior
+  solo documenta esa comprobacion, no una ejecucion adicional de tests.
 - IMPLEMENTACION: primer corte de apertura conectado; fases 1/2/3/9 PARCIALES.
 - No sustituye `StrategyRiskSessionService` ni `PositionProtectionService`.
 - No cambia main, runtimeBot, PM2, configuracion LIVE, thresholds, secretos,

@@ -2,11 +2,19 @@
 
 ## Referencia vigente del traspaso
 
-- Base publicada comprobada en la rama remota: `19f4678`, que incluye `2966821`,
+- Apertura durable publicada en `d249794bd9ba80c7c940c0796c10984af19236fb`,
+  SHA remoto comprobado. Validacion propia del coordinador: build y
+  2.194 + 46 = 2.240 tests PASS (185 archivos en ambos grupos).
+  Ver `SAFETY_DURABLE_ENTRY_SLICE.md`: 27 tests del coordinador, handoff pendiente
+  bloquea admision incluso con ACK; stops/cierres y contabilidad no integrados aun.
+- Datos y sizing publicados en `a24c437`, evidencia en `73856b8`:
+  `SAFETY_DATA_SIZING_INTEGRATION.md`. No equivalen a fases 1-9 completas.
+
+- Base historica publicada: `19f4678`, que incluye `2966821`,
   `d341225` y `8306846`. El journal de esa base requirio correcciones adicionales.
-- Seguimiento LOCAL del journal: `SAFETY_JOURNAL_19F4678_FIX.md`. Ejecucion propia
+- Seguimiento del journal publicado en `7d4c160`: `SAFETY_JOURNAL_19F4678_FIX.md`. Ejecucion propia
   de `npm run test:safety`: build PASS, 2.110 + 46 = 2.156 tests PASS; journal 264.
-  Almacenamiento corregido, sin integracion runtime ni nueva publicacion todavia.
+  Almacenamiento corregido; la integracion de aperturas posterior se describe arriba.
 - R1-R4 corregidos, no pendientes. Resultado propio del bloque: build PASS,
   1.840 + 46 = 1.886 tests. No es una nueva ejecucion del merge documental.
 - Estado y pruebas del seguimiento posterior en `SAFETY_RECONCILIATION_LEDGER_FIX.md`.
