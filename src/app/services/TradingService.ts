@@ -8,6 +8,7 @@ import { BotState, Candle, Side } from '../../core/types';
 import { DEFAULT_GUARDIAN_CONFIG } from '../../domain/services/ProfitGuardian';
 import { calculateATR } from '../../domain/services/TechnicalIndicators';
 import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
+import { readStartupIdentity } from '../runtime/StartupIdentity';
 import {
   AegisMicroLiveGateDecision,
   buildAegisMicroLiveGateConfigFromEnv,
@@ -428,6 +429,7 @@ export class TradingService {
       notifier: deps.notifier,
       now: () => Date.now(),
       getSignal: (symbol) => this.deps.mlService.getSignal(symbol),
+      isPredictionEnabled: () => this.isAegisEnabled(),
       getExitEyeConfig: () => this.runtimeConfig.getAegisExitEyeConfig(),
       getEntryThreshold: (symbol) => this.runtimeConfig.getAegisTurboGateConfig(symbol).minScore,
       logTradeEvent: (symbol, event, payload) =>
@@ -1042,6 +1044,8 @@ export class TradingService {
     await this.deps.stopCoordinator?.reconcileClosed((symbol) => this.stateForSymbol(symbol));
     if (this.runtimeStopping) return;
     const { logger, notifier, mlService, configManager, exchange } = this.deps;
+    const identity = readStartupIdentity();
+    logger.info('runtime_boot', { ...identity });
     const manager = configManager as any;
     if (typeof manager.validateSingleLiveAegisSymbol === 'function') {
       manager.validateSingleLiveAegisSymbol();
@@ -1057,13 +1061,14 @@ export class TradingService {
     const startupAccount = await this.readEntryAccountSnapshot(startupWalletBalance ?? undefined);
     await this.riskSession.restore();
 
-    logger.info(isTurbo ? '⚡ AEGIS TURBO MICRO-LIVE MODE' : '🛡️ AEGIS SHADOW MODE', {
-      initial: INITIAL_BALANCE,
-      walletBalance: startupWalletBalance,
-      mode: tradingMode,
-      liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
-      yamlLiveEnabled: this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled === true,
-    });
+    if (this.isAegisEnabled())
+      logger.info(isTurbo ? '⚡ AEGIS TURBO MICRO-LIVE MODE' : '🛡️ AEGIS SHADOW MODE', {
+        initial: INITIAL_BALANCE,
+        walletBalance: startupWalletBalance,
+        mode: tradingMode,
+        liveEnabled: CONFIG.AEGIS_LIVE_ENABLED,
+        yamlLiveEnabled: this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled === true,
+      });
 
     const liveSymbols = this.getLiveAegisSymbols();
     const startupSymbols = liveSymbols.length > 0 ? liveSymbols : this.config.symbols;
@@ -1080,7 +1085,7 @@ export class TradingService {
     const trailingCallback =
       (gateConfig as any).trailingCallbackRoe ?? regimeConfig?.trailingCallbackRoe ?? 0.08;
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; this.isAegisEnabled() && i < 5; i++) {
       try {
         await mlService.getSignal(firstSymbol);
         break;
@@ -1192,6 +1197,8 @@ export class TradingService {
     );
 
     const startupMsg = formatAegisStartupMessage({
+      identity,
+      microBurst: this.getMicroBurstCandidateConfig(),
       mode: {
         tradingMode,
         liveEnabled:
@@ -1221,7 +1228,7 @@ export class TradingService {
         requireBrackets: gateConfig.requireBrackets,
       },
       aegisTurbo: {
-        enabled: this.runtimeConfig.getAegisTurboYamlConfig()?.enabled === true,
+        enabled: this.isAegisEnabled(),
         mode:
           CONFIG.AEGIS_LIVE_ENABLED === true &&
           this.runtimeConfig.getAegisTurboYamlConfig()?.live_enabled === true
@@ -1263,7 +1270,7 @@ export class TradingService {
       activePositions: startupPositions,
     });
     await notifier.sendMessage(startupMsg);
-    for (const symbol of this.config.symbols) {
+    for (const symbol of this.isAegisEnabled() ? this.config.symbols : []) {
       if (!this.strategyRuntimeCoordinator.hasAegisRealtimeMarketState()) {
         this.deps.exchange.subscribeToCandles(symbol);
       }
@@ -1297,6 +1304,8 @@ export class TradingService {
 
     const mbConfig = this.getMicroBurstCandidateConfig();
     await this.strategyRuntimeCoordinator.start({
+      aegisEnabled: this.isAegisEnabled(),
+      momentumEnabled: momentumRideConfig.enabled && momentumRideConfig.mode !== 'OFF',
       symbols: startupSymbols,
       microBurstConfig: mbConfig,
       loadMicroBurstProvenance:
@@ -2045,6 +2054,7 @@ export class TradingService {
   }
 
   private async scanShadowOnly(symbol: string): Promise<void> {
+    if (!this.isAegisEnabled()) return;
     const signal = await this.deps.mlService.getSignal(symbol);
     const signalId = generateSignalId(symbol);
     this.logAegisScan(symbol, signal);
@@ -2185,7 +2195,15 @@ export class TradingService {
     await this.evaluateAegisEntry(symbol);
   }
 
+  private isAegisEnabled(): boolean {
+    return (
+      CONFIG.AEGIS_ENABLED !== false &&
+      this.runtimeConfig.getAegisTurboYamlConfig()?.enabled !== false
+    );
+  }
+
   private async evaluateAegisEntry(symbol: string): Promise<void> {
+    if (!this.isAegisEnabled()) return;
     const { mlService, exchange, logger } = this.deps;
     const symbolState = this.stateForSymbol(symbol);
     const tradingMode = this.getTradingMode();

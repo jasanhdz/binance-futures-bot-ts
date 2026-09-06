@@ -1,4 +1,5 @@
 import { Side } from '../../core/types';
+import type { StartupIdentity } from '../runtime/StartupIdentity';
 import { formatAegisReason } from './AegisReasonFormatter';
 
 type Votes = {
@@ -37,6 +38,8 @@ export interface AegisPositionMessageInput {
 }
 
 export interface AegisStartupMessageInput {
+  identity?: StartupIdentity;
+  microBurst?: { enabled: boolean; mode: string };
   mode: {
     tradingMode: string;
     liveEnabled: boolean;
@@ -378,20 +381,28 @@ export function formatAllSignalsMessage(input: {
 }
 
 export function formatAegisStartupMessage(input: AegisStartupMessageInput): string {
-  const status =
-    `🧠 ${formatStartupMode(input.mode.tradingMode)} | Live ${formatOnOff(input.mode.liveEnabled)} | Shorts ${formatOnOff(input.mode.shortsEnabled)}\n` +
-    `Trading mode: ${input.mode.strategy}`;
-  const probeMode = formatProbeModeBlock(input.probeMode);
+  const aegisActive = input.aegisTurbo?.enabled === true && input.aegisTurbo.mode !== 'OFF';
+  const momentumActive = input.momentumRide?.enabled === true && input.momentumRide.mode !== 'OFF';
+  const microActive = input.microBurst?.enabled === true && input.microBurst.mode !== 'OFF';
+  const active = [
+    aegisActive && `AEGIS_TURBO (${input.aegisTurbo?.mode ?? 'SHADOW'})`,
+    momentumActive && `MOMENTUM_RIDE (${input.momentumRide?.mode ?? 'SHADOW'})`,
+    microActive && `MICRO_BURST_V1 (${input.microBurst?.mode})`,
+  ].filter(Boolean);
+  // Plain text: TelegramAdapter owns HTML escaping for all messages.
+  const identity = input.identity;
 
   return [
-    `🔥 AEGIS + MOMENTUM LIVE ✅`,
-    status,
+    'Runtime started',
+    identity &&
+      `OS: ${identity.platform} ${identity.release}\nUser: ${identity.user}\nHost: ${identity.hostname}`,
+    active.length ? `Active strategies: ${active.join(', ')}` : 'No active entry strategies',
     formatCompactSymbols(input.mode.activeSymbols),
     formatStartupAccount(input.account),
-    formatAegisTurboBlock(input),
-    formatMomentumRideBlock(input.momentumRide),
-    formatRegimeEngineBlock(input.regimeEngineV2),
-    probeMode,
+    aegisActive ? formatAegisTurboBlock(input) : undefined,
+    momentumActive ? formatMomentumRideBlock(input.momentumRide) : undefined,
+    momentumActive ? formatRegimeEngineBlock(input.regimeEngineV2) : undefined,
+    aegisActive && input.probeMode?.enabled ? formatProbeModeBlock(input.probeMode) : undefined,
     formatStartupPositions({ activePositions: input.activePositions }),
   ]
     .filter((line): line is string => Boolean(line))

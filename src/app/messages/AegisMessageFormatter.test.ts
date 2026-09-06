@@ -174,10 +174,31 @@ describe('formatAegisStartupMessage', () => {
     expect(text).not.toContain('**');
   });
 
-  it('shows live system title and mode', () => {
-    expect(startup()).toContain('🔥 AEGIS + MOMENTUM LIVE ✅');
-    expect(startup()).toContain('🧠 MICRO-LIVE | Live ON | Shorts OFF');
-    expect(startup()).toContain('Trading mode: AEGIS_TURBO+MOMENTUM_RIDE');
+  it('shows a single strategy-aware title and effective modes', () => {
+    expect(startup()).toContain('Runtime started');
+    expect(startup()).toContain('AEGIS_TURBO (LIVE)');
+    expect(startup()).toContain('MOMENTUM_RIDE (ENFORCE)');
+  });
+
+  it('omits inactive strategy sections while retaining environment and position protection status', () => {
+    const text = startup({
+      aegisTurbo: { enabled: false },
+      momentumRide: { enabled: false },
+      microBurst: { enabled: true, mode: 'SHADOW' },
+      identity: { user: 'user<&>', hostname: 'mac<&>', platform: 'darwin', release: 'test' },
+      activePositions: [],
+    });
+    expect(text).toContain('Active strategies: MICRO_BURST_V1 (SHADOW)');
+    expect(text).not.toMatch(/Aegis|AEGIS|Momentum|MOMENTUM|Probe|RegimeEngine/);
+    expect(text).toContain('User: user<&>');
+    expect(text).toContain('Host: mac<&>');
+    expect(text).toContain('OS: darwin test');
+    const none = startup({
+      aegisTurbo: { enabled: false },
+      momentumRide: { mode: 'OFF' },
+      activePositions: [],
+    });
+    expect(none).toContain('No active entry strategies');
   });
 
   it('shows compact active symbols without depending on ETHUSDT as the only symbol', () => {

@@ -62,6 +62,7 @@ export interface AegisExitManagementDeps {
   notifier: Notifier;
   now(): number;
   getSignal(symbol: string): Promise<AegisTradingSignal>;
+  isPredictionEnabled?(): boolean;
   getExitEyeConfig(): AegisExitEyeYamlConfig;
   getEntryThreshold(symbol: string): number;
   logTradeEvent(symbol: string, event: string, payload: Record<string, unknown>): Promise<void>;
@@ -84,6 +85,7 @@ export class AegisExitManagementService {
   constructor(private readonly deps: AegisExitManagementDeps) {}
 
   async evaluate(input: AegisExitManagementInput): Promise<boolean> {
+    if (this.deps.isPredictionEnabled?.() === false) return false;
     const config = this.deps.getExitEyeConfig();
     const signal = await this.getSignal(input.symbol);
     const exitSignal = this.extractSignal(signal);

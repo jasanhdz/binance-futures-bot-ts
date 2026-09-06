@@ -39,7 +39,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Exact cancellation target lookup and durable Micro cleanup integration.
   'src/app/ports/Exchange.ts': '52ecccf5a0a45b0386eb78d991a00f057586a46493240ef3ad9c645a4a4cff5a',
   'src/infra/config/environment.ts':
-    '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
+    // User-requested AEGIS_ENABLED disconnect; existing defaults and LIVE values unchanged.
+    'b35c9984d4a756c53cc424350317cb4131c4c973f038f08d77bac103b7217ee3',
   'src/domain/services/ProfitGuardian.ts':
     'f95512ac4ecd82449dff30a1f63441f7297e57adf8b58ca32d8cca5409aa62fd',
   // Safety increment: reject malformed persisted Micro stop-submission records.
@@ -72,7 +73,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Startup barrier: never reopen admission or close storage over initializing work.
   // Stop safety slice: same protector injection, startup ordering, admission and drained close.
   'src/app/services/TradingService.ts':
-    'e0eb23b705e0a813646f4667c85b9620efdbee7c323633ac9c06e1ffb255d4b6',
+    // Strategy disconnect and OS/user startup reporting; not a LIVE approval hash.
+    '6daa243558cf68809d7c6d5bbc40496aa48bea75aac6a8f34f5a3584d338ecc7',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

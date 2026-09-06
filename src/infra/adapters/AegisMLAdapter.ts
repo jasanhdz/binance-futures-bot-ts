@@ -15,6 +15,9 @@ export class AegisMLServiceClient {
   }
 
   async fetchPrediction(payload: AegisPredictionInputV1): Promise<AegisPredictionResponse> {
+    if (CONFIG.AEGIS_ENABLED === false) {
+      return buildDefensivePrediction(payload.symbol, 'aegis_disabled', 'aegis_disabled');
+    }
     try {
       const { data } = await this.http.post<AegisPredictionResponse>(
         '/ml-v2/predict',
@@ -31,6 +34,7 @@ export class AegisMLServiceClient {
   }
 
   async getExitSignal(payload: any): ReturnType<MLService['getExitSignal']> {
+    if (CONFIG.AEGIS_ENABLED === false) return { action: 'HOLD', confidence: 0 };
     try {
       const { data } = await this.http.post<{ action: string; confidence: number }>(
         '/ml-v2/exit_signal',
@@ -47,6 +51,7 @@ export class AegisMLServiceClient {
   }
 
   async checkHealth(): Promise<boolean> {
+    if (CONFIG.AEGIS_ENABLED === false) return false;
     try {
       const response = await this.http.get('/health', { timeout: CONFIG.ML_HEALTH_TIMEOUT_MS });
       return response.status === 200;
@@ -56,8 +61,11 @@ export class AegisMLServiceClient {
   }
 }
 
-function buildDefensivePrediction(symbol: string, error: unknown): AegisPredictionResponse {
-  const reason = 'ml_predict_unavailable';
+function buildDefensivePrediction(
+  symbol: string,
+  error: unknown,
+  reason = 'ml_predict_unavailable',
+): AegisPredictionResponse {
   return {
     symbol,
     long_prob: 0,

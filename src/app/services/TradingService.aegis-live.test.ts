@@ -1222,6 +1222,28 @@ function makeHarness(
 }
 
 describe('TradingService Aegis live execution', () => {
+  it('disconnects Aegis startup and scans while retaining runtime identity reporting', async () => {
+    const { service, exchange, mlService, notifier } = makeHarness({
+      readActivePositionSequence: [null],
+    });
+    Object.assign(CONFIG, { AEGIS_ENABLED: false });
+    try {
+      await service.start(false);
+      await service.tick('ETHUSDT');
+      expect(mlService.getSignal).not.toHaveBeenCalled();
+      expect(mlService.getExitSignal).not.toHaveBeenCalled();
+      expect(exchange.marketOpen).not.toHaveBeenCalled();
+      const startup = notifier.sendMessage.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .find((message: string) => message.includes('Runtime started'));
+      expect(startup).toContain('OS:');
+      expect(startup).toContain('User:');
+      expect(startup).not.toContain('AEGIS_TURBO (');
+    } finally {
+      await service.stop();
+      restoreConfig();
+    }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     setConfig(true);
@@ -1512,11 +1534,9 @@ describe('TradingService Aegis live execution', () => {
     await service.start(false);
 
     expect(exchange.getUSDTBalance).toHaveBeenCalled();
+    expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Runtime started'));
     expect(notifier.sendMessage).toHaveBeenCalledWith(
-      expect.stringContaining('🔥 AEGIS + MOMENTUM LIVE ✅'),
-    );
-    expect(notifier.sendMessage).toHaveBeenCalledWith(
-      expect.stringContaining('🧠 MICRO-LIVE | Live ON | Shorts OFF'),
+      expect.stringContaining('AEGIS_TURBO (LIVE)'),
     );
     expect(notifier.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('🎯 Símbolos activos (2)\nETH BTC'),

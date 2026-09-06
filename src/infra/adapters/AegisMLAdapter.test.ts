@@ -10,6 +10,26 @@ vi.mock('axios', () => ({
 }));
 
 describe('AegisMLServiceClient', () => {
+  it('disconnects prediction, exit and health HTTP requests when disabled', async () => {
+    const post = vi.fn();
+    const get = vi.fn();
+    vi.mocked(axios.create).mockReturnValue({ post, get } as any);
+    const enabled = CONFIG.AEGIS_ENABLED;
+    Object.assign(CONFIG, { AEGIS_ENABLED: false });
+    try {
+      const client = new AegisMLServiceClient();
+      expect(await client.fetchPrediction({ symbol: 'ETHUSDT' })).toMatchObject({
+        neutral_prob: 1,
+        metadata: { fallback_reason: 'aegis_disabled' },
+      });
+      expect(await client.getExitSignal({})).toEqual({ action: 'HOLD', confidence: 0 });
+      expect(await client.checkHealth()).toBe(false);
+      expect(post).not.toHaveBeenCalled();
+      expect(get).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(CONFIG, { AEGIS_ENABLED: enabled });
+    }
+  });
   afterEach(() => {
     vi.clearAllMocks();
   });

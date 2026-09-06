@@ -103,6 +103,23 @@ function runtimeHarness(): RuntimeHarness {
 }
 
 describe('StrategyRuntimeCoordinator', () => {
+  it('does not construct disabled strategy producers or caches', async () => {
+    const { coordinator, factories, events } = runtimeHarness();
+    await coordinator.start({
+      symbols: ['ETHUSDT'],
+      aegisEnabled: false,
+      momentumEnabled: false,
+      microBurstConfig: { enabled: false, mode: 'OFF', symbols: {} },
+    });
+    expect(events).toEqual([]);
+    expect(factories.createAegisRealtimeMarketState).not.toHaveBeenCalled();
+    expect(factories.createAegisBlackBoxObservation).not.toHaveBeenCalled();
+    expect(factories.createMomentumRealtimeMarketState).not.toHaveBeenCalled();
+    expect(factories.createMomentumCandleState).not.toHaveBeenCalled();
+    expect(factories.createMomentumBlackBoxObservation).not.toHaveBeenCalled();
+    expect(coordinator.getAegisCandles('ETHUSDT', 100)).toEqual([]);
+    await coordinator.stop();
+  });
   it('preserves runtime startup and shutdown order', async () => {
     const { coordinator, events, factories } = runtimeHarness();
     const symbols = ['ETHUSDT', 'BTCUSDT'];

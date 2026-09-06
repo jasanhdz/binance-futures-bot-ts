@@ -60,6 +60,8 @@ export interface StrategyRuntimeCoordinatorDeps {
 }
 
 export interface StrategyRuntimeStartInput {
+  aegisEnabled?: boolean;
+  momentumEnabled?: boolean;
   symbols: readonly string[];
   microBurstConfig: MicroBurstRuntimeConfig;
   loadMicroBurstProvenance?: () => MicroBurstRuntimeProvenance;
@@ -198,43 +200,51 @@ export class StrategyRuntimeCoordinator {
       logger,
       clock,
     });
-    this.aegisRealtimeMarketState ??= this.factories.createAegisRealtimeMarketState({
-      sharedMarketData: this.sharedMarketDataRuntime,
-      logger,
-      clock,
-    });
-    this.aegisRealtimeMarketState.start(startupSymbols);
+    if (input.aegisEnabled !== false) {
+      this.aegisRealtimeMarketState ??= this.factories.createAegisRealtimeMarketState({
+        sharedMarketData: this.sharedMarketDataRuntime,
+        logger,
+        clock,
+      });
+      this.aegisRealtimeMarketState.start(startupSymbols);
+    }
 
-    this.momentumRealtimeMarketState ??= this.factories.createMomentumRealtimeMarketState({
-      sharedMarketData: this.sharedMarketDataRuntime,
-      clock,
-    });
-    this.momentumRealtimeMarketState.start(startupSymbols);
+    if (input.momentumEnabled !== false) {
+      this.momentumRealtimeMarketState ??= this.factories.createMomentumRealtimeMarketState({
+        sharedMarketData: this.sharedMarketDataRuntime,
+        clock,
+      });
+      this.momentumRealtimeMarketState.start(startupSymbols);
 
-    this.momentumCandleState ??= this.factories.createMomentumCandleState(
-      this.sharedMarketDataRuntime,
-    );
-    this.momentumCandleState.start(startupSymbols);
+      this.momentumCandleState ??= this.factories.createMomentumCandleState(
+        this.sharedMarketDataRuntime,
+      );
+      this.momentumCandleState.start(startupSymbols);
+    }
 
-    this.aegisBlackBoxObservation ??= this.factories.createAegisBlackBoxObservation({
-      exchange,
-      sharedMarketData: this.sharedMarketDataRuntime,
-      identity: this.deps.aegisIdentity,
-      clock,
-      decisionSink: this.deps.decisionSink,
-      marketSnapshotSink: this.deps.marketSnapshotSink,
-    });
-    this.aegisBlackBoxObservation.start(startupSymbols);
+    if (input.aegisEnabled !== false) {
+      this.aegisBlackBoxObservation ??= this.factories.createAegisBlackBoxObservation({
+        exchange,
+        sharedMarketData: this.sharedMarketDataRuntime,
+        identity: this.deps.aegisIdentity,
+        clock,
+        decisionSink: this.deps.decisionSink,
+        marketSnapshotSink: this.deps.marketSnapshotSink,
+      });
+      this.aegisBlackBoxObservation.start(startupSymbols);
+    }
 
-    this.momentumBlackBoxObservation ??= this.factories.createMomentumBlackBoxObservation({
-      exchange,
-      sharedMarketData: this.sharedMarketDataRuntime,
-      clock,
-      decisionSink: this.deps.decisionSink,
-      marketSnapshotSink: this.deps.marketSnapshotSink,
-    });
-    this.momentumBlackBoxObservation.start(startupSymbols);
-    this.deps.momentumStrategyRouter.setObservationHook(this.momentumBlackBoxObservation);
+    if (input.momentumEnabled !== false) {
+      this.momentumBlackBoxObservation ??= this.factories.createMomentumBlackBoxObservation({
+        exchange,
+        sharedMarketData: this.sharedMarketDataRuntime,
+        clock,
+        decisionSink: this.deps.decisionSink,
+        marketSnapshotSink: this.deps.marketSnapshotSink,
+      });
+      this.momentumBlackBoxObservation.start(startupSymbols);
+      this.deps.momentumStrategyRouter.setObservationHook(this.momentumBlackBoxObservation);
+    }
 
     if (input.microBurstConfig.enabled && input.microBurstConfig.mode !== 'OFF') {
       await this.startMicroBurst(input.microBurstConfig, input.loadMicroBurstProvenance);

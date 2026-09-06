@@ -68,6 +68,9 @@ export const CONFIG = {
   LOW_FUNDS_WALLET_THRESHOLD: trading.low_funds_threshold,
 
   // --- ML Service (ENV) ---
+  AEGIS_ENABLED: !['false', '0'].includes(
+    (process.env.AEGIS_ENABLED ?? 'true').trim().toLowerCase(),
+  ),
   ML_SERVICE_URL: process.env.ML_SERVICE_URL || 'http://127.0.0.1:8001',
   ML_HISTORY_BARS: Number(process.env.ML_HISTORY_BARS ?? 512),
   ML_PREDICT_TIMEOUT_MS: numberEnv('ML_PREDICT_TIMEOUT_MS') ?? 12_000,
