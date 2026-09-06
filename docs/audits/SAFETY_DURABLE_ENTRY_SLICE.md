@@ -139,6 +139,20 @@ desplegar. Falta vincular reservas/handoff/proteccion/accounting de todo el trad
 
 ## Pendiente Exacto
 
+### Verificacion exchange del handoff posterior a fc4f483
+
+La composicion consulta posicion y ordenes antes de aceptar el handoff persistido.
+bracketsAttached por si solo no libera admision: requiere cobertura BOT del lado y
+positionSide observado, cierre de posicion completa o reduceOnly con cantidad suficiente.
+TP solo se exige cuando el intent lo requiere; Micro con stop sin TP puede completar
+handoff. Fallos de lectura, cobertura parcial o cambio de identidad mantienen pendiente.
+Esto verifica proteccion al transferir, no garantiza su existencia futura ni reconstruye
+posiciones sin estado local. Esas responsabilidades y el journal de stops siguen pendientes.
+
+Validacion propia: npm run test:safety PASS, build y 2.211 + 46 = 2.257 tests
+(186 archivos). Ocho regresiones nuevas del callback de composicion real, journal en
+filesystem temporal y exchange simulado; sin ordenes reales ni cambios LIVE.
+
 1. Puerto identificado universal OPEN/STOP/TP/CLOSE/CANCEL y payload completo wire.
 2. Journal/handoff de proteccion y cierre; adopcion durable de un trade recuperado.
 3. Reservas de margen/riesgo, inventario universal y fencing/identidad de cuenta real.

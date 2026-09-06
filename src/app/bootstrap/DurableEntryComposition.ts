@@ -52,6 +52,41 @@ export function composeDurableEntryCoordinator(
         );
       };
       if (!state.flush || !matches()) return false;
+      const position = await exchange.readActivePosition(
+        request.intent.symbol,
+        request.intent.side,
+      );
+      if (
+        !position ||
+        !Number.isFinite(position.qtyAbs) ||
+        position.qtyAbs <= 0 ||
+        !['BOTH', request.intent.side].includes(position.sideMode)
+      )
+        return false;
+      const orders = await exchange.listCloseOrdersForSide(
+        request.intent.symbol,
+        request.intent.side,
+      );
+      const covers = (kind: 'STOP' | 'TAKE_PROFIT') =>
+        orders.some(
+          (candidate) =>
+            (candidate.type === kind || candidate.type === `${kind}_MARKET`) &&
+            candidate.owner === 'BOT' &&
+            Number.isFinite(candidate.stopPrice) &&
+            candidate.stopPrice > 0 &&
+            candidate.side === (request.intent.side === 'LONG' ? 'SELL' : 'BUY') &&
+            candidate.positionSide === position.sideMode &&
+            (candidate.closePosition === true ||
+              (candidate.reduceOnly === true &&
+                Number.isFinite(candidate.quantity) &&
+                candidate.quantity! >= position.qtyAbs)),
+        );
+      if (
+        (request.intent.protection.requireStop && !covers('STOP')) ||
+        (request.intent.protection.requireTakeProfit && !covers('TAKE_PROFIT')) ||
+        !matches()
+      )
+        return false;
       await state.flush();
       return matches();
     },
