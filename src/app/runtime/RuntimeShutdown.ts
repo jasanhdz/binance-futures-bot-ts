@@ -60,7 +60,8 @@ export class RuntimeShutdown {
     try {
       await deps.closeMutations();
     } catch (error) {
-      failures.push(error);
+      if (error instanceof RuntimeShutdownError) failures.push(...error.failures);
+      else failures.push(error);
     }
     if (failures.length) throw new RuntimeShutdownError(failures);
   }

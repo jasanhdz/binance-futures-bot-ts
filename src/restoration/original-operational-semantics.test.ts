@@ -71,7 +71,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Startup barrier: never reopen admission or close storage over initializing work.
   // Stop safety slice: same protector injection, startup ordering, admission and drained close.
   'src/app/services/TradingService.ts':
-    'd53e361372d2d3e8e4ba8eb6a9d0a48b05864f10c34379fddf4bb012a8b888ec',
+    'd3d897d8f2de28e9054dcfca2eaa1eca0f01bcb4fa55a52b74db338c648336da',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

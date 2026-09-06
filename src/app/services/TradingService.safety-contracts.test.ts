@@ -6,6 +6,44 @@ import { InMemoryExecutionJournal } from '../../core/risk/ExecutionJournal';
 import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
 
 describe('TradingService shared safety contracts', () => {
+  it('preserves both coordinator close failures after draining state', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    service.shutdown = new RuntimeShutdown();
+    const entryError = new Error('entry close failed');
+    const stopError = new Error('stop close failed');
+    const events: string[] = [];
+    service.deps = {
+      logger: { info: vi.fn() },
+      state: {
+        flush: async () => {
+          events.push('flush');
+        },
+      },
+      entryCoordinator: {
+        close: async () => {
+          events.push('entry');
+          throw entryError;
+        },
+      },
+      stopCoordinator: {
+        close: () => {
+          events.push('stop');
+          throw stopError;
+        },
+      },
+    };
+    service.symbolStateStores = new Map();
+    service.strategyRuntimeCoordinator = { stop: async () => {} };
+    service.decisionJsonlSink =
+      service.marketSnapshotEvidenceSink =
+      service.telemetryJsonlSink =
+        { drain: async () => {} };
+    const stopping = service.stop();
+    await expect(stopping).rejects.toMatchObject({ failures: [entryError, stopError] });
+    expect(events).toEqual(['flush', 'entry', 'stop']);
+    expect(service.stop()).toBe(stopping);
+    expect(service.acceptingEntries).toBe(false);
+  });
   it('starts only one loop when concurrent callers share initialization', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.initializeRuntime = vi.fn(async () => {});

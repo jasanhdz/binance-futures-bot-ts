@@ -144,6 +144,23 @@ desplegar. Falta vincular reservas/handoff/proteccion/accounting de todo el trad
 
 ## Pendiente Exacto
 
+### Errores de cierre y SQLite posteriores a b9886b3
+
+TradingService conserva ambos errores si fallan entryCoordinator.close y
+stopCoordinator.close. Se intenta cada cierre en orden y RuntimeShutdown propaga
+la lista completa de causas, incluida una excepcion sincrona, sin sustituir la primera.
+
+La investigacion de SQLite identifico dos causas: inicializacion WAL/esquema fuera
+del retry acotado y cleanup de tests antes de que todos los procesos hijo terminaran.
+La inicializacion ahora usa runWithBusyRetry; fallo agotado cierra DB y se propaga.
+Los fixtures esperan allSettled/close de hijos y cierran conexiones antes de unlink.
+No se modifican limites de rate ni se convierten errores I/O en exito.
+
+Validacion propia: npm run test:safety PASS, build y 2.313 + 46 = 2.359 tests,
+189 archivos. Tres pruebas deterministas de WAL (BUSY/LOCKED/agotamiento), prueba
+real multiproceso existente y regresion de ambos coordinadores fallando. Esto corrige
+las causas identificadas, no demuestra ausencia universal de contencion SQLite.
+
 ### Verificacion exchange del handoff posterior a fc4f483
 
 La composicion consulta posicion y ordenes antes de aceptar el handoff persistido.

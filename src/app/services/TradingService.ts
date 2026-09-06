@@ -77,7 +77,7 @@ import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/doma
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import type { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import type { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
-import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
+import { RuntimeShutdown, RuntimeShutdownError } from '../runtime/RuntimeShutdown';
 import { MicroEntryRecoveryService } from '../position/MicroEntryRecoveryService';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { MomentumEntryCoordinator } from '../../strategies/momentum/application/MomentumEntryCoordinator';
@@ -1309,11 +1309,16 @@ export class TradingService {
         () => this.telemetryJsonlSink.drain(),
       ],
       closeMutations: async () => {
-        try {
-          await this.deps.entryCoordinator?.close();
-        } finally {
-          await this.deps.stopCoordinator?.close();
+        const failures: unknown[] = [];
+        // Preserve order: stop recovery can still be used while entry work drains.
+        for (const coordinator of [this.deps.entryCoordinator, this.deps.stopCoordinator]) {
+          try {
+            await coordinator?.close();
+          } catch (error) {
+            failures.push(error);
+          }
         }
+        if (failures.length) throw new RuntimeShutdownError(failures);
       },
     });
   }
