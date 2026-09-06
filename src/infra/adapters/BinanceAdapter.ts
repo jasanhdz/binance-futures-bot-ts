@@ -1,5 +1,5 @@
 // src/infra/adapters/BinanceAdapter.ts
-import Binance from 'binance-api-node';
+import Binance, { type QueryFuturesOrderResult } from 'binance-api-node';
 import {
   Exchange,
   PositionInfo,
@@ -7,6 +7,8 @@ import {
   TradeFill,
   FundingSnapshot,
   BasisSnapshot,
+  EntryRecoveryExpectation,
+  RecoverableEntryPosition,
 } from '../../app/ports/Exchange';
 import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config/environment';
@@ -22,6 +24,22 @@ import { SharedBinanceRateLimiter } from './shared-binance-rate-limit';
 import { randomBytes } from 'node:crypto';
 
 type SharedRequestPriority = 'normal' | 'critical';
+
+/** Exact decimal quantity comparison, without accepting a missing fill via float tolerance. */
+function quantityUnits(value: string | number): bigint | undefined {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const text = String(value);
+  if (text.length > 128) return undefined;
+  const parsed = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(text);
+  if (!parsed) return undefined;
+  const scale = 18 + Number(parsed[3] ?? 0) - (parsed[2]?.length ?? 0);
+  if (!Number.isSafeInteger(scale) || Math.abs(scale) > 36) return undefined;
+  const digits = BigInt(parsed[1] + (parsed[2] ?? ''));
+  if (digits <= 0) return undefined;
+  if (scale >= 0) return digits * BigInt(10) ** BigInt(scale);
+  const divisor = BigInt(10) ** BigInt(-scale);
+  return digits % divisor === BigInt(0) ? digits / divisor : undefined;
+}
 
 const DEFAULT_MIN_REQ_GAP_MS = Number(process.env.BINANCE_REQ_GAP_MS ?? 40);
 const EXCHANGE_INFO_TTL_MS = Number(process.env.BINANCE_EXCHANGEINFO_TTL_MS ?? 5 * 60_000);
@@ -1033,7 +1051,17 @@ export class BinanceExchange implements Exchange {
   async readMarketOpenByClientOrderId(
     symbol: string,
     clientOrderId: string,
+    expected?: EntryRecoveryExpectation,
   ): Promise<{ avgPrice: number; orderId: string } | null> {
+    const order = await this.queryOpeningOrder(symbol, clientOrderId, expected);
+    return { avgPrice: Number(order.avgPrice || 0), orderId: String(order.orderId) };
+  }
+
+  private async queryOpeningOrder(
+    symbol: string,
+    clientOrderId: string,
+    expected?: EntryRecoveryExpectation,
+  ): Promise<QueryFuturesOrderResult> {
     try {
       const order = await this.enqueue(() =>
         this.cli.futuresGetOrder({ symbol, origClientOrderId: clientOrderId }),
@@ -1052,7 +1080,25 @@ export class BinanceExchange implements Exchange {
           `market open reconciliation returned non-accepted status: ${String(order.status)}`,
         );
       }
-      return { avgPrice: Number(order.avgPrice || 0), orderId: String(order.orderId) };
+      if (
+        expected &&
+        (!Number.isFinite(expected.quantity) ||
+          expected.quantity <= 0 ||
+          !Number.isSafeInteger(expected.notBeforeMs) ||
+          expected.notBeforeMs < 0 ||
+          (expected.side !== 'LONG' && expected.side !== 'SHORT') ||
+          order.status !== 'FILLED' ||
+          order.side !== (expected.side === 'LONG' ? 'BUY' : 'SELL') ||
+          !['BOTH', expected.side].includes(String(order.positionSide)) ||
+          Number(order.origQty) !== expected.quantity ||
+          Number(order.executedQty) !== expected.quantity ||
+          !Number.isSafeInteger(Number(order.time)) ||
+          Number(order.time) < expected.notBeforeMs ||
+          !Number.isFinite(Number(order.avgPrice)) ||
+          Number(order.avgPrice) <= 0)
+      )
+        throw new Error('ENTRY_RECOVERY_EXECUTION_MISMATCH');
+      return order;
     } catch (error) {
       noteRateLimitFromError(error);
       // A just-submitted order can be invisible briefly. The caller must not
@@ -1060,6 +1106,98 @@ export class BinanceExchange implements Exchange {
       if (isUnknownOrderError(error)) throw error;
       throw error;
     }
+  }
+
+  async readRecoverableEntryPosition(
+    symbol: string,
+    clientOrderId: string,
+    expected: EntryRecoveryExpectation,
+  ): Promise<RecoverableEntryPosition | null> {
+    const order = await this.queryOpeningOrder(symbol, clientOrderId, expected);
+    const startedAt = Date.now();
+    // Recovery is deliberately bounded. A full page or history outside the query
+    // window requires explicit reconciliation, not an inference from a partial list.
+    if (
+      order.reduceOnly !== false ||
+      order.closePosition !== false ||
+      !Number.isSafeInteger(order.updateTime) ||
+      order.updateTime < order.time ||
+      order.updateTime > startedAt ||
+      startedAt - order.time > 7 * 86_400_000
+    )
+      return null;
+    const readPosition = async () => {
+      const positions = await this.enqueue(() => this.cli.futuresPositionRisk({ symbol }));
+      if (!Array.isArray(positions)) return undefined;
+      const candidates = positions.filter(
+        (p) => p.symbol === symbol && p.positionSide === order.positionSide,
+      );
+      if (candidates.length !== 1) return undefined;
+      const p = candidates[0];
+      if (
+        Math.abs(Number(p.positionAmt)) !== expected.quantity ||
+        (expected.side === 'LONG' ? Number(p.positionAmt) <= 0 : Number(p.positionAmt) >= 0) ||
+        Number(p.entryPrice) !== Number(order.avgPrice) ||
+        !Number.isFinite(Number(p.leverage)) ||
+        Number(p.leverage) <= 0 ||
+        !Number.isSafeInteger(p.updateTime) ||
+        p.updateTime < order.time ||
+        p.updateTime > order.updateTime
+      )
+        return undefined;
+      return p;
+    };
+    const before = await readPosition();
+    if (!before) return null;
+    // No orderId filter: intervening close/reopen or manual fills must remain visible.
+    const fills = await this.enqueue(() =>
+      this.cli.futuresUserTrades({ symbol, startTime: order.time, limit: 1000 }),
+    );
+    if (!Array.isArray(fills) || !fills.length || fills.length >= 1000) return null;
+    const ids = new Set<string>();
+    let quantity = BigInt(0);
+    for (const fill of fills) {
+      const units = quantityUnits(fill.qty);
+      const id = String(fill.id);
+      if (
+        !Number.isSafeInteger(fill.id) ||
+        fill.id < 0 ||
+        ids.has(id) ||
+        fill.symbol !== symbol ||
+        String(fill.orderId) !== String(order.orderId) ||
+        fill.side !== order.side ||
+        fill.positionSide !== order.positionSide ||
+        !Number.isSafeInteger(fill.time) ||
+        fill.time < order.time ||
+        fill.time > order.updateTime ||
+        !Number.isFinite(Number(fill.price)) ||
+        Number(fill.price) <= 0 ||
+        units === undefined
+      )
+        return null;
+      ids.add(id);
+      quantity += units;
+    }
+    if (quantity !== quantityUnits(expected.quantity)) return null;
+    const after = await readPosition();
+    if (!after || after.updateTime !== before.updateTime || after.leverage !== before.leverage)
+      return null;
+    return {
+      source: 'BINANCE_ORDER_AND_TRADES_V1',
+      observedAt: Date.now(),
+      symbol,
+      side: expected.side,
+      clientOrderId,
+      orderId: String(order.orderId),
+      filledAt: order.updateTime,
+      fillIds: [...ids],
+      position: {
+        sideMode: after.positionSide,
+        qtyAbs: expected.quantity,
+        entryPrice: Number(after.entryPrice),
+        leverage: Number(after.leverage),
+      },
+    };
   }
 
   async readMarketOpenEvidence(
@@ -1135,7 +1273,7 @@ export class BinanceExchange implements Exchange {
       return true;
     } catch (e: any) {
       noteRateLimitFromError(e);
-      if (BinanceExchange.posSideMismatch(e)) {
+      if (e?.code === -4061) {
         const fallbackParams = { ...standardParams };
         delete fallbackParams.positionSide;
         await this.enqueue(
@@ -1153,6 +1291,9 @@ export class BinanceExchange implements Exchange {
         });
         return true;
       }
+      // Only an explicit unsupported-order endpoint rejection permits a different
+      // transport. Timeout/network/unknown responses may already have placed a stop.
+      if (e?.code !== -4120) throw e;
       return this.placeStopCloseAlgoFallback(symbol, side, stopPrice, algoParams, e, t0);
     }
   }
@@ -1187,7 +1328,7 @@ export class BinanceExchange implements Exchange {
       return true;
     } catch (fallbackError: any) {
       noteRateLimitFromError(fallbackError);
-      if (BinanceExchange.posSideMismatch(fallbackError)) {
+      if (fallbackError?.code === -4061) {
         delete algoParams.positionSide;
         await this.enqueue(
           () => this.placeAlgoOrderRaw(algoParams),

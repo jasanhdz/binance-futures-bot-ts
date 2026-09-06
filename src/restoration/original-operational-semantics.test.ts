@@ -31,7 +31,10 @@ function sha256(path: string): string {
 
 const baselineOperationalDigests: Record<string, string> = {
   // Phase 3: capability ports split while operational method contracts remain unchanged.
-  'src/app/ports/Exchange.ts': 'a90246d4ac1c015c6a6d6ba5f8d00fa09bda601360227928fc77c6e6f65d84f5',
+  // Owner-authorized recovery evidence constraint: optional expected side/quantity/time.
+  // Source checkpoint, not an approval or a claim of unchanged port bytes.
+  // Bounded current-position attribution capability for recovered Micro entries.
+  'src/app/ports/Exchange.ts': 'f03482236396876c83769b3b109648013a9eaadfd69729a1d7e6096d412d3a1d',
   'src/infra/config/environment.ts':
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
   'src/domain/services/ProfitGuardian.ts':
@@ -39,7 +42,7 @@ const baselineOperationalDigests: Record<string, string> = {
   // Safety increment: reject malformed persisted Micro stop-submission records.
   // Source checkpoint only; no production configuration or model approval change.
   'src/infra/logging/FsStateStore.ts':
-    '42650ac1fe80e97b8c5b08a9f8ec292610cfa4d21a7eb25b116bd457a5808023',
+    '7e39529e70dc31efdd05f51dc5e0cf690a12632cd65d8fbc522ea88a4ad4076a',
 };
 
 // Phase 1 owner-authorized architecture checkpoint. These are operational
@@ -48,7 +51,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Entry safety slice: one market-open send, exact ACK/lookup identity, source formatting.
   // Source checkpoint only, not LIVE authorization. See SAFETY_DURABLE_ENTRY_SLICE.md.
   'src/infra/adapters/BinanceAdapter.ts':
-    'e7efc1f81d1609617158170c76fed921f8d3fd68ed37294499d6fedacf36d389',
+    '30150edc13d787b5d5ef1877fd7f4b27b1d1a1986745dd7e6c16667adc15619d',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
@@ -65,7 +68,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Shutdown extraction: typed drain, preserve failures and close after all admitted work.
   // Startup barrier: never reopen admission or close storage over initializing work.
   'src/app/services/TradingService.ts':
-    '167e9af801bc2ba716061c4eda429687fcf3a9a69a19d961bab929265921b4a6',
+    '89b5fd599013bd78964613d5ed3207464ee82f7a82e188fc10c2fd7d34706b07',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

@@ -17,6 +17,7 @@ function sanitizeKey(key: string) {
 }
 
 export class FsStateStore implements StateStore {
+  private readonly symbolStores = new Map<string, FsStateStore>();
   private readonly statePath: string;
   private memoryCache: BotState;
   private savePromise: Promise<void> | null = null;
@@ -70,8 +71,14 @@ export class FsStateStore implements StateStore {
     this.scheduleDiskWrite();
   }
 
-  forSymbol(symbol: string): StateStore {
-    return new FsStateStore(`${this.key}_${sanitizeKey(symbol)}`, this.scope, this.baseDir);
+  forSymbol(symbol: string): FsStateStore {
+    const key = sanitizeKey(symbol);
+    let store = this.symbolStores.get(key);
+    if (!store) {
+      store = new FsStateStore(`${this.key}_${key}`, this.scope, this.baseDir);
+      this.symbolStores.set(key, store);
+    }
+    return store;
   }
 
   /**
@@ -147,6 +154,12 @@ function parseState(raw: string): BotState {
     throw new Error('BOT_STATE_INVALID');
   }
   const dailyRisk = state.dailyRisk;
+  if (
+    state.recoveredEntryMutationId !== undefined &&
+    (typeof state.recoveredEntryMutationId !== 'string' || !state.recoveredEntryMutationId.trim())
+  ) {
+    throw new Error('BOT_STATE_INVALID_RECOVERED_ENTRY');
+  }
   if (
     state.microProtectionBlocked !== undefined &&
     typeof state.microProtectionBlocked !== 'boolean'

@@ -18,6 +18,25 @@ export interface PositionInfo {
   roePct?: number;
 }
 
+export interface EntryRecoveryExpectation {
+  side: Side;
+  quantity: number;
+  notBeforeMs: number;
+}
+
+/** Bounded, current attribution; not a verified PnL outcome or an atomic account snapshot. */
+export interface RecoverableEntryPosition {
+  source: 'BINANCE_ORDER_AND_TRADES_V1';
+  observedAt: number;
+  symbol: string;
+  side: Side;
+  clientOrderId: string;
+  orderId: string;
+  filledAt: number;
+  fillIds: string[];
+  position: PositionInfo;
+}
+
 export type TradeFill = {
   orderId: string;
   side: 'BUY' | 'SELL';
@@ -55,7 +74,14 @@ export interface ExchangeAccountReadPort {
   readMarketOpenByClientOrderId(
     symbol: string,
     clientOrderId: string,
+    expected?: EntryRecoveryExpectation,
   ): Promise<{ avgPrice: number; orderId: string } | null>;
+  /** Null/errors mean attribution is insufficient: never infer ownership from matching side alone. */
+  readRecoverableEntryPosition?(
+    symbol: string,
+    clientOrderId: string,
+    expected: EntryRecoveryExpectation,
+  ): Promise<RecoverableEntryPosition | null>;
   /** Optional exchange-specific evidence lookup used after an ambiguous submit. */
   readMarketOpenEvidence?(
     symbol: string,

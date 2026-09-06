@@ -37,7 +37,11 @@ export function composeDurableEntryCoordinator(
       );
     },
     lookup: (request) =>
-      exchange.readMarketOpenByClientOrderId(request.intent.symbol, request.clientOrderId),
+      exchange.readMarketOpenByClientOrderId(request.intent.symbol, request.clientOrderId, {
+        side: request.intent.side,
+        quantity: request.quantity,
+        notBeforeMs: request.intent.requestedAt,
+      }),
     confirmHandoff: async (request, order) => {
       const state = stateStore.forSymbol?.(request.intent.symbol) ?? stateStore;
       const matches = () => {
@@ -48,7 +52,9 @@ export function composeDurableEntryCoordinator(
           current.lastSide === request.intent.side &&
           current.lastStrategy === request.intent.identity.strategyId &&
           current.mode !== 'IDLE' &&
-          current.bracketsAttached === true
+          current.bracketsAttached === true &&
+          // Reconstructing protection does not restore counters/fills/accounting evidence.
+          !(current.recoveredEntryMutationId && current.microBurstPnlUnverified === true)
         );
       };
       if (!state.flush || !matches()) return false;

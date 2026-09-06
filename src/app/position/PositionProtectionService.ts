@@ -66,7 +66,7 @@ export class PositionProtectionService {
     }
     this.microSupervisionInFlight.add(symbol);
     try {
-      return await this.superviseMicroStopOnce(symbol, store?.get() ?? state, store);
+      return await this.superviseMicroStopOnce(symbol, { ...(store?.get() ?? state) }, store);
     } finally {
       this.microSupervisionInFlight.delete(symbol);
     }
@@ -79,6 +79,17 @@ export class PositionProtectionService {
   ): Promise<MicroProtectionResult> {
     const side = state.lastSide;
     if (!side) return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_SIDE_UNKNOWN' };
+    const samePosition = () => {
+      const current = store?.get() ?? state;
+      return (
+        current.lastTradeId === state.lastTradeId &&
+        current.lastSide === side &&
+        current.mode === state.mode &&
+        current.lastStrategy === state.lastStrategy &&
+        current.positionOwner === state.positionOwner &&
+        current.lastOrderId === state.lastOrderId
+      );
+    };
     const exchange = this.deps.exchange;
     let position: PositionInfo | null;
     try {
@@ -95,6 +106,12 @@ export class PositionProtectionService {
     ) {
       return { status: 'UNKNOWN', reason: 'MICRO_POSITION_INVALID' };
     }
+    if (
+      state.recoveredEntryMutationId &&
+      (position.qtyAbs !== state.lastEntryQty || position.entryPrice !== state.lastEntryPrice)
+    ) {
+      return { status: 'UNKNOWN', reason: 'MICRO_RECOVERED_POSITION_CHANGED' };
+    }
     const coversPosition = (
       order: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>>[number],
     ) =>
@@ -104,6 +121,10 @@ export class PositionProtectionService {
       (!order.positionSide || order.positionSide === 'BOTH' || order.positionSide === side) &&
       (!order.side || order.side === (side === 'LONG' ? 'SELL' : 'BUY')) &&
       order.owner !== 'UNKNOWN' &&
+      (!state.recoveredEntryMutationId ||
+        (order.owner === 'BOT' &&
+          order.positionSide === position.sideMode &&
+          order.side === (side === 'LONG' ? 'SELL' : 'BUY'))) &&
       (order.closePosition === true ||
         (order.reduceOnly === true && Number(order.quantity) >= position.qtyAbs));
     let confirmationReadUnknown = false;
@@ -127,7 +148,10 @@ export class PositionProtectionService {
       }
       return false;
     };
-    if (await hasConfirmedStop()) return { status: 'PROTECTED' };
+    if (await hasConfirmedStop())
+      return samePosition()
+        ? { status: 'PROTECTED' }
+        : { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
     if (confirmationReadUnknown) {
       return { status: 'UNKNOWN', reason: 'CLOSE_ORDER_READ_FAILED' };
     }
@@ -194,16 +218,30 @@ export class PositionProtectionService {
     let placed: boolean;
     if (store) {
       try {
+        if (!samePosition() || store.get().microStopSubmission !== undefined) {
+          return { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
+        }
         if (!store.flush) throw new Error('MICRO_STOP_DURABLE_STORE_REQUIRED');
+        const attemptedAt = this.deps.now?.() ?? Date.now();
         store.set({
           microProtectionBlocked: true,
           microStopSubmission: {
-            attemptedAt: this.deps.now?.() ?? Date.now(),
+            attemptedAt,
             stopPrice: effectiveStopPrice,
             tradeId: state.lastTradeId,
           },
         });
         await store.flush();
+        const saved = store.get().microStopSubmission;
+        if (
+          !samePosition() ||
+          !saved ||
+          saved.tradeId !== state.lastTradeId ||
+          saved.attemptedAt !== attemptedAt ||
+          saved.stopPrice !== effectiveStopPrice
+        ) {
+          return { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
+        }
       } catch (error) {
         return { status: 'UNKNOWN', reason: `MICRO_STOP_PERSIST_FAILED:${String(error)}` };
       }
@@ -234,7 +272,9 @@ export class PositionProtectionService {
       effectiveStopPrice,
       tradeId: state.lastTradeId,
     });
-    return { status: 'PROTECTED', stopPrice: effectiveStopPrice };
+    return samePosition()
+      ? { status: 'PROTECTED', stopPrice: effectiveStopPrice }
+      : { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
   }
 
   /** No market context or guessed PnL: close state and accounting are independent. */

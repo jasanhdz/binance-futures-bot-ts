@@ -60,9 +60,22 @@ export class DurableEntryCoordinator {
   private startup?: Promise<void>;
   private shutdown?: Promise<void>;
   private readonly scope: OperationScope;
+  private recoverPosition?: (
+    request: DurableEntryRequest,
+    order: EntryOrderReceipt,
+  ) => Promise<void>;
 
   constructor(private readonly deps: DurableEntryCoordinatorDeps) {
     this.scope = { ...deps.scope };
+  }
+
+  /** Bound once by TradingService to its existing state/protection services, before start. */
+  registerPositionRecovery(
+    handler: (request: DurableEntryRequest, order: EntryOrderReceipt) => Promise<void>,
+  ): void {
+    if (this.startup || this.stopping || this.recoverPosition)
+      throw new Error('ENTRY_RECOVERY_HANDLER_ALREADY_BOUND');
+    this.recoverPosition = handler;
   }
 
   blockedReason(): string | undefined {
@@ -196,14 +209,14 @@ export class DurableEntryCoordinator {
             continue;
           }
           if (persisted?.status === 'CONFIRMED' && validOrder(persisted.order)) {
-            await this.finish(request, persisted);
+            await this.finish(request, persisted, true);
             if ((await this.journal!.readLatest(operationId))?.event === 'CLOSED')
               this.pending.delete(operationId);
             continue;
           }
           const order = await this.lookup(request);
           if (order) {
-            await this.finish(request, { status: 'CONFIRMED', order });
+            await this.finish(request, { status: 'CONFIRMED', order }, true);
             if ((await this.journal!.readLatest(operationId))?.event === 'CLOSED')
               this.pending.delete(operationId);
           } else if (latest.event === 'PREPARED' || latest.event === 'SUBMITTED') {
@@ -269,7 +282,11 @@ export class DurableEntryCoordinator {
     return request;
   }
 
-  private async finish(request: DurableEntryRequest, outcome: TerminalEvidence): Promise<void> {
+  private async finish(
+    request: DurableEntryRequest,
+    outcome: TerminalEvidence,
+    recovery = false,
+  ): Promise<void> {
     let event = (await this.journal!.readLatest(request.operationId))!.event;
     if (outcome.status === 'CONFIRMED' && event !== 'CLOSE_PENDING' && event !== 'CLOSED') {
       if (event === 'PREPARED') {
@@ -281,6 +298,12 @@ export class DurableEntryCoordinator {
     if (outcome.status === 'CONFIRMED' && event !== 'CLOSED') {
       let handedOff = false;
       try {
+        // Never run reconstruction while Shared is still handling a live execute() receipt.
+        if (recovery && !this.stopping) {
+          await this.recoverPosition?.(jsonSnapshot(request) as DurableEntryRequest, {
+            ...outcome.order,
+          });
+        }
         handedOff = await this.deps.confirmHandoff(request, outcome.order);
       } catch {
         /* Keep recovery pending. */

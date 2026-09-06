@@ -27,6 +27,12 @@
 
 ## Estado entregado (no confundir incrementos con fases completas)
 
+### Recovery Micro posterior a 5cdddf6
+
+`SAFETY_MICRO_ENTRY_RECOVERY.md` describe reconstruccion de estado vacio desde
+apertura/fills atribuibles y proteccion mediante la instancia runtime existente.
+La cuarentena contable permanece; no se afirma recovery universal ni fase 9 completa.
+
 ### Primer corte durable de apertura posterior a 73856b8
 
 Ver `SAFETY_DURABLE_ENTRY_SLICE.md`: coordinador de mutaciones de apertura conectado

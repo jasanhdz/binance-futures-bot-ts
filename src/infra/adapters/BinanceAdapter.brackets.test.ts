@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockClient = vi.hoisted(() => ({
+  futuresUserTrades: vi.fn(),
   futuresPing: vi.fn(() => Promise.resolve({})),
   futuresPositionMode: vi.fn(() => Promise.resolve({ dualSidePosition: true })),
   futuresOrder: vi.fn(() =>
@@ -93,6 +94,26 @@ describe('BinanceExchange bracket placement', () => {
       }),
     );
   });
+
+  it.each(['timeout', 'network lost', 'Position side does not match'])(
+    'does not resend a stop via fallback on uncoded %s',
+    async (message) => {
+      const error = new Error(message);
+      mockClient.futuresOrder.mockRejectedValueOnce(error);
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('unexpected network'));
+      try {
+        await expect(
+          new BinanceExchange(logger).placeStopClose('BTCUSDT', 'LONG', 90),
+        ).rejects.toBe(error);
+        expect(mockClient.futuresOrder).toHaveBeenCalledTimes(1);
+        expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
 
   it('places take-profit brackets as standard hedge-side close orders when quantity is provided', async () => {
     const exchange = new BinanceExchange(logger as any);
@@ -204,6 +225,42 @@ describe('BinanceExchange bracket placement', () => {
     expect(mockClient.futuresOrder).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    {},
+    { side: 'SELL' },
+    { positionSide: 'SHORT' },
+    { executedQty: '0.01' },
+    { origQty: '0.03' },
+    { status: 'PARTIALLY_FILLED' },
+    { time: 999 },
+    { avgPrice: 'NaN' },
+  ])('requires exact fully executed request evidence for recovery: %j', async (patch) => {
+    mockClient.futuresGetOrder.mockResolvedValueOnce({
+      orderId: 123,
+      avgPrice: '100',
+      status: 'FILLED',
+      symbol: 'BTCUSDT',
+      clientOrderId: 'se_client-order-123',
+      type: 'MARKET',
+      side: 'BUY',
+      positionSide: 'BOTH',
+      origQty: '0.02',
+      executedQty: '0.02',
+      time: 1000,
+      ...patch,
+    });
+    const exchange = new BinanceExchange(logger);
+    const result = exchange.readMarketOpenByClientOrderId('BTCUSDT', 'se_client-order-123', {
+      side: 'LONG',
+      quantity: 0.02,
+      notBeforeMs: 1000,
+    });
+    if (Object.keys(patch).length === 0)
+      await expect(result).resolves.toEqual({ orderId: '123', avgPrice: 100 });
+    else await expect(result).rejects.toThrow('ENTRY_RECOVERY_EXECUTION_MISMATCH');
+    expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+  });
+
   it.each(['symbol', 'clientOrderId', 'type'] as const)(
     'rejects lookup with a different %s',
     async (field) => {
@@ -230,6 +287,81 @@ describe('BinanceExchange bracket placement', () => {
 
     await expect(exchange.setLeverage('BTCUSDT', 20)).rejects.toThrow('leverage readback mismatch');
   });
+
+  it.each(['valid', 'other-fill', 'duplicate', 'partial', 'full-page', 'position-changed'])(
+    'requires bounded attribution of the current position: %s',
+    async (scenario) => {
+      const time = Date.now() - 1000;
+      const opening = {
+        orderId: 123,
+        avgPrice: '100',
+        status: 'FILLED',
+        symbol: 'BTCUSDT',
+        clientOrderId: 'se_client-order-123',
+        type: 'MARKET',
+        side: 'BUY',
+        positionSide: 'BOTH',
+        origQty: '0.02',
+        executedQty: '0.02',
+        time,
+        updateTime: time + 100,
+        reduceOnly: false,
+        closePosition: false,
+      };
+      mockClient.futuresGetOrder.mockResolvedValueOnce(opening);
+      const position = {
+        symbol: 'BTCUSDT',
+        leverage: '20',
+        entryPrice: '100',
+        positionAmt: '0.02',
+        positionSide: 'BOTH',
+        updateTime: time + 100,
+      };
+      mockClient.futuresPositionRisk.mockResolvedValue([position]);
+      const changedPosition = { ...position, updateTime: time + 200 };
+      if (scenario === 'position-changed')
+        mockClient.futuresPositionRisk
+          .mockResolvedValueOnce([position])
+          .mockResolvedValueOnce([changedPosition]);
+      const fill = {
+        symbol: 'BTCUSDT',
+        id: 1,
+        orderId: 123,
+        side: 'BUY',
+        positionSide: 'BOTH',
+        qty: '0.02',
+        price: '100',
+        time: time + 100,
+      };
+      mockClient.futuresUserTrades.mockResolvedValue(
+        scenario === 'full-page'
+          ? Array(1000).fill(fill)
+          : scenario === 'duplicate'
+            ? [fill, fill]
+            : [
+                {
+                  ...fill,
+                  ...(scenario === 'other-fill' ? { orderId: 999 } : {}),
+                  ...(scenario === 'partial' ? { qty: '0.01' } : {}),
+                },
+              ],
+      );
+      const exchange = new BinanceExchange(logger);
+      const result = await exchange.readRecoverableEntryPosition('BTCUSDT', 'se_client-order-123', {
+        side: 'LONG',
+        quantity: 0.02,
+        notBeforeMs: time,
+      });
+      if (scenario === 'valid')
+        expect(result).toMatchObject({
+          source: 'BINANCE_ORDER_AND_TRADES_V1',
+          fillIds: ['1'],
+          position: { qtyAbs: 0.02 },
+        });
+      else expect(result).toBeNull();
+      expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not accept an ambiguous margin-type change', async () => {
     mockClient.futuresAccountInfo.mockResolvedValue({

@@ -77,6 +77,7 @@ import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/doma
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import type { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
+import { MicroEntryRecoveryService } from '../position/MicroEntryRecoveryService';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { MomentumEntryCoordinator } from '../../strategies/momentum/application/MomentumEntryCoordinator';
 import {
@@ -283,6 +284,29 @@ export class TradingService {
       getImmediateTriggerBufferPct: () =>
         this.runtimeConfig.getAegisProfitProtectionConfig().immediate_trigger_buffer_pct,
       logTradeEvent: (symbol, event, input) => this.logAegisTradeEvent(symbol, event, input),
+    });
+    const entryRecovery = new MicroEntryRecoveryService({
+      exchange: deps.exchange,
+      stateForSymbol: (symbol) => this.stateForSymbol(symbol),
+      protection: this.positionProtection,
+    });
+    deps.entryCoordinator?.registerPositionRecovery(async (request, order) => {
+      // Startup runs before producers; periodic recovery must not overlap entry or management tasks.
+      if (
+        this.runtimeStopping ||
+        this.activeRuntimeTasks.size ||
+        this.entryInFlight ||
+        this.microBurstEntryInFlight
+      )
+        return;
+      await this.trackRuntimeTask(async () => {
+        const result = await entryRecovery.recover(request, order);
+        deps.logger.info('entry_position_recovery', {
+          symbol: request.intent.symbol,
+          tradeId: request.parentTradeId,
+          ...result,
+        });
+      });
     });
     this.aegisEntryContextBuilder = new AegisEntryContextBuilder({
       logger: deps.logger,
@@ -1287,7 +1311,13 @@ export class TradingService {
     while (this.isRunning) {
       try {
         this.riskSession.checkDailyReset();
-        for (const symbol of this.config.symbols) {
+        const recoverySymbols = [...this.symbolStateStores]
+          .filter(
+            ([, store]) =>
+              store.get().recoveredEntryMutationId !== undefined && store.get().mode !== 'IDLE',
+          )
+          .map(([symbol]) => symbol);
+        for (const symbol of new Set([...this.config.symbols, ...recoverySymbols])) {
           if (!this.isRunning) break;
           await this.processSymbol(symbol);
         }

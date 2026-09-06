@@ -59,6 +59,8 @@ export type BotState = {
   lastOrderId?: string;
   marketOpenAmbiguous?: boolean;
   marketOpenClientOrderId?: string;
+  /** Rebuilt from durable entry evidence; accounting/admission remain quarantined. */
+  recoveredEntryMutationId?: string;
   /** BOT is canonical. AEGIS remains readable only for persisted legacy state migration. */
   positionOwner?: 'BOT' | 'AEGIS' | 'EXTERNAL' | 'UNKNOWN';
   tradeOrigin?: 'BOT' | 'MANUAL_EXTERNAL' | 'UNKNOWN';

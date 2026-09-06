@@ -2,6 +2,10 @@
 
 ## Referencia vigente del traspaso
 
+- Recovery Micro posterior a 5cdddf6: validacion propia `npm run test:safety` PASS,
+  build y 2.242 + 46 = 2.288 tests (187 archivos entre grupos). Ver
+  `SAFETY_MICRO_ENTRY_RECOVERY.md` para evidencia, integracion real y limites.
+
 - Extraccion de shutdown consumida por TradingService, posterior a 4300eda:
   ejecucion propia `npm run test:safety` PASS, 2.203 + 46 = 2.249 tests
   en 186 archivos. Nueve tests de RuntimeShutdown; fase 9 sigue parcial.

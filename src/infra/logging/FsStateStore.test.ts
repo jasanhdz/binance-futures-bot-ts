@@ -62,6 +62,7 @@ describe('FsStateStore', () => {
   it('flushes pending writes and keeps child stores in the custom directory', async () => {
     const state = new FsStateStore('default', 'test', directory);
     const child = state.forSymbol?.('ethusdt');
+    expect(state.forSymbol('ETHUSDT')).toBe(child);
     expect(child).toBeDefined();
     child?.set({ lastTradeId: 'child-trade' });
 

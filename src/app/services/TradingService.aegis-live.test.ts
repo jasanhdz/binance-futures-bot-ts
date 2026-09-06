@@ -19,6 +19,7 @@ import { E4TailRiskGuardAdapter } from '../../strategies/aegis/domain/entry/guar
 import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import { InMemoryExecutionJournal, type ExecutionJournal } from '../../core/risk/ExecutionJournal';
 import type { AegisRealtimeMarketSnapshot } from '../../strategies/aegis/application/AegisRealtimeMarketState';
+import type { RecoverableEntryPosition } from '../ports/Exchange';
 
 const originalConfig = { ...CONFIG };
 
@@ -793,6 +794,9 @@ function makeHarness(
     ensureMarginType: vi.fn().mockResolvedValue(undefined),
     marketOpen: vi.fn().mockResolvedValue({ avgPrice: 3000, orderId: 'entry-1' }),
     readMarketOpenByClientOrderId: vi.fn().mockResolvedValue(null),
+    readRecoverableEntryPosition: vi
+      .fn<() => Promise<RecoverableEntryPosition | null>>()
+      .mockResolvedValue(null),
     readActivePosition,
     placeStopClose: options.placeStopCloseReject
       ? vi.fn().mockRejectedValue(new Error('stop failed'))
@@ -1189,6 +1193,92 @@ describe('TradingService Aegis live execution', () => {
 
   afterEach(() => {
     restoreConfig();
+  });
+
+  it('reconstructs pending Micro state at real startup even with entry mode OFF, using the existing protector', async () => {
+    const journal = new InMemoryExecutionJournal();
+    const now = Date.now();
+    const scope = { account: 'aegis-fixture', environment: 'fixture' };
+    const intent = {
+      identity: {
+        strategyId: 'MICRO_BURST_V1',
+        strategyVersion: 'v1',
+        freezeState: 'DRAFT',
+        codeCommitSha: 'fixture',
+      },
+      tradeId: 'MICRO-BURST-V1-recovery',
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      requestedAt: now - 1000,
+      leverage: 20,
+      positionFraction: 0.1,
+      structuralStopPrice: 2970,
+      destinationPrice: 3100,
+      protection: { requireStop: true, requireTakeProfit: false, closeIfProtectionFails: true },
+      metadata: {},
+    };
+    const request = {
+      protocol: 'ENTRY_MUTATION_V1',
+      scope,
+      operationId: 'recovery-op',
+      mutationId: 'se_recovery',
+      clientOrderId: 'se_recovery',
+      kind: 'OPEN',
+      parentTradeId: intent.tradeId,
+      intent,
+      quantity: 0.01,
+    };
+    await journal.append({
+      id: 'prepared',
+      operationId: 'recovery-op',
+      scope,
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      strategyId: 'MICRO_BURST_V1',
+      event: 'PREPARED',
+      timestampMs: now - 1000,
+      clientOrderId: 'se_recovery',
+      quantity: 0.01,
+      metadata: { journalOperationMeaning: 'ENTRY_MUTATION_NOT_TRADE', request },
+    });
+    const { service, exchange, symbolStores } = makeHarness({
+      entryJournal: journal,
+      symbolStates: { ETHUSDT: { mode: 'IDLE' } },
+      symbolModes: { ETHUSDT: 'OFF' },
+    });
+    const store = symbolStores.get('ETHUSDT');
+    store.flush = vi.fn(async () => {});
+    exchange.readMarketOpenByClientOrderId.mockResolvedValue({
+      avgPrice: 3000,
+      orderId: 'entry-1',
+    });
+    exchange.readRecoverableEntryPosition.mockImplementation(async () => ({
+      source: 'BINANCE_ORDER_AND_TRADES_V1',
+      observedAt: Date.now(),
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      clientOrderId: 'se_recovery',
+      orderId: 'entry-1',
+      filledAt: now - 500,
+      fillIds: ['1'],
+      position: { sideMode: 'LONG', qtyAbs: 0.01, entryPrice: 3000, leverage: 20 },
+    }));
+    try {
+      await service.start(false);
+      expect(store.get()).toMatchObject({
+        lastTradeId: intent.tradeId,
+        mode: 'LONG_RIDE',
+        microBurstPnlUnverified: true,
+        recoveredEntryMutationId: 'se_recovery',
+        bracketsAttached: true,
+      });
+      expect(exchange.placeStopClose).toHaveBeenCalledTimes(1);
+      expect(exchange.marketOpen).not.toHaveBeenCalled();
+      expect(exchange.placeTpClose).not.toHaveBeenCalled();
+      expect(store.flush).toHaveBeenCalled();
+    } finally {
+      await service.stop();
+    }
   });
 
   it('connects real startup, Aegis admission and Shared to the injected entry journal', async () => {
