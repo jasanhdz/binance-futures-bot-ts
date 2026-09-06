@@ -3,6 +3,7 @@ import { PositionInfo, SymbolFilters, TradingExchangePort } from '../ports/Excha
 import { Logger } from '../ports/Logger';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { StateStore } from '../ports/StateStore';
+import type { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
 import {
   LifecycleTradeEventInput,
   SafeStopMoveInput,
@@ -32,6 +33,7 @@ export interface MicroProtectionResult {
 }
 
 export interface PositionProtectionServiceDeps {
+  stopCoordinator?: DurableStopCoordinator;
   exchange: TradingExchangePort;
   logger: Logger;
   getRegimeConfig(symbol: string): RegimeConfig | undefined;
@@ -87,7 +89,18 @@ export class PositionProtectionService {
         current.mode === state.mode &&
         current.lastStrategy === state.lastStrategy &&
         current.positionOwner === state.positionOwner &&
-        current.lastOrderId === state.lastOrderId
+        current.lastOrderId === state.lastOrderId &&
+        current.lastEntryQty === state.lastEntryQty &&
+        current.lastEntryPrice === state.lastEntryPrice &&
+        current.lastStopPrice === state.lastStopPrice &&
+        current.microBurstStructuralStopPrice === state.microBurstStructuralStopPrice &&
+        current.lastEntryAt === state.lastEntryAt &&
+        current.recoveredEntryMutationId === state.recoveredEntryMutationId &&
+        current.ownershipStatus === state.ownershipStatus &&
+        (!this.deps.stopCoordinator ||
+          (current.microStopSubmission?.attemptedAt === state.microStopSubmission?.attemptedAt &&
+            current.microStopSubmission?.tradeId === state.microStopSubmission?.tradeId &&
+            current.microStopSubmission?.stopPrice === state.microStopSubmission?.stopPrice))
       );
     };
     const exchange = this.deps.exchange;
@@ -111,6 +124,71 @@ export class PositionProtectionService {
       (position.qtyAbs !== state.lastEntryQty || position.entryPrice !== state.lastEntryPrice)
     ) {
       return { status: 'UNKNOWN', reason: 'MICRO_RECOVERED_POSITION_CHANGED' };
+    }
+    if (this.deps.stopCoordinator) {
+      if (
+        !store?.flush ||
+        !state.lastTradeId ||
+        !state.lastOrderId ||
+        !state.lastStrategy ||
+        state.positionOwner !== 'BOT' ||
+        state.mode === 'IDLE' ||
+        position.qtyAbs !== state.lastEntryQty ||
+        position.entryPrice !== state.lastEntryPrice ||
+        !samePosition()
+      ) {
+        return { status: 'UNKNOWN', reason: 'MICRO_STOP_DURABLE_IDENTITY_REQUIRED' };
+      }
+      try {
+        const prices = [state.lastStopPrice, state.microBurstStructuralStopPrice].filter(
+          (price): price is number =>
+            typeof price === 'number' && Number.isFinite(price) && price > 0,
+        );
+        if (!prices.length)
+          return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_STOP_PRICE_UNKNOWN' };
+        const filters = await exchange.getSymbolFilters(symbol, position.leverage);
+        const stopPrice = this.roundStopPriceForSide(
+          side,
+          side === 'LONG' ? Math.max(...prices) : Math.min(...prices),
+          filters,
+        );
+        const mark = await exchange.getMarkPrice(symbol);
+        const safeToSend = !this.wouldStopTriggerImmediately(
+          side,
+          stopPrice,
+          mark,
+          this.deps.getImmediateTriggerBufferPct(),
+        );
+        if (!samePosition())
+          return { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
+        store.set({ microProtectionBlocked: true });
+        await store.flush();
+        const protectedNow = await this.deps.stopCoordinator.supervise(
+          {
+            symbol,
+            side,
+            positionSide: position.sideMode,
+            triggerPrice: stopPrice,
+            closePosition: true,
+            workingType: 'MARK_PRICE',
+            parentTradeId: state.lastTradeId,
+            parentOrderId: state.lastOrderId,
+            strategyId: state.lastStrategy,
+            positionQuantity: position.qtyAbs,
+            entryPrice: position.entryPrice,
+          },
+          samePosition,
+          safeToSend && !state.microStopSubmission,
+        );
+        return protectedNow && samePosition()
+          ? { status: 'PROTECTED', stopPrice }
+          : {
+              status: 'UNKNOWN',
+              reason: this.deps.stopCoordinator.blockedReason() ?? 'MICRO_STOP_MUTATION_PENDING',
+            };
+      } catch (error) {
+        return { status: 'UNKNOWN', reason: `MICRO_STOP_DURABLE_FAILED:${String(error)}` };
+      }
     }
     const coversPosition = (
       order: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>>[number],

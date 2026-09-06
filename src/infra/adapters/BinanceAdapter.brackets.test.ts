@@ -95,6 +95,131 @@ describe('BinanceExchange bracket placement', () => {
     );
   });
 
+  it('sends identified conditional stop exactly once and queries the same clientAlgoId', async () => {
+    const request = {
+      symbol: 'BTCUSDT',
+      side: 'LONG' as const,
+      positionSide: 'BOTH' as const,
+      triggerPrice: 90,
+      closePosition: true as const,
+      workingType: 'MARK_PRICE' as const,
+      clientOrderId: `bot_sl_${'a'.repeat(28)}`,
+    };
+    const order = {
+      symbol: request.symbol,
+      clientAlgoId: request.clientOrderId,
+      algoId: 456,
+      algoStatus: 'NEW',
+      algoType: 'CONDITIONAL',
+      orderType: 'STOP_MARKET',
+      side: 'SELL',
+      positionSide: 'BOTH',
+      triggerPrice: '90',
+      workingType: 'MARK_PRICE',
+      closePosition: true,
+    };
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify(order)));
+    try {
+      const exchange = new BinanceExchange(logger);
+      expect(await exchange.sendStopCloseOnce(request)).toEqual({
+        clientOrderId: request.clientOrderId,
+        orderId: '456',
+      });
+      const body = new URLSearchParams(String(fetch.mock.calls[0][1]?.body));
+      expect(body.get('clientAlgoId')).toBe(request.clientOrderId);
+      expect(body.get('quantity')).toBeNull();
+      expect(body.get('closePosition')).toBe('true');
+      fetch.mockResolvedValue(new Response(JSON.stringify(order)));
+      expect(await exchange.readStopCloseByClientOrderId(request)).toEqual({
+        clientOrderId: request.clientOrderId,
+        orderId: '456',
+      });
+      const query = new URL(String(fetch.mock.calls[1][0]));
+      expect(query.pathname).toBe('/fapi/v1/algoOrder');
+      expect(query.searchParams.get('clientAlgoId')).toBe(request.clientOrderId);
+      expect(fetch.mock.calls[1][1]?.method).toBe('GET');
+      expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+      expect(mockClient.futuresPositionMode).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it.each([
+    { clientAlgoId: 'other' },
+    { algoId: null },
+    { algoStatus: 'CANCELED' },
+    { algoStatus: 'TRIGGERED' },
+    { symbol: 'OTHER' },
+    { positionSide: 'LONG' },
+    { side: 'BUY' },
+    { triggerPrice: '89' },
+    { closePosition: false },
+    { workingType: 'CONTRACT_PRICE' },
+    { orderType: 'TAKE_PROFIT_MARKET' },
+  ])('does not confirm mismatching conditional evidence %j', async (override) => {
+    const request = {
+      symbol: 'BTCUSDT',
+      side: 'LONG' as const,
+      positionSide: 'BOTH' as const,
+      triggerPrice: 90,
+      closePosition: true as const,
+      workingType: 'MARK_PRICE' as const,
+      clientOrderId: `bot_sl_${'a'.repeat(28)}`,
+    };
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          symbol: request.symbol,
+          clientAlgoId: request.clientOrderId,
+          algoId: 456,
+          algoStatus: 'NEW',
+          algoType: 'CONDITIONAL',
+          orderType: 'STOP_MARKET',
+          side: 'SELL',
+          positionSide: 'BOTH',
+          triggerPrice: '90',
+          workingType: 'MARK_PRICE',
+          closePosition: true,
+          ...override,
+        }),
+      ),
+    );
+    try {
+      expect(await new BinanceExchange(logger).readStopCloseByClientOrderId(request)).toBeNull();
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it.each([-4061, -4120, -2013])(
+    'identified conditional transport never retries error %s',
+    async (code) => {
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(JSON.stringify({ code, msg: 'fixture' }), { status: 400 }));
+      try {
+        await expect(
+          new BinanceExchange(logger).sendStopCloseOnce({
+            symbol: 'BTCUSDT',
+            side: 'LONG',
+            positionSide: 'BOTH',
+            triggerPrice: 90,
+            closePosition: true,
+            workingType: 'MARK_PRICE',
+            clientOrderId: `bot_sl_${'a'.repeat(28)}`,
+          }),
+        ).rejects.toThrow();
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
+
   it.each(['timeout', 'network lost', 'Position side does not match'])(
     'does not resend a stop via fallback on uncoded %s',
     async (message) => {

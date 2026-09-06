@@ -11,6 +11,7 @@ import {
 import type { RecoverableEntryPosition, TradingExchangePort } from '../ports/Exchange';
 import { MicroEntryRecoveryService } from './MicroEntryRecoveryService';
 import { PositionProtectionService } from './PositionProtectionService';
+import { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -46,7 +47,7 @@ const request: DurableEntryRequest = {
   },
 };
 
-function fixture() {
+function fixture(durableStop = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-recovery-'));
   dirs.push(dir);
   const root = new FsStateStore('default', 'fixture', dir);
@@ -65,6 +66,16 @@ function fixture() {
   };
   const orders: Awaited<ReturnType<TradingExchangePort['listCloseOrdersForSide']>> = [];
   const exchange = {
+    sendStopCloseOnce: vi.fn(async (input: { clientOrderId: string }) => ({
+      clientOrderId: input.clientOrderId,
+      orderId: '987',
+    })),
+    readStopCloseByClientOrderId: vi.fn(async (input: { clientOrderId: string }) => {
+      const sent = exchange.sendStopCloseOnce.mock.calls[0]?.[0];
+      return sent?.clientOrderId === input.clientOrderId
+        ? { clientOrderId: sent.clientOrderId, orderId: '987' }
+        : null;
+    }),
     readRecoverableEntryPosition: vi.fn(async () => evidence),
     readActivePosition: vi.fn(async () => position),
     listCloseOrdersForSide: vi.fn(async () => [...orders]),
@@ -97,7 +108,15 @@ function fixture() {
     closeSideMarketSafe: vi.fn(),
     cancelOrderById: vi.fn(),
   };
+  const stopCoordinator = durableStop
+    ? new DurableStopCoordinator({
+        scope: request.scope,
+        journal: () => new FileBackedExecutionJournal(path.join(dir, 'stops.jsonl')),
+        exchange: exchange as unknown as TradingExchangePort,
+      })
+    : undefined;
   const protection = new PositionProtectionService({
+    stopCoordinator,
     exchange: exchange as unknown as TradingExchangePort,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     getRegimeConfig: () => undefined,
@@ -112,10 +131,29 @@ function fixture() {
     protection,
     now: () => now,
   });
-  return { dir, root, store, exchange, evidence, protection, service };
+  return { dir, root, store, exchange, evidence, protection, service, stopCoordinator };
 }
 
 describe('Micro entry recovery with durable state and the runtime protection service', () => {
+  it('hands recovered Micro to the same durable stop path without TP or legacy unidentified send', async () => {
+    const f = fixture(true);
+    try {
+      expect((await f.service.recover(request, { avgPrice: 100, orderId: '123' })).status).toBe(
+        'PROTECTED',
+      );
+      expect(
+        (await f.protection.superviseMicroStop('ETHUSDT', f.store.get(), f.store)).status,
+      ).toBe('PROTECTED');
+      expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(1);
+      expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+      expect(f.exchange.placeTpClose).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(f.dir, 'stops.jsonl'), 'utf8')).toContain(
+        'STOP_MUTATION_V1',
+      );
+    } finally {
+      await f.stopCoordinator!.close();
+    }
+  });
   it('rebuilds and protects a blank projection without opening or inventing accounting, then survives restart', async () => {
     const f = fixture();
     expect((await f.service.recover(request, { avgPrice: 100, orderId: '123' })).status).toBe(

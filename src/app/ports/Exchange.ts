@@ -109,6 +109,10 @@ export interface ExchangeAccountReadPort {
 }
 
 export interface TradingExchangePort extends MarketDataPort, ExchangeAccountReadPort {
+  /** Conditional algo endpoint only; no fallback or resend. Missing capability fails closed. */
+  sendStopCloseOnce?(request: IdentifiedStopRequest): Promise<StopOrderReceipt>;
+  /** Positive result requires exact identity and a currently NEW, BOT-owned covering stop. */
+  readStopCloseByClientOrderId?(request: IdentifiedStopRequest): Promise<StopOrderReceipt | null>;
   setLeverage(symbol: string, leverage: number): Promise<void>;
   ensureMarginType(symbol: string, marginType?: 'ISOLATED' | 'CROSSED'): Promise<void>;
   marketOpen(
@@ -134,6 +138,21 @@ export interface TradingExchangePort extends MarketDataPort, ExchangeAccountRead
 }
 
 export interface Exchange extends MarketDataPort, TradingExchangePort {}
+
+export interface IdentifiedStopRequest {
+  symbol: string;
+  side: Side;
+  positionSide: 'BOTH' | 'LONG' | 'SHORT';
+  triggerPrice: number;
+  closePosition: true;
+  workingType: 'MARK_PRICE';
+  clientOrderId: string;
+}
+
+export interface StopOrderReceipt {
+  clientOrderId: string;
+  orderId: string;
+}
 
 export type {
   BasisSnapshot,

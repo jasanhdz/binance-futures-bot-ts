@@ -52,6 +52,8 @@ export interface ExecutionJournal {
   readLatest(operationId: string): Promise<JournalEntry | null>;
   readByEvent(operationId: string, event: JournalEventType): Promise<JournalEntry[]>;
   listNonTerminal(): Promise<string[]>;
+  /** Read-only inventory, including terminal mutations, for protocol/scope validation. */
+  listOperations(): Promise<string[]>;
   /** Historical ACK index only. False NEVER authorizes sending a PREPARED request. */
   isSubmitted(clientOrderId: string): Promise<boolean>;
   flush(): Promise<void>;
@@ -296,6 +298,9 @@ class JournalIndex {
       .filter(([, entries]) => entries[entries.length - 1].event !== 'CLOSED')
       .map(([id]) => id);
   }
+  operationIds(): string[] {
+    return [...this.operations.keys()];
+  }
   isSubmitted(clientOrderId: string): boolean {
     return this.submitted.has(clientOrderId);
   }
@@ -337,6 +342,10 @@ export class InMemoryExecutionJournal implements ExecutionJournal {
   async listNonTerminal(): Promise<string[]> {
     this.assertUsable();
     return this.index.nonTerminal();
+  }
+  async listOperations(): Promise<string[]> {
+    this.assertUsable();
+    return this.index.operationIds();
   }
   async isSubmitted(clientOrderId: string): Promise<boolean> {
     this.assertUsable();

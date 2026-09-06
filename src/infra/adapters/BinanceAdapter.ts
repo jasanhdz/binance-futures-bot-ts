@@ -1219,6 +1219,75 @@ export class BinanceExchange implements Exchange {
     return { avgPrice: Number(order.avgPrice || 0), orderId: String(order.orderId) };
   }
 
+  async sendStopCloseOnce(
+    request: import('../../app/ports/Exchange').IdentifiedStopRequest,
+  ): Promise<import('../../app/ports/Exchange').StopOrderReceipt> {
+    const params = {
+      symbol: request.symbol,
+      side: request.side === 'LONG' ? 'SELL' : 'BUY',
+      positionSide: request.positionSide,
+      algoType: 'CONDITIONAL',
+      type: 'STOP_MARKET',
+      triggerPrice: String(request.triggerPrice),
+      workingType: request.workingType,
+      closePosition: 'true',
+      clientAlgoId: request.clientOrderId,
+    };
+    if (
+      !/^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
+      !Number.isFinite(request.triggerPrice) ||
+      request.triggerPrice <= 0 ||
+      request.closePosition !== true ||
+      request.workingType !== 'MARK_PRICE' ||
+      !['BOTH', request.side].includes(request.positionSide)
+    )
+      throw new Error('STOP_REQUEST_INVALID');
+    const receipt = await this.enqueue(
+      () => this.placeAlgoOrderRaw(params),
+      DEFAULT_REQUEST_WEIGHT,
+      'protection_algo_mutation',
+      'critical',
+    );
+    if (
+      receipt?.clientAlgoId !== request.clientOrderId ||
+      receipt?.symbol !== request.symbol ||
+      !receipt?.algoId ||
+      (typeof receipt.algoId === 'number' && !Number.isSafeInteger(receipt.algoId)) ||
+      !/^\d+$/.test(String(receipt.algoId))
+    )
+      throw new Error('STOP_ACK_IDENTITY');
+    return { clientOrderId: receipt.clientAlgoId, orderId: String(receipt.algoId) };
+  }
+
+  async readStopCloseByClientOrderId(
+    request: import('../../app/ports/Exchange').IdentifiedStopRequest,
+  ): Promise<import('../../app/ports/Exchange').StopOrderReceipt | null> {
+    // Missing/cancelled/triggered and lookup errors remain uncertain; none authorize resend.
+    const order = await this.enqueue(
+      () => this.placeAlgoOrderRaw({ clientAlgoId: request.clientOrderId }, 'GET'),
+      DEFAULT_REQUEST_WEIGHT,
+    );
+    if (
+      !order ||
+      order.clientAlgoId !== request.clientOrderId ||
+      !String(order.clientAlgoId).startsWith('bot_sl_') ||
+      order.symbol !== request.symbol ||
+      !order.algoId ||
+      (typeof order.algoId === 'number' && !Number.isSafeInteger(order.algoId)) ||
+      !/^\d+$/.test(String(order.algoId)) ||
+      order.algoStatus !== 'NEW' ||
+      order.algoType !== 'CONDITIONAL' ||
+      order.orderType !== 'STOP_MARKET' ||
+      order.side !== (request.side === 'LONG' ? 'SELL' : 'BUY') ||
+      order.positionSide !== request.positionSide ||
+      Number(order.triggerPrice) !== request.triggerPrice ||
+      order.workingType !== 'MARK_PRICE' ||
+      !(order.closePosition === true || order.closePosition === 'true')
+    )
+      return null;
+    return { clientOrderId: order.clientAlgoId, orderId: String(order.algoId) };
+  }
+
   async placeStopClose(
     symbol: string,
     side: Side,
@@ -1576,7 +1645,7 @@ export class BinanceExchange implements Exchange {
     }
   }
 
-  private async placeAlgoOrderRaw(params: any): Promise<any> {
+  private async placeAlgoOrderRaw(params: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
     const timestamp = params.timestamp || Date.now();
     const recvWindow = Number(process.env.BINANCE_RECV_WINDOW ?? 20_000);
     const qsParams = { ...params, timestamp, recvWindow };
@@ -1596,14 +1665,17 @@ export class BinanceExchange implements Exchange {
       signature,
     };
 
-    const res = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
-      method: 'POST',
-      headers: {
-        'X-MBX-APIKEY': CONFIG.API_KEY,
-        'Content-Type': 'application/x-www-form-urlencoded',
+    const res = await fetch(
+      `${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder${method === 'GET' ? `?${queryString}&signature=${signature}` : ''}`,
+      {
+        method,
+        headers: {
+          'X-MBX-APIKEY': CONFIG.API_KEY,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: method === 'POST' ? new URLSearchParams(signedParams).toString() : undefined,
       },
-      body: new URLSearchParams(signedParams).toString(),
-    });
+    );
 
     if (!res.ok) {
       const txt = await res.text();

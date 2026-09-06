@@ -99,16 +99,21 @@ DurableEntryCoordinator -> ExecutionJournal + BinanceExchange.marketOpen`.
 
 ## Matriz De Cobertura
 
-| Ruta | Persist-before-send | Resultado durable | Recovery sin reenvio |
-| --- | --- | --- | --- |
-| Micro -> Shared -> marketOpen inicial | SI | SI, por mutacion | SI |
-| Aegis -> Shared -> marketOpen inicial | SI | SI, por mutacion | SI |
-| Momentum -> Shared -> marketOpen inicial | SI | SI, por mutacion | SI |
-| Retry de sizing de esas rutas | SI, otra identidad tras rechazo durable | SI | SI |
-| Stop inicial Micro / brackets iniciales Aegis-Momentum | NO en este journal | NO en este journal | Proteccion existente, no nuevo protocolo |
-| Stops de reposicion / movimiento / TP | NO en este journal | NO en este journal | Garantias existentes, no cobertura universal |
-| Cierre inteligente / emergencia / cancelaciones | NO en este journal | NO en este journal | Garantias existentes, no cobertura universal |
-| Leverage / margin type | NO en este journal | NO en este journal | Fuera de este corte |
+Actualizacion posterior a 858d17d: la reposicion Micro (normal y recuperada) tiene
+su propio [journal de mutaciones de stop](SAFETY_DURABLE_MICRO_STOP.md). No comparte
+archivo ni lifecycle con aperturas. Stop inicial Shared, TP, movimientos y cierre
+siguen pendientes; la matriz siguiente conserva el alcance historico de este corte.
+
+| Ruta                                                   | Persist-before-send                     | Resultado durable  | Recovery sin reenvio                         |
+| ------------------------------------------------------ | --------------------------------------- | ------------------ | -------------------------------------------- |
+| Micro -> Shared -> marketOpen inicial                  | SI                                      | SI, por mutacion   | SI                                           |
+| Aegis -> Shared -> marketOpen inicial                  | SI                                      | SI, por mutacion   | SI                                           |
+| Momentum -> Shared -> marketOpen inicial               | SI                                      | SI, por mutacion   | SI                                           |
+| Retry de sizing de esas rutas                          | SI, otra identidad tras rechazo durable | SI                 | SI                                           |
+| Stop inicial Micro / brackets iniciales Aegis-Momentum | NO en este journal                      | NO en este journal | Proteccion existente, no nuevo protocolo     |
+| Stops de reposicion / movimiento / TP                  | NO en este journal                      | NO en este journal | Garantias existentes, no cobertura universal |
+| Cierre inteligente / emergencia / cancelaciones        | NO en este journal                      | NO en este journal | Garantias existentes, no cobertura universal |
+| Leverage / margin type                                 | NO en este journal                      | NO en este journal | Fuera de este corte                          |
 
 Confirmar una apertura en recovery no restaura por si solo su estado de estrategia
 ni coloca brackets. Si falta ese handoff, el journal permanece OPEN_CONFIRMED y

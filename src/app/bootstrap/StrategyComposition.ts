@@ -5,6 +5,7 @@ import { AegisMLService } from '../../strategies/aegis/application/AegisMLServic
 import { TradingService, type TradingServiceConfig } from '../services/TradingService';
 import type { ApplicationInfrastructure } from './ApplicationInfrastructure';
 import { composeDurableEntryCoordinator } from './DurableEntryComposition';
+import { composeDurableStopCoordinator } from './DurableStopComposition';
 
 export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure) {
   const { exchange, logger, stateStore, notifier, configManager } = infrastructure;
@@ -45,6 +46,7 @@ export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure
       consecutiveLossStateStore: lossStates.storeFor('AEGIS_TURBO'),
       strategyLossStateRegistry: lossStates,
       entryCoordinator: composeDurableEntryCoordinator(exchange, CONFIG.IS_TESTNET, stateStore),
+      stopCoordinator: composeDurableStopCoordinator(exchange, CONFIG.IS_TESTNET),
     },
     config,
   );

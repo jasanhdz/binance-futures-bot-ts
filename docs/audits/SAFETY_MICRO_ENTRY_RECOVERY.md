@@ -63,6 +63,10 @@ con webfetch, sin contenido util. No se afirma verificacion operativa de la API.
 
 ## Stop y concurrencia
 
+Continuacion desde 858d17d: ver [reposicion durable Micro](SAFETY_DURABLE_MICRO_STOP.md).
+Esa ruta ahora inyecta STOP_MUTATION_V1 en el mismo protector antes del latch legacy;
+la descripcion y los conteos siguientes documentan la base historica, no la suite nueva.
+
 PositionProtectionService persiste su latch microStopSubmission antes del envio,
 revalida identidad/intent despues del flush y no repite un intento incierto tras
 reinicio. Para recovered entries exige cobertura BOT con side/positionSide explicitos.
@@ -91,13 +95,13 @@ ConfigLoader separado 1 archivo y 46 tests. Total **2.288 tests, cero fallos**.
 
 ## Pendientes y publicacion
 
-| Area | Implementado/integrado | Pendiente |
-| --- | --- | --- |
-| Recovery Micro vacio | SI, journal -> proyeccion durable -> protector existente | Casos no atribuibles y otras estrategias |
-| Proteccion Micro recuperada | SI, latch previo y confirmacion exchange | IDs de mutacion de stop/receipt/lookup universales |
-| Contabilidad | Cuarentena conservada | Reconstruccion de contadores, fills/costes y ledger runtime |
-| Exposicion/reservas | Bloqueo de cuenta retenido | Inventario global y reservas monetarias durables |
-| Fase 9 | Servicio de recovery separado y consumidor real | Extracciones/integraciones restantes |
+| Area                        | Implementado/integrado                                   | Pendiente                                                   |
+| --------------------------- | -------------------------------------------------------- | ----------------------------------------------------------- |
+| Recovery Micro vacio        | SI, journal -> proyeccion durable -> protector existente | Casos no atribuibles y otras estrategias                    |
+| Proteccion Micro recuperada | SI, latch previo y confirmacion exchange                 | IDs de mutacion de stop/receipt/lookup universales          |
+| Contabilidad                | Cuarentena conservada                                    | Reconstruccion de contadores, fills/costes y ledger runtime |
+| Exposicion/reservas         | Bloqueo de cuenta retenido                               | Inventario global y reservas monetarias durables            |
+| Fase 9                      | Servicio de recovery separado y consumidor real          | Extracciones/integraciones restantes                        |
 
 Cambios de este documento describen el bloque local listo para publicacion. El SHA
 publicado se verifica despues del commit/push; no usar la suite para autorizar LIVE.

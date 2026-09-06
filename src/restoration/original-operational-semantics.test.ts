@@ -34,7 +34,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Owner-authorized recovery evidence constraint: optional expected side/quantity/time.
   // Source checkpoint, not an approval or a claim of unchanged port bytes.
   // Bounded current-position attribution capability for recovered Micro entries.
-  'src/app/ports/Exchange.ts': 'f03482236396876c83769b3b109648013a9eaadfd69729a1d7e6096d412d3a1d',
+  // Identified stop send-once and exact lookup capability; no LIVE configuration change.
+  'src/app/ports/Exchange.ts': '5dfcfe2b94888ad43f20fbe9e7d814f9c8e41c112c115232e07616d25c33e11d',
   'src/infra/config/environment.ts':
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
   'src/domain/services/ProfitGuardian.ts':
@@ -48,10 +49,10 @@ const baselineOperationalDigests: Record<string, string> = {
 // Phase 1 owner-authorized architecture checkpoint. These are operational
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
-  // Entry safety slice: one market-open send, exact ACK/lookup identity, source formatting.
-  // Source checkpoint only, not LIVE authorization. See SAFETY_DURABLE_ENTRY_SLICE.md.
+  // Stop safety slice: identified algo send-once and exact current conditional lookup.
+  // Source checkpoint only, not LIVE authorization. See SAFETY_DURABLE_MICRO_STOP.md.
   'src/infra/adapters/BinanceAdapter.ts':
-    '30150edc13d787b5d5ef1877fd7f4b27b1d1a1986745dd7e6c16667adc15619d',
+    '28a0d49f79a3b461d8fcda971a4aca3a114bddeb958fd41ad7aa6af5fd2c7744',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
@@ -67,8 +68,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Entry safety slice: inject coordinator, startup gate, periodic recovery and drained close.
   // Shutdown extraction: typed drain, preserve failures and close after all admitted work.
   // Startup barrier: never reopen admission or close storage over initializing work.
+  // Stop safety slice: same protector injection, startup ordering, admission and drained close.
   'src/app/services/TradingService.ts':
-    '89b5fd599013bd78964613d5ed3207464ee82f7a82e188fc10c2fd7d34706b07',
+    'ed9ea677d91c45c1ede9bf36474e163f72dd825ab73fc791bfd89547c5f09e58',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

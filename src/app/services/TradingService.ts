@@ -76,6 +76,7 @@ import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/Aegi
 import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import type { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
+import type { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
 import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
 import { MicroEntryRecoveryService } from '../position/MicroEntryRecoveryService';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
@@ -158,6 +159,7 @@ export interface TradingServiceDeps {
   strategyLossStateRegistry?: StrategyLossStateRegistry;
   /** Production supplies this via StrategyComposition; direct unit fixtures may omit it. */
   entryCoordinator?: DurableEntryCoordinator;
+  stopCoordinator?: DurableStopCoordinator;
 }
 
 export interface TradingServiceConfig {
@@ -181,6 +183,7 @@ export interface AegisRuntimeSnapshot {
   liquidityStressInputVersionBySymbol: Record<string, typeof LIQUIDITY_STRESS_INPUT_VERSION>;
   microBurstReadiness: MicroBurstRuntimeReadiness | null;
   entryMutationBlockedReason?: string;
+  stopMutationBlockedReason?: string;
 }
 
 export class TradingService {
@@ -278,6 +281,7 @@ export class TradingService {
     this.momentumStrategyIdentity = createMomentumRideLegacyIdentity();
     this.microBurstIdentity = createMicroBurstV1Identity();
     this.positionProtection = new PositionProtectionService({
+      stopCoordinator: deps.stopCoordinator,
       exchange: deps.exchange,
       logger: deps.logger,
       getRegimeConfig: (symbol) => this.runtimeConfig.getAegisTurboRegimeConfig(symbol),
@@ -364,6 +368,7 @@ export class TradingService {
         entryCoordinator: deps.entryCoordinator,
         isEntryCurrent: (intent) =>
           this.acceptingEntries &&
+          !deps.stopCoordinator?.blockedReason() &&
           !this.runtimeStopping &&
           this.getSymbolMode(intent.symbol) === 'LIVE',
         feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
@@ -947,6 +952,7 @@ export class TradingService {
       tradingMode: this.getTradingMode(),
       isRunning: this.isRunning,
       entryMutationBlockedReason: this.deps.entryCoordinator?.blockedReason(),
+      stopMutationBlockedReason: this.deps.stopCoordinator?.blockedReason(),
       tradesToday: riskSession.tradesToday,
       consecutiveLosses: riskSession.consecutiveLosses,
       dailyStartBalance: riskSession.dailyStartBalance,
@@ -996,6 +1002,7 @@ export class TradingService {
   private async initializeRuntime(): Promise<void> {
     if (this.runtimeStopping) return;
     this.acceptingEntries = false;
+    await this.deps.stopCoordinator?.start();
     await this.deps.entryCoordinator?.start();
     if (this.runtimeStopping) return;
     const { logger, notifier, mlService, configManager, exchange } = this.deps;
@@ -1298,7 +1305,11 @@ export class TradingService {
         () => this.telemetryJsonlSink.drain(),
       ],
       closeMutations: async () => {
-        await this.deps.entryCoordinator?.close();
+        try {
+          await this.deps.entryCoordinator?.close();
+        } finally {
+          await this.deps.stopCoordinator?.close();
+        }
       },
     });
   }
