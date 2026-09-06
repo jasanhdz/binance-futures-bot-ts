@@ -3,6 +3,7 @@ import { TradingService } from './TradingService';
 import { PositionProtectionService } from '../position/PositionProtectionService';
 import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import { InMemoryExecutionJournal } from '../../core/risk/ExecutionJournal';
+import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
 
 describe('TradingService shared safety contracts', () => {
   it('awaits the real entry recovery gate before startup can read the exchange', async () => {
@@ -54,6 +55,7 @@ describe('TradingService shared safety contracts', () => {
     'drains %s before flushing state and rejects new work during shutdown',
     async (method) => {
       const service = Object.create(TradingService.prototype) as any;
+      service.shutdown = new RuntimeShutdown();
       let finish!: () => void;
       const pending = new Promise<void>((resolve) => {
         finish = resolve;

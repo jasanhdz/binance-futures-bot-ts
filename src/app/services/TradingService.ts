@@ -76,6 +76,7 @@ import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/Aegi
 import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import type { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
+import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { MomentumEntryCoordinator } from '../../strategies/momentum/application/MomentumEntryCoordinator';
 import {
@@ -236,7 +237,7 @@ export class TradingService {
   private readonly aegisExitManagementService: AegisExitManagementService;
   private readonly aegisProfitProtectionService: AegisProfitProtectionService;
   private readonly momentumEntryCoordinator: MomentumEntryCoordinator;
-  private stopPromise: Promise<void> | null = null;
+  private readonly shutdown = new RuntimeShutdown();
   private readonly entryInFlightSymbols = new Set<string>();
   private entryInFlight = false;
   private readonly microBurstEntryInFlightSymbols = new Set<string>();
@@ -1229,35 +1230,28 @@ export class TradingService {
   }
 
   stop(): Promise<void> {
-    if (this.stopPromise) return this.stopPromise;
-    this.isRunning = false;
-    this.acceptingEntries = false;
-    this.runtimeStopping = true;
-    this.deps.logger.info('Aegis bot stopped');
-    if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
-    this.stopPromise = (async () => {
-      const producers = await Promise.allSettled([
-        Promise.resolve().then(() => this.strategyRuntimeCoordinator.stop()),
-      ]);
-      // Producers are stopped and admission is closed. Keep all stores open
-      // until previously admitted exchange work has finished updating state.
-      while (this.activeRuntimeTasks?.size) {
-        await Promise.allSettled([...this.activeRuntimeTasks]);
-      }
-      const stores = [this.deps.state, ...this.symbolStateStores.values()];
-      const flushed = await Promise.allSettled([
-        ...stores.map((store) => store.flush?.()),
-        this.decisionJsonlSink.drain(),
-        this.marketSnapshotEvidenceSink.drain(),
-        this.telemetryJsonlSink.drain(),
-      ]);
-      await this.deps.entryCoordinator?.close();
-      const failure = [...producers, ...flushed].find((result) => result.status === 'rejected');
-      if (failure?.status === 'rejected') throw failure.reason;
-    })().finally(() => {
-      this.stopPromise = null;
+    return this.shutdown.stop({
+      closeAdmission: () => {
+        this.isRunning = false;
+        this.acceptingEntries = false;
+        this.runtimeStopping = true;
+        if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
+        this.deps.logger.info('Aegis bot stopped');
+      },
+      stopProducers: () => this.strategyRuntimeCoordinator.stop(),
+      activeTasks: () => [...(this.activeRuntimeTasks ?? [])],
+      flushResources: () => [
+        ...[this.deps.state, ...this.symbolStateStores.values()].map(
+          (store) => () => store.flush?.(),
+        ),
+        () => this.decisionJsonlSink.drain(),
+        () => this.marketSnapshotEvidenceSink.drain(),
+        () => this.telemetryJsonlSink.drain(),
+      ],
+      closeMutations: async () => {
+        await this.deps.entryCoordinator?.close();
+      },
     });
-    return this.stopPromise;
   }
 
   async tick(symbol: string): Promise<void> {

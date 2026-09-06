@@ -144,3 +144,24 @@ desplegar. Falta vincular reservas/handoff/proteccion/accounting de todo el trad
 3. Reservas de margen/riesgo, inventario universal y fencing/identidad de cuenta real.
 4. Reconciliacion de fills/costes/PnL y ledger runtime idempotente.
 5. Consolidacion de fase 9 y resto de pendientes del traspaso, sin aprobar LIVE.
+
+## Extraccion de apagado posterior a d249794
+
+- TradingService delega el orden de cierre a `src/app/runtime/RuntimeShutdown.ts`
+  mediante puertos tipados: cerrar admision, detener productores, consultar tareas,
+  obtener flushes/drains y cerrar coordinador de mutaciones. No duplica esa secuencia.
+- Se conserva registro sincrono de tareas y lock antes del primer await. La nueva
+  extraccion publica la Promise antes de callbacks para soportar stop reentrante.
+- Un stop completado o fallido es estable e idempotente: no ejecuta otro cierre sobre
+  un journal ya cerrado. Una nueva sesion requiere nueva instancia del runtime.
+- Fallos sincronos/asincornos de productores o flushes se acumulan sin abandonar
+  otros recursos. El cierre de mutaciones se intenta al final; los errores se exponen
+  mediante RuntimeShutdownError.failures, no se convierten en exito.
+- Un timeout externo no libera recursos ni convierte tareas pendientes en terminadas.
+  Las tareas admitidas pueden registrar trabajo hijo, que tambien se drena.
+- Validacion propia: `npm run test:safety` PASS, build y 2.203 tests principales
+  (185 archivos) + 46 ConfigLoader (1 archivo) = 2.249 tests, cero fallos.
+  Nueve tests nuevos de RuntimeShutdown mas las regresiones de TradingService.
+- Es extraccion PARCIAL de fase 9, no integracion de las mutaciones de stop/cierre,
+  exposicion o contabilidad. El lifecycle de startup concurrente con stop y los
+  recursos del bootstrap exterior conservan pendientes; no se cambio main.ts.

@@ -2,6 +2,10 @@
 
 ## Referencia vigente del traspaso
 
+- Extraccion de shutdown consumida por TradingService, posterior a 4300eda:
+  ejecucion propia `npm run test:safety` PASS, 2.203 + 46 = 2.249 tests
+  en 186 archivos. Nueve tests de RuntimeShutdown; fase 9 sigue parcial.
+
 - Apertura durable publicada en `d249794bd9ba80c7c940c0796c10984af19236fb`,
   SHA remoto comprobado. Validacion propia del coordinador: build y
   2.194 + 46 = 2.240 tests PASS (185 archivos en ambos grupos).
