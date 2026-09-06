@@ -2,6 +2,10 @@
 
 ## Referencia vigente del traspaso
 
+- Cancelacion Micro posterior a 3d63029: validacion propia npm run test:safety PASS,
+  build y 2.348 + 46 = 2.394 tests (190 archivos entre grupos). Ver
+  SAFETY_DURABLE_MICRO_CANCEL.md para rutas conectadas, formato y pendientes.
+
 - Stop inicial Micro posterior a e5b980a: ejecucion propia npm run test:safety PASS,
   build y 2.317 + 46 = 2.363 tests. Ver SAFETY_DURABLE_MICRO_STOP.md para alcance;
   cierres/cancelaciones/otras estrategias y fase 9 siguen parciales.

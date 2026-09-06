@@ -824,6 +824,9 @@ function makeHarness(
     readStopCloseState: vi
       .fn<NonNullable<TradingExchangePort['readStopCloseState']>>()
       .mockResolvedValue(null),
+    readCancelTarget: vi
+      .fn<NonNullable<TradingExchangePort['readCancelTarget']>>()
+      .mockResolvedValue(null),
     placeStopClose: options.placeStopCloseReject
       ? vi.fn().mockRejectedValue(new Error('stop failed'))
       : vi.fn().mockResolvedValue(true),
@@ -1725,6 +1728,105 @@ describe('TradingService Aegis live execution', () => {
     expect((service as any).entryInFlight).toBe(false);
     expect((service as any).microBurstEntryInFlight).toBe(false);
   });
+
+  it.each([true, false])(
+    'routes the real Micro close callback through durable cancellation, lost ACK visible=%s',
+    async (visible) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-close-cancel-'));
+      const file = path.join(dir, 'journal.jsonl');
+      const journal = new FileBackedExecutionJournal(file);
+      const initialState = {
+        mode: 'LONG_RIDE',
+        positionOwner: 'BOT',
+        lastStrategy: 'MICRO_BURST_V1',
+        lastTradeId: 'MICRO-CANCEL-1',
+        lastOrderId: 'entry-1',
+        lastSide: 'LONG',
+        lastEntryAt: Date.now() - 60_000,
+        lastEntryPrice: 3000,
+        lastEntryQty: 0.01,
+        lastLeverage: 20,
+      };
+      const target = {
+        orderId: 'ALGO_123',
+        type: 'STOP_MARKET',
+        stopPrice: 2970,
+        side: 'SELL',
+        positionSide: 'LONG',
+        closePosition: true,
+        owner: 'BOT',
+      };
+      const h = makeHarness({
+        stopJournal: journal,
+        initialState,
+        closeOrders: [target],
+        readActivePositionSequence: [
+          { sideMode: 'LONG', qtyAbs: 0.01, entryPrice: 3000, leverage: 20 },
+          null,
+          null,
+        ],
+      });
+      h.state.flush = vi.fn(async () => undefined);
+      h.exchange.readCancelTarget
+        .mockResolvedValueOnce('NEW')
+        .mockResolvedValue(visible ? 'CANCELED' : null);
+      h.exchange.cancelOrderById.mockImplementation(async () => {
+        expect((await journal.readLatest((await journal.listOperations())[0]))?.event).toBe(
+          'PREPARED',
+        );
+        h.exchange.listCloseOrdersForSide.mockResolvedValue([]);
+        throw new Error('lost cancel response');
+      });
+      try {
+        const manager = (h.service as any).positionManagerRouter.managers.get('MICRO_BURST_V1');
+        const closed = await manager.execution.close(
+          {
+            symbol: 'ETHUSDT',
+            side: 'LONG',
+            botState: h.state.get(),
+            symbolState: h.state,
+            exitContext: { currentPrice: 2990, entryPrice: 3000, unrealizedRoe: -0.06 },
+          },
+          { action: 'CLOSE_MARKET', reason: 'HARD_STOP', diagnostics: {} },
+        );
+        expect(closed).toBe(visible);
+        expect(h.exchange.cancelOrderById).toHaveBeenCalledExactlyOnceWith('ETHUSDT', 'ALGO_123');
+        expect(h.state.get().mode).toBe(visible ? 'IDLE' : 'LONG_RIDE');
+        await h.service.stop();
+        const reopened = new FileBackedExecutionJournal(file);
+        const restart = makeHarness({
+          stopJournal: reopened,
+          closeOrders: [],
+          readActivePositionSequence: [null],
+          symbolModes: { ETHUSDT: 'OFF' },
+          symbolStates: { ETHUSDT: { ...h.state.get() } },
+        });
+        restart.exchange.readCancelTarget.mockResolvedValue(null);
+        try {
+          await restart.service.start(false);
+          expect(restart.service.getAegisRuntimeSnapshot().stopMutationBlockedReason).toBe(
+            visible ? undefined : 'CANCEL_MUTATION_PENDING',
+          );
+          expect(restart.exchange.cancelOrderById).not.toHaveBeenCalled();
+          expect(restart.exchange.marketOpen).not.toHaveBeenCalled();
+          if (!visible) {
+            restart.exchange.readCancelTarget.mockResolvedValue('CANCELED');
+            await (restart.service as any).deps.stopCoordinator.reconcileClosed(
+              () => restart.state,
+            );
+            expect(
+              restart.service.getAegisRuntimeSnapshot().stopMutationBlockedReason,
+            ).toBeUndefined();
+          }
+        } finally {
+          await restart.service.stop();
+        }
+      } finally {
+        await h.service.stop();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('quarantines an unverified close and denies new LIVE entry for the shadow candidate', async () => {
     const microBurst = {

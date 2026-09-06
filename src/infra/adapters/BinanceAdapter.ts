@@ -2081,6 +2081,58 @@ export class BinanceExchange implements Exchange {
     return true;
   }
 
+  async readCancelTarget(
+    request: import('../../app/ports/Exchange').CancelTarget,
+  ): Promise<'NEW' | 'CANCELED' | 'FILLED' | null> {
+    if (
+      typeof request.orderId !== 'string' ||
+      !/^(?:ALGO_)?[1-9]\d*$/.test(request.orderId) ||
+      typeof request.symbol !== 'string' ||
+      !request.symbol.trim() ||
+      (request.side !== 'LONG' && request.side !== 'SHORT') ||
+      !['BOTH', request.side].includes(request.positionSide) ||
+      !['STOP_MARKET', 'STOP', 'TAKE_PROFIT_MARKET', 'TAKE_PROFIT'].includes(request.type) ||
+      !Number.isFinite(request.stopPrice) ||
+      request.stopPrice <= 0
+    )
+      return null;
+    const algo = request.orderId.startsWith('ALGO_');
+    const id = algo ? request.orderId.slice(5) : request.orderId;
+    if (!/^\d+$/.test(id) || (!algo && !Number.isSafeInteger(Number(id)))) return null;
+    const order = await this.enqueue(() =>
+      algo
+        ? this.placeAlgoOrderRaw({ algoId: id }, 'GET')
+        : this.cli.futuresGetOrder({ symbol: request.symbol, orderId: Number(id) }),
+    );
+    if (!order || typeof order !== 'object' || Array.isArray(order)) return null;
+    const raw = order as Record<string, unknown>;
+    const actualId = algo ? raw?.algoId : raw?.orderId;
+    const clientId = algo ? raw?.clientAlgoId : raw?.clientOrderId;
+    const status = algo ? raw?.algoStatus : raw?.status;
+    if (
+      !raw ||
+      String(actualId) !== id ||
+      (typeof actualId === 'number' && !Number.isSafeInteger(actualId)) ||
+      typeof clientId !== 'string' ||
+      !(clientId.startsWith('se_') || /^bot_sl_[a-f0-9]{28}$/.test(clientId)) ||
+      raw.symbol !== request.symbol ||
+      raw.side !== (request.side === 'LONG' ? 'SELL' : 'BUY') ||
+      raw.positionSide !== request.positionSide ||
+      (algo ? raw.orderType : raw.type) !== request.type ||
+      Number(algo ? raw.triggerPrice : raw.stopPrice) !== request.stopPrice ||
+      !(
+        raw.closePosition === true ||
+        raw.closePosition === 'true' ||
+        raw.reduceOnly === true ||
+        raw.reduceOnly === 'true'
+      ) ||
+      (algo && raw.algoType !== 'CONDITIONAL') ||
+      (status !== 'NEW' && status !== 'CANCELED' && status !== 'FILLED')
+    )
+      return null;
+    return status;
+  }
+
   async cancelOrderById(symbol: string, orderId: string) {
     try {
       if (orderId.startsWith('ALGO_')) {

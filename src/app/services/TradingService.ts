@@ -692,6 +692,7 @@ export class TradingService {
     this.positionManagerRouter.register(
       new MicroBurstPositionManager(this.positionLifecycleCore, mbConfig.exitPolicy, {
         close: async (context, decision) => {
+          const closeIdentity = { ...context.botState };
           const closeStartedAt = Date.now();
           const position = await this.deps.exchange.readActivePosition(
             context.symbol,
@@ -711,7 +712,7 @@ export class TradingService {
           for (let attempt = 0; attempt < 3 && flatObservations < 2; attempt++) {
             if (attempt > 0) await this.sleep(300);
             remaining = await this.deps.exchange.readActivePosition(context.symbol, context.side);
-            flatObservations = remaining ? 0 : flatObservations + 1;
+            flatObservations = remaining === null ? flatObservations + 1 : 0;
           }
           if (remaining || flatObservations < 2) {
             this.deps.logger.error('micro_burst_live_close_not_flat', {
@@ -723,21 +724,14 @@ export class TradingService {
             return false;
           }
           try {
-            const closeOrders = await this.deps.exchange.listCloseOrdersForSide(
-              context.symbol,
-              context.side,
-            );
-            for (const order of closeOrders) {
-              if (order.owner === 'BOT') {
-                await this.deps.exchange.cancelOrderById(context.symbol, order.orderId);
-              }
-            }
-            const survivingBotOrders = (
-              await this.deps.exchange.listCloseOrdersForSide(context.symbol, context.side)
-            ).filter((order) => order.owner === 'BOT');
-            if (survivingBotOrders.length > 0) {
-              throw new Error(`BOT_CLOSE_ORDERS_REMAIN:${survivingBotOrders.length}`);
-            }
+            if (
+              !(await this.positionProtection.cleanupMicroCloseOrders(
+                context.symbol,
+                context.symbolState,
+                closeIdentity,
+              ))
+            )
+              return false;
           } catch (error) {
             this.deps.logger.error('micro_burst_live_close_order_cleanup_failed', {
               symbol: context.symbol,
@@ -771,14 +765,37 @@ export class TradingService {
               : (context.exitContext.entryPrice - context.exitContext.currentPrice) *
                 (position?.qtyAbs ?? context.botState.lastEntryQty ?? 0);
           const pnlVerified = realizedFills.length > 0;
-          context.symbolState.set({
-            mode: 'IDLE',
-            lastExitAt: Date.now(),
-            lastExitReason: decision.reason,
-            microBurstExitState: undefined,
-            microBurstPnlUnverified: !pnlVerified,
-            microBurstPnlUnverifiedAt: pnlVerified ? undefined : Date.now(),
-          });
+          if (this.deps.stopCoordinator) {
+            if (
+              (await this.deps.exchange.readFreshActivePosition?.(context.symbol, context.side)) !==
+              null
+            )
+              return false;
+            const current = context.symbolState.get();
+            if (
+              current.positionOwner !== 'BOT' ||
+              current.lastTradeId !== closeIdentity.lastTradeId ||
+              current.lastOrderId !== closeIdentity.lastOrderId ||
+              current.lastSide !== closeIdentity.lastSide ||
+              current.lastStrategy !== closeIdentity.lastStrategy ||
+              current.mode !== closeIdentity.mode ||
+              current.lastEntryAt !== closeIdentity.lastEntryAt
+            )
+              return false;
+          }
+          if (
+            !(await this.positionProtection.persistMicroOperationalClose(
+              context.symbolState,
+              closeIdentity,
+              {
+                lastExitAt: Date.now(),
+                lastExitReason: decision.reason,
+                microBurstPnlUnverified: !pnlVerified,
+                microBurstPnlUnverifiedAt: pnlVerified ? undefined : Date.now(),
+              },
+            ))
+          )
+            return false;
           if (!pnlVerified) {
             this.deps.logger.error('micro_burst_close_pnl_unverified_quarantine', {
               symbol: context.symbol,

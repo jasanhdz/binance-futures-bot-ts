@@ -47,6 +47,81 @@ const logger = {
 };
 
 describe('BinanceExchange bracket placement', () => {
+  it.each(['standard', 'algo'] as const)(
+    'queries exact %s cancel target, not a CID or open-order list',
+    async (kind) => {
+      const algo = kind === 'algo';
+      const request = {
+        symbol: 'BTCUSDT',
+        side: 'LONG' as const,
+        orderId: algo ? 'ALGO_123' : '123',
+        type: 'STOP_MARKET' as const,
+        positionSide: 'LONG' as const,
+        stopPrice: 90,
+      };
+      let response: Record<string, unknown> = {
+        symbol: 'BTCUSDT',
+        side: 'SELL',
+        positionSide: 'LONG',
+        closePosition: true,
+        orderId: 123,
+        algoId: 123,
+        type: 'STOP_MARKET',
+        orderType: 'STOP_MARKET',
+        algoType: 'CONDITIONAL',
+        stopPrice: '90',
+        triggerPrice: '90',
+        status: 'CANCELED',
+        algoStatus: 'CANCELED',
+        clientOrderId: 'se_legacy',
+        clientAlgoId: 'bot_sl_' + 'a'.repeat(28),
+      };
+      mockClient.futuresGetOrder.mockImplementation(async () => response as any);
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async () => new Response(JSON.stringify(response), { status: 200 }));
+      try {
+        const exchange = new BinanceExchange(logger);
+        expect(await exchange.readCancelTarget(request)).toBe('CANCELED');
+        if (algo) {
+          const url = String(fetch.mock.calls[0][0]);
+          expect(url).toContain('/fapi/v1/algoOrder?');
+          expect(url).toContain('algoId=123');
+          expect(url).not.toContain('clientAlgoId=');
+          expect(mockClient.futuresGetOrder).not.toHaveBeenCalled();
+        } else {
+          expect(mockClient.futuresGetOrder).toHaveBeenCalledExactlyOnceWith({
+            symbol: 'BTCUSDT',
+            orderId: 123,
+          });
+          expect(fetch).not.toHaveBeenCalled();
+        }
+        const original = { ...response };
+        for (const patch of [
+          { symbol: 'ETHUSDT' },
+          { side: 'BUY' },
+          { positionSide: 'SHORT' },
+          { clientOrderId: 'manual', clientAlgoId: 'manual' },
+          { orderId: 124, algoId: 124 },
+          { stopPrice: '91', triggerPrice: '91' },
+          { type: 'LIMIT', orderType: 'LIMIT' },
+          { closePosition: false },
+          { status: 'EXPIRED', algoStatus: 'FINISHED' },
+          { orderId: Number.MAX_SAFE_INTEGER + 1, algoId: Number.MAX_SAFE_INTEGER + 1 },
+        ]) {
+          response = { ...original, ...patch };
+          expect(await exchange.readCancelTarget(request)).toBeNull();
+        }
+        response = { ...original, status: 'FILLED', algoStatus: 'FILLED' };
+        expect(await exchange.readCancelTarget(request)).toBe('FILLED');
+        expect(mockClient.futuresOpenOrders).not.toHaveBeenCalled();
+        expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
+
   it.each([
     ['se_legacy', 'BOT'],
     ['bot_sl_' + 'a'.repeat(28), 'BOT'],

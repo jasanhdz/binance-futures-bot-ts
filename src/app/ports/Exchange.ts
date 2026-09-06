@@ -111,6 +111,8 @@ export interface ExchangeAccountReadPort {
 }
 
 export interface TradingExchangePort extends MarketDataPort, ExchangeAccountReadPort {
+  /** Exact target lookup, including BOT prefix and close-order context. Null is unknown. */
+  readCancelTarget?(request: CancelTarget): Promise<'NEW' | 'CANCELED' | 'FILLED' | null>;
   /** Conditional algo endpoint only; no fallback or resend. Missing capability fails closed. */
   sendStopCloseOnce?(request: IdentifiedStopRequest): Promise<StopOrderReceipt>;
   /** Positive result requires exact identity and a currently NEW, BOT-owned covering stop. */
@@ -142,6 +144,15 @@ export interface TradingExchangePort extends MarketDataPort, ExchangeAccountRead
 }
 
 export interface Exchange extends MarketDataPort, TradingExchangePort {}
+
+export interface CancelTarget {
+  symbol: string;
+  side: Side;
+  orderId: string;
+  type: 'STOP_MARKET' | 'STOP' | 'TAKE_PROFIT_MARKET' | 'TAKE_PROFIT';
+  positionSide: 'BOTH' | 'LONG' | 'SHORT';
+  stopPrice: number;
+}
 
 export interface IdentifiedStopRequest {
   symbol: string;

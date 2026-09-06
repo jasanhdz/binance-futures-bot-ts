@@ -36,7 +36,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Bounded current-position attribution capability for recovered Micro entries.
   // Identified stop send-once and exact lookup capability; no LIVE configuration change.
   // Read-only canceled-stop settlement and fresh position evidence; not a LIVE approval.
-  'src/app/ports/Exchange.ts': '74698304a90181688cc67c5c7c9cb49492c0a4fabfb12ebe5e17429d888e11d6',
+  // Exact cancellation target lookup and durable Micro cleanup integration.
+  'src/app/ports/Exchange.ts': '52ecccf5a0a45b0386eb78d991a00f057586a46493240ef3ad9c645a4a4cff5a',
   'src/infra/config/environment.ts':
     '5bddf440b6dfb598531042477e6ea2a00a15d8be8372e44063196045168bfa05',
   'src/domain/services/ProfitGuardian.ts':
@@ -53,7 +54,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Stop safety slice: identified algo send-once and exact current conditional lookup.
   // Source checkpoint only, not LIVE authorization. See SAFETY_DURABLE_MICRO_STOP.md.
   'src/infra/adapters/BinanceAdapter.ts':
-    '54a85cc1e76cf69d602653a9ac24be5fa010bf6c873daf426c5a7d3fa7c3a4db',
+    '5e9e874b69622ea6230f70a2fa14192ce5d045d790625ad32f6b6a24f29749bc',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
@@ -71,7 +72,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Startup barrier: never reopen admission or close storage over initializing work.
   // Stop safety slice: same protector injection, startup ordering, admission and drained close.
   'src/app/services/TradingService.ts':
-    'd08be11f5fc16d548f0b6663b78395d4e505954da0386f302aed5cad80295ba2',
+    'e0eb23b705e0a813646f4667c85b9620efdbee7c323633ac9c06e1ffb255d4b6',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

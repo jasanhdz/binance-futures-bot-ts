@@ -5,8 +5,9 @@ import type {
   JournalEventType,
   OperationScope,
 } from '../../core/risk/ExecutionJournal';
-import type { IdentifiedStopRequest, TradingExchangePort } from '../ports/Exchange';
+import type { CancelTarget, IdentifiedStopRequest, TradingExchangePort } from '../ports/Exchange';
 import type { StateStore } from '../ports/StateStore';
+import { RuntimeShutdownError } from '../runtime/RuntimeShutdown';
 
 interface StopRetirement {
   protocol: 'STOP_RETIREMENT_V1';
@@ -16,6 +17,67 @@ interface StopRetirement {
   status: 'CANCELED';
   lastExitAt: number;
   flatObservedAt: number[];
+}
+
+interface CancelMutationRequest extends CancelTarget {
+  protocol: 'CANCEL_MUTATION_V1';
+  scope: OperationScope;
+  parentTradeId: string;
+  parentOrderId: string;
+  strategyId: string;
+  operationId: string;
+  mutationId: string;
+}
+
+interface CancelConfirmation {
+  status: 'CANCELED';
+  source: 'EXACT_TARGET_QUERY';
+  observedAt: number;
+}
+
+function validCancelRequest(
+  request: CancelTarget & { parentTradeId: string; parentOrderId: string; strategyId: string },
+): boolean {
+  return (
+    [request.symbol, request.parentTradeId, request.parentOrderId].every(
+      (value) => typeof value === 'string' && !!value.trim() && value.trim() === value,
+    ) &&
+    typeof request.orderId === 'string' &&
+    /^(?:ALGO_)?[1-9]\d*$/.test(request.orderId) &&
+    (request.orderId.startsWith('ALGO_') || Number.isSafeInteger(Number(request.orderId))) &&
+    request.strategyId === 'MICRO_BURST_V1' &&
+    (request.side === 'LONG' || request.side === 'SHORT') &&
+    ['BOTH', request.side].includes(request.positionSide) &&
+    ['STOP_MARKET', 'STOP', 'TAKE_PROFIT_MARKET', 'TAKE_PROFIT'].includes(request.type) &&
+    Number.isFinite(request.stopPrice) &&
+    request.stopPrice > 0
+  );
+}
+
+function cancelTarget(request: CancelTarget): CancelTarget {
+  return {
+    symbol: request.symbol,
+    side: request.side,
+    orderId: request.orderId,
+    positionSide: request.positionSide,
+    type: request.type,
+    stopPrice: request.stopPrice,
+  };
+}
+
+function cancelId(
+  request: Omit<CancelMutationRequest, 'operationId' | 'protocol' | 'mutationId'>,
+): string {
+  return `cancel:${createHash('sha256')
+    .update(
+      JSON.stringify([
+        request.scope.account,
+        request.scope.environment,
+        request.parentTradeId,
+        request.orderId,
+      ]),
+    )
+    .digest('hex')}`;
 }
 
 export interface StopMutationRequest extends IdentifiedStopRequest {
@@ -72,6 +134,15 @@ export class DurableStopCoordinator {
         const retirements: JournalEntry[][] = [];
         for (const id of await this.journal.listOperations()) {
           const history = await this.journal.read(id);
+          if (id.startsWith('cancel:')) {
+            const request = this.cancelRequestFrom(history[0]);
+            for (const entry of history) {
+              if (JSON.stringify(this.cancelRequestFrom(entry)) !== JSON.stringify(request))
+                throw new Error('CANCEL_REQUEST_CHANGED');
+            }
+            if (history[history.length - 1].event !== 'CLOSED') this.pending.add(id);
+            continue;
+          }
           if (id.startsWith('stop-retirement:')) {
             retirements.push(history);
             continue;
@@ -99,6 +170,7 @@ export class DurableStopCoordinator {
             this.pending.delete(source[0].operationId);
           }
         }
+        await this.reconcileCancels();
       } catch (error) {
         this.failure = `STOP_JOURNAL_BLOCKED:${String(error)}`;
         throw error;
@@ -107,7 +179,197 @@ export class DurableStopCoordinator {
   }
 
   blockedReason(): string | undefined {
-    return this.failure ?? (this.pending.size ? 'STOP_MUTATION_PENDING' : undefined);
+    return this.cancelBlockedReason() ?? (this.pending.size ? 'STOP_MUTATION_PENDING' : undefined);
+  }
+
+  cancelBlockedReason(): string | undefined {
+    return (
+      this.failure ??
+      ([...this.pending, ...this.busy].some((id) => id.startsWith('cancel:'))
+        ? 'CANCEL_MUTATION_PENDING'
+        : undefined)
+    );
+  }
+
+  /** The existing journal owner also drains cancellation transports and gates admission. */
+  cancelProtection(
+    input: CancelTarget & { parentTradeId: string; parentOrderId: string; strategyId: string },
+    samePosition: () => boolean,
+  ): Promise<boolean> {
+    if (!validCancelRequest(input)) return Promise.resolve(false);
+    const request: CancelMutationRequest = {
+      ...cancelTarget(input),
+      parentTradeId: input.parentTradeId,
+      parentOrderId: input.parentOrderId,
+      strategyId: input.strategyId,
+      scope: { ...this.scope },
+      protocol: 'CANCEL_MUTATION_V1',
+      operationId: cancelId({ ...input, scope: this.scope }),
+      mutationId: cancelId({ ...input, scope: this.scope }),
+    };
+    if (this.closing || this.failure || this.busy.has(request.operationId))
+      return Promise.resolve(false);
+    this.busy.add(request.operationId);
+    const task = Promise.resolve()
+      .then(async () => {
+        await this.start();
+        if (!samePosition() || this.closing || this.failure) return false;
+        let latest = await this.journal!.readLatest(request.operationId);
+        if (latest) {
+          const saved = this.cancelRequestFrom(latest);
+          if (
+            Object.entries(request).some(
+              ([key, value]) =>
+                key !== 'scope' && saved[key as keyof CancelMutationRequest] !== value,
+            )
+          )
+            return false;
+          if (latest.event === 'CLOSED') return true;
+        } else {
+          if (
+            !request.parentTradeId ||
+            !request.parentOrderId ||
+            request.strategyId !== 'MICRO_BURST_V1'
+          )
+            return false;
+          if (
+            (await this.deps.exchange
+              .readCancelTarget?.(cancelTarget(request))
+              .catch(() => null)) !== 'NEW' ||
+            !samePosition()
+          )
+            return false;
+          this.pending.add(request.operationId);
+          latest = await this.appendCancel(request, 'PREPARED');
+          // PREPARED recovered on another call is observation-only, even if no send occurred.
+          if (!samePosition() || this.closing || !this.deps.exchange.readFreshActivePosition)
+            return false;
+          if (
+            (await this.deps.exchange.readFreshActivePosition(request.symbol, request.side)) !==
+              null ||
+            !samePosition() ||
+            this.closing
+          )
+            return false;
+          try {
+            await this.deps.exchange.cancelOrderById(request.symbol, request.orderId);
+          } catch {
+            // A lost response does not authorize a retry. Only an exact query can settle it.
+          }
+          latest = await this.appendCancel(request, 'UNKNOWN');
+        }
+        return await this.observeCancel(request, latest);
+      })
+      .catch((error) => {
+        this.failure ??= `CANCEL_MUTATION_BLOCKED:${String(error)}`;
+        return false;
+      })
+      .finally(() => {
+        this.busy.delete(request.operationId);
+        this.tasks.delete(task);
+      });
+    this.tasks.add(task);
+    return task;
+  }
+
+  private cancelRequestFrom(entry: JournalEntry): CancelMutationRequest {
+    const request = entry.metadata?.request as CancelMutationRequest | undefined;
+    if (
+      !request ||
+      request.protocol !== 'CANCEL_MUTATION_V1' ||
+      request.scope.account !== this.scope.account ||
+      request.scope.environment !== this.scope.environment ||
+      entry.scope.account !== this.scope.account ||
+      entry.scope.environment !== this.scope.environment ||
+      request.operationId !== entry.operationId ||
+      cancelId(request) !== entry.operationId ||
+      request.mutationId !== request.operationId ||
+      request.symbol !== entry.symbol ||
+      request.side !== entry.side ||
+      request.orderId !== entry.orderId ||
+      request.strategyId !== 'MICRO_BURST_V1' ||
+      request.strategyId !== entry.strategyId ||
+      !validCancelRequest(request) ||
+      entry.clientOrderId !== undefined ||
+      !['PREPARED', 'UNKNOWN', 'CLOSE_PENDING', 'CLOSED'].includes(entry.event) ||
+      entry.metadata?.journalOperationMeaning !== 'CANCEL_MUTATION_NOT_TRADE' ||
+      entry.metadata?.terminalMeaning !== 'CANCEL_OBSERVED_NOT_POSITION_FLAT'
+    )
+      throw new Error('CANCEL_PROTOCOL_OR_SCOPE_CONFLICT');
+    if (entry.event === 'CLOSE_PENDING' || entry.event === 'CLOSED') {
+      const confirmation = entry.metadata?.confirmation as CancelConfirmation | undefined;
+      if (
+        !confirmation ||
+        confirmation.status !== 'CANCELED' ||
+        confirmation.source !== 'EXACT_TARGET_QUERY' ||
+        !Number.isSafeInteger(confirmation.observedAt) ||
+        confirmation.observedAt < 0 ||
+        confirmation.observedAt > entry.timestampMs
+      )
+        throw new Error('CANCEL_CONFIRMATION_INVALID');
+    }
+    return request;
+  }
+
+  private appendCancel(
+    request: CancelMutationRequest,
+    event: JournalEventType,
+    confirmation?: CancelConfirmation,
+  ): Promise<JournalEntry> {
+    return this.journal!.append({
+      id: randomUUID(),
+      operationId: request.operationId,
+      scope: request.scope,
+      symbol: request.symbol,
+      side: request.side,
+      strategyId: request.strategyId,
+      orderId: request.orderId,
+      event,
+      timestampMs: Date.now(),
+      metadata: {
+        request,
+        journalOperationMeaning: 'CANCEL_MUTATION_NOT_TRADE',
+        terminalMeaning: 'CANCEL_OBSERVED_NOT_POSITION_FLAT',
+        ...(confirmation ? { confirmation } : {}),
+      },
+    });
+  }
+
+  private async observeCancel(
+    request: CancelMutationRequest,
+    latest: JournalEntry,
+  ): Promise<boolean> {
+    const status = await this.deps.exchange
+      .readCancelTarget?.(cancelTarget(request))
+      .catch(() => null);
+    if (status !== 'CANCELED') {
+      if (latest.event === 'PREPARED' || latest.event === 'CLOSE_PENDING')
+        await this.appendCancel(request, 'UNKNOWN');
+      return false;
+    }
+    const confirmation: CancelConfirmation = {
+      status: 'CANCELED',
+      source: 'EXACT_TARGET_QUERY',
+      observedAt: Date.now(),
+    };
+    if (latest.event !== 'CLOSE_PENDING')
+      latest = await this.appendCancel(request, 'CLOSE_PENDING', confirmation);
+    await this.appendCancel(request, 'CLOSED', confirmation);
+    this.pending.delete(request.operationId);
+    return true;
+  }
+
+  private async reconcileCancels(): Promise<void> {
+    for (const id of this.pending) {
+      if (!id.startsWith('cancel:') || this.busy.has(id) || this.closing) continue;
+      this.busy.add(id);
+      try {
+        const latest = await this.journal!.readLatest(id);
+        if (latest) await this.observeCancel(this.cancelRequestFrom(latest), latest);
+      } finally {
+        this.busy.delete(id);
+      }
+    }
   }
 
   async supervise(
@@ -263,11 +525,13 @@ export class DurableStopCoordinator {
     if (!this.journal || this.closing || this.failure) return Promise.resolve();
     const task = Promise.resolve()
       .then(async () => {
+        await this.reconcileCancels();
         const inventory = await this.journal!.listOperations();
         for (const id of new Set([
           ...this.pending,
           ...inventory.filter((key) => key.startsWith('stop:')),
         ])) {
+          if (id.startsWith('cancel:')) continue;
           if (this.closing || this.failure) return;
           if (this.retired.has(id)) continue;
           if (this.busy.has(id)) continue;
@@ -514,12 +778,17 @@ export class DurableStopCoordinator {
     return (this.closeTask ??= Promise.resolve().then(async () => {
       await this.startup?.catch(() => undefined);
       await Promise.allSettled([...this.tasks]);
-      try {
-        await this.journal?.flush();
-      } finally {
-        await this.journal?.close();
+      const failures: unknown[] = [];
+      for (const operation of [() => this.journal?.flush(), () => this.journal?.close()]) {
+        try {
+          await operation();
+        } catch (error) {
+          failures.push(error);
+        }
       }
-      if (this.failure) throw new Error(this.failure);
+      if (this.failure) failures.push(new Error(this.failure));
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new RuntimeShutdownError(failures);
     }));
   }
 }

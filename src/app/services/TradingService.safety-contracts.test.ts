@@ -432,7 +432,11 @@ describe('TradingService shared safety contracts', () => {
     };
     service.positionProtection.reconcileMissingMicroPosition = (symbol: string, store: any) =>
       PositionProtectionService.prototype.reconcileMissingMicroPosition.call(
-        { deps: { exchange: service.deps.exchange, wait: async () => undefined } } as any,
+        {
+          deps: { exchange: service.deps.exchange, wait: async () => undefined },
+          cleanupMicroCloseOrders: PositionProtectionService.prototype.cleanupMicroCloseOrders,
+          persistMicroOperationalClose: PositionProtectionService.prototype.persistMicroOperationalClose,
+        } as any,
         symbol,
         store,
       );

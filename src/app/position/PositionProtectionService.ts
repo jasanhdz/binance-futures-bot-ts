@@ -355,9 +355,103 @@ export class PositionProtectionService {
       : { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
   }
 
+  /** Shared by operational close and missing-position recovery; never settles accounting. */
+  async cleanupMicroCloseOrders(
+    symbol: string,
+    store: StateStore,
+    expected: BotState,
+  ): Promise<boolean> {
+    const state = { ...expected };
+    const side = state.lastSide;
+    if (!side) return false;
+    const coordinator = this.deps.stopCoordinator;
+    const samePosition = () => {
+      const current = store.get();
+      return (
+        current.positionOwner === 'BOT' &&
+        state.positionOwner === 'BOT' &&
+        current.lastTradeId === state.lastTradeId &&
+        current.lastOrderId === state.lastOrderId &&
+        current.lastSide === side &&
+        current.lastStrategy === state.lastStrategy &&
+        current.mode === state.mode &&
+        current.lastEntryAt === state.lastEntryAt
+      );
+    };
+    if (coordinator) {
+      if (
+        !samePosition() ||
+        !state.lastTradeId ||
+        !state.lastOrderId ||
+        state.lastStrategy !== 'MICRO_BURST_V1' ||
+        !store.flush ||
+        !this.deps.exchange.readFreshActivePosition
+      )
+        return false;
+      store.set({ microProtectionBlocked: true });
+      await store.flush();
+      if (!samePosition()) return false;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt)
+          await (this.deps.wait?.(300) ?? new Promise((resolve) => setTimeout(resolve, 300)));
+        if (
+          (await this.deps.exchange.readFreshActivePosition(symbol, side)) !== null ||
+          !samePosition()
+        )
+          return false;
+      }
+    }
+    const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    for (const order of orders) {
+      if (order.owner !== 'BOT') continue;
+      if (coordinator) {
+        if (
+          !samePosition() ||
+          order.side !== (side === 'LONG' ? 'SELL' : 'BUY') ||
+          !order.positionSide ||
+          !['BOTH', side].includes(order.positionSide) ||
+          !(order.closePosition || order.reduceOnly)
+        )
+          return false;
+        if (
+          !(await coordinator.cancelProtection(
+            {
+              symbol,
+              side,
+              orderId: order.orderId,
+              type: order.type,
+              positionSide: order.positionSide,
+              stopPrice: order.stopPrice,
+              parentTradeId: state.lastTradeId!,
+              parentOrderId: state.lastOrderId!,
+              strategyId: state.lastStrategy!,
+            },
+            samePosition,
+          ))
+        )
+          return false;
+      } else {
+        await this.deps.exchange.cancelOrderById(symbol, order.orderId);
+      }
+    }
+    const surviving = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    if (surviving.some((order) => order.owner === 'BOT'))
+      throw new Error('MICRO_BOT_CLOSE_ORDERS_REMAIN');
+    if (coordinator) {
+      if (
+        (await this.deps.exchange.readFreshActivePosition!(symbol, side)) !== null ||
+        !samePosition()
+      )
+        return false;
+      // List absence cannot hide a pending mutation from an earlier tick/restart.
+      if (coordinator.cancelBlockedReason()) return false;
+    }
+    return true;
+  }
+
   /** No market context or guessed PnL: close state and accounting are independent. */
   async reconcileMissingMicroPosition(symbol: string, store: StateStore): Promise<boolean> {
-    const state = store.get();
+    const state = { ...store.get() };
     const side = state.lastSide;
     if (!side) return false;
     // Two independent flat observations, not an interpretation of a read error.
@@ -367,32 +461,104 @@ export class PositionProtectionService {
       }
       if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) return false;
     }
-    const orders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
-    for (const order of orders) {
-      if (order.owner === 'BOT') await this.deps.exchange.cancelOrderById(symbol, order.orderId);
-    }
-    const surviving = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
-    if (surviving.some((order) => order.owner === 'BOT')) {
-      throw new Error('MICRO_BOT_CLOSE_ORDERS_REMAIN');
-    }
+    if (!(await this.cleanupMicroCloseOrders(symbol, store, state))) return false;
     // Detect a reopened position before changing local lifecycle state.
     if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) return false;
+    if (
+      this.deps.stopCoordinator &&
+      (store.get().lastTradeId !== state.lastTradeId ||
+        store.get().lastOrderId !== state.lastOrderId ||
+        store.get().positionOwner !== 'BOT' ||
+        store.get().lastSide !== state.lastSide ||
+        store.get().lastStrategy !== state.lastStrategy ||
+        store.get().mode !== state.mode ||
+        store.get().lastEntryAt !== state.lastEntryAt)
+    )
+      return false;
     if (!store.flush) throw new Error('MICRO_CLOSE_DURABLE_STORE_REQUIRED');
-    store.set({
-      mode: 'IDLE',
-      bracketsAttached: false,
-      microProtectionBlocked: false,
-      microStopSubmission: undefined,
-      microBurstExitState: undefined,
-      microBurstPnlUnverified: true,
-      microBurstPnlUnverifiedAt: state.microBurstPnlUnverifiedAt ?? this.deps.now?.() ?? Date.now(),
+    return this.persistMicroOperationalClose(store, state, {
       lastExitAt:
         state.mode === 'IDLE' && state.lastExitAt !== undefined
           ? state.lastExitAt
           : (this.deps.now?.() ?? Date.now()),
       lastExitReason: 'MICRO_FLAT_ACCOUNTING_PENDING',
+      microBurstPnlUnverified: true,
+      microBurstPnlUnverifiedAt: state.microBurstPnlUnverifiedAt ?? this.deps.now?.() ?? Date.now(),
     });
-    await store.flush();
+  }
+
+  /** Called only after flat/cleanup checks. Preserve newer state on failed persistence. */
+  async persistMicroOperationalClose(
+    store: StateStore,
+    expected: BotState,
+    close: Pick<
+      BotState,
+      'lastExitAt' | 'lastExitReason' | 'microBurstPnlUnverified' | 'microBurstPnlUnverifiedAt'
+    >,
+  ): Promise<boolean> {
+    const identity = { ...expected };
+    const sameIdentity = (mode = identity.mode) => {
+      const current = store.get();
+      return (
+        current.lastTradeId === identity.lastTradeId &&
+        current.lastOrderId === identity.lastOrderId &&
+        current.lastSide === identity.lastSide &&
+        current.lastStrategy === identity.lastStrategy &&
+        current.positionOwner === identity.positionOwner &&
+        current.lastEntryAt === identity.lastEntryAt &&
+        current.lastEntryQty === identity.lastEntryQty &&
+        current.lastEntryPrice === identity.lastEntryPrice &&
+        current.ownershipStatus === identity.ownershipStatus &&
+        current.mode === mode
+      );
+    };
+    if (this.deps.stopCoordinator && (!store.flush || !sameIdentity())) return false;
+    const previous = { ...store.get() };
+    const patch: Partial<BotState> = {
+      ...close,
+      mode: 'IDLE',
+      bracketsAttached: false,
+      microProtectionBlocked: false,
+      microStopSubmission: undefined,
+      microBurstExitState: undefined,
+      // Cancellation/flat evidence cannot clear an earlier accounting quarantine.
+      microBurstPnlUnverified:
+        previous.microBurstPnlUnverified === true || close.microBurstPnlUnverified,
+      microBurstPnlUnverifiedAt:
+        previous.microBurstPnlUnverified === true
+          ? previous.microBurstPnlUnverifiedAt
+          : close.microBurstPnlUnverifiedAt,
+    };
+    const ownsPatch = () => {
+      const current = store.get();
+      return (
+        sameIdentity('IDLE') &&
+        Object.entries(patch).every(([key, value]) => current[key as keyof BotState] === value)
+      );
+    };
+    try {
+      store.set(patch);
+      await store.flush?.();
+    } catch (error) {
+      if (ownsPatch())
+        store.set({
+          mode: previous.mode,
+          bracketsAttached: previous.bracketsAttached,
+          microStopSubmission: previous.microStopSubmission,
+          microBurstExitState: previous.microBurstExitState,
+          lastExitAt: previous.lastExitAt,
+          lastExitReason: previous.lastExitReason,
+          microBurstPnlUnverified: previous.microBurstPnlUnverified,
+          microBurstPnlUnverifiedAt: previous.microBurstPnlUnverifiedAt,
+          microProtectionBlocked: true,
+        });
+      else store.set({ microProtectionBlocked: true });
+      throw error;
+    }
+    if (this.deps.stopCoordinator && !ownsPatch()) {
+      store.set({ microProtectionBlocked: true });
+      return false;
+    }
     return true;
   }
 

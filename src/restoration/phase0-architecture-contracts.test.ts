@@ -58,6 +58,7 @@ const mutationMethods = new Set([
   'closeSideMarketSafe',
   'openStopForSide',
   'cancelOrderById',
+  'sendStopCloseOnce',
 ]);
 
 const mutationAuthorityAllowlist = new Set([
@@ -70,6 +71,12 @@ const mutationAuthorityAllowlist = new Set([
   'src/infra/adapters/BinanceAdapter.ts',
   'src/infra/adapters/ReadOnlyAuditedExchange.ts',
 ]);
+
+// The durable coordinator may execute only its journaled stop/cancel protocols,
+// not market openings or closes. Keep this exception method-scoped.
+const scopedMutationAuthority: Record<string, ReadonlySet<string>> = {
+  'src/app/execution/DurableStopCoordinator.ts': new Set(['sendStopCloseOnce', 'cancelOrderById']),
+};
 
 describe('Phase 0 architecture contracts', () => {
   it('keeps position recovery under one application owner', () => {
@@ -164,7 +171,8 @@ describe('Phase 0 architecture contracts', () => {
         if (
           ts.isPropertyAccessExpression(node) &&
           mutationMethods.has(node.name.text) &&
-          !mutationAuthorityAllowlist.has(source)
+          !mutationAuthorityAllowlist.has(source) &&
+          !scopedMutationAuthority[source]?.has(node.name.text)
         )
           violations.push(`${source}:${node.getStart(sourceFile)}.${node.name.text}`);
         ts.forEachChild(node, visit);
