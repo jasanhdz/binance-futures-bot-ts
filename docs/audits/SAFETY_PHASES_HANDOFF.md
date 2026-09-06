@@ -27,6 +27,15 @@
 
 ## Estado entregado (no confundir incrementos con fases completas)
 
+### Primer corte durable de apertura posterior a 73856b8
+
+Ver `SAFETY_DURABLE_ENTRY_SLICE.md`: coordinador de mutaciones de apertura conectado
+a Shared y a la composicion obligatoria de produccion, recovery antes de admision,
+lookup periodico y shutdown. Journal schema 1 conservado, un operationId por intento
+de mutacion, no por ciclo de posicion. Stops/cierres/cancelaciones y handoff de
+proteccion siguen fuera del protocolo nuevo. No cierra fases 1/2/3/9 ni autoriza LIVE.
+La validacion/publicacion de este corte se registra en ese documento.
+
 ### Journal posterior a 19f4678
 
 Los contratos auditados de persistencia, exclusion, validacion e identidad se

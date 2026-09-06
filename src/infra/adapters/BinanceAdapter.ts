@@ -122,7 +122,11 @@ function isUnknownOrderError(error: unknown): boolean {
 }
 
 import { WebSocketManager } from './WebSocketManager';
-import type { BinanceDepthDiffEvent, BinanceDepthSnapshot, LiveCandleUpdate } from '../../app/ports/MarketData';
+import type {
+  BinanceDepthDiffEvent,
+  BinanceDepthSnapshot,
+  LiveCandleUpdate,
+} from '../../app/ports/MarketData';
 
 export class BinanceExchange implements Exchange {
   private cli = Binance({
@@ -231,7 +235,8 @@ export class BinanceExchange implements Exchange {
         this.nextRequestAt = Date.now() + this.minReqGapMs;
         noteRateLimitFromError(err);
         const details = parseRateLimitError(err);
-        if (details?.banUntil) this.sharedRateLimiter.noteRateLimit(details.banUntil, details.status);
+        if (details?.banUntil)
+          this.sharedRateLimiter.noteRateLimit(details.banUntil, details.status);
         throw err;
       }
     };
@@ -245,7 +250,10 @@ export class BinanceExchange implements Exchange {
   }
 
   private getRequestWeightUsed(now = Date.now()): number {
-    while (this.recentRequestWeights.length && this.recentRequestWeights[0].at <= now - REQUEST_WEIGHT_WINDOW_MS) {
+    while (
+      this.recentRequestWeights.length &&
+      this.recentRequestWeights[0].at <= now - REQUEST_WEIGHT_WINDOW_MS
+    ) {
       this.recentRequestWeights.shift();
     }
     return this.recentRequestWeights.reduce((total, item) => total + item.weight, 0);
@@ -262,7 +270,11 @@ export class BinanceExchange implements Exchange {
       return cached.data;
     }
     try {
-      const info = await this.enqueue(() => this.cli.futuresAccountInfo(), DEFAULT_REQUEST_WEIGHT, 'account_info');
+      const info = await this.enqueue(
+        () => this.cli.futuresAccountInfo(),
+        DEFAULT_REQUEST_WEIGHT,
+        'account_info',
+      );
       this.accountInfoCache = { data: info, ts: Date.now() };
       return info;
     } catch (err) {
@@ -292,8 +304,8 @@ export class BinanceExchange implements Exchange {
 
   private async fetchCandles(symbol: string, interval: string, limit: number) {
     try {
-      const raw = await this.enqueue(() =>
-        this.cli.futuresCandles({ symbol, interval: interval as any, limit }),
+      const raw = await this.enqueue(
+        () => this.cli.futuresCandles({ symbol, interval: interval as any, limit }),
         DEFAULT_REQUEST_WEIGHT,
         'candles',
       );
@@ -333,7 +345,11 @@ export class BinanceExchange implements Exchange {
     if (cached && now - cached.ts < 5_000) {
       return cached.snapshot;
     }
-    const markData = await this.enqueue(() => this.cli.futuresMarkPrice(), DEFAULT_REQUEST_WEIGHT, 'mark_price');
+    const markData = await this.enqueue(
+      () => this.cli.futuresMarkPrice(),
+      DEFAULT_REQUEST_WEIGHT,
+      'mark_price',
+    );
     const entry = Array.isArray(markData)
       ? (markData.find((r: any) => r.symbol === symbol) as any)
       : (markData as any);
@@ -354,7 +370,11 @@ export class BinanceExchange implements Exchange {
       return this.exchangeInfoCache.data;
     }
     try {
-      const data = await this.enqueue(() => this.cli.futuresExchangeInfo(), DEFAULT_REQUEST_WEIGHT, 'exchange_info');
+      const data = await this.enqueue(
+        () => this.cli.futuresExchangeInfo(),
+        DEFAULT_REQUEST_WEIGHT,
+        'exchange_info',
+      );
       this.exchangeInfoCache = { data, ts: now };
       return data;
     } catch (err) {
@@ -370,11 +390,12 @@ export class BinanceExchange implements Exchange {
       return cached.data;
     }
     try {
-      const data = await this.enqueue(() =>
-        this.cli.futuresLeverageBracket({
-          symbol,
-          recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 20_000),
-        }),
+      const data = await this.enqueue(
+        () =>
+          this.cli.futuresLeverageBracket({
+            symbol,
+            recvWindow: Number(process.env.BINANCE_RECV_WINDOW ?? 20_000),
+          }),
         DEFAULT_REQUEST_WEIGHT,
         'leverage_bracket',
       );
@@ -452,7 +473,11 @@ export class BinanceExchange implements Exchange {
 
   async getServerTime() {
     try {
-      const t: any = await this.enqueue(() => this.cli.futuresTime(), DEFAULT_REQUEST_WEIGHT, 'server_time');
+      const t: any = await this.enqueue(
+        () => this.cli.futuresTime(),
+        DEFAULT_REQUEST_WEIGHT,
+        'server_time',
+      );
       return Number((t && t.serverTime) ?? t);
     } catch (err) {
       noteRateLimitFromError(err);
@@ -828,7 +853,8 @@ export class BinanceExchange implements Exchange {
           'margin_mutation',
           'critical',
         );
-        if (!(await verify())) throw new Error(`Binance margin type readback mismatch for ${symbol}`);
+        if (!(await verify()))
+          throw new Error(`Binance margin type readback mismatch for ${symbol}`);
         this.marginTypeCache.set(symbol, { type: marginType, ts: Date.now() });
         this.log.info('binance_margin_changed_and_verified', { symbol, marginType });
       } catch (err: any) {
@@ -840,8 +866,16 @@ export class BinanceExchange implements Exchange {
           return;
         }
         this.marginTypeCache.delete(symbol);
-        if (/timeout|timed out|fetch failed|network|429|418/i.test(msg) || err?.status === 429 || err?.status === 418) {
-          this.log.error('binance_margin_unknown_after_request', { symbol, marginType, error: msg });
+        if (
+          /timeout|timed out|fetch failed|network|429|418/i.test(msg) ||
+          err?.status === 429 ||
+          err?.status === 418
+        ) {
+          this.log.error('binance_margin_unknown_after_request', {
+            symbol,
+            marginType,
+            error: msg,
+          });
           throw new Error(`Binance margin type change is ambiguous for ${symbol}: ${msg}`);
         }
         throw err;
@@ -980,21 +1014,18 @@ export class BinanceExchange implements Exchange {
         qty: quantity,
       });
       this.invalidateAccountInfo();
+      if (
+        !Number.isSafeInteger(Number(res.orderId)) ||
+        Number(res.orderId) <= 0 ||
+        (clientOrderId && (res.clientOrderId !== clientOrderId || res.symbol !== symbol))
+      )
+        throw new Error('ENTRY_ACK_IDENTITY_MISMATCH');
       return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
     } catch (e: any) {
       noteRateLimitFromError(e);
-      if (BinanceExchange.posSideMismatch(e)) {
-        const res = await this.enqueue(
-          () => this.cli.futuresOrder(base),
-          DEFAULT_REQUEST_WEIGHT,
-          'order_mutation',
-          'critical',
-        );
-        this.hedgeCache = undefined;
-        this.log.warn('api_market_open_fallback', { symbol, side, qty: quantity });
-        this.invalidateAccountInfo();
-        return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
-      }
+      // A mutation is one transport send. Mode changes require a new admission,
+      // never an invisible fallback under the same persisted request identity.
+      if (BinanceExchange.posSideMismatch(e)) this.hedgeCache = undefined;
       throw e;
     }
   }
@@ -1007,6 +1038,15 @@ export class BinanceExchange implements Exchange {
       const order = await this.enqueue(() =>
         this.cli.futuresGetOrder({ symbol, origClientOrderId: clientOrderId }),
       );
+      if (
+        order.symbol !== symbol ||
+        order.clientOrderId !== clientOrderId ||
+        order.type !== 'MARKET' ||
+        !Number.isSafeInteger(Number(order.orderId)) ||
+        Number(order.orderId) <= 0
+      ) {
+        throw new Error('ENTRY_LOOKUP_IDENTITY_MISMATCH');
+      }
       if (!['NEW', 'PARTIALLY_FILLED', 'FILLED'].includes(String(order.status))) {
         throw new Error(
           `market open reconciliation returned non-accepted status: ${String(order.status)}`,
@@ -1205,23 +1245,33 @@ export class BinanceExchange implements Exchange {
       signature,
     };
 
-    await this.enqueue(async () => {
-      const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
-        method: 'POST',
-        headers: {
-          'X-MBX-APIKEY': CONFIG.API_KEY,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams(signedParams as any).toString(),
-      });
+    await this.enqueue(
+      async () => {
+        const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
+          method: 'POST',
+          headers: {
+            'X-MBX-APIKEY': CONFIG.API_KEY,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: new URLSearchParams(signedParams as any).toString(),
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw rawHttpError('Algo Order failed', response.status, errorText, response.headers.get('retry-after'));
-      }
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw rawHttpError(
+            'Algo Order failed',
+            response.status,
+            errorText,
+            response.headers.get('retry-after'),
+          );
+        }
 
-      return response.json();
-    }, DEFAULT_REQUEST_WEIGHT, 'protection_algo_mutation', 'critical');
+        return response.json();
+      },
+      DEFAULT_REQUEST_WEIGHT,
+      'protection_algo_mutation',
+      'critical',
+    );
 
     this.log.info('api_stop_algo_placed', { symbol, side, stopPrice });
   }
@@ -1457,23 +1507,33 @@ export class BinanceExchange implements Exchange {
       signature,
     };
 
-    await this.enqueue(async () => {
-      const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
-        method: 'POST',
-        headers: {
-          'X-MBX-APIKEY': CONFIG.API_KEY,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams(signedParams as any).toString(),
-      });
+    await this.enqueue(
+      async () => {
+        const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/algoOrder`, {
+          method: 'POST',
+          headers: {
+            'X-MBX-APIKEY': CONFIG.API_KEY,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: new URLSearchParams(signedParams as any).toString(),
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw rawHttpError('Algo TP Order failed', response.status, errorText, response.headers.get('retry-after'));
-      }
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw rawHttpError(
+            'Algo TP Order failed',
+            response.status,
+            errorText,
+            response.headers.get('retry-after'),
+          );
+        }
 
-      return response.json();
-    }, DEFAULT_REQUEST_WEIGHT, 'protection_algo_mutation', 'critical');
+        return response.json();
+      },
+      DEFAULT_REQUEST_WEIGHT,
+      'protection_algo_mutation',
+      'critical',
+    );
 
     this.log.info('api_tp_algo_placed', { symbol, side, tp: triggerPrice });
   }
@@ -1559,9 +1619,12 @@ export class BinanceExchange implements Exchange {
           .digest('hex');
 
         const response = await this.enqueue(() =>
-          fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`, {
-            headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
-          }),
+          fetch(
+            `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
+            {
+              headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+            },
+          ),
         );
 
         if (response.ok) {
@@ -1648,9 +1711,12 @@ export class BinanceExchange implements Exchange {
           .digest('hex');
 
         const response = await this.enqueue(() =>
-          fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`, {
-            headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
-          }),
+          fetch(
+            `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
+            {
+              headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+            },
+          ),
         );
 
         if (response.ok) {
@@ -1722,7 +1788,12 @@ export class BinanceExchange implements Exchange {
 
     if (!response.ok) {
       const text = await response.text();
-      throw rawHttpError('Raw algo cancel failed', response.status, text, response.headers.get('retry-after'));
+      throw rawHttpError(
+        'Raw algo cancel failed',
+        response.status,
+        text,
+        response.headers.get('retry-after'),
+      );
     }
     return true;
   }
@@ -1880,16 +1951,24 @@ export class BinanceExchange implements Exchange {
         .digest('hex');
 
       const response = await this.enqueue(() =>
-        fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`, {
-          headers: {
-            'X-MBX-APIKEY': CONFIG.API_KEY,
+        fetch(
+          `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${queryString}&signature=${signature}`,
+          {
+            headers: {
+              'X-MBX-APIKEY': CONFIG.API_KEY,
+            },
           },
-        }),
+        ),
       );
 
       if (!response.ok) {
         const text = await response.text();
-        throw rawHttpError('open algo orders failed', response.status, text, response.headers.get('retry-after'));
+        throw rawHttpError(
+          'open algo orders failed',
+          response.status,
+          text,
+          response.headers.get('retry-after'),
+        );
       }
       {
         const algoOrders = await response.json();

@@ -16,6 +16,9 @@ import { TradingService } from './TradingService';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
 import { AegisMomentumRideRuntimeConfig } from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
 import { E4TailRiskGuardAdapter } from '../../strategies/aegis/domain/entry/guards/E4TailRiskGuardAdapter';
+import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
+import { InMemoryExecutionJournal, type ExecutionJournal } from '../../core/risk/ExecutionJournal';
+import type { AegisRealtimeMarketSnapshot } from '../../strategies/aegis/application/AegisRealtimeMarketState';
 
 const originalConfig = { ...CONFIG };
 
@@ -660,6 +663,7 @@ function momentumRideRuntimeConfig(positionFraction = 0.015): AegisMomentumRideR
 
 function makeHarness(
   options: {
+    entryJournal?: ExecutionJournal;
     liveEnabled?: boolean;
     yaml?: any;
     symbols?: string[];
@@ -1134,6 +1138,15 @@ function makeHarness(
       configManager: configManager as any,
       historyLogger: historyLogger as any,
       closedTradeOutcomeReader: vi.fn().mockResolvedValue(options.closedTradeOutcomes ?? []),
+      entryCoordinator: options.entryJournal
+        ? new DurableEntryCoordinator({
+            scope: { account: 'aegis-fixture', environment: 'fixture' },
+            journal: () => options.entryJournal!,
+            confirmHandoff: async () => true,
+            lookup: (request) =>
+              exchange.readMarketOpenByClientOrderId(request.intent.symbol, request.clientOrderId),
+          })
+        : undefined,
     },
     {
       symbols: options.symbols ?? ['ETHUSDT'],
@@ -1176,6 +1189,85 @@ describe('TradingService Aegis live execution', () => {
 
   afterEach(() => {
     restoreConfig();
+  });
+
+  it('connects real startup, Aegis admission and Shared to the injected entry journal', async () => {
+    const journal = new InMemoryExecutionJournal();
+    const append = vi.spyOn(journal, 'append');
+    const { service, exchange, state } = makeHarness({ entryJournal: journal });
+    // Unlike legacy entry-only fixtures, a full startup must begin flat or it
+    // correctly adopts the fixture position as external before looking for entry.
+    let opened = false;
+    exchange.readActivePosition.mockImplementation(async () =>
+      opened
+        ? {
+            sideMode: 'LONG',
+            qtyAbs: 0.01,
+            entryPrice: 3000,
+            leverage: 20,
+            isolatedMargin: 2,
+          }
+        : null,
+    );
+    exchange.marketOpen.mockImplementation(async () => {
+      opened = true;
+      return { avgPrice: 3000, orderId: 'entry-1' };
+    });
+    try {
+      await service.tick('ETHUSDT');
+      expect(exchange.marketOpen).not.toHaveBeenCalled();
+      expect(service.getAegisRuntimeSnapshot().entryMutationBlockedReason).toBe(
+        'ENTRY_RECOVERY_NOT_INITIALIZED',
+      );
+      await service.start(false);
+      expect(state.get().mode).toBe('IDLE');
+      // Market data is an explicit healthy fixture, not a Binance subscription.
+      vi.spyOn(
+        (service as any).strategyRuntimeCoordinator,
+        'readAegisRealtimeMarket',
+      ).mockReturnValue({
+        source: 'SHARED_WEBSOCKET',
+        status: 'FRESH',
+        observedAtMs: Date.now(),
+        ageMs: 0,
+        orderBookHealth: 'HEALTHY',
+        bestBid: 2999,
+        bestAsk: 3001,
+        midPrice: 3000,
+        aggTradeAgeMs: 0,
+        aggTradeGapFree: true,
+        aggTradeCount: 1,
+        netTakerVolume: 1,
+      } satisfies AegisRealtimeMarketSnapshot);
+      (service as any).detector.ETHUSDT.processDepthUpdate({
+        bidDepth: Array.from({ length: 20 }, (_, index) => ({ price: 3000 - index, qty: 1 })),
+        askDepth: Array.from({ length: 20 }, (_, index) => ({ price: 3000 + index, qty: 1 })),
+        receivedAtMs: Date.now(),
+      });
+      await service.tick('ETHUSDT');
+      expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+      expect(exchange.placeStopClose).toHaveBeenCalled();
+      expect(exchange.placeTpClose).toHaveBeenCalled();
+      expect(state.get().lastStrategy).toBe('AEGIS_TURBO');
+      expect(append.mock.calls.map(([entry]) => entry.event)).toEqual([
+        'PREPARED',
+        'SUBMITTED',
+        'OPEN_CONFIRMED',
+        'CLOSE_PENDING',
+        'CLOSED',
+      ]);
+      expect(append.mock.invocationCallOrder[0]).toBeLessThan(
+        exchange.marketOpen.mock.invocationCallOrder[0],
+      );
+      expect(append.mock.calls[0][0].metadata).toMatchObject({
+        journalOperationMeaning: 'ENTRY_MUTATION_NOT_TRADE',
+        request: { kind: 'OPEN', intent: { identity: { strategyId: 'AEGIS_TURBO' } } },
+      });
+      expect(await journal.listNonTerminal()).toEqual([]);
+    } finally {
+      await service.stop();
+    }
+    await expect(journal.flush()).rejects.toThrow('JOURNAL_CLOSED');
   });
 
   it('includes current wallet balance in the startup Telegram message', async () => {

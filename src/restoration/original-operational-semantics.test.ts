@@ -45,9 +45,10 @@ const baselineOperationalDigests: Record<string, string> = {
 // Phase 1 owner-authorized architecture checkpoint. These are operational
 // source/config digests, not scientific model or freeze-manifest hashes.
 const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
-  // Owner-authorized additive market-data/composition change.
+  // Entry safety slice: one market-open send, exact ACK/lookup identity, source formatting.
+  // Source checkpoint only, not LIVE authorization. See SAFETY_DURABLE_ENTRY_SLICE.md.
   'src/infra/adapters/BinanceAdapter.ts':
-    '15855b9cc25d3e833f02494c66c73122f6e55d5ed6251f652c70cc9caeb95825',
+    'e7efc1f81d1609617158170c76fed921f8d3fd68ed37294499d6fedacf36d389',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
@@ -60,8 +61,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 follow-up: independent flat reconciliation and separate protection quarantine.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   // Data/sizing increment: validate original candles before tail selection and indicators.
+  // Entry safety slice: inject coordinator, startup gate, periodic recovery and drained close.
   'src/app/services/TradingService.ts':
-    'ebee73d41151dc78cbbed51d4db4089754bf1cad3a76857cc05b1f2d1b5a3d3b',
+    '87c691e1012a9bd96a3e97c84e0cd3ebe504c58d23035e85ee0b317eb5b9ebca',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

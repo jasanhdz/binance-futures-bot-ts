@@ -1,8 +1,28 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TradingService } from './TradingService';
 import { PositionProtectionService } from '../position/PositionProtectionService';
+import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
+import { InMemoryExecutionJournal } from '../../core/risk/ExecutionJournal';
 
 describe('TradingService shared safety contracts', () => {
+  it('awaits the real entry recovery gate before startup can read the exchange', async () => {
+    const service = Object.create(TradingService.prototype) as any;
+    const coordinator = new DurableEntryCoordinator({
+      scope: { account: 'fixture', environment: 'fixture' },
+      journal: () => {
+        throw new Error('JOURNAL_WRITER_LOCKED');
+      },
+      lookup: vi.fn(),
+      confirmHandoff: async () => false,
+    });
+    const exchange = { getUSDTBalance: vi.fn() };
+    service.deps = { entryCoordinator: coordinator, exchange };
+    await expect(service.start(false)).rejects.toThrow('JOURNAL_WRITER_LOCKED');
+    expect(service.acceptingEntries).toBe(false);
+    expect(exchange.getUSDTBalance).not.toHaveBeenCalled();
+    await expect(coordinator.close()).rejects.toThrow('ENTRY_JOURNAL_UNAVAILABLE');
+  });
+
   it('blocks other strategies while any cached Micro position needs reconciliation', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.symbolStateStores = new Map([
@@ -50,7 +70,20 @@ describe('TradingService shared safety contracts', () => {
       const flush = vi.fn(async () => {
         events.push('flush');
       });
-      service.deps = { state: { flush }, logger: { info: vi.fn() } };
+      const journal = new InMemoryExecutionJournal();
+      const coordinator = new DurableEntryCoordinator({
+        scope: { account: 'fixture', environment: 'fixture' },
+        journal: () => journal,
+        lookup: async () => null,
+        confirmHandoff: async () => false,
+      });
+      await coordinator.start();
+      const close = journal.close.bind(journal);
+      vi.spyOn(journal, 'close').mockImplementation(async () => {
+        events.push('journal-close');
+        await close();
+      });
+      service.deps = { state: { flush }, logger: { info: vi.fn() }, entryCoordinator: coordinator };
       const drain = vi.fn(async () => undefined);
       service.decisionJsonlSink = { drain };
       service.marketSnapshotEvidenceSink = { drain };
@@ -67,7 +100,7 @@ describe('TradingService shared safety contracts', () => {
       finish();
       await operation;
       await stopping;
-      expect(events).toEqual(['state-updated', 'flush']);
+      expect(events).toEqual(['state-updated', 'flush', 'journal-close']);
       expect(service.activeRuntimeTasks.size).toBe(0);
       expect(drain).toHaveBeenCalledTimes(3);
     },

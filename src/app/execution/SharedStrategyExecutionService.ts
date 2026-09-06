@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { DurableEntryCoordinator, definiteEntryRejectionCode } from './DurableEntryCoordinator';
 import { calculateMarginBudgetSizing, roundQuantityDown } from '../../core/risk/SizingEngine';
 import {
   PositionInfo,
@@ -23,6 +24,9 @@ export interface SharedStrategyExecutionConfig {
   isMarketOpenAmbiguous?: (symbol: string) => boolean;
   markMarketOpenAmbiguous?: (symbol: string, clientOrderId: string) => void;
   clearMarketOpenAmbiguity?: (symbol: string) => void;
+  /** Required by production composition; omitted only by isolated unit harnesses. */
+  entryCoordinator?: DurableEntryCoordinator;
+  isEntryCurrent?: (intent: StrategyExecutionIntent) => boolean;
 }
 
 const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
@@ -57,6 +61,12 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       requestedAt: intent.requestedAt,
       ...intent.metadata,
     };
+    const entryBlocked = this.config.entryCoordinator?.blockedReason();
+    if (entryBlocked)
+      return denied(intent, 'SHARED_SAFETY_DENIED', {
+        ...baseMetadata,
+        reasonDetail: entryBlocked,
+      });
     if (
       this.ambiguousSymbols.has(intent.symbol) ||
       this.config.isMarketOpenAmbiguous?.(intent.symbol) === true
@@ -122,6 +132,8 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     let failureStage: 'POSITION_CONFIRMATION' | 'PROTECTION' | 'EXCHANGE' | undefined;
     let emergencyCloseError: string | undefined;
     const quantityAdjustments: Array<Record<string, unknown>> = [];
+    const entryMutations: Array<{ operationId: string; mutationId: string; status: string }> = [];
+    Object.assign(baseMetadata, { entryMutations });
     try {
       await this.exchange.setLeverage(intent.symbol, intent.leverage);
       await this.exchange.ensureMarginType(intent.symbol, 'ISOLATED');
@@ -164,12 +176,44 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       void positionBeforeOpen;
       while (true) {
         try {
-          order = await this.exchange.marketOpen(
-            intent.symbol,
-            intent.side,
-            quantity,
-            clientOrderId,
-          );
+          if (this.config.entryCoordinator) {
+            const result = await this.config.entryCoordinator.execute(
+              intent,
+              quantity,
+              clientOrderId,
+              (request) =>
+                this.exchange.marketOpen(
+                  request.intent.symbol,
+                  request.intent.side,
+                  request.quantity,
+                  request.clientOrderId,
+                ),
+              () => this.config.isEntryCurrent?.(intent) !== false,
+            );
+            entryMutations.push({
+              operationId: result.operationId,
+              mutationId: result.mutationId,
+              status: result.status,
+            });
+            if (result.status === 'REJECTED')
+              throw Object.assign(new Error('ENTRY_MUTATION_REJECTED'), { code: result.code });
+            if (result.status !== 'CONFIRMED') {
+              return failed(intent, 'MARKET_OPEN_AMBIGUOUS', {
+                ...baseMetadata,
+                clientOrderId,
+                marketOpenAttempts: marketOpenAttempt,
+                reasonDetail: result.reason,
+              });
+            }
+            order = result.order;
+          } else {
+            order = await this.exchange.marketOpen(
+              intent.symbol,
+              intent.side,
+              quantity,
+              clientOrderId,
+            );
+          }
           break;
         } catch (error) {
           if (isDefiniteBusinessRejection(error) && !isRecoverableEntrySizeError(error)) {
@@ -824,53 +868,13 @@ function exactBracket(
   return order.closePosition === true || order.reduceOnly === true;
 }
 
-function errorCodes(error: unknown): number[] {
-  const candidate = error as {
-    code?: unknown;
-    message?: unknown;
-    response?: { data?: { code?: unknown; msg?: unknown } };
-    body?: { code?: unknown; msg?: unknown };
-  };
-  return [candidate?.code, candidate?.response?.data?.code, candidate?.body?.code]
-    .map((value) => Number(value))
-    .filter(Number.isFinite);
-}
-
 function isDefiniteBusinessRejection(error: unknown): boolean {
-  const codes = errorCodes(error);
-  if (codes.length > 0) {
-    return codes.some((code) =>
-      [-1111, -2010, -2018, -2019, -2027, -4003, -4004, -4005].includes(code),
-    );
-  }
-  return false;
+  return definiteEntryRejectionCode(error) !== undefined;
 }
 
 function isRecoverableEntrySizeError(error: unknown): boolean {
-  const codes = errorCodes(error);
-  if (codes.length > 0) return codes.some((code) => [-2019, -2027, -4005].includes(code));
-  const candidate = error as {
-    message?: unknown;
-    response?: { data?: { msg?: unknown } };
-    body?: { msg?: unknown };
-  };
-  const message = [
-    candidate?.message,
-    candidate?.response?.data?.msg,
-    candidate?.body?.msg,
-    String(error),
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-  return (
-    codes.length === 0 &&
-    (message.includes('margin is insufficient') ||
-      message.includes('insufficient margin') ||
-      message.includes('insufficient balance') ||
-      message.includes('quantity greater than max quantity') ||
-      message.includes('maximum allowable position'))
-  );
+  const code = definiteEntryRejectionCode(error);
+  return code !== undefined && [-2019, -2027, -4005].includes(code);
 }
 
 function marketOpenClientOrderId(intent: StrategyExecutionIntent, attempt = 0): string {

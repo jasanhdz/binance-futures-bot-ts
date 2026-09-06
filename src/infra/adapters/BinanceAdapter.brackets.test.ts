@@ -3,10 +3,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockClient = vi.hoisted(() => ({
   futuresPing: vi.fn(() => Promise.resolve({})),
   futuresPositionMode: vi.fn(() => Promise.resolve({ dualSidePosition: true })),
-  futuresOrder: vi.fn(() => Promise.resolve({ orderId: 123 })),
+  futuresOrder: vi.fn(() =>
+    Promise.resolve({ orderId: 123, symbol: 'BTCUSDT', clientOrderId: 'se_client-order-123' }),
+  ),
   futuresOpenOrders: vi.fn(() => Promise.resolve([])),
   futuresGetOrder: vi.fn(() =>
-    Promise.resolve({ orderId: 123, avgPrice: '100', status: 'FILLED' }),
+    Promise.resolve({
+      orderId: 123,
+      avgPrice: '100',
+      status: 'FILLED',
+      symbol: 'BTCUSDT',
+      clientOrderId: 'se_client-order-123',
+      type: 'MARKET',
+    }),
   ),
   futuresLeverage: vi.fn(() => Promise.resolve({ leverage: 20 })),
   futuresMarginType: vi.fn(() => Promise.resolve({})),
@@ -15,7 +24,11 @@ const mockClient = vi.hoisted(() => ({
     Promise.resolve({ positions: [{ symbol: 'BTCUSDT', marginType: 'isolated' }] }),
   ),
   futuresBook: vi.fn(() =>
-    Promise.resolve({ lastUpdateId: 1, bids: [{ price: '100', quantity: '1' }], asks: [{ price: '101', quantity: '1' }] }),
+    Promise.resolve({
+      lastUpdateId: 1,
+      bids: [{ price: '100', quantity: '1' }],
+      asks: [{ price: '101', quantity: '1' }],
+    }),
   ),
 }));
 
@@ -37,11 +50,18 @@ describe('BinanceExchange bracket placement', () => {
     vi.clearAllMocks();
     mockClient.futuresPing.mockResolvedValue({});
     mockClient.futuresPositionMode.mockResolvedValue({ dualSidePosition: true });
-    mockClient.futuresOrder.mockResolvedValue({ orderId: 123 });
+    mockClient.futuresOrder.mockResolvedValue({
+      orderId: 123,
+      symbol: 'BTCUSDT',
+      clientOrderId: 'se_client-order-123',
+    });
     mockClient.futuresGetOrder.mockResolvedValue({
       orderId: 123,
       avgPrice: '100',
       status: 'FILLED',
+      symbol: 'BTCUSDT',
+      clientOrderId: 'se_client-order-123',
+      type: 'MARKET',
     });
     mockClient.futuresLeverage.mockResolvedValue({ leverage: 20 });
     mockClient.futuresMarginType.mockResolvedValue({});
@@ -173,6 +193,36 @@ describe('BinanceExchange bracket placement', () => {
     });
     expect(order).toEqual({ avgPrice: 100, orderId: '123' });
   });
+
+  it('does not fallback or resend an identified open after position-mode rejection', async () => {
+    const error = Object.assign(new Error('Position side does not match'), { code: -4061 });
+    mockClient.futuresOrder.mockRejectedValueOnce(error);
+    const exchange = new BinanceExchange(logger);
+    await expect(exchange.marketOpen('BTCUSDT', 'LONG', 0.02, 'se_client-order-123')).rejects.toBe(
+      error,
+    );
+    expect(mockClient.futuresOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['symbol', 'clientOrderId', 'type'] as const)(
+    'rejects lookup with a different %s',
+    async (field) => {
+      mockClient.futuresGetOrder.mockResolvedValueOnce({
+        orderId: 123,
+        avgPrice: '100',
+        status: 'FILLED',
+        symbol: 'BTCUSDT',
+        clientOrderId: 'se_client-order-123',
+        type: 'MARKET',
+        [field]: 'different',
+      });
+      const exchange = new BinanceExchange(logger);
+      await expect(
+        exchange.readMarketOpenByClientOrderId('BTCUSDT', 'se_client-order-123'),
+      ).rejects.toThrow('ENTRY_LOOKUP_IDENTITY_MISMATCH');
+      expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+    },
+  );
 
   it('fails closed when leverage readback disagrees', async () => {
     mockClient.futuresPositionRisk.mockResolvedValue([{ symbol: 'BTCUSDT', leverage: '10' }]);

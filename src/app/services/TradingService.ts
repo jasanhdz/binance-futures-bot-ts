@@ -75,6 +75,7 @@ import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOw
 import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/AegisIdentity';
 import { createMomentumRideLegacyIdentity } from '../../strategies/momentum/domain/MomentumRideIdentity';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
+import type { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { MomentumEntryCoordinator } from '../../strategies/momentum/application/MomentumEntryCoordinator';
 import {
@@ -153,6 +154,8 @@ export interface TradingServiceDeps {
   closedTradeOutcomeReader?: () => Promise<AegisClosedTradeOutcome[]>;
   consecutiveLossStateStore?: StrategyLossStateStorePort;
   strategyLossStateRegistry?: StrategyLossStateRegistry;
+  /** Production supplies this via StrategyComposition; direct unit fixtures may omit it. */
+  entryCoordinator?: DurableEntryCoordinator;
 }
 
 export interface TradingServiceConfig {
@@ -175,6 +178,7 @@ export interface AegisRuntimeSnapshot {
   liquidityStressAgeMsBySymbol: Record<string, number | undefined>;
   liquidityStressInputVersionBySymbol: Record<string, typeof LIQUIDITY_STRESS_INPUT_VERSION>;
   microBurstReadiness: MicroBurstRuntimeReadiness | null;
+  entryMutationBlockedReason?: string;
 }
 
 export class TradingService {
@@ -243,6 +247,7 @@ export class TradingService {
     private deps: TradingServiceDeps,
     private config: TradingServiceConfig,
   ) {
+    if (deps.entryCoordinator) this.acceptingEntries = false;
     this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
     this.runtimeConfig = new TradingRuntimeConfigService(deps.configManager);
     this.aegisEntryNotificationService = new AegisEntryNotificationService({
@@ -331,6 +336,11 @@ export class TradingService {
     });
     this.sharedStrategyExecution = new TelemetryStrategyExecutionPort(
       new SharedStrategyExecutionService(deps.exchange, deps.logger, {
+        entryCoordinator: deps.entryCoordinator,
+        isEntryCurrent: (intent) =>
+          this.acceptingEntries &&
+          !this.runtimeStopping &&
+          this.getSymbolMode(intent.symbol) === 'LIVE',
         feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
         confirmationAttempts: 3,
         confirmationDelaysMs: [300, 500, 1000],
@@ -911,6 +921,7 @@ export class TradingService {
     return {
       tradingMode: this.getTradingMode(),
       isRunning: this.isRunning,
+      entryMutationBlockedReason: this.deps.entryCoordinator?.blockedReason(),
       tradesToday: riskSession.tradesToday,
       consecutiveLosses: riskSession.consecutiveLosses,
       dailyStartBalance: riskSession.dailyStartBalance,
@@ -941,6 +952,8 @@ export class TradingService {
   }
 
   async start(startLoop = true): Promise<void> {
+    this.acceptingEntries = false;
+    await this.deps.entryCoordinator?.start();
     const { logger, notifier, mlService, configManager, exchange } = this.deps;
     const manager = configManager as any;
     if (typeof manager.validateSingleLiveAegisSymbol === 'function') {
@@ -1205,6 +1218,7 @@ export class TradingService {
     });
 
     this.hardWatchdogTimer = setInterval(() => {
+      void this.deps.entryCoordinator?.reconcile();
       if (this.isRunning && Date.now() - this.lastAlivePulseMs > 180000) {
         this.deps.logger.error('system_deadlock_detected');
         process.exit(1);
@@ -1222,19 +1236,24 @@ export class TradingService {
     this.deps.logger.info('Aegis bot stopped');
     if (this.hardWatchdogTimer) clearInterval(this.hardWatchdogTimer);
     this.stopPromise = (async () => {
-      await this.strategyRuntimeCoordinator.stop();
+      const producers = await Promise.allSettled([
+        Promise.resolve().then(() => this.strategyRuntimeCoordinator.stop()),
+      ]);
       // Producers are stopped and admission is closed. Keep all stores open
       // until previously admitted exchange work has finished updating state.
       while (this.activeRuntimeTasks?.size) {
         await Promise.allSettled([...this.activeRuntimeTasks]);
       }
       const stores = [this.deps.state, ...this.symbolStateStores.values()];
-      await Promise.all([
+      const flushed = await Promise.allSettled([
         ...stores.map((store) => store.flush?.()),
         this.decisionJsonlSink.drain(),
         this.marketSnapshotEvidenceSink.drain(),
         this.telemetryJsonlSink.drain(),
       ]);
+      await this.deps.entryCoordinator?.close();
+      const failure = [...producers, ...flushed].find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') throw failure.reason;
     })().finally(() => {
       this.stopPromise = null;
     });
