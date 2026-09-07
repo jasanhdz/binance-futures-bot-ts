@@ -77,7 +77,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'src/app/services/TradingService.ts':
     // Reviewed disconnect correction: retain the common candle feed, not Aegis producers.
     // Strategy disconnect and OS/user startup reporting; not a LIVE approval hash.
-    // Mandatory managed close routing, independent recovery/admission/shutdown integration.
+    // Shared Micro/Momentum liquidity, bounded admission diagnostics and mandatory managed close routing.
+    // Independent recovery/admission/shutdown integration.
     '03ce14669f86eb1f30d1455edf64855a449bdb1c440a10c7056a560fd371ccf1',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.

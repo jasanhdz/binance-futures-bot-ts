@@ -37,8 +37,12 @@ import {
 import type { MomentumRideStrategyContext } from '../../strategies/momentum/domain/MomentumRideStrategy';
 import type { Exchange } from '../ports/Exchange';
 import type { Logger } from '../ports/Logger';
-import type { LiquidityVoidDetector } from '../services/LiquidityVoidDetector';
+import type {
+  LiquidityVoidDetector,
+  LiquidityStressStatus,
+} from '../services/LiquidityVoidDetector';
 import { SharedMarketDataRuntime } from '../services/SharedMarketDataRuntime';
+import { SharedLiquidityState } from '../services/SharedLiquidityState';
 import { buildMarketDataDiagnostics } from '../diagnostics/MarketDataDiagnostics';
 import { AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS } from '../../strategies/aegis/application/AegisMarketContext';
 import { getRateLimitMetrics } from '../../infra/adapters/rate-limit';
@@ -68,6 +72,9 @@ export interface StrategyRuntimeStartInput {
 }
 
 export interface StrategyRuntimeCoordinatorFactories {
+  createSharedLiquidityState(
+    deps: ConstructorParameters<typeof SharedLiquidityState>[0],
+  ): SharedLiquidityState;
   createSharedMarketDataRuntime(
     deps: ConstructorParameters<typeof SharedMarketDataRuntime>[0],
   ): SharedMarketDataRuntime;
@@ -87,6 +94,7 @@ export interface StrategyRuntimeCoordinatorFactories {
 }
 
 const DEFAULT_FACTORIES: StrategyRuntimeCoordinatorFactories = {
+  createSharedLiquidityState: (deps) => new SharedLiquidityState(deps),
   createSharedMarketDataRuntime: (deps) => new SharedMarketDataRuntime(deps),
   createAegisRealtimeMarketState: (deps) => new AegisRealtimeMarketState(deps),
   createMomentumRealtimeMarketState: (deps) => new MomentumRealtimeMarketState(deps),
@@ -105,6 +113,7 @@ const DEFAULT_FACTORIES: StrategyRuntimeCoordinatorFactories = {
 export class StrategyRuntimeCoordinator {
   private readonly factories: StrategyRuntimeCoordinatorFactories;
   private sharedMarketDataRuntime: SharedMarketDataRuntime | null = null;
+  private sharedLiquidityState: SharedLiquidityState | null = null;
   private aegisBlackBoxObservation: AegisBlackBoxObservation | null = null;
   private aegisRealtimeMarketState: AegisRealtimeMarketState | null = null;
   private momentumBlackBoxObservation: MomentumRideBlackBoxObservation | null = null;
@@ -122,6 +131,14 @@ export class StrategyRuntimeCoordinator {
 
   hasAegisRealtimeMarketState(): boolean {
     return this.aegisRealtimeMarketState !== null;
+  }
+
+  readLiquidityStatus(
+    symbol: string,
+    now: number,
+    freshnessMs: number,
+  ): LiquidityStressStatus | undefined {
+    return this.sharedLiquidityState?.read(symbol, now, freshnessMs);
   }
 
   aegisDetectorFor(symbol: string): LiquidityVoidDetector | undefined {
@@ -200,6 +217,20 @@ export class StrategyRuntimeCoordinator {
       logger,
       clock,
     });
+    const liquiditySymbols = new Set(input.momentumEnabled !== false ? startupSymbols : []);
+    if (input.microBurstConfig.enabled && input.microBurstConfig.mode !== 'OFF') {
+      for (const [symbol, config] of Object.entries(input.microBurstConfig.symbols)) {
+        if (config.enabled) liquiditySymbols.add(symbol);
+      }
+    }
+    if (liquiditySymbols.size > 0) {
+      this.sharedLiquidityState ??= this.factories.createSharedLiquidityState({
+        sharedMarketData: this.sharedMarketDataRuntime,
+        logger,
+        clock,
+      });
+      this.sharedLiquidityState.start([...liquiditySymbols]);
+    }
     if (input.aegisEnabled !== false) {
       this.aegisRealtimeMarketState ??= this.factories.createAegisRealtimeMarketState({
         sharedMarketData: this.sharedMarketDataRuntime,
@@ -267,6 +298,8 @@ export class StrategyRuntimeCoordinator {
     this.momentumCandleState?.close();
     this.momentumCandleState = null;
     await microBurstRuntime?.stop();
+    this.sharedLiquidityState?.close();
+    this.sharedLiquidityState = null;
     this.sharedMarketDataRuntime?.close();
     this.sharedMarketDataRuntime = null;
   }

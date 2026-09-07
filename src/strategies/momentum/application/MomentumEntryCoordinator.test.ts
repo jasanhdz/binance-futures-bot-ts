@@ -9,6 +9,8 @@ describe('MomentumEntryCoordinator', () => {
   it('owns the disabled-strategy boundary without reading market data', async () => {
     const readRuntimeCandles = vi.fn();
     const deps = {
+      now: () => 0,
+      logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn(), error: vi.fn() },
       getConfig: () =>
         ({
           enabled: false,
@@ -65,7 +67,14 @@ describe('MomentumEntryCoordinator', () => {
       logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn(), error: vi.fn() },
     } as unknown as MomentumEntryCoordinatorDeps;
 
-    await expect(new MomentumEntryCoordinator(deps).evaluate('BTCUSDT')).resolves.toBe(false);
+    const coordinator = new MomentumEntryCoordinator(deps);
+    await expect(coordinator.evaluate('BTCUSDT')).resolves.toBe(false);
+    vi.mocked(deps.now).mockReturnValue(100_060_000);
+    coordinator.heartbeat();
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      'strategy_entry_gate_summary',
+      expect.objectContaining({ strategy: 'MOMENTUM_RIDE', total: 2 }),
+    );
     expect(getUSDTBalance).not.toHaveBeenCalled();
     expect(readEntryAccountSnapshot).not.toHaveBeenCalled();
     expect(readPortfolioExposure).not.toHaveBeenCalled();

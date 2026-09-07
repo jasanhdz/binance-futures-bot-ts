@@ -10,7 +10,9 @@ import type { MomentumRideBlackBoxObservation } from '../../strategies/momentum/
 import type { MomentumCandleState } from '../../strategies/momentum/application/MomentumCandleState';
 import type { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
 import type { MomentumRideStrategyContext } from '../../strategies/momentum/domain/MomentumRideStrategy';
-import type { SharedMarketDataRuntime } from '../services/SharedMarketDataRuntime';
+import { SharedMarketDataRuntime } from '../services/SharedMarketDataRuntime';
+import { SharedLiquidityState } from '../services/SharedLiquidityState';
+import type { Exchange } from '../ports/Exchange';
 import {
   StrategyRuntimeCoordinator,
   type StrategyRuntimeCoordinatorFactories,
@@ -23,7 +25,7 @@ interface RuntimeHarness {
   factories: StrategyRuntimeCoordinatorFactories;
 }
 
-function runtimeHarness(): RuntimeHarness {
+function runtimeHarness(exchange: Exchange = {} as never): RuntimeHarness {
   const events: string[] = [];
   const sharedMarketData = {
     close: vi.fn(() => events.push('shared-market-data:close')),
@@ -59,6 +61,9 @@ function runtimeHarness(): RuntimeHarness {
   } as unknown as MomentumRideBlackBoxObservation;
 
   const factories: StrategyRuntimeCoordinatorFactories = {
+    createSharedLiquidityState: vi.fn(
+      () => ({ start: vi.fn(), close: vi.fn(), read: vi.fn() }) as never,
+    ),
     createSharedMarketDataRuntime: vi.fn(() => sharedMarketData),
     createAegisRealtimeMarketState: vi.fn(() => aegisRealtime),
     createMomentumRealtimeMarketState: vi.fn(() => momentumRealtime),
@@ -76,7 +81,7 @@ function runtimeHarness(): RuntimeHarness {
 
   const coordinator = new StrategyRuntimeCoordinator(
     {
-      exchange: {} as never,
+      exchange,
       logger: {
         debug: vi.fn(),
         info: vi.fn(),
@@ -103,6 +108,101 @@ function runtimeHarness(): RuntimeHarness {
 }
 
 describe('StrategyRuntimeCoordinator', () => {
+  it('feeds shared liquidity from the real synchronized plane with Aegis off and releases one shared stream', async () => {
+    const now = 1_700_000_000_000;
+    let emit: ((event: any) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const exchange = {
+      getDepthSnapshot: vi.fn(async () => ({
+        lastUpdateId: 100,
+        bids: Array.from({ length: 20 }, (_, i) => [String(100 - i), '10']),
+        asks: Array.from({ length: 20 }, (_, i) => [String(101 + i), '10']),
+        receivedAtMs: now,
+      })),
+      subscribeToDepthDiff: vi.fn((_symbol, _speed, callback) => {
+        emit = callback;
+        return unsubscribe;
+      }),
+      getServerTime: vi.fn(async () => now),
+      getCandles: vi.fn(),
+      subscribeToCandles: vi.fn(),
+      subscribeToPartialDepth: vi.fn(),
+    };
+    const { coordinator, factories } = runtimeHarness(exchange as never);
+    vi.mocked(factories.createSharedMarketDataRuntime).mockImplementation(
+      (deps) => new SharedMarketDataRuntime(deps),
+    );
+    vi.mocked(factories.createSharedLiquidityState).mockImplementation(
+      (deps) => new SharedLiquidityState(deps),
+    );
+    try {
+      await coordinator.start({
+        symbols: ['ETHUSDT'],
+        aegisEnabled: false,
+        momentumEnabled: true,
+        microBurstConfig: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+        loadMicroBurstProvenance: () => {
+          throw new Error('fixture: no journals');
+        },
+      });
+      emit!({
+        U: 100,
+        u: 101,
+        pu: 99,
+        bids: [['100', '10']],
+        asks: [],
+        E: now,
+        T: now,
+        receivedAtMs: now,
+      });
+      await vi.waitFor(() =>
+        expect(coordinator.readLiquidityStatus('ETHUSDT', now, 3_000)).toMatchObject({
+          status: 'FRESH',
+          stress: 0,
+        }),
+      );
+      const shared = vi.mocked(factories.createSharedMarketDataRuntime).mock.results[0].value;
+      const consumerLease = shared.orderBookDataPlane.acquire('ETHUSDT');
+      expect(exchange.subscribeToDepthDiff).toHaveBeenCalledTimes(1);
+      expect(exchange.getDepthSnapshot).toHaveBeenCalledTimes(1);
+      consumerLease.release();
+      expect(unsubscribe).not.toHaveBeenCalled();
+      expect(coordinator.readLiquidityStatus('ETHUSDT', now + 3_001, 3_000)?.status).toBe('STALE');
+      expect(factories.createAegisRealtimeMarketState).not.toHaveBeenCalled();
+      expect(factories.createAegisBlackBoxObservation).not.toHaveBeenCalled();
+      expect(exchange.getCandles).not.toHaveBeenCalled();
+      expect(exchange.subscribeToCandles).not.toHaveBeenCalled();
+      expect(exchange.subscribeToPartialDepth).not.toHaveBeenCalled();
+    } finally {
+      await coordinator.stop();
+    }
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+  it.each(['micro', 'momentum'])(
+    'starts shared liquidity for %s without constructing any Aegis producer',
+    async (strategy) => {
+      const { coordinator, factories } = runtimeHarness();
+      await coordinator.start({
+        symbols: ['ETHUSDT'],
+        aegisEnabled: false,
+        momentumEnabled: strategy === 'momentum',
+        microBurstConfig: {
+          enabled: strategy === 'micro',
+          mode: 'LIVE',
+          symbols: { BTCUSDT: { enabled: true }, SOLUSDT: { enabled: false } },
+        },
+        loadMicroBurstProvenance: () => {
+          throw new Error('fixture: do not start Micro journals');
+        },
+      });
+      const liquidity = vi.mocked(factories.createSharedLiquidityState).mock.results[0].value;
+      expect(liquidity.start).toHaveBeenCalledWith([strategy === 'micro' ? 'BTCUSDT' : 'ETHUSDT']);
+      expect(factories.createAegisRealtimeMarketState).not.toHaveBeenCalled();
+      expect(factories.createAegisBlackBoxObservation).not.toHaveBeenCalled();
+      await coordinator.stop();
+      expect(liquidity.close).toHaveBeenCalledTimes(1);
+    },
+  );
   it('does not construct disabled strategy producers or caches', async () => {
     const { coordinator, factories, events } = runtimeHarness();
     await coordinator.start({
@@ -117,6 +217,7 @@ describe('StrategyRuntimeCoordinator', () => {
     expect(factories.createMomentumRealtimeMarketState).not.toHaveBeenCalled();
     expect(factories.createMomentumCandleState).not.toHaveBeenCalled();
     expect(factories.createMomentumBlackBoxObservation).not.toHaveBeenCalled();
+    expect(factories.createSharedLiquidityState).not.toHaveBeenCalled();
     expect(coordinator.getAegisCandles('ETHUSDT', 100)).toEqual([]);
     await coordinator.stop();
   });

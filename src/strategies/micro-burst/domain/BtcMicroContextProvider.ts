@@ -50,6 +50,8 @@ export class BtcMicroContextProvider {
   private pollInFlight = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private lifecycleVersion = 0;
+  private exchangeClock?: { timestamp: number; receivedAt: number };
+  private delayedRefreshes = 0;
 
   constructor(
     private readonly btcSymbol: string,
@@ -82,6 +84,8 @@ export class BtcMicroContextProvider {
     this.lastRet3m = 0;
     this.lastRet5m = 0;
     this.lastAcceleration = 0;
+    this.exchangeClock = undefined;
+    this.delayedRefreshes = 0;
   }
 
   async pollCandles(): Promise<void> {
@@ -100,6 +104,7 @@ export class BtcMicroContextProvider {
       const exchangeSnapshotTimeMs = series.exchangeSnapshotTimeMs;
       if (lifecycleVersion !== this.lifecycleVersion) return;
       if (exchangeSnapshotTimeMs === null || !Number.isFinite(exchangeSnapshotTimeMs)) return;
+      this.exchangeClock = { timestamp: exchangeSnapshotTimeMs, receivedAt: localReceivedAtMs };
 
       const prepared = prepareClosedCandles(
         series.candles,
@@ -173,9 +178,22 @@ export class BtcMicroContextProvider {
   private async pollAndSchedule(lifecycleVersion: number): Promise<void> {
     await this.pollCandles();
     if (!this.running || lifecycleVersion !== this.lifecycleVersion) return;
+    const localNow = this.clock.now();
+    const exchangeNow = this.exchangeClock
+      ? this.exchangeClock.timestamp + Math.max(0, localNow - this.exchangeClock.receivedAt)
+      : localNow;
+    // Refresh at the candle boundary, not one minute after a variable-latency response.
+    // Allow publication time; retry briefly if the exchange still returned the old bar.
+    const phase = ((exchangeNow % this.pollIntervalMs) + this.pollIntervalMs) % this.pollIntervalMs;
+    const boundaryDelay = this.pollIntervalMs - phase + 250;
+    const delayed =
+      !this.lastObservationMs || exchangeNow - this.lastObservationMs >= this.pollIntervalMs;
+    const retryDelay = 1_000 * 2 ** this.delayedRefreshes;
+    this.delayedRefreshes = delayed ? Math.min(this.delayedRefreshes + 1, 6) : 0;
+    const delay = delayed ? Math.min(retryDelay, boundaryDelay) : boundaryDelay;
     this.pollTimer = setTimeout(() => {
       void this.pollAndSchedule(lifecycleVersion);
-    }, this.pollIntervalMs);
+    }, delay);
   }
 
   private computeReturns(nowMs: number): BtcReturnSet | null {

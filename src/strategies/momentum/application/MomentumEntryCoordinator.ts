@@ -1,4 +1,5 @@
 import type { Logger } from '../../../app/ports/Logger';
+import { EntryGateDiagnostics } from '../../../app/diagnostics/EntryGateDiagnostics';
 import type { Notifier } from '../../../app/ports/Notifier';
 import type { StateStore } from '../../../app/ports/StateStore';
 import type { USDTAccountSnapshot } from '../../../app/ports/Exchange';
@@ -79,7 +80,14 @@ export interface MomentumEntryCoordinatorDeps {
  * calls an exchange mutation directly.
  */
 export class MomentumEntryCoordinator {
-  constructor(private readonly deps: MomentumEntryCoordinatorDeps) {}
+  private readonly diagnostics: EntryGateDiagnostics;
+  constructor(private readonly deps: MomentumEntryCoordinatorDeps) {
+    this.diagnostics = new EntryGateDiagnostics(deps.logger, 'MOMENTUM_RIDE', () => deps.now());
+  }
+
+  heartbeat(): void {
+    this.diagnostics.heartbeat();
+  }
 
   async evaluate(symbol: string): Promise<boolean> {
     const candidate = await this.loadStandaloneData(symbol);
@@ -166,6 +174,11 @@ export class MomentumEntryCoordinator {
     // outcome I/O until the pattern has actually produced a candidate.
     const pattern = evaluateMomentumPattern(candidate.candles, side);
     if (!pattern.allowed) {
+      this.diagnostics.record('preflight', pattern.reason, {
+        symbol,
+        side,
+        diagnostics: pattern.diagnostics,
+      });
       this.deps.logger.debug('momentum_pattern_preflight_blocked', {
         symbol,
         side,
@@ -230,7 +243,7 @@ export class MomentumEntryCoordinator {
       maxTotalOpenPositionsWhenMomentum: config.safetyCaps.maxTotalOpenPositionsWhenMomentum,
       disableSymbolAfterStopLossMs: config.safetyCaps.disableSymbolAfterStopLossMinutes * 60_000,
     };
-    const liquidity = this.deps.readLiquidityStatus(symbol, now) ?? {
+    const liquidity = this.deps.readLiquidityStatus(symbol, this.deps.now()) ?? {
       stress: 0,
       status: 'NO_DATA' as const,
       inputVersion: this.deps.liquidityInputVersion,
@@ -278,6 +291,12 @@ export class MomentumEntryCoordinator {
       },
     };
     const decision = await this.deps.strategyRouter.evaluate('MOMENTUM_RIDE', strategyContext);
+    this.diagnostics.record('evaluation', decision.reason, {
+      symbol,
+      side,
+      decision: decision.decision,
+      mode: decision.mode,
+    });
     if (decision.diagnostics.patternMatched !== true) return false;
 
     await this.deps.historyLogger.logSignal({
@@ -482,4 +501,3 @@ export class MomentumEntryCoordinator {
     return true;
   }
 }
-

@@ -1,4 +1,5 @@
 import { prepareClosedCandles } from '../../core/market-data/CandleIntegrity';
+import { EntryGateDiagnostics } from '../diagnostics/EntryGateDiagnostics';
 import { Exchange, PositionInfo, SymbolFilters, USDTAccountSnapshot } from '../ports/Exchange';
 import { MLService } from '../ports/MLService';
 import { Logger } from '../ports/Logger';
@@ -244,6 +245,7 @@ export class TradingService {
   private readonly aegisExitManagementService: AegisExitManagementService;
   private readonly aegisProfitProtectionService: AegisProfitProtectionService;
   private readonly momentumEntryCoordinator: MomentumEntryCoordinator;
+  private readonly microAdmissionDiagnostics: EntryGateDiagnostics;
   private readonly shutdown = new RuntimeShutdown();
   private readonly entryInFlightSymbols = new Set<string>();
   private entryInFlight = false;
@@ -255,6 +257,9 @@ export class TradingService {
     private deps: TradingServiceDeps,
     private config: TradingServiceConfig,
   ) {
+    this.microAdmissionDiagnostics = new EntryGateDiagnostics(deps.logger, 'MICRO_BURST_V1', () =>
+      Date.now(),
+    );
     if (deps.entryCoordinator || deps.closeCoordinator) this.acceptingEntries = false;
     this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
     this.runtimeConfig = new TradingRuntimeConfigService(deps.configManager);
@@ -494,6 +499,11 @@ export class TradingService {
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       hasOpenPosition: (symbol) => this.deps.exchange.hasOpenPosition(symbol, 'ANY'),
       readLiquidityStatus: (symbol, now) =>
+        this.strategyRuntimeCoordinator.readLiquidityStatus(
+          symbol,
+          now,
+          LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+        ) ??
         this.detector[symbol]?.getLiquidityStressStatus(now, LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS),
       liquidityInputVersion: LIQUIDITY_STRESS_INPUT_VERSION,
       logTradeEvent: (symbol, event, payload) =>
@@ -1339,6 +1349,8 @@ export class TradingService {
     if (this.runtimeStopping) return;
 
     this.hardWatchdogTimer = setInterval(() => {
+      this.microAdmissionDiagnostics.heartbeat();
+      this.momentumEntryCoordinator.heartbeat();
       void this.deps.entryCoordinator?.reconcile();
       void this.deps.closeCoordinator?.reconcile(
         (symbol) => this.stateForSymbol(symbol),
@@ -1520,11 +1532,17 @@ export class TradingService {
       config.symbols[request.symbol]?.enabled !== true ||
       this.getSymbolMode(request.symbol) !== 'LIVE'
     ) {
-      this.deps.logger.warn('micro_burst_live_entry_denied', {
+      this.recordMicroAdmissionDenied({
         symbol: request.symbol,
         reason: 'LIVE_AUTHORITY_NOT_ENABLED',
         deployedCodeCommitSha: provenance.codeCommitSha,
         effectiveConfigHash: `sha256:${provenance.configHash}`,
+        approvedConfigHash: this.microBurstIdentity.configHash,
+        approvedCodeCommitSha: this.microBurstIdentity.codeCommitSha,
+        configMatches: this.microBurstIdentity.configHash === `sha256:${provenance.configHash}`,
+        codeMatches:
+          this.microBurstIdentity.codeCommitSha.toLowerCase() ===
+          provenance.codeCommitSha.toLowerCase(),
       });
       return false;
     }
@@ -1534,7 +1552,7 @@ export class TradingService {
       this.microBurstEntryInFlight ||
       this.microBurstEntryInFlightSymbols.has(request.symbol)
     ) {
-      this.deps.logger.warn('micro_burst_live_entry_denied', {
+      this.recordMicroAdmissionDenied({
         symbol: request.symbol,
         reason: 'MICRO_BURST_ENTRY_IN_FLIGHT',
       });
@@ -1542,7 +1560,7 @@ export class TradingService {
     }
     const reservation = this.acquireSharedEntryReservation(request.symbol);
     if (!reservation.acquired) {
-      this.deps.logger.warn('micro_burst_live_entry_denied', {
+      this.recordMicroAdmissionDenied({
         symbol: request.symbol,
         reason: reservation.reason,
       });
@@ -1554,6 +1572,9 @@ export class TradingService {
     try {
       const symbolState = this.stateForSymbol(request.symbol);
       if (symbolState.get().microBurstPnlUnverified === true) {
+        this.microAdmissionDiagnostics.record('admission', 'PREVIOUS_CLOSE_PNL_UNVERIFIED', {
+          symbol: request.symbol,
+        });
         this.deps.logger.error('micro_burst_live_entry_denied', {
           symbol: request.symbol,
           reason: 'PREVIOUS_CLOSE_PNL_UNVERIFIED',
@@ -1562,7 +1583,7 @@ export class TradingService {
         return false;
       }
       if (this.hasPendingMicroSafety()) {
-        this.deps.logger.warn('micro_burst_live_entry_denied', {
+        this.recordMicroAdmissionDenied({
           symbol: request.symbol,
           reason: 'MICRO_SAFETY_RECONCILIATION_PENDING',
         });
@@ -1588,10 +1609,17 @@ export class TradingService {
       this.riskSession.setDailyPnlPct(dailyPnlPct);
       const risk = this.riskSession.strategySnapshot('MICRO_BURST_V1', request.requestedAt);
       const gateConfig = this.runtimeConfig.getAegisTurboGateConfig(request.symbol);
-      const liquidity = this.detector[request.symbol]?.getLiquidityStressStatus(
-        request.requestedAt,
-        LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
-      );
+      const liquidityNow = Date.now();
+      const liquidity =
+        this.strategyRuntimeCoordinator.readLiquidityStatus(
+          request.symbol,
+          liquidityNow,
+          LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+        ) ??
+        this.detector[request.symbol]?.getLiquidityStressStatus(
+          liquidityNow,
+          LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS,
+        );
       const safety = evaluateSharedEntrySafety({
         hasOpenPosition: symbolState.get().mode !== 'IDLE' || hasOpenPosition,
         tradesToday: risk.tradesToday,
@@ -1609,7 +1637,7 @@ export class TradingService {
         dailyLossStopPct: gateConfig.dailyLossStopPct,
       });
       if (liquidity?.status !== 'FRESH' || !safety.allowed) {
-        this.deps.logger.warn('micro_burst_live_entry_denied', {
+        this.recordMicroAdmissionDenied({
           symbol: request.symbol,
           reason: liquidity?.status !== 'FRESH' ? 'LIQUIDITY_DATA_NOT_FRESH' : safety.reason,
         });
@@ -1638,7 +1666,7 @@ export class TradingService {
         config: this.runtimeConfig.getAegisPortfolioRiskConfig(),
       });
       if (!portfolio.allowed) {
-        this.deps.logger.warn('micro_burst_live_entry_denied', {
+        this.recordMicroAdmissionDenied({
           symbol: request.symbol,
           reason: portfolio.reason,
           ...portfolio.metadata,
@@ -1647,6 +1675,7 @@ export class TradingService {
       }
 
       const tradeId = generateStrategyTradeId('MICRO_BURST_V1', request.symbol);
+      this.microAdmissionDiagnostics.record('admission', 'ALLOWED', { symbol: request.symbol });
       const leverage = Math.min(request.leverage, MICRO_BURST_LIVE_LEVERAGE_CAP);
       const execution = await this.sharedStrategyExecution.execute(
         createMicroBurstExecutionIntent({
@@ -1815,6 +1844,11 @@ export class TradingService {
     if (configured.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED !== true)
       return { ...configured, mode: 'SHADOW' };
     return configured;
+  }
+
+  private recordMicroAdmissionDenied(sample: Record<string, unknown>): void {
+    this.microAdmissionDiagnostics.record('admission', String(sample.reason), sample);
+    this.deps.logger.debug('micro_burst_live_entry_denied', sample);
   }
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {

@@ -48,8 +48,20 @@ describe('Micro Burst Expected Continuation candidate identity', () => {
 
   it('denies LIVE when deployed commit does not match identity commit', () => {
     const identity = createMicroBurstV1Identity('a'.repeat(40));
-    expect(hasMicroBurstV1LiveAuthority(identity, 'b'.repeat(64), 'c'.repeat(40))).toBe(false);
+    expect(
+      hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, 'c'.repeat(40)),
+    ).toBe(false);
   });
+
+  it.each(['UNKNOWN', `${'a'.repeat(40)}-dirty`, `sha256:${'b'.repeat(64)}`])(
+    'denies LIVE for unsupported code revision %s even when identity and config match',
+    (revision) => {
+      const identity = createMicroBurstV1Identity(revision);
+      expect(
+        hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, revision),
+      ).toBe(false);
+    },
+  );
 
   it('denies LIVE when config hash does not match identity config hash', () => {
     const commit = '56e4574fe629768524b3f129e4f45e55746c6550';

@@ -57,6 +57,91 @@ function createDeps(candles: Candle[]) {
 }
 
 describe('BtcMicroContextProvider', () => {
+  it.each(
+    [0, 10_000, 30_000, 55_000].flatMap((phase) =>
+      [0, 400, 1_500].flatMap((latency) =>
+        [-30_000, 0, 30_000].map((skew) => ({ phase, latency, skew })),
+      ),
+    ),
+  )(
+    'refreshes at minute boundaries: phase=$phase latency=$latency localSkew=$skew',
+    async ({ phase, latency, skew }) => {
+      vi.useFakeTimers();
+      const boundary = Math.floor(NOW_MS / 60_000) * 60_000;
+      vi.setSystemTime(boundary + phase + skew);
+      const deps = createDeps([]);
+      deps.benchmark.candles.getSeries.mockImplementation(async () => {
+        const snapshotTime = Date.now() - skew;
+        const latestClose = Math.floor(snapshotTime / 60_000) * 60_000 - 1;
+        if (latency > 0) await new Promise((resolve) => setTimeout(resolve, latency));
+        return makeSeries(makeCandles(8, latestClose - 7 * 60_000), snapshotTime);
+      });
+      const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => Date.now() });
+      try {
+        provider.start();
+        await vi.advanceTimersByTimeAsync(latency);
+        const initialClose = provider.getBtcContext()!.observedAtMs;
+        expect(initialClose).toBe(boundary - 1);
+        // The old bar must remain old during the unavoidable publication/network gap.
+        await vi.advanceTimersByTimeAsync(boundary + 60_001 + skew - Date.now());
+        expect(provider.getBtcContext()!.observedAtMs).toBe(initialClose);
+        expect(Date.now() - skew - provider.getBtcContext()!.observedAtMs).toBeGreaterThan(60_000);
+        await vi.advanceTimersByTimeAsync(boundary + 60_500 + 2 * latency + skew - Date.now());
+        expect(provider.getBtcContext()!.observedAtMs).toBe(boundary + 59_999);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(provider.getBtcContext()!.observedAtMs).toBe(boundary + 119_999);
+        expect(deps.benchmark.candles.getSeries).toHaveBeenCalledTimes(3);
+      } finally {
+        provider.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('backs off during a prolonged outage without overlapping or renewing stale context', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Math.floor(NOW_MS / 60_000) * 60_000);
+    const deps = createDeps([]);
+    deps.benchmark.candles.getSeries.mockRejectedValue(new Error('offline'));
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => Date.now() });
+    try {
+      provider.start();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(deps.benchmark.candles.getSeries.mock.calls.length).toBeLessThanOrEqual(10);
+      expect(provider.getBtcContext()).toBeUndefined();
+      provider.stop();
+      const calls = deps.benchmark.candles.getSeries.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(deps.benchmark.candles.getSeries).toHaveBeenCalledTimes(calls);
+    } finally {
+      provider.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries an unpublished closed bar without re-dating it', async () => {
+    vi.useFakeTimers();
+    const boundary = Math.floor(NOW_MS / 60_000) * 60_000;
+    vi.setSystemTime(boundary + 30_000);
+    const deps = createDeps([]);
+    deps.benchmark.candles.getSeries.mockImplementation(async () => {
+      const now = Date.now();
+      const latest = now < boundary + 61_000 ? boundary - 1 : boundary + 59_999;
+      return makeSeries(makeCandles(8, latest - 420_000), now);
+    });
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => Date.now() });
+    try {
+      provider.start();
+      await vi.advanceTimersByTimeAsync(30_250);
+      expect(provider.getBtcContext()!.observedAtMs).toBe(boundary - 1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(provider.getBtcContext()!.observedAtMs).toBe(boundary + 59_999);
+      expect(deps.benchmark.candles.getSeries).toHaveBeenCalledTimes(3);
+    } finally {
+      provider.stop();
+      vi.useRealTimers();
+    }
+  });
   it.each(['gap', 'volume', 'stale', 'reversed'])(
     'invalidates a previous context on a %s refresh',
     async (kind) => {
@@ -328,7 +413,7 @@ describe('BtcMicroContextProvider', () => {
     expect(deps.getCandles).toHaveBeenCalledTimes(1);
 
     resolveFirstPoll!(makeSeries(makeCandles(6, NOW_MS - 300_000)));
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(1_250);
     expect(deps.getCandles).toHaveBeenCalledTimes(2);
 
     provider.stop();

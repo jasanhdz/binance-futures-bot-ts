@@ -18,6 +18,7 @@ import {
 } from '../../strategies/aegis/domain/CurrentBrainCanonicalDecision';
 import { TradingService } from './TradingService';
 import { LiquidityVoidDetector } from './LiquidityVoidDetector';
+import { SharedLiquidityState } from './SharedLiquidityState';
 import { AegisMomentumRideRuntimeConfig } from '../../strategies/aegis/domain/entry/AegisEntryDecisionTypes';
 import { E4TailRiskGuardAdapter } from '../../strategies/aegis/domain/entry/guards/E4TailRiskGuardAdapter';
 import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
@@ -34,6 +35,7 @@ import type { RecoverableEntryPosition, TradingExchangePort } from '../ports/Exc
 const originalConfig = { ...CONFIG };
 
 function setConfig(liveEnabled: boolean): void {
+  (CONFIG as any).AEGIS_ENABLED = true;
   (CONFIG as any).TRADING_MODE = 'AEGIS_TURBO_MICRO_LIVE';
   (CONFIG as any).AEGIS_LIVE_ENABLED = liveEnabled;
   (CONFIG as any).AEGIS_TURBO_ALLOW_SHORT = false;
@@ -1230,6 +1232,34 @@ function makeHarness(
   };
 }
 
+function attachSharedLiquidity(
+  service: TradingService,
+  logger: any,
+  status: 'FRESH' | 'STALE' | 'NO_DATA',
+): SharedLiquidityState {
+  const snapshot = {
+    observedAtMs: Date.now() - (status === 'STALE' ? 60_000 : 0),
+    bidDepth: Array.from({ length: 20 }, (_, i) => ({ price: 3000 - i, qty: 1 })),
+    askDepth: Array.from({ length: 20 }, (_, i) => ({ price: 3001 + i, qty: 1 })),
+  };
+  const liquidity = new SharedLiquidityState({
+    sharedMarketData: {
+      orderBookDataPlane: {
+        acquire: () => ({ release: vi.fn() }),
+        get: () => ({
+          getHealth: () => (status === 'NO_DATA' ? 'RESYNCING' : 'HEALTHY'),
+          getSnapshot: () => snapshot,
+        }),
+      },
+    } as never,
+    logger,
+    clock: { now: () => Date.now() },
+  });
+  liquidity.start(['ETHUSDT']);
+  (service as any).strategyRuntimeCoordinator.sharedLiquidityState = liquidity;
+  return liquidity;
+}
+
 describe('TradingService Aegis live execution', () => {
   it('keeps the candle feed and existing-position peaks updating with entry producers disabled', async () => {
     const { service, exchange, mlService, symbolStores } = makeHarness({
@@ -1266,6 +1296,81 @@ describe('TradingService Aegis live execution', () => {
     }
   });
 
+  it.each(['FRESH', 'STALE', 'NO_DATA'] as const)(
+    'admits qualifying Micro with Aegis disabled only with %s shared liquidity',
+    async (status) => {
+      const { service, exchange, mlService, logger, historyLogger, state } = makeHarness({
+        balance: 2_000,
+        microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+      });
+      Object.assign(CONFIG, { AEGIS_ENABLED: false });
+      (service as any).detector = {};
+      const liquidity = attachSharedLiquidity(service, logger, status);
+      // Explicit approved fixture, never a replacement of deployment approval.
+      vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
+        configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
+        codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
+      });
+      const execute = vi.spyOn((service as any).sharedStrategyExecution, 'execute');
+      try {
+        const opened = await (service as any).openMicroBurstLivePosition({
+          symbol: 'ETHUSDT',
+          side: 'LONG',
+          signalId: 'shared-liquidity',
+          requestedAt: Date.now(),
+          leverage: 20,
+          positionFraction: 0.01,
+          structuralStopPrice: 2970,
+          destinationPrice: 3030,
+          diagnostics: {},
+        });
+        expect(opened).toBe(status === 'FRESH');
+        expect(execute).toHaveBeenCalledTimes(status === 'FRESH' ? 1 : 0);
+        expect(exchange.marketOpen).toHaveBeenCalledTimes(status === 'FRESH' ? 1 : 0);
+        if (opened) {
+          expect(exchange.placeStopClose).toHaveBeenCalled();
+          expect(state.get().lastStrategy).toBe('MICRO_BURST_V1');
+          expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(
+            expect.objectContaining({ strategy: 'MICRO_BURST_V1' }),
+          );
+        }
+        expect(mlService.getSignal).not.toHaveBeenCalled();
+        expect(mlService.getExitSignal).not.toHaveBeenCalled();
+        expect(exchange.subscribeToCandles).not.toHaveBeenCalled();
+        expect(exchange.subscribeToPartialDepth).not.toHaveBeenCalled();
+      } finally {
+        liquidity.close();
+      }
+    },
+  );
+
+  it('aggregates the first Micro authority veto without account reads or warning spam', async () => {
+    const { service, exchange, logger } = makeHarness({
+      microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+    });
+    const start = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(start);
+    try {
+      for (let i = 0; i < 100; i++)
+        await (service as any).openMicroBurstLivePosition({ symbol: 'ETHUSDT' });
+      now.mockReturnValue(start + 60_000);
+      (service as any).microAdmissionDiagnostics.heartbeat();
+      expect(logger.info).toHaveBeenCalledWith(
+        'strategy_entry_gate_summary',
+        expect.objectContaining({
+          total: 100,
+          counts: { 'admission:LIVE_AUTHORITY_NOT_ENABLED': 100 },
+        }),
+      );
+      expect(exchange.hasOpenPosition).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'micro_burst_live_entry_denied',
+        expect.anything(),
+      );
+    } finally {
+      now.mockRestore();
+    }
+  });
   it('disconnects Aegis startup and scans while retaining runtime identity reporting', async () => {
     const { service, exchange, mlService, notifier } = makeHarness({
       readActivePositionSequence: [null],
@@ -2523,89 +2628,99 @@ describe('TradingService Aegis live execution', () => {
     );
   });
 
-  it('enters on standalone momentum when Aegis signal is abstain/do-not-enter', async () => {
-    const momentumCandlesList = Array.from({ length: 80 }, (_, index) => {
-      const close = 100 + index * 0.01;
-      const isMomentum = index >= 77;
-      const open = isMomentum ? close - 0.2 : close - 0.05;
-      return {
-        openTime: index * 300_000,
-        timestamp: index * 300_000,
-        open,
-        high: Math.max(open, close) + 0.1,
-        low: Math.min(open, close) - 0.1,
-        close,
-        volume: isMomentum ? 120 + (index - 77) * 2 : 100,
-        buyVolume: 50,
-        closeTime: (index + 1) * 300_000 - 1,
-      };
-    });
-    const abstainSignal: AegisTradingSignal = {
-      symbol: 'ETHUSDT',
-      action: 'PASS',
-      confidence: 0,
-      source: 'AEGIS_TURBO',
-      longProb: 0.33,
-      shortProb: 0.33,
-      neutralProb: 0.34,
-      metadata: {
-        aegis: {
-          turbo: {
-            raw: { action: 'HOLD', turbo_score: 0.4, votes: { long: 0, short: 0, neutral: 3 } },
-            gated: { action: 'HOLD', reason: 'abstain' },
+  it.each([true, false])(
+    'enters on standalone momentum independently of Aegis enabled=%s',
+    async (aegisEnabled) => {
+      const momentumCandlesList = Array.from({ length: 80 }, (_, index) => {
+        const close = 100 + index * 0.01;
+        const isMomentum = index >= 77;
+        const open = isMomentum ? close - 0.2 : close - 0.05;
+        return {
+          openTime: index * 300_000,
+          timestamp: index * 300_000,
+          open,
+          high: Math.max(open, close) + 0.1,
+          low: Math.min(open, close) - 0.1,
+          close,
+          volume: isMomentum ? 120 + (index - 77) * 2 : 100,
+          buyVolume: 50,
+          closeTime: (index + 1) * 300_000 - 1,
+        };
+      });
+      const abstainSignal: AegisTradingSignal = {
+        symbol: 'ETHUSDT',
+        action: 'PASS',
+        confidence: 0,
+        source: 'AEGIS_TURBO',
+        longProb: 0.33,
+        shortProb: 0.33,
+        neutralProb: 0.34,
+        metadata: {
+          aegis: {
+            turbo: {
+              raw: { action: 'HOLD', turbo_score: 0.4, votes: { long: 0, short: 0, neutral: 3 } },
+              gated: { action: 'HOLD', reason: 'abstain' },
+            },
           },
         },
-      },
-    };
-    const config = momentumRideRuntimeConfig(0.02);
-    config.standaloneMainReplica = true;
-    config.aegisFallbackEnabled = false;
+      };
+      const config = momentumRideRuntimeConfig(0.02);
+      config.standaloneMainReplica = true;
+      config.aegisFallbackEnabled = false;
 
-    const e4Evaluate = vi.spyOn(E4TailRiskGuardAdapter, 'evaluate');
-    const { exchange, historyLogger, logger, mlService, service } = makeHarness({
-      signal: abstainSignal,
-      cachedCandles: momentumCandlesList,
-      momentumRide: config,
-    });
+      const e4Evaluate = vi.spyOn(E4TailRiskGuardAdapter, 'evaluate');
+      const { exchange, historyLogger, logger, mlService, service } = makeHarness({
+        signal: abstainSignal,
+        cachedCandles: momentumCandlesList,
+        momentumRide: config,
+      });
+      Object.assign(CONFIG, { AEGIS_ENABLED: aegisEnabled });
+      (service as any).detector = {};
+      const liquidity = attachSharedLiquidity(service, logger, 'FRESH');
 
-    vi.spyOn(
-      (service as any).strategyRuntimeCoordinator,
-      'readMomentumRealtimeMarket',
-    ).mockReturnValue({
-      source: 'SHARED_WEBSOCKET',
-      status: 'FRESH',
-      orderBookHealth: 'HEALTHY',
-      observedAtMs: Date.now(),
-      ageMs: 0,
-      aggTradeAgeMs: 0,
-      aggTradeGapFree: true,
-      aggTradeCount: 10,
-      netTakerVolume: 1,
-    });
+      vi.spyOn(
+        (service as any).strategyRuntimeCoordinator,
+        'readMomentumRealtimeMarket',
+      ).mockReturnValue({
+        source: 'SHARED_WEBSOCKET',
+        status: 'FRESH',
+        orderBookHealth: 'HEALTHY',
+        observedAtMs: Date.now(),
+        ageMs: 0,
+        aggTradeAgeMs: 0,
+        aggTradeGapFree: true,
+        aggTradeCount: 10,
+        netTakerVolume: 1,
+      });
 
-    await service.tick('ETHUSDT');
+      try {
+        await service.tick('ETHUSDT');
+      } finally {
+        liquidity.close();
+      }
 
-    expect(exchange.marketOpen).toHaveBeenCalledWith(
-      'ETHUSDT',
-      'LONG',
-      expect.any(Number),
-      expect.any(String),
-    );
-    expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(
-      expect.objectContaining({ strategy: 'MOMENTUM_RIDE', side: 'LONG' }),
-    );
-    expect(logger.warn).toHaveBeenCalledWith(
-      'momentum_ride_live_entry',
-      expect.objectContaining({
-        symbol: 'ETHUSDT',
-        side: 'LONG',
-        leverage: 30,
-        positionFraction: 0.02,
-      }),
-    );
-    expect(mlService.getSignal).not.toHaveBeenCalled();
-    expect(e4Evaluate).not.toHaveBeenCalled();
-  });
+      expect(exchange.marketOpen).toHaveBeenCalledWith(
+        'ETHUSDT',
+        'LONG',
+        expect.any(Number),
+        expect.any(String),
+      );
+      expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(
+        expect.objectContaining({ strategy: 'MOMENTUM_RIDE', side: 'LONG' }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        'momentum_ride_live_entry',
+        expect.objectContaining({
+          symbol: 'ETHUSDT',
+          side: 'LONG',
+          leverage: 30,
+          positionFraction: 0.02,
+        }),
+      );
+      expect(mlService.getSignal).not.toHaveBeenCalled();
+      expect(e4Evaluate).not.toHaveBeenCalled();
+    },
+  );
 
   it('blocks standalone Momentum on a shared account-wide daily-loss veto', async () => {
     const config = momentumRideRuntimeConfig(0.02);
