@@ -17,6 +17,8 @@ import {
 } from './DurableEntryCoordinator';
 import { SharedStrategyExecutionService } from './SharedStrategyExecutionService';
 import { DurableStopCoordinator } from './DurableStopCoordinator';
+import { validateMicroBurstEntryMarket } from '../../strategies/micro-burst/domain/MicroBurstEntryMarketGuard';
+import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 
 const scope = { account: 'fixture-primary', environment: 'fixture' };
 const order = { avgPrice: 100, orderId: '123' };
@@ -157,6 +159,45 @@ function shared(coordinator: DurableEntryCoordinator) {
   );
   return { service, exchange };
 }
+
+it('does not send when Micro market evidence expires while PREPARED is persisted', async () => {
+  let now = 1000;
+  const journal = new InMemoryExecutionJournal();
+  const append = journal.append.bind(journal);
+  vi.spyOn(journal, 'append').mockImplementation(async (entry) => {
+    const persisted = await append(entry);
+    if (entry.event === 'PREPARED') now += 30_001;
+    return persisted;
+  });
+  const h = harness(journal);
+  await h.coordinator.start();
+  const request = {
+    ...intent(),
+    structuralStopPrice: 99.5,
+    destinationPrice: 102,
+    metadata: { signalSnapshotAtMs: 1000 },
+  };
+  const send = vi.fn().mockResolvedValue(order);
+  const reason = () =>
+    validateMicroBurstEntryMarket(
+      request,
+      2,
+      {
+        status: 'HEALTHY',
+        observedAtMs: now,
+        bidDepth: [{ price: 99.99, qty: 10 }],
+        askDepth: [{ price: 100.01, qty: 10 }],
+      },
+      now,
+      defaultMicroBurstConfig(),
+    );
+  expect(reason()).toBeUndefined();
+  const result = await h.coordinator.execute(request, 2, 'micro-expiry', send, () => !reason());
+  expect(result).toMatchObject({ status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' });
+  expect(reason()).toBe('MICRO_SIGNAL_EXPIRED');
+  expect(send).not.toHaveBeenCalled();
+  expect(h.coordinator.blockedReason()).toBeDefined();
+});
 
 afterEach(async () => {
   for (const coordinator of coordinators.splice(0))

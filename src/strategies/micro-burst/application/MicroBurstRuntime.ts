@@ -52,6 +52,8 @@ import type {
   MarketSnapshotEvidenceSink,
 } from '../../../core/blackbox/StrategyDecisionBlackBox';
 import { createMicroBurstBlackBoxObservation } from './MicroBurstBlackBoxObservation';
+import { validateMicroBurstEntryMarket } from '../domain/MicroBurstEntryMarketGuard';
+import type { StrategyExecutionIntent } from '../../../core/strategy/StrategyExecution';
 
 const DEFAULT_EVALUATION_INTERVAL_MS = 5000;
 const HEALTH_REPORT_INTERVAL_MS = 60_000;
@@ -753,7 +755,7 @@ export class MicroBurstRuntime {
             positionFraction,
             structuralStopPrice: result.structuralInvalidation,
             destinationPrice: result.destinationPrice,
-            diagnostics: result.diagnostics ?? {},
+            diagnostics: { ...result.diagnostics, signalSnapshotAtMs: result.snapshotAtMs },
           });
         }
       }
@@ -986,6 +988,16 @@ export class MicroBurstRuntime {
       this.paperOpenSymbols.delete(symbol);
       this.paperSuppressionDiagnostics.delete(`${symbol}:${result.tradeId}`);
     }
+  }
+
+  validateEntryMarket(intent: StrategyExecutionIntent, quantity: number): string | undefined {
+    return validateMicroBurstEntryMarket(
+      intent,
+      quantity,
+      this.symbolStates.get(intent.symbol)?.book.getSnapshot(),
+      this.deps.clock.now(),
+      { ...defaultMicroBurstConfig(), ...this.config.exitPolicy },
+    );
   }
 
   readExitMarketSnapshot(symbol: string, sinceMs?: number): MicroBurstExitMarketSnapshot | null {

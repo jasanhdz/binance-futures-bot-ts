@@ -31,6 +31,9 @@ import {
 } from '../../core/risk/ExecutionJournal';
 import type { AegisRealtimeMarketSnapshot } from '../../strategies/aegis/application/AegisRealtimeMarketState';
 import type { RecoverableEntryPosition, TradingExchangePort } from '../ports/Exchange';
+import type { StrategyExecutionIntent } from '../../core/strategy/StrategyExecution';
+import { validateMicroBurstEntryMarket } from '../../strategies/micro-burst/domain/MicroBurstEntryMarketGuard';
+import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 
 const originalConfig = { ...CONFIG };
 
@@ -1257,6 +1260,19 @@ function attachSharedLiquidity(
   });
   liquidity.start(['ETHUSDT']);
   (service as any).strategyRuntimeCoordinator.sharedLiquidityState = liquidity;
+  (service as any).strategyRuntimeCoordinator.microBurstRuntime = {
+    validateEntryMarket: (intent: StrategyExecutionIntent, quantity: number) =>
+      validateMicroBurstEntryMarket(
+        intent,
+        quantity,
+        {
+          ...snapshot,
+          status: status === 'FRESH' ? 'HEALTHY' : 'STALE',
+        },
+        Date.now(),
+        defaultMicroBurstConfig(),
+      ),
+  };
   return liquidity;
 }
 
@@ -1320,9 +1336,9 @@ describe('TradingService Aegis live execution', () => {
           requestedAt: Date.now(),
           leverage: 20,
           positionFraction: 0.01,
-          structuralStopPrice: 2970,
+          structuralStopPrice: 2990,
           destinationPrice: 3030,
-          diagnostics: {},
+          diagnostics: { signalSnapshotAtMs: Date.now() - 1000 },
         });
         expect(opened).toBe(status === 'FRESH');
         expect(execute).toHaveBeenCalledTimes(status === 'FRESH' ? 1 : 0);
@@ -1343,6 +1359,97 @@ describe('TradingService Aegis live execution', () => {
       }
     },
   );
+
+  it('does not let manual adoption steal a Micro fill before its ownership handoff', async () => {
+    const { service, exchange, logger, state } = makeHarness({
+      balance: 2_000,
+      microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+    });
+    Object.assign(CONFIG, { AEGIS_ENABLED: false });
+    const liquidity = attachSharedLiquidity(service, logger, 'FRESH');
+    vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
+      configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
+      codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
+    });
+    exchange.marketOpen.mockImplementation(async () => {
+      exchange.hasOpenPosition.mockResolvedValue(true);
+      expect(state.get().mode).toBe('IDLE');
+      expect(await (service as any).positionRecovery.tryAdoptManualPositionRuntime('ETHUSDT')).toBe(
+        false,
+      );
+      expect(exchange.placeStopClose).not.toHaveBeenCalled();
+      expect(exchange.placeTpClose).not.toHaveBeenCalled();
+      return { avgPrice: 3000, orderId: 'entry-1' };
+    });
+    try {
+      expect(
+        await (service as any).openMicroBurstLivePosition({
+          symbol: 'ETHUSDT',
+          side: 'LONG',
+          signalId: 'adoption-race',
+          requestedAt: Date.now(),
+          leverage: 20,
+          positionFraction: 0.01,
+          structuralStopPrice: 2990,
+          destinationPrice: 3030,
+          diagnostics: { signalSnapshotAtMs: Date.now() - 1000 },
+        }),
+      ).toBe(true);
+      expect(state.get()).toMatchObject({
+        lastStrategy: 'MICRO_BURST_V1',
+        positionOwner: 'BOT',
+        lastStopPrice: 2990,
+      });
+      expect(exchange.placeStopClose).toHaveBeenCalledTimes(1);
+      expect(exchange.placeTpClose).not.toHaveBeenCalled();
+    } finally {
+      liquidity.close();
+    }
+  });
+
+  it('denies a Micro signal that expires during asynchronous sizing without sending or adopting it', async () => {
+    const { service, exchange, logger, state } = makeHarness({
+      balance: 2_000,
+      microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+    });
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+    const liquidity = attachSharedLiquidity(service, logger, 'FRESH');
+    vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
+      configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
+      codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
+    });
+    exchange.readActivePosition.mockImplementationOnce(async () => {
+      clock.mockReturnValue(start + 30_001);
+      return null;
+    });
+    try {
+      expect(
+        await (service as any).openMicroBurstLivePosition({
+          symbol: 'ETHUSDT',
+          side: 'LONG',
+          signalId: 'expires-during-sizing',
+          requestedAt: start,
+          leverage: 20,
+          positionFraction: 0.01,
+          structuralStopPrice: 2990,
+          destinationPrice: 3030,
+          diagnostics: { signalSnapshotAtMs: start - 1000 },
+        }),
+      ).toBe(false);
+      expect(exchange.marketOpen).not.toHaveBeenCalled();
+      expect(exchange.placeStopClose).not.toHaveBeenCalled();
+      expect(state.get().mode).toBe('IDLE');
+      expect(state.get().marketOpenAmbiguous).not.toBe(true);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'micro_burst_live_entry_not_opened',
+        expect.objectContaining({ status: 'DENIED', reason: 'SHARED_SAFETY_DENIED' }),
+      );
+    } finally {
+      clock.mockRestore();
+      liquidity.close();
+    }
+  });
 
   it('aggregates the first Micro authority veto without account reads or warning spam', async () => {
     const { service, exchange, logger } = makeHarness({
@@ -2276,6 +2383,48 @@ describe('TradingService Aegis live execution', () => {
     expect(historyLogger.logTradeOpen).not.toHaveBeenCalled();
     expect(historyLogger.logTradeClose).not.toHaveBeenCalled();
   });
+
+  it.each(['MICRO_BURST_V1', 'MOMENTUM_RIDE'] as const)(
+    'preserves verified %s ownership at startup when excluded from metrics',
+    async (strategy) => {
+      const { exchange, service, symbolStores } = makeHarness({
+        symbolStates: {
+          ETHUSDT: {
+            mode: 'LONG_RIDE',
+            lastSide: 'LONG',
+            lastStrategy: strategy,
+            lastTradeId: 'verified-excluded-trade',
+            lastOrderId: 'order-1',
+            lastEntryPrice: 3000,
+            lastEntryQty: 0.02,
+            positionOwner: 'BOT',
+            tradeOrigin: 'BOT',
+            ownershipStatus: 'VERIFIED',
+            eligibleForBotMetrics: false,
+            metricsExclusionReason: 'EXTERNAL_QUANTITY_REDUCTION',
+          },
+        },
+        readActivePosition: {
+          sideMode: 'LONG',
+          qtyAbs: 0.02,
+          entryPrice: 3000,
+          leverage: 20,
+        },
+      });
+      await service.start(false);
+      expect(symbolStores.get('ETHUSDT')?.get()).toMatchObject({
+        lastStrategy: strategy,
+        lastTradeId: 'verified-excluded-trade',
+        positionOwner: 'BOT',
+        tradeOrigin: 'BOT',
+        ownershipStatus: 'VERIFIED',
+        eligibleForBotMetrics: false,
+        metricsExclusionReason: 'EXTERNAL_QUANTITY_REDUCTION',
+      });
+      expect(exchange.placeStopClose).not.toHaveBeenCalled();
+      expect(exchange.placeTpClose).not.toHaveBeenCalled();
+    },
+  );
 
   it('adds default -40% SL and +100% TP for an unprotected manual 40x position', async () => {
     const { exchange, service, symbolStores } = makeHarness({

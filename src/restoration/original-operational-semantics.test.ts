@@ -79,7 +79,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Strategy disconnect and OS/user startup reporting; not a LIVE approval hash.
     // Shared Micro/Momentum liquidity, bounded admission diagnostics and mandatory managed close routing.
     // Independent recovery/admission/shutdown integration.
-    'ae751a7ea3bb8e15ea45dcea2bdfcb76b5261429892f4a231829726ebfb7e07b',
+    // Ownership admission and Micro final executable revalidation; economics remain observational.
+    '343a6f988ad8146e374c7fb82ca4f64e8a598a56e0fa1eabaab5b6ff4c5fc763',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

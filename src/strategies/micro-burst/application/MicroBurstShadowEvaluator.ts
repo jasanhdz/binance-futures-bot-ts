@@ -16,6 +16,10 @@ import {
 import { priceDistanceToBps } from '../domain/MicroBurstUnits';
 import { defaultMicroBurstConfig } from '../domain/MicroBurstTypes';
 import { MICRO_BURST_V1_VERSION } from '../domain/MicroBurstIdentity';
+import {
+  evaluateMicroBurstReactionEntry,
+  MICRO_REACTION_CANDIDATE_VERSION,
+} from '../domain/MicroBurstReactionEntryPolicy';
 
 interface Clock {
   now(): number;
@@ -87,6 +91,28 @@ export class MicroBurstShadowEvaluator {
       );
 
       const referencePrice = context.decisionPrice.price;
+      try {
+        const reactionCandidate = evaluateMicroBurstReactionEntry(
+          context,
+          { ...defaultMicroBurstConfig(), ...strategyContext.config },
+          this.deps.contextBuilderDeps.book?.getDepthSnapshot(symbol),
+          this.deps.clock.now(),
+        );
+        this.deps.logger.info('micro_burst_entry_candidate_comparison', {
+          symbol,
+          snapshotAtMs,
+          candidateVersion: MICRO_REACTION_CANDIDATE_VERSION,
+          authority: 'OBSERVATION_ONLY',
+          baselineDecision: envelope.decision,
+          baselineReason: envelope.reason,
+          candidate: reactionCandidate,
+        });
+      } catch {
+        this.deps.logger.error('micro_burst_entry_candidate_observation_failed', {
+          symbol,
+          snapshotAtMs,
+        });
+      }
 
       const supportPrice = context.levels.nearest.support?.price ?? null;
       const resistancePrice = context.levels.nearest.resistance?.price ?? null;

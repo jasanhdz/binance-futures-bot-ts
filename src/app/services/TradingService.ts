@@ -348,7 +348,15 @@ export class TradingService {
       configSymbols: this.config.symbols,
       getLiveSymbols: () => this.getLiveAegisSymbols(),
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
-      isVerifiedBotOwnedState: (state) => this.isVerifiedBotOwnedState(state),
+      isEntryRecoveryPending: (symbol) =>
+        this.entryInFlight ||
+        this.microBurstEntryInFlightSymbols.has(symbol) ||
+        Boolean(deps.entryCoordinator?.blockedReason()),
+      // Metrics exclusion does not revoke verified position ownership.
+      isVerifiedBotOwnedState: (state) =>
+        (state.positionOwner === 'BOT' || state.positionOwner === 'AEGIS') &&
+        state.tradeOrigin === 'BOT' &&
+        state.ownershipStatus === 'VERIFIED',
       isLegacyBotOwnedState: (state) => this.isLegacyBotOwnedState(state),
       requireBrackets: () =>
         this.runtimeConfig.getAegisTurboYamlConfig()?.require_brackets !== false,
@@ -391,12 +399,21 @@ export class TradingService {
             );
           };
         },
-        isEntryCurrent: (intent) =>
-          this.acceptingEntries &&
-          !deps.stopCoordinator?.blockedReason() &&
-          !deps.closeCoordinator?.blockedReason() &&
-          !this.runtimeStopping &&
-          this.getSymbolMode(intent.symbol) === 'LIVE',
+        isEntryCurrent: (intent, quantity) => {
+          const admitted =
+            this.acceptingEntries &&
+            !deps.stopCoordinator?.blockedReason() &&
+            !deps.closeCoordinator?.blockedReason() &&
+            !this.runtimeStopping &&
+            this.getSymbolMode(intent.symbol) === 'LIVE';
+          if (!admitted || intent.identity.strategyId !== 'MICRO_BURST_V1') return admitted;
+          const reason = this.strategyRuntimeCoordinator.validateMicroBurstEntryMarket(
+            intent,
+            quantity,
+          );
+          if (reason) this.recordMicroAdmissionDenied({ symbol: intent.symbol, reason });
+          return reason === undefined;
+        },
         feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
         confirmationAttempts: 3,
         confirmationDelaysMs: [300, 500, 1000],
@@ -1681,6 +1698,7 @@ export class TradingService {
         createMicroBurstExecutionIntent({
           identity: this.microBurstIdentity,
           symbol: request.symbol,
+          signalSnapshotAtMs: Number(request.diagnostics.signalSnapshotAtMs),
           side: request.side,
           leverage,
           positionFraction: request.positionFraction,
@@ -1733,6 +1751,10 @@ export class TradingService {
           tradeId,
           status: execution.status,
           reason: execution.reason,
+          reasonDetail: executionMetadata.reasonDetail,
+          failureStage: executionMetadata.failureStage,
+          positionStillOpen: executionMetadata.positionStillOpen,
+          protectionPending: executionMetadata.protectionPending,
         });
         return false;
       }

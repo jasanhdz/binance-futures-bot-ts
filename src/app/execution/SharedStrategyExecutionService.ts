@@ -30,7 +30,7 @@ export interface SharedStrategyExecutionConfig {
   stopCoordinator?: DurableStopCoordinator;
   /** Captures ownership before awaits; entry permission is separate from protecting an opened position. */
   captureProtectionIdentity?: (intent: StrategyExecutionIntent) => () => boolean;
-  isEntryCurrent?: (intent: StrategyExecutionIntent) => boolean;
+  isEntryCurrent?: (intent: StrategyExecutionIntent, quantity: number) => boolean;
 }
 
 const DEFAULT_CONFIG: SharedStrategyExecutionConfig = {
@@ -194,7 +194,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                   request.quantity,
                   request.clientOrderId,
                 ),
-              () => this.config.isEntryCurrent?.(intent) !== false,
+              () => this.config.isEntryCurrent?.(intent, quantity) !== false,
             );
             entryMutations.push({
               operationId: result.operationId,
@@ -203,6 +203,11 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             });
             if (result.status === 'REJECTED')
               throw Object.assign(new Error('ENTRY_MUTATION_REJECTED'), { code: result.code });
+            if (result.status === 'BLOCKED' && result.reason === 'ENTRY_IDENTITY_NOT_CURRENT')
+              return denied(intent, 'SHARED_SAFETY_DENIED', {
+                ...baseMetadata,
+                reasonDetail: result.reason,
+              });
             if (result.status !== 'CONFIRMED') {
               return failed(intent, 'MARKET_OPEN_AMBIGUOUS', {
                 ...baseMetadata,
@@ -213,6 +218,11 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             }
             order = result.order;
           } else {
+            if (this.config.isEntryCurrent?.(intent, quantity) === false)
+              return denied(intent, 'SHARED_SAFETY_DENIED', {
+                ...baseMetadata,
+                reasonDetail: 'ENTRY_IDENTITY_NOT_CURRENT',
+              });
             order = await this.exchange.marketOpen(
               intent.symbol,
               intent.side,

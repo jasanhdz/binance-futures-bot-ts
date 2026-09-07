@@ -22,6 +22,7 @@ export function createMicroBurstExecutionIntent(
     },
     metadata: {
       strategy: 'MICRO_BURST_V1',
+      signalSnapshotAtMs: approved.signalSnapshotAtMs,
       leverageTier: approved.leverage > 30 ? 'HIGH' : 'MEDIUM',
     },
   };

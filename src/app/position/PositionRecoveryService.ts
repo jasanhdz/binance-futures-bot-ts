@@ -15,6 +15,7 @@ export interface PositionRecoveryServicePorts {
   configSymbols: readonly string[];
   getLiveSymbols(): string[];
   stateForSymbol(symbol: string): StateStore;
+  isEntryRecoveryPending(symbol: string): boolean;
   isVerifiedBotOwnedState(state: BotState): boolean;
   isLegacyBotOwnedState(state: BotState): boolean;
   requireBrackets(): boolean;
@@ -71,6 +72,12 @@ export class PositionRecoveryService {
       const symbolState = this.ports.stateForSymbol(symbol);
       const localState = symbolState.get();
       if (
+        this.ports.isEntryRecoveryPending(symbol) ||
+        localState.marketOpenAmbiguous ||
+        localState.microBurstPnlUnverified
+      )
+        continue;
+      if (
         localState.mode !== 'IDLE' &&
         this.ports.isVerifiedBotOwnedState(localState) &&
         !localState.lastOrderId
@@ -86,8 +93,14 @@ export class PositionRecoveryService {
           symbol,
           reason: 'ENTRY_ORDER_ID_MISSING_AFTER_RESTART',
         });
+        continue;
       }
-      if (localState.mode !== 'IDLE' && !this.ports.isVerifiedBotOwnedState(localState)) {
+      if (
+        localState.mode !== 'IDLE' &&
+        localState.positionOwner !== 'EXTERNAL' &&
+        localState.tradeOrigin !== 'MANUAL_EXTERNAL' &&
+        !this.ports.isVerifiedBotOwnedState(localState)
+      ) {
         if (this.ports.isLegacyBotOwnedState(localState)) {
           symbolState.set({
             positionOwner: 'BOT',
@@ -136,6 +149,21 @@ export class PositionRecoveryService {
         if (!position) continue;
 
         const currentState = symbolState.get();
+        if (
+          this.ports.isEntryRecoveryPending(symbol) ||
+          currentState.marketOpenAmbiguous ||
+          currentState.microBurstPnlUnverified
+        )
+          break;
+        // Unresolved active state is not evidence of a manually opened position.
+        if (
+          currentState.mode !== 'IDLE' &&
+          currentState.positionOwner !== 'EXTERNAL' &&
+          currentState.tradeOrigin !== 'MANUAL_EXTERNAL' &&
+          !this.ports.isVerifiedBotOwnedState(currentState) &&
+          !this.ports.isLegacyBotOwnedState(currentState)
+        )
+          break;
         if (
           currentState.mode !== 'IDLE' &&
           (this.ports.isVerifiedBotOwnedState(currentState) ||
@@ -227,7 +255,20 @@ export class PositionRecoveryService {
     const { exchange, logger, notifier } = this.ports;
     const symbolState = this.ports.stateForSymbol(symbol);
     const currentState = symbolState.get();
-    if (currentState.mode !== 'IDLE') return false;
+    const canAdopt = () => {
+      const latest = symbolState.get();
+      return (
+        latest.mode === 'IDLE' &&
+        !latest.marketOpenAmbiguous &&
+        !latest.microBurstPnlUnverified &&
+        latest.lastTradeId === currentState.lastTradeId &&
+        latest.lastOrderId === currentState.lastOrderId &&
+        latest.lastEntryAt === currentState.lastEntryAt &&
+        latest.lastExitAt === currentState.lastExitAt &&
+        !this.ports.isEntryRecoveryPending(symbol)
+      );
+    };
+    if (!canAdopt()) return false;
 
     let hasPosition = false;
     try {
@@ -235,7 +276,7 @@ export class PositionRecoveryService {
     } catch {
       return false;
     }
-    if (!hasPosition) return false;
+    if (!hasPosition || !canAdopt()) return false;
 
     for (const side of ['LONG', 'SHORT'] as Side[]) {
       let position: PositionInfo | null;
@@ -244,6 +285,8 @@ export class PositionRecoveryService {
       } catch {
         continue;
       }
+      // An exchange read can overlap a bot fill before its local ownership handoff.
+      if (!canAdopt()) return false;
       if (!position) continue;
 
       symbolState.set({

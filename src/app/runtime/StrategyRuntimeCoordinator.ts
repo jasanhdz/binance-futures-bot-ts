@@ -4,6 +4,7 @@ import type {
 } from '../../core/blackbox/StrategyDecisionBlackBox';
 import type { MarketSnapshotV1 } from '../../core/market-data/MarketSnapshotProvider';
 import type { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import type { StrategyExecutionIntent } from '../../core/strategy/StrategyExecution';
 import type { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { createReadOnlyAuditedExchange } from '../../infra/adapters/ReadOnlyAuditedExchange';
 import { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
@@ -180,6 +181,14 @@ export class StrategyRuntimeCoordinator {
 
   getMicroBurstReadiness(): MicroBurstRuntimeReadiness | null {
     return this.microBurstReadiness;
+  }
+
+  validateMicroBurstEntryMarket(
+    intent: StrategyExecutionIntent,
+    quantity: number,
+  ): string | undefined {
+    if (!this.microBurstRuntime) return 'MICRO_ENTRY_RUNTIME_UNAVAILABLE';
+    return this.microBurstRuntime.validateEntryMarket(intent, quantity);
   }
 
   readMicroBurstExitMarket(symbol: string, sinceMs?: number): MicroBurstExitMarketSnapshot | null {

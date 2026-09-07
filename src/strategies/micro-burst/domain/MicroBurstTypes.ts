@@ -416,4 +416,5 @@ export interface MicroBurstApprovedEntry {
   requestedAt: number;
   tradeId: string;
   signalId?: string;
+  signalSnapshotAtMs?: number;
 }
