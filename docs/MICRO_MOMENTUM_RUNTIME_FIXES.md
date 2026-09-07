@@ -206,3 +206,25 @@ PM2's installed restart path merges `current_conf` before `stopProcessId`, so
 allowance before signaling the old process. Verify `shutdown_completed`, no
 forced termination, and new journal ownership after startup; never delete locks
 to make startup succeed.
+
+### Durable Close Integration
+
+The interrupted integration completed a rebase onto remote durable-close revision
+`00e5b05466eed5315de02fa966e0797d78e2129c`. Runtime changes from `2bd51a7`
+are now `33359a1`; authorization changes from `10d9aee` are now `3711306`.
+The latter patch is unchanged. The combined TradingService retains managed close
+routing, recovery/admission/shutdown integration and the shared-liquidity,
+minute-refresh and bounded-diagnostics changes. Its restoration source checkpoint
+is updated to the combined source digest, not an authorization hash.
+
+The owner explicitly authorized integration, commits, normal push and live
+deployment on the current branch with the existing economic parameters unchanged.
+Approval must bind the final clean deployment commit, not either pre-rebase SHA
+or the runtime-fix base revision. Set the two separate local provenance/approval
+inputs only after that commit exists and validation succeeds, as described above.
+
+Fresh integrated validation on 2026-09-07 at 09:19-09:22 UTC: build passed;
+main suite 2,183 tests across 194 files; journal partitions 220 + 44 tests;
+isolated configuration suite 46 tests. Total: **2,493 passing tests across 196
+files**, with no unhandled errors. The journal partition skips are complementary:
+all 264 journal tests executed. No economic configuration changed.
