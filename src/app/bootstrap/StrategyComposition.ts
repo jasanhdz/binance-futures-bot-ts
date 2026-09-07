@@ -6,6 +6,7 @@ import { TradingService, type TradingServiceConfig } from '../services/TradingSe
 import type { ApplicationInfrastructure } from './ApplicationInfrastructure';
 import { composeDurableEntryCoordinator } from './DurableEntryComposition';
 import { composeDurableStopCoordinator } from './DurableStopComposition';
+import { composeDurableCloseCoordinator } from './DurableCloseComposition';
 
 export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure) {
   const { exchange, logger, stateStore, notifier, configManager } = infrastructure;
@@ -47,6 +48,7 @@ export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure
       strategyLossStateRegistry: lossStates,
       entryCoordinator: composeDurableEntryCoordinator(exchange, CONFIG.IS_TESTNET, stateStore),
       stopCoordinator: composeDurableStopCoordinator(exchange, CONFIG.IS_TESTNET),
+      closeCoordinator: composeDurableCloseCoordinator(exchange, CONFIG.IS_TESTNET),
     },
     config,
   );

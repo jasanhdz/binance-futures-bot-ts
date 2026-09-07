@@ -27,6 +27,41 @@
 
 ## Estado entregado (no confundir incrementos con fases completas)
 
+### Cierre durable Micro gestionado (incremento local, sin publicar)
+
+Ver `SAFETY_DURABLE_MICRO_CLOSE.md`. Ambas rutas TradingService, salida inteligente
+y emergencia explicita de proteccion runtime, usan un CID estable y PREPARED durable
+para posiciones Micro BOT ya gestionadas. Produccion lo compone obligatoriamente;
+startup/recovery con entrada OFF, gate Shared y shutdown drenado estan conectados.
+FILLED no implica flat; flat no atribuye fills. Cancelacion protectora reutiliza el
+protocolo durable existente solo despues de flat fresco. PnL permanece en cuarentena.
+No se hizo commit/push, no se inicio bot ni se accedio a exchange real. Se preservo
+el trabajo local previo de candles fallback y mensajes de arranque.
+
+Pendientes acumulativos, no resueltos por este incremento:
+
+- Inventario completo de exposicion y reservas monetarias runtime durables; la
+  exclusion de mutaciones pendientes no es un ledger de margen/notional/riesgo.
+- Ledger atribuible de fills/costes/PnL, salida por trigger con reporting completo,
+  reconciliacion contable y liberacion verificada de reservas/cuarentenas.
+- Emergencias Shared pre-handoff, cierres Aegis/Momentum y mutaciones universales
+  de brackets/TP. No extender a esas rutas el alcance de la prueba Micro.
+- Resolucion operativa explicita de PREPARED sin evidencia, parciales/residuales,
+  historial ausente, identidad perdida y stops disparados. Nunca reenviar por ausencia.
+- Phase 9 sigue PARCIAL: extraccion/integracion global de admision, supervision,
+  contabilidad y bootstrap exterior. Este bloque no completa las fases generales.
+- Validacion real, datos, operator recovery y despliegue siguen pendientes/no autorizados.
+
+La evidencia exacta de tests de este incremento queda en su audit; las cifras
+inferiores son historicas, no resultados nuevos.
+Validacion propia final: `AEGIS_ENABLED=true npm run test:safety` PASS, build,
+2.386 tests principales + 46 ConfigLoader = **2.432 tests, cero fallos**.
+Override solo del proceso de tests, sin cambios a archivos env.
+Revision independiente: fallo transitorio de lectura inicial de cierre, anterior a
+PREPARED, no deja bloqueo global ni cambia cuarentenas existentes. Dos regresiones
+cubren retry/reconciliacion y acceso a supervision; alcance y limites en el audit
+`SAFETY_DURABLE_MICRO_CLOSE.md`. Fallos de journal y no-resend siguen fail-closed.
+
 ### Recovery Micro posterior a 5cdddf6
 
 `SAFETY_MICRO_ENTRY_RECOVERY.md` describe reconstruccion de estado vacio desde

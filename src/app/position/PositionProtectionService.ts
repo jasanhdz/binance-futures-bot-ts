@@ -34,6 +34,7 @@ export interface MicroProtectionResult {
 
 export interface PositionProtectionServiceDeps {
   stopCoordinator?: DurableStopCoordinator;
+  closeCoordinator?: import('../execution/DurableCloseCoordinator').DurableCloseCoordinator;
   exchange: TradingExchangePort;
   logger: Logger;
   getRegimeConfig(symbol: string): RegimeConfig | undefined;
@@ -452,6 +453,7 @@ export class PositionProtectionService {
   /** No market context or guessed PnL: close state and accounting are independent. */
   async reconcileMissingMicroPosition(symbol: string, store: StateStore): Promise<boolean> {
     const state = { ...store.get() };
+    if (this.deps.closeCoordinator?.blocksPosition(symbol, state.lastTradeId)) return false;
     const side = state.lastSide;
     if (!side) return false;
     // Two independent flat observations, not an interpretation of a read error.
@@ -462,6 +464,7 @@ export class PositionProtectionService {
       if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) return false;
     }
     if (!(await this.cleanupMicroCloseOrders(symbol, store, state))) return false;
+    if (this.deps.closeCoordinator?.blocksPosition(symbol, state.lastTradeId)) return false;
     // Detect a reopened position before changing local lifecycle state.
     if ((await this.deps.exchange.readActivePosition(symbol, side)) !== null) return false;
     if (
@@ -476,6 +479,7 @@ export class PositionProtectionService {
     )
       return false;
     if (!store.flush) throw new Error('MICRO_CLOSE_DURABLE_STORE_REQUIRED');
+    if (this.deps.closeCoordinator?.blocksPosition(symbol, state.lastTradeId)) return false;
     return this.persistMicroOperationalClose(store, state, {
       lastExitAt:
         state.mode === 'IDLE' && state.lastExitAt !== undefined

@@ -37,7 +37,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Identified stop send-once and exact lookup capability; no LIVE configuration change.
   // Read-only canceled-stop settlement and fresh position evidence; not a LIVE approval.
   // Exact cancellation target lookup and durable Micro cleanup integration.
-  'src/app/ports/Exchange.ts': '52ecccf5a0a45b0386eb78d991a00f057586a46493240ef3ad9c645a4a4cff5a',
+  // Managed Micro close: narrow identified send/strict evidence port, not monetary settlement.
+  'src/app/ports/Exchange.ts': '7dd8fb1ed15083d705ed1dfbd394f778fb1ba2f47f80ba8378c6643c3c8d6ee1',
   'src/infra/config/environment.ts':
     // User-requested AEGIS_ENABLED disconnect; existing defaults and LIVE values unchanged.
     'b35c9984d4a756c53cc424350317cb4131c4c973f038f08d77bac103b7217ee3',
@@ -55,7 +56,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Stop safety slice: identified algo send-once and exact current conditional lookup.
   // Source checkpoint only, not LIVE authorization. See SAFETY_DURABLE_MICRO_STOP.md.
   'src/infra/adapters/BinanceAdapter.ts':
-    '5e9e874b69622ea6230f70a2fa14192ce5d045d790625ad32f6b6a24f29749bc',
+    // Identified market close, no retries, strict BOTH/hedge lookup. SAFETY_DURABLE_MICRO_CLOSE.md.
+    '880bd166d498d2749f361ba6e035a5d620d308cca3be6ee950196b667b21cb6d',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
@@ -73,8 +75,10 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Startup barrier: never reopen admission or close storage over initializing work.
   // Stop safety slice: same protector injection, startup ordering, admission and drained close.
   'src/app/services/TradingService.ts':
+    // Reviewed disconnect correction: retain the common candle feed, not Aegis producers.
     // Strategy disconnect and OS/user startup reporting; not a LIVE approval hash.
-    '6daa243558cf68809d7c6d5bbc40496aa48bea75aac6a8f34f5a3584d338ecc7',
+    // Mandatory managed close routing, independent recovery/admission/shutdown integration.
+    '03ce14669f86eb1f30d1455edf64855a449bdb1c440a10c7056a560fd371ccf1',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':

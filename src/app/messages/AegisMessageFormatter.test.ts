@@ -174,8 +174,9 @@ describe('formatAegisStartupMessage', () => {
     expect(text).not.toContain('**');
   });
 
-  it('shows a single strategy-aware title and effective modes', () => {
-    expect(startup()).toContain('Runtime started');
+  it('shows startup configuration and configured modes without claiming readiness', () => {
+    expect(startup()).toContain('Startup configuration');
+    expect(startup()).not.toMatch(/Runtime started|Active strategies/);
     expect(startup()).toContain('AEGIS_TURBO (LIVE)');
     expect(startup()).toContain('MOMENTUM_RIDE (ENFORCE)');
   });
@@ -188,7 +189,8 @@ describe('formatAegisStartupMessage', () => {
       identity: { user: 'user<&>', hostname: 'mac<&>', platform: 'darwin', release: 'test' },
       activePositions: [],
     });
-    expect(text).toContain('Active strategies: MICRO_BURST_V1 (SHADOW)');
+    expect(text).toContain('Configured entry strategies: MICRO_BURST_V1 (SHADOW)');
+    expect(text).not.toMatch(/Runtime started|Active strategies/);
     expect(text).not.toMatch(/Aegis|AEGIS|Momentum|MOMENTUM|Probe|RegimeEngine/);
     expect(text).toContain('User: user<&>');
     expect(text).toContain('Host: mac<&>');
@@ -198,7 +200,7 @@ describe('formatAegisStartupMessage', () => {
       momentumRide: { mode: 'OFF' },
       activePositions: [],
     });
-    expect(none).toContain('No active entry strategies');
+    expect(none).toContain('No configured entry strategies');
   });
 
   it('shows compact active symbols without depending on ETHUSDT as the only symbol', () => {

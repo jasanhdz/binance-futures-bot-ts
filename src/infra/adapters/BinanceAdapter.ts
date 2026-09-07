@@ -1821,6 +1821,98 @@ export class BinanceExchange implements Exchange {
     this.log.info('api_tp_algo_placed', { symbol, side, tp: triggerPrice });
   }
 
+  async sendMarketCloseOnce(
+    request: import('../../app/ports/Exchange').IdentifiedCloseRequest,
+  ): Promise<void> {
+    if (
+      !/^[A-Z0-9]+$/.test(request.symbol) ||
+      !['LONG', 'SHORT'].includes(request.side) ||
+      !['BOTH', request.side].includes(request.positionSide) ||
+      !Number.isFinite(request.quantity) ||
+      request.quantity <= 0 ||
+      !/^bot_cl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
+      !Number.isSafeInteger(request.notBeforeMs) ||
+      request.notBeforeMs < 0
+    )
+      throw new Error('CLOSE_REQUEST_INVALID');
+    try {
+      await this.enqueue(
+        () =>
+          this.cli.futuresOrder({
+            symbol: request.symbol,
+            type: 'MARKET',
+            side: request.side === 'LONG' ? 'SELL' : 'BUY',
+            quantity: String(request.quantity),
+            positionSide: request.positionSide,
+            ...(request.positionSide === 'BOTH' ? { reduceOnly: 'true' as const } : {}),
+            newClientOrderId: request.clientOrderId,
+            newOrderRespType: 'RESULT',
+          }),
+        DEFAULT_REQUEST_WEIGHT,
+        'protection_order_mutation',
+        'critical',
+      );
+    } finally {
+      // Even a lost ACK may have changed the account. Never retry or infer a fill here.
+      this.invalidateAccountInfo();
+    }
+  }
+
+  async readMarketCloseByClientOrderId(
+    request: import('../../app/ports/Exchange').IdentifiedCloseRequest,
+  ): Promise<import('../../app/ports/Exchange').IdentifiedCloseEvidence | null> {
+    const order = await this.enqueue(() =>
+      this.cli.futuresGetOrder({
+        symbol: request.symbol,
+        origClientOrderId: request.clientOrderId,
+      }),
+    );
+    const executed = Number(order.executedQty);
+    const status = String(order.status);
+    if (
+      !/^bot_cl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
+      ![order.origQty, order.executedQty, order.time, order.updateTime].every(
+        (value) =>
+          (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) &&
+          Number.isFinite(Number(value)),
+      ) ||
+      !['LONG', 'SHORT'].includes(request.side) ||
+      !['BOTH', request.side].includes(request.positionSide) ||
+      !Number.isFinite(request.quantity) ||
+      request.quantity <= 0 ||
+      !Number.isSafeInteger(request.notBeforeMs) ||
+      request.notBeforeMs < 0 ||
+      order.symbol !== request.symbol ||
+      order.clientOrderId !== request.clientOrderId ||
+      !/^[1-9]\d*$/.test(String(order.orderId)) ||
+      !Number.isSafeInteger(Number(order.orderId)) ||
+      order.type !== 'MARKET' ||
+      order.side !== (request.side === 'LONG' ? 'SELL' : 'BUY') ||
+      order.positionSide !== request.positionSide ||
+      (request.positionSide === 'BOTH'
+        ? ![true, 'true'].includes(order.reduceOnly as boolean | string)
+        : ![false, 'false'].includes(order.reduceOnly as boolean | string)) ||
+      Number(order.origQty) !== request.quantity ||
+      !Number.isFinite(executed) ||
+      executed < 0 ||
+      executed > request.quantity ||
+      !['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'EXPIRED'].includes(status) ||
+      (status === 'FILLED' && executed !== request.quantity) ||
+      (status === 'PARTIALLY_FILLED' && !(executed > 0 && executed < request.quantity)) ||
+      !Number.isSafeInteger(Number(order.time)) ||
+      Number(order.time) < request.notBeforeMs ||
+      !Number.isSafeInteger(Number(order.updateTime)) ||
+      Number(order.updateTime) < Number(order.time)
+    )
+      return null;
+    return {
+      clientOrderId: request.clientOrderId,
+      orderId: String(order.orderId),
+      status: status as import('../../app/ports/Exchange').IdentifiedCloseEvidence['status'],
+      executedQuantity: executed,
+    };
+  }
+
   async closeSideMarketSafe(
     symbol: string,
     side: Side,

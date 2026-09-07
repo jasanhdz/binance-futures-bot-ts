@@ -161,6 +161,7 @@ export interface TradingServiceDeps {
   /** Production supplies this via StrategyComposition; direct unit fixtures may omit it. */
   entryCoordinator?: DurableEntryCoordinator;
   stopCoordinator?: DurableStopCoordinator;
+  closeCoordinator?: import('../execution/DurableCloseCoordinator').DurableCloseCoordinator;
 }
 
 export interface TradingServiceConfig {
@@ -185,6 +186,7 @@ export interface AegisRuntimeSnapshot {
   microBurstReadiness: MicroBurstRuntimeReadiness | null;
   entryMutationBlockedReason?: string;
   stopMutationBlockedReason?: string;
+  closeMutationBlockedReason?: string;
 }
 
 export class TradingService {
@@ -253,7 +255,7 @@ export class TradingService {
     private deps: TradingServiceDeps,
     private config: TradingServiceConfig,
   ) {
-    if (deps.entryCoordinator) this.acceptingEntries = false;
+    if (deps.entryCoordinator || deps.closeCoordinator) this.acceptingEntries = false;
     this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
     this.runtimeConfig = new TradingRuntimeConfigService(deps.configManager);
     this.aegisEntryNotificationService = new AegisEntryNotificationService({
@@ -283,6 +285,7 @@ export class TradingService {
     this.microBurstIdentity = createMicroBurstV1Identity();
     this.positionProtection = new PositionProtectionService({
       stopCoordinator: deps.stopCoordinator,
+      closeCoordinator: deps.closeCoordinator,
       exchange: deps.exchange,
       logger: deps.logger,
       getRegimeConfig: (symbol) => this.runtimeConfig.getAegisTurboRegimeConfig(symbol),
@@ -386,6 +389,7 @@ export class TradingService {
         isEntryCurrent: (intent) =>
           this.acceptingEntries &&
           !deps.stopCoordinator?.blockedReason() &&
+          !deps.closeCoordinator?.blockedReason() &&
           !this.runtimeStopping &&
           this.getSymbolMode(intent.symbol) === 'LIVE',
         feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
@@ -694,6 +698,14 @@ export class TradingService {
     this.positionManagerRouter.register(
       new MicroBurstPositionManager(this.positionLifecycleCore, mbConfig.exitPolicy, {
         close: async (context, decision) => {
+          if (this.deps.closeCoordinator) {
+            return this.deps.closeCoordinator.closeManaged(
+              context.symbol,
+              context.symbolState,
+              this.positionProtection,
+              context.botState,
+            );
+          }
           const closeIdentity = { ...context.botState };
           const closeStartedAt = Date.now();
           const position = await this.deps.exchange.readActivePosition(
@@ -988,6 +1000,7 @@ export class TradingService {
       isRunning: this.isRunning,
       entryMutationBlockedReason: this.deps.entryCoordinator?.blockedReason(),
       stopMutationBlockedReason: this.deps.stopCoordinator?.blockedReason(),
+      closeMutationBlockedReason: this.deps.closeCoordinator?.blockedReason(),
       tradesToday: riskSession.tradesToday,
       consecutiveLosses: riskSession.consecutiveLosses,
       dailyStartBalance: riskSession.dailyStartBalance,
@@ -1038,6 +1051,13 @@ export class TradingService {
     if (this.runtimeStopping) return;
     this.acceptingEntries = false;
     await this.deps.stopCoordinator?.start();
+    if (this.runtimeStopping) return;
+    await this.deps.closeCoordinator?.start();
+    if (this.runtimeStopping) return;
+    await this.deps.closeCoordinator?.reconcile(
+      (symbol) => this.stateForSymbol(symbol),
+      this.positionProtection,
+    );
     if (this.runtimeStopping) return;
     await this.deps.entryCoordinator?.start();
     if (this.runtimeStopping) return;
@@ -1270,10 +1290,12 @@ export class TradingService {
       activePositions: startupPositions,
     });
     await notifier.sendMessage(startupMsg);
-    for (const symbol of this.isAegisEnabled() ? this.config.symbols : []) {
+    for (const symbol of this.config.symbols) {
+      // Existing-position protection needs candles even when entry producers are disabled.
       if (!this.strategyRuntimeCoordinator.hasAegisRealtimeMarketState()) {
         this.deps.exchange.subscribeToCandles(symbol);
       }
+      if (!this.isAegisEnabled()) continue;
       this.detector[symbol] =
         this.strategyRuntimeCoordinator.aegisDetectorFor(symbol) ??
         new LiquidityVoidDetector(this.deps.logger);
@@ -1318,6 +1340,10 @@ export class TradingService {
 
     this.hardWatchdogTimer = setInterval(() => {
       void this.deps.entryCoordinator?.reconcile();
+      void this.deps.closeCoordinator?.reconcile(
+        (symbol) => this.stateForSymbol(symbol),
+        this.positionProtection,
+      );
       void this.deps.stopCoordinator?.reconcileClosed((symbol) => this.stateForSymbol(symbol));
       if (this.isRunning && Date.now() - this.lastAlivePulseMs > 180000) {
         this.deps.logger.error('system_deadlock_detected');
@@ -1353,7 +1379,11 @@ export class TradingService {
       closeMutations: async () => {
         const failures: unknown[] = [];
         // Preserve order: stop recovery can still be used while entry work drains.
-        for (const coordinator of [this.deps.entryCoordinator, this.deps.stopCoordinator]) {
+        for (const coordinator of [
+          this.deps.entryCoordinator,
+          this.deps.closeCoordinator,
+          this.deps.stopCoordinator,
+        ]) {
           try {
             await coordinator?.close();
           } catch (error) {
@@ -1868,6 +1898,13 @@ export class TradingService {
 
     let managementContext: Record<string, unknown> = { symbol, botState, symbolState };
     if (identity.strategyId === 'MICRO_BURST_V1') {
+      if (this.deps.closeCoordinator?.blocksPosition(symbol, botState.lastTradeId)) {
+        await this.deps.closeCoordinator.reconcile(
+          (s) => this.stateForSymbol(s),
+          this.positionProtection,
+        );
+        return;
+      }
       let recoveryRequired = false;
       try {
         const protection = await this.positionProtection.superviseMicroStop(
@@ -1925,6 +1962,16 @@ export class TradingService {
         }
         try {
           if (botState.lastSide) {
+            if (this.deps.closeCoordinator) {
+              await this.deps.closeCoordinator.closeManaged(
+                symbol,
+                symbolState,
+                this.positionProtection,
+                botState,
+              );
+              await this.notifyError(symbol, 'MICRO STOP RECOVERY', error);
+              return;
+            }
             const position = await this.deps.exchange.readActivePosition(symbol, botState.lastSide);
             if (position) {
               await this.deps.exchange.closeSideMarketSafe(

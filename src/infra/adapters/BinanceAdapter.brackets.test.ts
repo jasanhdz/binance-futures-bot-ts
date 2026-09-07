@@ -47,6 +47,97 @@ const logger = {
 };
 
 describe('BinanceExchange bracket placement', () => {
+  it.each(['BOTH', 'LONG', 'SHORT'] as const)(
+    'identified close sends once and queries exact %s evidence',
+    async (positionSide) => {
+      const side = positionSide === 'SHORT' ? ('SHORT' as const) : ('LONG' as const);
+      const request = {
+        symbol: 'BTCUSDT',
+        side,
+        positionSide,
+        quantity: 2,
+        clientOrderId: 'bot_cl_' + 'a'.repeat(28),
+        notBeforeMs: 100,
+      };
+      mockClient.futuresOrder.mockRejectedValueOnce(
+        Object.assign(new Error('lost ACK'), { code: -4061 }),
+      );
+      const exchange = new BinanceExchange(logger);
+      await expect(exchange.sendMarketCloseOnce(request)).rejects.toThrow('lost ACK');
+      expect(mockClient.futuresOrder).toHaveBeenCalledTimes(1);
+      expect(mockClient.futuresOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          newClientOrderId: request.clientOrderId,
+          quantity: '2',
+          positionSide,
+          ...(positionSide === 'BOTH' ? { reduceOnly: 'true' } : {}),
+        }),
+      );
+      if (positionSide !== 'BOTH')
+        expect((mockClient.futuresOrder.mock.calls as unknown[][])[0][0]).not.toHaveProperty(
+          'reduceOnly',
+        );
+      const response = {
+        symbol: request.symbol,
+        clientOrderId: request.clientOrderId,
+        orderId: 99,
+        type: 'MARKET',
+        side: side === 'LONG' ? 'SELL' : 'BUY',
+        positionSide,
+        reduceOnly: positionSide === 'BOTH',
+        status: 'FILLED',
+        origQty: '2',
+        executedQty: '2',
+        time: 100,
+        updateTime: 101,
+      };
+      mockClient.futuresGetOrder.mockResolvedValue(response as any);
+      expect(await exchange.readMarketCloseByClientOrderId(request)).toMatchObject({
+        orderId: '99',
+        status: 'FILLED',
+        executedQuantity: 2,
+      });
+      expect(mockClient.futuresGetOrder).toHaveBeenLastCalledWith({
+        symbol: 'BTCUSDT',
+        origClientOrderId: request.clientOrderId,
+      });
+      for (const patch of [
+        { symbol: 'ETHUSDT' },
+        { clientOrderId: 'other' },
+        { orderId: 9007199254740992 },
+        { type: 'LIMIT' },
+        { side: side === 'LONG' ? 'BUY' : 'SELL' },
+        { positionSide: 'UNKNOWN' },
+        { origQty: '1' },
+        { executedQty: '1' },
+        { reduceOnly: !response.reduceOnly },
+        { reduceOnly: undefined },
+        { status: 'UNKNOWN' },
+        { time: 99 },
+        { updateTime: 98 },
+      ]) {
+        mockClient.futuresGetOrder.mockResolvedValue({ ...response, ...patch } as any);
+        expect(
+          await exchange.readMarketCloseByClientOrderId(request),
+          JSON.stringify(patch),
+        ).toBeNull();
+      }
+      mockClient.futuresGetOrder.mockResolvedValue({
+        ...response,
+        status: 'PARTIALLY_FILLED',
+        executedQty: '1',
+      } as any);
+      expect(await exchange.readMarketCloseByClientOrderId(request)).toMatchObject({
+        status: 'PARTIALLY_FILLED',
+        executedQuantity: 1,
+      });
+      mockClient.futuresGetOrder.mockRejectedValueOnce(
+        Object.assign(new Error('absent'), { code: -2013 }),
+      );
+      await expect(exchange.readMarketCloseByClientOrderId(request)).rejects.toThrow('absent');
+      expect(mockClient.futuresOrder).toHaveBeenCalledTimes(1);
+    },
+  );
   it.each(['standard', 'algo'] as const)(
     'queries exact %s cancel target, not a CID or open-order list',
     async (kind) => {

@@ -22,6 +22,7 @@ import { AegisMomentumRideRuntimeConfig } from '../../strategies/aegis/domain/en
 import { E4TailRiskGuardAdapter } from '../../strategies/aegis/domain/entry/guards/E4TailRiskGuardAdapter';
 import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
+import { DurableCloseCoordinator } from '../execution/DurableCloseCoordinator';
 import {
   FileBackedExecutionJournal,
   InMemoryExecutionJournal,
@@ -675,6 +676,7 @@ function makeHarness(
   options: {
     entryJournal?: ExecutionJournal;
     stopJournal?: ExecutionJournal;
+    closeJournal?: ExecutionJournal;
     liveEnabled?: boolean;
     yaml?: any;
     symbols?: string[];
@@ -1187,6 +1189,13 @@ function makeHarness(
             exchange: exchange as any,
           })
         : undefined,
+      closeCoordinator: options.closeJournal
+        ? new DurableCloseCoordinator({
+            scope: { account: 'aegis-fixture', environment: 'fixture' },
+            journal: () => options.closeJournal!,
+            exchange: exchange as any,
+          })
+        : undefined,
     },
     {
       symbols: options.symbols ?? ['ETHUSDT'],
@@ -1222,6 +1231,41 @@ function makeHarness(
 }
 
 describe('TradingService Aegis live execution', () => {
+  it('keeps the candle feed and existing-position peaks updating with entry producers disabled', async () => {
+    const { service, exchange, mlService, symbolStores } = makeHarness({
+      symbolStates: { ETHUSDT: { mode: 'IDLE' } },
+      readActivePosition: {
+        sideMode: 'LONG',
+        qtyAbs: 0.02,
+        entryPrice: 3000,
+        leverage: 10,
+      },
+    });
+    Object.assign(CONFIG, { AEGIS_ENABLED: false });
+    let high = 3001;
+    exchange.getLastCandle.mockImplementation(async () =>
+      exchange.subscribeToCandles.mock.calls.some(([symbol]) => symbol === 'ETHUSDT')
+        ? { openTime: Date.now(), open: 3000, high, low: 3000, close: 3000, volume: 1 }
+        : null,
+    );
+    try {
+      await service.start(false);
+      expect(exchange.subscribeToCandles).toHaveBeenCalledWith('ETHUSDT');
+      expect(exchange.subscribeToPartialDepth).not.toHaveBeenCalled();
+      await service.tick('ETHUSDT');
+      expect(symbolStores.get('ETHUSDT')?.get().lastPeakPrice).toBe(3001);
+      high = 3002;
+      await service.tick('ETHUSDT');
+      expect(symbolStores.get('ETHUSDT')?.get().lastPeakPrice).toBe(3002);
+      expect(mlService.getSignal).not.toHaveBeenCalled();
+      expect(mlService.getExitSignal).not.toHaveBeenCalled();
+      expect(exchange.marketOpen).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+      restoreConfig();
+    }
+  });
+
   it('disconnects Aegis startup and scans while retaining runtime identity reporting', async () => {
     const { service, exchange, mlService, notifier } = makeHarness({
       readActivePositionSequence: [null],
@@ -1235,7 +1279,7 @@ describe('TradingService Aegis live execution', () => {
       expect(exchange.marketOpen).not.toHaveBeenCalled();
       const startup = notifier.sendMessage.mock.calls
         .map((call: unknown[]) => String(call[0]))
-        .find((message: string) => message.includes('Runtime started'));
+        .find((message: string) => message.includes('Startup configuration'));
       expect(startup).toContain('OS:');
       expect(startup).toContain('User:');
       expect(startup).not.toContain('AEGIS_TURBO (');
@@ -1534,7 +1578,9 @@ describe('TradingService Aegis live execution', () => {
     await service.start(false);
 
     expect(exchange.getUSDTBalance).toHaveBeenCalled();
-    expect(notifier.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Runtime started'));
+    expect(notifier.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Startup configuration'),
+    );
     expect(notifier.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('AEGIS_TURBO (LIVE)'),
     );
@@ -1748,6 +1794,123 @@ describe('TradingService Aegis live execution', () => {
     expect((service as any).entryInFlight).toBe(false);
     expect((service as any).microBurstEntryInFlight).toBe(false);
   });
+
+  it.each(['intelligent', 'emergency'] as const)(
+    'routes managed Micro %s close through the real journal and recovers lost ACK at startup with entry OFF',
+    async (route) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-identified-close-'));
+      const file = path.join(dir, 'close.jsonl');
+      const stopFile = path.join(dir, 'stop.jsonl');
+      const state = {
+        mode: 'LONG_RIDE',
+        positionOwner: 'BOT',
+        lastStrategy: 'MICRO_BURST_V1',
+        lastTradeId: 'MICRO-CLOSE-1',
+        lastOrderId: '42',
+        lastSide: 'LONG',
+        lastEntryPrice: 3000,
+        lastEntryQty: 0.01,
+        lastEntryAt: Date.now() - 60_000,
+        lastLeverage: 20,
+      };
+      const h = makeHarness({
+        closeJournal: new FileBackedExecutionJournal(file),
+        stopJournal: new FileBackedExecutionJournal(stopFile),
+        initialState: state,
+        closeOrders: [],
+      });
+      h.state.flush = vi.fn(async () => {});
+      let received: any;
+      const send = vi.fn(async (request: any) => {
+        received = { ...request };
+        throw new Error('lost ACK');
+      });
+      Object.assign(h.exchange, {
+        sendMarketCloseOnce: send,
+        readMarketCloseByClientOrderId: vi.fn(async () => null),
+      });
+      h.exchange.readFreshActivePosition.mockResolvedValue({
+        sideMode: 'LONG',
+        qtyAbs: 0.01,
+        entryPrice: 3000,
+        leverage: 20,
+      });
+      try {
+        await (h.service as any).deps.closeCoordinator.start();
+        await (h.service as any).deps.stopCoordinator.start();
+        if (route === 'intelligent') {
+          const manager = (h.service as any).positionManagerRouter.managers.get('MICRO_BURST_V1');
+          expect(
+            await manager.execution.close(
+              {
+                symbol: 'ETHUSDT',
+                side: 'LONG',
+                botState: h.state.get(),
+                symbolState: h.state,
+                exitContext: { currentPrice: 2990, entryPrice: 3000, unrealizedRoe: -0.06 },
+              },
+              { action: 'CLOSE_MARKET', reason: 'HARD_STOP', diagnostics: {} },
+            ),
+          ).toBe(false);
+        } else {
+          vi.spyOn((h.service as any).positionProtection, 'superviseMicroStop').mockResolvedValue({
+            status: 'RECOVERY_REQUIRED',
+            reason: 'explicit emergency',
+          });
+          await (h.service as any).managePositionByOwner('ETHUSDT', h.state.get(), h.state);
+        }
+        expect(send).toHaveBeenCalledTimes(1);
+        expect(h.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(h.exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(h.service.getAegisRuntimeSnapshot().closeMutationBlockedReason).toBe(
+          'CLOSE_MUTATION_PENDING',
+        );
+        await h.service.stop();
+        const restart = makeHarness({
+          closeJournal: new FileBackedExecutionJournal(file),
+          stopJournal: new FileBackedExecutionJournal(stopFile),
+          closeOrders: [],
+          readActivePositionSequence: [null],
+          symbolModes: { ETHUSDT: 'OFF' },
+          symbolStates: { ETHUSDT: { ...h.state.get() } },
+        });
+        const lookup = vi.fn(async (request: any) =>
+          request.clientOrderId === received.clientOrderId
+            ? {
+                clientOrderId: received.clientOrderId,
+                orderId: '99',
+                status: 'FILLED',
+                executedQuantity: 0.01,
+              }
+            : null,
+        );
+        const noSend = vi.fn();
+        Object.assign(restart.exchange, {
+          sendMarketCloseOnce: noSend,
+          readMarketCloseByClientOrderId: lookup,
+        });
+        restart.exchange.readFreshActivePosition.mockResolvedValue(null);
+        const store = restart.symbolStores.get('ETHUSDT');
+        store.flush = vi.fn(async () => {});
+        try {
+          await restart.service.start(false);
+          expect(lookup).toHaveBeenCalled();
+          expect(noSend).not.toHaveBeenCalled();
+          expect(restart.exchange.marketOpen).not.toHaveBeenCalled();
+          expect(restart.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+          expect(
+            restart.service.getAegisRuntimeSnapshot().closeMutationBlockedReason,
+          ).toBeUndefined();
+          expect(store.get()).toMatchObject({ mode: 'IDLE', microBurstPnlUnverified: true });
+        } finally {
+          await restart.service.stop();
+        }
+      } finally {
+        await h.service.stop();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each([true, false])(
     'routes the real Micro close callback through durable cancellation, lost ACK visible=%s',

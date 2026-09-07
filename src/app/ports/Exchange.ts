@@ -110,7 +110,34 @@ export interface ExchangeAccountReadPort {
   getRecentFills(symbol: string, startTime?: number, limit?: number): Promise<TradeFill[]>;
 }
 
-export interface TradingExchangePort extends MarketDataPort, ExchangeAccountReadPort {
+export interface IdentifiedCloseRequest {
+  symbol: string;
+  side: Side;
+  positionSide: 'BOTH' | 'LONG' | 'SHORT';
+  quantity: number;
+  clientOrderId: string;
+  notBeforeMs: number;
+}
+
+export interface IdentifiedCloseEvidence {
+  clientOrderId: string;
+  orderId: string;
+  status: 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELED' | 'EXPIRED';
+  executedQuantity: number;
+}
+
+/** Single transport attempt; lookup evidence is not a position-flat or accounting verdict. */
+export interface IdentifiedClosePort {
+  sendMarketCloseOnce(request: IdentifiedCloseRequest): Promise<void>;
+  readMarketCloseByClientOrderId(
+    request: IdentifiedCloseRequest,
+  ): Promise<IdentifiedCloseEvidence | null>;
+}
+
+export interface TradingExchangePort
+  extends MarketDataPort,
+    ExchangeAccountReadPort,
+    Partial<IdentifiedClosePort> {
   /** Exact target lookup, including BOT prefix and close-order context. Null is unknown. */
   readCancelTarget?(request: CancelTarget): Promise<'NEW' | 'CANCELED' | 'FILLED' | null>;
   /** Conditional algo endpoint only; no fallback or resend. Missing capability fails closed. */

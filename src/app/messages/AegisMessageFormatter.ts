@@ -393,10 +393,12 @@ export function formatAegisStartupMessage(input: AegisStartupMessageInput): stri
   const identity = input.identity;
 
   return [
-    'Runtime started',
+    'Startup configuration',
     identity &&
       `OS: ${identity.platform} ${identity.release}\nUser: ${identity.user}\nHost: ${identity.hostname}`,
-    active.length ? `Active strategies: ${active.join(', ')}` : 'No active entry strategies',
+    active.length
+      ? `Configured entry strategies: ${active.join(', ')}`
+      : 'No configured entry strategies',
     formatCompactSymbols(input.mode.activeSymbols),
     formatStartupAccount(input.account),
     aegisActive ? formatAegisTurboBlock(input) : undefined,

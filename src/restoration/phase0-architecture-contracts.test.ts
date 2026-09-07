@@ -59,6 +59,7 @@ const mutationMethods = new Set([
   'openStopForSide',
   'cancelOrderById',
   'sendStopCloseOnce',
+  'sendMarketCloseOnce',
 ]);
 
 const mutationAuthorityAllowlist = new Set([
@@ -72,10 +73,12 @@ const mutationAuthorityAllowlist = new Set([
   'src/infra/adapters/ReadOnlyAuditedExchange.ts',
 ]);
 
-// The durable coordinator may execute only its journaled stop/cancel protocols,
-// not market openings or closes. Keep this exception method-scoped.
+// Each durable coordinator may execute only its own journaled protocols.
+// No legacy market-close or opening authority. Keep exceptions method-scoped.
 const scopedMutationAuthority: Record<string, ReadonlySet<string>> = {
   'src/app/execution/DurableStopCoordinator.ts': new Set(['sendStopCloseOnce', 'cancelOrderById']),
+  // Only the identified, persist-before-send managed Micro close protocol.
+  'src/app/execution/DurableCloseCoordinator.ts': new Set(['sendMarketCloseOnce']),
 };
 
 describe('Phase 0 architecture contracts', () => {
