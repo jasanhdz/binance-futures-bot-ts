@@ -5,14 +5,14 @@ export const MICRO_BURST_V1_VERSION = '0.8.0-expected-continuation-live';
 export const MICRO_BURST_V1_STRATEGY_SHA256 =
   '5d3995995c49b3a4397038a7169b44759da8b1f6afc0798d90906e6898548810';
 export const MICRO_BURST_V1_CONFIG_SHA256 =
-  '0444662a043cf452cd77cd92e37c1969be86f97e8eb16f1cfb82f41e3a943118';
-export const MICRO_BURST_V1_APPROVED_COMMIT = '56e4574fe629768524b3f129e4f45e55746c6550';
+  '093ab31d5531272246e7d408c0351d3a41e7d3716deaa02bf25ba39a43db2f1b';
 
 export const MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED: boolean = true;
 export const MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED: boolean = true;
 
 export function createMicroBurstV1Identity(
-  codeCommitSha = MICRO_BURST_V1_APPROVED_COMMIT,
+  // Approval is supplied separately after committing; never infer it from GIT_COMMIT_SHA.
+  codeCommitSha = process.env.MICRO_BURST_APPROVED_COMMIT ?? 'UNKNOWN',
 ): StrategyIdentity {
   return {
     strategyId: 'MICRO_BURST_V1',
@@ -29,8 +29,7 @@ export function hasMicroBurstV1LiveAuthority(
   effectiveConfigSha256: string,
   deployedCodeCommitSha: string,
 ): boolean {
-  const configMatches =
-    identity.configHash === `sha256:${effectiveConfigSha256}`;
+  const configMatches = identity.configHash === `sha256:${effectiveConfigSha256}`;
 
   return Boolean(
     hasLiveAuthority(identity, 'LIVE') &&

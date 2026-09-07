@@ -1395,11 +1395,13 @@ describe('TradingService Aegis live execution', () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('MICRO_BURST_APPROVED_COMMIT', 'a'.repeat(40));
     setConfig(true);
   });
 
   afterEach(() => {
     restoreConfig();
+    vi.unstubAllEnvs();
   });
 
   it('settles an already canceled stop at real startup without releasing accounting or sending orders', async () => {

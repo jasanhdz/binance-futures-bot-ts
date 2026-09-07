@@ -174,3 +174,35 @@ secret commits, active-lock deletion, journal rewrites, or risk relaxation.
 
 Fresh pre-commit verification at 09:05 UTC: build passed; 240 tests in 9 files
 (the targeted suites above plus restoration contracts) passed; diff check passed.
+
+### Exact Revision Binding
+
+Runtime-fix base revision: `2bd51a759ea16091dbede031500d2701adf908c5`.
+The subsequent authorization change approves the effective Micro configuration
+`093ab31d5531272246e7d408c0351d3a41e7d3716deaa02bf25ba39a43db2f1b`
+under the owner's explicit approval of the unchanged economic profile above.
+It does not claim this hash covers shared risk settings or prove profitability.
+
+`MICRO_BURST_APPROVED_COMMIT` is now a separate deployment approval input. Missing,
+empty, malformed, dirty, or mismatched approval denies Micro LIVE. It is never
+derived from `GIT_COMMIT_SHA`; the exact 40-hex equality and effective-config
+comparison remain mandatory. The historical hardcoded revision is not a default
+approval for new code. Version/strategy hash remain the existing model identity,
+not a hash of the entire runtime source tree.
+
+After the authorization commit exists, the operator sets the local approval and
+observed `GIT_COMMIT_SHA` to that exact final clean, tested commit and pushes it
+normally before starting the bot. The base revision above is audit lineage, NOT
+the deployed SHA. This avoids a self-referential commit hash without substituting
+a base SHA or artifact digest for the final revision. Future revisions require a
+new explicit deployment approval. Neither variable is a runtime Git attestation:
+deployment must verify clean HEAD, build, process environment and matching values.
+
+Authorization revision verification at 09:08-09:10 UTC: build passed; main suite
+2151 tests in 192 files, journal partitions 220 + 44, configuration suite 46.
+Total: **2461 tests across 194 files**, all passed without unhandled errors.
+PM2's installed restart path merges `current_conf` before `stopProcessId`, so
+`restart 01-Trading-Bot --kill-timeout 30000 --update-env` applies the graceful
+allowance before signaling the old process. Verify `shutdown_completed`, no
+forced termination, and new journal ownership after startup; never delete locks
+to make startup succeed.
