@@ -3,9 +3,14 @@ import { StrategyEvaluationResult } from '../../../core/strategy/StrategyDecisio
 import { StrategyIdentity, StrategyMode } from '../../../core/strategy/StrategyIdentity';
 import { MicroBurstConfig, MicroBurstContext, defaultMicroBurstConfig } from './MicroBurstTypes';
 import { evaluateMicroBurstEntry } from './MicroBurstEntryPolicy';
+import { evaluateMicroBurstReactionEntry, MICRO_REACTION_CANDIDATE_VERSION } from './MicroBurstReactionEntryPolicy';
+import type { OrderBookSnapshot } from './MicroBurstTypes';
 
 export interface MicroBurstStrategyContext extends MicroBurstContext {
   config?: Partial<MicroBurstConfig>;
+  entryPolicy?: 'BASELINE' | 'REACTION';
+  executionBook?: OrderBookSnapshot;
+  observedAtMs?: number;
 }
 
 export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyContext> {
@@ -24,7 +29,10 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
 
   evaluate(context: MicroBurstStrategyContext): StrategyEvaluationResult {
     const config = { ...this.config, ...context.config };
-    const decision = evaluateMicroBurstEntry(context, config);
+    const entryPolicy = context.entryPolicy ?? 'BASELINE';
+    const decision = entryPolicy === 'REACTION'
+      ? evaluateMicroBurstReactionEntry(context, config, context.executionBook, context.observedAtMs ?? NaN)
+      : evaluateMicroBurstEntry(context, config);
     return {
       symbol: context.symbol,
       timestamp: context.timestamp,
@@ -36,6 +44,8 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
       structuralInvalidation: decision.stopInvalidationPrice,
       diagnostics: {
         ...decision.diagnostics,
+        entryPolicy,
+        entryPolicyVersion: entryPolicy === 'REACTION' ? MICRO_REACTION_CANDIDATE_VERSION : 'baseline',
         leverage: decision.leverage,
         positionFraction: decision.positionFraction,
         leverageTier: decision.leverageTier,

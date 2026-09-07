@@ -38,6 +38,16 @@ function createMockDeps() {
 }
 
 describe('MicroBurstShadowEvaluator', () => {
+  it('selects reaction in LIVE once without a second candidate observer or baseline fallback', async () => {
+    const deps = createMockDeps();
+    const evaluate = vi.spyOn(deps.strategyRouter, 'evaluate');
+    const evaluator = new MicroBurstShadowEvaluator(deps, { ...makeConfig('LIVE'), entryPolicy: 'REACTION' });
+    const result = await evaluator.evaluate({ symbol: 'ETHUSDT', snapshotAtMs: NOW_MS });
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluate).toHaveBeenCalledWith('MICRO_BURST_V1', expect.objectContaining({ entryPolicy: 'REACTION', observedAtMs: NOW_MS }));
+    expect(result).toMatchObject({ decision: 'NO_TRADE', diagnostics: { entryPolicy: 'REACTION' } });
+    expect(deps.logger.info).not.toHaveBeenCalledWith('micro_burst_entry_candidate_comparison', expect.anything());
+  });
   it('returns disabled result when mode is OFF', async () => {
     const deps = createMockDeps();
     const evaluator = new MicroBurstShadowEvaluator(deps, makeConfig('OFF'));

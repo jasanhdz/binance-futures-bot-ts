@@ -1,7 +1,7 @@
 import { hasLiveAuthority, StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import * as crypto from 'crypto';
 
-export const MICRO_BURST_V1_VERSION = '0.8.0-expected-continuation-live';
+export const MICRO_BURST_V1_VERSION = '0.9.0-reaction-entry-live';
 export const MICRO_BURST_V1_STRATEGY_SHA256 =
   '5d3995995c49b3a4397038a7169b44759da8b1f6afc0798d90906e6898548810';
 export const MICRO_BURST_V1_CONFIG_SHA256 =

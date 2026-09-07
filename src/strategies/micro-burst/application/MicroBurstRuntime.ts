@@ -997,6 +997,7 @@ export class MicroBurstRuntime {
       this.symbolStates.get(intent.symbol)?.book.getSnapshot(),
       this.deps.clock.now(),
       { ...defaultMicroBurstConfig(), ...this.config.exitPolicy },
+      this.config.entryPolicy ?? 'BASELINE',
     );
   }
 

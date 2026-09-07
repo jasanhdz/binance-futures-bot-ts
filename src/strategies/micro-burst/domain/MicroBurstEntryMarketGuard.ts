@@ -9,6 +9,7 @@ export function validateMicroBurstEntryMarket(
   book: OrderBookSnapshot | undefined,
   now: number,
   config: MicroBurstConfig,
+  entryPolicy: 'BASELINE' | 'REACTION' = 'BASELINE',
 ): string | undefined {
   const snapshotAt = Number(intent.metadata.signalSnapshotAtMs);
   if (
@@ -83,5 +84,13 @@ export function validateMicroBurstEntryMarket(
   const risk = priceDistanceToBps(price, stop);
   if (room < config.minRoomBps || room / risk < config.minRewardRisk)
     return 'MICRO_EXECUTABLE_ROOM_LOST';
+  if (entryPolicy === 'REACTION') {
+    const costs = config.exitEstimatedRoundTripCostBps;
+    const netRoom = room - costs;
+    const netRR = netRoom / (risk + costs);
+    if (!Number.isFinite(costs) || costs < 0 || !Number.isFinite(netRR) ||
+        netRoom < config.minRoomBps || netRR < config.minRewardRisk)
+      return 'MICRO_EXECUTABLE_NET_ROOM_LOST';
+  }
   return undefined;
 }

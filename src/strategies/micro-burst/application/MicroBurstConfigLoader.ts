@@ -98,6 +98,8 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   const mb = mbSection as Record<string, unknown>;
   const enabled = mb.enabled === true;
   const mode = parseMode(mb.mode);
+  if (mb.entry_policy !== undefined && !['BASELINE', 'REACTION'].includes(String(mb.entry_policy)))
+    throw new Error('MICRO_ENTRY_POLICY_INVALID');
 
   const symbols: Record<string, MicroBurstSymbolConfig> = {};
   const rawSymbols = mb.symbols;
@@ -110,6 +112,7 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   return {
     enabled,
     mode,
+    ...(mb.entry_policy !== undefined ? { entryPolicy: mb.entry_policy as 'BASELINE' | 'REACTION' } : {}),
     symbols,
     exitPolicy: parseExitPolicy(mb.exit_policy ?? mb.exitPolicy),
     prospectiveValidation: parseProspectiveValidation(mb.prospective_validation),
@@ -210,6 +213,9 @@ export function mergeMicroBurstConfigs(
   return {
     enabled: override.enabled ?? base.enabled,
     mode: override.mode ?? base.mode,
+    ...(override.entryPolicy ?? base.entryPolicy
+      ? { entryPolicy: override.entryPolicy ?? base.entryPolicy }
+      : {}),
     symbols,
     exitPolicy: { ...base.exitPolicy, ...override.exitPolicy },
     prospectiveValidation: {

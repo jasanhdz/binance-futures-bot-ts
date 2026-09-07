@@ -10,9 +10,9 @@ import type {
   OrderBookSnapshot,
 } from './MicroBurstTypes';
 
-export const MICRO_REACTION_CANDIDATE_VERSION = 'reaction-entry-1-shadow';
+export const MICRO_REACTION_CANDIDATE_VERSION = 'reaction-entry-1-live';
 
-/** Observational candidate only. Never routed to the execution port. */
+/** Selected by the configured router policy; execution admission remains separate. */
 export function evaluateMicroBurstReactionEntry(
   ctx: MicroBurstContext,
   config: MicroBurstConfig,
@@ -248,6 +248,8 @@ export function evaluateMicroBurstReactionEntry(
     accepted.push({
       ...evaluated,
       targetPrice: boundedTarget,
+      roomToTargetBps: priceDistanceToBps(price, boundedTarget),
+      rewardRisk: priceDistanceToBps(price, boundedTarget) / (evaluated.riskToInvalidationBps ?? Infinity),
       reason: 'REACTION_CONFIRMED',
       diagnostics,
     });

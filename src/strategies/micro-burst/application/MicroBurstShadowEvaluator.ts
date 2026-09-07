@@ -77,6 +77,9 @@ export class MicroBurstShadowEvaluator {
 
       const strategyContext: MicroBurstStrategyContext = {
         ...context,
+        entryPolicy: this.runtimeConfig.entryPolicy ?? 'BASELINE',
+        executionBook: this.deps.contextBuilderDeps.book?.getDepthSnapshot(symbol),
+        observedAtMs: this.deps.clock.now(),
         config: {
           ...this.runtimeConfig.exitPolicy,
           ...(symConfig.btcConflictThresholdBps !== undefined
@@ -90,8 +93,10 @@ export class MicroBurstShadowEvaluator {
         strategyContext,
       );
 
-      const referencePrice = context.decisionPrice.price;
+      const referencePrice = typeof envelope.diagnostics.executablePrice === 'number'
+        ? envelope.diagnostics.executablePrice : context.decisionPrice.price;
       try {
+        if (strategyContext.entryPolicy === 'BASELINE') {
         const reactionCandidate = evaluateMicroBurstReactionEntry(
           context,
           { ...defaultMicroBurstConfig(), ...strategyContext.config },
@@ -107,6 +112,7 @@ export class MicroBurstShadowEvaluator {
           baselineReason: envelope.reason,
           candidate: reactionCandidate,
         });
+        }
       } catch {
         this.deps.logger.error('micro_burst_entry_candidate_observation_failed', {
           symbol,
@@ -115,6 +121,11 @@ export class MicroBurstShadowEvaluator {
       }
 
       const supportPrice = context.levels.nearest.support?.price ?? null;
+      this.deps.logger.info('micro_burst_entry_policy_selected', {
+        symbol, snapshotAtMs, mode: this.runtimeConfig.mode,
+        entryPolicy: strategyContext.entryPolicy, strategyVersion: envelope.identity.strategyVersion,
+        decision: envelope.decision, reason: envelope.reason,
+      });
       const resistancePrice = context.levels.nearest.resistance?.price ?? null;
       const structuralInvalidation = envelope.structuralInvalidation ?? null;
       const destinationPrice = envelope.destinationPrice ?? null;
@@ -217,7 +228,7 @@ export class MicroBurstShadowEvaluator {
           referencePriceSource:
             typeof envelope.diagnostics?.referencePriceSource === 'string'
               ? envelope.diagnostics.referencePriceSource
-              : 'CLOSED_1M_CANDLE',
+              : strategyContext.entryPolicy === 'REACTION' && wouldEnter ? 'EXECUTABLE_BOOK' : 'CLOSED_1M_CANDLE',
           btcAcceleration: context.btcContext?.acceleration ?? null,
           btcDirection: context.btcContext?.direction ?? null,
           temporalAbsorptionDetected: context.bookPressure.temporalAbsorptionDetected ?? false,

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateMicroBurstReactionEntry } from './MicroBurstReactionEntryPolicy';
 import { evaluateMicroBurstEntry } from './MicroBurstEntryPolicy';
+import { MicroBurstStrategy, MicroBurstStrategyContext } from './MicroBurstStrategy';
+import { createMicroBurstV1Identity } from './MicroBurstIdentity';
+import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import {
   makeMicroBurstContext,
   makeLevel,
@@ -50,7 +53,28 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
   };
   return { ctx, book };
 }
-describe('Micro reaction candidate, observational only', () => {
+describe('Micro reaction entry policy', () => {
+  it.each(['LONG', 'SHORT'] as const)('routes exactly the selected LIVE %s geometry', async (side) => {
+    const { ctx, book } = fixture(side);
+    const router = new StrategyRouter<MicroBurstStrategyContext>();
+    router.register(new MicroBurstStrategy(createMicroBurstV1Identity('a'.repeat(40)), 'LIVE'));
+    const expected = evaluateMicroBurstReactionEntry(ctx, config, book, now);
+    const selected = await router.evaluate('MICRO_BURST_V1', {
+      ...ctx, entryPolicy: 'REACTION', executionBook: book, observedAtMs: now,
+    });
+    expect(selected).toMatchObject({
+      mode: 'LIVE', decision: 'ENTRY_INTENT', side,
+      structuralInvalidation: expected.stopInvalidationPrice,
+      destinationPrice: expected.targetPrice,
+      diagnostics: { entryPolicy: 'REACTION', entryPolicyVersion: 'reaction-entry-1-live',
+        leverage: expected.leverage, positionFraction: expected.positionFraction },
+    });
+    ctx.candles.candles1m[0][side === 'LONG' ? 'low' : 'high'] = side === 'LONG' ? 99.8 : 100.2;
+    expect((await router.evaluate('MICRO_BURST_V1', { ...ctx, entryPolicy: 'BASELINE' })).decision).toBe('ENTRY_INTENT');
+    expect((await router.evaluate('MICRO_BURST_V1', {
+      ...ctx, entryPolicy: 'REACTION', executionBook: book, observedAtMs: now,
+    })).decision).toBe('NO_TRADE');
+  });
   it.each(['LONG', 'SHORT'] as const)(
     'qualifies mirrored %s reclaim without support priority',
     (side) => {

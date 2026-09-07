@@ -10,6 +10,7 @@ export interface MicroBurstSymbolConfig {
 export interface MicroBurstRuntimeConfig {
   enabled: boolean;
   mode: 'OFF' | 'SHADOW' | 'LIVE';
+  entryPolicy?: 'BASELINE' | 'REACTION';
   symbols: Record<string, MicroBurstSymbolConfig>;
   /** Shared domain-policy overrides used by entry, SHADOW, replay and LIVE management. */
   exitPolicy?: Partial<MicroBurstConfig>;

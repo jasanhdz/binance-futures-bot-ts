@@ -33,6 +33,7 @@ TRADING:
 micro_burst:
   enabled: true
   mode: LIVE
+  entry_policy: REACTION
   symbols:
     ETHUSDT:
       enabled: true

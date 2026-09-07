@@ -28,6 +28,15 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
   return { intent, book };
 }
 describe('Micro final executable admission', () => {
+  it.each(['LONG', 'SHORT'] as const)('retains gross gates and adds quantity-adjusted net costs for %s', (side) => {
+    const { intent, book } = fixture(side);
+    intent.destinationPrice = side === 'LONG' ? 100.9 : 99.1;
+    expect(validateMicroBurstEntryMarket(intent, 2, book, now, config)).toBeUndefined();
+    expect(validateMicroBurstEntryMarket(intent, 2, book, now, config, 'REACTION')).toBe('MICRO_EXECUTABLE_NET_ROOM_LOST');
+    intent.destinationPrice = side === 'LONG' ? 102 : 98;
+    expect(validateMicroBurstEntryMarket(intent, 2, book, now, config, 'REACTION')).toBeUndefined();
+    expect(validateMicroBurstEntryMarket(intent, 101, book, now, config, 'REACTION')).toBe('MICRO_EXECUTABLE_DEPTH_INSUFFICIENT');
+  });
   it.each(['LONG', 'SHORT'] as const)(
     'accepts fresh executable %s without changing identity or protection',
     (side) => {
