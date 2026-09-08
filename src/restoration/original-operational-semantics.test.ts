@@ -63,7 +63,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': '18c8584ac780bf3a1d34f90974dc4527b9c7116de79fdf9a927538ec89e33e4c',
+  'regime_config.live.yaml': '970ce7308d7ec0cd49e97e032491dc0b50901c8ab4300746ebff6968d83ce730',
   // 2026-09 safety handoff: shared entry lock, unknown exposure propagation,
   // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
   // Phase 3 increment: drain tracked entry/management work before shutdown flush.

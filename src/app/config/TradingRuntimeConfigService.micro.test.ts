@@ -22,7 +22,7 @@ describe('Micro effective configuration authority', () => {
     const merged = mergeMicroBurstConfigs(parsed, {});
     const parsedHash = service.getMicroBurstProvenance(parsed).configHash;
     const mergedHash = service.getMicroBurstProvenance(merged).configHash;
-    expect(mergedHash).toBe('093ab31d5531272246e7d408c0351d3a41e7d3716deaa02bf25ba39a43db2f1b');
+    expect(mergedHash).toBe('957d53b90e8d57eb9233e468722e85786a42a9244dc88b6cd66fc485421aa3ba');
     expect(parsedHash).not.toBe(MICRO_BURST_V1_CONFIG_SHA256);
     expect(mergedHash).toBe(MICRO_BURST_V1_CONFIG_SHA256);
     const identity = createMicroBurstV1Identity('a'.repeat(40));

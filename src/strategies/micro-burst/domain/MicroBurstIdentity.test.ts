@@ -17,7 +17,7 @@ describe('Micro Burst Expected Continuation candidate identity', () => {
     vi.stubEnv('MICRO_BURST_APPROVED_COMMIT', 'a'.repeat(40));
     const identity = createMicroBurstV1Identity();
     expect(identity).toMatchObject({
-      strategyVersion: '0.8.0-expected-continuation-live',
+      strategyVersion: '0.9.0-reaction-entry-live',
       freezeState: 'FROZEN_LIVE',
       codeCommitSha: 'a'.repeat(40),
     });
@@ -25,14 +25,14 @@ describe('Micro Burst Expected Continuation candidate identity', () => {
       'sha256:5d3995995c49b3a4397038a7169b44759da8b1f6afc0798d90906e6898548810',
     );
     expect(identity.configHash).toBe(
-      'sha256:093ab31d5531272246e7d408c0351d3a41e7d3716deaa02bf25ba39a43db2f1b',
+      'sha256:957d53b90e8d57eb9233e468722e85786a42a9244dc88b6cd66fc485421aa3ba',
     );
     expect(MICRO_BURST_V1_VERSION).toBe(identity.strategyVersion);
     expect(MICRO_BURST_V1_STRATEGY_SHA256).toBe(
       '5d3995995c49b3a4397038a7169b44759da8b1f6afc0798d90906e6898548810',
     );
     expect(MICRO_BURST_V1_CONFIG_SHA256).toBe(
-      '093ab31d5531272246e7d408c0351d3a41e7d3716deaa02bf25ba39a43db2f1b',
+      '957d53b90e8d57eb9233e468722e85786a42a9244dc88b6cd66fc485421aa3ba',
     );
     expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
     expect(hasLiveAuthority(identity, 'LIVE')).toBe(true);

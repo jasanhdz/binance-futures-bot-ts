@@ -16,6 +16,7 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
   const ctx = makeMicroBurstContext();
   const mirror = (p: number) => (side === 'LONG' ? p : 200 - p);
   ctx.momentum.direction = side;
+  ctx.levels.nearest.structuralPosition = side === 'LONG' ? 'near_support' : 'near_resistance';
   ctx.levels.nearest.support = makeLevel('support', side === 'LONG' ? 99.7 : 98);
   ctx.levels.nearest.resistance = makeLevel('resistance', side === 'LONG' ? 102 : 100.3);
   ctx.candles.candles1m = [
@@ -133,7 +134,7 @@ describe('Micro reaction entry policy', () => {
   it('evaluates SHORT when both boundaries are near rather than favoring support', () => {
     const { ctx, book } = fixture('SHORT');
     expect(evaluateMicroBurstEntry(ctx, { ...config, nearLevelThresholdBps: 250 }).action).toBe(
-      'NO_TRADE',
+      'ENTRY_INTENT',
     );
     expect(
       evaluateMicroBurstReactionEntry(ctx, { ...config, nearLevelThresholdBps: 250 }, book, now)
