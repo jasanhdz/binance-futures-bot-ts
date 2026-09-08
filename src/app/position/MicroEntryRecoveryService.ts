@@ -143,7 +143,11 @@ export class MicroEntryRecoveryService {
           microBurstStructuralStopPrice: intent.structuralStopPrice,
           microBurstDestinationPrice: intent.destinationPrice,
           ...(intent.identity.strategyVersion === 'CONTEXTUAL_V3'
-            ? { microBurstTradePolicy: structuredClone(contextualPolicy) }
+            ? {
+                microBurstTradePolicy: structuredClone(contextualPolicy),
+                microBurstEpisodeId: String(intent.metadata?.episodeId ?? ''),
+                microBurstEntrySubmittedAtMs: intent.requestedAt,
+              }
             : {}),
           recoveredEntryMutationId: request.mutationId,
           bracketsAttached: false,

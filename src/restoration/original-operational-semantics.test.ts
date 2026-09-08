@@ -38,7 +38,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Read-only canceled-stop settlement and fresh position evidence; not a LIVE approval.
   // Exact cancellation target lookup and durable Micro cleanup integration.
   // Managed Micro close: narrow identified send/strict evidence port, not monetary settlement.
-  'src/app/ports/Exchange.ts': '7dd8fb1ed15083d705ed1dfbd394f778fb1ba2f47f80ba8378c6643c3c8d6ee1',
+  // Exact V3 accounting read capability; no mutation or deployment approval change.
+  'src/app/ports/Exchange.ts': 'b14a34d668108ae9ef9c4b9e85ab7d2d28c523d9c92dacd5516ef17b6db13f9e',
   'src/infra/config/environment.ts':
     // User-requested AEGIS_ENABLED disconnect; existing defaults and LIVE values unchanged.
     'b35c9984d4a756c53cc424350317cb4131c4c973f038f08d77bac103b7217ee3',
@@ -57,7 +58,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Source checkpoint only, not LIVE authorization. See SAFETY_DURABLE_MICRO_STOP.md.
   'src/infra/adapters/BinanceAdapter.ts':
     // Identified market close, no retries, strict BOTH/hedge lookup. SAFETY_DURABLE_MICRO_CLOSE.md.
-    '880bd166d498d2749f361ba6e035a5d620d308cca3be6ee950196b667b21cb6d',
+    // Bounded exact-order fills/funding accounting, strict USDT and one-way attribution.
+    '4347510e80a2dcb0c998f1d9d6f55f94d0475e3ca859be02b7d94d85cf208096',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
@@ -81,7 +83,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Independent recovery/admission/shutdown integration.
     // Ownership admission and Micro final executable revalidation; economics remain observational.
     // Bounded exit observation and research-only missing-market routing; no V3 mutation authority.
-    'a0fa1c5708830a921ffccc7901f0a96a9da89c619fb370863dcc1a95bb60ac28',
+    // Policy-bound settlement recovery and independent durable net-loss admission check.
+    '89e4cbbcba55ed0e886a65187b0ff17eab619ed7240e529d3d5571ecd4447a55',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -130,7 +133,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
 const contextualSourceCheckpoints: Record<string, string> = {
   'regime_config.live.yaml': '970ce7308d7ec0cd49e97e032491dc0b50901c8ab4300746ebff6968d83ce730',
   'src/app/services/TradingService.ts':
-    'a0fa1c5708830a921ffccc7901f0a96a9da89c619fb370863dcc1a95bb60ac28',
+    '89e4cbbcba55ed0e886a65187b0ff17eab619ed7240e529d3d5571ecd4447a55',
 };
 
 type GuardFixture = [

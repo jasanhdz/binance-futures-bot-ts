@@ -1,5 +1,77 @@
 # Micro Contextual V3 Research Implementation
 
+## Runtime Accounting Wiring Follow-Up
+
+This source increment connects production accounting paths, but does not complete
+or enable V3 LIVE:
+
+- `BinanceExchange.readMicroBurstSettlement` queries exact order identities, both
+  commission legs, user trades, funding income and fresh flat positions. It uses
+  the shared request queue with endpoint weights, server-clock observations, a
+  seven-day maximum interval, conservative 90-day history cutoff, and at most 16
+  combined trade/income page reads. Full pages are divided into disjoint inclusive
+  time windows; a saturated millisecond or exhausted budget remains unverified.
+  No order mutation or market-order retry is part of this read capability.
+- Attribution currently requires one-way BOTH orders, exact complete quantities,
+  USDT commissions/funding and no foreign trades in the interval. Hedge attribution,
+  unsupported assets, partial terminal orders, missing numeric fields, ambiguous
+  boundary funding and unavailable endpoint evidence remain unverified. Empty
+  exhaustive income coverage, not an absent response, establishes zero funding.
+- `DurableCloseCoordinator` persists the policy/episode-bound exact close accounting
+  identity before the operational close can become terminal. Entry recovery retains
+  the episode and pre-submit interval start from its existing entry journal, rather
+  than incorrectly using the later position-confirmation timestamp to query fills.
+  Missing historical snapshots are not adopted or synthesized.
+- `TradingService` composes the ledger into V3 admission and the final pre-submit
+  callback. Its startup/watchdog accounting worker records pending settlement before
+  exchange reads and only releases the matching V3 accounting quarantine after
+  verified durable accounting and a state flush. A failed flush restores the
+  in-memory quarantine. Work is single-flight and tracked for graceful shutdown;
+  accounting endpoint failures do not disable stop supervision or send close retries.
+- `MicroNetLossComposition` opens independent critical SQLite storage under the
+  private, owned `data/runtime/micro-net-loss/` directory. Scope includes a SHA-256
+  API-key fingerprint and normalized production/testnet environment; credentials
+  are not printed or stored. Credential rotation deliberately requires a separately
+  signed new scope initialization, not an automatic account-ledger migration.
+  `MICRO_NET_LOSS_OPERATOR_PUBLIC_KEY_FILE` names an external PEM Ed25519 public key.
+  Missing key/initialization blocks V3; the bot neither signs nor auto-resets it.
+- Integrated offline tests exercise the real TradingService accounting worker,
+  Binance adapter methods with a simulated client, FsStateStore and SQLite ledger.
+  They cover three net losses, restart, post-halt win, exact tie, pre-halt win,
+  pending-before-read, missing funding, replay, unsupported ownership/policy and
+  failed quarantine-clear persistence. Separate durable-close tests cover the
+  retained accounting identity and send-once recovery.
+
+Remaining work is still material: production contextual sizing/liquidation-tier
+and cost evidence, entry-orchestrator policy/episode supply, executable exit
+economics, authorized durable V3 exit application, stop-trigger accounting routing,
+and the complete entry -> confirmed stop -> exits -> three-loss admission test.
+The parser/router/position-manager LIVE denials are not removed. Passing accounting
+integration tests is not a substitute for that missing full-flow test or deployment.
+
+Source integrity checkpoints are updated only for the reviewed Exchange port,
+Binance adapter and TradingService changes. No LIVE approval/config hash is changed.
+The operational YAML, `.env`, `dist`, existing ADA quarantine and PM2 process are
+untouched. Read-only PM2 metadata still shows `01-Trading-Bot` PID 627698 online and
+`02-Aegis-API` stopped; this does not attest the current artifact or V3 authority.
+No live account request, real test order, deployment or five-minute monitoring was
+performed. Economic profitability is not validated.
+
+Final offline verification for this increment:
+
+```sh
+AEGIS_ENABLED=false npx vitest run src/strategies/micro-burst src/app/execution/DurableEntryCoordinator.test.ts src/app/execution/DurableCloseCoordinator.test.ts src/app/execution/DurableStopCoordinator.test.ts src/app/execution/SharedStrategyExecutionService.test.ts src/app/position/MicroEntryRecoveryService.test.ts src/infra/state/MicroBurstNetLossLedger.test.ts src/app/services/TradingService.safety-contracts.test.ts src/app/services/TradingService.micro-settlement.test.ts src/app/bootstrap/MicroNetLossComposition.test.ts src/app/bootstrap/DurableCloseComposition.test.ts src/infra/adapters/BinanceAdapter.settlement.test.ts src/infra/adapters/BinanceAdapter.brackets.test.ts --silent --reporter=dot --maxWorkers=1
+AEGIS_ENABLED=false npx vitest run src/restoration/original-operational-semantics.test.ts -t 'operational sources|current-brain contract exception|branch bytes|out of the operational path|exit sources' --silent --reporter=dot --maxWorkers=1
+AEGIS_ENABLED=false npm run build -- --outDir /tmp/opencode/micro-runtime-accounting-20260908-build
+git diff --check
+```
+
+Result: 857 tests passed in 53 files; five selected source-integrity checks passed
+(15 unrelated checks deliberately skipped). External-directory compilation and
+whitespace checks passed. The earlier type-check caught two test-fixture type errors;
+both were corrected before the final build. No full-repository or Aegis-suite
+success is claimed. Every test process used `AEGIS_ENABLED=false`.
+
 ## Durable Contract Follow-Up
 
 The next source increment adds these contracts without changing deployment approval:

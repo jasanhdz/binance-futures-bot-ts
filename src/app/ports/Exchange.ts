@@ -7,6 +7,10 @@
 
 import { Side } from '../../core/types';
 import { MarketDataPort } from './MarketData';
+import type {
+  MicroBurstSettlementEvidence,
+  MicroBurstSettlementIdentity,
+} from '../../strategies/micro-burst/domain/MicroBurstSettlement';
 
 export interface PositionInfo {
   sideMode: 'BOTH' | 'LONG' | 'SHORT';
@@ -65,6 +69,10 @@ export interface USDTAccountSnapshot {
 }
 
 export interface ExchangeAccountReadPort {
+  /** Exhaustive exact-order accounting; null is unknown, never a zero-cost settlement. */
+  readMicroBurstSettlement?(
+    identity: MicroBurstSettlementIdentity,
+  ): Promise<MicroBurstSettlementEvidence | null>;
   readLiquidationPrice(symbol: string, side: Side): Promise<number | null>;
   getUSDTBalance(): Promise<number>;
   getUSDTAccountSnapshot?(): Promise<USDTAccountSnapshot>;

@@ -10,6 +10,8 @@ import type { IdentifiedCloseRequest, IdentifiedClosePort, PositionInfo } from '
 import type { StateStore } from '../ports/StateStore';
 import type { PositionProtectionService } from '../position/PositionProtectionService';
 import { RuntimeShutdownError } from '../runtime/RuntimeShutdown';
+import { isMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
+import { validMicroBurstSettlementIdentity } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
 
 interface CloseRequest extends IdentifiedCloseRequest {
   protocol: 'MICRO_CLOSE_V1';
@@ -408,6 +410,37 @@ export class DurableCloseCoordinator {
       return false;
     }
     if (!this.same(r, store, true)) return false;
+    if (identity.lastStrategyVersion === 'CONTEXTUAL_V3' && !identity.microBurstSettlement) {
+      const policy = identity.microBurstTradePolicy;
+      const settlement = {
+        tradeId: r.parentTradeId,
+        episodeId: identity.microBurstEpisodeId ?? '',
+        symbol: r.symbol,
+        side: r.side,
+        policyVersion: 'CONTEXTUAL_V3' as const,
+        configHash: identity.lastConfigHash ?? '',
+        codeCommitSha: identity.lastCodeCommitSha ?? '',
+        entryOrderId: r.parentOrderId,
+        closeOrderIds: [evidence.orderId],
+        quantity: r.quantity,
+        openedAtMs: identity.microBurstEntrySubmittedAtMs ?? NaN,
+        closedAtMs: Date.now(),
+      };
+      if (
+        isMicroBurstTradePolicy(policy, {
+          strategyId: r.strategyId,
+          strategyVersion: 'CONTEXTUAL_V3',
+          configHash: identity.lastConfigHash,
+          codeCommitSha: identity.lastCodeCommitSha ?? '',
+        }) &&
+        validMicroBurstSettlementIdentity(settlement)
+      ) {
+        // Persist accounting recovery before the close journal can become terminal.
+        store.set({ microBurstSettlement: settlement });
+        await store.flush();
+        if (!this.same(r, store, true)) return false;
+      }
+    }
     if (
       !(await protection.persistMicroOperationalClose(store, identity, {
         lastExitAt: identity.mode === 'IDLE' ? identity.lastExitAt : Date.now(),

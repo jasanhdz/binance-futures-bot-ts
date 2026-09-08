@@ -12,6 +12,7 @@ import type {
 import { PositionProtectionService } from '../position/PositionProtectionService';
 import { DurableStopCoordinator } from './DurableStopCoordinator';
 import { DurableCloseCoordinator } from './DurableCloseCoordinator';
+import { createMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -140,6 +141,54 @@ function fixture() {
 }
 
 describe('managed Micro durable close with real close/cancel journals', () => {
+  it('persists exact V3 accounting identity before terminal close and retains it on restart', async () => {
+    const f = fixture();
+    const identity = {
+      strategyId: 'MICRO_BURST_V1' as const,
+      strategyVersion: 'CONTEXTUAL_V3',
+      freezeState: 'DRAFT' as const,
+      configHash: `sha256:${'a'.repeat(64)}` as const,
+      codeCommitSha: 'b'.repeat(40),
+    };
+    const policy = createMicroBurstTradePolicy(identity, {
+      sizingMode: 'MARGIN_FRACTION',
+      marginFraction: 0.9,
+      mediumLeverage: 20,
+      highLeverage: 30,
+      maxConsecutiveNetLosses: 3,
+      resetMode: 'SIGNED_OPERATOR',
+      feeReserveBps: 14,
+      stopStressBps: 10,
+    });
+    f.store.set({
+      lastStrategyVersion: 'CONTEXTUAL_V3',
+      lastConfigHash: identity.configHash,
+      lastCodeCommitSha: identity.codeCommitSha,
+      microBurstTradePolicy: policy,
+      microBurstEpisodeId: 'episode',
+      microBurstEntrySubmittedAtMs: Date.now() - 1000,
+      lastEntryAt: Date.now() - 900,
+    });
+    const first = f.make();
+    expect(await first.run()).toBe(true);
+    const settlement = f.store.get().microBurstSettlement;
+    expect(settlement).toMatchObject({
+      tradeId: 'trade',
+      episodeId: 'episode',
+      entryOrderId: '42',
+      closeOrderIds: ['99'],
+      quantity: 2,
+      openedAtMs: f.store.get().microBurstEntrySubmittedAtMs,
+    });
+    expect(f.store.get().microBurstPnlUnverified).toBe(true);
+    await first.close();
+    const second = f.make();
+    await second.coordinator.start();
+    await second.coordinator.reconcile(() => f.store, second.protector);
+    expect(f.store.get().microBurstSettlement).toEqual(settlement);
+    expect(f.exchange.sendMarketCloseOnce).toHaveBeenCalledTimes(1);
+  });
+
   it.each([false, true])(
     'recovers a transient preflight read without changing existing quarantine=%s',
     async (quarantined) => {

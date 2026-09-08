@@ -22,6 +22,12 @@ import {
 } from './rate-limit';
 import { SharedBinanceRateLimiter } from './shared-binance-rate-limit';
 import { randomBytes } from 'node:crypto';
+import {
+  validMicroBurstSettlementIdentity,
+  reconcileMicroBurstSettlement,
+  type MicroBurstSettlementIdentity,
+  type MicroBurstSettlementEvidence,
+} from '../../strategies/micro-burst/domain/MicroBurstSettlement';
 
 type SharedRequestPriority = 'normal' | 'critical';
 
@@ -2245,6 +2251,169 @@ export class BinanceExchange implements Exchange {
       noteRateLimitFromError(err);
       throw err;
     }
+  }
+
+  async readMicroBurstSettlement(
+    identity: MicroBurstSettlementIdentity,
+  ): Promise<MicroBurstSettlementEvidence | null> {
+    if (!validMicroBurstSettlementIdentity(identity)) return null;
+    // User-trade history is bounded by Binance retention and seven-day query windows.
+    const serverTime = await this.enqueue(() => this.cli.futuresTime(), 1, 'settlement_time');
+    if (
+      !Number.isSafeInteger(serverTime) ||
+      identity.closedAtMs > serverTime ||
+      identity.openedAtMs < serverTime - 90 * 86_400_000 ||
+      identity.closedAtMs - identity.openedAtMs > 7 * 86_400_000
+    )
+      return null;
+    let reads = 0;
+    const readInterval = async <T>(
+      fetchPage: (startTime: number, endTime: number) => Promise<T[]>,
+      startTime: number,
+      endTime: number,
+    ): Promise<T[] | null> => {
+      if (++reads > 16) return null;
+      const rows = await fetchPage(startTime, endTime);
+      if (!Array.isArray(rows) || rows.length > 1000) return null;
+      if (rows.length < 1000) return rows;
+      // Inclusive disjoint windows avoid losing rows sharing the pagination boundary timestamp.
+      if (startTime === endTime) return null;
+      const midpoint = Math.floor((startTime + endTime) / 2);
+      const left = await readInterval(fetchPage, startTime, midpoint);
+      if (!left) return null;
+      const right = await readInterval(fetchPage, midpoint + 1, endTime);
+      return right && left.length + right.length <= 1000 ? [...left, ...right] : null;
+    };
+    const trades = await readInterval(
+      (startTime, endTime) =>
+        this.enqueue(
+          () =>
+            this.cli.futuresUserTrades({
+              symbol: identity.symbol,
+              startTime,
+              endTime,
+              limit: 1000,
+            }),
+          5,
+          'settlement_trades',
+        ),
+      identity.openedAtMs,
+      identity.closedAtMs,
+    );
+    if (!trades?.length) return null;
+    const orderIds = [identity.entryOrderId, ...identity.closeOrderIds];
+    const exactId = (value: unknown): string | null => {
+      if (typeof value === 'number' && (!Number.isSafeInteger(value) || value <= 0)) return null;
+      return (typeof value === 'string' || typeof value === 'number') &&
+        /^[1-9]\d*$/.test(String(value))
+        ? String(value)
+        : null;
+    };
+    const number = (value: unknown): number =>
+      (typeof value === 'string' && value.trim() !== '') || typeof value === 'number'
+        ? Number(value)
+        : NaN;
+    if (orderIds.some((id) => !exactId(id) || !Number.isSafeInteger(Number(id)))) return null;
+    if (
+      trades.some(
+        (trade) =>
+          trade.positionSide !== 'BOTH' ||
+          !exactId(trade.id) ||
+          !exactId(trade.orderId) ||
+          !orderIds.includes(String(trade.orderId)),
+      )
+    )
+      return null;
+    for (const orderId of orderIds) {
+      const order = await this.enqueue(
+        () => this.cli.futuresGetOrder({ symbol: identity.symbol, orderId: Number(orderId) }),
+        1,
+        'settlement_order',
+      );
+      const entry = orderId === identity.entryOrderId;
+      const quantity = trades
+        .filter((trade) => String(trade.orderId) === orderId)
+        .reduce((total, trade) => total + (quantityUnits(trade.qty) ?? BigInt(0)), BigInt(0));
+      if (
+        exactId(order.orderId) !== orderId ||
+        order.symbol !== identity.symbol ||
+        order.positionSide !== 'BOTH' ||
+        order.status !== 'FILLED' ||
+        order.side !== ((identity.side === 'LONG') === entry ? 'BUY' : 'SELL') ||
+        quantity <= BigInt(0) ||
+        quantityUnits(order.executedQty) !== quantity ||
+        quantityUnits(order.origQty) !== quantity
+      )
+        return null;
+    }
+    const income = await readInterval(
+      (startTime, endTime) =>
+        this.enqueue(
+          () =>
+            this.cli.futuresIncome({
+              symbol: identity.symbol,
+              incomeType: 'FUNDING_FEE',
+              startTime,
+              endTime,
+              limit: 1000,
+            }),
+          30,
+          'settlement_funding',
+        ),
+      identity.openedAtMs,
+      identity.closedAtMs,
+    );
+    if (
+      !income ||
+      income.some(
+        (row) =>
+          row.incomeType !== 'FUNDING_FEE' ||
+          !exactId(row.tranId) ||
+          row.time <= identity.openedAtMs ||
+          row.time >= identity.closedAtMs,
+      )
+    )
+      return null;
+    // BOTH-only attribution and both fresh side reads exclude opposite/hedged exposure.
+    if (
+      (await this.readFreshActivePosition(identity.symbol, 'LONG')) !== null ||
+      (await this.readFreshActivePosition(identity.symbol, 'SHORT')) !== null
+    )
+      return null;
+    const observedAtMs = await this.enqueue(() => this.cli.futuresTime(), 1, 'settlement_time');
+    if (!Number.isSafeInteger(observedAtMs) || observedAtMs < serverTime) return null;
+    const evidence: MicroBurstSettlementEvidence = {
+      source: 'BINANCE_EXACT_ORDERS_TRADES_AND_INCOME_V1',
+      observedAtMs,
+      fillsComplete: true,
+      fundingComplete: true,
+      fundingFromMs: identity.openedAtMs,
+      fundingThroughMs: identity.closedAtMs,
+      exactOrdersFilledAndPositionFlat: true,
+      fills: trades.map((trade) => ({
+        id: String(trade.id),
+        orderId: String(trade.orderId),
+        symbol: trade.symbol,
+        side: trade.side,
+        quantity: number(trade.qty),
+        price: number(trade.price),
+        eventTimeMs: trade.time,
+        realizedPnlUsdt: number(trade.realizedPnl),
+        commission: number(trade.commission),
+        commissionAsset: trade.commissionAsset,
+      })),
+      funding: income.map((row) => ({
+        id: String(row.tranId),
+        tradeId: identity.tradeId,
+        symbol: row.symbol,
+        asset: row.asset,
+        amount: number(row.income),
+        eventTimeMs: row.time,
+      })),
+    };
+    return reconcileMicroBurstSettlement(identity, evidence).status === 'VERIFIED'
+      ? evidence
+      : null;
   }
 
   async getRecentFills(symbol: string, startTime?: number, limit = 100): Promise<TradeFill[]> {

@@ -144,6 +144,10 @@ import {
   SharedEntryReservationResult,
 } from '../../core/risk/SharedEntryReservation';
 
+import type { MicroBurstNetLossLedger } from '../../infra/state/MicroBurstNetLossLedger';
+import { isMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
+import { validMicroBurstSettlementIdentity } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
+
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
 const DEFAULT_AEGIS_MAX_HOLD_MS = 8 * 60 * 60 * 1000;
@@ -164,6 +168,7 @@ export interface TradingServiceDeps {
   entryCoordinator?: DurableEntryCoordinator;
   stopCoordinator?: DurableStopCoordinator;
   closeCoordinator?: import('../execution/DurableCloseCoordinator').DurableCloseCoordinator;
+  microNetLossLedger?: MicroBurstNetLossLedger;
 }
 
 export interface TradingServiceConfig {
@@ -252,6 +257,7 @@ export class TradingService {
   private readonly entryInFlightSymbols = new Set<string>();
   private entryInFlight = false;
   private readonly microBurstEntryInFlightSymbols = new Set<string>();
+  private microSettlementTask?: Promise<void>;
   private microBurstEntryInFlight = false;
   private readonly sharedEntryReservation = new SharedEntryReservation();
 
@@ -407,11 +413,17 @@ export class TradingService {
         isEntryCurrent: (intent, quantity) => {
           const admitted =
             this.acceptingEntries &&
+            !this.microSettlementTask &&
             !deps.stopCoordinator?.blockedReason() &&
             !deps.closeCoordinator?.blockedReason() &&
             !this.runtimeStopping &&
             this.getSymbolMode(intent.symbol) === 'LIVE';
           if (!admitted || intent.identity.strategyId !== 'MICRO_BURST_V1') return admitted;
+          if (
+            intent.identity.strategyVersion === 'CONTEXTUAL_V3' &&
+            this.microNetLossBlockedReason()
+          )
+            return false;
           const reason = this.strategyRuntimeCoordinator.validateMicroBurstEntryMarket(
             intent,
             quantity,
@@ -1360,6 +1372,8 @@ export class TradingService {
     }
 
     if (this.runtimeStopping) return;
+    await this.reconcileMicroNetSettlements();
+    if (this.runtimeStopping) return;
     this.isRunning = true;
     this.acceptingEntries = true;
     this.runtimeStopping = false;
@@ -1387,6 +1401,7 @@ export class TradingService {
         this.positionProtection,
       );
       void this.deps.stopCoordinator?.reconcileClosed((symbol) => this.stateForSymbol(symbol));
+      void this.reconcileMicroNetSettlements();
       if (this.isRunning && Date.now() - this.lastAlivePulseMs > 180000) {
         this.deps.logger.error('system_deadlock_detected');
         process.exit(1);
@@ -1426,6 +1441,7 @@ export class TradingService {
           this.deps.entryCoordinator,
           this.deps.closeCoordinator,
           this.deps.stopCoordinator,
+          this.deps.microNetLossLedger,
         ]) {
           try {
             await coordinator?.close();
@@ -1547,6 +1563,13 @@ export class TradingService {
   ): Promise<boolean> {
     if (this.acceptingEntries === false) return false;
     const config = this.getMicroBurstCandidateConfig();
+    if (config.exitPolicy?.contextualPolicyVersion === 'CONTEXTUAL_V3') {
+      const reason = this.microNetLossBlockedReason();
+      if (reason) {
+        this.recordMicroAdmissionDenied({ symbol: request.symbol, reason });
+        return false;
+      }
+    }
     const provenance = this.runtimeConfig.getMicroBurstProvenance(config);
     if (
       !config.enabled ||
@@ -1875,6 +1898,106 @@ export class TradingService {
     }
   }
 
+  private microNetLossBlockedReason(): string | undefined {
+    if (this.microSettlementTask) return 'MICRO_NET_SETTLEMENT_RECONCILING';
+    const ledger = this.deps.microNetLossLedger;
+    return ledger
+      ? (ledger.snapshot().blockedReason ?? undefined)
+      : 'MICRO_NET_LOSS_LEDGER_UNAVAILABLE';
+  }
+
+  private reconcileMicroNetSettlements(): Promise<void> {
+    if (this.runtimeStopping || !this.deps.microNetLossLedger) return Promise.resolve();
+    if (this.microSettlementTask) return this.microSettlementTask;
+    const task = this.trackRuntimeTask(async () => {
+      const ledger = this.deps.microNetLossLedger!;
+      if (!ledger.snapshot().initialized) return;
+      for (const [symbol, store] of this.symbolStateStores) {
+        if (this.runtimeStopping) break;
+        const state = store.get();
+        const identity = state.microBurstSettlement;
+        if (
+          !identity ||
+          state.microBurstPnlUnverified !== true ||
+          state.mode !== 'IDLE' ||
+          state.positionOwner !== 'BOT' ||
+          state.lastStrategy !== 'MICRO_BURST_V1' ||
+          state.lastStrategyVersion !== 'CONTEXTUAL_V3' ||
+          state.lastTradeId !== identity.tradeId ||
+          state.lastOrderId !== identity.entryOrderId ||
+          state.lastSide !== identity.side ||
+          symbol !== identity.symbol ||
+          state.lastEntryQty !== identity.quantity ||
+          state.microBurstEntrySubmittedAtMs !== identity.openedAtMs ||
+          state.microBurstEpisodeId !== identity.episodeId ||
+          !validMicroBurstSettlementIdentity(identity) ||
+          !isMicroBurstTradePolicy(state.microBurstTradePolicy, {
+            strategyId: state.lastStrategy,
+            strategyVersion: state.lastStrategyVersion,
+            configHash: identity.configHash,
+            codeCommitSha: identity.codeCommitSha,
+          }) ||
+          state.lastConfigHash !== identity.configHash ||
+          state.lastCodeCommitSha !== identity.codeCommitSha ||
+          !store.flush
+        )
+          continue;
+        try {
+          // The critical pending row precedes every exchange await, including failed reads.
+          ledger.observe(identity);
+          const evidence = await this.deps.exchange.readMicroBurstSettlement?.(identity);
+          if (!evidence) continue;
+          const result = ledger.observe(identity, evidence);
+          const current = store.get();
+          if (
+            result.status !== 'VERIFIED' ||
+            current.mode !== 'IDLE' ||
+            current.positionOwner !== 'BOT' ||
+            current.lastTradeId !== identity.tradeId ||
+            current.lastOrderId !== identity.entryOrderId ||
+            current.lastStrategy !== 'MICRO_BURST_V1' ||
+            current.lastStrategyVersion !== 'CONTEXTUAL_V3' ||
+            current.lastSide !== identity.side ||
+            current.lastConfigHash !== identity.configHash ||
+            current.lastCodeCommitSha !== identity.codeCommitSha ||
+            current.microBurstEpisodeId !== identity.episodeId ||
+            current.microBurstTradePolicy !== state.microBurstTradePolicy ||
+            JSON.stringify(current.microBurstSettlement) !== JSON.stringify(identity) ||
+            ledger.snapshot().pendingSettlements !== 0
+          )
+            continue;
+          store.set({ microBurstPnlUnverified: false, microBurstPnlUnverifiedAt: undefined });
+          try {
+            await store.flush();
+          } catch (error) {
+            if (store.get().lastTradeId === identity.tradeId)
+              store.set({
+                microBurstPnlUnverified: true,
+                microBurstPnlUnverifiedAt: state.microBurstPnlUnverifiedAt,
+              });
+            throw error;
+          }
+          this.deps.logger.info('micro_burst_net_settlement_verified', {
+            symbol,
+            tradeId: identity.tradeId,
+            netPnlUsdt: result.netPnlUsdt,
+            halted: ledger.snapshot().halted,
+          });
+        } catch {
+          // Accounting outages do not stop protection or replay any market mutation.
+          this.deps.logger.error('micro_burst_net_settlement_pending', {
+            symbol,
+            tradeId: identity.tradeId,
+          });
+        }
+      }
+    }).finally(() => {
+      this.microSettlementTask = undefined;
+    });
+    this.microSettlementTask = task;
+    return task;
+  }
+
   private getMicroBurstCandidateConfig(): MicroBurstRuntimeConfig {
     const configured = this.runtimeConfig.getMicroBurstConfig();
     if (configured.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED !== true)
@@ -1915,6 +2038,7 @@ export class TradingService {
   }
 
   private hasPendingMicroSafety(): boolean {
+    if (this.microSettlementTask) return true;
     const stores = new Set<StateStore>(this.symbolStateStores?.values() ?? []);
     if (this.deps?.state) {
       stores.add(this.deps.state);
