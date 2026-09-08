@@ -8,6 +8,7 @@ import { validateMicroBurstEntryMarket } from './MicroBurstEntryMarketGuard';
 import type { MicroBurstConfig, OrderBookSnapshot } from './MicroBurstTypes';
 
 export interface MicroBurstLossBudgetInput extends QuantityFilters {
+  sizingMode?: 'LOSS_BUDGET';
   intent: StrategyExecutionIntent;
   now: number;
   book: OrderBookSnapshot | undefined;
@@ -22,9 +23,21 @@ export interface MicroBurstLossBudgetInput extends QuantityFilters {
   maxQuantity?: number;
 }
 
+export interface MicroBurstMarginFractionInput
+  extends Omit<MicroBurstLossBudgetInput, 'sizingMode' | 'marginBudget' | 'lossBudget'> {
+  sizingMode: 'MARGIN_FRACTION';
+  /** Available collateral, not total wallet equity or position notional. */
+  availableWallet: number;
+  marginFraction: number;
+  /** Reserve inside the allocation, expressed on entry notional. */
+  feeReserveBps: number;
+  lossBudget?: never;
+  marginBudget?: never;
+}
+
 /** Offline proposal only: no account reads, execution port, or default monetary budget. */
 export function sizeMicroBurstLossBudget(
-  input: MicroBurstLossBudgetInput,
+  input: MicroBurstLossBudgetInput | MicroBurstMarginFractionInput,
   config: MicroBurstConfig,
 ): MarginBudgetSizingResult {
   const fail = (reason: string): MarginBudgetSizingResult => ({
@@ -34,13 +47,42 @@ export function sizeMicroBurstLossBudget(
     notional: 0,
     marginRequired: 0,
   });
-  if (!Number.isFinite(input.lossBudget) || input.lossBudget <= 0)
+  if (
+    input.sizingMode !== undefined &&
+    input.sizingMode !== 'LOSS_BUDGET' &&
+    input.sizingMode !== 'MARGIN_FRACTION'
+  )
+    return fail('MICRO_SIZING_MODE_INVALID');
+  let marginBudget: number;
+  if (input.sizingMode === 'MARGIN_FRACTION') {
+    if (input.lossBudget !== undefined || input.marginBudget !== undefined)
+      return fail('MICRO_SIZING_MODE_CONFLICT');
+    if (
+      !Number.isFinite(input.availableWallet) ||
+      input.availableWallet <= 0 ||
+      !Number.isFinite(input.marginFraction) ||
+      input.marginFraction <= 0 ||
+      input.marginFraction > 0.9 ||
+      !Number.isFinite(input.feeReserveBps) ||
+      input.feeReserveBps <= 0 ||
+      input.feeReserveBps < input.residualCostBps
+    )
+      return fail('MICRO_MARGIN_FRACTION_INVALID');
+    // Margin plus the explicit cost reserve must fit inside the allocation.
+    marginBudget =
+      (input.availableWallet * input.marginFraction) /
+      (1 + (input.intent.leverage * input.feeReserveBps) / 10_000);
+  } else if (!Number.isFinite(input.lossBudget) || input.lossBudget <= 0) {
     return fail('MICRO_EXPLICIT_LOSS_BUDGET_REQUIRED');
+  } else {
+    marginBudget = input.marginBudget;
+  }
   if (
     !Number.isFinite(input.approvedLeverageCap) ||
     input.approvedLeverageCap <= 0 ||
     !Number.isInteger(input.intent.leverage) ||
     input.intent.leverage < 1 ||
+    (input.sizingMode === 'MARGIN_FRACTION' && ![20, 30].includes(input.intent.leverage)) ||
     input.intent.leverage > Math.min(30, input.approvedLeverageCap, config.maxLeverageHardCap)
   )
     return fail('MICRO_LEVERAGE_NOT_APPROVED');
@@ -82,6 +124,7 @@ export function sizeMicroBurstLossBudget(
     return fail('MICRO_EXECUTABLE_GEOMETRY_INVALID');
   const sized = calculateMarginBudgetSizing({
     ...input,
+    marginBudget,
     entryPrice: marginPrice,
     leverage: input.intent.leverage,
     maxQuantity: Math.min(available, input.maxQuantity ?? Infinity),

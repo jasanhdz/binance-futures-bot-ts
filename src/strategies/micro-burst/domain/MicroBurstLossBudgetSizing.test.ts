@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   sizeMicroBurstLossBudget,
   type MicroBurstLossBudgetInput,
+  type MicroBurstMarginFractionInput,
 } from './MicroBurstLossBudgetSizing';
 import { createMicroBurstExecutionIntent } from './MicroBurstExecutionIntentFactory';
 import { createMicroBurstV1Identity } from './MicroBurstIdentity';
@@ -99,6 +100,95 @@ describe('Micro explicit loss-budget proposal', () => {
     expect(sizeMicroBurstLossBudget(input, config).quantity).toBe(0.5);
     input.book!.askDepth[0].qty = 0.3;
     expect(sizeMicroBurstLossBudget(input, config).quantity).toBe(0.3);
+    input.book!.observedAtMs -= config.bookFreshnessMaxMs + 1;
+    expect(sizeMicroBurstLossBudget(input, config).reason).toBe('MICRO_EXECUTABLE_BOOK_NOT_FRESH');
+  });
+});
+
+describe('Micro explicit margin-fraction proposal', () => {
+  function marginFixture(side: 'LONG' | 'SHORT' = 'LONG'): MicroBurstMarginFractionInput {
+    const { marginBudget, lossBudget, sizingMode, ...input } = fixture(side);
+    return {
+      ...input,
+      sizingMode: 'MARGIN_FRACTION',
+      availableWallet: 25,
+      marginFraction: 0.9,
+      feeReserveBps: 14,
+      approvedLeverageCap: 30,
+    };
+  }
+
+  it.each(['LONG', 'SHORT'] as const)('funds %s margin and costs without a loss cap', (side) => {
+    const input = marginFixture(side);
+    const before = structuredClone(input);
+    const result = sizeMicroBurstLossBudget(input, config);
+    expect(result.valid).toBe(true);
+    expect(
+      result.marginRequired + (result.notional * input.feeReserveBps) / 10_000,
+    ).toBeLessThanOrEqual(25 * 0.9);
+    expect(result.maxLoss).toBeGreaterThan(2);
+    expect(input).toEqual(before);
+  });
+
+  it('reports greater estimated loss at 30x, not a fabricated fixed loss budget', () => {
+    const input = marginFixture();
+    const at20 = sizeMicroBurstLossBudget(input, config);
+    input.intent.leverage = 30;
+    const at30 = sizeMicroBurstLossBudget(input, config);
+    expect(at30.valid).toBe(true);
+    expect(at30.quantity).toBeGreaterThan(at20.quantity);
+    expect(at30.maxLoss).toBeGreaterThan(at20.maxLoss!);
+    expect(
+      at30.marginRequired + (at30.notional * input.feeReserveBps) / 10_000,
+    ).toBeLessThanOrEqual(22.5);
+  });
+
+  it.each([1, 19, 21, 29, 40])('rejects unapproved tier %s', (leverage) => {
+    const input = marginFixture();
+    input.intent.leverage = leverage;
+    expect(sizeMicroBurstLossBudget(input, config).reason).toBe('MICRO_LEVERAGE_NOT_APPROVED');
+  });
+
+  it.each([
+    { availableWallet: NaN },
+    { availableWallet: Infinity },
+    { availableWallet: 0 },
+    { marginFraction: 0.91 },
+    { marginFraction: 0 },
+    { marginFraction: NaN },
+    { feeReserveBps: 0 },
+    { feeReserveBps: 13 },
+    { feeReserveBps: NaN },
+  ])('rejects invalid allocation or unfunded costs %j', (override) => {
+    expect(sizeMicroBurstLossBudget({ ...marginFixture(), ...override }, config).reason).toBe(
+      'MICRO_MARGIN_FRACTION_INVALID',
+    );
+  });
+
+  it('rejects conflicting or unknown sizing modes at the runtime boundary', () => {
+    for (const override of [{ lossBudget: 2 }, { marginBudget: 22.5 }]) {
+      const input = { ...marginFixture(), ...override } as unknown as MicroBurstMarginFractionInput;
+      expect(sizeMicroBurstLossBudget(input, config).reason).toBe('MICRO_SIZING_MODE_CONFLICT');
+    }
+    const input = {
+      ...marginFixture(),
+      sizingMode: 'AUTO',
+    } as unknown as MicroBurstMarginFractionInput;
+    expect(sizeMicroBurstLossBudget(input, config).reason).toBe('MICRO_SIZING_MODE_INVALID');
+  });
+
+  it('retains liquidation, book freshness, depth, retry and minimum filters', () => {
+    const input = marginFixture();
+    input.liquidationPrice = 99.45;
+    expect(sizeMicroBurstLossBudget(input, config).reason).toBe('MICRO_LIQUIDATION_BOUND_UNSAFE');
+    input.liquidationPrice = 95;
+    input.maxQuantity = 0.5;
+    expect(sizeMicroBurstLossBudget(input, config).quantity).toBe(0.5);
+    input.book!.askDepth[0].qty = 0.3;
+    expect(sizeMicroBurstLossBudget(input, config).quantity).toBe(0.3);
+    input.minNotional = 31;
+    expect(sizeMicroBurstLossBudget(input, config).reason).toBe('BELOW_MIN_NOTIONAL');
+    input.minNotional = 5;
     input.book!.observedAtMs -= config.bookFreshnessMaxMs + 1;
     expect(sizeMicroBurstLossBudget(input, config).reason).toBe('MICRO_EXECUTABLE_BOOK_NOT_FRESH');
   });

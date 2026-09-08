@@ -1,5 +1,46 @@
 # Micro Contextual V3 Research Implementation
 
+## Margin-Fraction Follow-Up
+
+The subsequent operator request authorizes a 90% available-wallet margin allocation,
+20x/30x leverage, and a durable stop after three confirmed consecutive net losses.
+It does not require an independently chosen USDT loss budget. The older mandatory
+loss-budget prerequisite below is superseded for explicit `MARGIN_FRACTION` proposals.
+
+The offline sizing input now accepts `sizingMode: 'MARGIN_FRACTION'`,
+`availableWallet`, `marginFraction`, and `feeReserveBps`. It rejects allocations above
+0.9, nonfinite inputs, conflicting loss/margin budgets, unknown modes, and leverage
+outside 20x/30x or above the separately supplied approved/domain cap. The supplied
+reserve must cover at least the supplied residual-cost estimate. Margin plus that
+reserve fits within the allocation; the unused wallet fraction is not a loss budget.
+Structural-stop stress, caller-supplied liquidation evidence, quantity/notional
+filters, depth, freshness and executable-room checks remain mandatory. `maxLoss`
+is the shared result's estimated stressed structural loss, not a guaranteed loss
+ceiling. At 30x it can exceed the estimate at 20x. Existing loss-budget callers retain
+their behavior. Neither mode reads an account or sends an order.
+
+Verification for this follow-up:
+
+- `AEGIS_ENABLED=false npx vitest run src/strategies/micro-burst --silent --reporter=dot --maxWorkers=1`:
+  529 tests passed in 40 files, including 19 added margin-mode cases.
+- `npx tsc -p tsconfig.json --noEmit`: passed; no output written to `dist`.
+- `git diff --check`: passed.
+- Aegis and the complete repository suite were not tested; no all-suite claim is made.
+
+Read-only PM2 inspection found `01-Trading-Bot` online with PID 627698 and
+`02-Aegis-API` stopped. This is process metadata, not artifact or policy attestation.
+No process, operational YAML, environment, deployment approval, account or journal
+was modified. No account balance or exposure was queried. No subagent facility was
+available; independent verification commands were parallelized instead.
+
+This follow-up is not completion of V3 LIVE. Runtime YAML wiring for this sizing
+mode, live account/tier evidence, durable net-loss latch, policy-bound recovery,
+durable episode send-once integration, executable exit adapters and reconciled
+fill/fee/funding datasets remain unimplemented or unverified by this change. Parser,
+router and position-manager LIVE restrictions are preserved. No production
+activation, real-money operation, five-minute runtime validation, or profitability
+claim follows from these offline tests. Existing ADA quarantine is untouched.
+
 ## Integration Update
 
 The later user request explicitly authorizes publishing the context branch, merging

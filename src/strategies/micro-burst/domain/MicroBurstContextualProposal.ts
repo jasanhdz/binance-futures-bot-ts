@@ -9,6 +9,7 @@ import { createMicroBurstExecutionIntent } from './MicroBurstExecutionIntentFact
 import {
   sizeMicroBurstLossBudget,
   type MicroBurstLossBudgetInput,
+  type MicroBurstMarginFractionInput,
 } from './MicroBurstLossBudgetSizing';
 import type { MarginBudgetSizingResult } from '../../../core/risk/SizingEngine';
 
@@ -18,7 +19,9 @@ export function evaluateMicroBurstContextualProposal(input: {
   book: OrderBookSnapshot | undefined;
   observedAtMs: number;
   config: MicroBurstConfig;
-  risk: Omit<MicroBurstLossBudgetInput, 'intent' | 'book' | 'now'>;
+  risk:
+    | Omit<MicroBurstLossBudgetInput, 'intent' | 'book' | 'now'>
+    | Omit<MicroBurstMarginFractionInput, 'intent' | 'book' | 'now'>;
 }): {
   authority: 'OBSERVATION_ONLY';
   entry: MicroBurstEntryDecision;
