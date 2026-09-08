@@ -179,7 +179,9 @@ export class PositionProtectionService {
             side,
             positionSide: position.sideMode,
             triggerPrice: stopPrice,
-            closePosition: true,
+            ...(state.microBurstActiveStopKey
+              ? { closePosition: false, quantity: position.qtyAbs, reduceOnly: true as const }
+              : { closePosition: true }),
             workingType: 'MARK_PRICE',
             parentTradeId: state.lastTradeId,
             parentOrderId: state.lastOrderId,

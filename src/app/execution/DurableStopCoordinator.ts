@@ -412,7 +412,26 @@ export class DurableStopCoordinator {
       return false;
     const side = state.lastSide;
     const pending = state.microBurstStopMove;
-    const target = pending?.triggerPrice ?? triggerPrice;
+    let target = pending?.triggerPrice ?? triggerPrice;
+    if (!pending) {
+      if (!Number.isFinite(state.lastLeverage) || state.lastLeverage! <= 0) return false;
+      const filters = await this.deps.exchange.getSymbolFilters(symbol, state.lastLeverage!);
+      if (
+        !Number.isFinite(filters.tickSize) ||
+        filters.tickSize <= 0 ||
+        !Number.isInteger(filters.pricePrecision) ||
+        filters.pricePrecision < 0 ||
+        filters.pricePrecision > 18
+      )
+        return false;
+      const ticks = target / filters.tickSize;
+      target = Number(
+        (
+          (side === 'LONG' ? Math.ceil(ticks - 1e-12) : Math.floor(ticks + 1e-12)) *
+          filters.tickSize
+        ).toFixed(filters.pricePrecision),
+      );
+    }
     const key = pending?.key ?? `${policyDigest}:${target}`;
     const same = () => {
       const s = store.get();
@@ -430,6 +449,7 @@ export class DurableStopCoordinator {
     const position = await this.deps.exchange.readFreshActivePosition?.(symbol, side);
     if (
       !position ||
+      position.sideMode !== 'BOTH' ||
       position.qtyAbs !== state.lastEntryQty ||
       position.entryPrice !== state.lastEntryPrice ||
       !Number.isFinite(target) ||
@@ -446,8 +466,13 @@ export class DurableStopCoordinator {
         (o) =>
           o.owner === 'BOT' &&
           o.type === 'STOP_MARKET' &&
+          o.side === (side === 'LONG' ? 'SELL' : 'BUY') &&
+          o.positionSide === position.sideMode &&
           o.stopPrice === state.lastStopPrice &&
-          o.closePosition === true,
+          (o.closePosition === true ||
+            (o.positionSide === 'BOTH' &&
+              o.reduceOnly === true &&
+              Number(o.quantity) === position.qtyAbs)),
       )
     )
       return false;
@@ -473,7 +498,9 @@ export class DurableStopCoordinator {
         side,
         positionSide: position.sideMode,
         triggerPrice: target,
-        closePosition: true,
+        closePosition: false,
+        quantity: position.qtyAbs,
+        reduceOnly: true,
         workingType: 'MARK_PRICE',
         parentTradeId: state.lastTradeId,
         parentOrderId: state.lastOrderId,
@@ -530,9 +557,16 @@ export class DurableStopCoordinator {
         if (latest) {
           this.pending.add(operationId);
           request = this.requestFrom((await this.journal!.read(operationId))[0]);
+          // Historical close-all adjustments remain observation-only with their original bytes.
+          const legacyCoverage =
+            snapshot.replacementKey &&
+            request.closePosition === true &&
+            snapshot.closePosition === false;
           if (
             Object.entries(snapshot).some(
-              ([key, value]) => request[key as keyof StopMutationRequest] !== value,
+              ([key, value]) =>
+                !(legacyCoverage && ['closePosition', 'quantity', 'reduceOnly'].includes(key)) &&
+                request[key as keyof StopMutationRequest] !== value,
             )
           )
             return false;
@@ -549,7 +583,11 @@ export class DurableStopCoordinator {
                 order.side === (snapshot.side === 'LONG' ? 'SELL' : 'BUY') &&
                 order.positionSide === snapshot.positionSide &&
                 order.stopPrice === snapshot.triggerPrice &&
-                order.closePosition === true,
+                (snapshot.closePosition
+                  ? order.closePosition === true
+                  : order.closePosition === false &&
+                    order.reduceOnly === true &&
+                    Number(order.quantity) === snapshot.quantity),
             )
           ) {
             if (!samePosition()) return false;
@@ -571,12 +609,15 @@ export class DurableStopCoordinator {
             clientOrderId: `bot_sl_${digest.slice(0, 28)}`,
           };
           this.pending.add(operationId);
+          this.validateCoverage(request);
           latest = await this.append(request, 'PREPARED');
           // Only the owner that created this durable PREPARED may submit, once.
           if (!samePosition() || this.closing) return false;
-          const beforeSend = await this.deps.exchange
-            .readActivePosition(request.symbol, request.side)
-            .catch(() => null);
+          const beforeSend = await (
+            request.closePosition
+              ? this.deps.exchange.readActivePosition(request.symbol, request.side)
+              : this.deps.exchange.readFreshActivePosition?.(request.symbol, request.side)
+          )?.catch(() => null);
           if (
             !beforeSend ||
             beforeSend.sideMode !== request.positionSide ||
@@ -615,9 +656,11 @@ export class DurableStopCoordinator {
           !samePosition()
         )
           return false;
-        const position = await this.deps.exchange
-          .readActivePosition(request.symbol, request.side)
-          .catch(() => null);
+        const position = await (
+          request.closePosition
+            ? this.deps.exchange.readActivePosition(request.symbol, request.side)
+            : this.deps.exchange.readFreshActivePosition?.(request.symbol, request.side)
+        )?.catch(() => null);
         if (
           !position ||
           position.sideMode !== request.positionSide ||
@@ -874,7 +917,6 @@ export class DurableStopCoordinator {
       request.triggerPrice !== entry.stopPrice ||
       request.positionQuantity !== entry.quantity ||
       request.entryPrice !== entry.entryPrice ||
-      request.closePosition !== true ||
       request.workingType !== 'MARK_PRICE' ||
       request.mutationId !== request.clientOrderId ||
       !/^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
@@ -885,6 +927,7 @@ export class DurableStopCoordinator {
       entry.metadata?.terminalMeaning !== 'STOP_OBSERVED_NOT_POSITION_FLAT'
     )
       throw new Error('STOP_PROTOCOL_OR_SCOPE_CONFLICT');
+    this.validateCoverage(request);
     const digest = mutationDigest(this.scope, request.parentTradeId, request.replacementKey);
     if (
       request.replacementKey !== undefined &&
@@ -897,6 +940,21 @@ export class DurableStopCoordinator {
     )
       throw new Error('STOP_MUTATION_IDENTITY_CONFLICT');
     return request;
+  }
+
+  private validateCoverage(request: StopMutationRequest): void {
+    if (request.closePosition === true) {
+      if (request.quantity === undefined && request.reduceOnly === undefined) return;
+    } else if (
+      request.closePosition === false &&
+      request.positionSide === 'BOTH' &&
+      request.reduceOnly === true &&
+      Number.isFinite(request.quantity) &&
+      request.quantity! > 0 &&
+      request.quantity === request.positionQuantity
+    )
+      return;
+    throw new Error('STOP_COVERAGE_INVALID');
   }
 
   private async append(

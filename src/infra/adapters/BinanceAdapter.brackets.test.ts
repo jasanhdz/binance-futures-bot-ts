@@ -364,6 +364,155 @@ describe('BinanceExchange bracket placement', () => {
     }
   });
 
+  it.each(['LONG', 'SHORT'] as const)(
+    'sends a quantity-bound reduce-only %s stop without close-all or mode discovery',
+    async (side) => {
+      const request = {
+        symbol: 'BTCUSDT',
+        side,
+        positionSide: 'BOTH' as const,
+        triggerPrice: side === 'LONG' ? 90 : 110,
+        closePosition: false,
+        quantity: 0.02,
+        reduceOnly: true as const,
+        workingType: 'MARK_PRICE' as const,
+        clientOrderId: `bot_sl_${'b'.repeat(28)}`,
+      };
+      const order = {
+        symbol: request.symbol,
+        clientAlgoId: request.clientOrderId,
+        algoId: 457,
+        algoStatus: 'NEW',
+        algoType: 'CONDITIONAL',
+        orderType: 'STOP_MARKET',
+        side: side === 'LONG' ? 'SELL' : 'BUY',
+        positionSide: 'BOTH',
+        triggerPrice: String(request.triggerPrice),
+        workingType: 'MARK_PRICE',
+        closePosition: false,
+        reduceOnly: true,
+        quantity: '0.020',
+      };
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async () => new Response(JSON.stringify(order)));
+      try {
+        const exchange = new BinanceExchange(logger);
+        await exchange.sendStopCloseOnce(request);
+        const body = new URLSearchParams(String(fetch.mock.calls[0][1]?.body));
+        expect(body.get('quantity')).toBe('0.02');
+        expect(body.get('reduceOnly')).toBe('true');
+        expect(body.has('closePosition')).toBe(false);
+        expect(body.get('side')).toBe(order.side);
+        expect(await exchange.readStopCloseByClientOrderId(request)).toEqual({
+          clientOrderId: request.clientOrderId,
+          orderId: '457',
+        });
+        for (const changed of [
+          { quantity: '0.01' },
+          { quantity: undefined },
+          { reduceOnly: false },
+          { reduceOnly: undefined },
+          { closePosition: true },
+          { closePosition: undefined },
+          { positionSide: side },
+        ]) {
+          fetch.mockImplementation(
+            async () => new Response(JSON.stringify({ ...order, ...changed })),
+          );
+          expect(await exchange.readStopCloseByClientOrderId(request)).toBeNull();
+        }
+        const calls = fetch.mock.calls.length;
+        for (const changed of [
+          { quantity: 0 },
+          { quantity: -1 },
+          { quantity: NaN },
+          { quantity: Infinity },
+          { quantity: undefined },
+          { reduceOnly: undefined },
+          { closePosition: true },
+          { positionSide: side },
+        ]) {
+          await expect(exchange.sendStopCloseOnce({ ...request, ...changed })).rejects.toThrow(
+            'STOP_REQUEST_INVALID',
+          );
+        }
+        expect(fetch).toHaveBeenCalledTimes(calls);
+        mockClient.futuresGetOrder.mockResolvedValue({
+          orderId: 458,
+          symbol: request.symbol,
+          side: order.side,
+          positionSide: 'BOTH',
+          status: 'FILLED',
+          executedQty: '0.020',
+        } as any);
+        fetch.mockImplementation(
+          async () =>
+            new Response(
+              JSON.stringify({
+                ...order,
+                algoStatus: 'FINISHED',
+                actualOrderId: 458,
+              }),
+            ),
+        );
+        expect(await exchange.readTriggeredStop(request, request.quantity)).toEqual({
+          clientOrderId: request.clientOrderId,
+          orderId: '457',
+          executedOrderId: '458',
+        });
+        expect(await exchange.readTriggeredStop(request, 0.01)).toBeNull();
+        mockClient.futuresGetOrder.mockResolvedValue({
+          orderId: 458,
+          symbol: request.symbol,
+          side: order.side,
+          positionSide: 'BOTH',
+          status: 'FILLED',
+          executedQty: '0.010',
+        } as any);
+        expect(await exchange.readTriggeredStop(request, request.quantity)).toBeNull();
+        expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+        expect(mockClient.futuresPositionMode).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
+
+  it.each([-4130, -4509, -2022])(
+    'does not retry or cancel protection after algo rejection %s',
+    async (code) => {
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ code, msg: 'simulated exchange rejection' }), {
+            status: 400,
+          }),
+      );
+      try {
+        const exchange = new BinanceExchange(logger);
+        await expect(
+          exchange.sendStopCloseOnce({
+            symbol: 'BTCUSDT',
+            side: 'LONG',
+            positionSide: 'BOTH',
+            triggerPrice: 90,
+            closePosition: false,
+            quantity: 0.02,
+            reduceOnly: true,
+            workingType: 'MARK_PRICE',
+            clientOrderId: `bot_sl_${'c'.repeat(28)}`,
+          }),
+        ).rejects.toThrow(String(code));
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(fetch.mock.calls[0][1]?.method).toBe('POST');
+        expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+        expect(mockClient.futuresPositionMode).not.toHaveBeenCalled();
+      } finally {
+        fetch.mockRestore();
+      }
+    },
+  );
+
   it.each(['NEW', 'CANCELED', 'TRIGGERED', 'FINISHED', 'EXPIRED', 'UNKNOWN'])(
     'exposes only explicitly understood conditional lifecycle %s',
     async (status) => {

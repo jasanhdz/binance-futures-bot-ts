@@ -40,7 +40,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Managed Micro close: narrow identified send/strict evidence port, not monetary settlement.
   // Exact V3 accounting read capability; no mutation or deployment approval change.
   // Contextual fee/tier/triggered-stop evidence capabilities; not deployment approval.
-  'src/app/ports/Exchange.ts': '15d84050a416cdfb523011f2fca422661a2f57f500f4346aeb3b84b7b9200052',
+  // Quantity-bound one-way reduce-only stops; legacy close-all reads retained, not LIVE approval.
+  'src/app/ports/Exchange.ts': 'f0e9fffc6bd672b0e5f47620b30df021ed7585a0cf9122d440c5dcb7cd6dfc58',
   'src/infra/config/environment.ts':
     // User-requested AEGIS_ENABLED disconnect; existing defaults and LIVE values unchanged.
     'b35c9984d4a756c53cc424350317cb4131c4c973f038f08d77bac103b7217ee3',
@@ -61,7 +62,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Identified market close, no retries, strict BOTH/hedge lookup. SAFETY_DURABLE_MICRO_CLOSE.md.
     // Bounded exact-order fills/funding accounting, strict USDT and one-way attribution.
     // Signed fees, isolated maintenance tiers, exact triggered-stop attribution and exit costs.
-    '0c078acd4127dd2a5c8e4412d3e8dd64ea6f1afc94e8090c7c45a8cc39173088',
+    // Reviewed quantity-stop transport and exact quantity/flag/child-order evidence contract.
+    'b7e7fbd5e4411675d847ee505ce146104fb5ffc5862d53fb0549216e553f822b',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':

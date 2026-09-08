@@ -226,7 +226,10 @@ export interface IdentifiedStopRequest {
   side: Side;
   positionSide: 'BOTH' | 'LONG' | 'SHORT';
   triggerPrice: number;
-  closePosition: true;
+  /** Close-all excludes quantity/reduceOnly; quantity stops require BOTH and reduceOnly. */
+  closePosition: boolean;
+  quantity?: number;
+  reduceOnly?: true;
   workingType: 'MARK_PRICE';
   clientOrderId: string;
 }

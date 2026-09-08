@@ -231,6 +231,13 @@ async function fixture() {
       side === 'SHORT' ? null : position(),
     marketOpen: sendOpen,
     sendStopCloseOnce: vi.fn(async (r: any) => {
+      if (r.closePosition && [...stops.values()].some((s) => s.status === 'NEW' && s.closePosition))
+        throw new Error('simulated -4130 duplicate close-all stop');
+      if (
+        !r.closePosition &&
+        (r.positionSide !== 'BOTH' || r.reduceOnly !== true || r.quantity !== quantity)
+      )
+        throw new Error('simulated invalid reduce-only coverage');
       const id = String(++sequence);
       stops.set(id, { ...r, orderId: id, status: 'NEW' });
       return { clientOrderId: r.clientOrderId, orderId: id };
@@ -265,7 +272,9 @@ async function fixture() {
           side: 'SELL',
           positionSide: 'BOTH',
           owner: 'BOT',
-          closePosition: true,
+          closePosition: s.closePosition,
+          quantity: s.quantity,
+          reduceOnly: s.reduceOnly,
         })),
     readCancelTarget: async (r: any) => stops.get(r.orderId)?.status ?? null,
     cancelOrderById: async (_s: string, id: string) => {
@@ -532,6 +541,78 @@ async function fixture() {
 }
 
 describe('V3 production entry/protection/exit/accounting flow with simulated Binance', () => {
+  it('retains existing protection after rejected adjustment and never resends across restart', async () => {
+    const f = await fixture();
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    f.setPrice(101);
+    const policy = f.store.get().microBurstTradePolicy as any;
+    vi.mocked(f.exchange.sendStopCloseOnce!).mockRejectedValueOnce(new Error('simulated -2022'));
+    expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(false);
+    expect(f.store.get().lastStopPrice).toBe(99.5);
+    expect(await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG')).toHaveLength(1);
+    await f.restart();
+    expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(false);
+    expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(2);
+    expect(f.store.get().microBurstStopMove).toBeDefined();
+    expect(await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG')).toHaveLength(1);
+  }, 20_000);
+
+  it('does not prepare a quantity stop for hedge or changed position evidence', async () => {
+    const f = await fixture();
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    f.setPrice(101);
+    const policy = f.store.get().microBurstTradePolicy as any;
+    const position = await f.exchange.readFreshActivePosition!('ETHUSDT', 'LONG');
+    const read = vi.spyOn(f.exchange, 'readFreshActivePosition');
+    for (const changed of [{ sideMode: 'LONG' as const }, { qtyAbs: position!.qtyAbs + 1 }]) {
+      read.mockResolvedValueOnce({ ...position!, ...changed });
+      expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(false);
+      expect(f.store.get().microBurstStopMove).toBeUndefined();
+    }
+    expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  it('observes a historical close-all adjustment using its original contract without resending', async () => {
+    const f = await fixture();
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    f.setPrice(101);
+    const state = f.store.get();
+    const policy = state.microBurstTradePolicy as any;
+    const key = `${policy.digest}:100.2`;
+    expect(
+      await f.stop.supervise(
+        {
+          symbol: 'ETHUSDT',
+          side: 'LONG',
+          positionSide: 'BOTH',
+          triggerPrice: 100.2,
+          closePosition: true,
+          workingType: 'MARK_PRICE',
+          parentTradeId: state.lastTradeId!,
+          parentOrderId: state.lastOrderId!,
+          strategyId: state.lastStrategy!,
+          positionQuantity: state.lastEntryQty!,
+          entryPrice: state.lastEntryPrice!,
+          replacementKey: key,
+        },
+        () => true,
+        true,
+      ),
+    ).toBe(false);
+    f.store.set({ microBurstStopMove: { key, triggerPrice: 100.2, policyDigest: policy.digest } });
+    await f.restart();
+    const read = vi.spyOn(f.exchange, 'readStopCloseByClientOrderId');
+    expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(false);
+    expect(read).toHaveBeenCalledWith(
+      expect.objectContaining({ closePosition: true, replacementKey: key }),
+    );
+    expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(2);
+    expect(f.store.get().lastStopPrice).toBe(99.5);
+  }, 20_000);
+
   it('recovers an ambiguous stop adjustment by observation without a second send', async () => {
     const f = await fixture();
     expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
@@ -559,13 +640,20 @@ describe('V3 production entry/protection/exit/accounting flow with simulated Bin
     await f.entry.reconcile();
     f.setPrice(101);
     const policy = f.store.get().microBurstTradePolicy as any;
-    expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(true);
+    expect(await f.stop.tighten('ETHUSDT', f.store, 100.191, policy.digest)).toBe(true);
     expect(f.store.get().lastStopPrice).toBe(100.2);
     expect(f.store.get().microBurstActiveStopKey).toBe(`${policy.digest}:100.2`);
     const supervision = await f.protection.superviseMicroStop('ETHUSDT', f.store.get(), f.store);
     expect(supervision.status).toBe('PROTECTED');
     expect(await f.stop.tighten('ETHUSDT', f.store, 100.1, policy.digest)).toBe(false);
     expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(f.exchange.sendStopCloseOnce!).mock.calls[1][0]).toMatchObject({
+      closePosition: false,
+      reduceOnly: true,
+      positionSide: 'BOTH',
+      quantity: f.store.get().lastEntryQty,
+    });
+    expect(await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG')).toHaveLength(2);
   }, 20_000);
 
   it('advances a persisted blind timer without fake price/MFE and closes after restart', async () => {

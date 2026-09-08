@@ -10,6 +10,7 @@ import {
   EntryRecoveryExpectation,
   RecoverableEntryPosition,
   MicroBurstEntryRiskEvidence,
+  IdentifiedStopRequest,
 } from '../../app/ports/Exchange';
 import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config/environment';
@@ -31,6 +32,38 @@ import {
 } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
 
 type SharedRequestPriority = 'normal' | 'critical';
+
+function validIdentifiedStop(request: IdentifiedStopRequest): boolean {
+  return (
+    /^[A-Z0-9]+$/.test(request.symbol) &&
+    /^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) &&
+    Number.isFinite(request.triggerPrice) &&
+    request.triggerPrice > 0 &&
+    request.workingType === 'MARK_PRICE' &&
+    (request.side === 'LONG' || request.side === 'SHORT') &&
+    (request.closePosition === true
+      ? request.quantity === undefined &&
+        request.reduceOnly === undefined &&
+        ['BOTH', request.side].includes(request.positionSide)
+      : request.closePosition === false &&
+        request.positionSide === 'BOTH' &&
+        request.reduceOnly === true &&
+        Number.isFinite(request.quantity) &&
+        quantityUnits(request.quantity!) !== undefined)
+  );
+}
+
+function matchesStopCoverage(
+  request: IdentifiedStopRequest,
+  order: Record<string, unknown>,
+): boolean {
+  if (request.closePosition) return order.closePosition === true || order.closePosition === 'true';
+  return (
+    (order.closePosition === false || order.closePosition === 'false') &&
+    (order.reduceOnly === true || order.reduceOnly === 'true') &&
+    quantityUnits(order.quantity as string | number) === quantityUnits(request.quantity!)
+  );
+}
 
 function isBotProtectionId(value: unknown): boolean {
   return (
@@ -1282,19 +1315,12 @@ export class BinanceExchange implements Exchange {
       type: 'STOP_MARKET',
       triggerPrice: String(request.triggerPrice),
       workingType: request.workingType,
-      closePosition: 'true',
+      ...(request.closePosition
+        ? { closePosition: 'true' }
+        : { quantity: String(request.quantity), reduceOnly: 'true' }),
       clientAlgoId: request.clientOrderId,
     };
-    if (
-      !/^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
-      !Number.isFinite(request.triggerPrice) ||
-      request.triggerPrice <= 0 ||
-      request.closePosition !== true ||
-      request.workingType !== 'MARK_PRICE' ||
-      (request.side !== 'LONG' && request.side !== 'SHORT') ||
-      !['BOTH', request.side].includes(request.positionSide)
-    )
-      throw new Error('STOP_REQUEST_INVALID');
+    if (!validIdentifiedStop(request)) throw new Error('STOP_REQUEST_INVALID');
     const receipt = await this.enqueue(
       () => this.placeAlgoOrderRaw(params),
       DEFAULT_REQUEST_WEIGHT,
@@ -1328,9 +1354,10 @@ export class BinanceExchange implements Exchange {
     (import('../../app/ports/Exchange').StopOrderReceipt & { executedOrderId: string }) | null
   > {
     if (
-      !/^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
+      !validIdentifiedStop(request) ||
       !Number.isFinite(quantity) ||
       quantity <= 0 ||
+      (!request.closePosition && quantityUnits(quantity) !== quantityUnits(request.quantity!)) ||
       !/^[A-Z0-9]+$/.test(request.symbol)
     )
       return null;
@@ -1350,7 +1377,7 @@ export class BinanceExchange implements Exchange {
       algo.positionSide !== request.positionSide ||
       Number(algo.triggerPrice) !== request.triggerPrice ||
       algo.workingType !== 'MARK_PRICE' ||
-      !isTrueish(algo.closePosition) ||
+      !matchesStopCoverage(request, algo) ||
       !/^[1-9]\d*$/.test(String(algo.algoId)) ||
       (typeof algo.algoId === 'number' && !Number.isSafeInteger(algo.algoId)) ||
       !/^[1-9]\d*$/.test(String(algo.actualOrderId)) ||
@@ -1382,16 +1409,7 @@ export class BinanceExchange implements Exchange {
   async readStopCloseState(
     request: import('../../app/ports/Exchange').IdentifiedStopRequest,
   ): Promise<import('../../app/ports/Exchange').StopOrderState | null> {
-    if (
-      !/^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
-      !Number.isFinite(request.triggerPrice) ||
-      request.triggerPrice <= 0 ||
-      request.closePosition !== true ||
-      request.workingType !== 'MARK_PRICE' ||
-      (request.side !== 'LONG' && request.side !== 'SHORT') ||
-      !['BOTH', request.side].includes(request.positionSide)
-    )
-      throw new Error('STOP_REQUEST_INVALID');
+    if (!validIdentifiedStop(request)) throw new Error('STOP_REQUEST_INVALID');
     // Only NEW protection and definitive cancellation are interpreted. Not-found,
     // triggered and unexpected statuses never authorize resubmission or retirement.
     const order = await this.enqueue(
@@ -1413,7 +1431,7 @@ export class BinanceExchange implements Exchange {
       order.positionSide !== request.positionSide ||
       Number(order.triggerPrice) !== request.triggerPrice ||
       order.workingType !== 'MARK_PRICE' ||
-      !(order.closePosition === true || order.closePosition === 'true')
+      !matchesStopCoverage(request, order)
     )
       return null;
     return {
