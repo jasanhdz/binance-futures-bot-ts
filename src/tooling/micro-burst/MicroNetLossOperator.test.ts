@@ -24,5 +24,10 @@ it('initializes a fresh signed scope with private local keys but refuses a secon
   expect(() => initializeLocalMicroLedger(options)).toThrow(
     'MICRO_OPERATOR_INITIALIZATION_NOT_PRISTINE',
   );
+  const otherDirectory = path.join(root, 'other-operator');
+  expect(() => initializeLocalMicroLedger({ ...options, keyDirectory: otherDirectory })).toThrow(
+    'MICRO_OPERATOR_EXISTING_LEDGER_REQUIRES_PINNED_KEY',
+  );
+  expect(fs.existsSync(otherDirectory)).toBe(false);
   expect(fs.readdirSync(keyDirectory).filter((f) => f.endsWith('.json'))).toHaveLength(1);
 });

@@ -30,6 +30,20 @@ export function initializeLocalMicroLedger(options: {
   )
     throw new Error('MICRO_OPERATOR_EXPLICIT_INITIALIZATION_ARGUMENTS_REQUIRED');
   const parent = path.dirname(options.keyDirectory);
+  const account = `binance-key-${createHash('sha256').update(options.apiKey).digest('hex')}`;
+  const environment = options.isTestnet ? 'testnet' : 'production';
+  const databasePath = path.join(
+    process.cwd(),
+    'data',
+    'runtime',
+    'micro-net-loss',
+    `micro-net-loss-${account}-${environment}.sqlite`,
+  );
+  if (
+    fs.existsSync(databasePath) &&
+    !fs.existsSync(path.join(options.keyDirectory, 'operator.public.pem'))
+  )
+    throw new Error('MICRO_OPERATOR_EXISTING_LEDGER_REQUIRES_PINNED_KEY');
   const parentStat = fs.lstatSync(parent);
   if (
     !parentStat.isDirectory() ||
@@ -93,8 +107,8 @@ export function initializeLocalMicroLedger(options: {
     const command: MicroBurstLossResetCommand = {
       schemaVersion: 1,
       action: 'INITIALIZE',
-      account: `binance-key-${createHash('sha256').update(options.apiKey).digest('hex')}`,
-      environment: options.isTestnet ? 'testnet' : 'production',
+      account,
+      environment,
       strategyId: 'MICRO_BURST_V1',
       policyVersion: 'CONTEXTUAL_V3',
       expectedRevision: snapshot.revision,

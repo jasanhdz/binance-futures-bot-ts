@@ -1,5 +1,36 @@
 # Micro Contextual V3 Research Implementation
 
+## Existing Operator Ledger Check
+
+After publishing source integration commit `43474a3`, an explicitly invoked local
+INITIALIZE attempt failed with `MICRO_NET_LOSS_SCOPE_OR_KEY_MISMATCH`. Read-only SQL
+inspection at `2026-09-08T16:11:24.614Z` established that the production V3 ledger was
+already initialized: revision 1, epoch 1, streak 0, halt false, zero pending settlements
+and one signed command. The public key at
+`data/runtime/micro-operator/operator.public.pem` matches the ledger's pinned SPKI
+SHA-256 `ecc5440563cda6f080f75c2de083562101cbbd610f079e80f5163b899f2ff843`.
+The retained earlier initialization command explicitly describes local owner approval
+of the 90%/20x-30x/three-net-loss trial, without a legacy quarantine reset.
+
+No new initialization or reset was applied. The unsuccessful attempt generated an
+unused, unpinned pair under `/home/jasan/.config/micro-burst-owner/`; only those newly
+created PEM files were removed. The original pinned keys and signed record were not
+modified. The CLI now refuses a new key location for an existing scoped database
+before generating another pair. Its offline regression also checks this refusal.
+The existing ledger and operator directory are ignored by Git and were not staged.
+
+This resolves the earlier uncertainty about whether operator initialization exists;
+it does not clear ADA, attest live account history or approve a deployment. No `.env`
+key path or approved commit/config hash was changed, and no PM2 restart was performed.
+
+Follow-up verification: `AEGIS_ENABLED=false npx vitest run
+src/tooling/micro-burst/MicroNetLossOperator.test.ts
+src/app/bootstrap/MicroNetLossComposition.test.ts
+src/infra/state/MicroBurstNetLossLedger.test.ts --silent --reporter=dot --maxWorkers=1`
+passed 28 tests in three files. These overlap the integration suite below and are
+not added to its count. The external-directory build and `git diff --check` also
+passed after the operator precheck change.
+
 ## Production Flow Integration Follow-Up
 
 The resumed workspace contained an uncommitted integration over `d8d2de5`. This
