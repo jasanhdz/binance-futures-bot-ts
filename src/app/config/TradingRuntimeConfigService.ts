@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { microBurstConfigHash } from '../../strategies/micro-burst/application/MicroBurstConfigHash';
 import { Side } from '../../core/types';
 import { DEFAULT_GUARDIAN_CONFIG, GuardianConfig } from '../../domain/services/ProfitGuardian';
 import { RegimeConfig } from '../ports/RegimeStrategy';
@@ -63,17 +63,7 @@ export class TradingRuntimeConfigService {
   }
 
   getMicroBurstProvenance(config: ReturnType<typeof parseMicroBurstConfig>) {
-    const stable = (value: unknown): string => {
-      if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-      if (value && typeof value === 'object') {
-        return `{${Object.entries(value as Record<string, unknown>)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([key, child]) => `${JSON.stringify(key)}:${stable(child)}`)
-          .join(',')}}`;
-      }
-      return JSON.stringify(value);
-    };
-    const configHash = createHash('sha256').update(stable(config)).digest('hex');
+    const configHash = microBurstConfigHash(config);
     const codeCommitSha = process.env.GIT_COMMIT_SHA ?? process.env.GITHUB_SHA ?? process.env.COMMIT_SHA ?? 'UNKNOWN';
     const requestedCohort = config.prospectiveValidation?.cohortId;
     const cohortId = requestedCohort ?? `MBV1-M3_2-${codeCommitSha.slice(0, 12)}-${configHash.slice(0, 12)}`;

@@ -14,7 +14,7 @@ import {
 } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 
 describe('Micro effective configuration authority', () => {
-  it('matches only the owner-approved effective merged configuration', () => {
+  it('matches the approved effective REACTION config and rejects representation drift', () => {
     const parsed = parseMicroBurstConfig(
       load(readFileSync(resolve('regime_config.live.yaml'), 'utf8')),
     );
@@ -27,6 +27,10 @@ describe('Micro effective configuration authority', () => {
     expect(mergedHash).toBe(MICRO_BURST_V1_CONFIG_SHA256);
     const identity = createMicroBurstV1Identity('a'.repeat(40));
     expect(hasMicroBurstV1LiveAuthority(identity, mergedHash, identity.codeCommitSha)).toBe(true);
+    expect(hasMicroBurstV1LiveAuthority(identity, mergedHash, 'b'.repeat(40))).toBe(false);
+    expect(
+      hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, identity.codeCommitSha),
+    ).toBe(true);
     expect(hasMicroBurstV1LiveAuthority(identity, parsedHash, identity.codeCommitSha)).toBe(false);
     // Preserve the existing persisted provenance representation.
     expect(parsed.exitPolicy).toBeUndefined();

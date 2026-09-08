@@ -233,6 +233,16 @@ export interface MicroBurstExitMarketEvidence {
 }
 
 export interface MicroBurstExitContext {
+  /** V3 requires a quantity-covered exit quote and explicitly measured economics. */
+  executableEconomics?: {
+    observedAtMs: number;
+    exitPrice: number;
+    quantityCovered: boolean;
+    residualCostBps: number;
+    volatilityBps: number;
+  };
+  /** Next opposing obstacle, confirmed before this observation; never a synthetic target. */
+  nextConfirmedObstacle?: { price: number; availableAtMs: number };
   /** Current unrealized ROE (decimal: 0.10 = 10%). */
   unrealizedRoe: number;
   /** Price return from entry in decimal (0.001 = 0.1%). */
@@ -254,6 +264,7 @@ export interface MicroBurstExitContext {
   momentumDecayFlag: boolean;
   anomalyExitFlag: boolean;
   currentBookPressure: BookPressureSignal | null;
+  currentBookObservedAtMs?: number;
   currentBtcContext: BtcContext | null;
   marketEvidence?: MicroBurstExitMarketEvidence | null;
   /** Diagnostic only. It must not affect structural price exits. */
@@ -279,6 +290,8 @@ export interface MicroBurstLeverageTierConfig {
 // ── Config ───────────────────────────────────────────────────
 
 export interface MicroBurstConfig {
+  /** Research opt-in only. Omission preserves shipped entry/exit economics and config hash. */
+  contextualPolicyVersion?: 'CONTEXTUAL_V3';
   srLookbackBars: number;
   srPivotLeftBars: number;
   srPivotRightBars: number;
@@ -345,6 +358,33 @@ export interface MicroBurstConfig {
   /** Minimum current-price distance required before requesting a protective stop. */
   exitProtectionMinDistanceBps: number;
   maxLeverageHardCap: number;
+}
+
+export function validMicroBurstContextualConfig(config: MicroBurstConfig): boolean {
+  const defaults = defaultMicroBurstConfig();
+  for (const key of Object.keys(defaults) as (keyof MicroBurstConfig)[]) {
+    if (
+      typeof defaults[key] === 'number' &&
+      (typeof config[key] !== 'number' || !Number.isFinite(config[key]) || Number(config[key]) < 0)
+    )
+      return false;
+  }
+  return (
+    config.exitMaxHoldMs > 0 &&
+    config.exitProofWindowMs > 0 &&
+    config.exitIntelligenceMaxObservationGapMs > 0 &&
+    config.exitIntelligenceConfirmationMs > 0 &&
+    config.exitIntelligenceMinEvidenceFamilies >= 2 &&
+    config.exitIntelligenceMinEvidenceFamilies <= 5 &&
+    config.exitStructuralLockProgress > 0 &&
+    config.exitStructuralLockProgress < 1 &&
+    config.exitContinuationSupportThreshold > 0 &&
+    config.exitContinuationSupportThreshold <= 1 &&
+    config.exitWinnerExitPressureThreshold > 0 &&
+    config.exitWinnerExitPressureThreshold <= 1 &&
+    config.exitIntelligenceExitPressureThreshold > 0 &&
+    config.exitIntelligenceExitPressureThreshold <= 1
+  );
 }
 
 export function defaultMicroBurstConfig(): MicroBurstConfig {

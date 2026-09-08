@@ -7,6 +7,40 @@ import {
 } from '../application/MicroBurstConfigLoader';
 
 describe('MicroBurstConfigLoader', () => {
+  it('rejects V3 LIVE configuration rather than substituting the research exit manager', () => {
+    expect(() =>
+      parseMicroBurstConfig({
+        micro_burst: {
+          mode: 'LIVE',
+          exit_policy: {
+            contextual_policy_version: 'CONTEXTUAL_V3',
+          },
+        },
+      }),
+    ).toThrow('MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY');
+  });
+  it('keeps contextual policy opt-in and rejects unknown versions', () => {
+    expect(parseMicroBurstConfig({ micro_burst: {} }).exitPolicy).toBeUndefined();
+    expect(
+      parseMicroBurstConfig({
+        micro_burst: {
+          mode: 'SHADOW',
+          exit_policy: {
+            contextual_policy_version: 'CONTEXTUAL_V3',
+          },
+        },
+      }).exitPolicy?.contextualPolicyVersion,
+    ).toBe('CONTEXTUAL_V3');
+    expect(() =>
+      parseMicroBurstConfig({
+        micro_burst: {
+          exit_policy: {
+            contextual_policy_version: true,
+          },
+        },
+      }),
+    ).toThrow('MICRO_CONTEXTUAL_POLICY_INVALID');
+  });
   it('returns disabled config for empty input', () => {
     const config = parseMicroBurstConfig(null);
     expect(config.enabled).toBe(false);

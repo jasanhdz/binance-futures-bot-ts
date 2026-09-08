@@ -112,6 +112,12 @@ function freshMarketEvidence(context: MicroBurstExitContext, config: MicroBurstC
     : null;
 }
 
+function freshBook(context: MicroBurstExitContext, config: MicroBurstConfig): boolean {
+  if (!config.contextualPolicyVersion) return true;
+  const age = observationTime(context) - (context.currentBookObservedAtMs ?? NaN);
+  return Number.isFinite(age) && age >= 0 && age <= config.exitIntelligenceMaxObservationGapMs;
+}
+
 function flowRatio(buyVolume: number, sellVolume: number): number {
   const total = buyVolume + sellVolume;
   return total > 0 ? (buyVolume - sellVolume) / total : 0;
@@ -154,6 +160,9 @@ export function captureMicroBurstExitBaseline(
   const flowAvailable = Boolean(
     market?.takerFlowWindowComplete &&
       market.takerFlowGapFree &&
+      [market.buyTakerVolume, market.sellTakerVolume, market.takerTradeCount].every(
+        (value) => Number.isFinite(value) && value >= 0,
+      ) &&
       market.takerTradeCount >= config.exitFlowMinTrades,
   );
   const book = context.currentBookPressure;
@@ -164,7 +173,11 @@ export function captureMicroBurstExitBaseline(
         ? sideAware(flowRatio(market.buyTakerVolume, market.sellTakerVolume), side)
         : null,
     sideAwareBookPressure:
-      book?.status === 'HEALTHY' ? sideAware(book.signedTopOfBookImbalance, side) : null,
+      book?.status === 'HEALTHY' &&
+      freshBook(context, config) &&
+      Number.isFinite(book.signedTopOfBookImbalance)
+        ? sideAware(book.signedTopOfBookImbalance, side)
+        : null,
   };
 }
 
@@ -243,6 +256,9 @@ function assessFlow(
     !market ||
     !market.takerFlowWindowComplete ||
     !market.takerFlowGapFree ||
+    ![market.buyTakerVolume, market.sellTakerVolume, market.takerTradeCount].every(
+      (v) => Number.isFinite(v) && v >= 0,
+    ) ||
     market.takerTradeCount < config.exitFlowMinTrades
   ) {
     return unavailable('FLOW', { reason: 'QUALIFIED_TAKER_FLOW_UNAVAILABLE' });
@@ -290,7 +306,13 @@ function assessBook(
   baseline: MicroBurstExitBaseline | null,
 ): MicroBurstExitSourceAssessment {
   const book = context.currentBookPressure;
-  if (!book || book.status !== 'HEALTHY') {
+  if (
+    !book ||
+    book.status !== 'HEALTHY' ||
+    !freshBook(context, config) ||
+    !Number.isFinite(book.signedTopOfBookImbalance) ||
+    (book.imbalanceSlope !== null && !Number.isFinite(book.imbalanceSlope))
+  ) {
     return unavailable('BOOK', { status: book?.status ?? 'UNAVAILABLE' });
   }
   const pressure = sideAware(book.signedTopOfBookImbalance, side);

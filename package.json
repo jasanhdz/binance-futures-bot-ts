@@ -25,6 +25,7 @@
     "audit:recent-losses": "ts-node scripts/aegis/audit_recent_losing_trades.ts",
     "audit:long-risk-shadow": "ts-node scripts/aegis/audit_long_risk_shadow.ts",
     "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts",
+    "micro-burst:preflight-contextual": "ts-node src/tooling/micro-burst/MicroBurstContextualPreflight.ts",
     "micro-burst:analyze-shadow": "ts-node scripts/micro-burst-analyze-shadow.ts",
     "micro-burst:analyze-generic-shadow": "ts-node scripts/micro-burst-analyze-generic-shadow.ts"
   },

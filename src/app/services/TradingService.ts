@@ -71,6 +71,7 @@ import {
   MomentumRidePositionManager,
 } from '../strategy/OwnedPositionManagers';
 import { MicroBurstPositionManager } from '../../strategies/micro-burst/application/MicroBurstPositionManager';
+import { MicroBurstExitObservation } from '../../strategies/micro-burst/application/MicroBurstExitObservation';
 import { hasLiveAuthority, StrategyIdentity } from '../../core/strategy/StrategyIdentity';
 import { evaluateSharedEntrySafety } from '../../core/risk/SharedEntrySafetyGate';
 import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOwnership';
@@ -246,6 +247,7 @@ export class TradingService {
   private readonly aegisProfitProtectionService: AegisProfitProtectionService;
   private readonly momentumEntryCoordinator: MomentumEntryCoordinator;
   private readonly microAdmissionDiagnostics: EntryGateDiagnostics;
+  private readonly microExitObservation: MicroBurstExitObservation;
   private readonly shutdown = new RuntimeShutdown();
   private readonly entryInFlightSymbols = new Set<string>();
   private entryInFlight = false;
@@ -257,6 +259,9 @@ export class TradingService {
     private deps: TradingServiceDeps,
     private config: TradingServiceConfig,
   ) {
+    this.microExitObservation = new MicroBurstExitObservation({
+      append: (record) => this.deps.logger.info('micro_burst_exit_decision', record),
+    });
     this.microAdmissionDiagnostics = new EntryGateDiagnostics(deps.logger, 'MICRO_BURST_V1', () =>
       Date.now(),
     );
@@ -723,177 +728,185 @@ export class TradingService {
       new MomentumRidePositionManager(this.positionLifecycleCore),
     );
     this.positionManagerRouter.register(
-      new MicroBurstPositionManager(this.positionLifecycleCore, mbConfig.exitPolicy, {
-        close: async (context, decision) => {
-          if (this.deps.closeCoordinator) {
-            return this.deps.closeCoordinator.closeManaged(
-              context.symbol,
-              context.symbolState,
-              this.positionProtection,
-              context.botState,
-            );
-          }
-          const closeIdentity = { ...context.botState };
-          const closeStartedAt = Date.now();
-          const position = await this.deps.exchange.readActivePosition(
-            context.symbol,
-            context.side,
-          );
-          if (position) {
-            await this.deps.exchange.closeSideMarketSafe(
-              context.symbol,
-              context.side,
-              position.qtyAbs,
-              position.sideMode,
-              decision.reason,
-            );
-          }
-          let remaining: PositionInfo | null = null;
-          let flatObservations = 0;
-          for (let attempt = 0; attempt < 3 && flatObservations < 2; attempt++) {
-            if (attempt > 0) await this.sleep(300);
-            remaining = await this.deps.exchange.readActivePosition(context.symbol, context.side);
-            flatObservations = remaining === null ? flatObservations + 1 : 0;
-          }
-          if (remaining || flatObservations < 2) {
-            this.deps.logger.error('micro_burst_live_close_not_flat', {
-              symbol: context.symbol,
-              side: context.side,
-              tradeId: context.botState.lastTradeId,
-              remainingQuantity: remaining?.qtyAbs ?? 0,
-            });
-            return false;
-          }
-          try {
-            if (
-              !(await this.positionProtection.cleanupMicroCloseOrders(
+      new MicroBurstPositionManager(
+        this.positionLifecycleCore,
+        mbConfig.exitPolicy,
+        {
+          close: async (context, decision) => {
+            if (this.deps.closeCoordinator) {
+              return this.deps.closeCoordinator.closeManaged(
                 context.symbol,
                 context.symbolState,
+                this.positionProtection,
+                context.botState,
+              );
+            }
+            const closeIdentity = { ...context.botState };
+            const closeStartedAt = Date.now();
+            const position = await this.deps.exchange.readActivePosition(
+              context.symbol,
+              context.side,
+            );
+            if (position) {
+              await this.deps.exchange.closeSideMarketSafe(
+                context.symbol,
+                context.side,
+                position.qtyAbs,
+                position.sideMode,
+                decision.reason,
+              );
+            }
+            let remaining: PositionInfo | null = null;
+            let flatObservations = 0;
+            for (let attempt = 0; attempt < 3 && flatObservations < 2; attempt++) {
+              if (attempt > 0) await this.sleep(300);
+              remaining = await this.deps.exchange.readActivePosition(context.symbol, context.side);
+              flatObservations = remaining === null ? flatObservations + 1 : 0;
+            }
+            if (remaining || flatObservations < 2) {
+              this.deps.logger.error('micro_burst_live_close_not_flat', {
+                symbol: context.symbol,
+                side: context.side,
+                tradeId: context.botState.lastTradeId,
+                remainingQuantity: remaining?.qtyAbs ?? 0,
+              });
+              return false;
+            }
+            try {
+              if (
+                !(await this.positionProtection.cleanupMicroCloseOrders(
+                  context.symbol,
+                  context.symbolState,
+                  closeIdentity,
+                ))
+              )
+                return false;
+            } catch (error) {
+              this.deps.logger.error('micro_burst_live_close_order_cleanup_failed', {
+                symbol: context.symbol,
+                side: context.side,
+                tradeId: context.botState.lastTradeId,
+                error: String(error),
+              });
+              return false;
+            }
+            const fillLookupStart = position
+              ? closeStartedAt
+              : (context.botState.lastEntryAt ?? closeStartedAt);
+            const closeFills = await this.deps.exchange
+              .getRecentFills(context.symbol, fillLookupStart, 100)
+              .catch(() => []);
+            const expectedCloseSide = context.side === 'LONG' ? 'SELL' : 'BUY';
+            const realizedFills = closeFills.filter(
+              (fill) =>
+                fill.side === expectedCloseSide &&
+                typeof fill.realizedPnl === 'number' &&
+                Number.isFinite(fill.realizedPnl),
+            );
+            const realizedPnl = realizedFills.reduce(
+              (total, fill) => total + (fill.realizedPnl ?? 0) - (fill.commission ?? 0),
+              0,
+            );
+            const estimatedPnl =
+              context.side === 'LONG'
+                ? (context.exitContext.currentPrice - context.exitContext.entryPrice) *
+                  (position?.qtyAbs ?? context.botState.lastEntryQty ?? 0)
+                : (context.exitContext.entryPrice - context.exitContext.currentPrice) *
+                  (position?.qtyAbs ?? context.botState.lastEntryQty ?? 0);
+            const pnlVerified = realizedFills.length > 0;
+            if (this.deps.stopCoordinator) {
+              if (
+                (await this.deps.exchange.readFreshActivePosition?.(
+                  context.symbol,
+                  context.side,
+                )) !== null
+              )
+                return false;
+              const current = context.symbolState.get();
+              if (
+                current.positionOwner !== 'BOT' ||
+                current.lastTradeId !== closeIdentity.lastTradeId ||
+                current.lastOrderId !== closeIdentity.lastOrderId ||
+                current.lastSide !== closeIdentity.lastSide ||
+                current.lastStrategy !== closeIdentity.lastStrategy ||
+                current.mode !== closeIdentity.mode ||
+                current.lastEntryAt !== closeIdentity.lastEntryAt
+              )
+                return false;
+            }
+            if (
+              !(await this.positionProtection.persistMicroOperationalClose(
+                context.symbolState,
                 closeIdentity,
+                {
+                  lastExitAt: Date.now(),
+                  lastExitReason: decision.reason,
+                  microBurstPnlUnverified: !pnlVerified,
+                  microBurstPnlUnverifiedAt: pnlVerified ? undefined : Date.now(),
+                },
               ))
             )
               return false;
-          } catch (error) {
-            this.deps.logger.error('micro_burst_live_close_order_cleanup_failed', {
+            if (!pnlVerified) {
+              this.deps.logger.error('micro_burst_close_pnl_unverified_quarantine', {
+                symbol: context.symbol,
+                side: context.side,
+                tradeId: context.botState.lastTradeId,
+              });
+            }
+            await this.notifyExit(context.symbol, context.side, decision.reason, context.botState, {
+              exitPrice: context.exitContext.currentPrice,
+              finalRoe: context.exitContext.unrealizedRoe,
+              pnl: realizedFills.length > 0 ? realizedPnl : estimatedPnl,
+              pnlEstimated: realizedFills.length === 0,
+            });
+            return true;
+          },
+          moveStop: async (context, decision) => {
+            if (decision.requestedStopPrice === undefined) return false;
+            const position = await this.deps.exchange.readActivePosition(
+              context.symbol,
+              context.side,
+            );
+            if (!position) return false;
+            const filters = await this.deps.exchange.getSymbolFilters(
+              context.symbol,
+              context.exitContext.leverage,
+            );
+            const stopPrice = this.positionProtection.roundPrice(
+              decision.requestedStopPrice,
+              filters,
+            );
+            const moved = await this.positionProtection.moveCloseStop({
               symbol: context.symbol,
               side: context.side,
               tradeId: context.botState.lastTradeId,
-              error: String(error),
+              entryPrice: context.exitContext.entryPrice,
+              markPrice: context.exitContext.currentPrice,
+              leverage: context.exitContext.leverage,
+              quantity: position.qtyAbs,
+              position,
+              newStopPrice: stopPrice,
+              currentRoe: context.exitContext.unrealizedRoe,
+              peakRoe: context.botState.peakRoe ?? 0,
+              protectedRoe: 0,
+              reason: 'MOVE_SL_BE',
+              useClosePosition: false,
             });
-            return false;
-          }
-          const fillLookupStart = position
-            ? closeStartedAt
-            : (context.botState.lastEntryAt ?? closeStartedAt);
-          const closeFills = await this.deps.exchange
-            .getRecentFills(context.symbol, fillLookupStart, 100)
-            .catch(() => []);
-          const expectedCloseSide = context.side === 'LONG' ? 'SELL' : 'BUY';
-          const realizedFills = closeFills.filter(
-            (fill) =>
-              fill.side === expectedCloseSide &&
-              typeof fill.realizedPnl === 'number' &&
-              Number.isFinite(fill.realizedPnl),
-          );
-          const realizedPnl = realizedFills.reduce(
-            (total, fill) => total + (fill.realizedPnl ?? 0) - (fill.commission ?? 0),
-            0,
-          );
-          const estimatedPnl =
-            context.side === 'LONG'
-              ? (context.exitContext.currentPrice - context.exitContext.entryPrice) *
-                (position?.qtyAbs ?? context.botState.lastEntryQty ?? 0)
-              : (context.exitContext.entryPrice - context.exitContext.currentPrice) *
-                (position?.qtyAbs ?? context.botState.lastEntryQty ?? 0);
-          const pnlVerified = realizedFills.length > 0;
-          if (this.deps.stopCoordinator) {
-            if (
-              (await this.deps.exchange.readFreshActivePosition?.(context.symbol, context.side)) !==
-              null
-            )
-              return false;
-            const current = context.symbolState.get();
-            if (
-              current.positionOwner !== 'BOT' ||
-              current.lastTradeId !== closeIdentity.lastTradeId ||
-              current.lastOrderId !== closeIdentity.lastOrderId ||
-              current.lastSide !== closeIdentity.lastSide ||
-              current.lastStrategy !== closeIdentity.lastStrategy ||
-              current.mode !== closeIdentity.mode ||
-              current.lastEntryAt !== closeIdentity.lastEntryAt
-            )
-              return false;
-          }
-          if (
-            !(await this.positionProtection.persistMicroOperationalClose(
-              context.symbolState,
-              closeIdentity,
-              {
-                lastExitAt: Date.now(),
-                lastExitReason: decision.reason,
-                microBurstPnlUnverified: !pnlVerified,
-                microBurstPnlUnverifiedAt: pnlVerified ? undefined : Date.now(),
-              },
-            ))
-          )
-            return false;
-          if (!pnlVerified) {
-            this.deps.logger.error('micro_burst_close_pnl_unverified_quarantine', {
-              symbol: context.symbol,
-              side: context.side,
-              tradeId: context.botState.lastTradeId,
-            });
-          }
-          await this.notifyExit(context.symbol, context.side, decision.reason, context.botState, {
-            exitPrice: context.exitContext.currentPrice,
-            finalRoe: context.exitContext.unrealizedRoe,
-            pnl: realizedFills.length > 0 ? realizedPnl : estimatedPnl,
-            pnlEstimated: realizedFills.length === 0,
-          });
-          return true;
+            if (moved.moved) {
+              context.symbolState.set({
+                breakEvenArmed: true,
+                breakEvenExecuted: true,
+                lastBreakEvenStop: stopPrice,
+                lastStopPrice: stopPrice,
+              });
+            }
+            return moved.moved;
+          },
         },
-        moveStop: async (context, decision) => {
-          if (decision.requestedStopPrice === undefined) return false;
-          const position = await this.deps.exchange.readActivePosition(
-            context.symbol,
-            context.side,
-          );
-          if (!position) return false;
-          const filters = await this.deps.exchange.getSymbolFilters(
-            context.symbol,
-            context.exitContext.leverage,
-          );
-          const stopPrice = this.positionProtection.roundPrice(
-            decision.requestedStopPrice,
-            filters,
-          );
-          const moved = await this.positionProtection.moveCloseStop({
-            symbol: context.symbol,
-            side: context.side,
-            tradeId: context.botState.lastTradeId,
-            entryPrice: context.exitContext.entryPrice,
-            markPrice: context.exitContext.currentPrice,
-            leverage: context.exitContext.leverage,
-            quantity: position.qtyAbs,
-            position,
-            newStopPrice: stopPrice,
-            currentRoe: context.exitContext.unrealizedRoe,
-            peakRoe: context.botState.peakRoe ?? 0,
-            protectedRoe: 0,
-            reason: 'MOVE_SL_BE',
-            useClosePosition: false,
-          });
-          if (moved.moved) {
-            context.symbolState.set({
-              breakEvenArmed: true,
-              breakEvenExecuted: true,
-              lastBreakEvenStop: stopPrice,
-              lastStopPrice: stopPrice,
-            });
-          }
-          return moved.moved;
-        },
-      }),
+        undefined,
+        this.microExitObservation,
+      ),
     );
   }
 
@@ -1404,6 +1417,7 @@ export class TradingService {
         () => this.decisionJsonlSink.drain(),
         () => this.marketSnapshotEvidenceSink.drain(),
         () => this.telemetryJsonlSink.drain(),
+        () => this.microExitObservation.close(),
       ],
       closeMutations: async () => {
         const failures: unknown[] = [];
@@ -2075,6 +2089,10 @@ export class TradingService {
           symbol,
           tradeId: botState.lastTradeId,
         });
+        if (this.getMicroBurstCandidateConfig().exitPolicy?.contextualPolicyVersion) {
+          // Research deadline observation only; the V3 manager has no mutation authority.
+          await this.positionManagerRouter.route(identity, { symbol, botState, symbolState });
+        }
         return;
       }
       const peakPrice = Math.max(botState.microBurstPeakPrice ?? entryPrice, market.currentPrice);

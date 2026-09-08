@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateMicroBurstReactionEntry } from './MicroBurstReactionEntryPolicy';
 import { evaluateMicroBurstEntry } from './MicroBurstEntryPolicy';
+import { evaluateMicroBurstContextualProposal } from './MicroBurstContextualProposal';
+import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
 import { MicroBurstStrategy, MicroBurstStrategyContext } from './MicroBurstStrategy';
 import { createMicroBurstV1Identity } from './MicroBurstIdentity';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
@@ -55,27 +57,133 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
   return { ctx, book };
 }
 describe('Micro reaction entry policy', () => {
-  it.each(['LONG', 'SHORT'] as const)('routes exactly the selected LIVE %s geometry', async (side) => {
-    const { ctx, book } = fixture(side);
-    const router = new StrategyRouter<MicroBurstStrategyContext>();
-    router.register(new MicroBurstStrategy(createMicroBurstV1Identity('a'.repeat(40)), 'LIVE'));
-    const expected = evaluateMicroBurstReactionEntry(ctx, config, book, now);
-    const selected = await router.evaluate('MICRO_BURST_V1', {
-      ...ctx, entryPolicy: 'REACTION', executionBook: book, observedAtMs: now,
+  it('composes a reaction with explicit risk and episode deduplication without execution authority', () => {
+    const { ctx, book } = fixture();
+    const proposal = evaluateMicroBurstContextualProposal({
+      context: ctx,
+      book,
+      observedAtMs: now,
+      config,
+      risk: {
+        marginBudget: 100,
+        lossBudget: 2,
+        approvedLeverageCap: 20,
+        liquidationPrice: 95,
+        stopStressBps: 10,
+        residualCostBps: 14,
+        stepSize: 0.001,
+        qtyPrecision: 3,
+        minNotional: 5,
+      },
     });
-    expect(selected).toMatchObject({
-      mode: 'LIVE', decision: 'ENTRY_INTENT', side,
-      structuralInvalidation: expected.stopInvalidationPrice,
-      destinationPrice: expected.targetPrice,
-      diagnostics: { entryPolicy: 'REACTION', entryPolicyVersion: 'reaction-entry-1-live',
-        leverage: expected.leverage, positionFraction: expected.positionFraction },
+    expect(proposal).toMatchObject({
+      authority: 'OBSERVATION_ONLY',
+      eligibleForResearchFill: true,
+      entry: { leverage: 20 },
+      sizing: { valid: true },
     });
-    ctx.candles.candles1m[0][side === 'LONG' ? 'low' : 'high'] = side === 'LONG' ? 99.8 : 100.2;
-    expect((await router.evaluate('MICRO_BURST_V1', { ...ctx, entryPolicy: 'BASELINE' })).decision).toBe('ENTRY_INTENT');
-    expect((await router.evaluate('MICRO_BURST_V1', {
-      ...ctx, entryPolicy: 'REACTION', executionBook: book, observedAtMs: now,
-    })).decision).toBe('NO_TRADE');
+    expect(proposal.sizing!.maxLoss).toBeLessThanOrEqual(2);
+    const guard = new MicroBurstDuplicateSignalGuard({ now: () => now });
+    const episode = String(proposal.entry.diagnostics.episodeId);
+    const first = guard.check('MICRO_BURST_V1', ctx.symbol, 'LONG', 0.12341, now, episode);
+    const second = guard.check(
+      'MICRO_BURST_V1',
+      ctx.symbol,
+      'LONG',
+      0.12349,
+      now + 60_000,
+      episode,
+    );
+    expect(second.duplicateSuppressed).toBe(true);
+    expect(second.shadowSignalId).toBe(first.shadowSignalId);
+    expect(
+      guard.check('MICRO_BURST_V1', ctx.symbol, 'SHORT', 0.12341, now, episode).duplicateSuppressed,
+    ).toBe(false);
   });
+  it.each(['LONG', 'SHORT'] as const)(
+    'V3 %s uses reaction clarity, not baseline continuation/bias',
+    (side) => {
+      const { ctx, book } = fixture(side);
+      ctx.structuralClarity = false;
+      ctx.momentum.continuationScore = 0;
+      const candidate = { ...config, contextualPolicyVersion: 'CONTEXTUAL_V3' as const };
+      expect(evaluateMicroBurstReactionEntry(ctx, config, book, now).action).toBe('NO_TRADE');
+      expect(evaluateMicroBurstReactionEntry(ctx, candidate, book, now)).toMatchObject({
+        action: 'ENTRY_INTENT',
+        side,
+      });
+      ctx.bookPressure.anomalyFlag = true;
+      expect(evaluateMicroBurstReactionEntry(ctx, candidate, book, now).reason).toBe(
+        'BOOK_NOT_HEALTHY',
+      );
+    },
+  );
+  it('V3 cannot enter LIVE even with the old approved identity', () => {
+    const { ctx, book } = fixture();
+    const strategy = new MicroBurstStrategy(createMicroBurstV1Identity('a'.repeat(40)), 'LIVE');
+    expect(
+      strategy.evaluate({
+        ...ctx,
+        entryPolicy: 'REACTION',
+        executionBook: book,
+        observedAtMs: now,
+        config: { contextualPolicyVersion: 'CONTEXTUAL_V3' },
+      }).reason,
+    ).toBe('MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY');
+  });
+  it('V3 separates sub-cent levels within the same visit without minute/cent rounding', () => {
+    const { ctx, book } = fixture();
+    const candidate = { ...config, contextualPolicyVersion: 'CONTEXTUAL_V3' as const };
+    const first = evaluateMicroBurstReactionEntry(ctx, candidate, book, now);
+    ctx.levels.nearest.support!.price += 0.0001;
+    const second = evaluateMicroBurstReactionEntry(ctx, candidate, book, now);
+    expect(first.action).toBe('ENTRY_INTENT');
+    expect(second.action).toBe('ENTRY_INTENT');
+    expect(first.diagnostics.episodeId).not.toBe(second.diagnostics.episodeId);
+  });
+  it.each(['LONG', 'SHORT'] as const)(
+    'routes exactly the selected LIVE %s geometry',
+    async (side) => {
+      const { ctx, book } = fixture(side);
+      const router = new StrategyRouter<MicroBurstStrategyContext>();
+      router.register(new MicroBurstStrategy(createMicroBurstV1Identity('a'.repeat(40)), 'LIVE'));
+      const expected = evaluateMicroBurstReactionEntry(ctx, config, book, now);
+      const selected = await router.evaluate('MICRO_BURST_V1', {
+        ...ctx,
+        entryPolicy: 'REACTION',
+        executionBook: book,
+        observedAtMs: now,
+      });
+      expect(selected).toMatchObject({
+        mode: 'LIVE',
+        decision: 'ENTRY_INTENT',
+        side,
+        structuralInvalidation: expected.stopInvalidationPrice,
+        destinationPrice: expected.targetPrice,
+        diagnostics: {
+          entryPolicy: 'REACTION',
+          entryPolicyVersion: 'reaction-entry-1-live',
+          leverage: expected.leverage,
+          positionFraction: expected.positionFraction,
+        },
+      });
+      ctx.candles.candles1m[0][side === 'LONG' ? 'low' : 'high'] = side === 'LONG' ? 99.8 : 100.2;
+      ctx.levels.nearest.structuralPosition = side === 'LONG' ? 'near_support' : 'near_resistance';
+      expect(
+        (await router.evaluate('MICRO_BURST_V1', { ...ctx, entryPolicy: 'BASELINE' })).decision,
+      ).toBe('ENTRY_INTENT');
+      expect(
+        (
+          await router.evaluate('MICRO_BURST_V1', {
+            ...ctx,
+            entryPolicy: 'REACTION',
+            executionBook: book,
+            observedAtMs: now,
+          })
+        ).decision,
+      ).toBe('NO_TRADE');
+    },
+  );
   it.each(['LONG', 'SHORT'] as const)(
     'qualifies mirrored %s reclaim without support priority',
     (side) => {

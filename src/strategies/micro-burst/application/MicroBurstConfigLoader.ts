@@ -1,5 +1,9 @@
 import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';
 import type { MicroBurstConfig } from '../domain/MicroBurstTypes';
+import {
+  defaultMicroBurstConfig,
+  validMicroBurstContextualConfig,
+} from '../domain/MicroBurstTypes';
 
 const DEFAULT_SYMBOLS: Record<string, MicroBurstSymbolConfig> = {};
 
@@ -45,6 +49,11 @@ function parseExitPolicy(raw: unknown): Partial<MicroBurstConfig> | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const value = raw as Record<string, unknown>;
   const parsed: Partial<MicroBurstConfig> = {};
+  const version = value.contextual_policy_version ?? value.contextualPolicyVersion;
+  if (version !== undefined) {
+    if (version !== 'CONTEXTUAL_V3') throw new Error('MICRO_CONTEXTUAL_POLICY_INVALID');
+    parsed.contextualPolicyVersion = version;
+  }
   for (const [yamlKey, configKey] of Object.entries(EXIT_POLICY_NUMBER_FIELDS) as Array<
     [
       keyof typeof EXIT_POLICY_NUMBER_FIELDS,
@@ -52,9 +61,17 @@ function parseExitPolicy(raw: unknown): Partial<MicroBurstConfig> | undefined {
     ]
   >) {
     const candidate = value[yamlKey] ?? value[configKey];
+    if (
+      version &&
+      candidate !== undefined &&
+      (typeof candidate !== 'number' || !Number.isFinite(candidate) || candidate < 0)
+    )
+      throw new Error('MICRO_CONTEXTUAL_POLICY_CONFIG_INVALID');
     if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0)
       (parsed as Record<string, unknown>)[configKey] = candidate;
   }
+  if (version && !validMicroBurstContextualConfig({ ...defaultMicroBurstConfig(), ...parsed }))
+    throw new Error('MICRO_CONTEXTUAL_POLICY_CONFIG_INVALID');
   return Object.keys(parsed).length > 0 ? parsed : undefined;
 }
 
@@ -98,6 +115,9 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   const mb = mbSection as Record<string, unknown>;
   const enabled = mb.enabled === true;
   const mode = parseMode(mb.mode);
+  const exitPolicy = parseExitPolicy(mb.exit_policy ?? mb.exitPolicy);
+  if (mode === 'LIVE' && exitPolicy?.contextualPolicyVersion)
+    throw new Error('MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY');
   if (mb.entry_policy !== undefined && !['BASELINE', 'REACTION'].includes(String(mb.entry_policy)))
     throw new Error('MICRO_ENTRY_POLICY_INVALID');
 
@@ -112,9 +132,11 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   return {
     enabled,
     mode,
-    ...(mb.entry_policy !== undefined ? { entryPolicy: mb.entry_policy as 'BASELINE' | 'REACTION' } : {}),
+    ...(mb.entry_policy !== undefined
+      ? { entryPolicy: mb.entry_policy as 'BASELINE' | 'REACTION' }
+      : {}),
     symbols,
-    exitPolicy: parseExitPolicy(mb.exit_policy ?? mb.exitPolicy),
+    exitPolicy,
     prospectiveValidation: parseProspectiveValidation(mb.prospective_validation),
     marketArchive: parseMarketArchive(mb.market_archive),
   };
@@ -213,7 +235,7 @@ export function mergeMicroBurstConfigs(
   return {
     enabled: override.enabled ?? base.enabled,
     mode: override.mode ?? base.mode,
-    ...(override.entryPolicy ?? base.entryPolicy
+    ...((override.entryPolicy ?? base.entryPolicy)
       ? { entryPolicy: override.entryPolicy ?? base.entryPolicy }
       : {}),
     symbols,

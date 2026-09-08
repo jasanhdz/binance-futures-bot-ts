@@ -6,7 +6,12 @@ import {
   MicroBurstExitEvidenceSource,
   MicroBurstExitStage,
 } from './MicroBurstExitIntelligence';
-import { MicroBurstConfig, MicroBurstExitContext, MicroBurstExitDecision } from './MicroBurstTypes';
+import {
+  MicroBurstConfig,
+  MicroBurstExitContext,
+  MicroBurstExitDecision,
+  validMicroBurstContextualConfig,
+} from './MicroBurstTypes';
 
 export type MicroBurstExitEvidenceFamily =
   | 'MOMENTUM_REVERSAL'
@@ -35,6 +40,14 @@ export interface MicroBurstExitEngineState {
   evidenceSources?: MicroBurstExitEvidenceSource[];
   baseline?: MicroBurstExitBaseline;
   confirmedDecision?: MicroBurstExitDecision;
+  contextual?: {
+    peakPrice: number;
+    troughPrice: number;
+    blindSinceMs: number | null;
+    extendedDestinationPrice?: number;
+    lastEvidenceAtMs?: number;
+    lastExecutableAtMs?: number;
+  };
 }
 
 export interface MicroBurstExitTransition {
@@ -96,7 +109,8 @@ export function isMicroBurstExitEngineState(value: unknown): value is MicroBurst
   const decision = state.confirmedDecision;
   const validDecision =
     decision === undefined ||
-    (typeof decision === 'object' &&
+    (decision !== null &&
+      typeof decision === 'object' &&
       (decision.action === 'HOLD' ||
         decision.action === 'CLOSE_MARKET' ||
         decision.action === 'MOVE_STOP') &&
@@ -120,6 +134,21 @@ export function isMicroBurstExitEngineState(value: unknown): value is MicroBurst
       (Array.isArray(evidenceSources) &&
         evidenceSources.every((source) => EVIDENCE_SOURCES.has(source)))) &&
     (state.baseline === undefined || validBaseline(state.baseline)) &&
+    (state.contextual === undefined ||
+      (state.contextual !== null &&
+        typeof state.contextual === 'object' &&
+        [state.contextual.peakPrice, state.contextual.troughPrice].every(
+          (v) => Number.isFinite(v) && v > 0,
+        ) &&
+        state.contextual.peakPrice >= state.contextual.troughPrice &&
+        validFiniteNullable(state.contextual.blindSinceMs) &&
+        (state.contextual.blindSinceMs === null || state.contextual.blindSinceMs >= 0) &&
+        [state.contextual.lastEvidenceAtMs, state.contextual.lastExecutableAtMs].every(
+          (v) => v === undefined || (Number.isFinite(v) && v >= 0),
+        ) &&
+        (state.contextual.extendedDestinationPrice === undefined ||
+          (Number.isFinite(state.contextual.extendedDestinationPrice) &&
+            state.contextual.extendedDestinationPrice > 0)))) &&
     (state.riskStartedAtMs === null ||
       state.lastObservedAtMs === null ||
       (typeof state.riskStartedAtMs === 'number' &&
@@ -320,7 +349,15 @@ function profitLockStop(
   side: 'LONG' | 'SHORT',
   grossReturnBps: number,
   progress: number,
+  assessment?: ReturnType<typeof assessMicroBurstContinuation>,
 ): { stop: number; protectedBps: number; milestone: 'COST_COVER' | 'STRUCTURAL_PROGRESS' } | null {
+  if (
+    config.contextualPolicyVersion &&
+    (context.currentStopPrice === null ||
+      !Number.isFinite(context.currentStopPrice) ||
+      context.currentStopPrice <= 0)
+  )
+    return null;
   const costFloorBps = config.exitEstimatedRoundTripCostBps + config.exitCostCoverBufferBps;
   const targetPathBps =
     (Math.abs(context.destinationPrice - context.entryPrice) / context.entryPrice) * 10_000;
@@ -333,6 +370,27 @@ function profitLockStop(
       protectedBps = structuralLockBps;
       milestone = 'STRUCTURAL_PROGRESS';
     }
+  }
+  if (config.contextualPolicyVersion && assessment && context.executableEconomics) {
+    const mfe = assessment.maxFavorableExcursionBps;
+    const noise = Math.max(
+      config.exitProtectionMinDistanceBps,
+      context.executableEconomics.volatilityBps,
+    );
+    // Strong independent continuation gets more room; neither path widens an existing stop.
+    const tolerance = Math.min(
+      assessment.entryRiskBps,
+      Math.max(
+        noise,
+        mfe *
+          (assessment.continuationEligible
+            ? 1 - config.exitStructuralLockProgress
+            : config.exitStructuralLockProgress),
+      ),
+    );
+    protectedBps =
+      mfe >= config.exitBreakEvenActivationBps ? Math.max(costFloorBps, mfe - tolerance) : 0;
+    if (grossReturnBps - protectedBps < noise) return null;
   }
   if (protectedBps <= 0) return null;
   if (grossReturnBps - protectedBps < config.exitProtectionMinDistanceBps) return null;
@@ -355,7 +413,7 @@ function policyDiagnostics(
 }
 
 /** Pure reducer shared by SHADOW, offline simulation and the fail-closed LIVE adapter. */
-export function advanceMicroBurstExit(
+function advanceMicroBurstExitPolicy(
   rawPreviousState: MicroBurstExitEngineState,
   context: MicroBurstExitContext,
   config: MicroBurstConfig,
@@ -528,6 +586,7 @@ export function advanceMicroBurstExit(
     side,
     assessment.grossReturnBps,
     assessment.structuralProgress,
+    assessment,
   );
   if (profitLock) {
     return {
@@ -613,6 +672,269 @@ export function advanceMicroBurstExit(
       }),
     },
   };
+}
+
+/** Wall-clock bound also usable when no market context can be constructed. */
+export function microBurstExitDeadline(
+  enteredAtMs: number | undefined,
+  now: number,
+  config: MicroBurstConfig,
+): MicroBurstExitDecision | null {
+  if (
+    !Number.isFinite(enteredAtMs) ||
+    !Number.isFinite(now) ||
+    enteredAtMs! > now ||
+    enteredAtMs! < 0
+  )
+    return null;
+  const elapsed = now - enteredAtMs!;
+  if (elapsed < config.exitMaxHoldMs + config.exitMaxHoldExtensionMs) return null;
+  return {
+    action: 'CLOSE_MARKET',
+    reason: 'MAX_HOLD',
+    diagnostics: {
+      exitPolicyVersion: 'CONTEXTUAL_V3',
+      timeMs: elapsed,
+      deadlineIndependentOfMarket: true,
+      estimatedNetReturnBps: null,
+    },
+  };
+}
+
+/** Versioned opt-in wrapper. Legacy callers and persisted V1/V2 states remain readable. */
+export function advanceMicroBurstExit(
+  previous: MicroBurstExitEngineState,
+  context: MicroBurstExitContext,
+  config: MicroBurstConfig,
+  side: 'LONG' | 'SHORT',
+): MicroBurstExitTransition {
+  if (!config.contextualPolicyVersion)
+    return advanceMicroBurstExitPolicy(previous, context, config, side);
+  if (previous.phase === 'EXIT_CONFIRMED' && previous.confirmedDecision)
+    return { state: previous, decision: previous.confirmedDecision };
+  const now = context.observedAtMs ?? NaN;
+  const trace = (transition: MicroBurstExitTransition): MicroBurstExitTransition => {
+    const decision: MicroBurstExitDecision = {
+      ...transition.decision,
+      diagnostics: {
+        ...transition.decision.diagnostics,
+        exitPolicyVersion: 'CONTEXTUAL_V3',
+        scoreIsProbability: false,
+        observedAtMs: Number.isFinite(now) ? now : null,
+        evidenceObservedAtMs: context.marketEvidence?.observedAtMs ?? null,
+        executableObservedAtMs: context.executableEconomics?.observedAtMs ?? null,
+        flowGapFree: context.marketEvidence?.takerFlowGapFree ?? null,
+        inputs: structuredClone(context),
+      },
+    };
+    return {
+      state: {
+        ...transition.state,
+        ...(transition.state.phase === 'EXIT_CONFIRMED' ? { confirmedDecision: decision } : {}),
+      },
+      decision,
+    };
+  };
+  const close = (
+    reason: MicroBurstExitDecision['reason'],
+    diagnostics: Record<string, unknown> = {},
+  ) =>
+    trace(
+      closeTransition(
+        previous,
+        { action: 'CLOSE_MARKET', reason, diagnostics },
+        Number.isFinite(now) ? now : (previous.lastObservedAtMs ?? 0),
+      ),
+    );
+  if (!validMicroBurstContextualConfig(config))
+    return close('ANOMALY', { invalidPolicyConfig: true });
+  if (!Number.isFinite(now) || !Number.isFinite(context.timeInTradeMs) || context.timeInTradeMs < 0)
+    return close('ANOMALY', { invalidClock: true });
+  // Emergency facts and the absolute clock take precedence over protection or extensions.
+  if (
+    Number.isFinite(context.currentPrice) &&
+    context.currentPrice > 0 &&
+    Number.isFinite(context.structuralInvalidationPrice) &&
+    context.structuralInvalidationPrice > 0 &&
+    hardInvalidated(context, side)
+  )
+    return close('HARD_INVALIDATION');
+  if (
+    context.anomalyExitFlag ||
+    context.currentBookPressure?.status === 'ANOMALOUS' ||
+    context.currentBookPressure?.anomalyFlag
+  )
+    return close('ANOMALY');
+  const deadline = microBurstExitDeadline(now - context.timeInTradeMs, now, config);
+  if (deadline) return trace(closeTransition(previous, deadline, now));
+  const direction = side === 'LONG' ? 1 : -1;
+  if (
+    ![context.entryPrice, context.structuralInvalidationPrice, context.destinationPrice].every(
+      (v) => Number.isFinite(v) && v > 0,
+    ) ||
+    direction * (context.entryPrice - context.structuralInvalidationPrice) <= 0 ||
+    direction * (context.destinationPrice - context.entryPrice) <= 0
+  )
+    return close('ANOMALY', { invalidStructuralGeometry: true });
+  const economics = context.executableEconomics;
+  const fresh =
+    economics &&
+    economics.quantityCovered &&
+    [
+      economics.exitPrice,
+      economics.observedAtMs,
+      economics.residualCostBps,
+      economics.volatilityBps,
+    ].every(Number.isFinite) &&
+    economics.exitPrice > 0 &&
+    economics.residualCostBps >= config.exitEstimatedRoundTripCostBps &&
+    economics.volatilityBps >= 0 &&
+    economics.observedAtMs <= now &&
+    now - economics.observedAtMs <= config.exitIntelligenceMaxObservationGapMs;
+  const tracked = previous.contextual ?? {
+    peakPrice: context.entryPrice,
+    troughPrice: context.entryPrice,
+    blindSinceMs: null,
+  };
+  if (!fresh) {
+    const blindSinceMs = tracked.blindSinceMs ?? now;
+    if (now - blindSinceMs >= config.exitIntelligenceMaxObservationGapMs)
+      return close('ANOMALY', { executableEconomicsUnavailable: true, blindSinceMs });
+    return trace({
+      state: {
+        ...previous,
+        phase: 'OBSERVING',
+        riskStartedAtMs: null,
+        consecutiveRiskObservations: 0,
+        evidenceFamilies: [],
+        evidenceSources: [],
+        contextual: { ...tracked, blindSinceMs },
+      },
+      decision: {
+        action: 'HOLD',
+        reason: 'HOLD',
+        diagnostics: {
+          executableEconomicsUnavailable: true,
+          blindSinceMs,
+          estimatedNetReturnBps: null,
+        },
+      },
+    });
+  }
+  if (
+    side === 'LONG'
+      ? economics.exitPrice <= context.structuralInvalidationPrice
+      : economics.exitPrice >= context.structuralInvalidationPrice
+  )
+    return close('HARD_INVALIDATION', { executableInvalidation: true });
+  if (
+    context.currentStopPrice !== null &&
+    Number.isFinite(context.currentStopPrice) &&
+    context.currentStopPrice > 0 &&
+    (side === 'LONG'
+      ? economics.exitPrice <= context.currentStopPrice
+      : economics.exitPrice >= context.currentStopPrice)
+  )
+    return close(
+      classifyMicroBurstStopExitReason(context.currentStopPrice, context.entryPrice, side),
+      { knownStopCrossed: true },
+    );
+  if (previous.lastObservedAtMs !== null && now <= previous.lastObservedAtMs)
+    return trace({
+      state: previous,
+      decision: { action: 'HOLD', reason: 'HOLD', diagnostics: { nonAdvancingObservation: true } },
+    });
+  if (
+    tracked.lastExecutableAtMs !== undefined &&
+    economics.observedAtMs <= tracked.lastExecutableAtMs &&
+    (context.marketEvidence?.observedAtMs ?? 0) <= (tracked.lastEvidenceAtMs ?? 0)
+  )
+    return trace({
+      state: previous,
+      decision: { action: 'HOLD', reason: 'HOLD', diagnostics: { nonAdvancingEvidence: true } },
+    });
+  const trackedNext = {
+    ...tracked,
+    blindSinceMs: null,
+    lastExecutableAtMs: economics.observedAtMs,
+    lastEvidenceAtMs: context.marketEvidence?.observedAtMs ?? tracked.lastEvidenceAtMs,
+    peakPrice: Math.max(tracked.peakPrice, economics.exitPrice),
+    troughPrice: Math.min(tracked.troughPrice, economics.exitPrice),
+  };
+  let executable = {
+    ...context,
+    currentPrice: economics.exitPrice,
+    peakPrice: trackedNext.peakPrice,
+    troughPrice: trackedNext.troughPrice,
+    destinationPrice: tracked.extendedDestinationPrice ?? context.destinationPrice,
+  };
+  const effectiveConfig = { ...config, exitEstimatedRoundTripCostBps: economics.residualCostBps };
+  const assessment = assessMicroBurstContinuation(
+    executable,
+    effectiveConfig,
+    side,
+    previous.baseline,
+  );
+  if (
+    context.timeInTradeMs >= config.exitMaxHoldMs &&
+    !(assessment.estimatedNetReturnBps > 0 && assessment.continuationEligible)
+  )
+    return close('MAX_HOLD');
+  if (
+    context.timeInTradeMs >= config.exitProofWindowMs + config.exitProofExtensionMs &&
+    assessment.maxFavorableExcursionBps < config.exitMinProofExcursionBps
+  )
+    return close('EARLY_FAILURE', { proofExtensionExpired: true });
+  const obstacle = context.nextConfirmedObstacle;
+  const sign = side === 'LONG' ? 1 : -1;
+  if (
+    targetReached(executable, side) &&
+    !tracked.extendedDestinationPrice &&
+    assessment.continuationEligible &&
+    assessment.estimatedNetReturnBps > 0 &&
+    obstacle &&
+    Number.isFinite(obstacle.availableAtMs) &&
+    obstacle.availableAtMs >= 0 &&
+    obstacle.availableAtMs < now &&
+    Number.isFinite(obstacle.price) &&
+    obstacle.price > 0
+  ) {
+    const bounded = obstacle.price * (1 - (sign * config.exitCostCoverBufferBps) / 10_000);
+    const room = ((sign * (bounded - economics.exitPrice)) / economics.exitPrice) * 10_000;
+    if (
+      room >= config.minRoomBps + economics.residualCostBps &&
+      sign * (bounded - context.destinationPrice) > 0
+    ) {
+      trackedNext.extendedDestinationPrice = bounded;
+      executable = { ...executable, destinationPrice: bounded };
+    }
+  }
+  const marketAt = context.marketEvidence?.observedAtMs ?? -Infinity;
+  const repeatedMarket =
+    tracked.lastEvidenceAtMs !== undefined && marketAt <= tracked.lastEvidenceAtMs;
+  const marketGap =
+    tracked.lastEvidenceAtMs !== undefined &&
+    marketAt - tracked.lastEvidenceAtMs > config.exitIntelligenceMaxObservationGapMs;
+  // Fresh quotes alone cannot turn the same price/flow window into independent confirmations.
+  const evidencePrevious = marketGap
+    ? {
+        ...previous,
+        phase: 'OBSERVING' as const,
+        riskStartedAtMs: null,
+        consecutiveRiskObservations: 0,
+        evidenceFamilies: [],
+        evidenceSources: [],
+      }
+    : repeatedMarket
+      ? { ...previous, lastObservedAtMs: now }
+      : previous;
+  const transition = advanceMicroBurstExitPolicy(
+    evidencePrevious,
+    executable,
+    effectiveConfig,
+    side,
+  );
+  return trace({ ...transition, state: { ...transition.state, contextual: trackedNext } });
 }
 
 /** Single-observation guardrail evaluator retained for direct policy callers. */

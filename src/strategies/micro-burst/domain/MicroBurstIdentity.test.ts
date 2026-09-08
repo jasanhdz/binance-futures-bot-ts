@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hasLiveAuthority } from '../../../core/strategy/StrategyIdentity';
 import {
   createMicroBurstV1Identity,
+  diagnoseMicroBurstAuthority,
   hasMicroBurstV1LiveAuthority,
   MICRO_BURST_V1_CONFIG_SHA256,
   MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
@@ -10,6 +11,33 @@ import {
 } from './MicroBurstIdentity';
 
 describe('Micro Burst Expected Continuation candidate identity', () => {
+  it('does not mistake matching environment labels for an attested artifact', () => {
+    const input = {
+      identity: createMicroBurstV1Identity('a'.repeat(40)),
+      effectiveConfigSha256: MICRO_BURST_V1_CONFIG_SHA256,
+      declaredCommitSha: 'a'.repeat(40),
+      artifactVerified: false,
+      sourceDirty: false,
+    };
+    expect(diagnoseMicroBurstAuthority(input)).toMatchObject({
+      status: 'UNVERIFIED',
+      grantsAuthority: false,
+    });
+    expect(
+      diagnoseMicroBurstAuthority({
+        ...input,
+        artifactVerified: true,
+        artifactCommitSha: 'b'.repeat(40),
+      }),
+    ).toMatchObject({ status: 'MISMATCH', grantsAuthority: false });
+    expect(
+      diagnoseMicroBurstAuthority({
+        ...input,
+        artifactVerified: true,
+        artifactCommitSha: 'a'.repeat(40),
+      }),
+    ).toMatchObject({ status: 'MATCHED_EVIDENCE', grantsAuthority: false });
+  });
   beforeEach(() => vi.stubEnv('MICRO_BURST_APPROVED_COMMIT', undefined));
   afterEach(() => vi.unstubAllEnvs());
 

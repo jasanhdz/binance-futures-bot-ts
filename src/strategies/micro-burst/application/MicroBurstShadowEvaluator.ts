@@ -93,25 +93,27 @@ export class MicroBurstShadowEvaluator {
         strategyContext,
       );
 
-      const referencePrice = typeof envelope.diagnostics.executablePrice === 'number'
-        ? envelope.diagnostics.executablePrice : context.decisionPrice.price;
+      const referencePrice =
+        typeof envelope.diagnostics.executablePrice === 'number'
+          ? envelope.diagnostics.executablePrice
+          : context.decisionPrice.price;
       try {
         if (strategyContext.entryPolicy === 'BASELINE') {
-        const reactionCandidate = evaluateMicroBurstReactionEntry(
-          context,
-          { ...defaultMicroBurstConfig(), ...strategyContext.config },
-          this.deps.contextBuilderDeps.book?.getDepthSnapshot(symbol),
-          this.deps.clock.now(),
-        );
-        this.deps.logger.info('micro_burst_entry_candidate_comparison', {
-          symbol,
-          snapshotAtMs,
-          candidateVersion: MICRO_REACTION_CANDIDATE_VERSION,
-          authority: 'OBSERVATION_ONLY',
-          baselineDecision: envelope.decision,
-          baselineReason: envelope.reason,
-          candidate: reactionCandidate,
-        });
+          const reactionCandidate = evaluateMicroBurstReactionEntry(
+            context,
+            { ...defaultMicroBurstConfig(), ...strategyContext.config },
+            this.deps.contextBuilderDeps.book?.getDepthSnapshot(symbol),
+            this.deps.clock.now(),
+          );
+          this.deps.logger.info('micro_burst_entry_candidate_comparison', {
+            symbol,
+            snapshotAtMs,
+            candidateVersion: MICRO_REACTION_CANDIDATE_VERSION,
+            authority: 'OBSERVATION_ONLY',
+            baselineDecision: envelope.decision,
+            baselineReason: envelope.reason,
+            candidate: reactionCandidate,
+          });
         }
       } catch {
         this.deps.logger.error('micro_burst_entry_candidate_observation_failed', {
@@ -122,9 +124,14 @@ export class MicroBurstShadowEvaluator {
 
       const supportPrice = context.levels.nearest.support?.price ?? null;
       this.deps.logger.info('micro_burst_entry_policy_selected', {
-        symbol, snapshotAtMs, mode: this.runtimeConfig.mode,
-        entryPolicy: strategyContext.entryPolicy, strategyVersion: envelope.identity.strategyVersion,
-        decision: envelope.decision, reason: envelope.reason,
+        symbol,
+        snapshotAtMs,
+        mode: this.runtimeConfig.mode,
+        entryPolicy: strategyContext.entryPolicy,
+        strategyVersion: envelope.identity.strategyVersion,
+        decision: envelope.decision,
+        reason: envelope.reason,
+        ...(envelope.diagnostics?.sides ? { sides: envelope.diagnostics.sides } : {}),
       });
       const resistancePrice = context.levels.nearest.resistance?.price ?? null;
       const structuralInvalidation = envelope.structuralInvalidation ?? null;
@@ -157,6 +164,10 @@ export class MicroBurstShadowEvaluator {
           envelope.side,
           structuralInvalidation ?? 0,
           snapshotAtMs,
+          strategyContext.config?.contextualPolicyVersion &&
+            typeof envelope.diagnostics?.episodeId === 'string'
+            ? envelope.diagnostics.episodeId
+            : undefined,
         );
         shadowSignalId = signalResult.shadowSignalId;
         duplicateSuppressed = signalResult.duplicateSuppressed;
@@ -228,7 +239,9 @@ export class MicroBurstShadowEvaluator {
           referencePriceSource:
             typeof envelope.diagnostics?.referencePriceSource === 'string'
               ? envelope.diagnostics.referencePriceSource
-              : strategyContext.entryPolicy === 'REACTION' && wouldEnter ? 'EXECUTABLE_BOOK' : 'CLOSED_1M_CANDLE',
+              : strategyContext.entryPolicy === 'REACTION' && wouldEnter
+                ? 'EXECUTABLE_BOOK'
+                : 'CLOSED_1M_CANDLE',
           btcAcceleration: context.btcContext?.acceleration ?? null,
           btcDirection: context.btcContext?.direction ?? null,
           temporalAbsorptionDetected: context.bookPressure.temporalAbsorptionDetected ?? false,

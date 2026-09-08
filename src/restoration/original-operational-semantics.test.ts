@@ -80,7 +80,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Shared Micro/Momentum liquidity, bounded admission diagnostics and mandatory managed close routing.
     // Independent recovery/admission/shutdown integration.
     // Ownership admission and Micro final executable revalidation; economics remain observational.
-    '343a6f988ad8146e374c7fb82ca4f64e8a598a56e0fa1eabaab5b6ff4c5fc763',
+    // Bounded exit observation and research-only missing-market routing; no V3 mutation authority.
+    'a0fa1c5708830a921ffccc7901f0a96a9da89c619fb370863dcc1a95bb60ac28',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -121,6 +122,15 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
   'src/infra/config/ConfigLoader.ts':
     '9dd24581a9964bba54aed2a124a2e56f8e497bc1ae59af463e27103cb21f1d53',
+};
+
+// Branch/source checkpoints only. Neither value establishes deployment approval.
+// The historical YAML checkpoint predates the approved REACTION configuration.
+// These source checks do not replace runtime commit/config authority checks.
+const contextualSourceCheckpoints: Record<string, string> = {
+  'regime_config.live.yaml': '970ce7308d7ec0cd49e97e032491dc0b50901c8ab4300746ebff6968d83ce730',
+  'src/app/services/TradingService.ts':
+    'a0fa1c5708830a921ffccc7901f0a96a9da89c619fb370863dcc1a95bb60ac28',
 };
 
 type GuardFixture = [
@@ -237,12 +247,22 @@ describe('original TypeScript operational semantics', () => {
     }
   });
 
+  it('tracks branch bytes separately from deployment authorization', () => {
+    for (const [path, digest] of Object.entries(contextualSourceCheckpoints)) {
+      expect(sha256(path), path).toBe(digest);
+    }
+    expect(sha256('regime_config.live.yaml')).not.toBe(
+      '18c8584ac780bf3a1d34f90974dc4527b9c7116de79fdf9a927538ec89e33e4c',
+    );
+  });
+
   it('keeps Shadow, prospective, brain, and audit modules out of the operational path', () => {
     const forbidden =
       /(?:from|require\()\s*['"][^'"]*(?:\/tooling\/|\/brain\/|\/prospective\/|\/audit\/)/;
     const operationalPaths = [
       ...Object.keys(baselineOperationalDigests),
       ...Object.keys(ownerAuthorizedCurrentBrainContractDigests),
+      ...Object.keys(contextualSourceCheckpoints),
     ];
     const leaking = operationalPaths.filter((path) =>
       forbidden.test(readFileSync(resolve(repoRoot, path), 'utf8')),

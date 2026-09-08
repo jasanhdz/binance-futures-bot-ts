@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { PositionManagementResult } from '../../../core/strategy/StrategyDecision';
 import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import {
@@ -11,7 +12,12 @@ import {
   MicroBurstExitDecision,
   defaultMicroBurstConfig,
 } from '../domain/MicroBurstTypes';
-import { isMicroBurstExitEngineState, MicroBurstExitEngine } from '../domain/MicroBurstExitPolicy';
+import {
+  isMicroBurstExitEngineState,
+  MicroBurstExitEngine,
+  microBurstExitDeadline,
+} from '../domain/MicroBurstExitPolicy';
+import { MicroBurstExitObservation } from './MicroBurstExitObservation';
 import { MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
 
 export interface MicroBurstPositionManagementContext extends StrategyPositionLifecycleContext {
@@ -63,6 +69,8 @@ export class MicroBurstPositionManager
     config?: Partial<MicroBurstConfig>,
     private readonly execution?: MicroBurstPositionManagerExecution,
     private readonly liveAuthorityEnabled = MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
+    private readonly observation?: MicroBurstExitObservation,
+    private readonly now: () => number = Date.now,
   ) {
     this.config = { ...defaultMicroBurstConfig(), ...config };
   }
@@ -96,29 +104,73 @@ export class MicroBurstPositionManager
     this.activeTradeBySymbol.set(context.symbol, tradeId);
     const exitDecision = hasExitContext
       ? this.evaluateExit(context.exitContext, context.side, tradeId)
-      : null;
+      : this.config.contextualPolicyVersion
+        ? microBurstExitDeadline(context.botState.lastEntryAt, this.now(), this.config)
+        : null;
     if (exitDecision) {
+      const observation = {
+        schemaVersion: 1 as const,
+        authority: 'OBSERVATION_ONLY' as const,
+        identity,
+        symbol: context.symbol,
+        tradeId,
+        decisionId: randomUUID(),
+        observedAtMs: hasExitContext ? (context.exitContext.observedAtMs ?? null) : this.now(),
+        decision: exitDecision,
+        context: hasExitContext ? context.exitContext : null,
+        realizedNetPnl: null,
+      };
+      this.observation?.observe({
+        ...observation,
+        phase: 'DECISION',
+        actionApplied: null,
+        applicationStatus: 'NOT_ATTEMPTED',
+      });
       const engineState = this.exitEngine.getState(tradeId);
-      if (typeof context.symbolState.set === 'function') {
+      if (typeof context.symbolState.set === 'function' && !this.config.contextualPolicyVersion) {
         context.symbolState.set({ microBurstExitState: engineState });
       }
       let actionApplied = false;
+      let applicationAttempted = false;
       if (
         hasExitContext &&
         context.strategyMode === 'LIVE' &&
         this.execution &&
-        this.liveAuthorityEnabled
+        this.liveAuthorityEnabled &&
+        !this.config.contextualPolicyVersion
       ) {
-        if (exitDecision.action === 'CLOSE_MARKET') {
-          actionApplied = await this.execution.close(context, exitDecision);
-          if (actionApplied) {
-            this.exitEngine.forget(tradeId);
-            this.activeTradeBySymbol.delete(context.symbol);
+        try {
+          if (exitDecision.action === 'CLOSE_MARKET') {
+            applicationAttempted = true;
+            actionApplied = await this.execution.close(context, exitDecision);
+            if (actionApplied) {
+              this.exitEngine.forget(tradeId);
+              this.activeTradeBySymbol.delete(context.symbol);
+            }
+          } else if (exitDecision.action === 'MOVE_STOP') {
+            applicationAttempted = true;
+            actionApplied = await this.execution.moveStop(context, exitDecision);
           }
-        } else if (exitDecision.action === 'MOVE_STOP') {
-          actionApplied = await this.execution.moveStop(context, exitDecision);
+        } catch (error) {
+          this.observation?.observe({
+            ...observation,
+            phase: 'APPLICATION_RESULT',
+            actionApplied: null,
+            applicationStatus: 'UNKNOWN',
+          });
+          throw error;
         }
       }
+      this.observation?.observe({
+        ...observation,
+        phase: 'APPLICATION_RESULT',
+        actionApplied,
+        applicationStatus: actionApplied
+          ? 'APPLIED'
+          : applicationAttempted
+            ? 'NOT_APPLIED'
+            : 'NOT_ATTEMPTED',
+      });
       return {
         tradeId,
         decision: exitDecision.action,
@@ -131,9 +183,11 @@ export class MicroBurstPositionManager
           actionApplied,
           authorityReason:
             hasExitContext && context.strategyMode === 'LIVE'
-              ? this.execution && this.liveAuthorityEnabled
-                ? 'MICRO_BURST_V1_LIVE'
-                : 'LIVE_AUTHORITY_DISABLED_OR_EXECUTION_PORT_MISSING'
+              ? this.config.contextualPolicyVersion
+                ? 'MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY'
+                : this.execution && this.liveAuthorityEnabled
+                  ? 'MICRO_BURST_V1_LIVE'
+                  : 'LIVE_AUTHORITY_DISABLED_OR_EXECUTION_PORT_MISSING'
               : 'MICRO_BURST_V1_OFF',
           lifecycleApplied: actionApplied,
         },

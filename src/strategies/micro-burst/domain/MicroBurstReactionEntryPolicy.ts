@@ -1,8 +1,12 @@
 import type { Side } from '../../../core/types';
 import { hasBtcConflict } from './MicroBurstBtcContext';
-import { evaluateMicroBurstEntry } from './MicroBurstEntryPolicy';
+import {
+  evaluateMicroBurstEntry,
+  evaluateMicroBurstStructuralEntry,
+} from './MicroBurstEntryPolicy';
 import { createMicroBurstEpisodeId } from './MicroBurstIdentity';
 import { priceDistanceToBps } from './MicroBurstUnits';
+import { validMicroBurstContextualConfig } from './MicroBurstTypes';
 import type {
   MicroBurstConfig,
   MicroBurstContext,
@@ -11,6 +15,7 @@ import type {
 } from './MicroBurstTypes';
 
 export const MICRO_REACTION_CANDIDATE_VERSION = 'reaction-entry-1-live';
+export const MICRO_CONTEXTUAL_REACTION_VERSION = 'reaction-entry-2-contextual-shadow';
 
 /** Selected by the configured router policy; execution admission remains separate. */
 export function evaluateMicroBurstReactionEntry(
@@ -19,6 +24,7 @@ export function evaluateMicroBurstReactionEntry(
   book: OrderBookSnapshot | undefined,
   observedAtMs: number,
 ): MicroBurstEntryDecision {
+  const contextual = config.contextualPolicyVersion === 'CONTEXTUAL_V3';
   const reject = (
     reason: string,
     diagnostics: Record<string, unknown> = {},
@@ -26,9 +32,29 @@ export function evaluateMicroBurstReactionEntry(
     action: 'NO_TRADE',
     reason,
     confirmationStrength: ctx.momentum.strength,
-    diagnostics,
+    diagnostics: {
+      ...(contextual
+        ? { sides: { LONG: { reason, commonGuard: true }, SHORT: { reason, commonGuard: true } } }
+        : {}),
+      ...diagnostics,
+    },
   });
-  if (!ctx.dataQuality.contextValid) return reject('REACTION_CONTEXT_INVALID');
+  if (contextual && !validMicroBurstContextualConfig(config))
+    return reject('REACTION_CONFIG_INVALID');
+  if (!ctx.dataQuality.contextValid)
+    return reject('REACTION_CONTEXT_INVALID', {
+      invalidReasons: ctx.dataQuality.invalidReasons.slice(0, 20),
+    });
+  if (contextual && (ctx.bookPressure.status !== 'HEALTHY' || ctx.bookPressure.anomalyFlag))
+    return reject('BOOK_NOT_HEALTHY');
+  if (
+    contextual &&
+    (!ctx.btcContext ||
+      !Number.isFinite(ctx.btcContext.observedAtMs) ||
+      ctx.btcContext.observedAtMs > observedAtMs ||
+      observedAtMs - ctx.btcContext.observedAtMs > config.btcFreshnessMaxMs)
+  )
+    return reject('BTC_UNAVAILABLE');
   if (
     !Number.isFinite(observedAtMs) ||
     observedAtMs < ctx.timestamp ||
@@ -59,6 +85,10 @@ export function evaluateMicroBurstReactionEntry(
     !flow.gapFree ||
     flow.capacityTruncated ||
     !Number.isFinite(flow.netTakerFlow) ||
+    (contextual &&
+      ![flow.tradeCount, flow.eventWatermarkMs, flow.buyTakerVolume, flow.sellTakerVolume].every(
+        (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
+      )) ||
     flow.tradeCount <= 0 ||
     flow.eventWatermarkMs === null ||
     flow.eventWatermarkMs > observedAtMs ||
@@ -67,6 +97,22 @@ export function evaluateMicroBurstReactionEntry(
     return reject('REACTION_FLOW_UNAVAILABLE');
 
   const candles = ctx.candles.candles1m.filter((c) => c.closeTime <= ctx.timestamp);
+  if (
+    contextual &&
+    candles.some(
+      (c, i) =>
+        ![c.openTime, c.closeTime, c.open, c.high, c.low, c.close, c.volume].every(
+          Number.isFinite,
+        ) ||
+        c.openTime >= c.closeTime ||
+        c.volume < 0 ||
+        c.low <= 0 ||
+        c.high < Math.max(c.open, c.close) ||
+        c.low > Math.min(c.open, c.close) ||
+        (i > 0 && c.openTime < candles[i - 1].closeTime),
+    )
+  )
+    return reject('REACTION_CANDLE_INVALID');
   const latest = candles[candles.length - 1];
   if (!latest || ctx.timestamp - latest.closeTime > config.candleFreshness1mMaxMs)
     return reject('REACTION_CANDLE_UNAVAILABLE');
@@ -94,27 +140,41 @@ export function evaluateMicroBurstReactionEntry(
       .filter((l): l is NonNullable<typeof l> => !!l)
       .sort((a, b) => Math.abs(price - a.price) - Math.abs(price - b.price))[0];
     const target = side === 'LONG' ? ctx.levels.nearest.resistance : ctx.levels.nearest.support;
-    const fail = (reason: string) => {
-      sides[side] = { reason };
+    const fail = (reason: string, extra?: Record<string, unknown>) => {
+      sides[side] = { reason, ...extra };
     };
     if (
       !level ||
       !target ||
+      (contextual &&
+        ![level.price, target.price, level.availableAtMs, target.availableAtMs].every(
+          (v) => Number.isFinite(v) && v > 0,
+        )) ||
       level.availableAtMs > latest.openTime ||
       target.availableAtMs > latest.openTime
     ) {
-      fail('REACTION_LEVEL_NOT_CONFIRMED_BEFORE_TRIGGER');
+      fail('REACTION_LEVEL_NOT_CONFIRMED_BEFORE_TRIGGER', {
+        support: ctx.levels.nearest.support?.price ?? null,
+        resistance: ctx.levels.nearest.resistance?.price ?? null,
+      });
       continue;
     }
     if (
       sign * (price - level.price) <= 0 ||
       priceDistanceToBps(price, level.price) > config.nearLevelThresholdBps
     ) {
-      fail('REACTION_NOT_NEAR_LEVEL');
+      fail('REACTION_NOT_NEAR_LEVEL', {
+        levelPrice: level.price,
+        distanceBps: priceDistanceToBps(price, level.price),
+        maxBps: config.nearLevelThresholdBps,
+      });
       continue;
     }
     if (ctx.momentum.direction !== side || sign * flow.netTakerFlow <= 0) {
-      fail('REACTION_DIRECTION_NOT_CONFIRMED');
+      fail('REACTION_DIRECTION_NOT_CONFIRMED', {
+        momentumDir: ctx.momentum.direction,
+        netFlow: flow.netTakerFlow,
+      });
       continue;
     }
     const tolerance = (level.price * config.srClusterToleranceBps) / 10_000;
@@ -169,12 +229,22 @@ export function evaluateMicroBurstReactionEntry(
       !lastVisit ||
       (!reclaim && !retest)
     ) {
-      fail('REACTION_TRIGGER_MISSING');
+      fail('REACTION_TRIGGER_MISSING', {
+        touchesNow,
+        candleDirection: sign * (latest.close - latest.open) > 0 ? 'favorable' : 'adverse',
+        hasReclaim: reclaim,
+        hasRetest: retest,
+        regime: ctx.microRegime,
+        visitsCount: visits.length,
+      });
       continue;
     }
     const priorVisit = visits[visits.length - 2];
     if (priorVisit && lastVisit.rejection < priorVisit.rejection) {
-      fail('REACTION_DEFENSE_DEGRADING');
+      fail('REACTION_DEFENSE_DEGRADING', {
+        lastRejection: lastVisit.rejection,
+        priorRejection: priorVisit.rejection,
+      });
       continue;
     }
     const setup =
@@ -183,29 +253,33 @@ export function evaluateMicroBurstReactionEntry(
         : reclaim
           ? 'RECLAIM_REVERSAL'
           : 'TREND_RETEST_CONTINUATION';
-    const evaluated = evaluateMicroBurstEntry(
-      {
-        ...ctx,
-        currentPrice: price,
-        btcContext: ctx.btcContext
-          ? {
-              ...ctx.btcContext,
-              conflictFlag: hasBtcConflict(side, ctx.btcContext, config.btcConflictThresholdBps),
-            }
-          : null,
-        levels: {
-          ...ctx.levels,
-          nearest: {
-            ...ctx.levels.nearest,
-            ...(side === 'LONG' ? { support: level } : { resistance: level }),
-            structuralPosition: side === 'LONG' ? 'near_support' : 'near_resistance',
-          },
+    const sideContext: MicroBurstContext = {
+      ...ctx,
+      currentPrice: price,
+      btcContext: ctx.btcContext
+        ? {
+            ...ctx.btcContext,
+            conflictFlag: hasBtcConflict(side, ctx.btcContext, config.btcConflictThresholdBps),
+          }
+        : null,
+      levels: {
+        ...ctx.levels,
+        nearest: {
+          ...ctx.levels.nearest,
+          ...(side === 'LONG' ? { support: level } : { resistance: level }),
+          structuralPosition: side === 'LONG' ? 'near_support' : 'near_resistance',
         },
       },
-      config,
-    );
+    };
+    if (contextual && sideContext.btcContext?.conflictFlag) {
+      fail('BTC_CONFLICT');
+      continue;
+    }
+    const evaluated = contextual
+      ? evaluateMicroBurstStructuralEntry(sideContext, config, side)
+      : evaluateMicroBurstEntry(sideContext, config);
     if (evaluated.action !== 'ENTRY_INTENT') {
-      fail(evaluated.reason);
+      fail(evaluated.reason, evaluated.diagnostics);
       continue;
     }
     // The existing 14 bps exit budget is residual round-trip friction after the executable
@@ -231,7 +305,9 @@ export function evaluateMicroBurstReactionEntry(
         ctx.symbol,
         side,
         lastVisit.at,
-        MICRO_REACTION_CANDIDATE_VERSION,
+        contextual
+          ? `${MICRO_CONTEXTUAL_REACTION_VERSION}:${level.type}:${level.price}:${level.availableAtMs}`
+          : MICRO_REACTION_CANDIDATE_VERSION,
       ),
     };
     if (
@@ -249,7 +325,8 @@ export function evaluateMicroBurstReactionEntry(
       ...evaluated,
       targetPrice: boundedTarget,
       roomToTargetBps: priceDistanceToBps(price, boundedTarget),
-      rewardRisk: priceDistanceToBps(price, boundedTarget) / (evaluated.riskToInvalidationBps ?? Infinity),
+      rewardRisk:
+        priceDistanceToBps(price, boundedTarget) / (evaluated.riskToInvalidationBps ?? Infinity),
       reason: 'REACTION_CONFIRMED',
       diagnostics,
     });
