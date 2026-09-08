@@ -1,5 +1,74 @@
 # Micro Contextual V3 Research Implementation
 
+## Durable Contract Follow-Up
+
+The next source increment adds these contracts without changing deployment approval:
+
+- `micro_burst.contextual_risk` parses an explicit `MARGIN_FRACTION` policy with
+  `margin_fraction`, `medium_leverage`, `high_leverage`, `max_consecutive_net_losses`,
+  `reset_mode`, `fee_reserve_bps`, and `stop_stress_bps`. The accepted trial tiers are
+  20/30, the maximum margin fraction is 0.9, the loss threshold is three and reset
+  mode is `SIGNED_OPERATOR`. No dollar loss budget is required. Fields are explicit;
+  no observed config becomes an approval. This optional section participates in the
+  effective config hash. Existing configurations without it retain their representation.
+- `MicroBurstTradePolicy` captures the resolved config, risk policy, source config
+  hash and full source commit with a canonical digest. Existing confirmation thresholds
+  select 20/30 for this snapshot; they are heuristic inputs, not probabilities. The
+  legacy high tier remains unchanged. Recovery copies the journal's policy and rejects
+  invalid identity/digest rather than adopting latest configuration. V3 exit observation
+  uses the stored policy and binds persisted reducer state to its digest with a flush.
+- `DurableEntryCoordinator` identifies explicit V3 mutations by account, environment,
+  symbol, side and exact episode. A new trade/client ID or config hash does not reopen
+  an already recorded episode. PREPARED is flushed before sending; UNKNOWN remains
+  observation-only on restart. V3 requires a valid policy snapshot. Legacy operation IDs
+  are preserved. These tests do not establish evolving pivot-cluster continuity.
+- `reconcileMicroBurstSettlement` requires complete exact-order fill attribution,
+  quantity coverage, opening and closing commissions in USDT, complete funding coverage,
+  and identified order/flat evidence. Missing fees, unsupported fee assets, partial pages,
+  foreign fills and ambiguous funding produce UNVERIFIED/null. An exhaustive funding
+  interval with no events can establish zero funding; an absent interval cannot.
+- `MicroBurstNetLossLedger` stores accounting and loss checkpoints in an independently
+  scoped SQLite WAL database using FULL synchronous transactions. Unknown closes remain
+  pending. Three confirmed net losses latch the stop; midnight, restart, subsequent wins
+  and replay do not release it. A confirmed win resets the pre-halt streak; exact zero
+  does not count as a win. Duplicate fills/income cannot be attributed to another trade.
+  Conflicting accounting is quarantined. New evidence polls may change observation time
+  or row order without creating a false conflict. The adapter rejects oversized evidence
+  and caps trade records at 100,000 rather than pruning critical history.
+- Initialization and reset require externally signed Ed25519 commands bound to account,
+  environment, policy, revision, nonce and a short validity window. The bot generates no
+  operator signature. Pending/conflicting settlements prevent reset. The pinned public
+  key is part of the database identity. No existing operational ledger is migrated,
+  initialized, reset or cleared by this source increment.
+
+Verification, with Aegis disabled in every test process:
+
+```sh
+AEGIS_ENABLED=false npx vitest run src/strategies/micro-burst src/app/execution/DurableEntryCoordinator.test.ts src/app/position/MicroEntryRecoveryService.test.ts src/infra/state/MicroBurstNetLossLedger.test.ts src/app/services/TradingService.safety-contracts.test.ts --silent --reporter=dot --maxWorkers=1
+npx tsc -p tsconfig.json --noEmit
+git diff --check
+```
+
+Result: 653 tests passed in 45 files; TypeScript and whitespace validation passed.
+No complete repository/Aegis suite or profitability validation is claimed. Tests use
+synthetic exchange ports and temporary databases, not real orders or operational journals.
+
+### Remaining Integration Work
+
+This increment is not V3 LIVE completion. The new ledger is not composed into
+TradingService's admission/settlement path. No production Binance adapter supplies the
+new exhaustive fill/funding proof or pre-entry liquidation-tier evidence. Shared execution
+still uses its existing sizing path, not the contextual margin-sizing evidence contract.
+The parser, router and position-manager V3 LIVE denials remain. The policy snapshot and
+episode contracts must be supplied by the production entry orchestrator, and prospective
+dataset export and executable exit economics still need their live evidence adapters.
+An end-to-end test of that complete production route has not been established.
+
+No operational YAML, `.env`, approved hashes, `dist`, PM2 process or ADA quarantine was
+modified. No fresh process/artifact/book/exposure attestation was performed in this
+increment. No subagent tool is available in this session; independent reads and validation
+commands were parallelized. Deployment and five-minute live monitoring were not performed.
+
 ## Margin-Fraction Follow-Up
 
 The subsequent operator request authorizes a 90% available-wallet margin allocation,

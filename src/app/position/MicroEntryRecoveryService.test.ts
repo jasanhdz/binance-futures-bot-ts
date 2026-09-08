@@ -13,6 +13,7 @@ import { MicroEntryRecoveryService } from './MicroEntryRecoveryService';
 import { PositionProtectionService } from './PositionProtectionService';
 import { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
+import { createMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -138,6 +139,41 @@ function fixture(durableStop = false) {
 }
 
 describe('Micro entry recovery with durable state and the runtime protection service', () => {
+  it('recovers V3 from the journal policy without adopting latest config or losing quarantine', async () => {
+    const f = fixture();
+    const contextual = structuredClone(request);
+    contextual.intent.identity.strategyVersion = 'CONTEXTUAL_V3';
+    contextual.intent.identity.configHash = `sha256:${'a'.repeat(64)}`;
+    contextual.intent.identity.codeCommitSha = 'b'.repeat(40);
+    contextual.intent.leverage = 20;
+    contextual.intent.positionFraction = 0.9;
+    const policy = createMicroBurstTradePolicy(contextual.intent.identity, {
+      sizingMode: 'MARGIN_FRACTION',
+      marginFraction: 0.9,
+      mediumLeverage: 20,
+      highLeverage: 30,
+      maxConsecutiveNetLosses: 3,
+      resetMode: 'SIGNED_OPERATOR',
+      feeReserveBps: 14,
+      stopStressBps: 10,
+    });
+    contextual.intent.metadata.contextualPolicy = policy;
+    f.evidence.position.leverage = 20;
+    const receipt = { avgPrice: 100, orderId: '123' };
+    expect(await f.service.recover(contextual, receipt)).toMatchObject({ status: 'PROTECTED' });
+    const recovered = new FsStateStore('default', 'fixture', f.dir).forSymbol('ETHUSDT').get();
+    expect(recovered).toMatchObject({
+      microBurstTradePolicy: policy,
+      microBurstPnlUnverified: true,
+    });
+    const calls = f.exchange.readRecoverableEntryPosition.mock.calls.length;
+    policy.config.exitMaxHoldMs += 1;
+    expect(await f.service.recover(contextual, receipt)).toMatchObject({
+      reason: 'RECOVERY_CONTEXTUAL_POLICY_UNVERIFIED',
+    });
+    expect(f.exchange.readRecoverableEntryPosition).toHaveBeenCalledTimes(calls);
+    expect(f.store.get().microBurstTradePolicy).toEqual(recovered.microBurstTradePolicy);
+  });
   it.each(['missing', 'read-error', 'partial', 'exact'] as const)(
     'keeps recovery reachable after Shared cannot confirm the opened position: %s evidence',
     async (scenario) => {

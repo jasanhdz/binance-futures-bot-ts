@@ -54,7 +54,9 @@ export function evaluateMicroBurstContextualProposal(input: {
     requestedAt: input.observedAtMs,
     signalSnapshotAtMs: input.context.timestamp,
     tradeId: String(entry.diagnostics.episodeId),
+    signalId: String(entry.diagnostics.episodeId),
   });
+  intent.metadata.episodeId = entry.diagnostics.episodeId;
   const sizing = sizeMicroBurstLossBudget(
     { ...input.risk, intent, book: input.book, now: input.observedAtMs },
     config,

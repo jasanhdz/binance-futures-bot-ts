@@ -1,5 +1,6 @@
 import { MicroBurstRuntimeConfig, MicroBurstSymbolConfig } from './MicroBurstRuntimeTypes';
 import type { MicroBurstConfig } from '../domain/MicroBurstTypes';
+import { validMicroBurstContextualRiskPolicy } from '../domain/MicroBurstContextualRiskPolicy';
 import {
   defaultMicroBurstConfig,
   validMicroBurstContextualConfig,
@@ -116,6 +117,7 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   const enabled = mb.enabled === true;
   const mode = parseMode(mb.mode);
   const exitPolicy = parseExitPolicy(mb.exit_policy ?? mb.exitPolicy);
+  const contextualRisk = parseContextualRisk(mb.contextual_risk, exitPolicy);
   if (mode === 'LIVE' && exitPolicy?.contextualPolicyVersion)
     throw new Error('MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY');
   if (mb.entry_policy !== undefined && !['BASELINE', 'REACTION'].includes(String(mb.entry_policy)))
@@ -137,9 +139,44 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
       : {}),
     symbols,
     exitPolicy,
+    ...(contextualRisk ? { contextualRisk } : {}),
     prospectiveValidation: parseProspectiveValidation(mb.prospective_validation),
     marketArchive: parseMarketArchive(mb.market_archive),
   };
+}
+
+function parseContextualRisk(
+  raw: unknown,
+  exitPolicy: Partial<MicroBurstConfig> | undefined,
+): MicroBurstRuntimeConfig['contextualRisk'] {
+  if (raw === undefined) return undefined;
+  if (
+    !raw ||
+    typeof raw !== 'object' ||
+    Array.isArray(raw) ||
+    exitPolicy?.contextualPolicyVersion !== 'CONTEXTUAL_V3'
+  )
+    throw new Error('MICRO_CONTEXTUAL_RISK_CONFIG_INVALID');
+  const value = raw as Record<string, unknown>;
+  const risk = {
+    sizingMode: value.sizing_mode,
+    marginFraction: value.margin_fraction,
+    mediumLeverage: value.medium_leverage,
+    highLeverage: value.high_leverage,
+    maxConsecutiveNetLosses: value.max_consecutive_net_losses,
+    resetMode: value.reset_mode,
+    feeReserveBps: value.fee_reserve_bps,
+    stopStressBps: value.stop_stress_bps,
+  };
+  if (
+    Object.keys(value).length !== 8 ||
+    !validMicroBurstContextualRiskPolicy(risk) ||
+    risk.feeReserveBps <
+      (exitPolicy.exitEstimatedRoundTripCostBps ??
+        defaultMicroBurstConfig().exitEstimatedRoundTripCostBps)
+  )
+    throw new Error('MICRO_CONTEXTUAL_RISK_CONFIG_INVALID');
+  return risk;
 }
 
 function parseProspectiveValidation(
@@ -240,6 +277,9 @@ export function mergeMicroBurstConfigs(
       : {}),
     symbols,
     exitPolicy: { ...base.exitPolicy, ...override.exitPolicy },
+    ...((override.contextualRisk ?? base.contextualRisk)
+      ? { contextualRisk: override.contextualRisk ?? base.contextualRisk }
+      : {}),
     prospectiveValidation: {
       ...base.prospectiveValidation,
       ...override.prospectiveValidation,

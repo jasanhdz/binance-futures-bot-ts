@@ -19,12 +19,98 @@ import { SharedStrategyExecutionService } from './SharedStrategyExecutionService
 import { DurableStopCoordinator } from './DurableStopCoordinator';
 import { validateMicroBurstEntryMarket } from '../../strategies/micro-burst/domain/MicroBurstEntryMarketGuard';
 import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
+import { createMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
 
 const scope = { account: 'fixture-primary', environment: 'fixture' };
 const order = { avgPrice: 100, orderId: '123' };
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 const directories: string[] = [];
 const coordinators: DurableEntryCoordinator[] = [];
+
+describe('V3 durable episode identity', () => {
+  function contextual(): StrategyExecutionIntent {
+    const request = intent();
+    request.identity.strategyVersion = 'CONTEXTUAL_V3';
+    request.identity.codeCommitSha = 'b'.repeat(40);
+    request.identity.configHash = `sha256:${'a'.repeat(64)}`;
+    request.positionFraction = 0.9;
+    request.metadata.contextualPolicy = createMicroBurstTradePolicy(request.identity, {
+      sizingMode: 'MARGIN_FRACTION',
+      marginFraction: 0.9,
+      mediumLeverage: 20,
+      highLeverage: 30,
+      maxConsecutiveNetLosses: 3,
+      resetMode: 'SIGNED_OPERATOR',
+      feeReserveBps: 14,
+      stopStressBps: 10,
+    });
+    request.metadata.episodeId = `MBV1-EP-${'a'.repeat(24)}`;
+    return request;
+  }
+  it('does not resend a confirmed episode after restart with new trade/order/config IDs', async () => {
+    const h = harness();
+    await h.coordinator.start();
+    const first = contextual();
+    const send = vi.fn().mockResolvedValue(order);
+    expect((await h.coordinator.execute(first, 2, 'se_first', send)).status).toBe('CONFIRMED');
+    await h.coordinator.close();
+    const recovered = reopen(h.file, async () => null);
+    await recovered.coordinator.start();
+    const duplicate = contextual();
+    duplicate.tradeId = 'new-trade';
+    duplicate.identity.configHash = `sha256:${'b'.repeat(64)}`;
+    duplicate.metadata.contextualPolicy = createMicroBurstTradePolicy(duplicate.identity, {
+      sizingMode: 'MARGIN_FRACTION',
+      marginFraction: 0.9,
+      mediumLeverage: 20,
+      highLeverage: 30,
+      maxConsecutiveNetLosses: 3,
+      resetMode: 'SIGNED_OPERATOR',
+      feeReserveBps: 14,
+      stopStressBps: 10,
+    });
+    expect(await recovered.coordinator.execute(duplicate, 1, 'se_new', send)).toMatchObject({
+      status: 'BLOCKED',
+      reason: 'ENTRY_MUTATION_ALREADY_RECORDED',
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    duplicate.metadata.episodeId = `MBV1-EP-${'c'.repeat(24)}`;
+    expect(
+      (await recovered.coordinator.execute(duplicate, 1, 'se_next_episode', send)).status,
+    ).toBe('CONFIRMED');
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it('does not resend UNKNOWN after a crash and missing lookup', async () => {
+    const h = harness();
+    await h.coordinator.start();
+    const send = vi.fn().mockRejectedValue(new Error('timeout after exchange accepted'));
+    expect((await h.coordinator.execute(contextual(), 2, 'se_unknown', send)).status).toBe(
+      'UNKNOWN',
+    );
+    await h.coordinator.close();
+    const recovered = reopen(h.file, async () => null);
+    await recovered.coordinator.start();
+    expect(await recovered.coordinator.execute(contextual(), 2, 'se_retry', send)).toMatchObject({
+      status: 'BLOCKED',
+      reason: 'ENTRY_MUTATION_PENDING',
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('requires an exact contextual episode and fails closed on a pre-send flush failure', async () => {
+    const h = harness();
+    await h.coordinator.start();
+    const send = vi.fn().mockResolvedValue(order);
+    const request = contextual();
+    delete request.metadata.episodeId;
+    expect(await h.coordinator.execute(request, 2, 'se_missing', send)).toMatchObject({
+      status: 'BLOCKED',
+      reason: 'MICRO_DURABLE_EPISODE_REQUIRED',
+    });
+    vi.spyOn(h.journal, 'flush').mockRejectedValueOnce(new Error('disk unavailable'));
+    expect((await h.coordinator.execute(contextual(), 2, 'se_flush', send)).status).toBe('UNKNOWN');
+    expect(send).not.toHaveBeenCalled();
+  });
+});
 
 function intent(): StrategyExecutionIntent {
   return {

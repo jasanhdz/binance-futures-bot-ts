@@ -446,6 +446,8 @@ export function defaultMicroBurstConfig(): MicroBurstConfig {
 // ── Execution Intent Factory ─────────────────────────────────
 
 export interface MicroBurstApprovedEntry {
+  episodeId?: string;
+  contextualPolicy?: import('./MicroBurstTradePolicy').MicroBurstTradePolicy;
   identity: StrategyIdentity;
   symbol: string;
   side: Side;

@@ -101,6 +101,8 @@ export type BotState = {
   microBurstPeakPrice?: number;
   microBurstTroughPrice?: number;
   microBurstExitState?: unknown;
+  microBurstTradePolicy?: unknown;
+  microBurstExitPolicyDigest?: string;
   /** Fail-closed quarantine until an operator reconciles an exact realized close PnL. */
   microBurstPnlUnverified?: boolean;
   microBurstPnlUnverifiedAt?: number;

@@ -6,6 +6,7 @@ import type {
   OperationScope,
 } from '../../core/risk/ExecutionJournal';
 import type { StrategyExecutionIntent } from '../../core/strategy/StrategyExecution';
+import { isMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
 
 export interface DurableEntryRequest {
   protocol: 'ENTRY_MUTATION_V1';
@@ -111,10 +112,46 @@ export class DurableEntryCoordinator {
     send: (request: DurableEntryRequest) => Promise<EntryOrderReceipt>,
     isCurrent: () => boolean = () => true,
   ): Promise<DurableEntryResult> {
+    const contextual =
+      intent.identity.strategyId === 'MICRO_BURST_V1' &&
+      intent.identity.strategyVersion === 'CONTEXTUAL_V3';
+    const episodeId = intent.metadata.episodeId;
     const operationId = `entry_${createHash('sha256')
-      .update(JSON.stringify([this.scope, intent.tradeId, clientOrderId]))
+      .update(
+        JSON.stringify(
+          contextual
+            ? [
+                this.scope.account,
+                this.scope.environment,
+                'MICRO_CONTEXTUAL_EPISODE_V3',
+                intent.symbol,
+                intent.side,
+                episodeId,
+              ]
+            : [this.scope, intent.tradeId, clientOrderId],
+        ),
+      )
       .digest('hex')}`;
     const identity = { operationId, mutationId: clientOrderId };
+    if (contextual && (typeof episodeId !== 'string' || !/^MBV1-EP-[a-f0-9]{24}$/.test(episodeId)))
+      return Promise.resolve({
+        ...identity,
+        status: 'BLOCKED',
+        reason: 'MICRO_DURABLE_EPISODE_REQUIRED',
+      });
+    const policy = intent.metadata.contextualPolicy;
+    if (
+      contextual &&
+      (!isMicroBurstTradePolicy(policy, intent.identity) ||
+        ![20, 30].includes(intent.leverage) ||
+        intent.leverage > policy.config.maxLeverageHardCap ||
+        intent.positionFraction !== policy.risk.marginFraction)
+    )
+      return Promise.resolve({
+        ...identity,
+        status: 'BLOCKED',
+        reason: 'MICRO_TRADE_POLICY_INVALID',
+      });
     const blocked = this.blockedReason();
     if (blocked) return Promise.resolve({ ...identity, status: 'BLOCKED', reason: blocked });
     let request: DurableEntryRequest;
@@ -153,6 +190,7 @@ export class DurableEntryCoordinator {
           return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
         }
         await this.append(request, 'PREPARED');
+        await this.journal!.flush();
         // A change during persistence must not turn a stale intent into a send.
         if (this.stopping || !current()) {
           await this.append(request, 'RECOVERY_REQUIRED', undefined, 'ENTRY_IDENTITY_NOT_CURRENT');
@@ -291,6 +329,31 @@ export class DurableEntryCoordinator {
       request.parentTradeId !== request.intent.tradeId
     )
       throw new Error('ENTRY_RECOVERY_IDENTITY_CONFLICT');
+    if (
+      request.intent.identity.strategyId === 'MICRO_BURST_V1' &&
+      request.intent.identity.strategyVersion === 'CONTEXTUAL_V3'
+    ) {
+      const episodeId = request.intent.metadata.episodeId;
+      const expected = `entry_${createHash('sha256')
+        .update(
+          JSON.stringify([
+            this.scope.account,
+            this.scope.environment,
+            'MICRO_CONTEXTUAL_EPISODE_V3',
+            request.intent.symbol,
+            request.intent.side,
+            episodeId,
+          ]),
+        )
+        .digest('hex')}`;
+      if (
+        typeof episodeId !== 'string' ||
+        !/^MBV1-EP-[a-f0-9]{24}$/.test(episodeId) ||
+        request.operationId !== expected ||
+        !isMicroBurstTradePolicy(request.intent.metadata.contextualPolicy, request.intent.identity)
+      )
+        throw new Error('MICRO_DURABLE_EPISODE_CONFLICT');
+    }
     return request;
   }
 

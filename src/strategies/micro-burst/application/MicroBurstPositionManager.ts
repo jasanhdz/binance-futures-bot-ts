@@ -19,6 +19,7 @@ import {
 } from '../domain/MicroBurstExitPolicy';
 import { MicroBurstExitObservation } from './MicroBurstExitObservation';
 import { MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
+import { isMicroBurstTradePolicy } from '../domain/MicroBurstTradePolicy';
 
 export interface MicroBurstPositionManagementContext extends StrategyPositionLifecycleContext {
   strategyMode: 'OFF' | 'LIVE';
@@ -79,8 +80,9 @@ export class MicroBurstPositionManager
     exitContext: MicroBurstExitContext,
     side: 'LONG' | 'SHORT',
     tradeId = 'MICRO-BURST-DIRECT-EVALUATION',
+    config = this.config,
   ): MicroBurstExitDecision {
-    return this.exitEngine.evaluate(tradeId, exitContext, this.config, side);
+    return this.exitEngine.evaluate(tradeId, exitContext, config, side);
   }
 
   async manage(
@@ -90,6 +92,32 @@ export class MicroBurstPositionManager
     assertOwnership(this.strategyId, identity);
     const hasExitContext = hasExitDecisionContext(context);
     const tradeId = context.botState.lastTradeId ?? `MICRO-BURST-V1-${context.symbol}`;
+    const storedIdentity = {
+      ...identity,
+      strategyVersion: context.botState.lastStrategyVersion ?? identity.strategyVersion,
+      configHash: context.botState.lastConfigHash ?? identity.configHash,
+      codeCommitSha: context.botState.lastCodeCommitSha ?? identity.codeCommitSha,
+    };
+    const savedPolicy = context.botState.microBurstTradePolicy;
+    const policy = isMicroBurstTradePolicy(savedPolicy, storedIdentity) ? savedPolicy : undefined;
+    if (
+      storedIdentity.strategyVersion === 'CONTEXTUAL_V3' &&
+      (!policy ||
+        (context.botState.microBurstExitState !== undefined &&
+          context.botState.microBurstExitPolicyDigest !== policy.digest))
+    ) {
+      return {
+        tradeId,
+        decision: 'NO_ACTION',
+        reason: 'MICRO_PERSISTED_EXIT_POLICY_UNVERIFIED',
+        diagnostics: {
+          actionApplied: false,
+          lifecycleApplied: false,
+          lifecycleOwner: this.strategyId,
+        },
+      };
+    }
+    const config = policy?.config ?? this.config;
     const previousTradeId = this.activeTradeBySymbol.get(context.symbol);
     if (previousTradeId && previousTradeId !== tradeId) this.exitEngine.forget(previousTradeId);
     if (
@@ -103,9 +131,9 @@ export class MicroBurstPositionManager
     }
     this.activeTradeBySymbol.set(context.symbol, tradeId);
     const exitDecision = hasExitContext
-      ? this.evaluateExit(context.exitContext, context.side, tradeId)
-      : this.config.contextualPolicyVersion
-        ? microBurstExitDeadline(context.botState.lastEntryAt, this.now(), this.config)
+      ? this.evaluateExit(context.exitContext, context.side, tradeId, config)
+      : config.contextualPolicyVersion
+        ? microBurstExitDeadline(context.botState.lastEntryAt, this.now(), config)
         : null;
     if (exitDecision) {
       const observation = {
@@ -127,8 +155,19 @@ export class MicroBurstPositionManager
         applicationStatus: 'NOT_ATTEMPTED',
       });
       const engineState = this.exitEngine.getState(tradeId);
-      if (typeof context.symbolState.set === 'function' && !this.config.contextualPolicyVersion) {
-        context.symbolState.set({ microBurstExitState: engineState });
+      if (
+        engineState &&
+        typeof context.symbolState.set === 'function' &&
+        (!config.contextualPolicyVersion || policy)
+      ) {
+        context.symbolState.set({
+          microBurstExitState: engineState,
+          ...(policy ? { microBurstExitPolicyDigest: policy.digest } : {}),
+        });
+        if (policy) {
+          if (!context.symbolState.flush) throw new Error('MICRO_EXIT_POLICY_PERSISTENCE_REQUIRED');
+          await context.symbolState.flush();
+        }
       }
       let actionApplied = false;
       let applicationAttempted = false;
@@ -137,7 +176,7 @@ export class MicroBurstPositionManager
         context.strategyMode === 'LIVE' &&
         this.execution &&
         this.liveAuthorityEnabled &&
-        !this.config.contextualPolicyVersion
+        !config.contextualPolicyVersion
       ) {
         try {
           if (exitDecision.action === 'CLOSE_MARKET') {
@@ -183,7 +222,7 @@ export class MicroBurstPositionManager
           actionApplied,
           authorityReason:
             hasExitContext && context.strategyMode === 'LIVE'
-              ? this.config.contextualPolicyVersion
+              ? config.contextualPolicyVersion
                 ? 'MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY'
                 : this.execution && this.liveAuthorityEnabled
                   ? 'MICRO_BURST_V1_LIVE'

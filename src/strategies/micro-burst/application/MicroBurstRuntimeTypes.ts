@@ -14,6 +14,7 @@ export interface MicroBurstRuntimeConfig {
   symbols: Record<string, MicroBurstSymbolConfig>;
   /** Shared domain-policy overrides used by entry, SHADOW, replay and LIVE management. */
   exitPolicy?: Partial<MicroBurstConfig>;
+  contextualRisk?: import('../domain/MicroBurstContextualRiskPolicy').MicroBurstContextualRiskPolicy;
   prospectiveValidation?: {
     enabled: boolean;
     cohortId?: string;

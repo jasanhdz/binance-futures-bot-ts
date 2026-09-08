@@ -3,6 +3,7 @@ import type { DurableEntryRequest, EntryOrderReceipt } from '../execution/Durabl
 import type { TradingExchangePort } from '../ports/Exchange';
 import type { StateStore } from '../ports/StateStore';
 import type { PositionProtectionService } from './PositionProtectionService';
+import { isMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
 
 export interface MicroEntryRecoveryDeps {
   exchange: Pick<TradingExchangePort, 'readRecoverableEntryPosition'>;
@@ -28,6 +29,15 @@ export class MicroEntryRecoveryService {
     const { intent } = request;
     if (intent.identity.strategyId !== 'MICRO_BURST_V1')
       return { status: 'NOT_APPLICABLE', reason: 'RECOVERY_OWNER_UNSUPPORTED' };
+    const contextualPolicy = intent.metadata.contextualPolicy;
+    if (
+      intent.identity.strategyVersion === 'CONTEXTUAL_V3' &&
+      (!isMicroBurstTradePolicy(contextualPolicy, intent.identity) ||
+        ![20, 30].includes(intent.leverage) ||
+        intent.leverage > contextualPolicy.config.maxLeverageHardCap ||
+        intent.positionFraction !== contextualPolicy.risk.marginFraction)
+    )
+      return { status: 'PENDING', reason: 'RECOVERY_CONTEXTUAL_POLICY_UNVERIFIED' };
     if (this.inFlight.has(intent.symbol))
       return { status: 'PENDING', reason: 'RECOVERY_IN_FLIGHT' };
     this.inFlight.add(intent.symbol);
@@ -46,6 +56,10 @@ export class MicroEntryRecoveryService {
         state.positionOwner === 'BOT' &&
         state.tradeOrigin === 'BOT' &&
         state.ownershipStatus === 'VERIFIED' &&
+        (intent.identity.strategyVersion !== 'CONTEXTUAL_V3' ||
+          (isMicroBurstTradePolicy(state.microBurstTradePolicy, intent.identity) &&
+            state.microBurstTradePolicy.digest ===
+              (contextualPolicy as { digest: string }).digest)) &&
         state.mode === (intent.side === 'LONG' ? 'LONG_RIDE' : 'SHORT_RIDE');
       if (!blank(initial) && !matches(initial))
         return { status: 'CONFLICT', reason: 'RECOVERY_STATE_OCCUPIED' };
@@ -128,6 +142,9 @@ export class MicroEntryRecoveryService {
           lastStopPrice: intent.structuralStopPrice,
           microBurstStructuralStopPrice: intent.structuralStopPrice,
           microBurstDestinationPrice: intent.destinationPrice,
+          ...(intent.identity.strategyVersion === 'CONTEXTUAL_V3'
+            ? { microBurstTradePolicy: structuredClone(contextualPolicy) }
+            : {}),
           recoveredEntryMutationId: request.mutationId,
           bracketsAttached: false,
           lastBracketStatus: 'PENDING',

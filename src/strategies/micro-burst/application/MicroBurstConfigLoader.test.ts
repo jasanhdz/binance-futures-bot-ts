@@ -5,8 +5,70 @@ import {
   isMicroBurstShadowMode,
   isMicroBurstLiveMode,
 } from '../application/MicroBurstConfigLoader';
+import { microBurstConfigHash } from './MicroBurstConfigHash';
 
 describe('MicroBurstConfigLoader', () => {
+  const risk = {
+    sizing_mode: 'MARGIN_FRACTION',
+    margin_fraction: 0.9,
+    medium_leverage: 20,
+    high_leverage: 30,
+    max_consecutive_net_losses: 3,
+    reset_mode: 'SIGNED_OPERATOR',
+    fee_reserve_bps: 14,
+    stop_stress_bps: 10,
+  };
+  const contextual = (contextual_risk: unknown = risk) => ({
+    micro_burst: {
+      mode: 'SHADOW',
+      exit_policy: { contextual_policy_version: 'CONTEXTUAL_V3' },
+      contextual_risk,
+    },
+  });
+  it('parses explicit margin mode without a USDT loss budget and binds it into the config hash', () => {
+    const parsed = parseMicroBurstConfig(contextual());
+    expect(parsed.contextualRisk).toEqual({
+      sizingMode: 'MARGIN_FRACTION',
+      marginFraction: 0.9,
+      mediumLeverage: 20,
+      highLeverage: 30,
+      maxConsecutiveNetLosses: 3,
+      resetMode: 'SIGNED_OPERATOR',
+      feeReserveBps: 14,
+      stopStressBps: 10,
+    });
+    expect(microBurstConfigHash(parsed)).not.toBe(
+      microBurstConfigHash(parseMicroBurstConfig(contextual({ ...risk, margin_fraction: 0.8 }))),
+    );
+    expect(mergeMicroBurstConfigs(parsed, {}).contextualRisk).toEqual(parsed.contextualRisk);
+    expect(parseMicroBurstConfig({ micro_burst: {} })).not.toHaveProperty('contextualRisk');
+  });
+  it.each([
+    { sizing_mode: 'AUTO' },
+    { sizing_mode: 'LOSS_BUDGET' },
+    { margin_fraction: 0.91 },
+    { margin_fraction: NaN },
+    { margin_fraction: '0.9' },
+    { medium_leverage: 10 },
+    { high_leverage: 40 },
+    { max_consecutive_net_losses: 999 },
+    { reset_mode: 'DAILY' },
+    { fee_reserve_bps: 13 },
+    { stop_stress_bps: -1 },
+    { loss_budget_usdt: 2 },
+  ])('rejects unsafe or contradictory contextual risk %j', (override) => {
+    expect(() => parseMicroBurstConfig(contextual({ ...risk, ...override }))).toThrow(
+      'MICRO_CONTEXTUAL_RISK_CONFIG_INVALID',
+    );
+  });
+  it('does not apply contextual risk to legacy policies or infer missing risk fields', () => {
+    expect(() => parseMicroBurstConfig({ micro_burst: { contextual_risk: risk } })).toThrow(
+      'MICRO_CONTEXTUAL_RISK_CONFIG_INVALID',
+    );
+    expect(() => parseMicroBurstConfig(contextual({ sizing_mode: 'MARGIN_FRACTION' }))).toThrow(
+      'MICRO_CONTEXTUAL_RISK_CONFIG_INVALID',
+    );
+  });
   it('rejects V3 LIVE configuration rather than substituting the research exit manager', () => {
     expect(() =>
       parseMicroBurstConfig({

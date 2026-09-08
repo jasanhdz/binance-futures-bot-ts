@@ -8,6 +8,7 @@ import { BotState } from '../../../core/types';
 import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
 import { MicroBurstExitContext } from '../domain/MicroBurstTypes';
 import { MicroBurstExitObservation } from './MicroBurstExitObservation';
+import { createMicroBurstTradePolicy } from '../domain/MicroBurstTradePolicy';
 
 function botState(overrides: Partial<BotState> = {}): BotState {
   return { mode: 'IDLE', ...overrides };
@@ -54,6 +55,43 @@ function managementContext(
 }
 
 describe('MicroBurstPositionManager correctness boundary', () => {
+  it('uses the persisted V3 policy after restart and rejects unbound hysteresis', async () => {
+    const identity = {
+      ...createMicroBurstV1Identity('a'.repeat(40)),
+      strategyVersion: 'CONTEXTUAL_V3',
+    };
+    const policy = createMicroBurstTradePolicy(identity, {
+      sizingMode: 'MARGIN_FRACTION',
+      marginFraction: 0.9,
+      mediumLeverage: 20,
+      highLeverage: 30,
+      maxConsecutiveNetLosses: 3,
+      resetMode: 'SIGNED_OPERATOR',
+      feeReserveBps: 14,
+      stopStressBps: 10,
+    });
+    const context = managementContext({ currentPrice: 98, observedAtMs: 1000 });
+    context.botState.microBurstTradePolicy = policy;
+    context.botState.lastStrategyVersion = identity.strategyVersion;
+    context.botState.lastConfigHash = identity.configHash;
+    context.botState.lastCodeCommitSha = identity.codeCommitSha;
+    const set = vi.fn((update) => Object.assign(context.botState, update));
+    const flush = vi.fn(async () => {});
+    context.symbolState = { set, flush } as any;
+    const execution = { close: vi.fn(), moveStop: vi.fn() };
+    context.strategyMode = 'LIVE';
+    const manager = new MicroBurstPositionManager(lifecycle(), undefined, execution, true);
+    await manager.manage(createMicroBurstV1Identity('c'.repeat(40)), context);
+    expect(context.botState.microBurstExitPolicyDigest).toBe(policy.digest);
+    expect(flush).toHaveBeenCalledOnce();
+    expect(execution.close).not.toHaveBeenCalled();
+    const restored = new MicroBurstPositionManager(lifecycle(), undefined, execution, true);
+    context.botState.microBurstExitPolicyDigest = 'wrong';
+    expect(await restored.manage(identity, context)).toMatchObject({
+      reason: 'MICRO_PERSISTED_EXIT_POLICY_UNVERIFIED',
+    });
+    expect(flush).toHaveBeenCalledOnce();
+  });
   it('records uncertain execution without fabricating a failed fill or swallowing the error', async () => {
     const append = vi.fn();
     const error = new Error('transport outcome unknown');
