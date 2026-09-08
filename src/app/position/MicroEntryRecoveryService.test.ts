@@ -12,6 +12,7 @@ import type { RecoverableEntryPosition, TradingExchangePort } from '../ports/Exc
 import { MicroEntryRecoveryService } from './MicroEntryRecoveryService';
 import { PositionProtectionService } from './PositionProtectionService';
 import { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
+import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -76,8 +77,10 @@ function fixture(durableStop = false) {
         ? { clientOrderId: sent.clientOrderId, orderId: '987' }
         : null;
     }),
-    readRecoverableEntryPosition: vi.fn(async () => evidence),
-    readActivePosition: vi.fn(async () => position),
+    readRecoverableEntryPosition: vi.fn(
+      async (): Promise<RecoverableEntryPosition | null> => evidence,
+    ),
+    readActivePosition: vi.fn(async (): Promise<RecoverableEntryPosition['position']> => position),
     listCloseOrdersForSide: vi.fn(async () => [...orders]),
     getMarkPrice: vi.fn(async () => 100),
     getSymbolFilters: vi.fn(async () => ({
@@ -135,6 +138,119 @@ function fixture(durableStop = false) {
 }
 
 describe('Micro entry recovery with durable state and the runtime protection service', () => {
+  it.each(['missing', 'read-error', 'partial', 'exact'] as const)(
+    'keeps recovery reachable after Shared cannot confirm the opened position: %s evidence',
+    async (scenario) => {
+      const f = fixture(true);
+      const file = path.join(f.dir, 'entries.jsonl');
+      const journal = new FileBackedExecutionJournal(file);
+      const receipt = { avgPrice: 100, orderId: '123' };
+      const entry = new DurableEntryCoordinator({
+        scope: request.scope,
+        journal: () => journal,
+        lookup: async () => receipt,
+        confirmHandoff: async () => false,
+      });
+      const position = { ...f.evidence.position };
+      const readActivePosition = vi.fn().mockResolvedValue(null);
+      const port = {
+        ...f.exchange,
+        readActivePosition,
+        setLeverage: vi.fn(),
+        ensureMarginType: vi.fn(),
+        getUSDTBalance: vi.fn().mockResolvedValue(200),
+        getUSDTAccountSnapshot: vi.fn().mockResolvedValue({ availableBalance: 200 }),
+      };
+      f.exchange.marketOpen.mockResolvedValue(receipt);
+      const shared = new SharedStrategyExecutionService(
+        port as unknown as TradingExchangePort,
+        { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        {
+          entryCoordinator: entry,
+          stopCoordinator: f.stopCoordinator,
+          captureProtectionIdentity: () => () => true,
+          feeBufferPct: 0,
+          confirmationAttempts: 1,
+          confirmationDelaysMs: [0],
+          maxMarketOpenAttempts: 1,
+        },
+      );
+      let restarted: DurableEntryCoordinator | undefined;
+      try {
+        await f.stopCoordinator!.start();
+        await entry.start();
+        expect(await shared.execute(request.intent)).toMatchObject({
+          status: 'FAILED',
+          reason: 'POSITION_CONFIRMATION_FAILED',
+          metadata: { positionStillOpen: true, closeAmbiguous: true },
+        });
+        expect(f.exchange.marketOpen).toHaveBeenCalledTimes(1);
+        expect(f.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(f.exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(f.exchange.sendStopCloseOnce).not.toHaveBeenCalled();
+        const [id] = await journal.listNonTerminal();
+        const persisted = (await journal.readLatest(id))!.metadata!.request as DurableEntryRequest;
+        expect(persisted.quantity).toBe(2);
+        expect(entry.blockedReason()).toBe('ENTRY_MUTATION_PENDING');
+        await entry.close();
+
+        f.evidence.clientOrderId = persisted.clientOrderId;
+        if (scenario === 'missing') f.exchange.readRecoverableEntryPosition.mockResolvedValue(null);
+        if (scenario === 'read-error')
+          f.exchange.readRecoverableEntryPosition.mockRejectedValue(new Error('offline'));
+        if (scenario === 'partial') f.evidence.position.qtyAbs = 1;
+        const recover = vi.spyOn(f.service, 'recover');
+        restarted = new DurableEntryCoordinator({
+          scope: request.scope,
+          journal: () => new FileBackedExecutionJournal(file),
+          lookup: async () => receipt,
+          confirmHandoff: async () => false,
+        });
+        restarted.registerPositionRecovery(async (r, o) => {
+          await f.service.recover(r, o);
+        });
+        await restarted.start();
+        expect(recover).toHaveBeenCalledTimes(1);
+        expect(f.exchange.readRecoverableEntryPosition).toHaveBeenCalledWith(
+          'ETHUSDT',
+          persisted.clientOrderId,
+          {
+            side: 'LONG',
+            quantity: 2,
+            notBeforeMs: request.intent.requestedAt,
+          },
+        );
+        if (scenario !== 'exact') {
+          expect(f.store.get()).toEqual({ mode: 'IDLE' });
+          expect(f.exchange.sendStopCloseOnce).not.toHaveBeenCalled();
+          // Missing or partial attribution is not a permanent replay fence.
+          f.evidence.position = position;
+          f.exchange.readActivePosition.mockResolvedValue(position);
+          f.exchange.readRecoverableEntryPosition.mockResolvedValue(f.evidence);
+          await restarted.reconcile();
+        }
+        expect(f.store.get()).toMatchObject({
+          lastTradeId: request.parentTradeId,
+          recoveredEntryMutationId: persisted.mutationId,
+          bracketsAttached: true,
+          microBurstPnlUnverified: true,
+          eligibleForBotMetrics: false,
+        });
+        expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(1);
+        expect(f.exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(f.exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(f.exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(f.exchange.marketOpen).toHaveBeenCalledTimes(1);
+        expect(restarted.blockedReason()).toBe('ENTRY_MUTATION_PENDING');
+      } finally {
+        await entry.close();
+        await restarted?.close();
+        await f.stopCoordinator!.close();
+        await f.root.flush();
+      }
+    },
+  );
+
   it('hands recovered Micro to the same durable stop path without TP or legacy unidentified send', async () => {
     const f = fixture(true);
     try {

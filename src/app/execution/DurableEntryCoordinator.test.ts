@@ -207,10 +207,236 @@ afterEach(async () => {
 });
 
 describe('durable entry aperture', () => {
+  it.each(['protection', 'emergency'] as const)(
+    'excludes entry recovery throughout live Shared %s handling and drains before restart',
+    async (stage) => {
+      const f = harness();
+      f.confirmHandoff.mockResolvedValue(false);
+      const recover = vi.fn(async () => undefined);
+      f.coordinator.registerPositionRecovery(recover);
+      await f.coordinator.start();
+      const { exchange } = shared(f.coordinator);
+      let release!: () => void;
+      let entered!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const sendStopCloseOnce = vi.fn(async (request: { clientOrderId: string }) => {
+        entered();
+        await held;
+        return { clientOrderId: request.clientOrderId, orderId: 'stop-1' };
+      });
+      exchange.closeSideMarketSafe.mockImplementation(async () => {
+        entered();
+        await held;
+        exchange.readActivePosition.mockResolvedValue(null);
+      });
+      exchange.listCloseOrdersForSide.mockResolvedValue([]);
+      const port = {
+        ...exchange,
+        sendStopCloseOnce,
+        readStopCloseByClientOrderId: vi.fn(async (request: { clientOrderId: string }) => ({
+          clientOrderId: request.clientOrderId,
+          orderId: 'stop-1',
+        })),
+      };
+      const stops = new DurableStopCoordinator({
+        scope,
+        journal: () => new FileBackedExecutionJournal(f.file + '.stops'),
+        exchange: port as unknown as TradingExchangePort,
+      });
+      const service = new SharedStrategyExecutionService(
+        port as unknown as TradingExchangePort,
+        logger,
+        {
+          feeBufferPct: 0,
+          confirmationAttempts: 1,
+          confirmationDelaysMs: [0],
+          maxMarketOpenAttempts: 1,
+          entryCoordinator: f.coordinator,
+          stopCoordinator: stops,
+        },
+      );
+      try {
+        await stops.start();
+        const execution = service.execute({
+          ...intent(),
+          structuralStopPrice: stage === 'emergency' ? 101 : 99,
+        });
+        await started;
+        const [id] = await f.journal.listNonTerminal();
+        expect((await f.journal.readLatest(id))?.event).toBe('OPEN_CONFIRMED');
+        f.confirmHandoff.mockClear();
+        await f.coordinator.reconcile();
+        await f.coordinator.reconcile();
+        expect(recover).not.toHaveBeenCalled();
+        expect(f.confirmHandoff).not.toHaveBeenCalled();
+        expect(f.coordinator.blockedReason()).toBe('ENTRY_MUTATION_PENDING');
+        expect((await service.execute(intent())).status).toBe('DENIED');
+        let drained = false;
+        const closing = f.coordinator.close().then(() => {
+          drained = true;
+        });
+        await Promise.resolve();
+        expect(drained).toBe(false);
+        expect(() => new FileBackedExecutionJournal(f.file)).toThrow('JOURNAL_WRITER_LOCKED');
+        release();
+        expect((await execution).status).toBe(stage === 'emergency' ? 'FAILED' : 'OPENED');
+        await closing;
+        expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+        expect(sendStopCloseOnce).toHaveBeenCalledTimes(stage === 'protection' ? 1 : 0);
+        expect(exchange.closeSideMarketSafe).toHaveBeenCalledTimes(stage === 'emergency' ? 1 : 0);
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        const journal = new FileBackedExecutionJournal(f.file);
+        const restarted = new DurableEntryCoordinator({
+          scope,
+          journal: () => journal,
+          lookup: async () => null,
+          confirmHandoff: async () => false,
+        });
+        coordinators.push(restarted);
+        restarted.registerPositionRecovery(recover);
+        await restarted.start();
+        expect(recover).toHaveBeenCalledTimes(1);
+        expect((await journal.readLatest(id))?.event).toBe('OPEN_CONFIRMED');
+        expect(restarted.blockedReason()).toBe('ENTRY_MUTATION_PENDING');
+      } finally {
+        release();
+        await stops.close();
+      }
+    },
+  );
+
+  it('releases live exclusion after a failed observation so later recovery remains reachable', async () => {
+    const f = harness();
+    f.confirmHandoff.mockResolvedValue(false);
+    const recover = vi.fn(async () => undefined);
+    f.coordinator.registerPositionRecovery(recover);
+    await f.coordinator.start();
+    const result = await f.coordinator.execute(intent(), 2, 'se_live', async () => order);
+    await expect(
+      f.coordinator.withLiveHandoff(async () => {
+        await f.coordinator.reconcile();
+        expect(recover).not.toHaveBeenCalled();
+        throw new Error('observation unavailable');
+      }),
+    ).rejects.toThrow('observation unavailable');
+    await f.coordinator.reconcile();
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect((await f.journal.readLatest(result.operationId))?.event).toBe('OPEN_CONFIRMED');
+    expect(f.coordinator.blockedReason()).toBe('ENTRY_MUTATION_PENDING');
+  });
+
+  it('waits for already-running recovery before entering live handoff', async () => {
+    const f = harness();
+    f.confirmHandoff.mockResolvedValue(false);
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    f.coordinator.registerPositionRecovery(async () => {
+      entered();
+      await held;
+    });
+    await f.coordinator.start();
+    await f.coordinator.execute(intent(), 2, 'se_live', async () => order);
+    const recovery = f.coordinator.reconcile();
+    await started;
+    const work = vi.fn(async () => undefined);
+    const live = f.coordinator.withLiveHandoff(work);
+    await Promise.resolve();
+    expect(work).not.toHaveBeenCalled();
+    release();
+    await recovery;
+    await live;
+    expect(work).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'retains emergency risk reduction for confirmed %s exposure with invalid structural geometry before stop submission',
+    async (side) => {
+      const f = harness();
+      f.confirmHandoff.mockResolvedValue(false);
+      await f.coordinator.start();
+      const { exchange } = shared(f.coordinator);
+      const stopJournal = new FileBackedExecutionJournal(f.file + '.stops');
+      const sendStopCloseOnce = vi.fn();
+      const port = { ...exchange, sendStopCloseOnce, readStopCloseByClientOrderId: vi.fn() };
+      const stops = new DurableStopCoordinator({
+        scope,
+        journal: () => stopJournal,
+        exchange: port as unknown as TradingExchangePort,
+      });
+      const service = new SharedStrategyExecutionService(
+        port as unknown as TradingExchangePort,
+        logger,
+        {
+          feeBufferPct: 0,
+          confirmationAttempts: 1,
+          confirmationDelaysMs: [0],
+          maxMarketOpenAttempts: 1,
+          entryCoordinator: f.coordinator,
+          stopCoordinator: stops,
+          captureProtectionIdentity: () => () => true,
+        },
+      );
+      const position = { sideMode: 'BOTH', qtyAbs: 2, entryPrice: 100, leverage: 20 };
+      exchange.readActivePosition
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(position)
+        .mockResolvedValueOnce(position)
+        .mockResolvedValueOnce(null);
+      exchange.listCloseOrdersForSide.mockResolvedValue([]);
+      try {
+        await stops.start();
+        const result = await service.execute({
+          ...intent(),
+          side,
+          structuralStopPrice: side === 'LONG' ? 101 : 99,
+        });
+        expect(result).toMatchObject({
+          status: 'FAILED',
+          reason: 'BRACKETS_FAILED',
+          metadata: {
+            reasonDetail: 'invalid_structural_stop_geometry',
+            positionStillOpen: false,
+            orderId: '123',
+            entryPrice: 100,
+          },
+        });
+        expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
+        expect(sendStopCloseOnce).not.toHaveBeenCalled();
+        expect(exchange.placeStopClose).not.toHaveBeenCalled();
+        expect(exchange.closeSideMarketSafe).toHaveBeenCalledExactlyOnceWith(
+          'ETHUSDT',
+          side,
+          2,
+          'BOTH',
+          'SHARED_EXECUTION_PROTECTION_FAILED',
+        );
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(await stopJournal.listOperations()).toEqual([]);
+        const [id] = await f.journal.listNonTerminal();
+        expect((await f.journal.readLatest(id))?.event).toBe('OPEN_CONFIRMED');
+        expect(f.coordinator.blockedReason()).toBe('ENTRY_MUTATION_PENDING');
+      } finally {
+        await stops.close();
+      }
+    },
+  );
+
   it.each(['confirmed', 'lost-ack-visible', 'lost-ack-hidden', 'identity-changed'])(
     'routes initial Micro stop through its durable journal: %s',
     async (scenario) => {
       const f = harness();
+      f.confirmHandoff.mockResolvedValue(false);
       await f.coordinator.start();
       const { exchange } = shared(f.coordinator);
       const file = f.file + '.stops';
@@ -254,6 +480,7 @@ describe('durable entry aperture', () => {
         captureProtectionIdentity: () => () => current,
       });
       try {
+        await stops.start();
         const result = await service.execute(intent());
         expect(result.status).toBe(
           scenario === 'confirmed' || scenario === 'lost-ack-visible' ? 'OPENED' : 'FAILED',
@@ -263,6 +490,8 @@ describe('durable entry aperture', () => {
         expect(exchange.placeStopClose).not.toHaveBeenCalled();
         expect(exchange.placeTpClose).not.toHaveBeenCalled();
         expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+        expect(exchange.cancelOrderById).not.toHaveBeenCalled();
+        expect(f.coordinator.blockedReason()).toBe('ENTRY_MUTATION_PENDING');
         if (result.status === 'FAILED')
           expect(result.metadata).toMatchObject({
             positionStillOpen: true,

@@ -187,10 +187,22 @@ export class DurableEntryCoordinator {
     });
   }
 
+  /** Keep reconstruction out of Shared's receipt/protection/emergency handling.
+   * This is a live exclusion only, not durable transfer or permission to settle entry.
+   */
+  withLiveHandoff<T>(work: () => Promise<T>): Promise<T> {
+    const recovery = this.recovery;
+    return this.track(async () => {
+      // A recovery already reading evidence must finish before a new live owner starts.
+      await recovery;
+      return work();
+    });
+  }
+
   reconcile(): Promise<void> {
     if (this.recovery) return this.recovery;
     if (!this.journal || this.stopping || this.failure) return Promise.resolve();
-    // Do not reconcile a live send while its caller is still handling the receipt.
+    // Includes the live Shared owner, not just the nested entry transport task.
     if (this.tasks.size) return Promise.resolve();
     this.recovery = this.track(async () => {
       try {

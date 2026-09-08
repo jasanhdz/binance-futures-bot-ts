@@ -27,6 +27,41 @@
 
 ## Estado entregado (no confundir incrementos con fases completas)
 
+### Interrupted-task reinspection: transfer not implemented
+
+The latest continuation preserved all incoming worktree changes and changed only
+audit/handoff documentation. `SAFETY_SHARED_PRE_HANDOFF.md` records the concrete
+entry-replay, post-Shared caller-projection and managed cleanup/accounting contracts
+that remain unresolved. No partial transfer, fabricated projection, early entry
+settlement or blanket suppression was installed. This is an incomplete implementation,
+not a completed next slice or an externally blocked dependency. Full safety validation
+PASS again: build, 2,457 + 46 = **2,503 existing tests**, zero failures. No new transfer
+tests or architecture checkpoint changes; no commit/push/live/env edit.
+
+### Shared live ownership prerequisite (transfer still pending)
+
+See the follow-up in `SAFETY_SHARED_PRE_HANDOFF.md`. Shared now holds the entry
+coordinator's live recovery exclusion through receipt/protection/emergency handling;
+shutdown drains that work before releasing the entry writer. Four new tests preserve
+pending entry admission and demonstrate recovery is reachable after release/restart.
+This is NOT durable transfer: caller projection persistence lies outside the live
+boundary, and managed-close cleanup still requires a genuine BOT owner. No emergency
+policy suppression, early journal release, fake projection or new close transport.
+Final safety validation PASS: build, 2,457 + 46 = 2,503 tests; the workspace total
+includes other work, not just these four cases. Prior non-reproduced full-run failures
+and precise remaining protocol blockers are recorded in the audit. No hashes changed.
+
+### Shared pre-handoff: tests sin cambio de politica
+
+Ver `SAFETY_SHARED_PRE_HANDOFF.md`. Se retiro solo el incremento local rechazado
+de suppression/fence y sus tests/docs. Nuevos tests con ambos coordinadores preservan
+cierre de emergencia ante geometria invalida confirmada, no-close ante stop durable
+incierto y recovery Micro validado por evidencia tras restart. No cambia runtime ni
+completa cierre durable pre-handoff: falta transferencia explicita de propiedad.
+Validacion final: `AEGIS_ENABLED=true npm run test:safety` PASS, build y 2.392 + 46 =
+**2.438 tests, cero fallos**. Seis casos nuevos sustituyen los seis tests retirados;
+no se conservan assertions que certifiquen la politica rechazada.
+
 ### Cierre durable Micro gestionado (incremento local, sin publicar)
 
 Ver `SAFETY_DURABLE_MICRO_CLOSE.md`. Ambas rutas TradingService, salida inteligente

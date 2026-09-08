@@ -56,6 +56,12 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
   ) {}
 
   async execute(intent: StrategyExecutionIntent): Promise<StrategyExecutionResult> {
+    return this.config.entryCoordinator
+      ? this.config.entryCoordinator.withLiveHandoff(() => this.executeLive(intent))
+      : this.executeLive(intent);
+  }
+
+  private async executeLive(intent: StrategyExecutionIntent): Promise<StrategyExecutionResult> {
     const protectionIdentity = this.config.captureProtectionIdentity?.(intent) ?? (() => true);
     const baseMetadata = {
       strategyId: intent.identity.strategyId,
