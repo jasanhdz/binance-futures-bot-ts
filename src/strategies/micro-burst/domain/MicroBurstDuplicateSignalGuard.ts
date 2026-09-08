@@ -51,13 +51,16 @@ export class MicroBurstDuplicateSignalGuard {
     side: Side,
     structuralLevel: number,
     snapshotAtMs: number,
+    episodeId?: string,
   ): {
     shadowSignalId: string;
     duplicateSuppressed: boolean;
     firstObservedAt: number;
     lastObservedAt: number;
   } {
-    const key = buildSignalKey(strategy, symbol, side, structuralLevel, snapshotAtMs);
+    const key = episodeId
+      ? `${strategy}:${symbol}:${side}:${episodeId}`
+      : buildSignalKey(strategy, symbol, side, structuralLevel, snapshotAtMs);
     const now = this.clock.now();
 
     this.evictExpired(now);
@@ -73,13 +76,9 @@ export class MicroBurstDuplicateSignalGuard {
       };
     }
 
-    const shadowSignalId = generateShadowSignalId(
-      strategy,
-      symbol,
-      side,
-      structuralLevel,
-      snapshotAtMs,
-    );
+    const shadowSignalId = episodeId
+      ? `shadow-${key}`
+      : generateShadowSignalId(strategy, symbol, side, structuralLevel, snapshotAtMs);
     const record: SignalRecord = {
       shadowSignalId,
       firstObservedAt: now,

@@ -7,6 +7,7 @@ import {
 import { BotState } from '../../../core/types';
 import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
 import { MicroBurstExitContext } from '../domain/MicroBurstTypes';
+import { MicroBurstExitObservation } from './MicroBurstExitObservation';
 
 function botState(overrides: Partial<BotState> = {}): BotState {
   return { mode: 'IDLE', ...overrides };
@@ -53,6 +54,69 @@ function managementContext(
 }
 
 describe('MicroBurstPositionManager correctness boundary', () => {
+  it('records uncertain execution without fabricating a failed fill or swallowing the error', async () => {
+    const append = vi.fn();
+    const error = new Error('transport outcome unknown');
+    const close = vi.fn().mockRejectedValue(error);
+    const observer = new MicroBurstExitObservation({ append });
+    const manager = new MicroBurstPositionManager(
+      lifecycle(),
+      undefined,
+      { close, moveStop: vi.fn() },
+      true,
+      observer,
+    );
+    const context = { ...managementContext(), strategyMode: 'LIVE' as const };
+    await expect(manager.manage(createMicroBurstV1Identity(), context)).rejects.toBe(error);
+    await observer.close();
+    expect(close).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledTimes(2);
+    const [decision, result] = append.mock.calls.map(([value]) => value);
+    expect(result).toMatchObject({
+      decisionId: decision.decisionId,
+      tradeId: decision.tradeId,
+      phase: 'APPLICATION_RESULT',
+      actionApplied: null,
+      applicationStatus: 'UNKNOWN',
+      realizedNetPnl: null,
+    });
+  });
+  it('V3 deadline needs no invented price, and cannot mutate LIVE state or orders', async () => {
+    const execution = { close: vi.fn(), moveStop: vi.fn() };
+    const append = vi.fn();
+    const manager = new MicroBurstPositionManager(
+      lifecycle(),
+      { contextualPolicyVersion: 'CONTEXTUAL_V3' },
+      execution,
+      true,
+      new MicroBurstExitObservation({ append }),
+      () => 400_000,
+    );
+    const set = vi.fn();
+    const result = await manager.manage(createMicroBurstV1Identity(), {
+      symbol: 'ETHUSDT',
+      botState: botState({ lastEntryAt: 1000, lastTradeId: 'micro-deadline' }),
+      symbolState: { set } as any,
+    });
+    expect(result).toMatchObject({
+      decision: 'CLOSE_MARKET',
+      reason: 'MAX_HOLD',
+      diagnostics: { actionApplied: false },
+    });
+    const live = managementContext({ currentPrice: 98 });
+    live.strategyMode = 'LIVE';
+    live.symbolState = { set } as any;
+    await manager.manage(createMicroBurstV1Identity(), live);
+    expect(execution.close).not.toHaveBeenCalled();
+    expect(execution.moveStop).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(append).toHaveBeenCalledTimes(4));
+    expect(append.mock.calls[0][0]).toMatchObject({
+      context: null,
+      realizedNetPnl: null,
+      phase: 'DECISION',
+    });
+  });
   it('rejects ownership mismatch before lifecycle work', async () => {
     const core = lifecycle();
     const manager = new MicroBurstPositionManager(core);

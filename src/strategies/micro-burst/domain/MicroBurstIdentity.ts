@@ -39,6 +39,39 @@ export function hasMicroBurstV1LiveAuthority(
   );
 }
 
+/** Read-only attestation of supplied evidence. Environment labels alone attest no artifact. */
+export function diagnoseMicroBurstAuthority(input: {
+  identity: StrategyIdentity;
+  effectiveConfigSha256: string;
+  declaredCommitSha: string;
+  artifactCommitSha?: string;
+  artifactVerified: boolean;
+  sourceDirty: boolean;
+}): {
+  status: 'MATCHED_EVIDENCE' | 'UNVERIFIED' | 'MISMATCH';
+  reasons: string[];
+  grantsAuthority: false;
+} {
+  const reasons: string[] = [];
+  const { identity } = input;
+  if (!hasMicroBurstV1LiveAuthority(identity, input.effectiveConfigSha256, input.declaredCommitSha))
+    reasons.push('DECLARED_IDENTITY_CONFIG_OR_COMMIT_MISMATCH');
+  if (input.sourceDirty) reasons.push('SOURCE_DIRTY');
+  const verified = input.artifactVerified && /^[a-f0-9]{40}$/i.test(input.artifactCommitSha ?? '');
+  if (!verified) reasons.push('ARTIFACT_NOT_VERIFIED');
+  else if (input.artifactCommitSha!.toLowerCase() !== identity.codeCommitSha.toLowerCase())
+    reasons.push('ARTIFACT_APPROVAL_COMMIT_MISMATCH');
+  return {
+    status: reasons.some((reason) => reason.endsWith('MISMATCH'))
+      ? 'MISMATCH'
+      : reasons.length
+        ? 'UNVERIFIED'
+        : 'MATCHED_EVIDENCE',
+    reasons,
+    grantsAuthority: false,
+  };
+}
+
 /** Stable across processes and independent of insertion order for a chronological episode. */
 export function createMicroBurstEpisodeId(
   symbol: string,

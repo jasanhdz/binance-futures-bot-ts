@@ -94,6 +94,15 @@ export function evaluateMicroBurstEntry(
   }
   const side = structuralSide;
 
+  return evaluateMicroBurstStructuralEntry(ctx, config, side);
+}
+
+/** Shared structural economics; callers own their independent trigger and market guards. */
+export function evaluateMicroBurstStructuralEntry(
+  ctx: MicroBurstContext,
+  config: MicroBurstConfig,
+  side: Side,
+): MicroBurstEntryDecision {
   // ── Structural levels required (no fallback) ──
   // For LONG near support: target = resistance (above), stop = below support
   // For SHORT near resistance: target = support (below), stop = above resistance

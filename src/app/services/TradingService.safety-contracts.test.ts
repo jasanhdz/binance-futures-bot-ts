@@ -4,11 +4,13 @@ import { PositionProtectionService } from '../position/PositionProtectionService
 import { DurableEntryCoordinator } from '../execution/DurableEntryCoordinator';
 import { InMemoryExecutionJournal } from '../../core/risk/ExecutionJournal';
 import { RuntimeShutdown } from '../runtime/RuntimeShutdown';
+import { MicroBurstExitObservation } from '../../strategies/micro-burst/application/MicroBurstExitObservation';
 
 describe('TradingService shared safety contracts', () => {
   it('preserves both coordinator close failures after draining state', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.shutdown = new RuntimeShutdown();
+    service.microExitObservation = new MicroBurstExitObservation({ append: vi.fn() });
     const entryError = new Error('entry close failed');
     const stopError = new Error('stop close failed');
     const events: string[] = [];
@@ -55,6 +57,7 @@ describe('TradingService shared safety contracts', () => {
   it('waits for concurrent startup recovery before stopping producers and closing the journal', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.shutdown = new RuntimeShutdown();
+    service.microExitObservation = new MicroBurstExitObservation({ append: vi.fn() });
     let finish!: () => void;
     const recovery = new Promise<void>((resolve) => {
       finish = resolve;
@@ -102,6 +105,7 @@ describe('TradingService shared safety contracts', () => {
   it('coalesces initialization and prevents queued startup after synchronous stop', async () => {
     const service = Object.create(TradingService.prototype) as any;
     service.shutdown = new RuntimeShutdown();
+    service.microExitObservation = new MicroBurstExitObservation({ append: vi.fn() });
     service.deps = {
       entryCoordinator: { start: vi.fn(), close: vi.fn() },
       state: { flush: vi.fn() },
@@ -171,6 +175,7 @@ describe('TradingService shared safety contracts', () => {
     async (method) => {
       const service = Object.create(TradingService.prototype) as any;
       service.shutdown = new RuntimeShutdown();
+      service.microExitObservation = new MicroBurstExitObservation({ append: vi.fn() });
       let finish!: () => void;
       const pending = new Promise<void>((resolve) => {
         finish = resolve;
@@ -355,27 +360,41 @@ describe('TradingService shared safety contracts', () => {
     expect(service.entryInFlightSymbols.size).toBe(0);
   });
 
-  it('supervises Micro protection before requesting strategy market context', async () => {
-    const service = Object.create(TradingService.prototype) as any;
-    const order: string[] = [];
-    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
-    service.positionProtection = {
-      superviseMicroStop: vi.fn(async () => {
-        order.push('stop');
-        return { status: 'PROTECTED' };
-      }),
-    };
-    service.strategyRuntimeCoordinator = {
-      readMicroBurstExitMarket: vi.fn(() => {
-        order.push('market');
-        return null;
-      }),
-    };
-    service.deps = { logger: { warn: vi.fn() } };
-    const state = { mode: 'LONG_RIDE', positionOwner: 'BOT', lastStrategy: 'MICRO_BURST_V1' };
-    await service.managePositionByOwner('ETHUSDT', state, { get: () => state, set: vi.fn() });
-    expect(order).toEqual(['stop', 'market']);
-  });
+  it.each([false, true])(
+    'supervises Micro protection before missing-market research routing (V3=%s)',
+    async (contextual) => {
+      const service = Object.create(TradingService.prototype) as any;
+      const order: string[] = [];
+      service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+      service.positionProtection = {
+        superviseMicroStop: vi.fn(async () => {
+          order.push('stop');
+          return { status: 'PROTECTED' };
+        }),
+      };
+      service.strategyRuntimeCoordinator = {
+        readMicroBurstExitMarket: vi.fn(() => {
+          order.push('market');
+          return null;
+        }),
+      };
+      service.deps = { logger: { warn: vi.fn() } };
+      service.runtimeConfig = {
+        getMicroBurstConfig: () => ({
+          mode: 'SHADOW',
+          exitPolicy: contextual ? { contextualPolicyVersion: 'CONTEXTUAL_V3' } : {},
+        }),
+      };
+      service.positionManagerRouter = {
+        route: vi.fn(async () => {
+          order.push('research');
+        }),
+      };
+      const state = { mode: 'LONG_RIDE', positionOwner: 'BOT', lastStrategy: 'MICRO_BURST_V1' };
+      await service.managePositionByOwner('ETHUSDT', state, { get: () => state, set: vi.fn() });
+      expect(order).toEqual(contextual ? ['stop', 'market', 'research'] : ['stop', 'market']);
+    },
+  );
 
   it('does not emergency-close when Micro order visibility is temporarily unknown', async () => {
     const service = Object.create(TradingService.prototype) as any;
@@ -435,7 +454,8 @@ describe('TradingService shared safety contracts', () => {
         {
           deps: { exchange: service.deps.exchange, wait: async () => undefined },
           cleanupMicroCloseOrders: PositionProtectionService.prototype.cleanupMicroCloseOrders,
-          persistMicroOperationalClose: PositionProtectionService.prototype.persistMicroOperationalClose,
+          persistMicroOperationalClose:
+            PositionProtectionService.prototype.persistMicroOperationalClose,
         } as any,
         symbol,
         store,
