@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { DurableEntryCoordinator, definiteEntryRejectionCode } from './DurableEntryCoordinator';
 import type { DurableStopCoordinator } from './DurableStopCoordinator';
+import { isMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
+import type { MicroBurstLiveSizingResult } from '../../strategies/micro-burst/application/MicroBurstLiveSizing';
 import { calculateMarginBudgetSizing, roundQuantityDown } from '../../core/risk/SizingEngine';
 import {
   PositionInfo,
@@ -16,6 +18,10 @@ import {
 } from '../../core/strategy/StrategyExecution';
 
 export interface SharedStrategyExecutionConfig {
+  sizeContextualEntry?: (
+    intent: StrategyExecutionIntent,
+    filters: SymbolFilters,
+  ) => Promise<MicroBurstLiveSizingResult>;
   feeBufferPct: number;
   confirmationAttempts: number;
   confirmationDelaysMs: number[];
@@ -62,6 +68,22 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
   }
 
   private async executeLive(intent: StrategyExecutionIntent): Promise<StrategyExecutionResult> {
+    const contextual =
+      intent.identity.strategyId === 'MICRO_BURST_V1' &&
+      intent.identity.strategyVersion === 'CONTEXTUAL_V3';
+    if (contextual && !isMicroBurstTradePolicy(intent.metadata.contextualPolicy, intent.identity))
+      return denied(intent, 'STRATEGY_IDENTITY_INVALID', {
+        reasonDetail: 'MICRO_CONTEXTUAL_POLICY_UNVERIFIED',
+      });
+    if (
+      contextual &&
+      (!this.config.sizeContextualEntry ||
+        !this.config.entryCoordinator ||
+        !this.config.stopCoordinator)
+    )
+      return denied(intent, 'SHARED_SAFETY_DENIED', {
+        reasonDetail: 'MICRO_CONTEXTUAL_EXECUTION_CAPABILITIES_REQUIRED',
+      });
     const protectionIdentity = this.config.captureProtectionIdentity?.(intent) ?? (() => true);
     const baseMetadata = {
       strategyId: intent.identity.strategyId,
@@ -159,16 +181,26 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       const markPrice = await this.exchange.getMarkPrice(intent.symbol);
       const filters = await this.exchange.getSymbolFilters(intent.symbol, intent.leverage);
       const requestedNotional = effectiveWallet * intent.positionFraction * intent.leverage;
-      const sizing = calculateMarginBudgetSizing({
-        marginBudget: effectiveWallet * intent.positionFraction,
-        entryPrice: markPrice,
-        leverage: intent.leverage,
-        ...filters,
-        maxNotional: filters.notionalCap,
-      });
+      const sizing: MicroBurstLiveSizingResult = contextual
+        ? await this.config.sizeContextualEntry!(intent, filters)
+        : calculateMarginBudgetSizing({
+            marginBudget: effectiveWallet * intent.positionFraction,
+            entryPrice: markPrice,
+            leverage: intent.leverage,
+            ...filters,
+            maxNotional: filters.notionalCap,
+          });
       let quantity = sizing.quantity;
 
-      if (!sizing.valid) {
+      if (
+        !sizing.valid ||
+        !Number.isFinite(quantity) ||
+        quantity <= 0 ||
+        (contextual &&
+          (!Number.isFinite(sizing.marginRequired) ||
+            sizing.marginRequired > availableWallet * intent.positionFraction ||
+            roundQuantityDown(quantity, filters) !== quantity))
+      ) {
         return denied(intent, 'INVALID_SIZE', {
           ...baseMetadata,
           wallet,
@@ -180,12 +212,32 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
       }
 
       marketOpenAttempt = 1;
+      const evidence = sizing.contextualEvidence;
+      if (contextual) {
+        if (
+          !evidence ||
+          evidence.schemaVersion !== 1 ||
+          evidence.quantity !== quantity ||
+          evidence.symbol !== intent.symbol ||
+          evidence.side !== intent.side ||
+          evidence.policyDigest !== (intent.metadata.contextualPolicy as { digest: string }).digest
+        )
+          return denied(intent, 'INVALID_SIZE', {
+            ...baseMetadata,
+            reasonDetail: 'MICRO_CONTEXTUAL_SIZING_SNAPSHOT_REQUIRED',
+          });
+        intent = {
+          ...intent,
+          metadata: { ...intent.metadata, contextualSizingEvidence: evidence },
+        };
+      }
       let order: { avgPrice: number; orderId: string };
       let clientOrderId = marketOpenClientOrderId(intent);
       // Capture the pre-submit state for auditability; it is never treated as proof
       // that a later ambiguous submission opened this position.
       const positionBeforeOpen = await this.exchange.readActivePosition(intent.symbol, intent.side);
-      void positionBeforeOpen;
+      if (contextual && positionBeforeOpen)
+        return denied(intent, 'POSITION_ALREADY_OPEN', baseMetadata);
       while (true) {
         try {
           if (this.config.entryCoordinator) {
@@ -200,7 +252,22 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                   request.quantity,
                   request.clientOrderId,
                 ),
-              () => this.config.isEntryCurrent?.(intent, quantity) !== false,
+              () => {
+                if (contextual) {
+                  const now = Date.now();
+                  const policy = intent.metadata.contextualPolicy;
+                  if (
+                    !isMicroBurstTradePolicy(policy, intent.identity) ||
+                    !evidence ||
+                    !Number.isFinite(evidence.account.observedAtMs) ||
+                    evidence.account.observedAtMs > now ||
+                    now - evidence.account.observedAtMs >
+                      policy.config.exitIntelligenceMaxObservationGapMs
+                  )
+                    return false;
+                }
+                return this.config.isEntryCurrent?.(intent, quantity) !== false;
+              },
             );
             entryMutations.push({
               operationId: result.operationId,
@@ -238,6 +305,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           }
           break;
         } catch (error) {
+          if (contextual && isDefiniteBusinessRejection(error)) throw error;
           if (isDefiniteBusinessRejection(error) && !isRecoverableEntrySizeError(error)) {
             throw error;
           }

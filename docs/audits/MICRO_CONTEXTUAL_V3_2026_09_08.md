@@ -1,5 +1,93 @@
 # Micro Contextual V3 Research Implementation
 
+## Production Flow Integration Follow-Up
+
+The resumed workspace contained an uncommitted integration over `d8d2de5`. This
+increment reviews and completes additional production connections, without claiming
+a deployed or exchange-validated V3 runtime:
+
+- Shared execution now requires the trusted contextual sizing port and durable entry
+  and stop coordinators. Binance supplies signed account commission rates, available
+  USDT wallet collateral, isolated one-way position evidence, liquidation fees and
+  continuous maintenance-tier coverage. Unknown evidence denies entry. Margin plus
+  explicit fee reserve fits inside 90% of available wallet; supported tiers are 20/30,
+  not 40, with no separately invented dollar loss budget. The stressed liquidation
+  boundary is conservative modeling, not a guaranteed liquidation or loss price.
+- Validated account/book/sizing evidence is copied into the intent before durable
+  PREPARED, bound to policy digest, symbol, side and quantity. Account freshness is
+  checked again by the coordinator's pre-submit callback. Production admission also
+  requires exit-cost, settlement, triggered-stop and fresh-position capabilities.
+- Normal entry supplies the resolved policy and causal episode. The evaluator now
+  propagates the router's actual version instead of relabeling V3 signals as REACTION
+  0.9. The shared loss-streak gate uses V3's ledger and three-loss threshold rather
+  than the legacy session streak. Other existing admission protections remain.
+- Executable exit economics use quantity-covered book depth, actual opening fees,
+  current signed taker fees and bounded funding coverage. Missing evidence advances
+  the persisted blind timer without synthesizing prices or MFE. Full history pages
+  in this exit estimator are rejected, not silently treated as complete; final
+  settlement retains the separately implemented exhaustive pagination path.
+- The next opposing obstacle is read from validated closed 5m candles using the
+  stored trade policy's S/R parameters. Only a prior-confirmed next level is supplied
+  to the reducer's existing single-extension rule. Missing/stale/gapped data supplies
+  no obstacle. Exit actions require the stored policy and durable execution ports.
+- Stop tightening has a policy-bound mutation identity, preserves the old covering
+  stop while observing the new one, persists its active key, and resumes pending
+  adjustment observation during normal supervision. UNKNOWN does not permit resend;
+  a failed projection flush retains the pending adjustment. Triggered stop attribution
+  requires the exact conditional algo, actual executed order and complete quantity.
+- The operator-only initialization CLI generates genuine local-owner Ed25519 keys
+  with private permissions, records `LOCAL_OWNER_GENERATED_ED25519` provenance and
+  signs an INITIALIZE command. It refuses reinitialization of a known ledger; the
+  runtime does not import private keys or auto-reset the loss latch. This is local
+  owner signing, not independent or third-party approval. Operational invocation is
+  separate from the offline fixtures and is not implied by their success.
+
+The integrated simulated-Binance tests exercise entry, confirmed protection, durable
+close, triggered-stop accounting and three net losses. Restart now reopens FsStateStore,
+SQLite and all three execution journals and reconstructs their coordinators. Tests
+also cover blind-clock recovery and observation-only recovery of an ambiguous stop
+adjustment. A signal-evaluator regression separately checks V3 version/episode/tier
+propagation; the flow fixture does not claim to simulate the complete live feed or
+construct the entire TradingService bootstrap.
+
+### Verification
+
+All test processes used `AEGIS_ENABLED=false`:
+
+```sh
+AEGIS_ENABLED=false npx vitest run src/strategies/micro-burst src/app/execution/DurableEntryCoordinator.test.ts src/app/execution/DurableCloseCoordinator.test.ts src/app/execution/DurableStopCoordinator.test.ts src/app/execution/SharedStrategyExecutionService.test.ts src/app/position/MicroEntryRecoveryService.test.ts src/app/position/PositionProtectionService.test.ts src/app/runtime/StrategyRuntimeCoordinator.test.ts src/infra/state/MicroBurstNetLossLedger.test.ts src/app/services/TradingService.safety-contracts.test.ts src/app/services/TradingService.micro-settlement.test.ts src/app/services/TradingService.contextual-flow.test.ts src/app/bootstrap/MicroNetLossComposition.test.ts src/app/bootstrap/DurableCloseComposition.test.ts src/infra/adapters/BinanceAdapter.settlement.test.ts src/infra/adapters/BinanceAdapter.brackets.test.ts src/infra/adapters/BinanceAdapter.contextual-risk.test.ts src/tooling/micro-burst/MicroNetLossOperator.test.ts src/tooling/micro-burst/MicroBurstContextualPreflight.test.ts --silent --reporter=dot --maxWorkers=1
+AEGIS_ENABLED=false npx vitest run src/restoration/original-operational-semantics.test.ts -t 'operational sources|current-brain contract exception|branch bytes|out of the operational path|exit sources' --silent --reporter=dot --maxWorkers=1
+AEGIS_ENABLED=false npm run build -- --outDir /tmp/opencode/micro-contextual-wiring-20260908-build
+git diff --check
+```
+
+Result: 931 tests passed in 60 files; five selected integrity checks passed, with 15
+unrelated checks skipped. External compilation and whitespace validation passed.
+Earlier attempts included one 120-second terminated run, nondeterministic real-clock
+flow fixtures and a new candle-fixture/type error. Those attempts are not counted as
+successful; explicit simulated clocks and corrected candle validation passed the
+final commands above. No complete-repository or Aegis-suite success is claimed.
+
+### Deployment Boundary
+
+This is not V3 LIVE completion. The simulated exchange accepts coexistence of old and
+new close-position stops; actual Binance acceptance of that tightening protocol is
+not established. A rejected/unknown replacement retains the prior stop and pending
+identity, but this does not prove the requested adaptive stop can be installed on
+Binance. No manual real-money order was sent to test that assumption. Complete live
+bootstrap/feed-to-order validation, artifact/config approval, deployment and runtime
+monitoring remain outstanding. The local preflight reports these validation gaps
+instead of claiming the now-implemented fee/sizing/exit adapters do not exist.
+
+Read-only PM2 inspection at `2026-09-08T15:52:16.887Z` found `01-Trading-Bot` online,
+PID `627698`, kill timeout 30,000 ms, and `02-Aegis-API` stopped. This is process
+metadata, not source/artifact attestation. Local ADA state remains IDLE with
+`marketOpenAmbiguous=true` and `microBurstPnlUnverified=true`, without a complete V3
+policy/settlement identity. It is not retroactively adopted into V3 or cleared.
+Operational YAML, `.env`, `dist`, process configuration, journals and quarantine were
+not modified by this source/test increment. No current wallet amount or profitability
+is inferred from historical state or the synthetic 25-USDT test fixture.
+
 ## Runtime Accounting Wiring Follow-Up
 
 This source increment connects production accounting paths, but does not complete

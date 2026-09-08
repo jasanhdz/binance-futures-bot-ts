@@ -990,6 +990,10 @@ export class MicroBurstRuntime {
     }
   }
 
+  readExecutionBook(symbol: string) {
+    return this.symbolStates.get(symbol)?.book.getSnapshot();
+  }
+
   validateEntryMarket(intent: StrategyExecutionIntent, quantity: number): string | undefined {
     return validateMicroBurstEntryMarket(
       intent,
@@ -1016,6 +1020,14 @@ export class MicroBurstRuntime {
     return {
       currentPrice: latest.price,
       observedAtMs,
+      book: bookSnapshot ?? undefined,
+      volatilityBps:
+        eligibleTrades.length >= 2 && eligibleTrades[0].eventTime < latest.eventTime
+          ? ((Math.max(...eligibleTrades.map((t) => t.price)) -
+              Math.min(...eligibleTrades.map((t) => t.price))) /
+              latest.price) *
+            10_000
+          : undefined,
       currentBookPressure: bookSnapshot
         ? analyzeBookPressure(bookSnapshot, now, undefined, bookSnapshot.temporalHistory)
         : null,

@@ -69,6 +69,16 @@ export interface USDTAccountSnapshot {
 }
 
 export interface ExchangeAccountReadPort {
+  readMicroBurstEntryRisk?(
+    symbol: string,
+    leverage: number,
+  ): Promise<MicroBurstEntryRiskEvidence | null>;
+  readMicroBurstExitCosts?(
+    symbol: string,
+    entryOrderId: string,
+    quantity: number,
+    sinceMs: number,
+  ): Promise<{ observedAtMs: number; residualCostBps: number } | null>;
   /** Exhaustive exact-order accounting; null is unknown, never a zero-cost settlement. */
   readMicroBurstSettlement?(
     identity: MicroBurstSettlementIdentity,
@@ -118,6 +128,24 @@ export interface ExchangeAccountReadPort {
   getRecentFills(symbol: string, startTime?: number, limit?: number): Promise<TradeFill[]>;
 }
 
+export interface MicroBurstEntryRiskEvidence {
+  source: 'BINANCE_ISOLATED_USDT_TIERS_V1';
+  observedAtMs: number;
+  availableWallet: number;
+  takerFeeRate: number;
+  liquidationFeeRate: number;
+  leverage: number;
+  positionSide: 'BOTH';
+  marginType: 'ISOLATED';
+  brackets: {
+    notionalFloor: number;
+    notionalCap: number;
+    initialLeverage: number;
+    maintMarginRatio: number;
+    cum: number;
+  }[];
+}
+
 export interface IdentifiedCloseRequest {
   symbol: string;
   side: Side;
@@ -146,6 +174,10 @@ export interface TradingExchangePort
   extends MarketDataPort,
     ExchangeAccountReadPort,
     Partial<IdentifiedClosePort> {
+  readTriggeredStop?(
+    request: IdentifiedStopRequest,
+    quantity: number,
+  ): Promise<(StopOrderReceipt & { executedOrderId: string }) | null>;
   /** Exact target lookup, including BOT prefix and close-order context. Null is unknown. */
   readCancelTarget?(request: CancelTarget): Promise<'NEW' | 'CANCELED' | 'FILLED' | null>;
   /** Conditional algo endpoint only; no fallback or resend. Missing capability fails closed. */

@@ -118,8 +118,12 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   const mode = parseMode(mb.mode);
   const exitPolicy = parseExitPolicy(mb.exit_policy ?? mb.exitPolicy);
   const contextualRisk = parseContextualRisk(mb.contextual_risk, exitPolicy);
-  if (mode === 'LIVE' && exitPolicy?.contextualPolicyVersion)
-    throw new Error('MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY');
+  if (
+    mode === 'LIVE' &&
+    exitPolicy?.contextualPolicyVersion &&
+    (!contextualRisk || mb.entry_policy !== 'REACTION')
+  )
+    throw new Error('MICRO_CONTEXTUAL_LIVE_RISK_AND_REACTION_REQUIRED');
   if (mb.entry_policy !== undefined && !['BASELINE', 'REACTION'].includes(String(mb.entry_policy)))
     throw new Error('MICRO_ENTRY_POLICY_INVALID');
 

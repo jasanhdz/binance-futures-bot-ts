@@ -177,7 +177,7 @@ export class MicroBurstShadowEvaluator {
 
       const result: MicroBurstShadowEvaluationResult = {
         strategyId: 'MICRO_BURST_V1',
-        strategyVersion: MICRO_BURST_V1_VERSION,
+        strategyVersion: envelope.identity.strategyVersion,
         symbol,
         snapshotAtMs,
         decision: envelope.decision,

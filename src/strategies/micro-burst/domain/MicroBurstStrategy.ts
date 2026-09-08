@@ -1,6 +1,10 @@
 import { EntryStrategy } from '../../../core/strategy/EntryStrategy';
 import { StrategyEvaluationResult } from '../../../core/strategy/StrategyDecision';
-import { StrategyIdentity, StrategyMode } from '../../../core/strategy/StrategyIdentity';
+import {
+  StrategyIdentity,
+  StrategyMode,
+  hasLiveAuthority,
+} from '../../../core/strategy/StrategyIdentity';
 import { MicroBurstConfig, MicroBurstContext, defaultMicroBurstConfig } from './MicroBurstTypes';
 import { evaluateMicroBurstEntry } from './MicroBurstEntryPolicy';
 import {
@@ -33,12 +37,18 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
 
   evaluate(context: MicroBurstStrategyContext): StrategyEvaluationResult {
     const config = { ...this.config, ...context.config };
-    if (config.contextualPolicyVersion && this.mode === 'LIVE') {
+    if (
+      config.contextualPolicyVersion &&
+      this.mode === 'LIVE' &&
+      (this.identity.strategyVersion !== 'CONTEXTUAL_V3' ||
+        !hasLiveAuthority(this.identity, 'LIVE') ||
+        context.entryPolicy !== 'REACTION')
+    ) {
       return {
         symbol: context.symbol,
         timestamp: context.timestamp,
         decision: 'NO_TRADE',
-        reason: 'MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY',
+        reason: 'MICRO_CONTEXTUAL_LIVE_IDENTITY_REQUIRED',
         diagnostics: {
           authority: 'OBSERVATION_ONLY',
           policyVersion: config.contextualPolicyVersion,

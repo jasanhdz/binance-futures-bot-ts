@@ -69,6 +69,15 @@ export class PositionProtectionService {
     }
     this.microSupervisionInFlight.add(symbol);
     try {
+      const pending = store?.get().microBurstStopMove;
+      if (pending && store && this.deps.stopCoordinator) {
+        await this.deps.stopCoordinator.tighten(
+          symbol,
+          store,
+          pending.triggerPrice,
+          pending.policyDigest,
+        );
+      }
       return await this.superviseMicroStopOnce(symbol, { ...(store?.get() ?? state) }, store);
     } finally {
       this.microSupervisionInFlight.delete(symbol);
@@ -177,6 +186,9 @@ export class PositionProtectionService {
             strategyId: state.lastStrategy,
             positionQuantity: position.qtyAbs,
             entryPrice: position.entryPrice,
+            ...(state.microBurstActiveStopKey
+              ? { replacementKey: state.microBurstActiveStopKey }
+              : {}),
           },
           samePosition,
           safeToSend && !state.microStopSubmission,
@@ -524,6 +536,8 @@ export class PositionProtectionService {
       bracketsAttached: false,
       microProtectionBlocked: false,
       microStopSubmission: undefined,
+      microBurstStopMove: undefined,
+      microBurstActiveStopKey: undefined,
       microBurstExitState: undefined,
       // Cancellation/flat evidence cannot clear an earlier accounting quarantine.
       microBurstPnlUnverified:
@@ -549,6 +563,8 @@ export class PositionProtectionService {
           mode: previous.mode,
           bracketsAttached: previous.bracketsAttached,
           microStopSubmission: previous.microStopSubmission,
+          microBurstStopMove: previous.microBurstStopMove,
+          microBurstActiveStopKey: previous.microBurstActiveStopKey,
           microBurstExitState: previous.microBurstExitState,
           lastExitAt: previous.lastExitAt,
           lastExitReason: previous.lastExitReason,

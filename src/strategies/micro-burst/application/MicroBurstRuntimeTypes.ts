@@ -51,6 +51,8 @@ export interface MicroBurstLiveEntryRequest {
 }
 
 export interface MicroBurstExitMarketSnapshot {
+  book?: import('../domain/MicroBurstTypes').OrderBookSnapshot;
+  volatilityBps?: number;
   currentPrice: number;
   observedAtMs: number;
   currentBookPressure: import('../domain/MicroBurstTypes').BookPressureSignal | null;

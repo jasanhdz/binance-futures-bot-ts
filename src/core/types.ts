@@ -106,6 +106,9 @@ export type BotState = {
   microBurstEntrySubmittedAtMs?: number;
   /** Exact durable close identity, retained until net accounting is verified. */
   microBurstSettlement?: import('../strategies/micro-burst/domain/MicroBurstSettlement').MicroBurstSettlementIdentity;
+  microBurstStopCloseOrderIds?: string[];
+  microBurstActiveStopKey?: string;
+  microBurstStopMove?: { key: string; triggerPrice: number; policyDigest: string };
   microBurstExitPolicyDigest?: string;
   /** Fail-closed quarantine until an operator reconciles an exact realized close PnL. */
   microBurstPnlUnverified?: boolean;

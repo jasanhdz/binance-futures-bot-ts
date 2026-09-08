@@ -4,7 +4,10 @@ import { MicroBurstDuplicateSignalGuard } from '../domain/MicroBurstDuplicateSig
 import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { MicroBurstStrategy, MicroBurstStrategyContext } from '../domain/MicroBurstStrategy';
-import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
+import {
+  createMicroBurstV1Identity,
+  createMicroBurstContextualIdentity,
+} from '../domain/MicroBurstIdentity';
 
 const NOW_MS = 1_700_000_000_000;
 
@@ -38,15 +41,53 @@ function createMockDeps() {
 }
 
 describe('MicroBurstShadowEvaluator', () => {
+  it('preserves the evaluated contextual version for the normal live entry request', async () => {
+    const deps = createMockDeps();
+    const identity = createMicroBurstContextualIdentity('a'.repeat(64), 'b'.repeat(40));
+    vi.spyOn(deps.strategyRouter, 'evaluate').mockResolvedValue({
+      identity,
+      symbol: 'ETHUSDT',
+      timestamp: NOW_MS,
+      mode: 'LIVE',
+      decision: 'ENTRY_INTENT',
+      side: 'LONG',
+      reason: 'synthetic contextual signal',
+      structuralInvalidation: 99,
+      destinationPrice: 102,
+      diagnostics: { episodeId: 'contextual-episode', leverage: 30, positionFraction: 0.9 },
+    } as any);
+    const evaluator = new MicroBurstShadowEvaluator(deps, {
+      ...makeConfig('LIVE'),
+      entryPolicy: 'REACTION',
+      exitPolicy: { contextualPolicyVersion: 'CONTEXTUAL_V3' },
+    });
+    expect(await evaluator.evaluate({ symbol: 'ETHUSDT', snapshotAtMs: NOW_MS })).toMatchObject({
+      strategyVersion: 'CONTEXTUAL_V3',
+      wouldEnter: true,
+      diagnostics: { episodeId: 'contextual-episode', leverage: 30, positionFraction: 0.9 },
+    });
+  });
   it('selects reaction in LIVE once without a second candidate observer or baseline fallback', async () => {
     const deps = createMockDeps();
     const evaluate = vi.spyOn(deps.strategyRouter, 'evaluate');
-    const evaluator = new MicroBurstShadowEvaluator(deps, { ...makeConfig('LIVE'), entryPolicy: 'REACTION' });
+    const evaluator = new MicroBurstShadowEvaluator(deps, {
+      ...makeConfig('LIVE'),
+      entryPolicy: 'REACTION',
+    });
     const result = await evaluator.evaluate({ symbol: 'ETHUSDT', snapshotAtMs: NOW_MS });
     expect(evaluate).toHaveBeenCalledTimes(1);
-    expect(evaluate).toHaveBeenCalledWith('MICRO_BURST_V1', expect.objectContaining({ entryPolicy: 'REACTION', observedAtMs: NOW_MS }));
-    expect(result).toMatchObject({ decision: 'NO_TRADE', diagnostics: { entryPolicy: 'REACTION' } });
-    expect(deps.logger.info).not.toHaveBeenCalledWith('micro_burst_entry_candidate_comparison', expect.anything());
+    expect(evaluate).toHaveBeenCalledWith(
+      'MICRO_BURST_V1',
+      expect.objectContaining({ entryPolicy: 'REACTION', observedAtMs: NOW_MS }),
+    );
+    expect(result).toMatchObject({
+      decision: 'NO_TRADE',
+      diagnostics: { entryPolicy: 'REACTION' },
+    });
+    expect(deps.logger.info).not.toHaveBeenCalledWith(
+      'micro_burst_entry_candidate_comparison',
+      expect.anything(),
+    );
   });
   it('returns disabled result when mode is OFF', async () => {
     const deps = createMockDeps();

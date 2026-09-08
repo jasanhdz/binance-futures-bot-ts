@@ -191,6 +191,10 @@ export class StrategyRuntimeCoordinator {
     return this.microBurstRuntime.validateEntryMarket(intent, quantity);
   }
 
+  readMicroBurstExecutionBook(symbol: string) {
+    return this.microBurstRuntime?.readExecutionBook(symbol) ?? undefined;
+  }
+
   readMicroBurstExitMarket(symbol: string, sinceMs?: number): MicroBurstExitMarketSnapshot | null {
     return this.microBurstRuntime?.readExitMarketSnapshot(symbol, sinceMs) ?? null;
   }

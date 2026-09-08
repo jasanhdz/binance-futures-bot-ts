@@ -28,6 +28,7 @@ export interface MicroBurstPositionManagementContext extends StrategyPositionLif
 }
 
 export interface MicroBurstPositionManagerExecution {
+  authorizeContextual?(context: MicroBurstPositionManagementContext, policyDigest: string): boolean;
   close(
     context: MicroBurstPositionManagementContext,
     decision: MicroBurstExitDecision,
@@ -64,6 +65,7 @@ export class MicroBurstPositionManager
   private readonly config: MicroBurstConfig;
   private readonly exitEngine = new MicroBurstExitEngine();
   private readonly activeTradeBySymbol = new Map<string, string>();
+  private readonly managing = new Set<string>();
 
   constructor(
     _lifecycle: StrategyPositionLifecycleCore,
@@ -86,6 +88,26 @@ export class MicroBurstPositionManager
   }
 
   async manage(
+    identity: StrategyIdentity,
+    context: StrategyPositionLifecycleContext,
+  ): Promise<PositionManagementResult> {
+    const tradeId = context.botState.lastTradeId ?? context.symbol;
+    if (this.managing.has(tradeId))
+      return {
+        tradeId,
+        decision: 'NO_ACTION',
+        reason: 'MICRO_EXIT_IN_FLIGHT',
+        diagnostics: { actionApplied: false, lifecycleApplied: false },
+      };
+    this.managing.add(tradeId);
+    try {
+      return await this.manageCurrent(identity, context);
+    } finally {
+      this.managing.delete(tradeId);
+    }
+  }
+
+  private async manageCurrent(
     identity: StrategyIdentity,
     context: StrategyPositionLifecycleContext,
   ): Promise<PositionManagementResult> {
@@ -117,19 +139,39 @@ export class MicroBurstPositionManager
         },
       };
     }
-    const config = policy?.config ?? this.config;
+    const config =
+      policy?.config ??
+      (context.botState.lastStrategyVersion && storedIdentity.strategyVersion !== 'CONTEXTUAL_V3'
+        ? { ...this.config, contextualPolicyVersion: undefined }
+        : this.config);
     const previousTradeId = this.activeTradeBySymbol.get(context.symbol);
     if (previousTradeId && previousTradeId !== tradeId) this.exitEngine.forget(previousTradeId);
     if (
       !previousTradeId &&
       isMicroBurstExitEngineState(context.botState.microBurstExitState) &&
-      (!hasExitContext ||
+      (policy ||
+        !hasExitContext ||
         context.botState.microBurstExitState.lastObservedAtMs === null ||
         context.botState.microBurstExitState.lastObservedAtMs <= context.exitContext.observedAtMs!)
     ) {
       this.exitEngine.restore(tradeId, context.botState.microBurstExitState);
     }
     this.activeTradeBySymbol.set(context.symbol, tradeId);
+    if (
+      policy &&
+      hasExitContext &&
+      isMicroBurstExitEngineState(context.botState.microBurstExitState) &&
+      context.botState.microBurstExitState.phase !== 'EXIT_CONFIRMED' &&
+      context.botState.microBurstExitState.lastObservedAtMs !== null &&
+      context.exitContext.observedAtMs! < context.botState.microBurstExitState.lastObservedAtMs
+    ) {
+      return {
+        tradeId,
+        decision: 'NO_ACTION',
+        reason: 'MICRO_EXIT_CLOCK_REGRESSION',
+        diagnostics: { actionApplied: false, lifecycleApplied: false },
+      };
+    }
     const exitDecision = hasExitContext
       ? this.evaluateExit(context.exitContext, context.side, tradeId, config)
       : config.contextualPolicyVersion
@@ -176,7 +218,8 @@ export class MicroBurstPositionManager
         context.strategyMode === 'LIVE' &&
         this.execution &&
         this.liveAuthorityEnabled &&
-        !config.contextualPolicyVersion
+        (!config.contextualPolicyVersion ||
+          (policy && this.execution.authorizeContextual?.(context, policy.digest) === true))
       ) {
         try {
           if (exitDecision.action === 'CLOSE_MARKET') {
@@ -223,7 +266,9 @@ export class MicroBurstPositionManager
           authorityReason:
             hasExitContext && context.strategyMode === 'LIVE'
               ? config.contextualPolicyVersion
-                ? 'MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY'
+                ? applicationAttempted
+                  ? 'MICRO_CONTEXTUAL_V3_LIVE'
+                  : 'MICRO_CONTEXTUAL_EXECUTION_NOT_AUTHORIZED'
                 : this.execution && this.liveAuthorityEnabled
                   ? 'MICRO_BURST_V1_LIVE'
                   : 'LIVE_AUTHORITY_DISABLED_OR_EXECUTION_PORT_MISSING'

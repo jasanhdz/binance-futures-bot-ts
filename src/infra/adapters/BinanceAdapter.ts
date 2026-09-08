@@ -9,6 +9,7 @@ import {
   BasisSnapshot,
   EntryRecoveryExpectation,
   RecoverableEntryPosition,
+  MicroBurstEntryRiskEvidence,
 } from '../../app/ports/Exchange';
 import { Candle, Side } from '../../core/types';
 import { CONFIG } from '../config/environment';
@@ -1320,6 +1321,64 @@ export class BinanceExchange implements Exchange {
       : null;
   }
 
+  async readTriggeredStop(
+    request: import('../../app/ports/Exchange').IdentifiedStopRequest,
+    quantity: number,
+  ): Promise<
+    (import('../../app/ports/Exchange').StopOrderReceipt & { executedOrderId: string }) | null
+  > {
+    if (
+      !/^bot_sl_[a-f0-9]{28}$/.test(request.clientOrderId) ||
+      !Number.isFinite(quantity) ||
+      quantity <= 0 ||
+      !/^[A-Z0-9]+$/.test(request.symbol)
+    )
+      return null;
+    const algo = await this.enqueue(
+      () => this.placeAlgoOrderRaw({ clientAlgoId: request.clientOrderId }, 'GET'),
+      1,
+      'micro_triggered_stop',
+    );
+    if (
+      !algo ||
+      algo.clientAlgoId !== request.clientOrderId ||
+      algo.symbol !== request.symbol ||
+      algo.algoStatus !== 'FINISHED' ||
+      algo.algoType !== 'CONDITIONAL' ||
+      algo.orderType !== 'STOP_MARKET' ||
+      algo.side !== (request.side === 'LONG' ? 'SELL' : 'BUY') ||
+      algo.positionSide !== request.positionSide ||
+      Number(algo.triggerPrice) !== request.triggerPrice ||
+      algo.workingType !== 'MARK_PRICE' ||
+      !isTrueish(algo.closePosition) ||
+      !/^[1-9]\d*$/.test(String(algo.algoId)) ||
+      (typeof algo.algoId === 'number' && !Number.isSafeInteger(algo.algoId)) ||
+      !/^[1-9]\d*$/.test(String(algo.actualOrderId)) ||
+      !Number.isSafeInteger(Number(algo.actualOrderId))
+    )
+      return null;
+    const order = await this.enqueue(
+      () =>
+        this.cli.futuresGetOrder({ symbol: request.symbol, orderId: Number(algo.actualOrderId) }),
+      1,
+      'micro_triggered_stop_order',
+    );
+    if (
+      String(order.orderId) !== String(algo.actualOrderId) ||
+      order.symbol !== request.symbol ||
+      order.side !== algo.side ||
+      order.positionSide !== request.positionSide ||
+      order.status !== 'FILLED' ||
+      quantityUnits(order.executedQty) !== quantityUnits(quantity)
+    )
+      return null;
+    return {
+      clientOrderId: request.clientOrderId,
+      orderId: String(algo.algoId),
+      executedOrderId: String(order.orderId),
+    };
+  }
+
   async readStopCloseState(
     request: import('../../app/ports/Exchange').IdentifiedStopRequest,
   ): Promise<import('../../app/ports/Exchange').StopOrderState | null> {
@@ -2251,6 +2310,256 @@ export class BinanceExchange implements Exchange {
       noteRateLimitFromError(err);
       throw err;
     }
+  }
+
+  private async microCommissionRate(symbol: string): Promise<number | null> {
+    const params = new URLSearchParams({
+      symbol,
+      timestamp: String(await this.getServerTime()),
+      recvWindow: '5000',
+    });
+    const signature = require('node:crypto')
+      .createHmac('sha256', CONFIG.API_SECRET)
+      .update(params.toString())
+      .digest('hex');
+    const response = await this.enqueue(
+      () =>
+        fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/commissionRate?${params}&signature=${signature}`, {
+          headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+          signal: AbortSignal.timeout(5000),
+        }),
+      20,
+      'micro_commission_rate',
+    );
+    if (!response.ok) {
+      const error = rawHttpError(
+        'MICRO_COMMISSION_READ_FAILED',
+        response.status,
+        '',
+        response.headers.get('retry-after'),
+      );
+      noteRateLimitFromError(error);
+      throw error;
+    }
+    const value = (await response.json()) as { symbol?: unknown; takerCommissionRate?: unknown };
+    const rate =
+      typeof value.takerCommissionRate === 'string' && value.takerCommissionRate.trim()
+        ? Number(value.takerCommissionRate)
+        : NaN;
+    return value.symbol === symbol && Number.isFinite(rate) && rate >= 0 && rate < 1 ? rate : null;
+  }
+
+  async readMicroBurstEntryRisk(
+    symbol: string,
+    leverage: number,
+  ): Promise<MicroBurstEntryRiskEvidence | null> {
+    if (!/^[A-Z0-9]+$/.test(symbol) || ![20, 30].includes(leverage)) return null;
+    const observedAtMs = await this.getServerTime();
+    const account = await this.enqueue(
+      () => this.cli.futuresAccountInfo(),
+      5,
+      'micro_entry_account',
+    );
+    const mode = await this.enqueue(
+      () => this.cli.futuresPositionMode(),
+      30,
+      'micro_entry_position_mode',
+    );
+    const accountData = account as unknown as {
+      canTrade?: unknown;
+      multiAssetsMargin?: unknown;
+      positions?: {
+        symbol: string;
+        positionAmt: string;
+        positionSide: string;
+        isolated: boolean;
+        leverage: string;
+      }[];
+      assets?: { asset: string; walletBalance: string; availableBalance: string }[];
+    };
+    const num = (v: unknown) =>
+      typeof v === 'string' && v.trim() ? Number(v) : typeof v === 'number' ? v : NaN;
+    if (
+      accountData.canTrade !== true ||
+      accountData.multiAssetsMargin !== false ||
+      mode.dualSidePosition !== false ||
+      !Array.isArray(accountData.positions) ||
+      !Array.isArray(accountData.assets) ||
+      accountData.positions.some(
+        (p) => !Number.isFinite(num(p.positionAmt)) || num(p.positionAmt) !== 0,
+      )
+    )
+      return null;
+    const positions = accountData.positions.filter((p) => p.symbol === symbol);
+    const asset = accountData.assets.filter((a) => a.asset === 'USDT');
+    if (
+      positions.length !== 1 ||
+      positions[0].positionSide !== 'BOTH' ||
+      positions[0].isolated !== true ||
+      num(positions[0].leverage) !== leverage ||
+      asset.length !== 1
+    )
+      return null;
+    const availableWallet = Math.min(num(asset[0].walletBalance), num(asset[0].availableBalance));
+    if (!Number.isFinite(availableWallet) || availableWallet <= 0) return null;
+    const tiers = await this.enqueue(
+      () => this.cli.futuresLeverageBracket({ symbol, recvWindow: 5000 }),
+      1,
+      'micro_entry_tiers',
+    );
+    const rows = (
+      tiers as unknown as { symbol: string; brackets: MicroBurstEntryRiskEvidence['brackets'] }[]
+    ).filter((r) => r.symbol === symbol);
+    const info = await this.getExchangeInfoSnapshot();
+    const symbols = info.symbols.filter((s: { symbol: string }) => s.symbol === symbol);
+    const liquidationFeeRate = num(symbols[0]?.liquidationFee);
+    const takerFeeRate = await this.microCommissionRate(symbol);
+    if (
+      rows.length !== 1 ||
+      !Array.isArray(rows[0].brackets) ||
+      !rows[0].brackets.length ||
+      symbols.length !== 1 ||
+      symbols[0].marginAsset !== 'USDT' ||
+      symbols[0].quoteAsset !== 'USDT' ||
+      symbols[0].status !== 'TRADING' ||
+      takerFeeRate === null ||
+      !Number.isFinite(liquidationFeeRate) ||
+      liquidationFeeRate < 0 ||
+      liquidationFeeRate >= 1
+    )
+      return null;
+    const brackets = rows[0].brackets.map((b) => ({
+      notionalFloor: num(b.notionalFloor),
+      notionalCap: num(b.notionalCap),
+      initialLeverage: num(b.initialLeverage),
+      maintMarginRatio: num(b.maintMarginRatio),
+      cum: num(b.cum),
+    }));
+    if (
+      brackets.some(
+        (b, i) =>
+          !Object.values(b).every(Number.isFinite) ||
+          b.notionalFloor !== (i ? brackets[i - 1].notionalCap : 0) ||
+          b.notionalCap <= b.notionalFloor ||
+          b.maintMarginRatio < 0 ||
+          b.maintMarginRatio >= 1 ||
+          b.cum < 0 ||
+          b.initialLeverage < 1,
+      )
+    )
+      return null;
+    return {
+      source: 'BINANCE_ISOLATED_USDT_TIERS_V1',
+      observedAtMs,
+      availableWallet,
+      takerFeeRate,
+      liquidationFeeRate,
+      leverage,
+      positionSide: 'BOTH',
+      marginType: 'ISOLATED',
+      brackets,
+    };
+  }
+
+  async readMicroBurstExitCosts(
+    symbol: string,
+    entryOrderId: string,
+    quantity: number,
+    sinceMs: number,
+  ): Promise<{ observedAtMs: number; residualCostBps: number } | null> {
+    const through = await this.getServerTime();
+    if (
+      !/^[A-Z0-9]+$/.test(symbol) ||
+      !/^[1-9]\d*$/.test(entryOrderId) ||
+      !Number.isSafeInteger(sinceMs) ||
+      through < sinceMs ||
+      through - sinceMs > 7 * 86_400_000 ||
+      !Number.isFinite(quantity) ||
+      quantity <= 0
+    )
+      return null;
+    const trades = await this.enqueue(
+      () =>
+        this.cli.futuresUserTrades({ symbol, startTime: sinceMs, endTime: through, limit: 1000 }),
+      5,
+      'micro_exit_entry_fees',
+    );
+    if (!Array.isArray(trades) || !trades.length || trades.length >= 1000) return null;
+    const numeric = (v: unknown) =>
+      (typeof v === 'string' && v.trim()) || typeof v === 'number' ? Number(v) : NaN;
+    let notional = 0,
+      commission = 0,
+      units = BigInt(0);
+    const ids = new Set<string>();
+    for (const t of trades) {
+      if (
+        String(t.orderId) !== entryOrderId ||
+        t.symbol !== symbol ||
+        t.positionSide !== 'BOTH' ||
+        !['BUY', 'SELL'].includes(t.side) ||
+        t.side !== trades[0].side ||
+        t.commissionAsset !== 'USDT' ||
+        !Number.isSafeInteger(t.id) ||
+        t.id <= 0 ||
+        ids.has(String(t.id)) ||
+        numeric(t.realizedPnl) !== 0 ||
+        !Number.isFinite(numeric(t.commission)) ||
+        numeric(t.commission) < 0 ||
+        !Number.isFinite(numeric(t.price)) ||
+        numeric(t.price) <= 0 ||
+        !quantityUnits(t.qty) ||
+        numeric(t.qty) <= 0 ||
+        !Number.isSafeInteger(t.time) ||
+        t.time < sinceMs ||
+        t.time > through
+      )
+        return null;
+      ids.add(String(t.id));
+      units += quantityUnits(t.qty)!;
+      notional += numeric(t.price) * numeric(t.qty);
+      commission += numeric(t.commission);
+    }
+    if (units !== quantityUnits(quantity) || !Number.isFinite(notional) || notional <= 0)
+      return null;
+    const funding = await this.enqueue(
+      () =>
+        this.cli.futuresIncome({
+          symbol,
+          incomeType: 'FUNDING_FEE',
+          startTime: sinceMs,
+          endTime: through,
+          limit: 1000,
+        }),
+      30,
+      'micro_exit_funding',
+    );
+    if (!Array.isArray(funding) || funding.length >= 1000) return null;
+    const fundingIds = new Set<string>();
+    let fundingCost = 0;
+    for (const f of funding) {
+      if (
+        f.symbol !== symbol ||
+        f.incomeType !== 'FUNDING_FEE' ||
+        f.asset !== 'USDT' ||
+        !String(f.tranId).match(/^[1-9]\d*$/) ||
+        (typeof f.tranId === 'number' && !Number.isSafeInteger(f.tranId)) ||
+        fundingIds.has(String(f.tranId)) ||
+        !Number.isFinite(numeric(f.income)) ||
+        !Number.isSafeInteger(f.time) ||
+        f.time <= sinceMs ||
+        f.time > through
+      )
+        return null;
+      fundingIds.add(String(f.tranId));
+      fundingCost -= numeric(f.income);
+    }
+    const taker = await this.microCommissionRate(symbol);
+    if (taker === null) return null;
+    return {
+      observedAtMs: through,
+      residualCostBps:
+        (commission / notional + Math.max(0, fundingCost) / notional + taker) * 10_000,
+    };
   }
 
   async readMicroBurstSettlement(

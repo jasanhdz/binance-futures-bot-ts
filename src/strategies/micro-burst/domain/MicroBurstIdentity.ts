@@ -10,6 +10,20 @@ export const MICRO_BURST_V1_CONFIG_SHA256 =
 export const MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED: boolean = true;
 export const MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED: boolean = true;
 
+export function createMicroBurstContextualIdentity(
+  approvedConfigSha = process.env.MICRO_BURST_CONTEXTUAL_APPROVED_CONFIG_SHA256 ?? 'UNKNOWN',
+  approvedCommit = process.env.MICRO_BURST_APPROVED_COMMIT ?? 'UNKNOWN',
+): StrategyIdentity {
+  return {
+    strategyId: 'MICRO_BURST_V1',
+    strategyVersion: 'CONTEXTUAL_V3',
+    freezeState: 'FROZEN_LIVE',
+    codeCommitSha: approvedCommit,
+    configHash: `sha256:${approvedConfigSha}`,
+    strategyHash: `sha256:${crypto.createHash('sha256').update('MICRO_CONTEXTUAL_V3_MARGIN_FRACTION_20_30_NET_LOSS_3').digest('hex')}`,
+  };
+}
+
 export function createMicroBurstV1Identity(
   // Approval is supplied separately after committing; never infer it from GIT_COMMIT_SHA.
   codeCommitSha = process.env.MICRO_BURST_APPROVED_COMMIT ?? 'UNKNOWN',

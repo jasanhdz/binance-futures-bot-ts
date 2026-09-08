@@ -69,7 +69,7 @@ describe('MicroBurstConfigLoader', () => {
       'MICRO_CONTEXTUAL_RISK_CONFIG_INVALID',
     );
   });
-  it('rejects V3 LIVE configuration rather than substituting the research exit manager', () => {
+  it('requires explicit risk and REACTION for V3 LIVE configuration', () => {
     expect(() =>
       parseMicroBurstConfig({
         micro_burst: {
@@ -79,7 +79,7 @@ describe('MicroBurstConfigLoader', () => {
           },
         },
       }),
-    ).toThrow('MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY');
+    ).toThrow('MICRO_CONTEXTUAL_LIVE_RISK_AND_REACTION_REQUIRED');
   });
   it('keeps contextual policy opt-in and rejects unknown versions', () => {
     expect(parseMicroBurstConfig({ micro_burst: {} }).exitPolicy).toBeUndefined();

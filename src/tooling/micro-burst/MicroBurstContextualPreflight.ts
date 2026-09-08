@@ -38,15 +38,13 @@ export function contextualPreflight(input: {
   };
   blockers: string[];
 } {
-  // These are implementation/evidence gaps, not operator-settable success flags.
+  // This local-only command cannot attest deployment or exchange acceptance.
   const blockers = [
-    'V3_LIVE_EXECUTION_INTEGRATION_INCOMPLETE',
+    'V3_PRODUCTION_DEPLOYMENT_VALIDATION_NOT_ESTABLISHED',
     'V3_OPERATOR_APPROVAL_BUNDLE_NOT_ESTABLISHED',
     'RUNNING_ARTIFACT_NOT_ATTESTED',
-    'EXPLICIT_MONETARY_RISK_APPROVAL_NOT_ESTABLISHED',
-    'LIVE_MARGIN_LIQUIDATION_FILTER_FEE_EVIDENCE_NOT_INTEGRATED',
-    'QUANTITY_AWARE_EXIT_ECONOMICS_NOT_INTEGRATED',
-    'DURABLE_V3_EPISODE_AND_PER_TRADE_POLICY_RECOVERY_NOT_INTEGRATED',
+    'DURABLE_STOP_REPLACEMENT_EXCHANGE_ACCEPTANCE_NOT_ESTABLISHED',
+    'SIGNED_NET_LOSS_LEDGER_INITIALIZATION_NOT_INSPECTED',
     'DECISION_FILL_COMMISSION_FUNDING_DATASET_NOT_ESTABLISHED',
     'CHRONOLOGICAL_OOS_ACCEPTANCE_NOT_ESTABLISHED',
     'OWNERSHIP_PROTECTION_AND_PNL_QUARANTINES_NOT_INSPECTED',
@@ -68,6 +66,7 @@ export function contextualPreflight(input: {
       blockers.push('HISTORICAL_APPROVED_EFFECTIVE_CONFIG_MISMATCH');
     if (config.exitPolicy?.contextualPolicyVersion !== 'CONTEXTUAL_V3')
       blockers.push('V3_NOT_CONFIGURED');
+    if (!config.contextualRisk) blockers.push('EXPLICIT_MARGIN_FRACTION_POLICY_NOT_CONFIGURED');
   } catch {
     blockers.push('CONFIG_PARSE_OR_POLICY_VALIDATION_FAILED');
   }

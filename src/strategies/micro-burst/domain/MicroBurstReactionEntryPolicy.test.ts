@@ -129,7 +129,7 @@ describe('Micro reaction entry policy', () => {
         observedAtMs: now,
         config: { contextualPolicyVersion: 'CONTEXTUAL_V3' },
       }).reason,
-    ).toBe('MICRO_CONTEXTUAL_POLICY_RESEARCH_ONLY');
+    ).toBe('MICRO_CONTEXTUAL_LIVE_IDENTITY_REQUIRED');
   });
   it('V3 separates sub-cent levels within the same visit without minute/cent rounding', () => {
     const { ctx, book } = fixture();
