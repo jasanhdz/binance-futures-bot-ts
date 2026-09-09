@@ -1,9 +1,10 @@
+import { isMicroBurstPolicy } from '../../../core/strategy/MicroBurstLegacy';
 export interface MicroBurstSettlementIdentity {
   tradeId: string;
   episodeId: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
-  policyVersion: 'CONTEXTUAL_V3';
+  policyVersion: 'MICRO';
   configHash: string;
   codeCommitSha: string;
   entryOrderId: string;
@@ -61,7 +62,7 @@ export function validMicroBurstSettlementIdentity(identity: MicroBurstSettlement
   return (
     !!identity &&
     !(
-      identity.policyVersion !== 'CONTEXTUAL_V3' ||
+      !isMicroBurstPolicy(identity.policyVersion) ||
       ![identity.tradeId, identity.episodeId, identity.entryOrderId].every(
         (value) => typeof value === 'string' && !!value.trim() && value.length <= 256,
       ) ||

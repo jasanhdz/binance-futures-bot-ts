@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { SharedStrategyExecutionService } from '../../../app/execution/SharedStrategyExecutionService';
 import { Exchange } from '../../../app/ports/Exchange';
 import { createMicroBurstExecutionIntent } from './MicroBurstExecutionIntentFactory';
-import { createMicroBurstV1Identity } from './MicroBurstIdentity';
+import { createMicroBurstIdentity } from './MicroBurstIdentity';
 import { MicroBurstApprovedEntry } from './MicroBurstTypes';
 
 describe('MicroBurstExecutionIntentFactory determinism', () => {
   it('produces the same intent for the same approved entry without reading a clock', () => {
     const approved: MicroBurstApprovedEntry = {
-      identity: createMicroBurstV1Identity('deadbeef'),
+      identity: createMicroBurstIdentity('deadbeef'),
       symbol: 'ETHUSDT',
       side: 'LONG',
       leverage: 20,
@@ -16,7 +16,7 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
       stopInvalidationPrice: 99.8,
       targetPrice: 102,
       requestedAt: 1_700_000_000_000,
-      tradeId: 'MICRO-BURST-V1-ETHUSDT-1700000000000',
+      tradeId: 'MICRO-BURST-ETHUSDT-1700000000000',
       signalId: 'signal-1',
     };
     const first = createMicroBurstExecutionIntent(approved);
@@ -37,9 +37,13 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
     });
     expect(first.stopRoe).toBeUndefined();
     expect(first.takeProfitRoe).toBeUndefined();
+    expect(first.metadata.leverageTier).toBe('MEDIUM');
+    expect(
+      createMicroBurstExecutionIntent({ ...approved, leverage: 30 }).metadata.leverageTier,
+    ).toBe('HIGH');
   });
 
-  it('passes the absolute structural stop through shared execution without ROE conversion', async () => {
+  it('rejects a current Micro intent without its bound policy before any protection mutation', async () => {
     const placeStopClose = vi.fn().mockResolvedValue(true);
     const exchange = {
       setLeverage: vi.fn(),
@@ -92,7 +96,7 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
       },
     );
     const executionIntent = createMicroBurstExecutionIntent({
-      identity: createMicroBurstV1Identity('deadbeef'),
+      identity: createMicroBurstIdentity('deadbeef'),
       symbol: 'ETHUSDT',
       side: 'LONG',
       leverage: 20,
@@ -100,19 +104,16 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
       stopInvalidationPrice: 99.804,
       targetPrice: 102,
       requestedAt: 1_700_000_000_000,
-      tradeId: 'MICRO-BURST-V1-ETHUSDT-1700000000000',
+      tradeId: 'MICRO-BURST-ETHUSDT-1700000000000',
       signalId: 'signal-1',
     });
 
     const result = await service.execute(executionIntent);
 
-    expect(result.status).toBe('OPENED');
-    expect(placeStopClose).toHaveBeenCalledWith('ETHUSDT', 'LONG', 99.8);
+    expect(result.status).toBe('DENIED');
+    expect(exchange.marketOpen).not.toHaveBeenCalled();
+    expect(placeStopClose).not.toHaveBeenCalled();
     expect(exchange.placeTpClose).not.toHaveBeenCalled();
-    expect(result.metadata).toMatchObject({
-      stopSource: 'STRUCTURAL_PRICE',
-      requestedStructuralStopPrice: 99.804,
-      effectiveStopPrice: 99.8,
-    });
+    expect(executionIntent.structuralStopPrice).toBe(99.804);
   });
 });

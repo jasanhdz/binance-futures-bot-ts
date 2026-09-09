@@ -11,7 +11,7 @@ import {
   MicroBurstReferencePriceProvider,
   MicroBurstReferencePriceDeps,
 } from '../domain/MicroBurstReferencePrice';
-import { MicroBurstShadowEvaluator } from './MicroBurstShadowEvaluator';
+import { MicroBurstEvaluator } from './MicroBurstEvaluator';
 import { MicroBurstDuplicateSignalGuard } from '../domain/MicroBurstDuplicateSignalGuard';
 import type {
   MicroBurstExitMarketSnapshot,
@@ -243,7 +243,7 @@ export class MicroBurstRuntime {
   private evaluationTimer: NodeJS.Timeout | null = null;
   private healthTimer: NodeJS.Timeout | null = null;
   private btcProvider: BtcMicroContextProvider | null = null;
-  private shadowEvaluator: MicroBurstShadowEvaluator | null = null;
+  private evaluator: MicroBurstEvaluator | null = null;
   private readonly symbolStates = new Map<string, SymbolRuntimeState>();
   private totalEvaluations = 0;
   private totalUniqueSignals = 0;
@@ -283,7 +283,7 @@ export class MicroBurstRuntime {
     };
     const costScenarios = new Map([
       [
-        'MICRO_BURST_V1' as const,
+        'MICRO_BURST' as const,
         Object.fromEntries(
           DEFAULT_COST_SCENARIOS.map((scenario) => [
             scenario.label,
@@ -294,11 +294,11 @@ export class MicroBurstRuntime {
     ]);
     this.shadowEngine = new ShadowTradingEngine(
       this.shadowTradeJournal,
-      new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(microBurstConfig)]] as const),
+      new Map([['MICRO_BURST', new MicroBurstShadowPolicyAdapter(microBurstConfig)]] as const),
       costScenarios,
     );
     for (const position of this.shadowEngine.getOpenPositions()) {
-      if (position.strategyId === 'MICRO_BURST_V1') this.paperOpenSymbols.add(position.symbol);
+      if (position.strategyId === 'MICRO_BURST') this.paperOpenSymbols.add(position.symbol);
     }
     try {
       if (!this.shadowTradeJournal.getHealth().healthy)
@@ -325,9 +325,9 @@ export class MicroBurstRuntime {
 
     if (this.config.mode === 'LIVE' && !this.deps.liveTrading) {
       this.deps.logger.error('micro_burst_runtime_live_rejected', {
-        message: 'MICRO_BURST_V1 LIVE execution port missing. Failing closed.',
+        message: 'MICRO_BURST LIVE execution port missing. Failing closed.',
       });
-      throw new Error('MICRO_BURST_V1_LIVE_EXECUTION_PORT_REQUIRED');
+      throw new Error('MICRO_BURST_LIVE_EXECUTION_PORT_REQUIRED');
     }
 
     const enabledSymbols = Object.entries(this.config.symbols)
@@ -573,7 +573,7 @@ export class MicroBurstRuntime {
       });
     }
 
-    this.shadowEvaluator = new MicroBurstShadowEvaluator(
+    this.evaluator = new MicroBurstEvaluator(
       {
         contextBuilderDeps,
         strategyRouter: this.deps.strategyRouter,
@@ -667,7 +667,7 @@ export class MicroBurstRuntime {
     snapshotAtMs?: number,
   ): Promise<MicroBurstShadowEvaluationResult | null> {
     const state = this.symbolStates.get(symbol);
-    if (!state || !this.shadowEvaluator) return null;
+    if (!state || !this.evaluator) return null;
     if (state.evaluationInFlight) return null;
     if (!this.running) return null;
 
@@ -675,7 +675,7 @@ export class MicroBurstRuntime {
     const t0 = this.deps.clock.now();
 
     try {
-      const result = await this.shadowEvaluator.evaluate({
+      const result = await this.evaluator.evaluate({
         symbol,
         snapshotAtMs,
       });
@@ -691,7 +691,7 @@ export class MicroBurstRuntime {
         const decisionReceivedAtMs = this.deps.clock.now();
         const opened = this.shadowEngine.open(
           {
-            strategyId: 'MICRO_BURST_V1',
+            strategyId: 'MICRO_BURST',
             strategyVersion: result.strategyVersion,
             symbol: result.symbol,
             side: result.side,
@@ -783,7 +783,7 @@ export class MicroBurstRuntime {
               schemaVersion: 1,
               shadowSignalId: result.shadowSignalId,
               cohortId: this.deps.provenance?.cohortId ?? 'UNOFFICIAL',
-              strategyId: 'MICRO_BURST_V1',
+              strategyId: 'MICRO_BURST',
               strategyVersion: result.strategyVersion,
               codeCommitSha: this.deps.provenance?.codeCommitSha ?? 'UNKNOWN',
               configHash: this.deps.provenance?.configHash ?? 'UNKNOWN',
@@ -959,14 +959,14 @@ export class MicroBurstRuntime {
     const state = this.symbolStates.get(symbol);
     const openPosition = this.shadowEngine
       .getOpenPositions()
-      .find((position) => position.strategyId === 'MICRO_BURST_V1' && position.symbol === symbol);
+      .find((position) => position.strategyId === 'MICRO_BURST' && position.symbol === symbol);
     const snapshot = state?.book.getSnapshot();
     const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
     const currentBookPressure = snapshot
       ? analyzeBookPressure(snapshot, receivedAtMs, undefined, snapshot.temporalHistory)
       : null;
     const result = this.shadowEngine.manage(
-      { strategyId: 'MICRO_BURST_V1', symbol },
+      { strategyId: 'MICRO_BURST', symbol },
       {
         exchangeTimeMs: event.eventTime,
         receivedAtMs,
@@ -1001,7 +1001,6 @@ export class MicroBurstRuntime {
       this.symbolStates.get(intent.symbol)?.book.getSnapshot(),
       this.deps.clock.now(),
       { ...defaultMicroBurstConfig(), ...this.config.exitPolicy },
-      this.config.entryPolicy ?? 'BASELINE',
     );
   }
 
@@ -1063,7 +1062,7 @@ export class MicroBurstRuntime {
     const readiness = assessMicroBurstReadiness({
       codeSha: provenance?.codeCommitSha,
       configHash: provenance?.configHash,
-      strategyVersion: this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion,
+      strategyVersion: this.deps.strategyRouter.get('MICRO_BURST')?.identity.strategyVersion,
       cohortId: provenance?.cohortId,
       officialCohortReady: provenance?.officialCohortReady,
       mode: this.config.mode,
@@ -1121,7 +1120,7 @@ export class MicroBurstRuntime {
       blockers.push('CODE_COMMIT_SHA_UNKNOWN');
     if (!provenance?.configHash || provenance.configHash === 'UNKNOWN')
       blockers.push('CONFIG_HASH_UNKNOWN');
-    if (!provenance?.cohortId?.startsWith('MBV1-M3_2-')) blockers.push('COHORT_NAMESPACE_INVALID');
+    if (!provenance?.cohortId?.startsWith('MB-COHORT-')) blockers.push('COHORT_NAMESPACE_INVALID');
     if (!this.running) blockers.push('RUNTIME_NOT_RUNNING');
 
     return {
@@ -1133,7 +1132,7 @@ export class MicroBurstRuntime {
       blockers,
       cohortId: provenance?.cohortId ?? null,
       strategyVersion:
-        this.deps.strategyRouter.get('MICRO_BURST_V1')?.identity.strategyVersion ?? null,
+        this.deps.strategyRouter.get('MICRO_BURST')?.identity.strategyVersion ?? null,
       codeCommitSha: provenance?.codeCommitSha ?? null,
       configHash: provenance?.configHash ?? null,
       liveExecution:

@@ -2,8 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
-  MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED,
+  MICRO_BURST_LIVE_AUTHORITY_ENABLED,
+  MICRO_BURST_SHADOW_AUTHORITY_ENABLED,
 } from './MicroBurstIdentity';
 import { strategyLifecyclePolicy } from '../../../core/strategy/StrategyLifecyclePolicy';
 
@@ -20,13 +20,13 @@ function getDomainProductionFiles(): string[] {
 
 describe('Micro Burst architecture boundaries', () => {
   it('enables both SHADOW and LIVE authority after black-box validation', () => {
-    expect(MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED).toBe(true);
-    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
+    expect(MICRO_BURST_SHADOW_AUTHORITY_ENABLED).toBe(true);
+    expect(MICRO_BURST_LIVE_AUTHORITY_ENABLED).toBe(true);
   });
 
   it('disables legacy ProfitGuardian, break-even and trailing lifecycle mechanics', () => {
-    expect(strategyLifecyclePolicy('MICRO_BURST_V1')).toEqual({
-      strategyId: 'MICRO_BURST_V1',
+    expect(strategyLifecyclePolicy('MICRO_BURST')).toEqual({
+      strategyId: 'MICRO_BURST',
       useLegacyProfitGuardian: false,
       useBreakEven: false,
       useTrailing: false,

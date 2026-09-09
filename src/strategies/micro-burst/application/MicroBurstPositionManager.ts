@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isMicroBurstPolicy } from '../../../core/strategy/MicroBurstLegacy';
 import { PositionManagementResult } from '../../../core/strategy/StrategyDecision';
 import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import {
@@ -18,7 +19,7 @@ import {
   microBurstExitDeadline,
 } from '../domain/MicroBurstExitPolicy';
 import { MicroBurstExitObservation } from './MicroBurstExitObservation';
-import { MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
+import { MICRO_BURST_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
 import { isMicroBurstTradePolicy } from '../domain/MicroBurstTradePolicy';
 
 export interface MicroBurstPositionManagementContext extends StrategyPositionLifecycleContext {
@@ -39,7 +40,7 @@ export interface MicroBurstPositionManagerExecution {
   ): Promise<boolean>;
 }
 
-function assertOwnership(expected: 'MICRO_BURST_V1', identity: StrategyIdentity): void {
+function assertOwnership(expected: 'MICRO_BURST', identity: StrategyIdentity): void {
   if (identity.strategyId !== expected) {
     throw new Error(`POSITION_MANAGER_OWNERSHIP_MISMATCH:${expected}:${identity.strategyId}`);
   }
@@ -60,7 +61,7 @@ function hasExitDecisionContext(
 export class MicroBurstPositionManager
   implements StrategyPositionManager<StrategyPositionLifecycleContext>
 {
-  readonly strategyId = 'MICRO_BURST_V1' as const;
+  readonly strategyId = 'MICRO_BURST' as const;
 
   private readonly config: MicroBurstConfig;
   private readonly exitEngine = new MicroBurstExitEngine();
@@ -71,7 +72,7 @@ export class MicroBurstPositionManager
     _lifecycle: StrategyPositionLifecycleCore,
     config?: Partial<MicroBurstConfig>,
     private readonly execution?: MicroBurstPositionManagerExecution,
-    private readonly liveAuthorityEnabled = MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
+    private readonly liveAuthorityEnabled = MICRO_BURST_LIVE_AUTHORITY_ENABLED,
     private readonly observation?: MicroBurstExitObservation,
     private readonly now: () => number = Date.now,
   ) {
@@ -113,7 +114,7 @@ export class MicroBurstPositionManager
   ): Promise<PositionManagementResult> {
     assertOwnership(this.strategyId, identity);
     const hasExitContext = hasExitDecisionContext(context);
-    const tradeId = context.botState.lastTradeId ?? `MICRO-BURST-V1-${context.symbol}`;
+    const tradeId = context.botState.lastTradeId ?? `MICRO-BURST-${context.symbol}`;
     const storedIdentity = {
       ...identity,
       strategyVersion: context.botState.lastStrategyVersion ?? identity.strategyVersion,
@@ -123,7 +124,7 @@ export class MicroBurstPositionManager
     const savedPolicy = context.botState.microBurstTradePolicy;
     const policy = isMicroBurstTradePolicy(savedPolicy, storedIdentity) ? savedPolicy : undefined;
     if (
-      storedIdentity.strategyVersion === 'CONTEXTUAL_V3' &&
+      isMicroBurstPolicy(storedIdentity.strategyVersion) &&
       (!policy ||
         (context.botState.microBurstExitState !== undefined &&
           context.botState.microBurstExitPolicyDigest !== policy.digest))
@@ -141,7 +142,7 @@ export class MicroBurstPositionManager
     }
     const config =
       policy?.config ??
-      (context.botState.lastStrategyVersion && storedIdentity.strategyVersion !== 'CONTEXTUAL_V3'
+      (context.botState.lastStrategyVersion && !isMicroBurstPolicy(storedIdentity.strategyVersion)
         ? { ...this.config, contextualPolicyVersion: undefined }
         : this.config);
     const previousTradeId = this.activeTradeBySymbol.get(context.symbol);
@@ -267,18 +268,18 @@ export class MicroBurstPositionManager
             hasExitContext && context.strategyMode === 'LIVE'
               ? config.contextualPolicyVersion
                 ? applicationAttempted
-                  ? 'MICRO_CONTEXTUAL_V3_LIVE'
+                  ? 'MICRO_LIVE'
                   : 'MICRO_CONTEXTUAL_EXECUTION_NOT_AUTHORIZED'
                 : this.execution && this.liveAuthorityEnabled
-                  ? 'MICRO_BURST_V1_LIVE'
+                  ? 'MICRO_BURST_LIVE'
                   : 'LIVE_AUTHORITY_DISABLED_OR_EXECUTION_PORT_MISSING'
-              : 'MICRO_BURST_V1_OFF',
+              : 'MICRO_BURST_OFF',
           lifecycleApplied: actionApplied,
         },
       };
     }
     return {
-      tradeId: context.botState.lastTradeId ?? `MICRO-BURST-V1-${context.symbol}`,
+      tradeId: context.botState.lastTradeId ?? `MICRO-BURST-${context.symbol}`,
       decision: 'NO_ACTION',
       reason: 'micro_burst_position_manager_completed',
       diagnostics: {

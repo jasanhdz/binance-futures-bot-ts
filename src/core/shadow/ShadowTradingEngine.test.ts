@@ -51,7 +51,7 @@ class FailingJournal extends MemoryJournal {
 const provenance = { strategyVersion: 'test', codeCommitSha: 'test' };
 const quote = { bestBid: 99, bestAsk: 101, observedAtMs: 1000, status: 'HEALTHY' as const };
 function intent(
-  strategyId: 'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST_V1',
+  strategyId: 'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST',
   symbol: string,
   side: 'LONG' | 'SHORT',
 ) {
@@ -84,13 +84,13 @@ describe('ShadowTradingEngine', () => {
     const policies = new Map([
       ['AEGIS_TURBO', holdPolicy('AEGIS_TURBO')],
       ['MOMENTUM_RIDE', holdPolicy('MOMENTUM_RIDE')],
-      ['MICRO_BURST_V1', holdPolicy('MICRO_BURST_V1')],
+      ['MICRO_BURST', holdPolicy('MICRO_BURST')],
     ] as const);
     const engine = new ShadowTradingEngine(journal, policies);
     expect(engine.open(intent('AEGIS_TURBO', 'BTCUSDT', 'LONG'), quote).status).toBe('OPENED');
     expect(engine.open(intent('AEGIS_TURBO', 'BTCUSDT', 'SHORT'), quote).status).toBe('SUPPRESSED');
     expect(engine.open(intent('MOMENTUM_RIDE', 'BTCUSDT', 'SHORT'), quote).status).toBe('OPENED');
-    expect(engine.open(intent('MICRO_BURST_V1', 'BTCUSDT', 'LONG'), quote).status).toBe('OPENED');
+    expect(engine.open(intent('MICRO_BURST', 'BTCUSDT', 'LONG'), quote).status).toBe('OPENED');
     expect(engine.open(intent('AEGIS_TURBO', 'ETHUSDT', 'LONG'), quote).status).toBe('OPENED');
     expect(engine.getOpenPositions()).toHaveLength(4);
   });
@@ -100,10 +100,10 @@ describe('ShadowTradingEngine', () => {
     const policies = new Map([
       ['AEGIS_TURBO', holdPolicy('AEGIS_TURBO')],
       ['MOMENTUM_RIDE', holdPolicy('MOMENTUM_RIDE')],
-      ['MICRO_BURST_V1', holdPolicy('MICRO_BURST_V1')],
+      ['MICRO_BURST', holdPolicy('MICRO_BURST')],
     ] as const);
     const first = new ShadowTradingEngine(journal, policies);
-    for (const id of ['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST_V1'] as const)
+    for (const id of ['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST'] as const)
       first.open(intent(id, 'BTCUSDT', 'LONG'), quote);
     expect(new ShadowTradingEngine(journal, policies).getOpenPositions()).toHaveLength(3);
     const duplicate = { ...journal.positions[0], tradeId: 'duplicate' };

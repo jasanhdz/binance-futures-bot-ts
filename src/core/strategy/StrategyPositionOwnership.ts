@@ -1,3 +1,4 @@
+import { isMicroBurstStrategy } from './MicroBurstLegacy';
 import { BotState } from '../types';
 import { StrategyId } from './StrategyIdentity';
 
@@ -17,13 +18,13 @@ export function resolveStrategyOwnership(state: BotState): StrategyOwnershipReso
   if (
     state.lastStrategy === 'AEGIS_TURBO' ||
     state.lastStrategy === 'MOMENTUM_RIDE' ||
-    state.lastStrategy === 'MICRO_BURST_V1'
+    isMicroBurstStrategy(state.lastStrategy)
   ) {
-    evidence.add(state.lastStrategy);
+    evidence.add(isMicroBurstStrategy(state.lastStrategy) ? 'MICRO_BURST' : state.lastStrategy!);
   }
   if (state.lastTradeId?.startsWith('MOMENTUM-RIDE-')) evidence.add('MOMENTUM_RIDE');
   if (state.lastTradeId?.startsWith('AEGIS-TURBO-')) evidence.add('AEGIS_TURBO');
-  if (state.lastTradeId?.startsWith('MICRO-BURST-V1-')) evidence.add('MICRO_BURST_V1');
+  if (state.lastTradeId?.startsWith('MICRO-BURST-')) evidence.add('MICRO_BURST');
 
   const strategyIds = [...evidence];
   if (strategyIds.length > 1) return { status: 'AMBIGUOUS', strategyIds };
@@ -44,7 +45,7 @@ export function resolveStrategyOwnership(state: BotState): StrategyOwnershipReso
   }
 
   if (
-    strategyId !== 'MICRO_BURST_V1' &&
+    strategyId !== 'MICRO_BURST' &&
     (state.positionOwner === 'AEGIS' || state.tradeOrigin === 'BOT')
   ) {
     return { status: 'LEGACY_MIGRATABLE', strategyId };

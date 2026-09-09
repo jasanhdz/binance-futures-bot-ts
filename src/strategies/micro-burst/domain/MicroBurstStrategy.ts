@@ -6,17 +6,12 @@ import {
   hasLiveAuthority,
 } from '../../../core/strategy/StrategyIdentity';
 import { MicroBurstConfig, MicroBurstContext, defaultMicroBurstConfig } from './MicroBurstTypes';
-import { evaluateMicroBurstEntry } from './MicroBurstEntryPolicy';
-import {
-  evaluateMicroBurstReactionEntry,
-  MICRO_REACTION_CANDIDATE_VERSION,
-  MICRO_CONTEXTUAL_REACTION_VERSION,
-} from './MicroBurstReactionEntryPolicy';
+import { evaluateMicroBurstReactionEntry } from './MicroBurstReactionEntryPolicy';
 import type { OrderBookSnapshot } from './MicroBurstTypes';
 
 export interface MicroBurstStrategyContext extends MicroBurstContext {
   config?: Partial<MicroBurstConfig>;
-  entryPolicy?: 'BASELINE' | 'REACTION';
+  entryPolicy?: 'MICRO';
   executionBook?: OrderBookSnapshot;
   observedAtMs?: number;
 }
@@ -29,20 +24,18 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
     readonly mode: StrategyMode,
     config?: Partial<MicroBurstConfig>,
   ) {
-    if (identity.strategyId !== 'MICRO_BURST_V1') {
-      throw new Error(`MICRO_BURST_V1_IDENTITY_MISMATCH:${identity.strategyId}`);
+    if (identity.strategyId !== 'MICRO_BURST') {
+      throw new Error(`MICRO_BURST_IDENTITY_MISMATCH:${identity.strategyId}`);
     }
     this.config = { ...defaultMicroBurstConfig(), ...config };
   }
 
   evaluate(context: MicroBurstStrategyContext): StrategyEvaluationResult {
-    const config = { ...this.config, ...context.config };
+    const config = { ...this.config, ...context.config, contextualPolicyVersion: 'MICRO' as const };
     if (
       config.contextualPolicyVersion &&
       this.mode === 'LIVE' &&
-      (this.identity.strategyVersion !== 'CONTEXTUAL_V3' ||
-        !hasLiveAuthority(this.identity, 'LIVE') ||
-        context.entryPolicy !== 'REACTION')
+      (this.identity.strategyVersion !== 'MICRO' || !hasLiveAuthority(this.identity, 'LIVE'))
     ) {
       return {
         symbol: context.symbol,
@@ -55,16 +48,12 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
         },
       };
     }
-    const entryPolicy = context.entryPolicy ?? 'BASELINE';
-    const decision =
-      entryPolicy === 'REACTION'
-        ? evaluateMicroBurstReactionEntry(
-            context,
-            config,
-            context.executionBook,
-            context.observedAtMs ?? NaN,
-          )
-        : evaluateMicroBurstEntry(context, config);
+    const decision = evaluateMicroBurstReactionEntry(
+      context,
+      config,
+      context.executionBook,
+      context.observedAtMs ?? NaN,
+    );
     return {
       symbol: context.symbol,
       timestamp: context.timestamp,
@@ -76,13 +65,7 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
       structuralInvalidation: decision.stopInvalidationPrice,
       diagnostics: {
         ...decision.diagnostics,
-        entryPolicy,
-        entryPolicyVersion:
-          entryPolicy === 'REACTION'
-            ? config.contextualPolicyVersion
-              ? MICRO_CONTEXTUAL_REACTION_VERSION
-              : MICRO_REACTION_CANDIDATE_VERSION
-            : 'baseline',
+        policy: 'MICRO',
         leverage: decision.leverage,
         positionFraction: decision.positionFraction,
         leverageTier: decision.leverageTier,

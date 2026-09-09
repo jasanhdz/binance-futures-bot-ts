@@ -46,7 +46,7 @@ type Case = {
 
 function signal(testCase: Case): MicroBurstShadowEvaluationResult {
   return {
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     strategyVersion: 'golden',
     symbol: 'ETHUSDT',
     snapshotAtMs: 1_000,
@@ -129,15 +129,15 @@ function makeEngine(config: MicroBurstConfig): ShadowTradingEngine {
   const journal = new MemoryJournal();
   return new ShadowTradingEngine(
     journal,
-    new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(config)]] as const),
+    new Map([['MICRO_BURST', new MicroBurstShadowPolicyAdapter(config)]] as const),
     defaultCostScenarios(),
   );
 }
 
-function defaultCostScenarios(): Map<'MICRO_BURST_V1', Record<string, ShadowCostScenario>> {
-  return new Map<'MICRO_BURST_V1', Record<string, ShadowCostScenario>>([
+function defaultCostScenarios(): Map<'MICRO_BURST', Record<string, ShadowCostScenario>> {
+  return new Map<'MICRO_BURST', Record<string, ShadowCostScenario>>([
     [
-      'MICRO_BURST_V1',
+      'MICRO_BURST',
       Object.fromEntries(
         DEFAULT_COST_SCENARIOS.map((scenario) => [
           scenario.label,
@@ -185,7 +185,7 @@ function runCase(testCase: Case): void {
   );
   const candidateOpen = engine.open(
     {
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'golden',
       symbol: 'ETHUSDT',
       side: testCase.side,
@@ -230,7 +230,7 @@ function runCase(testCase: Case): void {
     };
     const referenceResult = reference.manage('ETHUSDT', paperObservation);
     const candidateResult = engine.manage(
-      { strategyId: 'MICRO_BURST_V1', symbol: 'ETHUSDT' },
+      { strategyId: 'MICRO_BURST', symbol: 'ETHUSDT' },
       {
         currentPrice: observation.currentPrice,
         receivedAtMs: observation.receivedAtMs,
@@ -374,7 +374,7 @@ describe('Micro Burst full golden parity', () => {
       expect(
         engine.open(
           {
-            strategyId: 'MICRO_BURST_V1',
+            strategyId: 'MICRO_BURST',
             strategyVersion: 'golden',
             symbol: `S${String(invalid?.status ?? 'NONE')}`,
             side: 'LONG',
@@ -418,7 +418,7 @@ describe('Micro Burst full golden parity', () => {
     };
     const entry = signal(testCase);
     const intent = {
-      strategyId: 'MICRO_BURST_V1' as const,
+      strategyId: 'MICRO_BURST' as const,
       strategyVersion: 'golden',
       symbol: 'ETHUSDT',
       side: 'LONG' as const,
@@ -436,7 +436,7 @@ describe('Micro Burst full golden parity', () => {
     );
     expect(
       engine.manage(
-        { strategyId: 'MICRO_BURST_V1', symbol: 'ETHUSDT' },
+        { strategyId: 'MICRO_BURST', symbol: 'ETHUSDT' },
         {
           currentPrice: 101,
           receivedAtMs: 2_000,
@@ -491,7 +491,7 @@ describe('Micro Burst full golden parity', () => {
     const journal = new MemoryJournal();
     const engine = new ShadowTradingEngine(
       journal,
-      new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(config)]] as const),
+      new Map([['MICRO_BURST', new MicroBurstShadowPolicyAdapter(config)]] as const),
       defaultCostScenarios(),
     );
     const entry = signal(testCase);
@@ -499,7 +499,7 @@ describe('Micro Burst full golden parity', () => {
     expect(
       engine.open(
         {
-          strategyId: 'MICRO_BURST_V1',
+          strategyId: 'MICRO_BURST',
           strategyVersion: 'golden',
           symbol: 'ETHUSDT',
           side: 'LONG',
@@ -519,7 +519,7 @@ describe('Micro Burst full golden parity', () => {
       observedAtMs: 2_000,
     });
     const uncertainCandidate = engine.manage(
-      { strategyId: 'MICRO_BURST_V1', symbol: 'ETHUSDT' },
+      { strategyId: 'MICRO_BURST', symbol: 'ETHUSDT' },
       {
         currentPrice: 102,
         receivedAtMs: 2_000,
@@ -536,7 +536,7 @@ describe('Micro Burst full golden parity', () => {
       quote,
     });
     const recoveredCandidate = engine.manage(
-      { strategyId: 'MICRO_BURST_V1', symbol: 'ETHUSDT' },
+      { strategyId: 'MICRO_BURST', symbol: 'ETHUSDT' },
       {
         currentPrice: 102,
         receivedAtMs: 3_000,
@@ -560,11 +560,7 @@ describe('Micro Burst full golden parity', () => {
       stop: 90,
       observations: [],
     });
-    const intent = (
-      strategyId: 'MICRO_BURST_V1' | 'MOMENTUM_RIDE',
-      symbol: string,
-      id: string,
-    ) => ({
+    const intent = (strategyId: 'MICRO_BURST' | 'MOMENTUM_RIDE', symbol: string, id: string) => ({
       strategyId,
       strategyVersion: 'golden',
       symbol,
@@ -577,13 +573,13 @@ describe('Micro Burst full golden parity', () => {
       parentDecisionId: id,
       provenance,
     });
-    expect(
-      engine.open(intent('MICRO_BURST_V1', 'ETHUSDT', base.shadowSignalId), quote).status,
-    ).toBe('OPENED');
-    expect(engine.open(intent('MICRO_BURST_V1', 'ETHUSDT', 'same-symbol-2'), quote).status).toBe(
+    expect(engine.open(intent('MICRO_BURST', 'ETHUSDT', base.shadowSignalId), quote).status).toBe(
+      'OPENED',
+    );
+    expect(engine.open(intent('MICRO_BURST', 'ETHUSDT', 'same-symbol-2'), quote).status).toBe(
       'SUPPRESSED',
     );
-    expect(engine.open(intent('MICRO_BURST_V1', 'BTCUSDT', 'cross-symbol'), quote).status).toBe(
+    expect(engine.open(intent('MICRO_BURST', 'BTCUSDT', 'cross-symbol'), quote).status).toBe(
       'OPENED',
     );
     expect(engine.open(intent('MOMENTUM_RIDE', 'ETHUSDT', 'cross-strategy'), quote).status).toBe(
@@ -596,7 +592,7 @@ describe('Micro Burst full golden parity', () => {
     const journal = new MemoryJournal();
     const engine = new ShadowTradingEngine(
       journal,
-      new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(config)]] as const),
+      new Map([['MICRO_BURST', new MicroBurstShadowPolicyAdapter(config)]] as const),
     );
     const testCase: Case = {
       name: 'restart',
@@ -608,7 +604,7 @@ describe('Micro Burst full golden parity', () => {
     const entry = signal(testCase);
     engine.open(
       {
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
         strategyVersion: 'golden',
         symbol: 'ETHUSDT',
         side: 'LONG',
@@ -623,7 +619,7 @@ describe('Micro Burst full golden parity', () => {
       shadowQuote(quote),
     );
     engine.manage(
-      { strategyId: 'MICRO_BURST_V1', symbol: 'ETHUSDT' },
+      { strategyId: 'MICRO_BURST', symbol: 'ETHUSDT' },
       {
         currentPrice: 101,
         receivedAtMs: 2_000,
@@ -635,7 +631,7 @@ describe('Micro Burst full golden parity', () => {
     engine.flush();
     const restarted = new ShadowTradingEngine(
       journal,
-      new Map([['MICRO_BURST_V1', new MicroBurstShadowPolicyAdapter(config)]] as const),
+      new Map([['MICRO_BURST', new MicroBurstShadowPolicyAdapter(config)]] as const),
     );
     expect(restarted.getOpenPositions()).toHaveLength(1);
     expect(restarted.getOpenPositions()[0].peakPrice).toBe(101);

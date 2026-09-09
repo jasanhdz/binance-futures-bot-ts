@@ -25,7 +25,7 @@ function snapshot(overrides: Partial<MarketSnapshotV1> = {}): MarketSnapshotV1 {
 function decision(overrides: Partial<StrategyDecisionEnvelope> = {}): StrategyDecisionEnvelope {
   return {
     identity: {
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: '1.0.0',
       freezeState: 'DRAFT',
       codeCommitSha: 'abc123',
@@ -60,7 +60,7 @@ describe('StrategyDecisionBlackBox', () => {
     );
     expect(record.schemaVersion).toBe(2);
     expect(record.marketSnapshotId).toBe('snapshot-1');
-    expect(record.strategy.strategyId).toBe('MICRO_BURST_V1');
+    expect(record.strategy.strategyId).toBe('MICRO_BURST');
     expect(record.decision).toBe('ENTRY_INTENT');
     expect(record.evaluatedAtReceivedMs).toBe(950);
     expect(record.strategyTimestampMs).toBe(100);

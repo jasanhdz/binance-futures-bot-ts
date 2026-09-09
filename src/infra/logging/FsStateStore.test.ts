@@ -35,6 +35,34 @@ describe('FsStateStore', () => {
     });
   });
 
+  it('combines persisted Micro counters at the read boundary without changing historical IDs or file bytes', async () => {
+    const file = path.join(directory, 'state_TEST.json');
+    const original = JSON.stringify({
+      mode: 'IDLE',
+      lastStrategy: 'MICRO_BURST_V1',
+      lastTradeId: 'MICRO-BURST-V1-ETHUSDT-1',
+      lastOrderId: '123',
+      marketOpenAmbiguous: true,
+      microBurstPnlUnverified: true,
+      dailyRisk: {
+        dayKey: 20600,
+        tradesToday: 5,
+        strategyTradesToday: { MICRO_BURST_V1: 3, MICRO_BURST: 2 },
+      },
+    });
+    await fs.writeFile(file, original);
+    const restored = new FsStateStore('default', 'test', directory).get();
+    expect(restored.dailyRisk?.strategyTradesToday).toEqual({ MICRO_BURST: 5 });
+    expect(restored).toMatchObject({
+      lastStrategy: 'MICRO_BURST_V1',
+      lastTradeId: 'MICRO-BURST-V1-ETHUSDT-1',
+      lastOrderId: '123',
+      marketOpenAmbiguous: true,
+      microBurstPnlUnverified: true,
+    });
+    expect(await fs.readFile(file, 'utf8')).toBe(original);
+  });
+
   it('preserves the stop submission latch across a fresh store instance', async () => {
     const state = new FsStateStore('default', 'test', directory);
     const submission = { attemptedAt: 1234, stopPrice: 99, tradeId: 'micro-1' };

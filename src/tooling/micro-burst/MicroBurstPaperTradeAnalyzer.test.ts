@@ -8,7 +8,7 @@ function trade(overrides: Partial<MicroBurstPaperPosition> = {}): MicroBurstPape
     state: 'CLOSED',
     tradeId: 'T',
     parentSignalId: 'S',
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     strategyVersion: 'V',
     symbol: 'ETHUSDT',
     side: 'LONG',

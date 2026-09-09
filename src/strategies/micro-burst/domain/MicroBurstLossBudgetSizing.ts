@@ -137,7 +137,6 @@ export function sizeMicroBurstLossBudget(
     input.book,
     input.now,
     { ...config, exitEstimatedRoundTripCostBps: input.residualCostBps },
-    'REACTION',
   );
   return denial ? fail(denial) : sized;
 }

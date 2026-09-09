@@ -13,8 +13,8 @@ export interface MicroBurstLossResetCommand {
   action: 'INITIALIZE' | 'RESET_LOSS_HALT';
   account: string;
   environment: string;
-  strategyId: 'MICRO_BURST_V1';
-  policyVersion: 'CONTEXTUAL_V3';
+  strategyId: 'MICRO_BURST';
+  policyVersion: 'MICRO';
   expectedRevision: number;
   nonce: string;
   issuedAtMs: number;
@@ -115,8 +115,8 @@ export class MicroBurstNetLossLedger {
         1,
         this.scope.account,
         this.scope.environment,
-        'MICRO_BURST_V1',
-        'CONTEXTUAL_V3',
+        'MICRO_BURST',
+        'MICRO',
         3,
         createHash('sha256')
           .update(this.publicKey.export({ type: 'spki', format: 'der' }))
@@ -129,7 +129,11 @@ export class MicroBurstNetLossLedger {
           const saved = this.db
             .prepare('SELECT identity FROM micro_loss_meta WHERE id = 1')
             .get() as { identity: string };
-          if (saved.identity !== identity) throw new Error('MICRO_NET_LOSS_SCOPE_OR_KEY_MISMATCH');
+          const legacyIdentity = JSON.parse(identity) as unknown[];
+          legacyIdentity[3] = 'MICRO_BURST_V1';
+          legacyIdentity[4] = 'CONTEXTUAL_V3';
+          if (saved.identity !== identity && saved.identity !== JSON.stringify(legacyIdentity))
+            throw new Error('MICRO_NET_LOSS_SCOPE_OR_KEY_MISMATCH');
           if (existed && !this.db.prepare('SELECT 1 FROM micro_loss_state WHERE id = 1').get())
             throw new Error('MICRO_NET_LOSS_STATE_MISSING');
           this.db.prepare('INSERT OR IGNORE INTO micro_loss_state VALUES (1, 0, 0, 0, 0, 0)').run();
@@ -318,8 +322,8 @@ export class MicroBurstNetLossLedger {
       !['INITIALIZE', 'RESET_LOSS_HALT'].includes(command.action) ||
       command.account !== this.scope.account ||
       command.environment !== this.scope.environment ||
-      command.strategyId !== 'MICRO_BURST_V1' ||
-      command.policyVersion !== 'CONTEXTUAL_V3' ||
+      command.strategyId !== 'MICRO_BURST' ||
+      command.policyVersion !== 'MICRO' ||
       !Number.isSafeInteger(command.expectedRevision) ||
       command.expectedRevision < 0 ||
       typeof command.nonce !== 'string' ||

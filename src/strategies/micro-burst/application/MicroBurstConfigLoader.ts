@@ -47,13 +47,14 @@ const EXIT_POLICY_NUMBER_FIELDS = {
 } as const satisfies Record<string, keyof MicroBurstConfig>;
 
 function parseExitPolicy(raw: unknown): Partial<MicroBurstConfig> | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
+  if (raw === undefined) return { contextualPolicyVersion: 'MICRO' };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error('MICRO_POLICY_CONFIG_INVALID');
   const value = raw as Record<string, unknown>;
-  const parsed: Partial<MicroBurstConfig> = {};
+  const parsed: Partial<MicroBurstConfig> = { contextualPolicyVersion: 'MICRO' };
   const version = value.contextual_policy_version ?? value.contextualPolicyVersion;
   if (version !== undefined) {
-    if (version !== 'CONTEXTUAL_V3') throw new Error('MICRO_CONTEXTUAL_POLICY_INVALID');
-    parsed.contextualPolicyVersion = version;
+    throw new Error('MICRO_POLICY_SELECTOR_REMOVED');
   }
   for (const [yamlKey, configKey] of Object.entries(EXIT_POLICY_NUMBER_FIELDS) as Array<
     [
@@ -63,7 +64,6 @@ function parseExitPolicy(raw: unknown): Partial<MicroBurstConfig> | undefined {
   >) {
     const candidate = value[yamlKey] ?? value[configKey];
     if (
-      version &&
       candidate !== undefined &&
       (typeof candidate !== 'number' || !Number.isFinite(candidate) || candidate < 0)
     )
@@ -71,7 +71,7 @@ function parseExitPolicy(raw: unknown): Partial<MicroBurstConfig> | undefined {
     if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0)
       (parsed as Record<string, unknown>)[configKey] = candidate;
   }
-  if (version && !validMicroBurstContextualConfig({ ...defaultMicroBurstConfig(), ...parsed }))
+  if (!validMicroBurstContextualConfig({ ...defaultMicroBurstConfig(), ...parsed }))
     throw new Error('MICRO_CONTEXTUAL_POLICY_CONFIG_INVALID');
   return Object.keys(parsed).length > 0 ? parsed : undefined;
 }
@@ -118,14 +118,9 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   const mode = parseMode(mb.mode);
   const exitPolicy = parseExitPolicy(mb.exit_policy ?? mb.exitPolicy);
   const contextualRisk = parseContextualRisk(mb.contextual_risk, exitPolicy);
-  if (
-    mode === 'LIVE' &&
-    exitPolicy?.contextualPolicyVersion &&
-    (!contextualRisk || mb.entry_policy !== 'REACTION')
-  )
-    throw new Error('MICRO_CONTEXTUAL_LIVE_RISK_AND_REACTION_REQUIRED');
-  if (mb.entry_policy !== undefined && !['BASELINE', 'REACTION'].includes(String(mb.entry_policy)))
-    throw new Error('MICRO_ENTRY_POLICY_INVALID');
+  if (mode === 'LIVE' && !contextualRisk) throw new Error('MICRO_LIVE_RISK_REQUIRED');
+  if (mb.entry_policy !== undefined || mb.entryPolicy !== undefined)
+    throw new Error('MICRO_POLICY_SELECTOR_REMOVED');
 
   const symbols: Record<string, MicroBurstSymbolConfig> = {};
   const rawSymbols = mb.symbols;
@@ -138,9 +133,7 @@ export function parseMicroBurstConfig(yamlData: unknown): MicroBurstRuntimeConfi
   return {
     enabled,
     mode,
-    ...(mb.entry_policy !== undefined
-      ? { entryPolicy: mb.entry_policy as 'BASELINE' | 'REACTION' }
-      : {}),
+    entryPolicy: 'MICRO',
     symbols,
     exitPolicy,
     ...(contextualRisk ? { contextualRisk } : {}),
@@ -158,7 +151,7 @@ function parseContextualRisk(
     !raw ||
     typeof raw !== 'object' ||
     Array.isArray(raw) ||
-    exitPolicy?.contextualPolicyVersion !== 'CONTEXTUAL_V3'
+    exitPolicy?.contextualPolicyVersion !== 'MICRO'
   )
     throw new Error('MICRO_CONTEXTUAL_RISK_CONFIG_INVALID');
   const value = raw as Record<string, unknown>;
@@ -236,12 +229,12 @@ function parseMarketArchive(raw: unknown): MicroBurstRuntimeConfig['marketArchiv
 }
 
 export function microBurstConfigFromEnv(): MicroBurstRuntimeConfig {
-  const enabled = process.env.MICRO_BURST_V1_ENABLED === 'true';
-  const modeStr = process.env.MICRO_BURST_V1_MODE ?? 'OFF';
+  const enabled = process.env.MICRO_BURST_ENABLED === 'true';
+  const modeStr = process.env.MICRO_BURST_MODE ?? 'OFF';
   const mode = parseMode(modeStr);
 
   const symbols: Record<string, MicroBurstSymbolConfig> = {};
-  const symbolsEnv = process.env.MICRO_BURST_V1_SYMBOLS;
+  const symbolsEnv = process.env.MICRO_BURST_SYMBOLS;
   if (symbolsEnv) {
     for (const sym of symbolsEnv
       .split(',')
@@ -256,9 +249,9 @@ export function microBurstConfigFromEnv(): MicroBurstRuntimeConfig {
     mode,
     symbols,
     prospectiveValidation: {
-      enabled: process.env.MICRO_BURST_V1_PROSPECTIVE_VALIDATION === 'true',
+      enabled: process.env.MICRO_BURST_PROSPECTIVE_VALIDATION === 'true',
     },
-    marketArchive: { enabled: process.env.MICRO_BURST_V1_MARKET_ARCHIVE === 'true' },
+    marketArchive: { enabled: process.env.MICRO_BURST_MARKET_ARCHIVE === 'true' },
   };
 }
 

@@ -9,8 +9,8 @@ describe('MicroBurstShadowPolicyAdapter', () => {
   it('preserves the direct Micro Burst exit decision', () => {
     const position = {
       schemaVersion: 2,
-      key: shadowPositionKey('MICRO_BURST_V1', 'ETHUSDT'),
-      strategyId: 'MICRO_BURST_V1',
+      key: shadowPositionKey('MICRO_BURST', 'ETHUSDT'),
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'test',
       symbol: 'ETHUSDT',
       side: 'LONG',
@@ -74,8 +74,8 @@ describe('MicroBurstShadowPolicyAdapter', () => {
   it('uses local receive time rather than exchange event time for lifecycle timing', () => {
     const position = {
       schemaVersion: 2,
-      key: shadowPositionKey('MICRO_BURST_V1', 'ETHUSDT'),
-      strategyId: 'MICRO_BURST_V1',
+      key: shadowPositionKey('MICRO_BURST', 'ETHUSDT'),
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'test',
       symbol: 'ETHUSDT',
       side: 'LONG',
@@ -114,8 +114,8 @@ describe('MicroBurstShadowPolicyAdapter', () => {
   it('uses the confirmed intelligent exit in the SHADOW lifecycle adapter', () => {
     const position = {
       schemaVersion: 2,
-      key: shadowPositionKey('MICRO_BURST_V1', 'ETHUSDT'),
-      strategyId: 'MICRO_BURST_V1',
+      key: shadowPositionKey('MICRO_BURST', 'ETHUSDT'),
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'test',
       symbol: 'ETHUSDT',
       side: 'LONG',

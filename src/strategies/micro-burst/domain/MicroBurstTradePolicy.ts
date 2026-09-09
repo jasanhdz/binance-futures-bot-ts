@@ -1,3 +1,4 @@
+import { isMicroBurstStrategy, isMicroBurstPolicy } from '../../../core/strategy/MicroBurstLegacy';
 import { createHash } from 'node:crypto';
 import type { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import {
@@ -12,7 +13,7 @@ import {
 
 export interface MicroBurstTradePolicy {
   schemaVersion: 1;
-  policyVersion: 'CONTEXTUAL_V3';
+  policyVersion: 'MICRO';
   sourceConfigHash: string;
   sourceCodeCommitSha: string;
   config: MicroBurstConfig;
@@ -29,12 +30,12 @@ export function createMicroBurstTradePolicy(
   const base = { ...defaultMicroBurstConfig(), ...overrides };
   const payload = {
     schemaVersion: 1 as const,
-    policyVersion: 'CONTEXTUAL_V3' as const,
+    policyVersion: 'MICRO' as const,
     sourceConfigHash: identity.configHash!,
     sourceCodeCommitSha: identity.codeCommitSha,
     config: {
       ...base,
-      contextualPolicyVersion: 'CONTEXTUAL_V3' as const,
+      contextualPolicyVersion: 'MICRO' as const,
       maxLeverageHardCap: Math.min(base.maxLeverageHardCap, 30),
       leverageTiers: {
         high: {
@@ -71,16 +72,16 @@ export function isMicroBurstTradePolicy(
     const { digest, ...policy } = value as MicroBurstTradePolicy;
     return (
       Object.keys(value).length === 7 &&
-      identity.strategyId === 'MICRO_BURST_V1' &&
-      identity.strategyVersion === 'CONTEXTUAL_V3' &&
+      isMicroBurstStrategy(identity.strategyId) &&
+      isMicroBurstPolicy(identity.strategyVersion) &&
       policy.schemaVersion === 1 &&
-      policy.policyVersion === 'CONTEXTUAL_V3' &&
+      isMicroBurstPolicy(policy.policyVersion) &&
       /^sha256:[a-f0-9]{64}$/.test(policy.sourceConfigHash) &&
       /^[a-f0-9]{40}$/.test(policy.sourceCodeCommitSha) &&
       policy.sourceConfigHash === identity.configHash &&
       policy.sourceCodeCommitSha === identity.codeCommitSha &&
       validMicroBurstContextualRiskPolicy(policy.risk) &&
-      policy.config.contextualPolicyVersion === 'CONTEXTUAL_V3' &&
+      isMicroBurstPolicy(policy.config.contextualPolicyVersion) &&
       validMicroBurstContextualConfig(policy.config) &&
       policy.risk.feeReserveBps >= policy.config.exitEstimatedRoundTripCostBps &&
       Number.isFinite(policy.config.maxLeverageHardCap) &&

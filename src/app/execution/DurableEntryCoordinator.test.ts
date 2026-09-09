@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FileBackedExecutionJournal,
@@ -27,10 +28,10 @@ const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 const directories: string[] = [];
 const coordinators: DurableEntryCoordinator[] = [];
 
-describe('V3 durable episode identity', () => {
+describe('Micro durable episode identity', () => {
   function contextual(): StrategyExecutionIntent {
     const request = intent();
-    request.identity.strategyVersion = 'CONTEXTUAL_V3';
+    request.identity.strategyVersion = 'MICRO';
     request.identity.codeCommitSha = 'b'.repeat(40);
     request.identity.configHash = `sha256:${'a'.repeat(64)}`;
     request.positionFraction = 0.9;
@@ -44,7 +45,7 @@ describe('V3 durable episode identity', () => {
       feeReserveBps: 14,
       stopStressBps: 10,
     });
-    request.metadata.episodeId = `MBV1-EP-${'a'.repeat(24)}`;
+    request.metadata.episodeId = `MB-EP-${'a'.repeat(24)}`;
     return request;
   }
   it('does not resend a confirmed episode after restart with new trade/order/config IDs', async () => {
@@ -74,7 +75,7 @@ describe('V3 durable episode identity', () => {
       reason: 'ENTRY_MUTATION_ALREADY_RECORDED',
     });
     expect(send).toHaveBeenCalledTimes(1);
-    duplicate.metadata.episodeId = `MBV1-EP-${'c'.repeat(24)}`;
+    duplicate.metadata.episodeId = `MB-EP-${'c'.repeat(24)}`;
     expect(
       (await recovered.coordinator.execute(duplicate, 1, 'se_next_episode', send)).status,
     ).toBe('CONFIRMED');
@@ -96,6 +97,68 @@ describe('V3 durable episode identity', () => {
     });
     expect(send).toHaveBeenCalledTimes(1);
   });
+  it('does not reopen a terminal historical episode under the canonical identity', async () => {
+    const h = harness();
+    await h.coordinator.start();
+    const request = contextual();
+    const first = await h.coordinator.execute(request, 2, 'se_original', async () => order);
+    const history = await h.journal.read(first.operationId);
+    const legacyEpisode = String(request.metadata.episodeId).replace('MB-EP-', 'MBV1-EP-');
+    const operationId = `entry_${createHash('sha256')
+      .update(
+        JSON.stringify([
+          scope.account,
+          scope.environment,
+          'MICRO_CONTEXTUAL_EPISODE_V3',
+          request.symbol,
+          request.side,
+          legacyEpisode,
+        ]),
+      )
+      .digest('hex')}`;
+    const legacy = harness();
+    // Construct an isolated historical fixture; production journal bytes are never rewritten.
+    for (const entry of history) {
+      const {
+        schemaVersion: _schema,
+        version: _version,
+        sequence: _sequence,
+        ...row
+      } = structuredClone(entry) as any;
+      row.operationId = operationId;
+      row.strategyId = 'MICRO_BURST_V1';
+      const saved = row.metadata.request;
+      saved.operationId = operationId;
+      saved.intent.identity.strategyId = 'MICRO_BURST_V1';
+      saved.intent.identity.strategyVersion = 'CONTEXTUAL_V3';
+      saved.intent.metadata.episodeId = legacyEpisode;
+      const { digest: _digest, ...policy } = saved.intent.metadata.contextualPolicy;
+      policy.policyVersion = policy.config.contextualPolicyVersion = 'CONTEXTUAL_V3';
+      const canonical = (v: any): string =>
+        v && typeof v === 'object'
+          ? Array.isArray(v)
+            ? `[${v.map(canonical).join(',')}]`
+            : `{${Object.keys(v)
+                .sort()
+                .map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`)
+                .join(',')}}`
+          : JSON.stringify(v);
+      saved.intent.metadata.contextualPolicy = {
+        ...policy,
+        digest: `sha256:${createHash('sha256').update(canonical(policy)).digest('hex')}`,
+      };
+      await legacy.journal.append(row);
+    }
+    await legacy.coordinator.start();
+    const before = fs.readFileSync(legacy.file, 'utf8');
+    const send = vi.fn().mockResolvedValue(order);
+    expect(await legacy.coordinator.execute(request, 2, 'se_renamed', send)).toMatchObject({
+      status: 'BLOCKED',
+      reason: 'ENTRY_MUTATION_ALREADY_RECORDED',
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(fs.readFileSync(legacy.file, 'utf8')).toBe(before);
+  });
   it('requires an exact contextual episode and fails closed on a pre-send flush failure', async () => {
     const h = harness();
     await h.coordinator.start();
@@ -115,7 +178,7 @@ describe('V3 durable episode identity', () => {
 function intent(): StrategyExecutionIntent {
   return {
     identity: {
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'v1',
       freezeState: 'DRAFT',
       codeCommitSha: 'fixture',
@@ -184,7 +247,7 @@ async function seedPrepared(journal: ExecutionJournal): Promise<DurableEntryRequ
     scope,
     symbol: 'ETHUSDT',
     side: 'LONG',
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     event: 'PREPARED',
     timestampMs: 1000,
     quantity: 2,
@@ -602,7 +665,7 @@ describe('durable entry aperture', () => {
               workingType: 'MARK_PRICE',
               parentTradeId: intent().tradeId,
               parentOrderId: '123',
-              strategyId: 'MICRO_BURST_V1',
+              strategyId: 'MICRO_BURST',
               positionQuantity: 2,
               entryPrice: 100,
             },
@@ -618,7 +681,7 @@ describe('durable entry aperture', () => {
       }
     },
   );
-  it.each(['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST_V1'] as const)(
+  it.each(['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST'] as const)(
     'routes %s intents through the same Shared mutation boundary',
     async (strategyId) => {
       const { coordinator, journal } = harness();

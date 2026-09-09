@@ -7,6 +7,30 @@ function state(overrides: Partial<BotState>): BotState {
 }
 
 describe('resolveStrategyOwnership', () => {
+  it.each(['MICRO-BURST-V1-ETHUSDT-1', 'MICRO-BURST-ETHUSDT-1'])(
+    'normalizes persisted Micro provenance without rewriting %s or adopting manual ownership',
+    (lastTradeId) => {
+      const persisted = state({
+        positionOwner: 'BOT',
+        tradeOrigin: 'BOT',
+        lastStrategy: 'MICRO_BURST_V1',
+        lastTradeId,
+      } as unknown as Partial<BotState>);
+      const before = JSON.stringify(persisted);
+      expect(resolveStrategyOwnership(persisted)).toEqual({
+        status: 'OWNED',
+        strategyId: 'MICRO_BURST',
+      });
+      expect(JSON.stringify(persisted)).toBe(before);
+      expect(
+        resolveStrategyOwnership({
+          ...persisted,
+          positionOwner: 'EXTERNAL',
+          tradeOrigin: 'MANUAL_EXTERNAL',
+        }),
+      ).toEqual({ status: 'EXTERNAL' });
+    },
+  );
   it('resolves canonical BOT ownership from consistent strategy provenance', () => {
     expect(
       resolveStrategyOwnership(
@@ -26,10 +50,10 @@ describe('resolveStrategyOwnership', () => {
         state({
           positionOwner: 'BOT',
           tradeOrigin: 'BOT',
-          lastTradeId: 'MICRO-BURST-V1-ETHUSDT-1',
+          lastTradeId: 'MICRO-BURST-ETHUSDT-1',
         }),
       ),
-    ).toEqual({ status: 'OWNED', strategyId: 'MICRO_BURST_V1' });
+    ).toEqual({ status: 'OWNED', strategyId: 'MICRO_BURST' });
   });
 
   it('migrates legacy AEGIS ownership using Aegis trade provenance', () => {

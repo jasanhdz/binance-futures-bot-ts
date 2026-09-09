@@ -10,7 +10,7 @@ function signal(
   side: 'LONG' | 'SHORT' = 'LONG',
 ): MicroBurstShadowEvaluationResult {
   return {
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     strategyVersion: 'V',
     symbol,
     snapshotAtMs: 1_000,

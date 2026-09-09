@@ -69,8 +69,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
 
   private async executeLive(intent: StrategyExecutionIntent): Promise<StrategyExecutionResult> {
     const contextual =
-      intent.identity.strategyId === 'MICRO_BURST_V1' &&
-      intent.identity.strategyVersion === 'CONTEXTUAL_V3';
+      intent.identity.strategyId === 'MICRO_BURST' && intent.identity.strategyVersion === 'MICRO';
     if (contextual && !isMicroBurstTradePolicy(intent.metadata.contextualPolicy, intent.identity))
       return denied(intent, 'STRATEGY_IDENTITY_INVALID', {
         reasonDetail: 'MICRO_CONTEXTUAL_POLICY_UNVERIFIED',
@@ -403,7 +402,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
 
       const entryPrice = position.entryPrice > 0 ? position.entryPrice : order.avgPrice;
       const durableMicroStop =
-        intent.identity.strategyId === 'MICRO_BURST_V1' && this.config.stopCoordinator;
+        intent.identity.strategyId === 'MICRO_BURST' && this.config.stopCoordinator;
       const stopPrice = hasStructuralStop
         ? durableMicroStop && Number.isFinite(filters.tickSize) && filters.tickSize > 0
           ? Number(

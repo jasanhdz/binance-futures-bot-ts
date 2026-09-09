@@ -31,7 +31,7 @@ function fixture() {
     lastSide: 'LONG',
     lastTradeId: 'trade',
     lastOrderId: '42',
-    lastStrategy: 'MICRO_BURST_V1',
+    lastStrategy: 'MICRO_BURST',
     positionOwner: 'BOT',
     lastEntryPrice: 100,
     lastEntryQty: 2,
@@ -144,8 +144,8 @@ describe('managed Micro durable close with real close/cancel journals', () => {
   it('persists exact V3 accounting identity before terminal close and retains it on restart', async () => {
     const f = fixture();
     const identity = {
-      strategyId: 'MICRO_BURST_V1' as const,
-      strategyVersion: 'CONTEXTUAL_V3',
+      strategyId: 'MICRO_BURST' as const,
+      strategyVersion: 'MICRO',
       freezeState: 'DRAFT' as const,
       configHash: `sha256:${'a'.repeat(64)}` as const,
       codeCommitSha: 'b'.repeat(40),
@@ -161,7 +161,7 @@ describe('managed Micro durable close with real close/cancel journals', () => {
       stopStressBps: 10,
     });
     f.store.set({
-      lastStrategyVersion: 'CONTEXTUAL_V3',
+      lastStrategyVersion: 'MICRO',
       lastConfigHash: identity.configHash,
       lastCodeCommitSha: identity.codeCommitSha,
       microBurstTradePolicy: policy,

@@ -16,7 +16,7 @@ function makeOutcome(overrides: Partial<TradeOutcome> = {}): TradeOutcome {
     tradeId: 'T1',
     symbol: 'XRPUSDT',
     side: 'LONG',
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     entryPrice: 1.0,
     exitPrice: 1.1,
     quantity: 100,
@@ -40,7 +40,7 @@ describe('RiskLedger', () => {
     expect(state.tradesToday).toBe(1);
     expect(state.dailyPnl).toBeCloseTo(9.4);
     expect(state.consecutiveLosses).toBe(0);
-    expect(state.strategyTradesToday['MICRO_BURST_V1']).toBe(1);
+    expect(state.strategyTradesToday['MICRO_BURST']).toBe(1);
   });
 
   it('rejects unverified outcomes without applying', () => {
@@ -179,7 +179,7 @@ describe('RiskLedger', () => {
       tradesToday: 5,
       consecutiveLosses: 3,
       dailyPnl: -50,
-      strategyTradesToday: { MICRO_BURST_V1: 3, AEGIS_TURBO: 2 },
+      strategyTradesToday: { MICRO_BURST: 3, AEGIS_TURBO: 2 },
     });
     const state = ledger.getState();
     expect(state.dayKey).toBe('2026-09-05');
@@ -337,7 +337,7 @@ describe('RiskLedger evidence and recovery contracts', () => {
       const snapshot = {
         dayKey: todayKey,
         tradesToday: 2,
-        strategyTradesToday: { MICRO_BURST_V1: 2 },
+        strategyTradesToday: { MICRO_BURST: 2 },
         consecutiveLosses: 0,
         dailyPnl: 7,
         peakDailyPnl: 7,
@@ -348,7 +348,7 @@ describe('RiskLedger evidence and recovery contracts', () => {
         legacyBaseline: {
           dayKey: todayKey,
           tradesToday: 1,
-          strategyTradesToday: { MICRO_BURST_V1: 1 },
+          strategyTradesToday: { MICRO_BURST: 1 },
           consecutiveLosses: 0,
           dailyPnl: 5,
           peakDailyPnl: 5,
@@ -418,7 +418,7 @@ describe('RiskLedger evidence and recovery contracts', () => {
     outcome.netPnl = 999;
     const snapshot = ledger.getState();
     const recovered = new RiskLedger(snapshot);
-    snapshot.strategyTradesToday.MICRO_BURST_V1 = 999;
+    snapshot.strategyTradesToday.MICRO_BURST = 999;
     snapshot.historicalPnl[todayKey] = 999;
     snapshot.appliedKeys.length = 0;
     snapshot.closedTradeIds.length = 0;
@@ -550,7 +550,7 @@ describe('RiskLedger evidence and recovery contracts', () => {
       tradesToday: 2,
       peakDailyPnl: 5,
       consecutiveLosses: 1,
-      strategyTradesToday: { MICRO_BURST_V1: 1, corrected: 1 },
+      strategyTradesToday: { MICRO_BURST: 1, corrected: 1 },
     });
     expect(ledger.getState().closedTradeIds).toEqual(['stable:identity', 'other']);
     ledger = restart(ledger);

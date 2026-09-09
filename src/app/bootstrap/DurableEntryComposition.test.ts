@@ -26,7 +26,7 @@ describe('production durable entry factory in an explicit filesystem fixture', (
       lastTradeId: 'T1',
       lastOrderId: 'O1',
       lastSide: 'LONG',
-      lastStrategy: 'MICRO_BURST_V1',
+      lastStrategy: 'MICRO_BURST',
       bracketsAttached: true,
     };
     const store: StateStore = {
@@ -75,7 +75,7 @@ describe('production durable entry factory in an explicit filesystem fixture', (
     const coordinator = composeDurableEntryCoordinator(exchange, true, store);
     const intent: StrategyExecutionIntent = {
       identity: {
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
         strategyVersion: 'v1',
         freezeState: 'DRAFT',
         codeCommitSha: 'fixture',

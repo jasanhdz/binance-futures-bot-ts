@@ -17,7 +17,7 @@ import path from 'path';
 export type AegisTurboVotes = StrategyVotes;
 export type AegisResearchStrategy = Extract<
   StrategyId,
-  'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST_V1'
+  'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST'
 >;
 export type StrategyProvenanceFields = GenericStrategyProvenanceFields;
 export type AegisTradeOwnershipFields = StrategyTradeOwnershipFields;
@@ -45,8 +45,8 @@ export function generateStrategyTradeId(
   const prefix =
     strategy === 'MOMENTUM_RIDE'
       ? 'MOMENTUM-RIDE'
-      : strategy === 'MICRO_BURST_V1'
-        ? 'MICRO-BURST-V1'
+      : strategy === 'MICRO_BURST'
+        ? 'MICRO-BURST'
         : 'AEGIS-TURBO';
   return `${prefix}-${safeToken(symbol)}-${formatIdTimestamp(timestamp)}`;
 }

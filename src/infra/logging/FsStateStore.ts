@@ -194,12 +194,17 @@ function parseState(raw: string): BotState {
       Array.isArray(dailyRisk.strategyTradesToday) ||
       Object.entries(dailyRisk.strategyTradesToday).some(
         ([strategyId, count]) =>
-          !['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST_V1'].includes(strategyId) ||
+          !['AEGIS_TURBO', 'MOMENTUM_RIDE', 'MICRO_BURST', 'MICRO_BURST_V1'].includes(strategyId) ||
           !Number.isInteger(count) ||
           (count as number) < 0,
       ))
   ) {
     throw new Error('BOT_STATE_INVALID');
+  }
+  if (dailyRisk && 'MICRO_BURST_V1' in dailyRisk.strategyTradesToday) {
+    const counts = dailyRisk.strategyTradesToday as Record<string, number>;
+    counts.MICRO_BURST = (counts.MICRO_BURST ?? 0) + counts.MICRO_BURST_V1;
+    delete counts.MICRO_BURST_V1;
   }
   return state as BotState;
 }

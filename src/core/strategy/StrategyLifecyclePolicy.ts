@@ -39,7 +39,7 @@ const MOMENTUM_POLICY: StrategyLifecyclePolicy = {
 };
 
 const MICRO_BURST_RESERVED_POLICY: StrategyLifecyclePolicy = {
-  strategyId: 'MICRO_BURST_V1',
+  strategyId: 'MICRO_BURST',
   useLegacyProfitGuardian: false,
   useBreakEven: false,
   useTrailing: false,
@@ -68,7 +68,7 @@ export function strategyLifecyclePolicy(strategyId: StrategyId): StrategyLifecyc
       return AEGIS_POLICY;
     case 'MOMENTUM_RIDE':
       return MOMENTUM_POLICY;
-    case 'MICRO_BURST_V1':
+    case 'MICRO_BURST':
       return MICRO_BURST_RESERVED_POLICY;
   }
 }

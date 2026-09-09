@@ -1,4 +1,4 @@
-import { MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
+import { MICRO_BURST_LIVE_AUTHORITY_ENABLED } from '../domain/MicroBurstIdentity';
 
 export interface MicroBurstReadinessChecks {
   code: boolean;
@@ -77,7 +77,7 @@ export function assessMicroBurstReadiness(
     code: known(input.codeSha),
     config: known(input.configHash),
     version: known(input.strategyVersion),
-    cohort: known(cohortId) && cohortId?.startsWith('MBV1-M3_2-') === true,
+    cohort: known(cohortId) && cohortId?.startsWith('MB-COHORT-') === true,
     manifest: input.manifestValid === true,
     archive: input.archiveEnabled && input.archiveAvailable && input.archiveHealthy === true,
     db: input.databaseValid === true,
@@ -93,7 +93,7 @@ export function assessMicroBurstReadiness(
     mutation: input.mutationAuditAvailable === true,
     liveFlags:
       input.mode === 'SHADOW' ||
-      (input.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED === true),
+      (input.mode === 'LIVE' && MICRO_BURST_LIVE_AUTHORITY_ENABLED === true),
     preregistration: input.enabled && input.preregistrationEnabled,
     schema: input.schemaValid === true,
     episode: input.episodeDefinitionValid === true,
@@ -107,7 +107,7 @@ export function assessMicroBurstReadiness(
   const warnings: string[] = [];
   if (input.officialCohortReady !== true)
     warnings.push('Official cohort authority was not asserted.');
-  if (input.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED !== true)
+  if (input.mode === 'LIVE' && MICRO_BURST_LIVE_AUTHORITY_ENABLED !== true)
     warnings.push('LIVE mode is rejected; no exchange authority is granted.');
   const readyForSoak = soakBlockers.length === 0;
   const readyForFreeze = readyForSoak && input.officialCohortReady === true;
@@ -119,7 +119,7 @@ export function assessMicroBurstReadiness(
     readyForFreeze,
     official: false,
     officialAuthority,
-    liveAuthority: input.mode === 'LIVE' && MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED === true,
+    liveAuthority: input.mode === 'LIVE' && MICRO_BURST_LIVE_AUTHORITY_ENABLED === true,
     checks,
     blockers,
     warnings,

@@ -8,7 +8,7 @@ import {
 } from './MicroBurstExitPolicy';
 import { defaultMicroBurstConfig, type MicroBurstExitContext } from './MicroBurstTypes';
 
-const config = { ...defaultMicroBurstConfig(), contextualPolicyVersion: 'CONTEXTUAL_V3' as const };
+const config = { ...defaultMicroBurstConfig(), contextualPolicyVersion: 'MICRO' as const };
 function context(
   now: number,
   price = 100.5,

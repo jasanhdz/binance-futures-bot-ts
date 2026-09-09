@@ -1,3 +1,4 @@
+import { isMicroBurstStrategy } from '../../core/strategy/MicroBurstLegacy';
 import { BotState, Side } from '../../core/types';
 import { PositionInfo, SymbolFilters, TradingExchangePort } from '../ports/Exchange';
 import { Logger } from '../ports/Logger';
@@ -150,7 +151,12 @@ export class PositionProtectionService {
         return { status: 'UNKNOWN', reason: 'MICRO_STOP_DURABLE_IDENTITY_REQUIRED' };
       }
       try {
-        const prices = [state.lastStopPrice, state.microBurstStructuralStopPrice].filter(
+        const activeStopKey = state.microBurstStopMove?.key ?? state.microBurstActiveStopKey;
+        const prices = [
+          state.microBurstStopMove?.triggerPrice,
+          state.lastStopPrice,
+          state.microBurstStructuralStopPrice,
+        ].filter(
           (price): price is number =>
             typeof price === 'number' && Number.isFinite(price) && price > 0,
         );
@@ -179,7 +185,7 @@ export class PositionProtectionService {
             side,
             positionSide: position.sideMode,
             triggerPrice: stopPrice,
-            ...(state.microBurstActiveStopKey
+            ...(activeStopKey
               ? { closePosition: false, quantity: position.qtyAbs, reduceOnly: true as const }
               : { closePosition: true }),
             workingType: 'MARK_PRICE',
@@ -188,13 +194,50 @@ export class PositionProtectionService {
             strategyId: state.lastStrategy,
             positionQuantity: position.qtyAbs,
             entryPrice: position.entryPrice,
-            ...(state.microBurstActiveStopKey
-              ? { replacementKey: state.microBurstActiveStopKey }
-              : {}),
+            ...(activeStopKey ? { replacementKey: activeStopKey } : {}),
           },
           samePosition,
           safeToSend && !state.microStopSubmission,
         );
+        if (!protectedNow && activeStopKey && samePosition()) {
+          // Two successful inventory reads plus a fresh unchanged position distinguish
+          // missing protection from an unknown query. Only the former permits durable close.
+          for (let observation = 0; observation < 2; observation++) {
+            const orders = await exchange.listCloseOrdersForSide(symbol, side);
+            if (
+              orders.some(
+                (order) =>
+                  order.type === 'STOP_MARKET' &&
+                  order.owner === 'BOT' &&
+                  order.side === (side === 'LONG' ? 'SELL' : 'BUY') &&
+                  order.positionSide === position.sideMode &&
+                  Number.isFinite(order.stopPrice) &&
+                  (side === 'LONG'
+                    ? order.stopPrice >= state.lastStopPrice!
+                    : order.stopPrice <= state.lastStopPrice!) &&
+                  (order.closePosition === true ||
+                    (order.reduceOnly === true && Number(order.quantity) === position.qtyAbs)),
+              )
+            )
+              return {
+                status: 'UNKNOWN',
+                reason: 'MICRO_REPLACEMENT_UNCONFIRMED_OLD_COVERAGE_RETAINED',
+              };
+            const fresh = await exchange.readFreshActivePosition?.(symbol, side);
+            if (
+              !fresh ||
+              fresh.sideMode !== position.sideMode ||
+              fresh.qtyAbs !== position.qtyAbs ||
+              fresh.entryPrice !== position.entryPrice ||
+              !samePosition()
+            )
+              return {
+                status: 'UNKNOWN',
+                reason: 'MICRO_REPLACEMENT_RECOVERY_POSITION_UNVERIFIED',
+              };
+          }
+          return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_REPLACEMENT_COVERAGE_MISSING' };
+        }
         return protectedNow && samePosition()
           ? { status: 'PROTECTED', stopPrice }
           : {
@@ -398,7 +441,7 @@ export class PositionProtectionService {
         !samePosition() ||
         !state.lastTradeId ||
         !state.lastOrderId ||
-        state.lastStrategy !== 'MICRO_BURST_V1' ||
+        !isMicroBurstStrategy(state.lastStrategy) ||
         !store.flush ||
         !this.deps.exchange.readFreshActivePosition
       )

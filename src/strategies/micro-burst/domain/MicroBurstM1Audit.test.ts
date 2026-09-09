@@ -2,8 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED,
-  MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED,
+  MICRO_BURST_SHADOW_AUTHORITY_ENABLED,
+  MICRO_BURST_LIVE_AUTHORITY_ENABLED,
 } from './MicroBurstIdentity';
 
 const strategyDir = resolve(__dirname);
@@ -67,8 +67,8 @@ describe('Micro Burst M3 static audit', () => {
   });
 
   it('keeps the new exit candidate LIVE-approved after evidence review', () => {
-    expect(MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED).toBe(true);
-    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
+    expect(MICRO_BURST_SHADOW_AUTHORITY_ENABLED).toBe(true);
+    expect(MICRO_BURST_LIVE_AUTHORITY_ENABLED).toBe(true);
   });
 
   it('application layer files do not invoke exchange mutation', () => {
@@ -110,6 +110,6 @@ describe('Micro Burst M3 static audit', () => {
   });
 
   it('LIVE authority flag is enabled for production deployment', () => {
-    expect(MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED).toBe(true);
+    expect(MICRO_BURST_LIVE_AUTHORITY_ENABLED).toBe(true);
   });
 });

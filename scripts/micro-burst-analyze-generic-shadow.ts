@@ -2,7 +2,7 @@
 import { FileShadowTradeJournal } from '../src/core/shadow/ShadowTradeJournal';
 import { analyzeShadow } from '../src/core/shadow/ShadowTradeAnalyzer';
 
-const strategyId = argument('--strategy') ?? 'MICRO_BURST_V1';
+const strategyId = argument('--strategy') ?? 'MICRO_BURST';
 const symbol = argument('--symbol');
 const tradesDir = argument('--trades-dir') ?? 'logs/micro-burst/shadow/trades';
 const eventsDir = argument('--events-dir') ?? 'logs/micro-burst/shadow/trade-events';

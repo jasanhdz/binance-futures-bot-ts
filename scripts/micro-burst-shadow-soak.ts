@@ -1,5 +1,5 @@
 /**
- * MICRO BURST V1 — M2.1 Live Data Soak Verification
+ * Micro Burst - M2.1 Live Data Soak Verification
  *
  * Verifies continuous data flow from Binance USD-M Futures using raw
  * combined WebSocket streams (bypassing binance-api-node individual
@@ -651,7 +651,7 @@ async function main(): Promise<void> {
   const anyValidCtx = SYMBOLS.some((s) => perSymbol[s].context.validContexts > 0);
   console.log(`\n${'='.repeat(60)}`);
   if (allDepthOk && allAggOk && allRefOk && btc.healthy && anyValidCtx) {
-    console.log(`VERDICT: MICRO_BURST_V1_M2_1_CONTINUOUS_LIVE_DATA_VERIFIED`);
+    console.log(`VERDICT: MICRO_BURST_M2_1_CONTINUOUS_LIVE_DATA_VERIFIED`);
   } else {
     console.log(`VERDICT: M2_1_INCOMPLETE`);
     if (!allDepthOk) console.log(`  FAIL: depth WS events = 0 for some symbols`);

@@ -67,7 +67,7 @@ export function createMicroBurstBlackBoxObservation(
     snapshotProvider,
     blackBox,
     (strategyId, context) => {
-      if (strategyId !== 'MICRO_BURST_V1') return null;
+      if (strategyId !== 'MICRO_BURST') return null;
       return {
         symbol: context.symbol,
         quote: true,

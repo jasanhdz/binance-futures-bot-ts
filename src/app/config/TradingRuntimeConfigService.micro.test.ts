@@ -8,13 +8,13 @@ import {
   mergeMicroBurstConfigs,
 } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 import {
-  createMicroBurstV1Identity,
-  hasMicroBurstV1LiveAuthority,
-  MICRO_BURST_V1_CONFIG_SHA256,
+  createMicroBurstIdentity,
+  hasMicroBurstLiveAuthority,
+  MICRO_BURST_CONFIG_SHA256,
 } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 
 describe('Micro effective configuration authority', () => {
-  it('matches the approved effective REACTION config and rejects representation drift', () => {
+  it('matches the approved effective Micro config and rejects representation drift', () => {
     const parsed = parseMicroBurstConfig(
       load(readFileSync(resolve('regime_config.live.yaml'), 'utf8')),
     );
@@ -22,30 +22,30 @@ describe('Micro effective configuration authority', () => {
     const merged = mergeMicroBurstConfigs(parsed, {});
     const parsedHash = service.getMicroBurstProvenance(parsed).configHash;
     const mergedHash = service.getMicroBurstProvenance(merged).configHash;
-    expect(mergedHash).toBe('957d53b90e8d57eb9233e468722e85786a42a9244dc88b6cd66fc485421aa3ba');
-    expect(parsedHash).not.toBe(MICRO_BURST_V1_CONFIG_SHA256);
-    expect(mergedHash).toBe(MICRO_BURST_V1_CONFIG_SHA256);
-    const identity = createMicroBurstV1Identity('a'.repeat(40));
-    expect(hasMicroBurstV1LiveAuthority(identity, mergedHash, identity.codeCommitSha)).toBe(true);
-    expect(hasMicroBurstV1LiveAuthority(identity, mergedHash, 'b'.repeat(40))).toBe(false);
+    expect(mergedHash).toBe('132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1');
+    expect(parsedHash).toBe(MICRO_BURST_CONFIG_SHA256);
+    expect(mergedHash).toBe(MICRO_BURST_CONFIG_SHA256);
+    const identity = createMicroBurstIdentity('a'.repeat(40), mergedHash);
+    expect(hasMicroBurstLiveAuthority(identity, mergedHash, identity.codeCommitSha)).toBe(true);
+    expect(hasMicroBurstLiveAuthority(identity, mergedHash, 'b'.repeat(40))).toBe(false);
     expect(
-      hasMicroBurstV1LiveAuthority(identity, MICRO_BURST_V1_CONFIG_SHA256, identity.codeCommitSha),
+      hasMicroBurstLiveAuthority(identity, MICRO_BURST_CONFIG_SHA256, identity.codeCommitSha),
     ).toBe(true);
-    expect(hasMicroBurstV1LiveAuthority(identity, parsedHash, identity.codeCommitSha)).toBe(false);
+    expect(hasMicroBurstLiveAuthority(identity, parsedHash, identity.codeCommitSha)).toBe(true);
     // Preserve the existing persisted provenance representation.
-    expect(parsed.exitPolicy).toBeUndefined();
-    expect(merged.exitPolicy).toEqual({});
+    expect(parsed.exitPolicy).toEqual({ contextualPolicyVersion: 'MICRO' });
+    expect(merged.exitPolicy).toEqual({ contextualPolicyVersion: 'MICRO' });
     for (const config of [parsed, merged]) {
       expect(
         service.getMicroBurstProvenance(JSON.parse(JSON.stringify(config))).configHash,
-      ).not.toBe(MICRO_BURST_V1_CONFIG_SHA256);
+      ).not.toBe(MICRO_BURST_CONFIG_SHA256);
     }
   });
 
   it('hashes effective risk overrides and is independent of object insertion order', () => {
     const service = new TradingRuntimeConfigService({} as never);
     const base = parseMicroBurstConfig({
-      micro_burst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+      micro_burst: { enabled: true, mode: 'SHADOW', symbols: { ETHUSDT: { enabled: true } } },
     });
     const hash = (config: typeof base) => service.getMicroBurstProvenance(config).configHash;
     expect(hash(base)).toBe(

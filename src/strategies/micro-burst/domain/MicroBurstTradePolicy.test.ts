@@ -6,8 +6,8 @@ import type { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import type { MicroBurstContextualRiskPolicy } from './MicroBurstContextualRiskPolicy';
 
 const identity: StrategyIdentity = {
-  strategyId: 'MICRO_BURST_V1',
-  strategyVersion: 'CONTEXTUAL_V3',
+  strategyId: 'MICRO_BURST',
+  strategyVersion: 'MICRO',
   freezeState: 'DRAFT',
   codeCommitSha: 'a'.repeat(40),
   configHash: `sha256:${'b'.repeat(64)}`,

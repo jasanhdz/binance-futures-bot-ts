@@ -38,7 +38,7 @@ describe('StrategyLossStateRegistry', () => {
       closedAt: '2026-08-29T20:02:00.000Z',
       pnlUsdt: -3,
     });
-    await registry.record('MICRO_BURST_V1', mode, {
+    await registry.record('MICRO_BURST', mode, {
       tradeId: 'b-1',
       closedAt: '2026-08-29T20:03:00.000Z',
       pnlUsdt: 2,
@@ -51,7 +51,7 @@ describe('StrategyLossStateRegistry', () => {
 
     expect(registry.trackerValue('AEGIS_TURBO')).toBe(1);
     expect(registry.trackerValue('MOMENTUM_RIDE')).toBe(2);
-    expect(registry.trackerValue('MICRO_BURST_V1')).toBe(0);
+    expect(registry.trackerValue('MICRO_BURST')).toBe(0);
     expect(registry.trackerValue('MANUAL')).toBe(1);
 
     const momentum = await registry.storeFor('MOMENTUM_RIDE').read(mode);

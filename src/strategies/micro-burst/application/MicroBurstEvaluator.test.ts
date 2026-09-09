@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MicroBurstShadowEvaluator } from '../application/MicroBurstShadowEvaluator';
+import { MicroBurstEvaluator } from './MicroBurstEvaluator';
 import { MicroBurstDuplicateSignalGuard } from '../domain/MicroBurstDuplicateSignalGuard';
 import type { MicroBurstRuntimeConfig } from '../application/MicroBurstRuntimeTypes';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { MicroBurstStrategy, MicroBurstStrategyContext } from '../domain/MicroBurstStrategy';
-import {
-  createMicroBurstV1Identity,
-  createMicroBurstContextualIdentity,
-} from '../domain/MicroBurstIdentity';
+import { createMicroBurstIdentity } from '../domain/MicroBurstIdentity';
 
 const NOW_MS = 1_700_000_000_000;
 
@@ -24,7 +21,7 @@ function makeConfig(mode: 'OFF' | 'SHADOW' | 'LIVE' = 'SHADOW'): MicroBurstRunti
 
 function createMockDeps() {
   const router = new StrategyRouter<MicroBurstStrategyContext>();
-  router.register(new MicroBurstStrategy(createMicroBurstV1Identity(), 'SHADOW'));
+  router.register(new MicroBurstStrategy(createMicroBurstIdentity(), 'SHADOW'));
 
   return {
     contextBuilderDeps: {
@@ -40,10 +37,10 @@ function createMockDeps() {
   };
 }
 
-describe('MicroBurstShadowEvaluator', () => {
+describe('MicroBurstEvaluator', () => {
   it('preserves the evaluated contextual version for the normal live entry request', async () => {
     const deps = createMockDeps();
-    const identity = createMicroBurstContextualIdentity('a'.repeat(64), 'b'.repeat(40));
+    const identity = createMicroBurstIdentity('b'.repeat(40), 'a'.repeat(64));
     vi.spyOn(deps.strategyRouter, 'evaluate').mockResolvedValue({
       identity,
       symbol: 'ETHUSDT',
@@ -56,13 +53,13 @@ describe('MicroBurstShadowEvaluator', () => {
       destinationPrice: 102,
       diagnostics: { episodeId: 'contextual-episode', leverage: 30, positionFraction: 0.9 },
     } as any);
-    const evaluator = new MicroBurstShadowEvaluator(deps, {
+    const evaluator = new MicroBurstEvaluator(deps, {
       ...makeConfig('LIVE'),
-      entryPolicy: 'REACTION',
-      exitPolicy: { contextualPolicyVersion: 'CONTEXTUAL_V3' },
+      entryPolicy: 'MICRO',
+      exitPolicy: { contextualPolicyVersion: 'MICRO' },
     });
     expect(await evaluator.evaluate({ symbol: 'ETHUSDT', snapshotAtMs: NOW_MS })).toMatchObject({
-      strategyVersion: 'CONTEXTUAL_V3',
+      strategyVersion: 'MICRO',
       wouldEnter: true,
       diagnostics: { episodeId: 'contextual-episode', leverage: 30, positionFraction: 0.9 },
     });
@@ -70,19 +67,19 @@ describe('MicroBurstShadowEvaluator', () => {
   it('selects reaction in LIVE once without a second candidate observer or baseline fallback', async () => {
     const deps = createMockDeps();
     const evaluate = vi.spyOn(deps.strategyRouter, 'evaluate');
-    const evaluator = new MicroBurstShadowEvaluator(deps, {
+    const evaluator = new MicroBurstEvaluator(deps, {
       ...makeConfig('LIVE'),
-      entryPolicy: 'REACTION',
+      entryPolicy: 'MICRO',
     });
     const result = await evaluator.evaluate({ symbol: 'ETHUSDT', snapshotAtMs: NOW_MS });
     expect(evaluate).toHaveBeenCalledTimes(1);
     expect(evaluate).toHaveBeenCalledWith(
-      'MICRO_BURST_V1',
-      expect.objectContaining({ entryPolicy: 'REACTION', observedAtMs: NOW_MS }),
+      'MICRO_BURST',
+      expect.objectContaining({ entryPolicy: 'MICRO', observedAtMs: NOW_MS }),
     );
     expect(result).toMatchObject({
       decision: 'NO_TRADE',
-      diagnostics: { entryPolicy: 'REACTION' },
+      diagnostics: { policy: 'MICRO' },
     });
     expect(deps.logger.info).not.toHaveBeenCalledWith(
       'micro_burst_entry_candidate_comparison',
@@ -91,7 +88,7 @@ describe('MicroBurstShadowEvaluator', () => {
   });
   it('returns disabled result when mode is OFF', async () => {
     const deps = createMockDeps();
-    const evaluator = new MicroBurstShadowEvaluator(deps, makeConfig('OFF'));
+    const evaluator = new MicroBurstEvaluator(deps, makeConfig('OFF'));
 
     const result = await evaluator.evaluate({ symbol: 'ETHUSDT' });
 
@@ -103,7 +100,7 @@ describe('MicroBurstShadowEvaluator', () => {
 
   it('returns disabled result for unknown symbol', async () => {
     const deps = createMockDeps();
-    const evaluator = new MicroBurstShadowEvaluator(deps, makeConfig());
+    const evaluator = new MicroBurstEvaluator(deps, makeConfig());
 
     const result = await evaluator.evaluate({ symbol: 'XRPUSDT' });
 
@@ -113,19 +110,19 @@ describe('MicroBurstShadowEvaluator', () => {
 
   it('returns NO_TRADE when strategy router returns NO_TRADE', async () => {
     const deps = createMockDeps();
-    const evaluator = new MicroBurstShadowEvaluator(deps, makeConfig());
+    const evaluator = new MicroBurstEvaluator(deps, makeConfig());
 
     const result = await evaluator.evaluate({ symbol: 'ETHUSDT', snapshotAtMs: NOW_MS });
 
     expect(result.decision).toBe('NO_TRADE');
     expect(result.wouldEnter).toBe(false);
     expect(result.liveExecution).toBe(false);
-    expect(result.strategyId).toBe('MICRO_BURST_V1');
+    expect(result.strategyId).toBe('MICRO_BURST');
   });
 
   it('never calls execute on SharedStrategyExecutionService', async () => {
     const deps = createMockDeps();
-    const evaluator = new MicroBurstShadowEvaluator(deps, makeConfig());
+    const evaluator = new MicroBurstEvaluator(deps, makeConfig());
 
     await evaluator.evaluate({ symbol: 'ETHUSDT' });
 
@@ -138,14 +135,14 @@ describe('MicroBurstShadowEvaluator', () => {
 
   it('produces telemetry log for NO_TRADE', async () => {
     const deps = createMockDeps();
-    const evaluator = new MicroBurstShadowEvaluator(deps, makeConfig());
+    const evaluator = new MicroBurstEvaluator(deps, makeConfig());
 
     await evaluator.evaluate({ symbol: 'ETHUSDT' });
 
     expect(deps.logger.debug).toHaveBeenCalledWith(
-      'micro_burst_shadow_no_trade',
+      'micro_burst_no_trade',
       expect.objectContaining({
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
         liveExecution: false,
       }),
     );
@@ -153,7 +150,7 @@ describe('MicroBurstShadowEvaluator', () => {
 
   it('includes all required telemetry fields', async () => {
     const deps = createMockDeps();
-    const evaluator = new MicroBurstShadowEvaluator(deps, makeConfig());
+    const evaluator = new MicroBurstEvaluator(deps, makeConfig());
 
     await evaluator.evaluate({ symbol: 'ETHUSDT' });
 

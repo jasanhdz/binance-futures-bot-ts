@@ -189,7 +189,7 @@ describe('formatAegisStartupMessage', () => {
       identity: { user: 'user<&>', hostname: 'mac<&>', platform: 'darwin', release: 'test' },
       activePositions: [],
     });
-    expect(text).toContain('Configured entry strategies: MICRO_BURST_V1 (SHADOW)');
+    expect(text).toContain('Configured entry strategies: MICRO_BURST (SHADOW)');
     expect(text).not.toMatch(/Runtime started|Active strategies/);
     expect(text).not.toMatch(/Aegis|AEGIS|Momentum|MOMENTUM|Probe|RegimeEngine/);
     expect(text).toContain('User: user<&>');

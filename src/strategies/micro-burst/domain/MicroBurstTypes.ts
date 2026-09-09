@@ -290,8 +290,8 @@ export interface MicroBurstLeverageTierConfig {
 // ── Config ───────────────────────────────────────────────────
 
 export interface MicroBurstConfig {
-  /** Research opt-in only. Omission preserves shipped entry/exit economics and config hash. */
-  contextualPolicyVersion?: 'CONTEXTUAL_V3';
+  /** Current runtime policy marker; omission is retained only for historical exit recovery. */
+  contextualPolicyVersion?: 'MICRO';
   srLookbackBars: number;
   srPivotLeftBars: number;
   srPivotRightBars: number;

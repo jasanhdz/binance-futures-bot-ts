@@ -12,7 +12,7 @@ const TEST_DIR = path.join(__dirname, '__test_outcome_tracker__');
 function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignalSnapshot {
   return freezeSignalSnapshot({
     shadowSignalId: `shadow-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     strategyVersion: '0.4.0-prospective-validation',
     codeCommitSha: 'UNCOMMITTED',
     configHash: 'default',

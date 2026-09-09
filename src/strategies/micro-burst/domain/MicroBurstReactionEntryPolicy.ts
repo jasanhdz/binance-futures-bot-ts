@@ -1,9 +1,6 @@
 import type { Side } from '../../../core/types';
 import { hasBtcConflict } from './MicroBurstBtcContext';
-import {
-  evaluateMicroBurstEntry,
-  evaluateMicroBurstStructuralEntry,
-} from './MicroBurstEntryPolicy';
+import { evaluateMicroBurstStructuralEntry } from './MicroBurstEntryPolicy';
 import { createMicroBurstEpisodeId } from './MicroBurstIdentity';
 import { priceDistanceToBps } from './MicroBurstUnits';
 import { validMicroBurstContextualConfig } from './MicroBurstTypes';
@@ -14,17 +11,21 @@ import type {
   OrderBookSnapshot,
 } from './MicroBurstTypes';
 
-export const MICRO_REACTION_CANDIDATE_VERSION = 'reaction-entry-1-live';
-export const MICRO_CONTEXTUAL_REACTION_VERSION = 'reaction-entry-2-contextual-shadow';
-
-/** Selected by the configured router policy; execution admission remains separate. */
+/** The current Micro entry algorithm; execution admission remains separate. */
 export function evaluateMicroBurstReactionEntry(
   ctx: MicroBurstContext,
   config: MicroBurstConfig,
   book: OrderBookSnapshot | undefined,
   observedAtMs: number,
 ): MicroBurstEntryDecision {
-  const contextual = config.contextualPolicyVersion === 'CONTEXTUAL_V3';
+  config = {
+    ...config,
+    maxLeverageHardCap: Math.min(config.maxLeverageHardCap, 30),
+    leverageTiers: {
+      high: { ...config.leverageTiers.high, leverage: 30 },
+      medium: { ...config.leverageTiers.medium, leverage: 20 },
+    },
+  };
   const reject = (
     reason: string,
     diagnostics: Record<string, unknown> = {},
@@ -33,26 +34,22 @@ export function evaluateMicroBurstReactionEntry(
     reason,
     confirmationStrength: ctx.momentum.strength,
     diagnostics: {
-      ...(contextual
-        ? { sides: { LONG: { reason, commonGuard: true }, SHORT: { reason, commonGuard: true } } }
-        : {}),
+      sides: { LONG: { reason, commonGuard: true }, SHORT: { reason, commonGuard: true } },
       ...diagnostics,
     },
   });
-  if (contextual && !validMicroBurstContextualConfig(config))
-    return reject('REACTION_CONFIG_INVALID');
+  if (!validMicroBurstContextualConfig(config)) return reject('REACTION_CONFIG_INVALID');
   if (!ctx.dataQuality.contextValid)
     return reject('REACTION_CONTEXT_INVALID', {
       invalidReasons: ctx.dataQuality.invalidReasons.slice(0, 20),
     });
-  if (contextual && (ctx.bookPressure.status !== 'HEALTHY' || ctx.bookPressure.anomalyFlag))
+  if (ctx.bookPressure.status !== 'HEALTHY' || ctx.bookPressure.anomalyFlag)
     return reject('BOOK_NOT_HEALTHY');
   if (
-    contextual &&
-    (!ctx.btcContext ||
-      !Number.isFinite(ctx.btcContext.observedAtMs) ||
-      ctx.btcContext.observedAtMs > observedAtMs ||
-      observedAtMs - ctx.btcContext.observedAtMs > config.btcFreshnessMaxMs)
+    !ctx.btcContext ||
+    !Number.isFinite(ctx.btcContext.observedAtMs) ||
+    ctx.btcContext.observedAtMs > observedAtMs ||
+    observedAtMs - ctx.btcContext.observedAtMs > config.btcFreshnessMaxMs
   )
     return reject('BTC_UNAVAILABLE');
   if (
@@ -85,10 +82,9 @@ export function evaluateMicroBurstReactionEntry(
     !flow.gapFree ||
     flow.capacityTruncated ||
     !Number.isFinite(flow.netTakerFlow) ||
-    (contextual &&
-      ![flow.tradeCount, flow.eventWatermarkMs, flow.buyTakerVolume, flow.sellTakerVolume].every(
-        (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
-      )) ||
+    ![flow.tradeCount, flow.eventWatermarkMs, flow.buyTakerVolume, flow.sellTakerVolume].every(
+      (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
+    ) ||
     flow.tradeCount <= 0 ||
     flow.eventWatermarkMs === null ||
     flow.eventWatermarkMs > observedAtMs ||
@@ -98,7 +94,6 @@ export function evaluateMicroBurstReactionEntry(
 
   const candles = ctx.candles.candles1m.filter((c) => c.closeTime <= ctx.timestamp);
   if (
-    contextual &&
     candles.some(
       (c, i) =>
         ![c.openTime, c.closeTime, c.open, c.high, c.low, c.close, c.volume].every(
@@ -146,10 +141,9 @@ export function evaluateMicroBurstReactionEntry(
     if (
       !level ||
       !target ||
-      (contextual &&
-        ![level.price, target.price, level.availableAtMs, target.availableAtMs].every(
-          (v) => Number.isFinite(v) && v > 0,
-        )) ||
+      ![level.price, target.price, level.availableAtMs, target.availableAtMs].every(
+        (v) => Number.isFinite(v) && v > 0,
+      ) ||
       level.availableAtMs > latest.openTime ||
       target.availableAtMs > latest.openTime
     ) {
@@ -271,13 +265,11 @@ export function evaluateMicroBurstReactionEntry(
         },
       },
     };
-    if (contextual && sideContext.btcContext?.conflictFlag) {
+    if (sideContext.btcContext?.conflictFlag) {
       fail('BTC_CONFLICT');
       continue;
     }
-    const evaluated = contextual
-      ? evaluateMicroBurstStructuralEntry(sideContext, config, side)
-      : evaluateMicroBurstEntry(sideContext, config);
+    const evaluated = evaluateMicroBurstStructuralEntry(sideContext, config, side);
     if (evaluated.action !== 'ENTRY_INTENT') {
       fail(evaluated.reason, evaluated.diagnostics);
       continue;
@@ -305,9 +297,7 @@ export function evaluateMicroBurstReactionEntry(
         ctx.symbol,
         side,
         lastVisit.at,
-        contextual
-          ? `${MICRO_CONTEXTUAL_REACTION_VERSION}:${level.type}:${level.price}:${level.availableAtMs}`
-          : MICRO_REACTION_CANDIDATE_VERSION,
+        `MICRO:${level.type}:${level.price}:${level.availableAtMs}`,
       ),
     };
     if (

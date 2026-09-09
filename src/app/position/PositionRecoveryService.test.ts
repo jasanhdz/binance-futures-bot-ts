@@ -89,7 +89,7 @@ describe('PositionRecoveryService', () => {
     },
   );
 
-  it.each(['MICRO_BURST_V1', 'MOMENTUM_RIDE'] as const)(
+  it.each(['MICRO_BURST', 'MOMENTUM_RIDE'] as const)(
     'does not overwrite a %s ownership handoff completed during an exchange read',
     async (strategy) => {
       const fixture = basePorts();
@@ -165,7 +165,7 @@ describe('PositionRecoveryService', () => {
     });
   });
 
-  it.each(['MICRO_BURST_V1', 'MOMENTUM_RIDE'] as const)(
+  it.each(['MICRO_BURST', 'MOMENTUM_RIDE'] as const)(
     'does not convert incomplete %s startup ownership into manual protection',
     async (strategy) => {
       const fixture = basePorts();
@@ -232,7 +232,7 @@ describe('PositionRecoveryService', () => {
     },
   );
 
-  it.each(['MICRO_BURST_V1', 'MOMENTUM_RIDE'] as const)(
+  it.each(['MICRO_BURST', 'MOMENTUM_RIDE'] as const)(
     'preserves verified %s startup identity without manual brackets',
     async (strategy) => {
       const fixture = basePorts();

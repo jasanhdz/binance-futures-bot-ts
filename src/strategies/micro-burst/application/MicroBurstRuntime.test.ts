@@ -3,7 +3,7 @@ import { MicroBurstRuntime, MicroBurstRuntimeDeps } from './MicroBurstRuntime';
 import type { MicroBurstRuntimeConfig } from './MicroBurstRuntimeTypes';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { MicroBurstStrategyContext, MicroBurstStrategy } from '../domain/MicroBurstStrategy';
-import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
+import { createMicroBurstIdentity } from '../domain/MicroBurstIdentity';
 import { Exchange } from '../../../app/ports/Exchange';
 import { ShadowJournal } from '../../../core/shadow/ShadowTradeJournal';
 import { ShadowPosition, ShadowTradeEvent } from '../../../core/shadow/ShadowTradingTypes';
@@ -22,7 +22,7 @@ function makeConfig(overrides: Partial<MicroBurstRuntimeConfig> = {}): MicroBurs
 
 function makeDeps(): MicroBurstRuntimeDeps {
   const router = new StrategyRouter<MicroBurstStrategyContext>();
-  router.register(new MicroBurstStrategy(createMicroBurstV1Identity(), 'SHADOW'));
+  router.register(new MicroBurstStrategy(createMicroBurstIdentity(), 'SHADOW'));
   return {
     exchange: {
       getServerTime: async () => Date.now(),
@@ -344,7 +344,7 @@ describe('MicroBurstRuntime', () => {
 
   it('rejects LIVE mode without an execution port', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig({ mode: 'LIVE' }));
-    await expect(runtime.start()).rejects.toThrow('MICRO_BURST_V1_LIVE_EXECUTION_PORT_REQUIRED');
+    await expect(runtime.start()).rejects.toThrow('MICRO_BURST_LIVE_EXECUTION_PORT_REQUIRED');
     expect(runtime.getReadiness()).toMatchObject({
       ready: false,
       blockers: expect.arrayContaining(['RUNTIME_NOT_RUNNING']),
@@ -361,9 +361,9 @@ describe('MicroBurstRuntime', () => {
       makeConfig({ mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } }),
     );
     await runtime.start();
-    (runtime as any).shadowEvaluator = {
+    (runtime as any).evaluator = {
       evaluate: async () => ({
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
         strategyVersion: '0.8.0-expected-continuation-shadow',
         symbol: 'ETHUSDT',
         snapshotAtMs: 1_000,
@@ -481,7 +481,7 @@ describe('MicroBurstRuntime', () => {
       temporalHistory: [],
     });
     const result = {
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'golden',
       symbol: 'ETHUSDT',
       snapshotAtMs: 1_000,
@@ -509,12 +509,12 @@ describe('MicroBurstRuntime', () => {
       lastObservedAt: 1_000,
       diagnostics: { leverage: 20, positionFraction: 0.05 },
     };
-    (runtime as any).shadowEvaluator = { evaluate: async () => result };
+    (runtime as any).evaluator = { evaluate: async () => result };
     const evaluated = await runtime.evaluateSymbol('ETHUSDT');
     expect(evaluated?.wouldEnter).toBe(true);
     expect(shadowJournal.positions).toHaveLength(1);
     expect(shadowJournal.positions[0].schemaVersion).toBe(2);
-    expect(shadowJournal.positions[0].strategyId).toBe('MICRO_BURST_V1');
+    expect(shadowJournal.positions[0].strategyId).toBe('MICRO_BURST');
     expect(shadowJournal.events.some((event) => event.event === 'OPENED')).toBe(true);
     expect(runtime.getHealth().paperEngine).toBe('GENERIC');
     callbacks.ETHUSDT({
@@ -596,7 +596,7 @@ describe('MicroBurstRuntime', () => {
     deps.provenance = {
       codeCommitSha: 'abc123',
       configHash: 'def456',
-      cohortId: 'MBV1-M3_2-abc123-def456',
+      cohortId: 'MB-COHORT-abc123-def456',
       officialCohortReady: true,
     };
     const runtime = new MicroBurstRuntime(
@@ -719,7 +719,7 @@ describe('MicroBurstRuntime exchange mutation firewall', () => {
     };
 
     const router = new StrategyRouter<MicroBurstStrategyContext>();
-    router.register(new MicroBurstStrategy(createMicroBurstV1Identity(), 'SHADOW'));
+    router.register(new MicroBurstStrategy(createMicroBurstIdentity(), 'SHADOW'));
     deps.strategyRouter = router;
 
     const runtime = new MicroBurstRuntime(deps, makeConfig());

@@ -7,7 +7,7 @@ import {
 
 const source = { sourceCommit: 'a'.repeat(40), sourceDirty: false };
 
-describe('Contextual V3 local preflight', () => {
+describe('Micro local preflight', () => {
   it('reports the actual drift without approving it or hiding implementation blockers', () => {
     const report = contextualPreflight({
       ...source,
@@ -17,26 +17,24 @@ describe('Contextual V3 local preflight', () => {
       status: 'BLOCKED',
       grantsAuthority: false,
       hashes: {
-        effectiveConfig: '957d53b90e8d57eb9233e468722e85786a42a9244dc88b6cd66fc485421aa3ba',
+        effectiveConfig: '132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1',
         historicalApprovedConfig:
           '093ab31d5531272246e7d408c0351d3a41e7d3716deaa02bf25ba39a43db2f1b',
-        yaml: '970ce7308d7ec0cd49e97e032491dc0b50901c8ab4300746ebff6968d83ce730',
+        yaml: '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
         historicalYamlCheckpoint: MICRO_HISTORICAL_YAML_CHECKPOINT,
       },
     });
     expect(report.blockers).toEqual(
       expect.arrayContaining([
-        'HISTORICAL_APPROVED_EFFECTIVE_CONFIG_MISMATCH',
-        'HISTORICAL_YAML_CHECKPOINT_MISMATCH',
-        'V3_PRODUCTION_DEPLOYMENT_VALIDATION_NOT_ESTABLISHED',
-        'CHRONOLOGICAL_OOS_ACCEPTANCE_NOT_ESTABLISHED',
+        'APPROVED_EFFECTIVE_CONFIG_MISMATCH',
+        'APPROVED_SOURCE_COMMIT_MISMATCH',
       ]),
     );
   });
 
   it.each([
     '[invalid',
-    'micro_burst:\n  mode: LIVE\n  exit_policy:\n    contextual_policy_version: CONTEXTUAL_V3',
+    'micro_burst:\n  mode: LIVE\n  exit_policy:\n    contextual_policy_version: MICRO',
   ])('fails closed for invalid or forbidden config', (yaml) => {
     const report = contextualPreflight({ ...source, yaml });
     expect(report.hashes.effectiveConfig).toBeNull();
@@ -47,10 +45,10 @@ describe('Contextual V3 local preflight', () => {
   it('cannot turn a clean research source into approval', () => {
     const report = contextualPreflight({
       ...source,
-      yaml: 'micro_burst:\n  mode: OFF\n  exit_policy:\n    contextual_policy_version: CONTEXTUAL_V3',
+      yaml: 'micro_burst:\n  mode: OFF\n  exit_policy:\n    contextual_policy_version: MICRO',
     });
-    expect(report.blockers).not.toContain('V3_NOT_CONFIGURED');
-    expect(report.blockers).toContain('V3_OPERATOR_APPROVAL_BUNDLE_NOT_ESTABLISHED');
+    expect(report.blockers).not.toContain('MICRO_NOT_CONFIGURED');
+    expect(report.blockers).toContain('APPROVED_SOURCE_COMMIT_MISMATCH');
     expect(report.status).toBe('BLOCKED');
   });
 
@@ -58,6 +56,25 @@ describe('Contextual V3 local preflight', () => {
     const report = contextualPreflight({ yaml: '[', sourceCommit: 'UNKNOWN', sourceDirty: true });
     expect(report.blockers).toEqual(
       expect.arrayContaining(['SOURCE_DIRTY', 'SOURCE_REVISION_UNKNOWN']),
+    );
+  });
+
+  it('validates only the approved current local source/config and retains separate deployment checks', () => {
+    const input = {
+      ...source,
+      approvedCommit: source.sourceCommit,
+      approvedConfigSha256: '132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1',
+      yaml: readFileSync('regime_config.live.yaml', 'utf8'),
+    };
+    expect(contextualPreflight(input)).toMatchObject({
+      status: 'LOCAL_VALIDATED',
+      grantsAuthority: false,
+      blockers: [],
+    });
+    expect(contextualPreflight(input).remainingChecks).toContain('RUNNING_ARTIFACT_NOT_ATTESTED');
+    expect(contextualPreflight({ ...input, sourceDirty: true }).status).toBe('BLOCKED');
+    expect(contextualPreflight({ ...input, approvedCommit: 'b'.repeat(40) }).status).toBe(
+      'BLOCKED',
     );
   });
 

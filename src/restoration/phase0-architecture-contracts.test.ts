@@ -47,7 +47,28 @@ const concreteStrategyPrefixes = [
 
 const sharedRoots = ['src/core/', 'src/app/execution/', 'src/app/position/', 'src/app/ports/'];
 
-const sharedImportAllowlist: Record<string, string[]> = {};
+// Durable Micro boundaries validate immutable policy/settlement contracts, not entry signals.
+// Keep these exceptions file-specific; strategy evaluators and mutation adapters remain forbidden.
+const sharedImportAllowlist: Record<string, string[]> = {
+  'src/app/execution/DurableCloseCoordinator.ts': [
+    'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
+    'src/strategies/micro-burst/domain/MicroBurstSettlement.ts',
+  ],
+  'src/app/execution/DurableEntryCoordinator.ts': [
+    'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
+  ],
+  'src/app/execution/DurableStopCoordinator.ts': [
+    'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
+  ],
+  'src/app/execution/SharedStrategyExecutionService.ts': [
+    'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
+    'src/strategies/micro-burst/application/MicroBurstLiveSizing.ts',
+  ],
+  'src/app/ports/Exchange.ts': ['src/strategies/micro-burst/domain/MicroBurstSettlement.ts'],
+  'src/app/position/MicroEntryRecoveryService.ts': [
+    'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
+  ],
+};
 
 const mutationMethods = new Set([
   'setLeverage',

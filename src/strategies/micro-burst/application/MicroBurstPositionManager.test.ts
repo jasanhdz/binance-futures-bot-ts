@@ -5,13 +5,14 @@ import {
   MicroBurstPositionManager,
 } from './MicroBurstPositionManager';
 import { BotState } from '../../../core/types';
-import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
+import { createMicroBurstIdentity } from '../domain/MicroBurstIdentity';
 import { MicroBurstExitContext } from '../domain/MicroBurstTypes';
 import { MicroBurstExitObservation } from './MicroBurstExitObservation';
 import { createMicroBurstTradePolicy } from '../domain/MicroBurstTradePolicy';
 
 function botState(overrides: Partial<BotState> = {}): BotState {
-  return { mode: 'IDLE', ...overrides };
+  // Legacy exit behavior is available only with persisted historical provenance.
+  return { mode: 'IDLE', lastStrategyVersion: '0.9.0-reaction-entry-live', ...overrides };
 }
 
 function lifecycle() {
@@ -46,7 +47,7 @@ function managementContext(
 ): MicroBurstPositionManagementContext {
   return {
     symbol: 'ETHUSDT',
-    botState: botState({ lastTradeId: 'MICRO-BURST-V1-123' }),
+    botState: botState({ lastTradeId: 'MICRO-BURST-123' }),
     symbolState: {} as MicroBurstPositionManagementContext['symbolState'],
     strategyMode: 'OFF',
     side: 'LONG',
@@ -55,10 +56,10 @@ function managementContext(
 }
 
 describe('MicroBurstPositionManager correctness boundary', () => {
-  it('uses the persisted V3 policy after restart and rejects unbound hysteresis', async () => {
+  it('uses the persisted Micro policy after restart and rejects unbound hysteresis', async () => {
     const identity = {
-      ...createMicroBurstV1Identity('a'.repeat(40)),
-      strategyVersion: 'CONTEXTUAL_V3',
+      ...createMicroBurstIdentity('a'.repeat(40), 'b'.repeat(64)),
+      strategyVersion: 'MICRO',
     };
     const policy = createMicroBurstTradePolicy(identity, {
       sizingMode: 'MARGIN_FRACTION',
@@ -81,7 +82,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
     const execution = { close: vi.fn(), moveStop: vi.fn() };
     context.strategyMode = 'LIVE';
     const manager = new MicroBurstPositionManager(lifecycle(), undefined, execution, true);
-    await manager.manage(createMicroBurstV1Identity('c'.repeat(40)), context);
+    await manager.manage(createMicroBurstIdentity('c'.repeat(40)), context);
     expect(context.botState.microBurstExitPolicyDigest).toBe(policy.digest);
     expect(flush).toHaveBeenCalledOnce();
     expect(execution.close).not.toHaveBeenCalled();
@@ -105,7 +106,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       observer,
     );
     const context = { ...managementContext(), strategyMode: 'LIVE' as const };
-    await expect(manager.manage(createMicroBurstV1Identity(), context)).rejects.toBe(error);
+    await expect(manager.manage(createMicroBurstIdentity(), context)).rejects.toBe(error);
     await observer.close();
     expect(close).toHaveBeenCalledOnce();
     expect(append).toHaveBeenCalledTimes(2);
@@ -119,41 +120,41 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       realizedNetPnl: null,
     });
   });
-  it('V3 deadline needs no invented price, and cannot mutate LIVE state or orders', async () => {
+  it('rejects unbound current Micro policy without inventing a deadline price or granting LIVE authority', async () => {
     const execution = { close: vi.fn(), moveStop: vi.fn() };
     const append = vi.fn();
     const manager = new MicroBurstPositionManager(
       lifecycle(),
-      { contextualPolicyVersion: 'CONTEXTUAL_V3' },
+      { contextualPolicyVersion: 'MICRO' },
       execution,
       true,
       new MicroBurstExitObservation({ append }),
       () => 400_000,
     );
     const set = vi.fn();
-    const result = await manager.manage(createMicroBurstV1Identity(), {
+    const result = await manager.manage(createMicroBurstIdentity(), {
       symbol: 'ETHUSDT',
-      botState: botState({ lastEntryAt: 1000, lastTradeId: 'micro-deadline' }),
+      botState: botState({
+        lastEntryAt: 1000,
+        lastTradeId: 'micro-deadline',
+        lastStrategyVersion: 'MICRO',
+      }),
       symbolState: { set } as any,
     });
     expect(result).toMatchObject({
-      decision: 'CLOSE_MARKET',
-      reason: 'MAX_HOLD',
+      decision: 'NO_ACTION',
+      reason: 'MICRO_PERSISTED_EXIT_POLICY_UNVERIFIED',
       diagnostics: { actionApplied: false },
     });
     const live = managementContext({ currentPrice: 98 });
+    live.botState.lastStrategyVersion = 'MICRO';
     live.strategyMode = 'LIVE';
     live.symbolState = { set } as any;
-    await manager.manage(createMicroBurstV1Identity(), live);
+    await manager.manage(createMicroBurstIdentity(), live);
     expect(execution.close).not.toHaveBeenCalled();
     expect(execution.moveStop).not.toHaveBeenCalled();
     expect(set).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(append).toHaveBeenCalledTimes(4));
-    expect(append.mock.calls[0][0]).toMatchObject({
-      context: null,
-      realizedNetPnl: null,
-      phase: 'DECISION',
-    });
+    expect(append).not.toHaveBeenCalled();
   });
   it('rejects ownership mismatch before lifecycle work', async () => {
     const core = lifecycle();
@@ -175,16 +176,16 @@ describe('MicroBurstPositionManager correctness boundary', () => {
   it('evaluates and translates target exit while OFF without applying a mutation', async () => {
     const core = lifecycle();
     const manager = new MicroBurstPositionManager(core);
-    const result = await manager.manage(createMicroBurstV1Identity(), managementContext());
+    const result = await manager.manage(createMicroBurstIdentity(), managementContext());
     expect(result).toMatchObject({
-      tradeId: 'MICRO-BURST-V1-123',
+      tradeId: 'MICRO-BURST-123',
       decision: 'CLOSE_MARKET',
       reason: 'TARGET',
       diagnostics: {
-        lifecycleOwner: 'MICRO_BURST_V1',
+        lifecycleOwner: 'MICRO_BURST',
         strategyMode: 'OFF',
         actionApplied: false,
-        authorityReason: 'MICRO_BURST_V1_OFF',
+        authorityReason: 'MICRO_BURST_OFF',
       },
     });
     expect(core.manage).not.toHaveBeenCalled();
@@ -192,7 +193,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
 
   it('fails closed to NO_ACTION when exit context is unavailable', async () => {
     const manager = new MicroBurstPositionManager(lifecycle());
-    const result = await manager.manage(createMicroBurstV1Identity(), {
+    const result = await manager.manage(createMicroBurstIdentity(), {
       symbol: 'ETHUSDT',
       botState: botState(),
       symbolState: {} as MicroBurstPositionManagementContext['symbolState'],
@@ -241,20 +242,20 @@ describe('MicroBurstPositionManager correctness boundary', () => {
         },
       });
 
-    expect(await manager.manage(createMicroBurstV1Identity(), contextAt(20_000))).toMatchObject({
+    expect(await manager.manage(createMicroBurstIdentity(), contextAt(20_000))).toMatchObject({
       decision: 'HOLD',
       diagnostics: { actionApplied: false },
     });
-    expect(await manager.manage(createMicroBurstV1Identity(), contextAt(21_000))).toMatchObject({
+    expect(await manager.manage(createMicroBurstIdentity(), contextAt(21_000))).toMatchObject({
       decision: 'HOLD',
       diagnostics: { actionApplied: false },
     });
-    expect(await manager.manage(createMicroBurstV1Identity(), contextAt(23_000))).toMatchObject({
+    expect(await manager.manage(createMicroBurstIdentity(), contextAt(23_000))).toMatchObject({
       decision: 'CLOSE_MARKET',
       reason: 'INTELLIGENT_EXIT',
       diagnostics: {
         actionApplied: false,
-        authorityReason: 'MICRO_BURST_V1_OFF',
+        authorityReason: 'MICRO_BURST_OFF',
       },
     });
     expect(core.manage).not.toHaveBeenCalled();
@@ -277,14 +278,14 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       } as unknown as MicroBurstPositionManagementContext['symbolState'],
     };
 
-    const result = await manager.manage(createMicroBurstV1Identity(), context);
+    const result = await manager.manage(createMicroBurstIdentity(), context);
 
     expect(result).toMatchObject({
       decision: 'CLOSE_MARKET',
       reason: 'TARGET',
       diagnostics: {
         actionApplied: true,
-        authorityReason: 'MICRO_BURST_V1_LIVE',
+        authorityReason: 'MICRO_BURST_LIVE',
       },
     });
     expect(close).toHaveBeenCalledOnce();
@@ -313,12 +314,12 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       } as unknown as MicroBurstPositionManagementContext['symbolState'],
     };
 
-    const result = await manager.manage(createMicroBurstV1Identity(), context);
+    const result = await manager.manage(createMicroBurstIdentity(), context);
 
     expect(result).toMatchObject({
       decision: 'MOVE_STOP',
       reason: 'PROFIT_LOCK',
-      diagnostics: { actionApplied: true, authorityReason: 'MICRO_BURST_V1_LIVE' },
+      diagnostics: { actionApplied: true, authorityReason: 'MICRO_BURST_LIVE' },
     });
     expect(moveStop).toHaveBeenCalledOnce();
     const moveStopCall = (moveStop as any).mock.calls[0];
@@ -339,12 +340,12 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       } as unknown as MicroBurstPositionManagementContext['symbolState'],
     };
 
-    expect(await manager.manage(createMicroBurstV1Identity(), context)).toMatchObject({
+    expect(await manager.manage(createMicroBurstIdentity(), context)).toMatchObject({
       decision: 'CLOSE_MARKET',
       reason: 'TARGET',
       diagnostics: {
         actionApplied: true,
-        authorityReason: 'MICRO_BURST_V1_LIVE',
+        authorityReason: 'MICRO_BURST_LIVE',
       },
     });
     expect(close).toHaveBeenCalledOnce();
@@ -388,7 +389,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
       },
     });
     riskContext.symbolState = { set: firstSet } as unknown as typeof riskContext.symbolState;
-    await firstManager.manage(createMicroBurstV1Identity(), riskContext);
+    await firstManager.manage(createMicroBurstIdentity(), riskContext);
     const persisted = firstSet.mock.calls[firstSet.mock.calls.length - 1]?.[0]?.microBurstExitState;
 
     const restoredManager = new MicroBurstPositionManager(lifecycle());
@@ -400,7 +401,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
     });
     restoredContext.botState.microBurstExitState = persisted;
     restoredContext.symbolState = { set: vi.fn() } as unknown as typeof restoredContext.symbolState;
-    await restoredManager.manage(createMicroBurstV1Identity(), restoredContext);
+    await restoredManager.manage(createMicroBurstIdentity(), restoredContext);
     const restoredCalls = (restoredContext.symbolState.set as any).mock.calls;
     expect(restoredCalls[restoredCalls.length - 1][0].microBurstExitState).toMatchObject({
       consecutiveRiskObservations: 2,
@@ -425,7 +426,7 @@ describe('MicroBurstPositionManager correctness boundary', () => {
     malformedContext.symbolState = {
       set: vi.fn(),
     } as unknown as typeof malformedContext.symbolState;
-    await malformedManager.manage(createMicroBurstV1Identity(), malformedContext);
+    await malformedManager.manage(createMicroBurstIdentity(), malformedContext);
     const malformedCalls = (malformedContext.symbolState.set as any).mock.calls;
     expect(malformedCalls[malformedCalls.length - 1][0].microBurstExitState).toMatchObject({
       consecutiveRiskObservations: 1,

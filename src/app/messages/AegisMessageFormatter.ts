@@ -387,7 +387,7 @@ export function formatAegisStartupMessage(input: AegisStartupMessageInput): stri
   const active = [
     aegisActive && `AEGIS_TURBO (${input.aegisTurbo?.mode ?? 'SHADOW'})`,
     momentumActive && `MOMENTUM_RIDE (${input.momentumRide?.mode ?? 'SHADOW'})`,
-    microActive && `MICRO_BURST_V1 (${input.microBurst?.mode})`,
+    microActive && `MICRO_BURST (${input.microBurst?.mode})`,
   ].filter(Boolean);
   // Plain text: TelegramAdapter owns HTML escaping for all messages.
   const identity = input.identity;

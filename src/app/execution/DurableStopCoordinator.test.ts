@@ -25,7 +25,7 @@ function fixture() {
     lastSide: 'LONG',
     lastTradeId: 'trade',
     lastOrderId: '42',
-    lastStrategy: 'MICRO_BURST_V1',
+    lastStrategy: 'MICRO_BURST',
     positionOwner: 'BOT',
     lastEntryPrice: 100,
     lastEntryQty: 2,

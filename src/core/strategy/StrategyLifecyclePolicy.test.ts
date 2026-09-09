@@ -18,6 +18,6 @@ describe('StrategyLifecyclePolicy', () => {
   it('keeps owned strategies on their explicit lifecycle identities', () => {
     expect(strategyLifecyclePolicy('AEGIS_TURBO').strategyId).toBe('AEGIS_TURBO');
     expect(strategyLifecyclePolicy('MOMENTUM_RIDE').strategyId).toBe('MOMENTUM_RIDE');
-    expect(strategyLifecyclePolicy('MICRO_BURST_V1').strategyId).toBe('MICRO_BURST_V1');
+    expect(strategyLifecyclePolicy('MICRO_BURST').strategyId).toBe('MICRO_BURST');
   });
 });

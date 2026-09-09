@@ -4,7 +4,7 @@ import { evaluateMicroBurstEntry } from './MicroBurstEntryPolicy';
 import { evaluateMicroBurstContextualProposal } from './MicroBurstContextualProposal';
 import { MicroBurstDuplicateSignalGuard } from './MicroBurstDuplicateSignalGuard';
 import { MicroBurstStrategy, MicroBurstStrategyContext } from './MicroBurstStrategy';
-import { createMicroBurstV1Identity } from './MicroBurstIdentity';
+import { createMicroBurstIdentity } from './MicroBurstIdentity';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import {
   makeMicroBurstContext,
@@ -85,29 +85,22 @@ describe('Micro reaction entry policy', () => {
     expect(proposal.sizing!.maxLoss).toBeLessThanOrEqual(2);
     const guard = new MicroBurstDuplicateSignalGuard({ now: () => now });
     const episode = String(proposal.entry.diagnostics.episodeId);
-    const first = guard.check('MICRO_BURST_V1', ctx.symbol, 'LONG', 0.12341, now, episode);
-    const second = guard.check(
-      'MICRO_BURST_V1',
-      ctx.symbol,
-      'LONG',
-      0.12349,
-      now + 60_000,
-      episode,
-    );
+    const first = guard.check('MICRO_BURST', ctx.symbol, 'LONG', 0.12341, now, episode);
+    const second = guard.check('MICRO_BURST', ctx.symbol, 'LONG', 0.12349, now + 60_000, episode);
     expect(second.duplicateSuppressed).toBe(true);
     expect(second.shadowSignalId).toBe(first.shadowSignalId);
     expect(
-      guard.check('MICRO_BURST_V1', ctx.symbol, 'SHORT', 0.12341, now, episode).duplicateSuppressed,
+      guard.check('MICRO_BURST', ctx.symbol, 'SHORT', 0.12341, now, episode).duplicateSuppressed,
     ).toBe(false);
   });
   it.each(['LONG', 'SHORT'] as const)(
-    'V3 %s uses reaction clarity, not baseline continuation/bias',
+    'current Micro %s uses reaction clarity, not historical continuation/bias',
     (side) => {
       const { ctx, book } = fixture(side);
       ctx.structuralClarity = false;
       ctx.momentum.continuationScore = 0;
-      const candidate = { ...config, contextualPolicyVersion: 'CONTEXTUAL_V3' as const };
-      expect(evaluateMicroBurstReactionEntry(ctx, config, book, now).action).toBe('NO_TRADE');
+      const candidate = { ...config, contextualPolicyVersion: 'MICRO' as const };
+      expect(evaluateMicroBurstReactionEntry(ctx, config, book, now).action).toBe('ENTRY_INTENT');
       expect(evaluateMicroBurstReactionEntry(ctx, candidate, book, now)).toMatchObject({
         action: 'ENTRY_INTENT',
         side,
@@ -118,22 +111,22 @@ describe('Micro reaction entry policy', () => {
       );
     },
   );
-  it('V3 cannot enter LIVE even with the old approved identity', () => {
+  it('cannot enter LIVE without complete approved identity', () => {
     const { ctx, book } = fixture();
-    const strategy = new MicroBurstStrategy(createMicroBurstV1Identity('a'.repeat(40)), 'LIVE');
+    const strategy = new MicroBurstStrategy(createMicroBurstIdentity('a'.repeat(40)), 'LIVE');
     expect(
       strategy.evaluate({
         ...ctx,
-        entryPolicy: 'REACTION',
+        entryPolicy: 'MICRO',
         executionBook: book,
         observedAtMs: now,
-        config: { contextualPolicyVersion: 'CONTEXTUAL_V3' },
+        config: { contextualPolicyVersion: 'MICRO' },
       }).reason,
     ).toBe('MICRO_CONTEXTUAL_LIVE_IDENTITY_REQUIRED');
   });
-  it('V3 separates sub-cent levels within the same visit without minute/cent rounding', () => {
+  it('separates sub-cent levels within the same visit without minute/cent rounding', () => {
     const { ctx, book } = fixture();
-    const candidate = { ...config, contextualPolicyVersion: 'CONTEXTUAL_V3' as const };
+    const candidate = { ...config, contextualPolicyVersion: 'MICRO' as const };
     const first = evaluateMicroBurstReactionEntry(ctx, candidate, book, now);
     ctx.levels.nearest.support!.price += 0.0001;
     const second = evaluateMicroBurstReactionEntry(ctx, candidate, book, now);
@@ -146,11 +139,18 @@ describe('Micro reaction entry policy', () => {
     async (side) => {
       const { ctx, book } = fixture(side);
       const router = new StrategyRouter<MicroBurstStrategyContext>();
-      router.register(new MicroBurstStrategy(createMicroBurstV1Identity('a'.repeat(40)), 'LIVE'));
-      const expected = evaluateMicroBurstReactionEntry(ctx, config, book, now);
-      const selected = await router.evaluate('MICRO_BURST_V1', {
+      router.register(
+        new MicroBurstStrategy(createMicroBurstIdentity('a'.repeat(40), 'b'.repeat(64)), 'LIVE'),
+      );
+      const expected = evaluateMicroBurstReactionEntry(
+        ctx,
+        { ...config, contextualPolicyVersion: 'MICRO' },
+        book,
+        now,
+      );
+      const selected = await router.evaluate('MICRO_BURST', {
         ...ctx,
-        entryPolicy: 'REACTION',
+        entryPolicy: 'MICRO',
         executionBook: book,
         observedAtMs: now,
       });
@@ -161,22 +161,21 @@ describe('Micro reaction entry policy', () => {
         structuralInvalidation: expected.stopInvalidationPrice,
         destinationPrice: expected.targetPrice,
         diagnostics: {
-          entryPolicy: 'REACTION',
-          entryPolicyVersion: 'reaction-entry-1-live',
-          leverage: expected.leverage,
+          policy: 'MICRO',
+          leverage: 30,
           positionFraction: expected.positionFraction,
         },
       });
       ctx.candles.candles1m[0][side === 'LONG' ? 'low' : 'high'] = side === 'LONG' ? 99.8 : 100.2;
       ctx.levels.nearest.structuralPosition = side === 'LONG' ? 'near_support' : 'near_resistance';
       expect(
-        (await router.evaluate('MICRO_BURST_V1', { ...ctx, entryPolicy: 'BASELINE' })).decision,
-      ).toBe('ENTRY_INTENT');
+        (await router.evaluate('MICRO_BURST', { ...ctx, entryPolicy: 'MICRO' })).decision,
+      ).toBe('NO_TRADE');
       expect(
         (
-          await router.evaluate('MICRO_BURST_V1', {
+          await router.evaluate('MICRO_BURST', {
             ...ctx,
-            entryPolicy: 'REACTION',
+            entryPolicy: 'MICRO',
             executionBook: book,
             observedAtMs: now,
           })
@@ -261,6 +260,7 @@ describe('Micro reaction entry policy', () => {
       openTime: now - 180_000,
       closeTime: now - 120_000,
       open: 99.6,
+      low: 99.5,
       close: 100,
     });
     expect(evaluateMicroBurstReactionEntry(ctx, config, book, now).diagnostics.setup).toBe(
@@ -274,7 +274,15 @@ describe('Micro reaction entry policy', () => {
     const candle = ctx.candles.candles1m[0];
     ctx.candles.candles1m.unshift(
       { ...candle, openTime: now - 180_000, closeTime: now - 120_000, close: 100.2, high: 100.3 },
-      { ...candle, openTime: now - 120_000, closeTime: now - 60_000, low: 100, close: 100.1 },
+      {
+        ...candle,
+        openTime: now - 120_000,
+        closeTime: now - 60_000,
+        open: 100.1,
+        low: 100,
+        close: 100.1,
+        high: 100.2,
+      },
     );
     expect(evaluateMicroBurstReactionEntry(ctx, config, book, now).diagnostics.sides).toMatchObject(
       { LONG: { reason: 'REACTION_DEFENSE_DEGRADING' } },

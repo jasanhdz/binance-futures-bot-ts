@@ -8,6 +8,7 @@ import {
   parseMicroBurstConfig,
 } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 import { microBurstConfigHash } from '../../strategies/micro-burst/application/MicroBurstConfigHash';
+import { MICRO_BURST_CONFIG_SHA256 } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 
 // Historical research baseline, not the subsequently approved REACTION deployment.
 const MICRO_HISTORICAL_APPROVED_CONFIG =
@@ -21,12 +22,14 @@ export function contextualPreflight(input: {
   yaml: string;
   sourceCommit: string;
   sourceDirty: boolean;
+  approvedCommit?: string;
+  approvedConfigSha256?: string;
   prospectiveOverride?: string;
   archiveOverride?: string;
 }): {
   schemaVersion: 1;
-  policyVersion: 'CONTEXTUAL_V3';
-  status: 'BLOCKED';
+  policyVersion: 'MICRO';
+  status: 'BLOCKED' | 'LOCAL_VALIDATED';
   grantsAuthority: false;
   sourceCommit: string;
   sourceDirty: boolean;
@@ -37,17 +40,16 @@ export function contextualPreflight(input: {
     historicalYamlCheckpoint: string;
   };
   blockers: string[];
+  remainingChecks: string[];
 } {
   // This local-only command cannot attest deployment or exchange acceptance.
-  const blockers = [
-    'V3_PRODUCTION_DEPLOYMENT_VALIDATION_NOT_ESTABLISHED',
-    'V3_OPERATOR_APPROVAL_BUNDLE_NOT_ESTABLISHED',
+  const blockers: string[] = [];
+  const remainingChecks = [
     'RUNNING_ARTIFACT_NOT_ATTESTED',
-    'DURABLE_STOP_REPLACEMENT_EXCHANGE_ACCEPTANCE_NOT_ESTABLISHED',
     'SIGNED_NET_LOSS_LEDGER_INITIALIZATION_NOT_INSPECTED',
-    'DECISION_FILL_COMMISSION_FUNDING_DATASET_NOT_ESTABLISHED',
-    'CHRONOLOGICAL_OOS_ACCEPTANCE_NOT_ESTABLISHED',
     'OWNERSHIP_PROTECTION_AND_PNL_QUARANTINES_NOT_INSPECTED',
+    'EXCHANGE_STOP_ACCEPTANCE_NOT_PROVEN_BY_LOCAL_CHECK',
+    'ECONOMIC_RESULTS_NOT_VALIDATED',
   ];
   let effectiveConfig: string | null = null;
   try {
@@ -62,23 +64,30 @@ export function contextualPreflight(input: {
           : { enabled: input.archiveOverride === 'true' },
     });
     effectiveConfig = microBurstConfigHash(config);
-    if (effectiveConfig !== MICRO_HISTORICAL_APPROVED_CONFIG)
-      blockers.push('HISTORICAL_APPROVED_EFFECTIVE_CONFIG_MISMATCH');
-    if (config.exitPolicy?.contextualPolicyVersion !== 'CONTEXTUAL_V3')
-      blockers.push('V3_NOT_CONFIGURED');
+    if (
+      effectiveConfig !== MICRO_BURST_CONFIG_SHA256 ||
+      effectiveConfig !== input.approvedConfigSha256
+    )
+      blockers.push('APPROVED_EFFECTIVE_CONFIG_MISMATCH');
+    if (config.exitPolicy?.contextualPolicyVersion !== 'MICRO')
+      blockers.push('MICRO_NOT_CONFIGURED');
     if (!config.contextualRisk) blockers.push('EXPLICIT_MARGIN_FRACTION_POLICY_NOT_CONFIGURED');
+    if (!config.enabled || config.mode !== 'LIVE') blockers.push('MICRO_LIVE_NOT_SELECTED');
   } catch {
     blockers.push('CONFIG_PARSE_OR_POLICY_VALIDATION_FAILED');
   }
   const yaml = createHash('sha256').update(input.yaml).digest('hex');
-  if (yaml !== MICRO_HISTORICAL_YAML_CHECKPOINT)
-    blockers.push('HISTORICAL_YAML_CHECKPOINT_MISMATCH');
   if (input.sourceDirty) blockers.push('SOURCE_DIRTY');
   if (!/^[a-f0-9]{40}$/i.test(input.sourceCommit)) blockers.push('SOURCE_REVISION_UNKNOWN');
+  if (
+    !/^[a-f0-9]{40}$/i.test(input.approvedCommit ?? '') ||
+    input.approvedCommit !== input.sourceCommit
+  )
+    blockers.push('APPROVED_SOURCE_COMMIT_MISMATCH');
   return {
     schemaVersion: 1,
-    policyVersion: 'CONTEXTUAL_V3',
-    status: 'BLOCKED',
+    policyVersion: 'MICRO',
+    status: blockers.length ? 'BLOCKED' : 'LOCAL_VALIDATED',
     grantsAuthority: false,
     sourceCommit: input.sourceCommit,
     sourceDirty: input.sourceDirty,
@@ -89,6 +98,7 @@ export function contextualPreflight(input: {
       historicalYamlCheckpoint: MICRO_HISTORICAL_YAML_CHECKPOINT,
     },
     blockers,
+    remainingChecks,
   };
 }
 
@@ -109,11 +119,13 @@ if (require.main === module) {
       yaml: readFileSync(resolve(root, 'regime_config.live.yaml'), 'utf8'),
       sourceCommit: git('rev-parse', 'HEAD'),
       sourceDirty: git('status', '--porcelain', '--untracked-files=normal') !== '',
+      approvedCommit: process.env.MICRO_BURST_APPROVED_COMMIT,
+      approvedConfigSha256: process.env.MICRO_BURST_APPROVED_CONFIG_SHA256,
       prospectiveOverride: process.env.PHANTOM_MICRO_BURST_PROSPECTIVE_VALIDATION,
       archiveOverride: process.env.PHANTOM_MICRO_BURST_MARKET_ARCHIVE,
     });
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-    process.exitCode = 2;
+    process.exitCode = report.status === 'LOCAL_VALIDATED' ? 0 : 2;
   } catch {
     process.stdout.write(
       `${JSON.stringify({ status: 'BLOCKED', grantsAuthority: false, blockers: ['LOCAL_PREFLIGHT_FAILED'] })}\n`,

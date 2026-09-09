@@ -5,7 +5,7 @@ describe('EntryGateDiagnostics', () => {
   it('aggregates counts once per minute and emits idle heartbeats', () => {
     let now = 0;
     const logger = { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const diagnostics = new EntryGateDiagnostics(logger, 'MICRO_BURST_V1', () => now);
+    const diagnostics = new EntryGateDiagnostics(logger, 'MICRO_BURST', () => now);
     for (let i = 0; i < 1_000; i++)
       diagnostics.record('admission', 'CONFIG_MISMATCH', { symbol: 'ETHUSDT' });
     expect(logger.info).not.toHaveBeenCalled();

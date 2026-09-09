@@ -1,3 +1,4 @@
+import { isMicroBurstStrategy, isMicroBurstPolicy } from '../../core/strategy/MicroBurstLegacy';
 import type { BotState } from '../../core/types';
 import type { DurableEntryRequest, EntryOrderReceipt } from '../execution/DurableEntryCoordinator';
 import type { TradingExchangePort } from '../ports/Exchange';
@@ -27,11 +28,11 @@ export class MicroEntryRecoveryService {
     receipt: EntryOrderReceipt,
   ): Promise<MicroEntryRecoveryResult> {
     const { intent } = request;
-    if (intent.identity.strategyId !== 'MICRO_BURST_V1')
+    if (!isMicroBurstStrategy(intent.identity.strategyId))
       return { status: 'NOT_APPLICABLE', reason: 'RECOVERY_OWNER_UNSUPPORTED' };
     const contextualPolicy = intent.metadata.contextualPolicy;
     if (
-      intent.identity.strategyVersion === 'CONTEXTUAL_V3' &&
+      isMicroBurstPolicy(intent.identity.strategyVersion) &&
       (!isMicroBurstTradePolicy(contextualPolicy, intent.identity) ||
         ![20, 30].includes(intent.leverage) ||
         intent.leverage > contextualPolicy.config.maxLeverageHardCap ||
@@ -52,11 +53,11 @@ export class MicroEntryRecoveryService {
         state.lastTradeId === request.parentTradeId &&
         state.lastOrderId === receipt.orderId &&
         state.lastSide === intent.side &&
-        state.lastStrategy === 'MICRO_BURST_V1' &&
+        isMicroBurstStrategy(state.lastStrategy) &&
         state.positionOwner === 'BOT' &&
         state.tradeOrigin === 'BOT' &&
         state.ownershipStatus === 'VERIFIED' &&
-        (intent.identity.strategyVersion !== 'CONTEXTUAL_V3' ||
+        (!isMicroBurstPolicy(intent.identity.strategyVersion) ||
           (isMicroBurstTradePolicy(state.microBurstTradePolicy, intent.identity) &&
             state.microBurstTradePolicy.digest ===
               (contextualPolicy as { digest: string }).digest)) &&
@@ -125,7 +126,7 @@ export class MicroEntryRecoveryService {
           lastTradeId: request.parentTradeId,
           lastOrderId: receipt.orderId,
           lastSide: intent.side,
-          lastStrategy: 'MICRO_BURST_V1',
+          lastStrategy: 'MICRO_BURST',
           lastStrategyVersion: intent.identity.strategyVersion,
           lastStrategyHash: intent.identity.strategyHash,
           lastConfigHash: intent.identity.configHash,
@@ -142,7 +143,7 @@ export class MicroEntryRecoveryService {
           lastStopPrice: intent.structuralStopPrice,
           microBurstStructuralStopPrice: intent.structuralStopPrice,
           microBurstDestinationPrice: intent.destinationPrice,
-          ...(intent.identity.strategyVersion === 'CONTEXTUAL_V3'
+          ...(isMicroBurstPolicy(intent.identity.strategyVersion)
             ? {
                 microBurstTradePolicy: structuredClone(contextualPolicy),
                 microBurstEpisodeId: String(intent.metadata?.episodeId ?? ''),

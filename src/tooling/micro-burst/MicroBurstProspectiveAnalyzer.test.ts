@@ -33,7 +33,7 @@ describe('MicroBurstProspectiveAnalyzer', () => {
   it('reconstructs time-shift entry from the first post-shift trade without crossing symbols', () => {
     const signal = {
       shadowSignalId: 'shifted',
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'v1',
       codeCommitSha: 'sha',
       configHash: 'cfg',
@@ -110,27 +110,31 @@ describe('MicroBurstProspectiveAnalyzer', () => {
 
   it('requires an explicit cohort when official data contains multiple cohorts', () => {
     const row = (id: string, cohortId: string) => ({ shadowSignalId: id, cohortId });
-    expect(() => analyzeMicroBurstProspective({
-      signals: [row('a', 'cohort-a'), row('b', 'cohort-b')],
-      outcomes: [],
-      official: true,
-      availableCohorts: ['cohort-a', 'cohort-b'],
-    })).toThrow('COHORT_SELECTION_REQUIRED');
+    expect(() =>
+      analyzeMicroBurstProspective({
+        signals: [row('a', 'cohort-a'), row('b', 'cohort-b')],
+        outcomes: [],
+        official: true,
+        availableCohorts: ['cohort-a', 'cohort-b'],
+      }),
+    ).toThrow('COHORT_SELECTION_REQUIRED');
   });
 
   it('rejects an unresolved malformed outcome journal for official analysis', () => {
-    expect(() => analyzeMicroBurstProspective({
-      signals: [],
-      outcomes: [],
-      official: true,
-      malformedJournal: {
-        journalHealthy: false,
-        malformedCount: 1,
-        malformedFile: 'outcomes.jsonl',
-        malformedLine: 4,
-        malformedReason: 'invalid json',
-      },
-    })).toThrow('MALFORMED_OUTCOME_JOURNAL_UNRESOLVED');
+    expect(() =>
+      analyzeMicroBurstProspective({
+        signals: [],
+        outcomes: [],
+        official: true,
+        malformedJournal: {
+          journalHealthy: false,
+          malformedCount: 1,
+          malformedFile: 'outcomes.jsonl',
+          malformedLine: 4,
+          malformedReason: 'invalid json',
+        },
+      }),
+    ).toThrow('MALFORMED_OUTCOME_JOURNAL_UNRESOLVED');
   });
 
   it('rejects required and unknown legacy gaps, but not a depth gap', () => {
@@ -168,6 +172,8 @@ describe('MicroBurstProspectiveAnalyzer', () => {
       signals: [{ shadowSignalId: 'a', episodeId: 'MBV1-EP-a' }],
       outcomes: [],
     });
-    expect(report.text).toContain('Episode bootstrap/attrition: bootstrap=1; completed=0; attrition=1');
+    expect(report.text).toContain(
+      'Episode bootstrap/attrition: bootstrap=1; completed=0; attrition=1',
+    );
   });
 });

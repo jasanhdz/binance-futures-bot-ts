@@ -10,7 +10,7 @@ import { ShadowSignalSnapshot } from '../research/MicroBurstOutcomeTypes';
 function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignalSnapshot {
   return freezeSignalSnapshot({
     shadowSignalId: 'test-signal',
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     strategyVersion: '0.4.0-prospective-validation',
     codeCommitSha: 'UNCOMMITTED',
     configHash: 'default',

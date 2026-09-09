@@ -39,11 +39,11 @@ function settlement(
   evidence: MicroBurstSettlementEvidence;
 } {
   const identity: MicroBurstSettlementIdentity = {
-    tradeId: `MICRO-BURST-V1-${index}`,
+    tradeId: `MICRO-BURST-${index}`,
     episodeId: `episode-${index}`,
     symbol: 'ETHUSDT',
     side,
-    policyVersion: 'CONTEXTUAL_V3',
+    policyVersion: 'MICRO',
     configHash: `sha256:${'a'.repeat(64)}`,
     codeCommitSha: 'b'.repeat(40),
     entryOrderId: `entry-${index}`,
@@ -127,8 +127,8 @@ function fixture() {
     action,
     account: options.account,
     environment: options.environment,
-    strategyId: 'MICRO_BURST_V1',
-    policyVersion: 'CONTEXTUAL_V3',
+    strategyId: 'MICRO_BURST',
+    policyVersion: 'MICRO',
     expectedRevision: instance.snapshot().revision,
     nonce: `operator_nonce_${instance.snapshot().revision}`,
     issuedAtMs: now,
@@ -196,6 +196,51 @@ describe('Micro net settlement economics', () => {
 });
 
 describe('Micro durable three-net-loss latch', () => {
+  it.each([0, 3])(
+    'opens the persisted legacy identity without resetting revision, signed commands or %s losses',
+    (losses) => {
+      const f = fixture();
+      f.apply(f.ledger, f.command());
+      for (let i = 1; i <= losses; i++) {
+        const trade = settlement(i);
+        f.ledger.observe(trade.identity, trade.evidence);
+      }
+      const before = f.ledger.snapshot();
+      f.ledger.close();
+      const db = new Database(f.options.databasePath);
+      const identity = JSON.parse(
+        (
+          db.prepare('SELECT identity FROM micro_loss_meta WHERE id = 1').get() as {
+            identity: string;
+          }
+        ).identity,
+      );
+      identity[3] = 'MICRO_BURST_V1';
+      identity[4] = 'CONTEXTUAL_V3';
+      const legacy = JSON.stringify(identity);
+      db.prepare('UPDATE micro_loss_meta SET identity = ? WHERE id = 1').run(legacy);
+      const commands = db.prepare('SELECT * FROM micro_loss_commands').all();
+      db.close();
+      const restored = f.reopen();
+      expect(restored.snapshot()).toEqual(before);
+      if (losses === 3)
+        expect(restored.snapshot().blockedReason).toBe('MICRO_THREE_NET_LOSSES_LATCHED');
+      restored.close();
+      const observed = new Database(f.options.databasePath, { readonly: true });
+      expect(observed.prepare('SELECT identity FROM micro_loss_meta WHERE id = 1').get()).toEqual({
+        identity: legacy,
+      });
+      expect(observed.prepare('SELECT * FROM micro_loss_commands').all()).toEqual(commands);
+      observed.close();
+      expect(
+        () =>
+          new MicroBurstNetLossLedger({
+            ...f.options,
+            operatorPublicKey: generateKeyPairSync('ed25519').publicKey,
+          }),
+      ).toThrow('SCOPE_OR_KEY_MISMATCH');
+    },
+  );
   it('requires signed initialization and cannot use a restart or later win to release a halt', () => {
     const f = fixture();
     expect(f.ledger.snapshot().blockedReason).toBe('MICRO_NET_LOSS_NOT_INITIALIZED');

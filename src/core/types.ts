@@ -108,7 +108,12 @@ export type BotState = {
   microBurstSettlement?: import('../strategies/micro-burst/domain/MicroBurstSettlement').MicroBurstSettlementIdentity;
   microBurstStopCloseOrderIds?: string[];
   microBurstActiveStopKey?: string;
-  microBurstStopMove?: { key: string; triggerPrice: number; policyDigest: string };
+  microBurstStopMove?: {
+    key: string;
+    triggerPrice: number;
+    policyDigest: string;
+    retirementTargets?: import('../app/ports/Exchange').CancelTarget[];
+  };
   microBurstExitPolicyDigest?: string;
   /** Fail-closed quarantine until an operator reconciles an exact realized close PnL. */
   microBurstPnlUnverified?: boolean;

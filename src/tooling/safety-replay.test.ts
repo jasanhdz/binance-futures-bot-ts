@@ -12,7 +12,7 @@ function makeEpisode(overrides: Partial<ReplayEpisode> = {}): ReplayEpisode {
     episodeId: 'EP-1',
     symbol: 'XRPUSDT',
     side: 'LONG',
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     startedAtMs: 1_700_000_000_000,
     closedAtMs: 1_700_001_000_000,
     entryPrice: 1.0,
@@ -92,7 +92,12 @@ describe('computeReplayMetrics', () => {
   it('excludes INCOMPLETE episodes from completed count and returns INSUFFICIENT_DATA', () => {
     const episodes = [
       makeEpisode({ episodeId: 'EP-1', outcome: 'WIN', netPnl: 10 }),
-      makeEpisode({ episodeId: 'EP-2', outcome: 'INCOMPLETE', closedAtMs: undefined, netPnl: undefined }),
+      makeEpisode({
+        episodeId: 'EP-2',
+        outcome: 'INCOMPLETE',
+        closedAtMs: undefined,
+        netPnl: undefined,
+      }),
     ];
     const metrics = computeReplayMetrics(episodes);
     expect(metrics.totalEpisodes).toBe(2);
@@ -156,16 +161,12 @@ describe('validateTemporalSplits', () => {
   });
 
   it('returns false when startedAtMs >= closedAtMs', () => {
-    const episodes = [
-      makeEpisode({ episodeId: 'EP-1', startedAtMs: 200, closedAtMs: 100 }),
-    ];
+    const episodes = [makeEpisode({ episodeId: 'EP-1', startedAtMs: 200, closedAtMs: 100 })];
     expect(validateTemporalSplits(episodes)).toBe(false);
   });
 
   it('allows incomplete episodes (no closedAtMs)', () => {
-    const episodes = [
-      makeEpisode({ episodeId: 'EP-1', closedAtMs: undefined }),
-    ];
+    const episodes = [makeEpisode({ episodeId: 'EP-1', closedAtMs: undefined })];
     expect(validateTemporalSplits(episodes)).toBe(true);
   });
 });

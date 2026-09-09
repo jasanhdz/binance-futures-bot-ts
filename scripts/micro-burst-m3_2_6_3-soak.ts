@@ -26,7 +26,7 @@ import { MicroBurstOutcomeJournal } from '../src/app/micro-burst/MicroBurstOutco
 import { MicroBurstOutcomeTracker } from '../src/app/micro-burst/MicroBurstOutcomeTracker';
 import { MicroBurstStorage } from '../src/app/micro-burst/MicroBurstStorage';
 import { parseMicroBurstConfig } from '../src/strategies/micro-burst/application/MicroBurstConfigLoader';
-import { createMicroBurstV1Identity } from '../src/domain/strategies/micro-burst/MicroBurstIdentity';
+import { createMicroBurstIdentity } from '../src/domain/strategies/micro-burst/MicroBurstIdentity';
 import { MicroBurstRuntime } from '../src/domain/strategies/micro-burst/MicroBurstRuntime';
 import {
   MicroBurstStrategy,
@@ -74,7 +74,7 @@ if (
   smokeEvidence.codeSha !== codeSha ||
   smokeEvidence.workingTreeClean !== true ||
   smokeEvidence.durationSeconds < 90 ||
-  smokeEvidence.verdict !== 'MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED' ||
+  smokeEvidence.verdict !== 'MICRO_BURST_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED' ||
   smokeEvidence.reconnects !== 0 ||
   smokeEvidence.cleanUnsubscribe !== true ||
   smokeEvidence.mutationAudit.totalMutationAttempts !== 0 ||
@@ -91,7 +91,7 @@ if (existsSync(runRoot)) throw new Error('M3_2_6_3_RUN_ROOT_ALREADY_EXISTS');
 mkdirSync(runRoot, { recursive: true });
 
 const configHash = createHash('sha256').update(readFileSync(configPath)).digest('hex');
-const cohortId = `MBV1-M3_2-${codeSha.slice(0, 12)}-${configHash.slice(0, 12)}`;
+const cohortId = `MB-COHORT-${codeSha.slice(0, 12)}-${configHash.slice(0, 12)}`;
 const parsed = parseMicroBurstConfig(load(readFileSync(configPath, 'utf8')));
 const config = {
   ...parsed,
@@ -114,7 +114,7 @@ const manifest = {
   workingTreeClean: true,
   configHash,
   configPath: 'config/micro-burst-m3_2_2-soak.yaml',
-  strategyVersion: createMicroBurstV1Identity(codeSha).strategyVersion,
+  strategyVersion: createMicroBurstIdentity(codeSha).strategyVersion,
   mode: 'SHADOW',
   official: false,
   liveExecution: false,
@@ -156,7 +156,9 @@ function validateArchive(runRootPath: string): Record<string, unknown> {
   };
   walk(archiveRoot);
   const gzipFiles = files.filter((file) => file.endsWith('.ndjson.gz'));
-  const tempFiles = files.filter((file) => file.endsWith('.tmp') || file.endsWith('.active.ndjson'));
+  const tempFiles = files.filter(
+    (file) => file.endsWith('.tmp') || file.endsWith('.active.ndjson'),
+  );
   let actualRecords = 0;
   let checksumErrors = 0;
   for (const file of gzipFiles) {
@@ -179,16 +181,24 @@ function validateArchive(runRootPath: string): Record<string, unknown> {
   const integrity = (db.pragma('integrity_check') as Array<{ integrity_check: string }>)[0]
     ?.integrity_check;
   const segmentRows = db
-    .prepare('SELECT COUNT(*) AS count, COALESCE(SUM(record_count), 0) AS records FROM market_data_segments')
+    .prepare(
+      'SELECT COUNT(*) AS count, COALESCE(SUM(record_count), 0) AS records FROM market_data_segments',
+    )
     .get() as { count: number; records: number };
   const counts = {
-    signals: (db.prepare('SELECT COUNT(*) AS count FROM micro_burst_signals').get() as { count: number })
+    signals: (
+      db.prepare('SELECT COUNT(*) AS count FROM micro_burst_signals').get() as { count: number }
+    ).count,
+    outcomes: (
+      db.prepare('SELECT COUNT(*) AS count FROM micro_burst_outcomes').get() as { count: number }
+    ).count,
+    gaps: (db.prepare('SELECT COUNT(*) AS count FROM market_data_gaps').get() as { count: number })
       .count,
-    outcomes: (db.prepare('SELECT COUNT(*) AS count FROM micro_burst_outcomes').get() as { count: number })
-      .count,
-    gaps: (db.prepare('SELECT COUNT(*) AS count FROM market_data_gaps').get() as { count: number }).count,
-    pending: (db.prepare('SELECT COUNT(*) AS count FROM micro_burst_pending_outcomes').get() as { count: number })
-      .count,
+    pending: (
+      db.prepare('SELECT COUNT(*) AS count FROM micro_burst_pending_outcomes').get() as {
+        count: number;
+      }
+    ).count,
   };
   db.close();
   return {
@@ -240,7 +250,7 @@ async function main(): Promise<void> {
     storage,
   });
   const router = new StrategyRouter<MicroBurstStrategyContext>();
-  router.register(new MicroBurstStrategy(createMicroBurstV1Identity(codeSha), 'SHADOW'));
+  router.register(new MicroBurstStrategy(createMicroBurstIdentity(codeSha), 'SHADOW'));
   const runtime = new MicroBurstRuntime(
     {
       exchange,
@@ -381,14 +391,14 @@ async function main(): Promise<void> {
       mutations: mutationAudit,
       verdict: shortValidation
         ? shortValidationPassed
-          ? 'MICRO_BURST_V1_M3_2_6_5_SHORT_VALIDATION_VERIFIED'
-          : 'MICRO_BURST_V1_M3_2_6_5_SHORT_VALIDATION_BLOCKED'
-        : readinessBeforeStop.readyForSoak
-        && readinessStable
-        && storageValidation.verified === true
-        && mutationAudit.totalMutationAttempts === 0
-        ? 'MICRO_BURST_V1_M3_2_6_PRE_COHORT_CORRECTNESS_VERIFIED'
-        : 'MICRO_BURST_V1_M3_2_6_4_BLOCKED',
+          ? 'MICRO_BURST_M3_2_6_5_SHORT_VALIDATION_VERIFIED'
+          : 'MICRO_BURST_M3_2_6_5_SHORT_VALIDATION_BLOCKED'
+        : readinessBeforeStop.readyForSoak &&
+            readinessStable &&
+            storageValidation.verified === true &&
+            mutationAudit.totalMutationAttempts === 0
+          ? 'MICRO_BURST_M3_2_6_PRE_COHORT_CORRECTNESS_VERIFIED'
+          : 'MICRO_BURST_M3_2_6_4_BLOCKED',
     };
     writeFileSync(
       resolve(runRoot, 'http-mutation-audit.json'),

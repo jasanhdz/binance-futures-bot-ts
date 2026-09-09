@@ -14,12 +14,7 @@ import {
   MicroBurstShadowTelemetryLog,
 } from './MicroBurstShadowEvaluationTypes';
 import { priceDistanceToBps } from '../domain/MicroBurstUnits';
-import { defaultMicroBurstConfig } from '../domain/MicroBurstTypes';
-import { MICRO_BURST_V1_VERSION } from '../domain/MicroBurstIdentity';
-import {
-  evaluateMicroBurstReactionEntry,
-  MICRO_REACTION_CANDIDATE_VERSION,
-} from '../domain/MicroBurstReactionEntryPolicy';
+import { MICRO_BURST_VERSION } from '../domain/MicroBurstIdentity';
 
 interface Clock {
   now(): number;
@@ -34,7 +29,7 @@ interface ShadowEvaluatorDeps {
   getServerTime(): Promise<number>;
 }
 
-export class MicroBurstShadowEvaluator {
+export class MicroBurstEvaluator {
   private readonly symbolConfigs: Map<string, MicroBurstSymbolConfig> = new Map();
   private readonly runtimeConfig: MicroBurstRuntimeConfig;
 
@@ -77,11 +72,12 @@ export class MicroBurstShadowEvaluator {
 
       const strategyContext: MicroBurstStrategyContext = {
         ...context,
-        entryPolicy: this.runtimeConfig.entryPolicy ?? 'BASELINE',
+        entryPolicy: 'MICRO',
         executionBook: this.deps.contextBuilderDeps.book?.getDepthSnapshot(symbol),
         observedAtMs: this.deps.clock.now(),
         config: {
           ...this.runtimeConfig.exitPolicy,
+          contextualPolicyVersion: 'MICRO',
           ...(symConfig.btcConflictThresholdBps !== undefined
             ? { btcConflictThresholdBps: symConfig.btcConflictThresholdBps }
             : {}),
@@ -89,7 +85,7 @@ export class MicroBurstShadowEvaluator {
       };
 
       const envelope: StrategyDecisionEnvelope = await this.deps.strategyRouter.evaluate(
-        'MICRO_BURST_V1',
+        'MICRO_BURST',
         strategyContext,
       );
 
@@ -97,30 +93,6 @@ export class MicroBurstShadowEvaluator {
         typeof envelope.diagnostics.executablePrice === 'number'
           ? envelope.diagnostics.executablePrice
           : context.decisionPrice.price;
-      try {
-        if (strategyContext.entryPolicy === 'BASELINE') {
-          const reactionCandidate = evaluateMicroBurstReactionEntry(
-            context,
-            { ...defaultMicroBurstConfig(), ...strategyContext.config },
-            this.deps.contextBuilderDeps.book?.getDepthSnapshot(symbol),
-            this.deps.clock.now(),
-          );
-          this.deps.logger.info('micro_burst_entry_candidate_comparison', {
-            symbol,
-            snapshotAtMs,
-            candidateVersion: MICRO_REACTION_CANDIDATE_VERSION,
-            authority: 'OBSERVATION_ONLY',
-            baselineDecision: envelope.decision,
-            baselineReason: envelope.reason,
-            candidate: reactionCandidate,
-          });
-        }
-      } catch {
-        this.deps.logger.error('micro_burst_entry_candidate_observation_failed', {
-          symbol,
-          snapshotAtMs,
-        });
-      }
 
       const supportPrice = context.levels.nearest.support?.price ?? null;
       this.deps.logger.info('micro_burst_entry_policy_selected', {
@@ -159,7 +131,7 @@ export class MicroBurstShadowEvaluator {
 
       if (wouldEnter && envelope.side) {
         const signalResult = this.deps.duplicateGuard.check(
-          'MICRO_BURST_V1',
+          'MICRO_BURST',
           symbol,
           envelope.side,
           structuralInvalidation ?? 0,
@@ -176,7 +148,7 @@ export class MicroBurstShadowEvaluator {
       }
 
       const result: MicroBurstShadowEvaluationResult = {
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
         strategyVersion: envelope.identity.strategyVersion,
         symbol,
         snapshotAtMs,
@@ -239,7 +211,7 @@ export class MicroBurstShadowEvaluator {
           referencePriceSource:
             typeof envelope.diagnostics?.referencePriceSource === 'string'
               ? envelope.diagnostics.referencePriceSource
-              : strategyContext.entryPolicy === 'REACTION' && wouldEnter
+              : wouldEnter
                 ? 'EXECUTABLE_BOOK'
                 : 'CLOSED_1M_CANDLE',
           btcAcceleration: context.btcContext?.acceleration ?? null,
@@ -301,15 +273,9 @@ export class MicroBurstShadowEvaluator {
     };
 
     if (result.wouldEnter) {
-      this.deps.logger.info(
-        'micro_burst_shadow_entry_intent',
-        log as unknown as Record<string, unknown>,
-      );
+      this.deps.logger.info('micro_burst_entry_intent', log as unknown as Record<string, unknown>);
     } else {
-      this.deps.logger.debug(
-        'micro_burst_shadow_no_trade',
-        log as unknown as Record<string, unknown>,
-      );
+      this.deps.logger.debug('micro_burst_no_trade', log as unknown as Record<string, unknown>);
     }
   }
 
@@ -318,8 +284,8 @@ export class MicroBurstShadowEvaluator {
     snapshotAtMs: number,
   ): MicroBurstShadowEvaluationResult {
     return {
-      strategyId: 'MICRO_BURST_V1',
-      strategyVersion: MICRO_BURST_V1_VERSION,
+      strategyId: 'MICRO_BURST',
+      strategyVersion: MICRO_BURST_VERSION,
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',
@@ -360,8 +326,8 @@ export class MicroBurstShadowEvaluator {
     error: string,
   ): MicroBurstShadowEvaluationResult {
     return {
-      strategyId: 'MICRO_BURST_V1',
-      strategyVersion: MICRO_BURST_V1_VERSION,
+      strategyId: 'MICRO_BURST',
+      strategyVersion: MICRO_BURST_VERSION,
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',

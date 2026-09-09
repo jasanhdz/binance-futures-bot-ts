@@ -15,7 +15,7 @@ function position(tradeId: string, symbol: string) {
     state: 'OPEN_SHADOW' as const,
     tradeId,
     parentSignalId: tradeId,
-    strategyId: 'MICRO_BURST_V1' as const,
+    strategyId: 'MICRO_BURST' as const,
     strategyVersion: 'V1',
     symbol,
     side: 'LONG' as const,

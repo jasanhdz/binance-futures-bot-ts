@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isMicroBurstStrategy, isMicroBurstPolicy } from '../../core/strategy/MicroBurstLegacy';
 import type {
   ExecutionJournal,
   JournalEntry,
@@ -113,8 +114,7 @@ export class DurableEntryCoordinator {
     isCurrent: () => boolean = () => true,
   ): Promise<DurableEntryResult> {
     const contextual =
-      intent.identity.strategyId === 'MICRO_BURST_V1' &&
-      intent.identity.strategyVersion === 'CONTEXTUAL_V3';
+      intent.identity.strategyId === 'MICRO_BURST' && intent.identity.strategyVersion === 'MICRO';
     const episodeId = intent.metadata.episodeId;
     const operationId = `entry_${createHash('sha256')
       .update(
@@ -123,7 +123,7 @@ export class DurableEntryCoordinator {
             ? [
                 this.scope.account,
                 this.scope.environment,
-                'MICRO_CONTEXTUAL_EPISODE_V3',
+                'MICRO_EPISODE',
                 intent.symbol,
                 intent.side,
                 episodeId,
@@ -133,7 +133,7 @@ export class DurableEntryCoordinator {
       )
       .digest('hex')}`;
     const identity = { operationId, mutationId: clientOrderId };
-    if (contextual && (typeof episodeId !== 'string' || !/^MBV1-EP-[a-f0-9]{24}$/.test(episodeId)))
+    if (contextual && (typeof episodeId !== 'string' || !/^MB-EP-[a-f0-9]{24}$/.test(episodeId)))
       return Promise.resolve({
         ...identity,
         status: 'BLOCKED',
@@ -181,7 +181,25 @@ export class DurableEntryCoordinator {
     this.pending.add(operationId);
     return this.track(async (): Promise<DurableEntryResult> => {
       try {
-        if (await this.journal!.readLatest(operationId)) {
+        // Renaming an episode must not reopen its immutable historical mutation.
+        const legacyOperationId = contextual
+          ? `entry_${createHash('sha256')
+              .update(
+                JSON.stringify([
+                  this.scope.account,
+                  this.scope.environment,
+                  'MICRO_CONTEXTUAL_EPISODE_V3',
+                  intent.symbol,
+                  intent.side,
+                  String(episodeId).replace(/^MB-EP-/, 'MBV1-EP-'),
+                ]),
+              )
+              .digest('hex')}`
+          : undefined;
+        if (
+          (await this.journal!.readLatest(operationId)) ||
+          (legacyOperationId && (await this.journal!.readLatest(legacyOperationId)))
+        ) {
           this.pending.delete(operationId);
           return { ...identity, status: 'BLOCKED', reason: 'ENTRY_MUTATION_ALREADY_RECORDED' };
         }
@@ -330,8 +348,8 @@ export class DurableEntryCoordinator {
     )
       throw new Error('ENTRY_RECOVERY_IDENTITY_CONFLICT');
     if (
-      request.intent.identity.strategyId === 'MICRO_BURST_V1' &&
-      request.intent.identity.strategyVersion === 'CONTEXTUAL_V3'
+      isMicroBurstStrategy(request.intent.identity.strategyId) &&
+      isMicroBurstPolicy(request.intent.identity.strategyVersion)
     ) {
       const episodeId = request.intent.metadata.episodeId;
       const expected = `entry_${createHash('sha256')
@@ -339,7 +357,9 @@ export class DurableEntryCoordinator {
           JSON.stringify([
             this.scope.account,
             this.scope.environment,
-            'MICRO_CONTEXTUAL_EPISODE_V3',
+            request.intent.identity.strategyVersion === 'MICRO'
+              ? 'MICRO_EPISODE'
+              : 'MICRO_CONTEXTUAL_EPISODE_V3',
             request.intent.symbol,
             request.intent.side,
             episodeId,
@@ -348,7 +368,11 @@ export class DurableEntryCoordinator {
         .digest('hex')}`;
       if (
         typeof episodeId !== 'string' ||
-        !/^MBV1-EP-[a-f0-9]{24}$/.test(episodeId) ||
+        !(
+          request.intent.identity.strategyVersion === 'MICRO'
+            ? /^MB-EP-[a-f0-9]{24}$/
+            : /^MBV1-EP-[a-f0-9]{24}$/
+        ).test(episodeId) ||
         request.operationId !== expected ||
         !isMicroBurstTradePolicy(request.intent.metadata.contextualPolicy, request.intent.identity)
       )

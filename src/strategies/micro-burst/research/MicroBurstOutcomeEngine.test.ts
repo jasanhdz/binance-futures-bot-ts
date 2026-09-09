@@ -19,8 +19,8 @@ import { defaultMicroBurstConfig } from '../domain/MicroBurstTypes';
 
 function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignalSnapshot {
   return freezeSignalSnapshot({
-    shadowSignalId: 'shadow-MICRO_BURST_V1-BTCUSDT-LONG-79000-1700000000',
-    strategyId: 'MICRO_BURST_V1',
+    shadowSignalId: 'shadow-MICRO_BURST-BTCUSDT-LONG-79000-1700000000',
+    strategyId: 'MICRO_BURST',
     strategyVersion: '0.4.0-prospective-validation',
     codeCommitSha: 'UNCOMMITTED',
     configHash: 'default',
@@ -68,7 +68,7 @@ function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignal
 function makeShortSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignalSnapshot {
   return makeSignal({
     side: 'SHORT',
-    shadowSignalId: 'shadow-MICRO_BURST_V1-BTCUSDT-SHORT-79000-1700000000',
+    shadowSignalId: 'shadow-MICRO_BURST-BTCUSDT-SHORT-79000-1700000000',
     structuralStopPrice: 79500,
     destinationPrice: 78500,
     support: 78400,
@@ -479,7 +479,7 @@ describe('MicroBurstOutcomeEngine freeze snapshot', () => {
   it('creates immutable signal snapshot', () => {
     const snapshot = freezeSignalSnapshot({
       shadowSignalId: 'test-001',
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: '0.4.0-prospective-validation',
       codeCommitSha: 'abc123',
       configHash: 'hash-1',

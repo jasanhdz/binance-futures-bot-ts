@@ -36,7 +36,10 @@ function markMessage(stream: string): void {
 
 async function main(): Promise<void> {
   const root = resolve(__dirname, '..');
-  const codeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  const codeSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: root,
+    encoding: 'utf8',
+  }).trim();
   const branch = execFileSync('git', ['branch', '--show-current'], {
     cwd: root,
     encoding: 'utf8',
@@ -120,18 +123,22 @@ async function main(): Promise<void> {
   const evidence = {
     ...result,
     verdict: verified
-      ? 'MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED'
-      : 'MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_BLOCKED',
+      ? 'MICRO_BURST_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED'
+      : 'MICRO_BURST_PRODUCTION_PATH_MARKET_DATA_SMOKE_BLOCKED',
   };
-  writeFileSync(resolve(evidenceRoot, 'smoke-result.json'), JSON.stringify(evidence, null, 2) + '\n', {
-    flag: 'wx',
-  });
+  writeFileSync(
+    resolve(evidenceRoot, 'smoke-result.json'),
+    JSON.stringify(evidence, null, 2) + '\n',
+    {
+      flag: 'wx',
+    },
+  );
   console.log(JSON.stringify(result, null, 2));
   if (verified) {
-    console.log('MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED');
+    console.log('MICRO_BURST_PRODUCTION_PATH_MARKET_DATA_SMOKE_VERIFIED');
     return;
   }
-  console.log('MICRO_BURST_V1_PRODUCTION_PATH_MARKET_DATA_SMOKE_BLOCKED');
+  console.log('MICRO_BURST_PRODUCTION_PATH_MARKET_DATA_SMOKE_BLOCKED');
   process.exitCode = 1;
 }
 

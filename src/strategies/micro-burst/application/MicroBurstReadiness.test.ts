@@ -8,7 +8,7 @@ const complete: MicroBurstReadinessInput = {
   codeSha: 'abc123',
   configHash: 'def456',
   strategyVersion: '0.6.0',
-  cohortId: 'MBV1-M3_2-abc123-def456',
+  cohortId: 'MB-COHORT-abc123-def456',
   officialCohortReady: true,
   mode: 'SHADOW',
   enabled: true,

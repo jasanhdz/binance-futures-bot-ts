@@ -28,7 +28,7 @@ export function evaluateMicroBurstContextualProposal(input: {
   sizing: MarginBudgetSizingResult | null;
   eligibleForResearchFill: boolean;
 } {
-  const config = { ...input.config, contextualPolicyVersion: 'CONTEXTUAL_V3' as const };
+  const config = { ...input.config, contextualPolicyVersion: 'MICRO' as const };
   const entry = evaluateMicroBurstReactionEntry(
     input.context,
     config,
@@ -39,8 +39,8 @@ export function evaluateMicroBurstContextualProposal(input: {
     return { authority: 'OBSERVATION_ONLY', entry, sizing: null, eligibleForResearchFill: false };
   const intent = createMicroBurstExecutionIntent({
     identity: {
-      strategyId: 'MICRO_BURST_V1',
-      strategyVersion: 'CONTEXTUAL_V3',
+      strategyId: 'MICRO_BURST',
+      strategyVersion: 'MICRO',
       freezeState: 'SHADOW_CANDIDATE',
       codeCommitSha: 'UNKNOWN',
     },

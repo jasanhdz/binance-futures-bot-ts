@@ -11,7 +11,7 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
     episodeId: 'episode',
     symbol: 'ETHUSDT',
     side,
-    policyVersion: 'CONTEXTUAL_V3',
+    policyVersion: 'MICRO',
     configHash: `sha256:${'a'.repeat(64)}`,
     codeCommitSha: 'b'.repeat(40),
     entryOrderId: '1',

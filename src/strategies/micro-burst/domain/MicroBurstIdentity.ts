@@ -1,44 +1,32 @@
 import { hasLiveAuthority, StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 import * as crypto from 'crypto';
 
-export const MICRO_BURST_V1_VERSION = '0.9.0-reaction-entry-live';
-export const MICRO_BURST_V1_STRATEGY_SHA256 =
-  '5d3995995c49b3a4397038a7169b44759da8b1f6afc0798d90906e6898548810';
-export const MICRO_BURST_V1_CONFIG_SHA256 =
-  '957d53b90e8d57eb9233e468722e85786a42a9244dc88b6cd66fc485421aa3ba';
+export const MICRO_BURST_VERSION = 'MICRO';
+export const MICRO_BURST_STRATEGY_SHA256 = crypto
+  .createHash('sha256')
+  .update('MICRO_MARGIN_FRACTION_20_30_NET_LOSS_3')
+  .digest('hex');
+export const MICRO_BURST_CONFIG_SHA256 =
+  '132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1';
 
-export const MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED: boolean = true;
-export const MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED: boolean = true;
+export const MICRO_BURST_SHADOW_AUTHORITY_ENABLED: boolean = true;
+export const MICRO_BURST_LIVE_AUTHORITY_ENABLED: boolean = true;
 
-export function createMicroBurstContextualIdentity(
-  approvedConfigSha = process.env.MICRO_BURST_CONTEXTUAL_APPROVED_CONFIG_SHA256 ?? 'UNKNOWN',
+export function createMicroBurstIdentity(
   approvedCommit = process.env.MICRO_BURST_APPROVED_COMMIT ?? 'UNKNOWN',
+  approvedConfigSha = process.env.MICRO_BURST_APPROVED_CONFIG_SHA256 ?? 'UNKNOWN',
 ): StrategyIdentity {
   return {
-    strategyId: 'MICRO_BURST_V1',
-    strategyVersion: 'CONTEXTUAL_V3',
+    strategyId: 'MICRO_BURST',
+    strategyVersion: 'MICRO',
     freezeState: 'FROZEN_LIVE',
     codeCommitSha: approvedCommit,
     configHash: `sha256:${approvedConfigSha}`,
-    strategyHash: `sha256:${crypto.createHash('sha256').update('MICRO_CONTEXTUAL_V3_MARGIN_FRACTION_20_30_NET_LOSS_3').digest('hex')}`,
+    strategyHash: `sha256:${MICRO_BURST_STRATEGY_SHA256}`,
   };
 }
 
-export function createMicroBurstV1Identity(
-  // Approval is supplied separately after committing; never infer it from GIT_COMMIT_SHA.
-  codeCommitSha = process.env.MICRO_BURST_APPROVED_COMMIT ?? 'UNKNOWN',
-): StrategyIdentity {
-  return {
-    strategyId: 'MICRO_BURST_V1',
-    strategyVersion: MICRO_BURST_V1_VERSION,
-    freezeState: 'FROZEN_LIVE',
-    codeCommitSha,
-    strategyHash: `sha256:${MICRO_BURST_V1_STRATEGY_SHA256}`,
-    configHash: `sha256:${MICRO_BURST_V1_CONFIG_SHA256}`,
-  };
-}
-
-export function hasMicroBurstV1LiveAuthority(
+export function hasMicroBurstLiveAuthority(
   identity: StrategyIdentity,
   effectiveConfigSha256: string,
   deployedCodeCommitSha: string,
@@ -46,8 +34,11 @@ export function hasMicroBurstV1LiveAuthority(
   const configMatches = identity.configHash === `sha256:${effectiveConfigSha256}`;
 
   return Boolean(
-    hasLiveAuthority(identity, 'LIVE') &&
+    identity.strategyId === 'MICRO_BURST' &&
+      identity.strategyVersion === 'MICRO' &&
+      hasLiveAuthority(identity, 'LIVE') &&
       /^[a-f0-9]{40}$/i.test(identity.codeCommitSha) &&
+      /^[a-f0-9]{64}$/.test(effectiveConfigSha256) &&
       deployedCodeCommitSha.toLowerCase() === identity.codeCommitSha.toLowerCase() &&
       configMatches,
   );
@@ -68,7 +59,7 @@ export function diagnoseMicroBurstAuthority(input: {
 } {
   const reasons: string[] = [];
   const { identity } = input;
-  if (!hasMicroBurstV1LiveAuthority(identity, input.effectiveConfigSha256, input.declaredCommitSha))
+  if (!hasMicroBurstLiveAuthority(identity, input.effectiveConfigSha256, input.declaredCommitSha))
     reasons.push('DECLARED_IDENTITY_CONFIG_OR_COMMIT_MISMATCH');
   if (input.sourceDirty) reasons.push('SOURCE_DIRTY');
   const verified = input.artifactVerified && /^[a-f0-9]{40}$/i.test(input.artifactCommitSha ?? '');
@@ -95,8 +86,11 @@ export function createMicroBurstEpisodeId(
 ): string {
   const digest = crypto
     .createHash('sha256')
-    .update(`${symbol}\u0000${side}\u0000${cohortId}\u0000${startedAtMs}`)
+    // Keep the historical causal hash stable while exposing only the canonical prefix.
+    .update(
+      `${symbol}\u0000${side}\u0000${cohortId.replace(/^MICRO:/, 'reaction-entry-2-contextual-shadow:')}\u0000${startedAtMs}`,
+    )
     .digest('hex')
     .slice(0, 24);
-  return `MBV1-EP-${digest}`;
+  return `MB-EP-${digest}`;
 }

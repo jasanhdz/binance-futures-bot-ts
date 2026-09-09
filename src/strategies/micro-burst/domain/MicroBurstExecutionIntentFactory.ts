@@ -27,9 +27,9 @@ export function createMicroBurstExecutionIntent(
       closeIfProtectionFails: true,
     },
     metadata: {
-      strategy: 'MICRO_BURST_V1',
+      strategy: 'MICRO_BURST',
       signalSnapshotAtMs: approved.signalSnapshotAtMs,
-      leverageTier: approved.leverage > 30 ? 'HIGH' : 'MEDIUM',
+      leverageTier: approved.leverage === 30 ? 'HIGH' : 'MEDIUM',
       ...(approved.episodeId ? { episodeId: approved.episodeId } : {}),
       ...(approved.contextualPolicy
         ? { contextualPolicy: structuredClone(approved.contextualPolicy) }

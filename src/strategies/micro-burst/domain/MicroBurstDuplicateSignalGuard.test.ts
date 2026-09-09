@@ -8,7 +8,7 @@ describe('MicroBurstDuplicateSignalGuard', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
     const guard = new MicroBurstDuplicateSignalGuard(clock);
 
-    const result = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
+    const result = guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
 
     expect(result.duplicateSuppressed).toBe(false);
     expect(result.shadowSignalId).toContain('ETHUSDT');
@@ -20,9 +20,9 @@ describe('MicroBurstDuplicateSignalGuard', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
     const guard = new MicroBurstDuplicateSignalGuard(clock);
 
-    const first = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
+    const first = guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
     clock.now.mockReturnValue(NOW_MS + 5000);
-    const second = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS + 5000);
+    const second = guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS + 5000);
 
     expect(second.duplicateSuppressed).toBe(true);
     expect(second.shadowSignalId).toBe(first.shadowSignalId);
@@ -33,8 +33,8 @@ describe('MicroBurstDuplicateSignalGuard', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
     const guard = new MicroBurstDuplicateSignalGuard(clock);
 
-    const long = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
-    const short = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'SHORT', 99.7, NOW_MS);
+    const long = guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
+    const short = guard.check('MICRO_BURST', 'ETHUSDT', 'SHORT', 99.7, NOW_MS);
 
     expect(long.shadowSignalId).not.toBe(short.shadowSignalId);
     expect(long.duplicateSuppressed).toBe(false);
@@ -45,8 +45,8 @@ describe('MicroBurstDuplicateSignalGuard', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
     const guard = new MicroBurstDuplicateSignalGuard(clock);
 
-    const a = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
-    const b = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.8, NOW_MS);
+    const a = guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
+    const b = guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.8, NOW_MS);
 
     expect(a.shadowSignalId).not.toBe(b.shadowSignalId);
   });
@@ -55,9 +55,9 @@ describe('MicroBurstDuplicateSignalGuard', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
     const guard = new MicroBurstDuplicateSignalGuard(clock);
 
-    guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
+    guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
     clock.now.mockReturnValue(NOW_MS + 65_000);
-    const next = guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS + 65_000);
+    const next = guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS + 65_000);
 
     expect(next.duplicateSuppressed).toBe(false);
   });
@@ -66,7 +66,7 @@ describe('MicroBurstDuplicateSignalGuard', () => {
     const clock = { now: vi.fn(() => NOW_MS) };
     const guard = new MicroBurstDuplicateSignalGuard(clock);
 
-    guard.check('MICRO_BURST_V1', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
+    guard.check('MICRO_BURST', 'ETHUSDT', 'LONG', 99.7, NOW_MS);
     expect(guard.size()).toBe(1);
 
     guard.clear();

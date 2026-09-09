@@ -1,7 +1,14 @@
+import {
+  isMicroBurstStrategy,
+  isMicroBurstPolicy,
+  samePersistedStrategy,
+} from '../../core/strategy/MicroBurstLegacy';
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   ExecutionJournal,
   JournalEntry,
+  JournalInput,
   JournalEventType,
   OperationScope,
 } from '../../core/risk/ExecutionJournal';
@@ -29,6 +36,12 @@ interface CancelMutationRequest extends CancelTarget {
   strategyId: string;
   operationId: string;
   mutationId: string;
+  replacementCoverage?: {
+    orderId: string;
+    triggerPrice: number;
+    quantity: number;
+    entryPrice: number;
+  };
 }
 
 interface CancelConfirmation {
@@ -47,7 +60,7 @@ function validCancelRequest(
     typeof request.orderId === 'string' &&
     /^(?:ALGO_)?[1-9]\d*$/.test(request.orderId) &&
     (request.orderId.startsWith('ALGO_') || Number.isSafeInteger(Number(request.orderId))) &&
-    request.strategyId === 'MICRO_BURST_V1' &&
+    isMicroBurstStrategy(request.strategyId) &&
     (request.side === 'LONG' || request.side === 'SHORT') &&
     ['BOTH', request.side].includes(request.positionSide) &&
     ['STOP_MARKET', 'STOP', 'TAKE_PROFIT_MARKET', 'TAKE_PROFIT'].includes(request.type) &&
@@ -209,9 +222,10 @@ export class DurableStopCoordinator {
   cancelProtection(
     input: CancelTarget & { parentTradeId: string; parentOrderId: string; strategyId: string },
     samePosition: () => boolean,
+    replacementCoverage?: CancelMutationRequest['replacementCoverage'],
   ): Promise<boolean> {
     if (!validCancelRequest(input)) return Promise.resolve(false);
-    const request: CancelMutationRequest = {
+    let request: CancelMutationRequest = {
       ...cancelTarget(input),
       parentTradeId: input.parentTradeId,
       parentOrderId: input.parentOrderId,
@@ -220,6 +234,7 @@ export class DurableStopCoordinator {
       protocol: 'CANCEL_MUTATION_V1',
       operationId: cancelId({ ...input, scope: this.scope }),
       mutationId: cancelId({ ...input, scope: this.scope }),
+      ...(replacementCoverage ? { replacementCoverage: { ...replacementCoverage } } : {}),
     };
     if (this.closing || this.failure || this.busy.has(request.operationId))
       return Promise.resolve(false);
@@ -234,16 +249,19 @@ export class DurableStopCoordinator {
           if (
             Object.entries(request).some(
               ([key, value]) =>
-                key !== 'scope' && saved[key as keyof CancelMutationRequest] !== value,
+                key !== 'scope' &&
+                !(key === 'strategyId' && samePersistedStrategy(saved.strategyId, value)) &&
+                !isDeepStrictEqual(saved[key as keyof CancelMutationRequest], value),
             )
           )
             return false;
+          request = saved;
           if (latest.event === 'CLOSED') return true;
         } else {
           if (
             !request.parentTradeId ||
             !request.parentOrderId ||
-            request.strategyId !== 'MICRO_BURST_V1'
+            !isMicroBurstStrategy(request.strategyId)
           )
             return false;
           if (
@@ -259,8 +277,10 @@ export class DurableStopCoordinator {
           if (!samePosition() || this.closing || !this.deps.exchange.readFreshActivePosition)
             return false;
           if (
-            (await this.deps.exchange.readFreshActivePosition(request.symbol, request.side)) !==
-              null ||
+            !(request.replacementCoverage
+              ? await this.confirmReplacementCoverage(request)
+              : (await this.deps.exchange.readFreshActivePosition(request.symbol, request.side)) ===
+                null) ||
             !samePosition() ||
             this.closing
           )
@@ -286,7 +306,7 @@ export class DurableStopCoordinator {
     return task;
   }
 
-  private cancelRequestFrom(entry: JournalEntry): CancelMutationRequest {
+  private cancelRequestFrom(entry: JournalInput): CancelMutationRequest {
     const request = entry.metadata?.request as CancelMutationRequest | undefined;
     if (
       !request ||
@@ -301,7 +321,7 @@ export class DurableStopCoordinator {
       request.symbol !== entry.symbol ||
       request.side !== entry.side ||
       request.orderId !== entry.orderId ||
-      request.strategyId !== 'MICRO_BURST_V1' ||
+      !isMicroBurstStrategy(request.strategyId) ||
       request.strategyId !== entry.strategyId ||
       !validCancelRequest(request) ||
       entry.clientOrderId !== undefined ||
@@ -310,6 +330,22 @@ export class DurableStopCoordinator {
       entry.metadata?.terminalMeaning !== 'CANCEL_OBSERVED_NOT_POSITION_FLAT'
     )
       throw new Error('CANCEL_PROTOCOL_OR_SCOPE_CONFLICT');
+    const coverage = request.replacementCoverage;
+    if (
+      coverage &&
+      (request.positionSide !== 'BOTH' ||
+        request.type !== 'STOP_MARKET' ||
+        typeof coverage.orderId !== 'string' ||
+        !/^(?:ALGO_)?[1-9]\d*$/.test(coverage.orderId) ||
+        coverage.orderId === request.orderId ||
+        ![coverage.triggerPrice, coverage.quantity, coverage.entryPrice].every(
+          (v) => Number.isFinite(v) && v > 0,
+        ) ||
+        (request.side === 'LONG'
+          ? coverage.triggerPrice <= request.stopPrice
+          : coverage.triggerPrice >= request.stopPrice))
+    )
+      throw new Error('CANCEL_REPLACEMENT_COVERAGE_INVALID');
     if (entry.event === 'CLOSE_PENDING' || entry.event === 'CLOSED') {
       const confirmation = entry.metadata?.confirmation as CancelConfirmation | undefined;
       if (
@@ -325,12 +361,51 @@ export class DurableStopCoordinator {
     return request;
   }
 
+  private async confirmReplacementCoverage(
+    request: Pick<CancelMutationRequest, 'symbol' | 'side' | 'orderId' | 'replacementCoverage'>,
+  ): Promise<boolean> {
+    const coverage = request.replacementCoverage!;
+    const exchange = this.deps.exchange;
+    const orders = await exchange.listCloseOrdersForSide(request.symbol, request.side);
+    if (
+      !orders.some(
+        (order) =>
+          order.orderId === coverage.orderId &&
+          order.orderId !== request.orderId &&
+          order.owner === 'BOT' &&
+          order.type === 'STOP_MARKET' &&
+          order.side === (request.side === 'LONG' ? 'SELL' : 'BUY') &&
+          order.positionSide === 'BOTH' &&
+          order.stopPrice === coverage.triggerPrice &&
+          (order.closePosition === true ||
+            (order.reduceOnly === true && Number(order.quantity) === coverage.quantity)),
+      )
+    )
+      return false;
+    const status = await exchange.readCancelTarget?.({
+      symbol: request.symbol,
+      side: request.side,
+      positionSide: 'BOTH',
+      type: 'STOP_MARKET',
+      orderId: coverage.orderId,
+      stopPrice: coverage.triggerPrice,
+    });
+    if (status !== 'NEW') return false;
+    const position = await exchange.readFreshActivePosition?.(request.symbol, request.side);
+    return (
+      !!position &&
+      position.sideMode === 'BOTH' &&
+      position.qtyAbs === coverage.quantity &&
+      position.entryPrice === coverage.entryPrice
+    );
+  }
+
   private appendCancel(
     request: CancelMutationRequest,
     event: JournalEventType,
     confirmation?: CancelConfirmation,
   ): Promise<JournalEntry> {
-    return this.journal!.append({
+    const entry: JournalInput = {
       id: randomUUID(),
       operationId: request.operationId,
       scope: request.scope,
@@ -346,7 +421,9 @@ export class DurableStopCoordinator {
         terminalMeaning: 'CANCEL_OBSERVED_NOT_POSITION_FLAT',
         ...(confirmation ? { confirmation } : {}),
       },
-    });
+    };
+    this.cancelRequestFrom(entry);
+    return this.journal!.append(entry);
   }
 
   private async observeCancel(
@@ -441,6 +518,10 @@ export class DurableStopCoordinator {
         s.lastSide === side &&
         s.positionOwner === 'BOT' &&
         s.mode === state.mode &&
+        s.lastEntryQty === state.lastEntryQty &&
+        s.lastEntryPrice === state.lastEntryPrice &&
+        s.lastStopPrice === state.lastStopPrice &&
+        isDeepStrictEqual(s.microBurstTradePolicy, state.microBurstTradePolicy) &&
         s.microBurstStopMove?.key === key
       );
     };
@@ -468,7 +549,7 @@ export class DurableStopCoordinator {
           o.type === 'STOP_MARKET' &&
           o.side === (side === 'LONG' ? 'SELL' : 'BUY') &&
           o.positionSide === position.sideMode &&
-          o.stopPrice === state.lastStopPrice &&
+          (o.stopPrice === state.lastStopPrice || (pending && o.stopPrice === target)) &&
           (o.closePosition === true ||
             (o.positionSide === 'BOTH' &&
               o.reduceOnly === true &&
@@ -476,7 +557,27 @@ export class DurableStopCoordinator {
       )
     )
       return false;
-    if (!pending) {
+    const retirementTargets =
+      pending?.retirementTargets ??
+      orders
+        .filter(
+          (o) =>
+            o.owner === 'BOT' &&
+            o.type === 'STOP_MARKET' &&
+            o.side === (side === 'LONG' ? 'SELL' : 'BUY') &&
+            o.positionSide === position.sideMode &&
+            o.stopPrice === state.lastStopPrice,
+        )
+        .map((o) => ({
+          symbol,
+          side,
+          orderId: o.orderId,
+          positionSide: position.sideMode,
+          type: o.type,
+          stopPrice: o.stopPrice,
+        }));
+    if (!retirementTargets.length) return false;
+    if (!pending || pending.retirementTargets === undefined) {
       const current = store.get();
       if (
         current.lastTradeId !== state.lastTradeId ||
@@ -484,10 +585,12 @@ export class DurableStopCoordinator {
         current.mode !== state.mode ||
         current.positionOwner !== 'BOT' ||
         current.lastStopPrice !== state.lastStopPrice ||
-        current.microBurstStopMove !== undefined
+        current.microBurstStopMove !== pending
       )
         return false;
-      store.set({ microBurstStopMove: { key, triggerPrice: target, policyDigest } });
+      store.set({
+        microBurstStopMove: { key, triggerPrice: target, policyDigest, retirementTargets },
+      });
       await store.flush();
     }
     if (!same()) return false;
@@ -504,7 +607,7 @@ export class DurableStopCoordinator {
         workingType: 'MARK_PRICE',
         parentTradeId: state.lastTradeId,
         parentOrderId: state.lastOrderId,
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
         positionQuantity: position.qtyAbs,
         entryPrice: position.entryPrice,
         replacementKey: key,
@@ -513,22 +616,91 @@ export class DurableStopCoordinator {
       true,
     );
     if (!confirmed || !same()) return false;
+    const replacementProof = await this.journal!.readLatest(
+      `stop:${mutationDigest(this.scope, state.lastTradeId, key)}`,
+    );
+    if (replacementProof?.event !== 'CLOSED' || !replacementProof.orderId || !same()) return false;
+    const refreshedOrders = await this.deps.exchange.listCloseOrdersForSide(symbol, side);
+    const covering = refreshedOrders.find(
+      (o) =>
+        o.orderId === replacementProof.orderId &&
+        o.owner === 'BOT' &&
+        o.type === 'STOP_MARKET' &&
+        o.side === (side === 'LONG' ? 'SELL' : 'BUY') &&
+        o.positionSide === position.sideMode &&
+        o.stopPrice === target &&
+        (o.closePosition === true ||
+          (o.reduceOnly === true && Number(o.quantity) === position.qtyAbs)),
+    );
+    if (!covering || !same()) return false;
+    for (const old of retirementTargets) {
+      if (old.orderId === covering.orderId || !same()) return false;
+      if (
+        !(await this.cancelProtection(
+          {
+            ...old,
+            parentTradeId: state.lastTradeId,
+            parentOrderId: state.lastOrderId,
+            strategyId: 'MICRO_BURST',
+          },
+          same,
+          {
+            orderId: covering.orderId,
+            triggerPrice: target,
+            quantity: position.qtyAbs,
+            entryPrice: position.entryPrice,
+          },
+        ))
+      )
+        return false;
+    }
+    // Confirmation above is historical after awaits; recheck before projecting the active stop.
+    if (
+      !same() ||
+      !(await this.confirmReplacementCoverage({
+        symbol,
+        side,
+        orderId: retirementTargets[0].orderId,
+        replacementCoverage: {
+          orderId: covering.orderId,
+          triggerPrice: target,
+          quantity: position.qtyAbs,
+          entryPrice: position.entryPrice,
+        },
+      })) ||
+      !same()
+    )
+      return false;
     store.set({
       lastStopPrice: target,
       microBurstActiveStopKey: key,
       microBurstStopMove: undefined,
     });
+    const projected = () => {
+      const current = store.get();
+      return (
+        current.lastTradeId === state.lastTradeId &&
+        current.lastOrderId === state.lastOrderId &&
+        current.lastSide === side &&
+        current.mode === state.mode &&
+        current.positionOwner === 'BOT' &&
+        current.lastStopPrice === target &&
+        current.microBurstActiveStopKey === key &&
+        current.microBurstStopMove === undefined
+      );
+    };
     try {
       await store.flush();
     } catch (error) {
-      store.set({
-        lastStopPrice: state.lastStopPrice,
-        microBurstActiveStopKey: state.microBurstActiveStopKey,
-        microBurstStopMove: { key, triggerPrice: target, policyDigest },
-      });
+      if (projected())
+        store.set({
+          lastStopPrice: state.lastStopPrice,
+          microBurstActiveStopKey: state.microBurstActiveStopKey,
+          microBurstStopMove: { key, triggerPrice: target, policyDigest, retirementTargets },
+        });
       throw error;
     }
-    return true;
+    return projected();
   }
 
   async supervise(
@@ -566,6 +738,7 @@ export class DurableStopCoordinator {
             Object.entries(snapshot).some(
               ([key, value]) =>
                 !(legacyCoverage && ['closePosition', 'quantity', 'reduceOnly'].includes(key)) &&
+                !(key === 'strategyId' && samePersistedStrategy(request.strategyId, value)) &&
                 request[key as keyof StopMutationRequest] !== value,
             )
           )
@@ -725,7 +898,7 @@ export class DurableStopCoordinator {
                 state.lastTradeId === request.parentTradeId &&
                 state.lastOrderId === request.parentOrderId &&
                 state.lastSide === request.side &&
-                state.lastStrategy === request.strategyId &&
+                samePersistedStrategy(state.lastStrategy, request.strategyId) &&
                 Number.isSafeInteger(lastExitAt) &&
                 lastExitAt! >= history[0].timestampMs &&
                 lastExitAt! <= Date.now() &&
@@ -745,7 +918,7 @@ export class DurableStopCoordinator {
               const query = { ...request, scope: { ...request.scope } };
               const canceled = await exchange.readStopCloseState(query);
               const triggered =
-                canceled === null && store.get().lastStrategyVersion === 'CONTEXTUAL_V3'
+                canceled === null && isMicroBurstPolicy(store.get().lastStrategyVersion)
                   ? await exchange.readTriggeredStop?.(query, request.positionQuantity)
                   : null;
               const observed =

@@ -21,7 +21,6 @@ describe('MicroBurstConfigLoader', () => {
   const contextual = (contextual_risk: unknown = risk) => ({
     micro_burst: {
       mode: 'SHADOW',
-      exit_policy: { contextual_policy_version: 'CONTEXTUAL_V3' },
       contextual_risk,
     },
   });
@@ -61,38 +60,27 @@ describe('MicroBurstConfigLoader', () => {
       'MICRO_CONTEXTUAL_RISK_CONFIG_INVALID',
     );
   });
-  it('does not apply contextual risk to legacy policies or infer missing risk fields', () => {
-    expect(() => parseMicroBurstConfig({ micro_burst: { contextual_risk: risk } })).toThrow(
-      'MICRO_CONTEXTUAL_RISK_CONFIG_INVALID',
-    );
+  it('uses current Micro risk without a selector and does not infer missing risk fields', () => {
+    expect(
+      parseMicroBurstConfig({ micro_burst: { contextual_risk: risk } }).contextualRisk,
+    ).toMatchObject({ marginFraction: 0.9, mediumLeverage: 20, highLeverage: 30 });
     expect(() => parseMicroBurstConfig(contextual({ sizing_mode: 'MARGIN_FRACTION' }))).toThrow(
       'MICRO_CONTEXTUAL_RISK_CONFIG_INVALID',
     );
   });
-  it('requires explicit risk and REACTION for V3 LIVE configuration', () => {
+  it('requires explicit risk for LIVE configuration', () => {
     expect(() =>
       parseMicroBurstConfig({
         micro_burst: {
           mode: 'LIVE',
-          exit_policy: {
-            contextual_policy_version: 'CONTEXTUAL_V3',
-          },
         },
       }),
-    ).toThrow('MICRO_CONTEXTUAL_LIVE_RISK_AND_REACTION_REQUIRED');
+    ).toThrow('MICRO_LIVE_RISK_REQUIRED');
   });
-  it('keeps contextual policy opt-in and rejects unknown versions', () => {
-    expect(parseMicroBurstConfig({ micro_burst: {} }).exitPolicy).toBeUndefined();
-    expect(
-      parseMicroBurstConfig({
-        micro_burst: {
-          mode: 'SHADOW',
-          exit_policy: {
-            contextual_policy_version: 'CONTEXTUAL_V3',
-          },
-        },
-      }).exitPolicy?.contextualPolicyVersion,
-    ).toBe('CONTEXTUAL_V3');
+  it('always selects current Micro and rejects version selectors', () => {
+    expect(parseMicroBurstConfig({ micro_burst: {} }).exitPolicy?.contextualPolicyVersion).toBe(
+      'MICRO',
+    );
     expect(() =>
       parseMicroBurstConfig({
         micro_burst: {
@@ -101,7 +89,10 @@ describe('MicroBurstConfigLoader', () => {
           },
         },
       }),
-    ).toThrow('MICRO_CONTEXTUAL_POLICY_INVALID');
+    ).toThrow('MICRO_POLICY_SELECTOR_REMOVED');
+    expect(() => parseMicroBurstConfig({ micro_burst: { entry_policy: 'BASELINE' } })).toThrow(
+      'MICRO_POLICY_SELECTOR_REMOVED',
+    );
   });
   it('returns disabled config for empty input', () => {
     const config = parseMicroBurstConfig(null);
@@ -141,7 +132,7 @@ describe('MicroBurstConfigLoader', () => {
     expect(config.symbols.BTCUSDT.enabled).toBe(true);
   });
 
-  it('parses deterministic exit-policy overrides and ignores invalid values', () => {
+  it('parses deterministic exit-policy overrides and rejects invalid values', () => {
     const config = parseMicroBurstConfig({
       micro_burst: {
         enabled: true,
@@ -150,17 +141,20 @@ describe('MicroBurstConfigLoader', () => {
           exit_estimated_round_trip_cost_bps: 16,
           exit_winner_exit_pressure_threshold: 0.8,
           exit_proof_extension_ms: 45_000,
-          exit_max_hold_ms: Number.NaN,
           unknown_field: 123,
         },
       },
     });
 
     expect(config.exitPolicy).toEqual({
+      contextualPolicyVersion: 'MICRO',
       exitEstimatedRoundTripCostBps: 16,
       exitWinnerExitPressureThreshold: 0.8,
       exitProofExtensionMs: 45_000,
     });
+    expect(() =>
+      parseMicroBurstConfig({ micro_burst: { exit_policy: { exit_max_hold_ms: NaN } } }),
+    ).toThrow('MICRO_CONTEXTUAL_POLICY_CONFIG_INVALID');
   });
 
   it('defaults mode to OFF for unknown values', () => {
@@ -172,7 +166,7 @@ describe('MicroBurstConfigLoader', () => {
 
   it('LIVE mode is parsed correctly', () => {
     const config = parseMicroBurstConfig({
-      micro_burst: { enabled: true, mode: 'LIVE' },
+      micro_burst: { enabled: true, mode: 'LIVE', contextual_risk: risk },
     });
     expect(config.mode).toBe('LIVE');
   });

@@ -50,7 +50,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Safety increment: reject malformed persisted Micro stop-submission records.
   // Source checkpoint only; no production configuration or model approval change.
   'src/infra/logging/FsStateStore.ts':
-    '7e39529e70dc31efdd05f51dc5e0cf690a12632cd65d8fbc522ea88a4ad4076a',
+    // Canonical daily counts include historical Micro keys without rewriting trade provenance.
+    '97a46d730072daf5ab01f54b4598a3df57c339885baba68ed4f36f85d12549e2',
 };
 
 // Phase 1 owner-authorized architecture checkpoint. These are operational
@@ -69,7 +70,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
-  'regime_config.live.yaml': '970ce7308d7ec0cd49e97e032491dc0b50901c8ab4300746ebff6968d83ce730',
+  // Owner-authorized single Micro policy: 90% margin/reserve, 20/30 tiers, signed three-loss halt.
+  'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   // 2026-09 safety handoff: shared entry lock, unknown exposure propagation,
   // Micro stop supervision and failed-entry ownership. See SAFETY_PHASES_HANDOFF.md.
   // Phase 3 increment: drain tracked entry/management work before shutdown flush.
@@ -89,7 +91,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Bounded exit observation and research-only missing-market routing; no V3 mutation authority.
     // Policy-bound settlement recovery and independent durable net-loss admission check.
     // V3 policy/episode/sizing and durable exits; deployment and ADA quarantine unchanged.
-    'fd47d016bc4c7d8aa61c083c5e8852772842486fa31f61b0704ae0167278a7cc',
+    // Canonical admission/management and historical read boundaries; not artifact approval.
+    '2e8bfe510d309ae190ca0238acb5167e3058efcf71e275c55cb3cf1d7f520f35',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -136,9 +139,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
 // The historical YAML checkpoint predates the approved REACTION configuration.
 // These source checks do not replace runtime commit/config authority checks.
 const contextualSourceCheckpoints: Record<string, string> = {
-  'regime_config.live.yaml': '970ce7308d7ec0cd49e97e032491dc0b50901c8ab4300746ebff6968d83ce730',
+  'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   'src/app/services/TradingService.ts':
-    'fd47d016bc4c7d8aa61c083c5e8852772842486fa31f61b0704ae0167278a7cc',
+    '2e8bfe510d309ae190ca0238acb5167e3058efcf71e275c55cb3cf1d7f520f35',
 };
 
 type GuardFixture = [

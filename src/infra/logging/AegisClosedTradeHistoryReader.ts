@@ -3,6 +3,7 @@ import path from 'path';
 import type { ClosedTradeOutcome } from '../../domain/services/ConsecutiveLossTracker';
 import type { AegisClosedTradeOutcome } from '../../strategies/aegis/domain/services/AegisConsecutiveLossTracker';
 import { isVerifiedAegisMetricRecord } from './AegisTradeOwnership';
+import { isMicroBurstStrategy } from '../../core/strategy/MicroBurstLegacy';
 
 export async function readAegisClosedTradeOutcomes(
   baseDir = path.join(process.cwd(), 'logs', 'aegis'),
@@ -81,7 +82,7 @@ export async function readStrategyClosedTradeOutcomes(
         record.status !== 'CLOSED' ||
         (record.strategy !== 'AEGIS_TURBO' &&
           record.strategy !== 'MOMENTUM_RIDE' &&
-          record.strategy !== 'MICRO_BURST_V1') ||
+          !isMicroBurstStrategy(record.strategy)) ||
         record.mode !== mode
       )
         continue;

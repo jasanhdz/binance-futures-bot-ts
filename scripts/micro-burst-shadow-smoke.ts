@@ -1,5 +1,5 @@
 /**
- * MICRO BURST V1 — Shadow Smoke Test
+ * Micro Burst - Shadow Smoke Test
  *
  * Exercises the operational shadow pipeline against live public Binance data.
  * NO credentials, NO orders, NO exchange mutation. Bounded duration (default 45s).
@@ -290,14 +290,14 @@ async function main(): Promise<void> {
   const anyAggTrade = Array.from(metrics.aggTradeEvents.values()).some((v) => v > 0);
 
   if (allDepthHealthy && allRefPrice && btcOk && mutationsZero && anyAggTrade) {
-    console.log(`\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED`);
+    console.log(`\nVERDICT: MICRO_BURST_M2_OPERATIONAL_SHADOW_RUNTIME_VERIFIED`);
   } else if (allDepthHealthy && allRefPrice && btcOk && mutationsZero) {
     console.log(
-      `\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_PARTIAL — aggTrade WS data not observed`,
+      `\nVERDICT: MICRO_BURST_M2_OPERATIONAL_SHADOW_PARTIAL — aggTrade WS data not observed`,
     );
   } else if (mutationsZero) {
     console.log(
-      `\nVERDICT: MICRO_BURST_V1_M2_OPERATIONAL_SHADOW_READY (partial data — verify on server)`,
+      `\nVERDICT: MICRO_BURST_M2_OPERATIONAL_SHADOW_READY (partial data — verify on server)`,
     );
   } else {
     console.log(`\nVERDICT: SMOKE_TEST_FAILED — exchange mutations detected`);

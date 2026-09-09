@@ -50,7 +50,7 @@ export interface MicroBurstPaperPosition {
   state: Exclude<MicroBurstPaperState, 'FLAT' | 'RECOVERY_BLOCKED'>;
   tradeId: string;
   parentSignalId: string;
-  strategyId: 'MICRO_BURST_V1';
+  strategyId: 'MICRO_BURST';
   strategyVersion: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
@@ -207,7 +207,7 @@ export class MicroBurstPaperTrading {
       state: 'OPEN_SHADOW',
       tradeId,
       parentSignalId: signal.shadowSignalId,
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: signal.strategyVersion,
       symbol: signal.symbol,
       side: signal.side!,

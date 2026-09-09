@@ -5,7 +5,7 @@ import {
   type MicroBurstMarginFractionInput,
 } from './MicroBurstLossBudgetSizing';
 import { createMicroBurstExecutionIntent } from './MicroBurstExecutionIntentFactory';
-import { createMicroBurstV1Identity } from './MicroBurstIdentity';
+import { createMicroBurstIdentity } from './MicroBurstIdentity';
 import { defaultMicroBurstConfig } from './MicroBurstTypes';
 
 const now = 1_700_000_000_000;
@@ -13,7 +13,7 @@ const config = defaultMicroBurstConfig();
 function fixture(side: 'LONG' | 'SHORT' = 'LONG'): MicroBurstLossBudgetInput {
   return {
     intent: createMicroBurstExecutionIntent({
-      identity: createMicroBurstV1Identity(),
+      identity: createMicroBurstIdentity(),
       symbol: 'ETHUSDT',
       side,
       requestedAt: now,

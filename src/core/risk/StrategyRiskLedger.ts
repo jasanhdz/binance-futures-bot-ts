@@ -175,7 +175,7 @@ export class StrategyRiskLedger implements RiskLedgerContract {
 export function strategyIdFromTradeId(tradeId: string): StrategyId | undefined {
   if (tradeId.startsWith('MOMENTUM-RIDE-')) return 'MOMENTUM_RIDE';
   if (tradeId.startsWith('AEGIS-TURBO-')) return 'AEGIS_TURBO';
-  if (tradeId.startsWith('MICRO-BURST-V1-')) return 'MICRO_BURST_V1';
+  if (tradeId.startsWith('MICRO-BURST-')) return 'MICRO_BURST';
   return undefined;
 }
 

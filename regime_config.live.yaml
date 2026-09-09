@@ -33,7 +33,15 @@ TRADING:
 micro_burst:
   enabled: true
   mode: LIVE
-  entry_policy: REACTION
+  contextual_risk:
+    sizing_mode: MARGIN_FRACTION
+    margin_fraction: 0.9
+    medium_leverage: 20
+    high_leverage: 30
+    max_consecutive_net_losses: 3
+    reset_mode: SIGNED_OPERATOR
+    fee_reserve_bps: 14
+    stop_stress_bps: 10
   symbols:
     ETHUSDT:
       enabled: true

@@ -26,17 +26,17 @@ const request: DurableEntryRequest = {
   operationId: 'entry-fixture',
   mutationId: 'se_fixture',
   kind: 'OPEN',
-  parentTradeId: 'MICRO-BURST-V1-fixture',
+  parentTradeId: 'MICRO-BURST-fixture',
   quantity: 2,
   clientOrderId: 'se_fixture',
   intent: {
     identity: {
-      strategyId: 'MICRO_BURST_V1',
+      strategyId: 'MICRO_BURST',
       strategyVersion: 'v1',
       freezeState: 'DRAFT',
       codeCommitSha: 'fixture',
     },
-    tradeId: 'MICRO-BURST-V1-fixture',
+    tradeId: 'MICRO-BURST-fixture',
     symbol: 'ETHUSDT',
     side: 'LONG',
     requestedAt: now - 1000,
@@ -142,7 +142,7 @@ describe('Micro entry recovery with durable state and the runtime protection ser
   it('recovers V3 from the journal policy without adopting latest config or losing quarantine', async () => {
     const f = fixture();
     const contextual = structuredClone(request);
-    contextual.intent.identity.strategyVersion = 'CONTEXTUAL_V3';
+    contextual.intent.identity.strategyVersion = 'MICRO';
     contextual.intent.identity.configHash = `sha256:${'a'.repeat(64)}`;
     contextual.intent.identity.codeCommitSha = 'b'.repeat(40);
     contextual.intent.leverage = 20;
@@ -315,7 +315,7 @@ describe('Micro entry recovery with durable state and the runtime protection ser
       mode: 'LONG_RIDE',
       lastTradeId: request.parentTradeId,
       lastEntryAt: now - 500,
-      lastStrategy: 'MICRO_BURST_V1',
+      lastStrategy: 'MICRO_BURST',
       bracketsAttached: true,
       microBurstPnlUnverified: true,
       eligibleForBotMetrics: false,

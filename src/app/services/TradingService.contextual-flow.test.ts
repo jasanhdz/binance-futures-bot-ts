@@ -20,7 +20,7 @@ import { DurableCloseCoordinator } from '../execution/DurableCloseCoordinator';
 import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecutionService';
 import { PositionProtectionService } from '../position/PositionProtectionService';
 import { MicroBurstPositionManager } from '../../strategies/micro-burst/application/MicroBurstPositionManager';
-import { createMicroBurstContextualIdentity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
+import { createMicroBurstIdentity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 import { sizeMicroBurstLiveEntry } from '../../strategies/micro-burst/application/MicroBurstLiveSizing';
 import { validateMicroBurstEntryMarket } from '../../strategies/micro-burst/domain/MicroBurstEntryMarketGuard';
 import {
@@ -44,7 +44,7 @@ async function fixture() {
   let store = new FsStateStore('default', 'flow', dir).forSymbol('ETHUSDT');
   cleanups.push(() => store.flush!());
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  const identity = createMicroBurstContextualIdentity('a'.repeat(64), 'b'.repeat(40));
+  const identity = createMicroBurstIdentity('b'.repeat(40), 'a'.repeat(64));
   const risk = {
     sizingMode: 'MARGIN_FRACTION' as const,
     marginFraction: 0.9,
@@ -58,9 +58,9 @@ async function fixture() {
   const config = {
     enabled: true,
     mode: 'LIVE',
-    entryPolicy: 'REACTION',
+    entryPolicy: 'MICRO',
     symbols: { ETHUSDT: { enabled: true } },
-    exitPolicy: { contextualPolicyVersion: 'CONTEXTUAL_V3' },
+    exitPolicy: { contextualPolicyVersion: 'MICRO' },
     contextualRisk: risk,
   };
   const scope = { account: 'simulated-account', environment: 'offline' };
@@ -77,8 +77,8 @@ async function fixture() {
     schemaVersion: 1,
     action: 'INITIALIZE',
     ...scope,
-    strategyId: 'MICRO_BURST_V1',
-    policyVersion: 'CONTEXTUAL_V3',
+    strategyId: 'MICRO_BURST',
+    policyVersion: 'MICRO',
     expectedRevision: 0,
     nonce: 'offline-full-flow-initialization',
     issuedAtMs: now,
@@ -347,6 +347,7 @@ async function fixture() {
   const service = Object.create(TradingService.prototype) as any;
   Object.assign(service, {
     acceptingEntries: true,
+    lastErrorTime: {},
     activeRuntimeTasks: new Set(),
     microBurstEntryInFlightSymbols: new Set(),
     entryInFlightSymbols: new Set(),
@@ -426,7 +427,6 @@ async function fixture() {
           book(),
           Date.now(),
           (intent.metadata.contextualPolicy as any).config,
-          'REACTION',
         ),
     });
   service.sharedStrategyExecution = makeExecution();
@@ -461,14 +461,14 @@ async function fixture() {
     symbol: 'ETHUSDT',
     side: 'LONG',
     signalId: `signal-${episode}`,
-    strategyVersion: 'CONTEXTUAL_V3',
+    strategyVersion: 'MICRO',
     requestedAt: Date.now(),
     leverage: tier,
     positionFraction: 0.9,
     structuralStopPrice: 99.5,
     destinationPrice: 102,
     diagnostics: {
-      episodeId: `MBV1-EP-${String(episode).padStart(24, '0')}`,
+      episodeId: `MB-EP-${String(episode).padStart(24, '0')}`,
       signalSnapshotAtMs: Date.now(),
     },
   });
@@ -540,7 +540,121 @@ async function fixture() {
   };
 }
 
-describe('V3 production entry/protection/exit/accounting flow with simulated Binance', () => {
+describe('Micro production entry/protection/exit/accounting flow with simulated Binance', () => {
+  it.each([false, true])(
+    'does not overwrite a newer trade during final stop projection, flush rejects=%s',
+    async (reject) => {
+      const f = await fixture();
+      expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+      await f.entry.reconcile();
+      f.setPrice(101);
+      const policy = f.store.get().microBurstTradePolicy as { digest: string };
+      const flush = f.store.flush!.bind(f.store);
+      vi.spyOn(f.store, 'flush').mockImplementation(async () => {
+        if (f.store.get().microBurstActiveStopKey) {
+          f.store.set({
+            lastTradeId: 'newer-trade',
+            lastOrderId: '999',
+            lastStopPrice: 98,
+            microBurstActiveStopKey: undefined,
+            microBurstStopMove: undefined,
+          });
+          if (reject) throw new Error('projection flush failed');
+        }
+        await flush();
+      });
+      const result = f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest);
+      if (reject) await expect(result).rejects.toThrow('projection flush failed');
+      else expect(await result).toBe(false);
+      expect(f.store.get()).toMatchObject({
+        lastTradeId: 'newer-trade',
+        lastOrderId: '999',
+        lastStopPrice: 98,
+      });
+      expect(f.store.get().microBurstStopMove).toBeUndefined();
+    },
+    20_000,
+  );
+
+  it('uses the identified durable close when a confirmed adjustment and the old protection are both gone', async () => {
+    const f = await fixture();
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    f.setPrice(101);
+    const policy = f.store.get().microBurstTradePolicy as any;
+    expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(true);
+    const orders = await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG');
+    for (const order of orders) await f.exchange.cancelOrderById('ETHUSDT', order.orderId);
+    await f.service.managePositionByOwner('ETHUSDT', f.store.get(), f.store);
+    expect(f.exchange.sendMarketCloseOnce).toHaveBeenCalledTimes(1);
+    expect(f.store.get().mode).toBe('IDLE');
+    expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(2);
+    await f.restart();
+    expect(f.exchange.sendMarketCloseOnce).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  it.each([false, true])(
+    'keeps cancellation uncertainty across restart without another adjustment or resend, exchange canceled=%s',
+    async (canceled) => {
+      const f = await fixture();
+      expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+      await f.entry.reconcile();
+      f.setPrice(101);
+      const policy = f.store.get().microBurstTradePolicy as any;
+      const old = (await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG'))[0];
+      const send = f.exchange.cancelOrderById.bind(f.exchange);
+      const cancel = vi
+        .spyOn(f.exchange, 'cancelOrderById')
+        .mockImplementation(async (symbol, id) => {
+          if (canceled) await send(symbol, id);
+          throw new Error('lost cancellation response');
+        });
+      const query = f.exchange.readCancelTarget!.bind(f.exchange);
+      let oldReads = 0;
+      let visible = false;
+      vi.spyOn(f.exchange, 'readCancelTarget').mockImplementation(async (request) => {
+        if (request.orderId === old.orderId && ++oldReads > 1 && !visible) return null;
+        return query(request);
+      });
+      expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(false);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith('ETHUSDT', old.orderId);
+      expect(f.store.get().microBurstStopMove?.retirementTargets).toHaveLength(1);
+      await f.restart();
+      expect(await f.stop.tighten('ETHUSDT', f.store, 100.3, policy.digest)).toBe(false);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(2);
+      visible = true;
+      expect(await f.stop.tighten('ETHUSDT', f.store, 100.3, policy.digest)).toBe(canceled);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(2);
+      expect(f.store.get().lastStopPrice).toBe(canceled ? 100.2 : 99.5);
+      expect(f.store.get().microBurstStopMove === undefined).toBe(canceled);
+    },
+    20_000,
+  );
+
+  it('never cancels the old covering stop when the exact replacement ceases to be confirmed', async () => {
+    const f = await fixture();
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    f.setPrice(101);
+    const policy = f.store.get().microBurstTradePolicy as any;
+    const old = (await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG'))[0];
+    const cancel = vi.spyOn(f.exchange, 'cancelOrderById');
+    const query = f.exchange.readCancelTarget!.bind(f.exchange);
+    vi.spyOn(f.exchange, 'readCancelTarget').mockImplementation((request) =>
+      request.orderId === old.orderId ? query(request) : Promise.resolve(null),
+    );
+    expect(await f.stop.tighten('ETHUSDT', f.store, 100.2, policy.digest)).toBe(false);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(f.store.get().microBurstStopMove).toBeDefined();
+    expect(await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG')).toHaveLength(2);
+    await f.restart();
+    expect(await f.stop.tighten('ETHUSDT', f.store, 100.3, policy.digest)).toBe(false);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(f.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
   it('retains existing protection after rejected adjustment and never resends across restart', async () => {
     const f = await fixture();
     expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
@@ -653,7 +767,7 @@ describe('V3 production entry/protection/exit/accounting flow with simulated Bin
       positionSide: 'BOTH',
       quantity: f.store.get().lastEntryQty,
     });
-    expect(await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG')).toHaveLength(2);
+    expect(await f.exchange.listCloseOrdersForSide('ETHUSDT', 'LONG')).toHaveLength(1);
   }, 20_000);
 
   it('advances a persisted blind timer without fake price/MFE and closes after restart', async () => {
@@ -687,7 +801,7 @@ describe('V3 production entry/protection/exit/accounting flow with simulated Bin
       ).toBe(true);
       const state = f.store.get();
       expect(state.bracketsAttached).toBe(true);
-      expect(state.lastStrategyVersion).toBe('CONTEXTUAL_V3');
+      expect(state.lastStrategyVersion).toBe('MICRO');
       expect(state.lastEntryQty).toBeGreaterThan(0);
       expect(
         state.lastEntryMargin! + (state.lastEntryQty! * 100 * 14) / 10_000,

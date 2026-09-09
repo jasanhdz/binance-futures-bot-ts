@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { MicroBurstNetLossLedger } from '../../infra/state/MicroBurstNetLossLedger';
 
-/** No key means no V3 admission. Initialization/reset remain externally signed operations. */
+/** No key means no Micro admission. Initialization/reset remain externally signed operations. */
 export function composeMicroNetLossLedger(
   apiKey: string,
   isTestnet: boolean,

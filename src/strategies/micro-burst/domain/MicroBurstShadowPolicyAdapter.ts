@@ -13,7 +13,7 @@ import {
 
 /** Adapts the shared Micro Burst exit engine to the generic SHADOW lifecycle. */
 export class MicroBurstShadowPolicyAdapter implements ShadowStrategyPolicy {
-  readonly strategyId = 'MICRO_BURST_V1' as const;
+  readonly strategyId = 'MICRO_BURST' as const;
   private readonly exitEngine = new MicroBurstExitEngine();
   private readonly activeTradeBySymbol = new Map<string, string>();
 

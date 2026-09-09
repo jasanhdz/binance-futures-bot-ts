@@ -33,7 +33,7 @@ function fixture() {
     lastTradeId: 'trade-1',
     lastOrderId: 'entry-1',
     lastSide: 'LONG',
-    lastStrategy: 'MICRO_BURST_V1',
+    lastStrategy: 'MICRO_BURST',
     lastEntryAt: 1,
   } as BotState;
   const store: StateStore = {
@@ -132,7 +132,7 @@ describe('durable Micro cancellation through the real protector', () => {
         stopPrice: 90,
         parentTradeId: 'trade-1',
         parentOrderId: 'entry-1',
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
       },
       () => true,
     );
@@ -300,7 +300,7 @@ describe('durable Micro cancellation through the real protector', () => {
           status: 'RECOVERY_REQUIRED',
           reason: 'fixture emergency',
         });
-        service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+        service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
         service.strategyRuntimeCoordinator = { readMicroBurstExitMarket: vi.fn() };
         service.notifyError = vi.fn();
         service.deps = { exchange: f.exchange, logger: { warn: vi.fn(), error: vi.fn() } };
@@ -395,7 +395,7 @@ describe('durable Micro cancellation through the real protector', () => {
       status: 'RECOVERY_REQUIRED',
       reason: 'fixture emergency',
     });
-    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
     service.strategyRuntimeCoordinator = { readMicroBurstExitMarket: vi.fn() };
     service.notifyError = vi.fn();
     service.deps = { exchange: f.exchange, logger: { warn: vi.fn(), error: vi.fn() } };

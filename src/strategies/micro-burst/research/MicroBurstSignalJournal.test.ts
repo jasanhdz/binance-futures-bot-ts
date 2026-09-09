@@ -10,7 +10,7 @@ function makeResult(
   overrides: Partial<MicroBurstShadowEvaluationResult> = {},
 ): MicroBurstShadowEvaluationResult {
   return {
-    strategyId: 'MICRO_BURST_V1',
+    strategyId: 'MICRO_BURST',
     strategyVersion: '0.3.0-operational-shadow',
     symbol: 'ETHUSDT',
     snapshotAtMs: 1000000,
@@ -73,7 +73,7 @@ describe('MicroBurstSignalJournal', () => {
     expect(lines).toHaveLength(1);
 
     const entry = JSON.parse(lines[0]);
-    expect(entry.strategyId).toBe('MICRO_BURST_V1');
+    expect(entry.strategyId).toBe('MICRO_BURST');
     expect(entry.symbol).toBe('ETHUSDT');
     expect(entry.side).toBe('LONG');
     expect(entry.wouldEnter).toBe(true);

@@ -3,8 +3,12 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { StrategyHistoryLogger } from './StrategyHistoryLogger';
+import { generateStrategyTradeId } from './AegisTurboHistoryLogger';
 
 describe('StrategyHistoryLogger', () => {
+  it('emits only canonical Micro identifiers for new trades', () => {
+    expect(generateStrategyTradeId('MICRO_BURST', 'ETHUSDT')).toMatch(/^MICRO-BURST-ETHUSDT-/);
+  });
   let tempDir: string;
 
   beforeEach(async () => {
@@ -27,7 +31,7 @@ describe('StrategyHistoryLogger', () => {
     await logger.logTradeEvent({
       timestamp: '2026-08-26T10:15:00.001Z',
       symbol: 'ETHUSDT',
-      strategy: 'MICRO_BURST_V1',
+      strategy: 'MICRO_BURST',
       mode: 'SHADOW',
       event: 'SIGNAL_RECEIVED',
     });

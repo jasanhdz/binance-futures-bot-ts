@@ -37,8 +37,8 @@ function fixture() {
     action: 'INITIALIZE',
     account: options.account,
     environment: options.environment,
-    strategyId: 'MICRO_BURST_V1',
-    policyVersion: 'CONTEXTUAL_V3',
+    strategyId: 'MICRO_BURST',
+    policyVersion: 'MICRO',
     expectedRevision: 0,
     nonce: 'synthetic-initialization-nonce',
     issuedAtMs: now,
@@ -51,8 +51,8 @@ function fixture() {
   );
   const policy = createMicroBurstTradePolicy(
     {
-      strategyId: 'MICRO_BURST_V1',
-      strategyVersion: 'CONTEXTUAL_V3',
+      strategyId: 'MICRO_BURST',
+      strategyVersion: 'MICRO',
       freezeState: 'DRAFT',
       configHash: `sha256:${'a'.repeat(64)}`,
       codeCommitSha: 'b'.repeat(40),
@@ -105,7 +105,7 @@ function fixture() {
       episodeId: `episode-${index}`,
       symbol: 'ETHUSDT',
       side: 'LONG',
-      policyVersion: 'CONTEXTUAL_V3',
+      policyVersion: 'MICRO',
       configHash: policy.sourceConfigHash,
       codeCommitSha: policy.sourceCodeCommitSha,
       entryOrderId: String(index * 2),
@@ -117,8 +117,8 @@ function fixture() {
     store.set({
       mode: 'IDLE',
       positionOwner: 'BOT',
-      lastStrategy: 'MICRO_BURST_V1',
-      lastStrategyVersion: 'CONTEXTUAL_V3',
+      lastStrategy: 'MICRO_BURST',
+      lastStrategyVersion: 'MICRO',
       lastTradeId: identity.tradeId,
       lastOrderId: identity.entryOrderId,
       lastSide: 'LONG',

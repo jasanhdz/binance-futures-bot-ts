@@ -10,7 +10,7 @@ vi.mock('../config/environment', () => ({
 import { BinanceExchange } from './BinanceAdapter';
 import { sizeMicroBurstLiveEntry } from '../../strategies/micro-burst/application/MicroBurstLiveSizing';
 import { createMicroBurstTradePolicy } from '../../strategies/micro-burst/domain/MicroBurstTradePolicy';
-import { createMicroBurstContextualIdentity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
+import { createMicroBurstIdentity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
 import { createMicroBurstExecutionIntent } from '../../strategies/micro-burst/domain/MicroBurstExecutionIntentFactory';
 afterEach(() => {
   vi.restoreAllMocks();
@@ -77,7 +77,7 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG', leverage = 20) {
     getServerTime: async () => now,
     getExchangeInfoSnapshot: async () => info,
   });
-  const identity = createMicroBurstContextualIdentity('a'.repeat(64), 'b'.repeat(40));
+  const identity = createMicroBurstIdentity('b'.repeat(40), 'a'.repeat(64));
   const policy = createMicroBurstTradePolicy(identity, {
     sizingMode: 'MARGIN_FRACTION',
     marginFraction: 0.9,

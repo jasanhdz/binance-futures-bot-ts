@@ -155,7 +155,7 @@ describe('TradingService shared safety contracts', () => {
 
   it('reconciles MISSING before and without asking for a technical exit context', async () => {
     const service = Object.create(TradingService.prototype) as any;
-    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
     service.positionProtection = {
       superviseMicroStop: vi.fn().mockResolvedValue({ status: 'MISSING' }),
       reconcileMissingMicroPosition: vi.fn().mockResolvedValue(true),
@@ -163,7 +163,7 @@ describe('TradingService shared safety contracts', () => {
     service.strategyRuntimeCoordinator = { readMicroBurstExitMarket: vi.fn() };
     service.deps = { logger: { warn: vi.fn() } };
     const store = { set: vi.fn() };
-    await service.managePositionByOwner('ETHUSDT', { lastStrategy: 'MICRO_BURST_V1' }, store);
+    await service.managePositionByOwner('ETHUSDT', { lastStrategy: 'MICRO_BURST' }, store);
     expect(service.positionProtection.reconcileMissingMicroPosition).toHaveBeenCalledWith(
       'ETHUSDT',
       store,
@@ -365,7 +365,7 @@ describe('TradingService shared safety contracts', () => {
     async (contextual) => {
       const service = Object.create(TradingService.prototype) as any;
       const order: string[] = [];
-      service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+      service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
       service.positionProtection = {
         superviseMicroStop: vi.fn(async () => {
           order.push('stop');
@@ -382,7 +382,7 @@ describe('TradingService shared safety contracts', () => {
       service.runtimeConfig = {
         getMicroBurstConfig: () => ({
           mode: 'SHADOW',
-          exitPolicy: contextual ? { contextualPolicyVersion: 'CONTEXTUAL_V3' } : {},
+          exitPolicy: contextual ? { contextualPolicyVersion: 'MICRO' } : {},
         }),
       };
       service.positionManagerRouter = {
@@ -390,7 +390,7 @@ describe('TradingService shared safety contracts', () => {
           order.push('research');
         }),
       };
-      const state = { mode: 'LONG_RIDE', positionOwner: 'BOT', lastStrategy: 'MICRO_BURST_V1' };
+      const state = { mode: 'LONG_RIDE', positionOwner: 'BOT', lastStrategy: 'MICRO_BURST' };
       await service.managePositionByOwner('ETHUSDT', state, { get: () => state, set: vi.fn() });
       expect(order).toEqual(contextual ? ['stop', 'market', 'research'] : ['stop', 'market']);
     },
@@ -398,7 +398,7 @@ describe('TradingService shared safety contracts', () => {
 
   it('does not emergency-close when Micro order visibility is temporarily unknown', async () => {
     const service = Object.create(TradingService.prototype) as any;
-    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
     service.positionProtection = {
       superviseMicroStop: vi.fn().mockResolvedValue({
         status: 'UNKNOWN',
@@ -410,7 +410,7 @@ describe('TradingService shared safety contracts', () => {
       exchange: { closeSideMarketSafe: vi.fn() },
     };
     service.notifyError = vi.fn().mockResolvedValue(undefined);
-    const state = { mode: 'LONG_RIDE', lastStrategy: 'MICRO_BURST_V1' };
+    const state = { mode: 'LONG_RIDE', lastStrategy: 'MICRO_BURST' };
     const store = { set: vi.fn() };
 
     await service.managePositionByOwner('ETHUSDT', state, store);
@@ -425,7 +425,7 @@ describe('TradingService shared safety contracts', () => {
   it('attempts a fresh-quantity emergency close when Micro protection fails', async () => {
     const service = Object.create(TradingService.prototype) as any;
     const position = { sideMode: 'BOTH', qtyAbs: 2 };
-    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
     service.positionProtection = {
       superviseMicroStop: vi.fn().mockResolvedValue({
         status: 'RECOVERY_REQUIRED',
@@ -464,7 +464,7 @@ describe('TradingService shared safety contracts', () => {
     const state = {
       mode: 'LONG_RIDE',
       positionOwner: 'BOT',
-      lastStrategy: 'MICRO_BURST_V1',
+      lastStrategy: 'MICRO_BURST',
       lastSide: 'LONG',
       lastTradeId: 'micro-1',
     };
@@ -494,7 +494,7 @@ describe('TradingService shared safety contracts', () => {
 
   it('keeps Micro quarantined when the emergency close fails', async () => {
     const service = Object.create(TradingService.prototype) as any;
-    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
     service.positionProtection = {
       superviseMicroStop: vi.fn().mockResolvedValue({
         status: 'RECOVERY_REQUIRED',
@@ -516,7 +516,7 @@ describe('TradingService shared safety contracts', () => {
     const state = {
       mode: 'SHORT_RIDE',
       positionOwner: 'BOT',
-      lastStrategy: 'MICRO_BURST_V1',
+      lastStrategy: 'MICRO_BURST',
       lastSide: 'SHORT',
     };
     const store = { get: () => state, set: vi.fn() };
@@ -534,7 +534,7 @@ describe('TradingService shared safety contracts', () => {
 
   it('keeps Micro ambiguous when emergency close leaves exposure open', async () => {
     const service = Object.create(TradingService.prototype) as any;
-    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST_V1' });
+    service.strategyIdentityForState = () => ({ strategyId: 'MICRO_BURST' });
     service.positionProtection = {
       superviseMicroStop: vi.fn().mockResolvedValue({
         status: 'RECOVERY_REQUIRED',
@@ -551,7 +551,7 @@ describe('TradingService shared safety contracts', () => {
     service.notifyError = vi.fn().mockResolvedValue(undefined);
     const state = {
       mode: 'LONG_RIDE',
-      lastStrategy: 'MICRO_BURST_V1',
+      lastStrategy: 'MICRO_BURST',
       lastSide: 'LONG',
     };
     const store = { set: vi.fn() };

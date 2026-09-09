@@ -99,11 +99,12 @@ describe('readAegisClosedTradeOutcomes', () => {
       [
         { ...ownership, trade_id: 'AEGIS-TURBO-1', strategy: 'AEGIS_TURBO' },
         { ...ownership, trade_id: 'MOMENTUM-RIDE-1', strategy: 'MOMENTUM_RIDE' },
+        { ...ownership, trade_id: 'MICRO-BURST-1', strategy: 'MICRO_BURST' },
         { ...ownership, trade_id: 'MICRO-BURST-V1-1', strategy: 'MICRO_BURST_V1' },
         {
           ...ownership,
-          trade_id: 'MICRO-BURST-V1-ESTIMATED',
-          strategy: 'MICRO_BURST_V1',
+          trade_id: 'MICRO-BURST-ESTIMATED',
+          strategy: 'MICRO_BURST',
           metadata: { pnl_status: 'ESTIMATED_FROM_MARK_PRICE' },
         },
       ]
@@ -111,6 +112,15 @@ describe('readAegisClosedTradeOutcomes', () => {
         .join('\n'),
     );
 
-    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(3);
+    const file = path.join(tempDir, 'turbo_trades_2026-07-27.jsonl');
+    const original = await fs.readFile(file, 'utf8');
+    const outcomes = await readStrategyClosedTradeOutcomes(tempDir);
+    expect(outcomes).toHaveLength(4);
+    expect(outcomes).toContainEqual({
+      tradeId: 'MICRO-BURST-V1-1',
+      closedAt: ownership.closed_at,
+      pnlUsdt: -1,
+    });
+    expect(await fs.readFile(file, 'utf8')).toBe(original);
   });
 });

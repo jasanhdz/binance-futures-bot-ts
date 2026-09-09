@@ -1,3 +1,8 @@
+import {
+  isMicroBurstStrategy,
+  isMicroBurstPolicy,
+  samePersistedStrategy,
+} from '../../core/strategy/MicroBurstLegacy';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BotState } from '../../core/types';
 import type {
@@ -19,7 +24,7 @@ interface CloseRequest extends IdentifiedCloseRequest {
   operationId: string;
   parentTradeId: string;
   parentOrderId: string;
-  strategyId: 'MICRO_BURST_V1';
+  strategyId: 'MICRO_BURST';
   entryPrice: number;
   identity: Pick<
     BotState,
@@ -138,7 +143,7 @@ export class DurableCloseCoordinator {
       !r.parentTradeId?.trim() ||
       !r.parentOrderId?.trim() ||
       !/^[A-Z0-9]+$/.test(r.symbol) ||
-      r.strategyId !== 'MICRO_BURST_V1' ||
+      !isMicroBurstStrategy(r.strategyId) ||
       !['LONG', 'SHORT'].includes(r.side) ||
       !['BOTH', r.side].includes(r.positionSide) ||
       !Number.isFinite(r.quantity) ||
@@ -189,7 +194,7 @@ export class DurableCloseCoordinator {
       s.lastTradeId === r.parentTradeId &&
       s.lastOrderId === r.parentOrderId &&
       s.lastSide === r.side &&
-      s.lastStrategy === r.strategyId &&
+      samePersistedStrategy(s.lastStrategy, r.strategyId) &&
       (['lastEntryAt', 'lastEntryQty', 'lastEntryPrice', 'ownershipStatus'] as const).every(
         (key) => s[key] === r.identity[key],
       ) &&
@@ -239,7 +244,7 @@ export class DurableCloseCoordinator {
       this.failure ||
       !/^[A-Z0-9]+$/.test(symbol) ||
       state.positionOwner !== 'BOT' ||
-      state.lastStrategy !== 'MICRO_BURST_V1' ||
+      !isMicroBurstStrategy(state.lastStrategy) ||
       !state.lastTradeId ||
       !state.lastOrderId ||
       !state.lastSide ||
@@ -285,7 +290,7 @@ export class DurableCloseCoordinator {
         notBeforeMs: Date.now(),
         parentTradeId: state.lastTradeId!,
         parentOrderId: state.lastOrderId!,
-        strategyId: 'MICRO_BURST_V1',
+        strategyId: 'MICRO_BURST',
         identity: JSON.parse(
           JSON.stringify({
             mode: state.mode,
@@ -410,14 +415,14 @@ export class DurableCloseCoordinator {
       return false;
     }
     if (!this.same(r, store, true)) return false;
-    if (identity.lastStrategyVersion === 'CONTEXTUAL_V3' && !identity.microBurstSettlement) {
+    if (isMicroBurstPolicy(identity.lastStrategyVersion) && !identity.microBurstSettlement) {
       const policy = identity.microBurstTradePolicy;
       const settlement = {
         tradeId: r.parentTradeId,
         episodeId: identity.microBurstEpisodeId ?? '',
         symbol: r.symbol,
         side: r.side,
-        policyVersion: 'CONTEXTUAL_V3' as const,
+        policyVersion: 'MICRO' as const,
         configHash: identity.lastConfigHash ?? '',
         codeCommitSha: identity.lastCodeCommitSha ?? '',
         entryOrderId: r.parentOrderId,
@@ -429,7 +434,7 @@ export class DurableCloseCoordinator {
       if (
         isMicroBurstTradePolicy(policy, {
           strategyId: r.strategyId,
-          strategyVersion: 'CONTEXTUAL_V3',
+          strategyVersion: 'MICRO',
           configHash: identity.lastConfigHash,
           codeCommitSha: identity.lastCodeCommitSha ?? '',
         }) &&

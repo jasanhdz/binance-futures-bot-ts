@@ -1,5 +1,5 @@
 /**
- * MICRO BURST V1 — Prospective Outcome Tracker
+ * Micro Burst - Prospective Outcome Tracker
  *
  * Application-layer component that:
  * - Receives frozen signal snapshots (T0 immutable)
@@ -32,10 +32,7 @@ import {
   OUTCOME_HORIZONS_MS,
 } from './MicroBurstOutcomeEngine';
 import { createMicroBurstEpisodeId } from '../domain/MicroBurstIdentity';
-import {
-  MicroBurstConfig,
-  defaultMicroBurstConfig,
-} from '../domain/MicroBurstTypes';
+import { MicroBurstConfig, defaultMicroBurstConfig } from '../domain/MicroBurstTypes';
 import { MicroBurstOutcomeJournal } from './MicroBurstOutcomeJournal';
 import { MicroBurstTradeHistoryStore } from './MicroBurstTradeHistoryStore';
 import { MicroBurstStorage } from './MicroBurstStorage';
@@ -173,7 +170,16 @@ export class MicroBurstOutcomeTracker {
         const startedAtMs = component[0].signalAtMs;
         const primarySignalId = component[0].shadowSignalId;
         const cohortId = component[0].cohortId;
-        const episodeId = createMicroBurstEpisodeId(symbol, side, startedAtMs, cohortId ?? '');
+        const canonicalEpisodeId = createMicroBurstEpisodeId(
+          symbol,
+          side,
+          startedAtMs,
+          cohortId ?? '',
+        );
+        // Persisted research cohorts retain their original episode identities on replay.
+        const episodeId = cohortId?.startsWith('MBV1-M3_2-')
+          ? canonicalEpisodeId.replace(/^MB-EP-/, 'MBV1-EP-')
+          : canonicalEpisodeId;
         const episode = {
           signalIds: new Set(component.map((candidate) => candidate.shadowSignalId)),
           primarySignalId,
@@ -201,7 +207,8 @@ export class MicroBurstOutcomeTracker {
       flush();
     }
     for (const oldId of this.episodes.keys()) {
-      if (oldId.startsWith('MBV1-EP-') && !rebuilt.has(oldId)) this.episodes.delete(oldId);
+      if ((oldId.startsWith('MBV1-EP-') || oldId.startsWith('MB-EP-')) && !rebuilt.has(oldId))
+        this.episodes.delete(oldId);
     }
     for (const [episodeId, episode] of rebuilt) this.episodes.set(episodeId, episode as any);
     for (const candidate of signals) {
@@ -451,10 +458,7 @@ export class MicroBurstOutcomeTracker {
 
       const computedHorizons = computeAllHorizons(pending.signal, entryPrice, history);
       // A completed horizon is frozen at maturity; never replace it with a later query.
-      const horizons: Record<
-        number,
-        import('./MicroBurstOutcomeTypes').HorizonOutcome
-      > = {
+      const horizons: Record<number, import('./MicroBurstOutcomeTypes').HorizonOutcome> = {
         ...computedHorizons,
         ...Object.fromEntries(pending.completedHorizons),
       };

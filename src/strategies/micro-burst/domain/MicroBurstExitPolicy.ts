@@ -693,7 +693,7 @@ export function microBurstExitDeadline(
     action: 'CLOSE_MARKET',
     reason: 'MAX_HOLD',
     diagnostics: {
-      exitPolicyVersion: 'CONTEXTUAL_V3',
+      exitPolicyVersion: 'MICRO',
       timeMs: elapsed,
       deadlineIndependentOfMarket: true,
       estimatedNetReturnBps: null,
@@ -718,7 +718,7 @@ export function advanceMicroBurstExit(
       ...transition.decision,
       diagnostics: {
         ...transition.decision.diagnostics,
-        exitPolicyVersion: 'CONTEXTUAL_V3',
+        exitPolicyVersion: 'MICRO',
         scoreIsProbability: false,
         observedAtMs: Number.isFinite(now) ? now : null,
         evidenceObservedAtMs: context.marketEvidence?.observedAtMs ?? null,

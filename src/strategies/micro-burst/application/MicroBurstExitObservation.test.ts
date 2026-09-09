@@ -3,13 +3,13 @@ import {
   MicroBurstExitObservation,
   type MicroBurstExitObservationRecord,
 } from './MicroBurstExitObservation';
-import { createMicroBurstV1Identity } from '../domain/MicroBurstIdentity';
+import { createMicroBurstIdentity } from '../domain/MicroBurstIdentity';
 
 function record(): MicroBurstExitObservationRecord {
   return {
     schemaVersion: 1,
     authority: 'OBSERVATION_ONLY',
-    identity: createMicroBurstV1Identity(),
+    identity: createMicroBurstIdentity(),
     symbol: 'ETHUSDT',
     tradeId: 'micro-test',
     decisionId: 'decision-test',
