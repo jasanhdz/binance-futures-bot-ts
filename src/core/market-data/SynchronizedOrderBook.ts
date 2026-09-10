@@ -106,6 +106,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
   private temporalHistory: TemporalOrderBookObservation[] = [];
   private diffUnsubscribe: (() => void) | null = null;
   private lifecycleGeneration = 0;
+  private awaitingBridge = false;
 
   constructor(
     private readonly symbol: string,
@@ -135,6 +136,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
     this.askBook.clear();
     this.diffBuffer = [];
     this.health = 'UNAVAILABLE';
+    this.awaitingBridge = false;
   }
 
   getState(): OrderBookState {
@@ -190,6 +192,17 @@ export class SynchronizedOrderBook implements OrderBookPort {
       return;
     }
     if (this.health === 'UNSYNCED' || this.health === 'STALE') {
+      if (this.awaitingBridge && this.health === 'UNSYNCED') {
+        if (event.u <= this.lastUpdateId) return;
+        if (!(event.U <= this.lastUpdateId + 1 && this.lastUpdateId + 1 <= event.u)) {
+          this.desync('snapshot bridge missing');
+          return;
+        }
+        this.awaitingBridge = false;
+        this.apply(event);
+        if (this.getState().health === 'HEALTHY') this.resyncFailureStreak = 0;
+        return;
+      }
       this.buffer(event);
       if (!this.resyncTimer) this.syncFromSnapshot();
       return;
@@ -215,6 +228,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
     if (this.isSyncing || !this.diffUnsubscribe) return;
     const generation = this.lifecycleGeneration;
     this.isSyncing = true;
+    this.awaitingBridge = false;
     try {
       const snapshot = await this.deps.snapshotSource.getSnapshot(
         this.symbol,
@@ -236,6 +250,8 @@ export class SynchronizedOrderBook implements OrderBookPort {
       this.diffBuffer = [];
       if (!buffered.length) {
         this.health = 'UNSYNCED';
+        // REST may finish before the next websocket diff. Keep this snapshot as the bridge anchor.
+        this.awaitingBridge = true;
         return;
       }
       {
@@ -337,6 +353,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
   }
 
   private invalidate(health: OrderBookHealth, reason: string): void {
+    this.awaitingBridge = false;
     const alreadyRecovering = this.resyncRequested || this.resyncTimer !== null;
     if (!alreadyRecovering) this.gapCount++;
     this.health = health;

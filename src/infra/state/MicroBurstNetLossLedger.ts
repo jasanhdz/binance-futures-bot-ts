@@ -1,7 +1,12 @@
 import Database from 'better-sqlite3';
+import {
+  validMicroHistoricalIdentity,
+  type MicroHistoricalIdentity,
+} from '../../strategies/micro-burst/domain/MicroHistoricalClose';
 import { createHash, createPublicKey, verify, type KeyObject } from 'node:crypto';
 import {
   reconcileMicroBurstSettlement,
+  reconcileMicroBurstEconomics,
   validMicroBurstSettlementIdentity,
   type MicroBurstSettlementEvidence,
   type MicroBurstSettlementIdentity,
@@ -205,12 +210,33 @@ export class MicroBurstNetLossLedger {
     identity: MicroBurstSettlementIdentity,
     evidence?: MicroBurstSettlementEvidence,
   ): MicroBurstSettlementResult {
+    if (!validMicroBurstSettlementIdentity(identity))
+      throw new Error('MICRO_SETTLEMENT_IDENTITY_INVALID');
+    return this.observeEconomic(identity, evidence);
+  }
+
+  /** Historical imports retain original provenance and share cashflow deduplication, not policy authority. */
+  observeHistorical(
+    identity: MicroHistoricalIdentity,
+    evidence: MicroBurstSettlementEvidence,
+  ): MicroBurstSettlementResult {
+    if (
+      !validMicroHistoricalIdentity(identity) ||
+      identity.closedAtMs >= Math.floor(this.now() / 86_400_000) * 86_400_000
+    )
+      throw new Error('MICRO_HISTORICAL_IDENTITY_INVALID');
+    return this.observeEconomic(identity, evidence);
+  }
+
+  private observeEconomic(
+    identity: MicroBurstSettlementIdentity | MicroHistoricalIdentity,
+    evidence?: MicroBurstSettlementEvidence,
+  ): MicroBurstSettlementResult {
     if (this.failure) throw new Error(this.failure);
     const now = this.now();
-    if (!validMicroBurstSettlementIdentity(identity) || identity.closedAtMs > now)
-      throw new Error('MICRO_SETTLEMENT_IDENTITY_INVALID');
+    if (identity.closedAtMs > now) throw new Error('MICRO_SETTLEMENT_IDENTITY_INVALID');
     const result: MicroBurstSettlementResult = evidence
-      ? reconcileMicroBurstSettlement(identity, evidence)
+      ? reconcileMicroBurstEconomics(identity, evidence)
       : { status: 'UNVERIFIED', netPnlUsdt: null, reason: 'MICRO_SETTLEMENT_EVIDENCE_MISSING' };
     if (evidence && evidence.observedAtMs > now)
       throw new Error('MICRO_SETTLEMENT_FUTURE_EVIDENCE');
@@ -426,9 +452,14 @@ export class MicroBurstNetLossLedger {
           )
           .all() as { trade_id: string; identity: string; evidence: string }[];
         for (const trade of historical) {
-          const identity = JSON.parse(trade.identity) as MicroBurstSettlementIdentity;
+          const identity = JSON.parse(trade.identity) as
+            | MicroBurstSettlementIdentity
+            | MicroHistoricalIdentity;
           const evidence = JSON.parse(trade.evidence) as MicroBurstSettlementEvidence;
-          const result = reconcileMicroBurstSettlement(identity, evidence);
+          const result =
+            'provenance' in identity && validMicroHistoricalIdentity(identity)
+              ? reconcileMicroBurstEconomics(identity, evidence)
+              : reconcileMicroBurstSettlement(identity as MicroBurstSettlementIdentity, evidence);
           if (result.status !== 'VERIFIED') throw new Error('MICRO_NET_LOSS_HISTORY_INVALID');
           const closedAt = Math.max(
             ...evidence.fills

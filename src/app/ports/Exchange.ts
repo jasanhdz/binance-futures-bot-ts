@@ -8,9 +8,11 @@
 import { Side } from '../../core/types';
 import { MarketDataPort } from './MarketData';
 import type {
+  MicroBurstEconomicIdentity,
   MicroBurstSettlementEvidence,
   MicroBurstSettlementIdentity,
 } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
+import type { MicroFlatObservation } from '../../strategies/micro-burst/domain/MicroHistoricalClose';
 
 export interface PositionInfo {
   sideMode: 'BOTH' | 'LONG' | 'SHORT';
@@ -69,6 +71,13 @@ export interface USDTAccountSnapshot {
 }
 
 export interface ExchangeAccountReadPort {
+  readHistoricalMicroClose?(
+    input: Omit<MicroBurstEconomicIdentity, 'closeOrderIds'> & { clientOrderId: string },
+  ): Promise<{
+    identity: MicroBurstEconomicIdentity;
+    evidence: MicroBurstSettlementEvidence;
+  } | null>;
+  readMicroFlatAndOpenOrders?(symbol: string): Promise<MicroFlatObservation | null>;
   readMicroBurstEntryRisk?(
     symbol: string,
     leverage: number,

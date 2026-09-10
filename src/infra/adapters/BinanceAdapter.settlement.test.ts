@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BinanceExchange } from './BinanceAdapter';
 import {
   reconcileMicroBurstSettlement,
   reconcileMicroBurstEconomics,
   type MicroBurstSettlementIdentity,
 } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
+afterEach(() => vi.unstubAllGlobals());
 
 function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
   const identity: MicroBurstSettlementIdentity = {
@@ -57,6 +58,80 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
 }
 
 describe('Binance exact settlement reads', () => {
+  it('discovers external close IDs only after matching the original entry client identity', async () => {
+    const f = fixture('SHORT');
+    const getOrder = f.client.futuresGetOrder.getMockImplementation()!;
+    f.client.futuresGetOrder.mockImplementation(async (input) => ({
+      ...(await getOrder(input)),
+      clientOrderId: 'original',
+    }));
+    const { episodeId, policyVersion, configHash, codeCommitSha, closeOrderIds, ...input } =
+      f.identity;
+    const result = await f.exchange.readHistoricalMicroClose({
+      ...input,
+      clientOrderId: 'original',
+    });
+    expect(result?.identity.closeOrderIds).toEqual(['2']);
+    expect(result?.identity.closedAtMs).toBe(190);
+    expect(result?.identity).not.toHaveProperty('policyVersion');
+    expect(
+      await f.exchange.readHistoricalMicroClose({ ...input, clientOrderId: 'other' }),
+    ).toBeNull();
+  });
+
+  it.each(['regular', 'algo', 'malformed-algo', 'http', 'new-position', 'backwards', 'slow'])(
+    'does not prove flat with complete empty working orders under %s',
+    async (fault) => {
+      const f = fixture();
+      Object.assign(f.client, {
+        futuresOpenOrders: vi.fn(async () =>
+          fault === 'regular' ? [{ type: 'LIMIT', owner: 'UNKNOWN' }] : [],
+        ),
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: fault !== 'http',
+          status: 500,
+          text: async () => 'unavailable',
+          headers: { get: () => null },
+          json: async () =>
+            fault === 'algo'
+              ? [{ algoType: 'CONDITIONAL', clientAlgoId: 'foreign' }]
+              : fault === 'malformed-algo'
+                ? {}
+                : [],
+        })),
+      );
+      if (fault === 'new-position')
+        f.client.futuresPositionRisk.mockResolvedValueOnce([
+          { symbol: 'ETHUSDT', positionSide: 'BOTH', positionAmt: '1' },
+        ]);
+      if (fault === 'backwards')
+        f.client.futuresTime.mockResolvedValueOnce(300).mockResolvedValueOnce(299);
+      if (fault === 'slow')
+        f.client.futuresTime.mockResolvedValueOnce(300).mockResolvedValueOnce(10_301);
+      if (fault === 'http' || fault === 'new-position')
+        await expect(f.exchange.readMicroFlatAndOpenOrders('ETHUSDT')).rejects.toThrow();
+      else expect(await f.exchange.readMicroFlatAndOpenOrders('ETHUSDT')).toBeNull();
+    },
+  );
+
+  it('reads unfiltered regular and algo inventories and rechecks both position sides', async () => {
+    const f = fixture();
+    const open = vi.fn(async () => []);
+    Object.assign(f.client, { futuresOpenOrders: open });
+    const fetcher = vi.fn(async () => ({ ok: true, json: async () => [] }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await f.exchange.readMicroFlatAndOpenOrders('ETHUSDT')).toMatchObject({
+      regularOpenOrders: 0,
+      algoOpenOrders: 0,
+      source: 'BINANCE_FRESH_FLAT_AND_ALL_OPEN_ORDERS',
+    });
+    expect(open).toHaveBeenCalledWith({ symbol: 'ETHUSDT' });
+    expect(f.client.futuresPositionRisk).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it('audits historical economics without manufacturing current-policy provenance', async () => {
     const f = fixture('SHORT');
     const { episodeId, policyVersion, configHash, codeCommitSha, ...historical } = f.identity;

@@ -6,11 +6,23 @@ export class MicroUtcClock {
   private pending = false;
   private nextRead = 0;
   private invalid = false;
+  private synchronization?: Promise<void>;
 
   constructor(
     private readonly readServerTime: () => Promise<number>,
     private readonly monotonic: () => number = () => performance.now(),
   ) {}
+
+  async ready(): Promise<void> {
+    try {
+      this.now();
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'MICRO_NET_LOSS_CLOCK_UNAVAILABLE')
+        throw error;
+    }
+    await this.synchronization;
+    this.now();
+  }
 
   now(): number {
     const at = this.monotonic();
@@ -21,7 +33,7 @@ export class MicroUtcClock {
     if (!this.pending && at >= this.nextRead) {
       this.pending = true;
       this.nextRead = at + 5_000;
-      void Promise.resolve()
+      this.synchronization = Promise.resolve()
         .then(this.readServerTime)
         .then((server) => {
           const received = this.monotonic();

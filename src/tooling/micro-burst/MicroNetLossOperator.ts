@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import axios from 'axios';
+import { MicroUtcClock } from '../../infra/state/MicroUtcClock';
 import {
   createHash,
   createPrivateKey,
@@ -16,12 +18,13 @@ import {
 } from '../../infra/state/MicroBurstNetLossLedger';
 
 /** Explicit operator CLI only. The trading runtime imports neither this module nor private keys. */
-export function initializeLocalMicroLedger(options: {
+export async function initializeLocalMicroLedger(options: {
   keyDirectory: string;
   apiKey: string;
   isTestnet: boolean;
   reason: string;
-}): { publicKeyFile: string; revision: number; initialized: boolean } {
+  readServerTime: () => Promise<number>;
+}): Promise<{ publicKeyFile: string; revision: number; initialized: boolean }> {
   if (
     !options.apiKey.trim() ||
     !options.reason.trim() ||
@@ -29,6 +32,8 @@ export function initializeLocalMicroLedger(options: {
     !path.isAbsolute(options.keyDirectory)
   )
     throw new Error('MICRO_OPERATOR_EXPLICIT_INITIALIZATION_ARGUMENTS_REQUIRED');
+  const clock = new MicroUtcClock(options.readServerTime);
+  await clock.ready();
   const parent = path.dirname(options.keyDirectory);
   const account = `binance-key-${createHash('sha256').update(options.apiKey).digest('hex')}`;
   const environment = options.isTestnet ? 'testnet' : 'production';
@@ -98,12 +103,18 @@ export function initializeLocalMicroLedger(options: {
       .equals(publicKey.export({ type: 'spki', format: 'der' }))
   )
     throw new Error('MICRO_OPERATOR_KEY_PAIR_MISMATCH');
-  const ledger = composeMicroNetLossLedger(options.apiKey, options.isTestnet, publicKeyFile)!;
+  const ledger = composeMicroNetLossLedger(
+    options.apiKey,
+    options.isTestnet,
+    publicKeyFile,
+    options.readServerTime,
+    clock,
+  )!;
   try {
     const snapshot = ledger.snapshot();
     if (snapshot.initialized || snapshot.pendingSettlements || snapshot.halted)
       throw new Error('MICRO_OPERATOR_INITIALIZATION_NOT_PRISTINE');
-    const now = Date.now();
+    const now = clock.now();
     const command: MicroBurstLossResetCommand = {
       schemaVersion: 1,
       action: 'INITIALIZE',
@@ -153,22 +164,35 @@ if (require.main === module) {
     );
     process.exitCode = 1;
   } else {
-    try {
-      console.log(
-        JSON.stringify(
-          initializeLocalMicroLedger({
-            keyDirectory: directory,
-            reason,
-            apiKey: process.env.BINANCE_API_KEY ?? '',
-            isTestnet: process.env.IS_TESTNET === '1',
-          }),
-        ),
-      );
-    } catch {
-      console.error(
-        'MICRO_OPERATOR_INITIALIZATION_FAILED: no reset performed; inspect permissions, scope and existing initialization',
-      );
-      process.exitCode = 1;
-    }
+    void (async () => {
+      try {
+        console.log(
+          JSON.stringify(
+            await initializeLocalMicroLedger({
+              keyDirectory: directory,
+              reason,
+              apiKey: process.env.BINANCE_API_KEY ?? '',
+              isTestnet: process.env.IS_TESTNET === '1',
+              readServerTime: async () => {
+                const base =
+                  process.env.IS_TESTNET === '1'
+                    ? 'https://demo-fapi.binance.com'
+                    : 'https://fapi.binance.com';
+                const response = await axios.get(`${base}/fapi/v1/time`, {
+                  timeout: 2000,
+                  maxRedirects: 0,
+                });
+                return response.data.serverTime;
+              },
+            }),
+          ),
+        );
+      } catch {
+        console.error(
+          'MICRO_OPERATOR_INITIALIZATION_FAILED: no reset performed; inspect permissions, scope and existing initialization',
+        );
+        process.exitCode = 1;
+      }
+    })();
   }
 }

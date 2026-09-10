@@ -10,6 +10,7 @@ export function composeMicroNetLossLedger(
   isTestnet: boolean,
   publicKeyFile = process.env.MICRO_NET_LOSS_OPERATOR_PUBLIC_KEY_FILE,
   readServerTime?: () => Promise<number>,
+  clock = readServerTime ? new MicroUtcClock(readServerTime) : undefined,
 ): MicroBurstNetLossLedger | undefined {
   if (!publicKeyFile) return undefined;
   if (!apiKey.trim()) throw new Error('MICRO_NET_LOSS_ACCOUNT_CREDENTIAL_REQUIRED');
@@ -50,8 +51,7 @@ export function composeMicroNetLossLedger(
     if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
       throw new Error('MICRO_NET_LOSS_STORAGE_NOT_OWNED');
   }
-  if (!readServerTime) throw new Error('MICRO_NET_LOSS_EXCHANGE_CLOCK_REQUIRED');
-  const clock = new MicroUtcClock(readServerTime);
+  if (!clock) throw new Error('MICRO_NET_LOSS_EXCHANGE_CLOCK_REQUIRED');
   return new MicroBurstNetLossLedger({
     databasePath,
     account,

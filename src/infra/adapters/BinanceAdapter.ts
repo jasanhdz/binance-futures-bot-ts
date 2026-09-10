@@ -2590,6 +2590,134 @@ export class BinanceExchange implements Exchange {
   }
 
   /** Read-only economics for legacy trades, without assigning a new policy or episode. */
+  async readHistoricalMicroClose(
+    input: Omit<MicroBurstEconomicIdentity, 'closeOrderIds'> & { clientOrderId: string },
+  ): Promise<{
+    identity: MicroBurstEconomicIdentity;
+    evidence: MicroBurstSettlementEvidence;
+  } | null> {
+    if (
+      !validMicroBurstEconomicIdentity({ ...input, closeOrderIds: ['discovery'] }) ||
+      !/^[1-9]\d*$/.test(input.entryOrderId) ||
+      !Number.isSafeInteger(Number(input.entryOrderId)) ||
+      input.closedAtMs - input.openedAtMs > 7 * 86_400_000
+    )
+      return null;
+    const order = await this.enqueue(
+      () =>
+        this.cli.futuresGetOrder({
+          symbol: input.symbol,
+          orderId: Number(input.entryOrderId),
+        }),
+      1,
+      'historical_entry_identity',
+    );
+    if (order.clientOrderId !== input.clientOrderId || String(order.orderId) !== input.entryOrderId)
+      return null;
+    // Discovery is bounded and never itself sufficient to settle accounting.
+    const trades = await this.enqueue(
+      () =>
+        this.cli.futuresUserTrades({
+          symbol: input.symbol,
+          startTime: input.openedAtMs,
+          endTime: input.closedAtMs,
+          limit: 1000,
+        }),
+      5,
+      'historical_close_discovery',
+    );
+    if (!Array.isArray(trades) || !trades.length || trades.length >= 1000) return null;
+    const closes = trades.filter((t) => String(t.orderId) !== input.entryOrderId);
+    if (!closes.length) return null;
+    const { clientOrderId: _, ...economic } = input;
+    const identity = {
+      ...economic,
+      closeOrderIds: [...new Set(closes.map((t) => String(t.orderId)))],
+      closedAtMs: Math.max(...closes.map((t) => t.time)),
+    };
+    if (identity.closedAtMs > input.closedAtMs) return null;
+    const evidence = await this.readHistoricalMicroSettlement(identity);
+    return evidence ? { identity, evidence } : null;
+  }
+
+  /** No type/side/ownership filters: any working order keeps historical retirement blocked. */
+  async readMicroFlatAndOpenOrders(
+    symbol: string,
+  ): Promise<
+    import('../../strategies/micro-burst/domain/MicroHistoricalClose').MicroFlatObservation | null
+  > {
+    if (!/^[A-Z0-9]+$/.test(symbol)) return null;
+    const startedAtMs = await this.enqueue(() => this.cli.futuresTime(), 1, 'historical_flat_time');
+    if (
+      (await this.readFreshActivePosition(symbol, 'LONG')) !== null ||
+      (await this.readFreshActivePosition(symbol, 'SHORT')) !== null
+    )
+      return null;
+    const regular = await this.enqueue(
+      () => this.cli.futuresOpenOrders({ symbol }),
+      1,
+      'historical_open_orders',
+    );
+    if (!Array.isArray(regular) || regular.length !== 0) return null;
+    const algo = await this.enqueue(
+      async () => {
+        const query = new URLSearchParams({
+          symbol,
+          timestamp: String(Date.now()),
+          recvWindow: '5000',
+        }).toString();
+        const signature = require('crypto')
+          .createHmac('sha256', CONFIG.API_SECRET)
+          .update(query)
+          .digest('hex');
+        const response = await fetch(
+          `${CONFIG.HTTP_FUTURES}/fapi/v1/openAlgoOrders?${query}&signature=${signature}`,
+          {
+            headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+            signal: AbortSignal.timeout(5000),
+            redirect: 'error',
+          },
+        );
+        if (!response.ok)
+          throw rawHttpError(
+            'historical open algo orders failed',
+            response.status,
+            await response.text(),
+            response.headers.get('retry-after'),
+          );
+        return response.json();
+      },
+      1,
+      'historical_open_algo_orders',
+    );
+    if (!Array.isArray(algo) || algo.length !== 0) return null;
+    if (
+      (await this.readFreshActivePosition(symbol, 'LONG')) !== null ||
+      (await this.readFreshActivePosition(symbol, 'SHORT')) !== null
+    )
+      return null;
+    const observedAtMs = await this.enqueue(
+      () => this.cli.futuresTime(),
+      1,
+      'historical_flat_time',
+    );
+    if (
+      ![startedAtMs, observedAtMs].every(Number.isSafeInteger) ||
+      observedAtMs < startedAtMs ||
+      observedAtMs - startedAtMs > 10_000
+    )
+      return null;
+    return {
+      source: 'BINANCE_FRESH_FLAT_AND_ALL_OPEN_ORDERS',
+      symbol,
+      startedAtMs,
+      observedAtMs,
+      regularOpenOrders: 0,
+      algoOpenOrders: 0,
+    };
+  }
+
+  /** Read-only economics for legacy trades, without assigning a new policy or episode. */
   async readHistoricalMicroSettlement(
     identity: MicroBurstEconomicIdentity,
   ): Promise<MicroBurstSettlementEvidence | null> {

@@ -45,6 +45,8 @@ export class MicroEntryRecoveryService {
     try {
       const store = this.deps.stateForSymbol(intent.symbol);
       const initial = store.get();
+      if (initial.microHistoricalClose?.identity.tradeId === request.parentTradeId)
+        return { status: 'PENDING', reason: 'RECOVERY_HISTORICAL_CLOSE_REQUIRES_COORDINATOR' };
       const blank = (state: BotState) =>
         state.mode === 'IDLE' &&
         Object.entries(state).every(([key, value]) => key === 'mode' || value === undefined);

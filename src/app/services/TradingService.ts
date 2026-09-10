@@ -83,6 +83,7 @@ import type { DurableEntryCoordinator } from '../execution/DurableEntryCoordinat
 import type { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
 import { RuntimeShutdown, RuntimeShutdownError } from '../runtime/RuntimeShutdown';
 import { MicroEntryRecoveryService } from '../position/MicroEntryRecoveryService';
+import { MicroHistoricalCloseService } from '../position/MicroHistoricalCloseService';
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { MomentumEntryCoordinator } from '../../strategies/momentum/application/MomentumEntryCoordinator';
 import {
@@ -318,6 +319,15 @@ export class TradingService {
       stateForSymbol: (symbol) => this.stateForSymbol(symbol),
       protection: this.positionProtection,
     });
+    const historicalClose =
+      deps.microNetLossLedger && deps.stopCoordinator
+        ? new MicroHistoricalCloseService({
+            exchange: deps.exchange,
+            ledger: deps.microNetLossLedger,
+            stops: deps.stopCoordinator,
+            stopping: () => this.runtimeStopping,
+          })
+        : undefined;
     deps.entryCoordinator?.registerPositionRecovery(async (request, order) => {
       // Startup runs before producers; periodic recovery must not overlap entry or management tasks.
       if (
@@ -327,13 +337,38 @@ export class TradingService {
         this.microBurstEntryInFlight
       )
         return;
-      await this.trackRuntimeTask(async () => {
-        const result = await entryRecovery.recover(request, order);
-        deps.logger.info('entry_position_recovery', {
-          symbol: request.intent.symbol,
-          tradeId: request.parentTradeId,
-          ...result,
-        });
+      return this.trackRuntimeTask(async () => {
+        const reservation = this.acquireSharedEntryReservation(request.intent.symbol);
+        if (!reservation.acquired) return;
+        try {
+          const closed = await historicalClose?.recover(
+            request,
+            order,
+            this.stateForSymbol(request.intent.symbol),
+          );
+          if (closed) {
+            deps.logger.info('micro_historical_close_verified', {
+              symbol: closed.identity.symbol,
+              closedAtMs: closed.identity.closedAtMs,
+              protection: 'RETIRED_AFTER_CONFIRMED_FLAT',
+            });
+            return closed;
+          }
+          // A durable historical-close marker must never reconstruct a ghost position.
+          if (
+            this.stateForSymbol(request.intent.symbol).get().microHistoricalClose?.identity
+              .tradeId === request.parentTradeId
+          )
+            return;
+          const result = await entryRecovery.recover(request, order);
+          deps.logger.info('entry_position_recovery', {
+            symbol: request.intent.symbol,
+            tradeId: request.parentTradeId,
+            ...result,
+          });
+        } finally {
+          reservation.release();
+        }
       });
     });
     this.aegisEntryContextBuilder = new AegisEntryContextBuilder({

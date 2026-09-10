@@ -41,7 +41,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Exact V3 accounting read capability; no mutation or deployment approval change.
   // Contextual fee/tier/triggered-stop evidence capabilities; not deployment approval.
   // Quantity-bound one-way reduce-only stops; legacy close-all reads retained, not LIVE approval.
-  'src/app/ports/Exchange.ts': 'f0e9fffc6bd672b0e5f47620b30df021ed7585a0cf9122d440c5dcb7cd6dfc58',
+  // Historical exact-close discovery and unfiltered flat/order proof. No new mutation capability.
+  'src/app/ports/Exchange.ts': '4496ffe2533b200831c9345ee95d8726c7462a74427ef24e63d58949955960de',
   'src/infra/config/environment.ts':
     // User-requested AEGIS_ENABLED disconnect; existing defaults and LIVE values unchanged.
     'b35c9984d4a756c53cc424350317cb4131c4c973f038f08d77bac103b7217ee3',
@@ -64,7 +65,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Bounded exact-order fills/funding accounting, strict USDT and one-way attribution.
     // Signed fees, isolated maintenance tiers, exact triggered-stop attribution and exit costs.
     // Reviewed quantity-stop transport and exact quantity/flag/child-order evidence contract.
-    'b7e7fbd5e4411675d847ee505ce146104fb5ffc5862d53fb0549216e553f822b',
+    // Reviewed historical GET-only discovery and fresh complete open-order observations.
+    // See micro-historical-reconciliation.md; source checkpoint, not deployment authority.
+    '0efb2753ce49ccbe909e6067df5cc68fbfc6b822a6f81645b96f8eaf49309b87',
   // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
   'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
   'config/regime_config.example.yaml':
@@ -92,7 +95,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Policy-bound settlement recovery and independent durable net-loss admission check.
     // V3 policy/episode/sizing and durable exits; deployment and ADA quarantine unchanged.
     // Canonical admission/management and historical read boundaries; not artifact approval.
-    '2e8bfe510d309ae190ca0238acb5167e3058efcf71e275c55cb3cf1d7f520f35',
+    // Runtime-owned historical settlement under pending/shared admission reservations.
+    '8355482271127029f6854c470146045cfc3e9751fadede44afb26b7f81de5e28',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -141,7 +145,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
 const contextualSourceCheckpoints: Record<string, string> = {
   'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   'src/app/services/TradingService.ts':
-    '2e8bfe510d309ae190ca0238acb5167e3058efcf71e275c55cb3cf1d7f520f35',
+    '8355482271127029f6854c470146045cfc3e9751fadede44afb26b7f81de5e28',
 };
 
 type GuardFixture = [

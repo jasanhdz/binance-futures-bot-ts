@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  validMicroHistoricalClose,
+  type MicroHistoricalCloseProof,
+} from '../../strategies/micro-burst/domain/MicroHistoricalClose';
 import { isMicroBurstStrategy, isMicroBurstPolicy } from '../../core/strategy/MicroBurstLegacy';
 import type {
   ExecutionJournal,
@@ -65,7 +70,7 @@ export class DurableEntryCoordinator {
   private recoverPosition?: (
     request: DurableEntryRequest,
     order: EntryOrderReceipt,
-  ) => Promise<void>;
+  ) => Promise<MicroHistoricalCloseProof | void>;
 
   constructor(private readonly deps: DurableEntryCoordinatorDeps) {
     this.scope = { ...deps.scope };
@@ -73,7 +78,10 @@ export class DurableEntryCoordinator {
 
   /** Bound once by TradingService to its existing state/protection services, before start. */
   registerPositionRecovery(
-    handler: (request: DurableEntryRequest, order: EntryOrderReceipt) => Promise<void>,
+    handler: (
+      request: DurableEntryRequest,
+      order: EntryOrderReceipt,
+    ) => Promise<MicroHistoricalCloseProof | void>,
   ): void {
     if (this.startup || this.stopping || this.recoverPosition)
       throw new Error('ENTRY_RECOVERY_HANDLER_ALREADY_BOUND');
@@ -94,6 +102,10 @@ export class DurableEntryCoordinator {
     this.startup = (async () => {
       try {
         this.journal = this.deps.journal();
+        for (const id of await this.journal.listOperations()) {
+          const latest = await this.journal.readLatest(id);
+          if (latest?.metadata?.externalClose) this.requestFrom(latest);
+        }
         for (const id of await this.journal.listNonTerminal()) this.pending.add(id);
         await this.reconcile();
         if (this.failure) throw new Error(this.failure);
@@ -378,7 +390,39 @@ export class DurableEntryCoordinator {
       )
         throw new Error('MICRO_DURABLE_EPISODE_CONFLICT');
     }
+    if (entry.metadata?.externalClose) {
+      const proof = entry.metadata.externalClose as MicroHistoricalCloseProof;
+      const outcome = entry.metadata.outcome as TerminalEvidence | undefined;
+      if (
+        !['CLOSE_PENDING', 'CLOSED'].includes(entry.event) ||
+        outcome?.status !== 'CONFIRMED' ||
+        !validOrder(outcome.order) ||
+        !this.matchesHistoricalClose(request, outcome.order, proof)
+      )
+        throw new Error('ENTRY_EXTERNAL_CLOSE_IDENTITY_INVALID');
+    }
     return request;
+  }
+
+  private matchesHistoricalClose(
+    request: DurableEntryRequest,
+    receipt: EntryOrderReceipt,
+    proof: MicroHistoricalCloseProof,
+  ): boolean {
+    if (!validMicroHistoricalClose(proof)) return false;
+    const i = proof.identity;
+    return (
+      i.tradeId === request.parentTradeId &&
+      i.entryOrderId === receipt.orderId &&
+      i.symbol === request.intent.symbol &&
+      i.side === request.intent.side &&
+      i.quantity === request.quantity &&
+      i.openedAtMs === request.intent.requestedAt &&
+      i.provenance.operationId === request.operationId &&
+      i.provenance.clientOrderId === request.clientOrderId &&
+      i.provenance.entryPrice === receipt.avgPrice &&
+      isDeepStrictEqual(i.provenance.identity, request.intent.identity)
+    );
   }
 
   private async finish(
@@ -396,12 +440,37 @@ export class DurableEntryCoordinator {
     }
     if (outcome.status === 'CONFIRMED' && event !== 'CLOSED') {
       let handedOff = false;
+      let externalClose: MicroHistoricalCloseProof | void;
       try {
         // Never run reconstruction while Shared is still handling a live execute() receipt.
         if (recovery && !this.stopping) {
-          await this.recoverPosition?.(jsonSnapshot(request) as DurableEntryRequest, {
-            ...outcome.order,
-          });
+          externalClose = await this.recoverPosition?.(
+            jsonSnapshot(request) as DurableEntryRequest,
+            {
+              ...outcome.order,
+            },
+          );
+          if (externalClose) {
+            if (!this.matchesHistoricalClose(request, outcome.order, externalClose))
+              throw new Error('ENTRY_EXTERNAL_CLOSE_IDENTITY_INVALID');
+            if (event !== 'CLOSE_PENDING')
+              await this.append(
+                request,
+                'CLOSE_PENDING',
+                outcome,
+                'EXTERNALLY_CONFIRMED_CLOSE',
+                externalClose,
+              );
+            await this.append(
+              request,
+              'CLOSED',
+              outcome,
+              'EXTERNALLY_CONFIRMED_CLOSE',
+              externalClose,
+            );
+            await this.journal!.flush();
+            return;
+          }
         }
         handedOff = await this.deps.confirmHandoff(request, outcome.order);
       } catch {
@@ -419,6 +488,7 @@ export class DurableEntryCoordinator {
     event: JournalEventType,
     outcome?: TerminalEvidence,
     reason?: string,
+    externalClose?: MicroHistoricalCloseProof,
   ): Promise<void> {
     await this.journal!.append({
       id: randomUUID(),
@@ -437,6 +507,7 @@ export class DurableEntryCoordinator {
         journalOperationMeaning: 'ENTRY_MUTATION_NOT_TRADE',
         request,
         ...(outcome ? { outcome } : {}),
+        ...(externalClose ? { externalClose } : {}),
       },
     });
   }

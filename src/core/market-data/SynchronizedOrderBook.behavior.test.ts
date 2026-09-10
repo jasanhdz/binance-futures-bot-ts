@@ -76,6 +76,42 @@ async function startAndBridge(
 }
 
 describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
+  it('bridges the next websocket diff when REST completes before it, without a snapshot loop', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    book.start();
+    await vi.waitFor(() => expect(book.getState().health).toBe('UNSYNCED'));
+    d.diffSource.emit(diff(99, 100, 98));
+    expect(book.getState().health).toBe('UNSYNCED');
+    d.diffSource.emit(diff(100, 102, 99, { bids: [['100', '12']] }));
+    expect(book.getHealth()).toBe('HEALTHY');
+    expect(book.getState().lastUpdateId).toBe(102);
+    expect(book.getState().bids[0].qty).toBe(12);
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(1);
+    book.stop();
+  });
+
+  it('rejects a missing bridge arriving after REST, rather than admitting a disconnected book', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d);
+    book.start();
+    await vi.waitFor(() => expect(book.getState().health).toBe('UNSYNCED'));
+    d.diffSource.emit(diff(103, 104, 102));
+    expect(book.getSnapshot()).toBeUndefined();
+    expect(book.getState().gapCount).toBe(1);
+    book.stop();
+  });
+
+  it('expires a waiting bridge when no websocket events arrive', async () => {
+    const d = deps();
+    const book = new SynchronizedOrderBook(SYMBOL, d, 500, 100);
+    book.start();
+    await vi.waitFor(() => expect(book.getState().health).toBe('UNSYNCED'));
+    d.clock.now.mockReturnValue(NOW + 101);
+    expect(book.getSnapshot()).toBeUndefined();
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledTimes(2);
+    book.stop();
+  });
   it('drops buffered events with u < snapshot lastUpdateId and bridges with U <= lastUpdateId + 1 <= u', async () => {
     let resolveSnapshot!: (value: BinanceDepthSnapshot) => void;
     const source = new Promise<BinanceDepthSnapshot>((resolve) => {
@@ -153,10 +189,7 @@ describe('SynchronizedOrderBook USD-M diff-depth synchronization', () => {
     book.start();
     d.diffSource.emit(diff(101, 101, 100));
     await vi.waitFor(() => expect(book.getState().lastUpdateId).toBe(101));
-    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledWith(
-      SYMBOL,
-      ORDER_BOOK_SNAPSHOT_DEPTH,
-    );
+    expect(d.snapshotSource.getSnapshot).toHaveBeenCalledWith(SYMBOL, ORDER_BOOK_SNAPSHOT_DEPTH);
   });
 
   it('accepts non-contiguous u values when pu chains to the preceding u', async () => {

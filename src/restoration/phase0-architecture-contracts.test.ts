@@ -56,15 +56,23 @@ const sharedImportAllowlist: Record<string, string[]> = {
   ],
   'src/app/execution/DurableEntryCoordinator.ts': [
     'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
+    'src/strategies/micro-burst/domain/MicroHistoricalClose.ts',
   ],
   'src/app/execution/DurableStopCoordinator.ts': [
     'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
+    'src/strategies/micro-burst/domain/MicroHistoricalClose.ts',
   ],
   'src/app/execution/SharedStrategyExecutionService.ts': [
     'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
     'src/strategies/micro-burst/application/MicroBurstLiveSizing.ts',
   ],
-  'src/app/ports/Exchange.ts': ['src/strategies/micro-burst/domain/MicroBurstSettlement.ts'],
+  'src/app/ports/Exchange.ts': [
+    'src/strategies/micro-burst/domain/MicroBurstSettlement.ts',
+    'src/strategies/micro-burst/domain/MicroHistoricalClose.ts',
+  ],
+  'src/app/position/MicroHistoricalCloseService.ts': [
+    'src/strategies/micro-burst/domain/MicroHistoricalClose.ts',
+  ],
   'src/app/position/MicroEntryRecoveryService.ts': [
     'src/strategies/micro-burst/domain/MicroBurstTradePolicy.ts',
   ],
@@ -163,6 +171,8 @@ describe('Phase 0 architecture contracts', () => {
     const allowedReadOnlySmokeImports = new Set([
       'scripts/micro-burst-m3_2_6_3-soak.ts -> src/infra/adapters/BinanceAdapter.ts',
       'scripts/micro-burst-production-path-shadow-smoke.ts -> src/infra/adapters/BinanceAdapter.ts',
+      // Reviewed pre-existing GET-only historical economics CLI; no runtime or journal imports.
+      'scripts/micro-burst-audit-historical-close.ts -> src/infra/adapters/BinanceAdapter.ts',
     ]);
     const violations: string[] = [];
     for (const fileName of files) {

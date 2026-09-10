@@ -5,6 +5,10 @@ import {
 } from '../../core/strategy/MicroBurstLegacy';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  validMicroHistoricalClose,
+  type MicroHistoricalCloseProof,
+} from '../../strategies/micro-burst/domain/MicroHistoricalClose';
 import type {
   ExecutionJournal,
   JournalEntry,
@@ -21,8 +25,9 @@ interface StopRetirement {
   protocol: 'STOP_RETIREMENT_V1';
   targetOperationId: string;
   request: StopMutationRequest;
-  orderId: string;
-  status: 'CANCELED' | 'FILLED';
+  orderId?: string;
+  status: 'CANCELED' | 'FILLED' | 'RETIRED_AFTER_CONFIRMED_FLAT';
+  externalClose?: MicroHistoricalCloseProof;
   executedOrderId?: string;
   lastExitAt: number;
   flatObservedAt: number[];
@@ -716,6 +721,7 @@ export class DurableStopCoordinator {
     if (!snapshot.parentTradeId?.trim() || !snapshot.parentOrderId?.trim()) return false;
     const digest = mutationDigest(this.scope, snapshot.parentTradeId, snapshot.replacementKey);
     const operationId = `stop:${digest}`;
+    if (this.retired.has(operationId)) return false;
     if (this.busy.has(operationId)) return false;
     this.busy.add(operationId);
     this.pending.add(operationId);
@@ -861,6 +867,105 @@ export class DurableStopCoordinator {
       })
       .finally(() => {
         this.busy.delete(operationId);
+        this.tasks.delete(task);
+      });
+    this.tasks.add(task);
+    return task;
+  }
+
+  /** Observation-only settlement. Does not send, cancel, change BotState or resolve PnL. */
+  retireHistoricalClose(proof: MicroHistoricalCloseProof, same: () => boolean): Promise<boolean> {
+    if (
+      !validMicroHistoricalClose(proof) ||
+      this.closing ||
+      this.failure ||
+      this.tasks.size ||
+      this.busy.size ||
+      !this.journal ||
+      !same()
+    )
+      return Promise.resolve(false);
+    const identity = proof.identity;
+    const id = `stop:${mutationDigest(this.scope, identity.tradeId)}`;
+    this.busy.add(id);
+    this.pending.add(id);
+    const task = (async () => {
+      const inventory = await this.journal!.listOperations();
+      // Do not retire a trade while an unrelated mutation or a cancellation can still be in flight.
+      if (!same() || this.closing || [...this.pending].some((key) => key !== id)) return false;
+      const history = await this.journal!.read(id);
+      if (
+        !history.length ||
+        inventory.some((key) => key.startsWith('cancel:') && this.pending.has(key))
+      )
+        return false;
+      const request = this.requestFrom(history[0]);
+      if (
+        request.parentTradeId !== identity.tradeId ||
+        request.parentOrderId !== identity.entryOrderId ||
+        request.symbol !== identity.symbol ||
+        request.side !== identity.side ||
+        request.positionQuantity !== identity.quantity ||
+        request.entryPrice !== identity.provenance.entryPrice ||
+        request.strategyId !== identity.provenance.identity.strategyId ||
+        request.replacementKey ||
+        proof.flat[1].observedAtMs > Date.now() ||
+        Date.now() - proof.flat[1].observedAtMs > 10_000 ||
+        identity.closedAtMs < history[0].timestampMs
+      )
+        return false;
+      const retirementId = id.replace(/^stop:/, 'stop-retirement:');
+      let latest = await this.journal!.readLatest(retirementId);
+      const retirement: StopRetirement = latest
+        ? this.retirementFrom(latest, history)
+        : {
+            protocol: 'STOP_RETIREMENT_V1',
+            targetOperationId: id,
+            request,
+            status: 'RETIRED_AFTER_CONFIRMED_FLAT',
+            externalClose: proof,
+            lastExitAt: identity.closedAtMs,
+            flatObservedAt: [
+              proof.flat[0].startedAtMs,
+              proof.flat[0].observedAtMs,
+              proof.flat[1].observedAtMs,
+            ],
+          };
+      for (const event of ['PREPARED', 'CLOSE_PENDING', 'CLOSED'] as const) {
+        if (
+          latest &&
+          ['PREPARED', 'CLOSE_PENDING', 'CLOSED'].indexOf(latest.event) >=
+            ['PREPARED', 'CLOSE_PENDING', 'CLOSED'].indexOf(event)
+        )
+          continue;
+        if (!same() || this.closing) return false;
+        latest = await this.journal!.append({
+          id: randomUUID(),
+          operationId: retirementId,
+          scope: this.scope,
+          symbol: request.symbol,
+          side: request.side,
+          strategyId: request.strategyId,
+          event,
+          timestampMs: Date.now(),
+          metadata: {
+            journalOperationMeaning: 'STOP_RETIREMENT_NOT_ACCOUNTING',
+            retirement,
+          },
+        });
+      }
+      await this.journal!.flush();
+      if (!same() || this.closing) return false;
+      this.retired.add(id);
+      this.pending.delete(id);
+      return true;
+    })()
+      .catch((error) => {
+        this.failure ??= `STOP_RETIREMENT_JOURNAL_BLOCKED:${String(error)}`;
+        return false;
+      })
+      .finally(() => {
+        this.busy.delete(id);
         this.tasks.delete(task);
       });
     this.tasks.add(task);
@@ -1050,12 +1155,31 @@ export class DurableStopCoordinator {
       entry.metadata?.journalOperationMeaning !== 'STOP_RETIREMENT_NOT_ACCOUNTING' ||
       !['PREPARED', 'CLOSE_PENDING', 'CLOSED'].includes(entry.event) ||
       JSON.stringify(proof.request) !== JSON.stringify(request) ||
-      !['CANCELED', 'FILLED'].includes(proof.status) ||
+      !['CANCELED', 'FILLED', 'RETIRED_AFTER_CONFIRMED_FLAT'].includes(proof.status) ||
       (proof.status === 'FILLED' &&
         (typeof proof.executedOrderId !== 'string' || !/^[1-9]\d*$/.test(proof.executedOrderId))) ||
-      typeof proof.orderId !== 'string' ||
-      !proof.orderId.trim() ||
-      (last.orderId && proof.orderId !== last.orderId) ||
+      (proof.status !== 'RETIRED_AFTER_CONFIRMED_FLAT' &&
+        (typeof proof.orderId !== 'string' ||
+          !proof.orderId.trim() ||
+          (last.orderId && proof.orderId !== last.orderId))) ||
+      (proof.status === 'RETIRED_AFTER_CONFIRMED_FLAT' &&
+        (!proof.externalClose ||
+          !validMicroHistoricalClose(proof.externalClose) ||
+          proof.orderId !== undefined ||
+          proof.executedOrderId !== undefined ||
+          proof.externalClose.identity.tradeId !== request.parentTradeId ||
+          proof.externalClose.identity.entryOrderId !== request.parentOrderId ||
+          proof.externalClose.identity.symbol !== request.symbol ||
+          proof.externalClose.identity.side !== request.side ||
+          proof.externalClose.identity.quantity !== request.positionQuantity ||
+          proof.externalClose.identity.provenance.entryPrice !== request.entryPrice ||
+          proof.externalClose.identity.provenance.identity.strategyId !== request.strategyId ||
+          proof.lastExitAt !== proof.externalClose.identity.closedAtMs ||
+          !isDeepStrictEqual(proof.flatObservedAt, [
+            proof.externalClose.flat[0].startedAtMs,
+            proof.externalClose.flat[0].observedAtMs,
+            proof.externalClose.flat[1].observedAtMs,
+          ]))) ||
       !Number.isSafeInteger(proof.lastExitAt) ||
       proof.lastExitAt < source[0].timestampMs ||
       !Array.isArray(proof.flatObservedAt) ||
