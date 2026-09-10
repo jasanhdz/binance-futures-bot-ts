@@ -48,6 +48,29 @@ now retains the snapshot and waits for its bridge. It no longer requests another
 REST snapshot on each diff while waiting. Missing bridges and stale observations
 still block readiness; freshness thresholds are unchanged.
 
+USD-M bootstrap drops only events with `u < lastUpdateId` and consumes the first
+bridge satisfying `U <= lastUpdateId <= u`, including `u == lastUpdateId`.
+After that bridge, nonduplicate events must chain `pu` to the previous `u`.
+The same boundary applies to buffered events and events arriving after REST.
+Reference: https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/How-to-manage-a-local-order-book-correctly
+
 The local initialization CLI awaits a validated Binance UTC clock before creating
 keys or storage and signs with that clock. Tests inject offline time. This command
 must not be used to reset or reinitialize an existing production ledger.
+
+## Boundary Follow-Up Validation
+
+On 2026-09-10 the final scoped runs passed 1,663 tests in 96 files. Initial
+fork-pool runs reported an unhandled Vitest RPC timeout despite passing assertions;
+they are not counted as successful validation. The final selection uses threads,
+except the registry suite which requires `process.chdir()` and therefore forks.
+These are offline tests; no Aegis application is started.
+
+```bash
+AEGIS_ENABLED=false npx vitest run src/strategies/micro-burst src/app/execution src/app/position src/app/bootstrap src/core/market-data src/core/risk src/infra/state src/tooling/micro-burst src/infra/adapters/BinanceAdapter.settlement.test.ts src/app/services/TradingService.safety-contracts.test.ts src/restoration --exclude src/infra/state/StrategyLossStateRegistry.test.ts --silent --maxWorkers=2 --pool=threads --reporter=dot
+AEGIS_ENABLED=false npx vitest run src/infra/state/StrategyLossStateRegistry.test.ts --silent --maxWorkers=1 --pool=forks --reporter=dot
+```
+
+TypeScript compiled into `/tmp/opencode/micro-usdm-boundary-dist`, outside the
+running artifact. Deployment and runtime observations are recorded separately in
+`logs/micro-historical-20260910/`; local tests do not establish live readiness.

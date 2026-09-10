@@ -193,8 +193,8 @@ export class SynchronizedOrderBook implements OrderBookPort {
     }
     if (this.health === 'UNSYNCED' || this.health === 'STALE') {
       if (this.awaitingBridge && this.health === 'UNSYNCED') {
-        if (event.u <= this.lastUpdateId) return;
-        if (!(event.U <= this.lastUpdateId + 1 && this.lastUpdateId + 1 <= event.u)) {
+        if (event.u < this.lastUpdateId) return;
+        if (!(event.U <= this.lastUpdateId && this.lastUpdateId <= event.u)) {
           this.desync('snapshot bridge missing');
           return;
         }
@@ -246,7 +246,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
       this.temporalHistory = [];
 
       const snapshotUpdateId = this.lastUpdateId;
-      const buffered = this.diffBuffer.filter((event) => event.u >= snapshotUpdateId + 1);
+      const buffered = this.diffBuffer.filter((event) => event.u >= snapshotUpdateId);
       this.diffBuffer = [];
       if (!buffered.length) {
         this.health = 'UNSYNCED';
@@ -256,9 +256,8 @@ export class SynchronizedOrderBook implements OrderBookPort {
       }
       {
         const first = buffered[0];
-        // Binance's bridge includes the first update after the snapshot. The
-        // snapshot itself is already applied, so the boundary is +1.
-        if (!(first.U <= this.lastUpdateId + 1 && this.lastUpdateId + 1 <= first.u)) {
+        // USD-M requires U <= snapshot lastUpdateId <= u, including equality.
+        if (!(first.U <= this.lastUpdateId && this.lastUpdateId <= first.u)) {
           this.desync('snapshot bridge missing');
           return;
         }
