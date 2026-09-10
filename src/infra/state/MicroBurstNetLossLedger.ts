@@ -60,13 +60,14 @@ interface StateRow {
   halted: number;
 }
 
-/** Account/environment-specific critical storage, independent of research logs and day resets. */
+/** Account/environment-specific critical storage; UTC rollover never clears settlement evidence. */
 export class MicroBurstNetLossLedger {
   private readonly db: Database.Database;
   private readonly publicKey: KeyObject;
   private failure: string | null = null;
   private readonly scope: { account: string; environment: string };
   private readonly now: () => number;
+  private lastClock = 0;
 
   constructor(options: {
     databasePath: string;
@@ -110,6 +111,12 @@ export class MicroBurstNetLossLedger {
         CREATE TABLE IF NOT EXISTS micro_loss_commands (
           nonce TEXT PRIMARY KEY, command TEXT NOT NULL, signature TEXT NOT NULL, applied_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS micro_loss_calendar (
+          id INTEGER PRIMARY KEY CHECK(id = 1), day_start INTEGER NOT NULL, last_seen INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS micro_loss_rollovers (
+          revision INTEGER PRIMARY KEY, from_day INTEGER, to_day INTEGER NOT NULL, observed_at INTEGER NOT NULL
+        );
       `);
       const identity = JSON.stringify([
         1,
@@ -147,6 +154,7 @@ export class MicroBurstNetLossLedger {
 
   snapshot(): MicroBurstNetLossSnapshot {
     try {
+      this.db.transaction(() => this.syncUtcDay()).immediate();
       const state = this.db
         .prepare('SELECT * FROM micro_loss_state WHERE id = 1')
         .get() as StateRow;
@@ -172,8 +180,14 @@ export class MicroBurstNetLossLedger {
                 ? 'MICRO_NET_SETTLEMENT_PENDING'
                 : null),
       };
-    } catch {
-      this.failure = 'MICRO_NET_LOSS_STORAGE_UNAVAILABLE';
+    } catch (error) {
+      const clockUnavailable =
+        error instanceof Error && error.message === 'MICRO_NET_LOSS_CLOCK_UNAVAILABLE';
+      if (!clockUnavailable)
+        this.failure ??=
+          error instanceof Error && error.message === 'MICRO_NET_LOSS_CLOCK_INVALID'
+            ? 'MICRO_NET_LOSS_CLOCK_INVALID'
+            : 'MICRO_NET_LOSS_STORAGE_UNAVAILABLE';
       return {
         initialized: false,
         revision: 0,
@@ -181,7 +195,7 @@ export class MicroBurstNetLossLedger {
         consecutiveLosses: 0,
         halted: true,
         pendingSettlements: 0,
-        blockedReason: this.failure,
+        blockedReason: this.failure ?? 'MICRO_NET_LOSS_CLOCK_UNAVAILABLE',
       };
     }
   }
@@ -214,6 +228,7 @@ export class MicroBurstNetLossLedger {
     try {
       return this.db
         .transaction((): MicroBurstSettlementResult => {
+          this.syncUtcDay(now, true);
           const state = this.db
             .prepare('SELECT * FROM micro_loss_state WHERE id = 1')
             .get() as StateRow;
@@ -275,9 +290,19 @@ export class MicroBurstNetLossLedger {
           if (result.status === 'VERIFIED') {
             this.db
               .prepare(
-                'UPDATE micro_loss_trades SET evidence = ?, result = ?, net = ? WHERE trade_id = ?',
+                'UPDATE micro_loss_trades SET evidence = ?, result = ?, net = ?, closed_at = ? WHERE trade_id = ?',
               )
-              .run(evidenceJson, canonical(result), result.netPnlUsdt, identity.tradeId);
+              .run(
+                evidenceJson,
+                canonical(result),
+                result.netPnlUsdt,
+                Math.max(
+                  ...evidence!.fills
+                    .filter((fill) => fill.orderId !== identity.entryOrderId)
+                    .map((fill) => fill.eventTimeMs),
+                ),
+                identity.tradeId,
+              );
             for (const ref of refs)
               this.db
                 .prepare('INSERT INTO micro_loss_refs VALUES (?, ?)')
@@ -289,9 +314,13 @@ export class MicroBurstNetLossLedger {
           }
           const outcomes = this.db
             .prepare(
-              'SELECT net FROM micro_loss_trades WHERE epoch = ? AND net IS NOT NULL ORDER BY closed_at, trade_id',
+              'SELECT net FROM micro_loss_trades WHERE epoch = ? AND net IS NOT NULL AND closed_at >= ? AND closed_at < ? ORDER BY closed_at, trade_id',
             )
-            .all(state.epoch) as { net: number }[];
+            .all(
+              state.epoch,
+              Math.floor(now / 86_400_000) * 86_400_000,
+              (Math.floor(now / 86_400_000) + 1) * 86_400_000,
+            ) as { net: number }[];
           let streak = 0;
           let halted = state.halted;
           for (const outcome of outcomes) {
@@ -373,6 +402,73 @@ export class MicroBurstNetLossLedger {
 
   close(): void {
     this.db.close();
+  }
+
+  private syncUtcDay(now = this.now(), persistClock = false): void {
+    const calendar = this.db.prepare('SELECT * FROM micro_loss_calendar WHERE id = 1').get() as
+      | { day_start: number; last_seen: number }
+      | undefined;
+    if (
+      !Number.isSafeInteger(now) ||
+      now < this.lastClock ||
+      (calendar && now < calendar.last_seen)
+    ) {
+      this.failure = 'MICRO_NET_LOSS_CLOCK_INVALID';
+      throw new Error(this.failure);
+    }
+    this.lastClock = now;
+    const day = Math.floor(now / 86_400_000) * 86_400_000;
+    if (!calendar || calendar.day_start !== day) {
+      if (!calendar) {
+        const historical = this.db
+          .prepare(
+            'SELECT trade_id, identity, evidence FROM micro_loss_trades WHERE net IS NOT NULL',
+          )
+          .all() as { trade_id: string; identity: string; evidence: string }[];
+        for (const trade of historical) {
+          const identity = JSON.parse(trade.identity) as MicroBurstSettlementIdentity;
+          const evidence = JSON.parse(trade.evidence) as MicroBurstSettlementEvidence;
+          const result = reconcileMicroBurstSettlement(identity, evidence);
+          if (result.status !== 'VERIFIED') throw new Error('MICRO_NET_LOSS_HISTORY_INVALID');
+          const closedAt = Math.max(
+            ...evidence.fills
+              .filter((fill) => fill.orderId !== identity.entryOrderId)
+              .map((fill) => fill.eventTimeMs),
+          );
+          this.db
+            .prepare('UPDATE micro_loss_trades SET closed_at = ? WHERE trade_id = ?')
+            .run(closedAt, trade.trade_id);
+        }
+      }
+      const state = this.db
+        .prepare('SELECT * FROM micro_loss_state WHERE id = 1')
+        .get() as StateRow;
+      const outcomes = this.db
+        .prepare(
+          'SELECT net FROM micro_loss_trades WHERE epoch = ? AND net IS NOT NULL AND closed_at >= ? AND closed_at < ? ORDER BY closed_at, trade_id',
+        )
+        .all(state.epoch, day, day + 86_400_000) as { net: number }[];
+      let streak = 0;
+      let halted = 0;
+      for (const outcome of outcomes) {
+        if (outcome.net < 0) streak += 1;
+        else if (outcome.net > 0) streak = 0;
+        if (streak >= 3) halted = 1;
+      }
+      // Migration derives only the daily loss gate; signed commands and unresolved trades stay intact.
+      if (state.initialized) {
+        this.db
+          .prepare(
+            'UPDATE micro_loss_state SET revision = revision + 1, streak = ?, halted = ? WHERE id = 1',
+          )
+          .run(streak, halted);
+        this.db
+          .prepare('INSERT INTO micro_loss_rollovers VALUES (?, ?, ?, ?)')
+          .run(state.revision + 1, calendar?.day_start ?? null, day, now);
+      }
+    }
+    if (!calendar || calendar.day_start !== day || persistClock)
+      this.db.prepare('INSERT OR REPLACE INTO micro_loss_calendar VALUES (1, ?, ?)').run(day, now);
   }
 }
 

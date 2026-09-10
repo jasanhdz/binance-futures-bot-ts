@@ -50,7 +50,12 @@ export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure
       entryCoordinator: composeDurableEntryCoordinator(exchange, CONFIG.IS_TESTNET, stateStore),
       stopCoordinator: composeDurableStopCoordinator(exchange, CONFIG.IS_TESTNET),
       closeCoordinator: composeDurableCloseCoordinator(exchange, CONFIG.IS_TESTNET),
-      microNetLossLedger: composeMicroNetLossLedger(CONFIG.API_KEY, CONFIG.IS_TESTNET),
+      microNetLossLedger: composeMicroNetLossLedger(
+        CONFIG.API_KEY,
+        CONFIG.IS_TESTNET,
+        undefined,
+        () => exchange.getServerTime(),
+      ),
     },
     config,
   );

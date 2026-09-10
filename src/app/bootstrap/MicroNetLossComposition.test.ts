@@ -18,7 +18,7 @@ describe('Micro critical ledger composition', () => {
     expect(mkdir).not.toHaveBeenCalled();
   });
 
-  it('separates credential/environment scopes and never initializes them automatically', () => {
+  it('separates credential/environment scopes and never initializes them automatically', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-ledger-composition-'));
     cleanup.push(() => fs.rmSync(directory, { recursive: true, force: true }));
     vi.spyOn(process, 'cwd').mockReturnValue(directory);
@@ -32,8 +32,11 @@ describe('Micro critical ledger composition', () => {
       ['synthetic-b', false],
       ['synthetic-a', true],
     ] as const) {
-      const ledger = composeMicroNetLossLedger(credential, testnet, key)!;
-      expect(ledger.snapshot().blockedReason).toBe('MICRO_NET_LOSS_NOT_INITIALIZED');
+      const ledger = composeMicroNetLossLedger(credential, testnet, key, async () => 100_000)!;
+      expect(ledger.snapshot().blockedReason).toBe('MICRO_NET_LOSS_CLOCK_UNAVAILABLE');
+      await vi.waitFor(() =>
+        expect(ledger.snapshot().blockedReason).toBe('MICRO_NET_LOSS_NOT_INITIALIZED'),
+      );
       ledger.close();
     }
     const files = fs.readdirSync(path.join(directory, 'data', 'runtime', 'micro-net-loss'));

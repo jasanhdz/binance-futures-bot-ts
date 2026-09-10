@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { BinanceExchange } from './BinanceAdapter';
 import {
   reconcileMicroBurstSettlement,
+  reconcileMicroBurstEconomics,
   type MicroBurstSettlementIdentity,
 } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
 
@@ -56,6 +57,19 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
 }
 
 describe('Binance exact settlement reads', () => {
+  it('audits historical economics without manufacturing current-policy provenance', async () => {
+    const f = fixture('SHORT');
+    const { episodeId, policyVersion, configHash, codeCommitSha, ...historical } = f.identity;
+    const evidence = await f.exchange.readHistoricalMicroSettlement(historical);
+    expect(reconcileMicroBurstEconomics(historical, evidence!)).toMatchObject({
+      status: 'VERIFIED',
+      netPnlUsdt: -1,
+    });
+    expect(
+      await f.exchange.readMicroBurstSettlement(historical as MicroBurstSettlementIdentity),
+    ).toBeNull();
+    expect(historical).not.toHaveProperty('policyVersion');
+  });
   it.each(['LONG', 'SHORT'] as const)(
     'accounts both fee legs for %s and confirms empty funding',
     async (side) => {

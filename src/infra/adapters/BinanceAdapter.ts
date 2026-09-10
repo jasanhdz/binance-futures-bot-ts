@@ -26,7 +26,9 @@ import { SharedBinanceRateLimiter } from './shared-binance-rate-limit';
 import { randomBytes } from 'node:crypto';
 import {
   validMicroBurstSettlementIdentity,
-  reconcileMicroBurstSettlement,
+  reconcileMicroBurstEconomics,
+  validMicroBurstEconomicIdentity,
+  type MicroBurstEconomicIdentity,
   type MicroBurstSettlementIdentity,
   type MicroBurstSettlementEvidence,
 } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
@@ -2584,6 +2586,14 @@ export class BinanceExchange implements Exchange {
     identity: MicroBurstSettlementIdentity,
   ): Promise<MicroBurstSettlementEvidence | null> {
     if (!validMicroBurstSettlementIdentity(identity)) return null;
+    return this.readHistoricalMicroSettlement(identity);
+  }
+
+  /** Read-only economics for legacy trades, without assigning a new policy or episode. */
+  async readHistoricalMicroSettlement(
+    identity: MicroBurstEconomicIdentity,
+  ): Promise<MicroBurstSettlementEvidence | null> {
+    if (!validMicroBurstEconomicIdentity(identity)) return null;
     // User-trade history is bounded by Binance retention and seven-day query windows.
     const serverTime = await this.enqueue(() => this.cli.futuresTime(), 1, 'settlement_time');
     if (
@@ -2738,9 +2748,7 @@ export class BinanceExchange implements Exchange {
         eventTimeMs: row.time,
       })),
     };
-    return reconcileMicroBurstSettlement(identity, evidence).status === 'VERIFIED'
-      ? evidence
-      : null;
+    return reconcileMicroBurstEconomics(identity, evidence).status === 'VERIFIED' ? evidence : null;
   }
 
   async getRecentFills(symbol: string, startTime?: number, limit = 100): Promise<TradeFill[]> {

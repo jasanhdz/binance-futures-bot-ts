@@ -314,7 +314,7 @@ describe('Micro durable three-net-loss latch', () => {
     f.apply(restored, f.command(restored, 'RESET_LOSS_HALT'));
   });
 
-  it('replays event-time chronology conservatively and never resets at midnight', () => {
+  it('replays event-time chronology and releases only the loss pause at midnight', () => {
     const f = fixture();
     f.apply(f.ledger, f.command());
     for (const index of [3, 1, 2]) {
@@ -325,7 +325,127 @@ describe('Micro durable three-net-loss latch', () => {
     f.ledger.close();
     const nextDay = new MicroBurstNetLossLedger({ ...f.options, now: () => now + 86_400_000 });
     ledgers.push(nextDay);
+    expect(nextDay.snapshot()).toMatchObject({ consecutiveLosses: 0, halted: false });
+  });
+
+  it('carries pending evidence across midnight and attributes late confirmation to the close day', () => {
+    const f = fixture();
+    f.apply(f.ledger, f.command());
+    const pending = settlement(1);
+    f.ledger.observe(pending.identity);
+    f.ledger.close();
+    const nextDay = new MicroBurstNetLossLedger({ ...f.options, now: () => now + 86_400_000 });
+    ledgers.push(nextDay);
+    expect(nextDay.snapshot()).toMatchObject({
+      consecutiveLosses: 0,
+      halted: false,
+      pendingSettlements: 1,
+      blockedReason: 'MICRO_NET_SETTLEMENT_PENDING',
+    });
+    nextDay.observe(pending.identity, pending.evidence);
+    expect(nextDay.snapshot()).toMatchObject({
+      consecutiveLosses: 0,
+      pendingSettlements: 0,
+      blockedReason: null,
+    });
+    nextDay.close();
+    const rollback = f.reopen();
+    expect(rollback.snapshot().blockedReason).toBe('MICRO_NET_LOSS_CLOCK_INVALID');
+  });
+
+  it('does not let a late previous-day settlement release the current-day pause', () => {
+    const f = fixture();
+    f.apply(f.ledger, f.command());
+    f.ledger.close();
+    const nextDay = new MicroBurstNetLossLedger({ ...f.options, now: () => now + 86_400_000 });
+    ledgers.push(nextDay);
+    for (let index = 1; index <= 3; index++) {
+      const t = settlement(index);
+      t.identity.openedAtMs += 86_400_000;
+      t.identity.closedAtMs += 86_400_000;
+      t.evidence.observedAtMs += 86_400_000;
+      t.evidence.fundingFromMs += 86_400_000;
+      t.evidence.fundingThroughMs += 86_400_000;
+      for (const fill of t.evidence.fills) fill.eventTimeMs += 86_400_000;
+      for (const funding of t.evidence.funding) funding.eventTimeMs += 86_400_000;
+      nextDay.observe(t.identity, t.evidence);
+    }
+    const oldWin = settlement(4, 1);
+    nextDay.observe(oldWin.identity, oldWin.evidence);
     expect(nextDay.snapshot()).toMatchObject({ consecutiveLosses: 3, halted: true });
+  });
+
+  it('uses the final closing fill date, not the later local flat-observation date', () => {
+    const f = fixture();
+    f.apply(f.ledger, f.command());
+    f.ledger.close();
+    const nextDay = new MicroBurstNetLossLedger({ ...f.options, now: () => now + 86_400_000 });
+    ledgers.push(nextDay);
+    const old = settlement(1);
+    old.identity.closedAtMs += 86_400_000;
+    old.evidence.observedAtMs += 86_400_000;
+    old.evidence.fundingThroughMs = old.identity.closedAtMs;
+    nextDay.observe(old.identity, old.evidence);
+    expect(nextDay.snapshot()).toMatchObject({ consecutiveLosses: 0, pendingSettlements: 0 });
+  });
+
+  it('migrates an existing calendarless ledger without rewriting signed history or clearing pending evidence', () => {
+    const f = fixture();
+    f.apply(f.ledger, f.command());
+    for (let i = 1; i <= 3; i++) {
+      const t = settlement(i);
+      f.ledger.observe(t.identity, t.evidence);
+    }
+    const unknown = settlement(4);
+    f.ledger.observe(unknown.identity);
+    const before = f.ledger.snapshot();
+    f.ledger.close();
+    const db = new Database(f.options.databasePath);
+    db.exec('DROP TABLE micro_loss_calendar; DROP TABLE micro_loss_rollovers');
+    const commands = db.prepare('SELECT * FROM micro_loss_commands').all();
+    const trades = db.prepare('SELECT * FROM micro_loss_trades').all();
+    db.close();
+    const migrated = new MicroBurstNetLossLedger({ ...f.options, now: () => now + 86_400_000 });
+    ledgers.push(migrated);
+    expect(migrated.snapshot()).toMatchObject({
+      revision: before.revision + 1,
+      epoch: before.epoch,
+      halted: false,
+      consecutiveLosses: 0,
+      pendingSettlements: 1,
+      blockedReason: 'MICRO_NET_SETTLEMENT_PENDING',
+    });
+    migrated.close();
+    const audit = new Database(f.options.databasePath, { readonly: true });
+    expect(audit.prepare('SELECT * FROM micro_loss_commands').all()).toEqual(commands);
+    expect(audit.prepare('SELECT * FROM micro_loss_trades').all()).toEqual(trades);
+    expect(audit.prepare('SELECT * FROM micro_loss_rollovers').all()).toHaveLength(1);
+    audit.close();
+  });
+
+  it('rolls over within a running process at exactly 00:00 UTC without initializing a missing ledger', () => {
+    const f = fixture();
+    f.apply(f.ledger, f.command());
+    for (let i = 1; i <= 3; i++) {
+      const t = settlement(i);
+      f.ledger.observe(t.identity, t.evidence);
+    }
+    f.ledger.close();
+    let clock = 86_400_000 - 1;
+    const running = new MicroBurstNetLossLedger({ ...f.options, now: () => clock });
+    ledgers.push(running);
+    expect(running.snapshot().halted).toBe(true);
+    clock++;
+    expect(running.snapshot()).toMatchObject({ halted: false, consecutiveLosses: 0, epoch: 1 });
+    running.close();
+    const restored = new MicroBurstNetLossLedger({ ...f.options, now: () => clock });
+    ledgers.push(restored);
+    expect(restored.snapshot().blockedReason).toBeNull();
+    const missing = fixture();
+    missing.ledger.close();
+    const empty = new MicroBurstNetLossLedger({ ...missing.options, now: () => clock });
+    ledgers.push(empty);
+    expect(empty.snapshot().blockedReason).toBe('MICRO_NET_LOSS_NOT_INITIALIZED');
   });
 
   it.each(['identity', 'cashflows', 'reuse'])('durably quarantines %s conflicts', (fault) => {

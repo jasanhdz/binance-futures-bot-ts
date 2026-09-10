@@ -14,6 +14,44 @@ export interface MicroBurstSettlementIdentity {
   closedAtMs: number;
 }
 
+/** Historical accounting does not assert membership in the current strategy policy. */
+export type MicroBurstEconomicIdentity = Pick<
+  MicroBurstSettlementIdentity,
+  | 'tradeId'
+  | 'symbol'
+  | 'side'
+  | 'entryOrderId'
+  | 'closeOrderIds'
+  | 'quantity'
+  | 'openedAtMs'
+  | 'closedAtMs'
+>;
+
+export function validMicroBurstEconomicIdentity(identity: MicroBurstEconomicIdentity): boolean {
+  return (
+    !!identity &&
+    [identity.tradeId, identity.entryOrderId].every(
+      (value) => typeof value === 'string' && !!value.trim() && value.length <= 256,
+    ) &&
+    /^[A-Z0-9]+$/.test(identity.symbol) &&
+    ['LONG', 'SHORT'].includes(identity.side) &&
+    Number.isFinite(identity.quantity) &&
+    identity.quantity > 0 &&
+    [identity.openedAtMs, identity.closedAtMs].every(
+      (value) => Number.isSafeInteger(value) && value >= 0,
+    ) &&
+    identity.closedAtMs >= identity.openedAtMs &&
+    Array.isArray(identity.closeOrderIds) &&
+    identity.closeOrderIds.length > 0 &&
+    identity.closeOrderIds.length <= 100 &&
+    identity.closeOrderIds.every(
+      (id) => typeof id === 'string' && !!id.trim() && id.length <= 256,
+    ) &&
+    new Set([identity.entryOrderId, ...identity.closeOrderIds]).size ===
+      identity.closeOrderIds.length + 1
+  );
+}
+
 export interface MicroBurstSettlementFill {
   id: string;
   orderId: string;
@@ -60,31 +98,13 @@ export type MicroBurstSettlementResult =
 
 export function validMicroBurstSettlementIdentity(identity: MicroBurstSettlementIdentity): boolean {
   return (
-    !!identity &&
-    !(
-      !isMicroBurstPolicy(identity.policyVersion) ||
-      ![identity.tradeId, identity.episodeId, identity.entryOrderId].every(
-        (value) => typeof value === 'string' && !!value.trim() && value.length <= 256,
-      ) ||
-      !/^[A-Z0-9]+$/.test(identity.symbol) ||
-      !['LONG', 'SHORT'].includes(identity.side) ||
-      !/^sha256:[a-f0-9]{64}$/.test(identity.configHash) ||
-      !/^[a-f0-9]{40}$/.test(identity.codeCommitSha) ||
-      !Number.isFinite(identity.quantity) ||
-      identity.quantity <= 0 ||
-      ![identity.openedAtMs, identity.closedAtMs].every(
-        (value) => Number.isSafeInteger(value) && value >= 0,
-      ) ||
-      identity.closedAtMs < identity.openedAtMs ||
-      !Array.isArray(identity.closeOrderIds) ||
-      !identity.closeOrderIds.length ||
-      identity.closeOrderIds.length > 100 ||
-      identity.closeOrderIds.some(
-        (id) => typeof id !== 'string' || !id.trim() || id.length > 256,
-      ) ||
-      new Set([identity.entryOrderId, ...identity.closeOrderIds]).size !==
-        identity.closeOrderIds.length + 1
-    )
+    validMicroBurstEconomicIdentity(identity) &&
+    isMicroBurstPolicy(identity.policyVersion) &&
+    typeof identity.episodeId === 'string' &&
+    !!identity.episodeId.trim() &&
+    identity.episodeId.length <= 256 &&
+    /^sha256:[a-f0-9]{64}$/.test(identity.configHash) &&
+    /^[a-f0-9]{40}$/.test(identity.codeCommitSha)
   );
 }
 
@@ -93,13 +113,21 @@ export function reconcileMicroBurstSettlement(
   identity: MicroBurstSettlementIdentity,
   evidence: MicroBurstSettlementEvidence,
 ): MicroBurstSettlementResult {
+  if (!validMicroBurstSettlementIdentity(identity))
+    return { status: 'UNVERIFIED', netPnlUsdt: null, reason: 'MICRO_SETTLEMENT_IDENTITY_INVALID' };
+  return reconcileMicroBurstEconomics(identity, evidence);
+}
+
+export function reconcileMicroBurstEconomics(
+  identity: MicroBurstEconomicIdentity,
+  evidence: MicroBurstSettlementEvidence,
+): MicroBurstSettlementResult {
   const fail = (reason: string): MicroBurstSettlementResult => ({
     status: 'UNVERIFIED',
     netPnlUsdt: null,
     reason,
   });
-  if (!validMicroBurstSettlementIdentity(identity))
-    return fail('MICRO_SETTLEMENT_IDENTITY_INVALID');
+  if (!validMicroBurstEconomicIdentity(identity)) return fail('MICRO_SETTLEMENT_IDENTITY_INVALID');
   if (
     !evidence ||
     !Number.isSafeInteger(evidence.observedAtMs) ||

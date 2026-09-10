@@ -2,12 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { MicroBurstNetLossLedger } from '../../infra/state/MicroBurstNetLossLedger';
+import { MicroUtcClock } from '../../infra/state/MicroUtcClock';
 
 /** No key means no Micro admission. Initialization/reset remain externally signed operations. */
 export function composeMicroNetLossLedger(
   apiKey: string,
   isTestnet: boolean,
   publicKeyFile = process.env.MICRO_NET_LOSS_OPERATOR_PUBLIC_KEY_FILE,
+  readServerTime?: () => Promise<number>,
 ): MicroBurstNetLossLedger | undefined {
   if (!publicKeyFile) return undefined;
   if (!apiKey.trim()) throw new Error('MICRO_NET_LOSS_ACCOUNT_CREDENTIAL_REQUIRED');
@@ -48,5 +50,13 @@ export function composeMicroNetLossLedger(
     if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
       throw new Error('MICRO_NET_LOSS_STORAGE_NOT_OWNED');
   }
-  return new MicroBurstNetLossLedger({ databasePath, account, environment, operatorPublicKey });
+  if (!readServerTime) throw new Error('MICRO_NET_LOSS_EXCHANGE_CLOCK_REQUIRED');
+  const clock = new MicroUtcClock(readServerTime);
+  return new MicroBurstNetLossLedger({
+    databasePath,
+    account,
+    environment,
+    operatorPublicKey,
+    now: () => clock.now(),
+  });
 }
