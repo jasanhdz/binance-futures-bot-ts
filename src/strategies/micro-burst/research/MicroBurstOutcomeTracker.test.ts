@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { MicroBurstOutcomeTracker } from './MicroBurstOutcomeTracker';
 import { MicroBurstOutcomeJournal } from './MicroBurstOutcomeJournal';
@@ -7,7 +8,7 @@ import { MicroBurstStorage } from './MicroBurstStorage';
 import { ShadowSignalSnapshot } from './MicroBurstOutcomeTypes';
 import { freezeSignalSnapshot } from './MicroBurstOutcomeEngine';
 
-const TEST_DIR = path.join(__dirname, '__test_outcome_tracker__');
+const TEST_DIR = fs.mkdtempSync(path.join(tmpdir(), 'micro-outcome-tracker-'));
 
 function makeSignal(overrides: Partial<ShadowSignalSnapshot> = {}): ShadowSignalSnapshot {
   return freezeSignalSnapshot({

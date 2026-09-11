@@ -8,6 +8,19 @@ import type { StrategyId } from '../strategy/StrategyIdentity';
 import type { StrategyDecisionBlackBox } from './StrategyDecisionBlackBox';
 
 export interface StrategyDecisionObservationHook<TContext = unknown> {
+  /** Opt-in exact-input path: synchronous capture, followed by bounded observational enqueue. */
+  captureExactInput?(
+    strategyId: StrategyId,
+    context: TContext,
+  ): { context: TContext; snapshot: MarketSnapshotV1 } | null;
+  enqueueExactDecision?(
+    snapshot: MarketSnapshotV1,
+    decision: StrategyDecisionEnvelope,
+  ): void | 'QUEUED' | 'OBSERVATIONAL_DROP';
+  close?(): Promise<void> | void;
+  observationHealth?(): Readonly<Record<string, unknown>>;
+  /** Optional required minimum audit, outside the droppable observational queue. */
+  requiredAudit?: { acknowledge(decision: StrategyDecisionEnvelope): Promise<void> };
   beforeEvaluation(strategyId: StrategyId, context: TContext): Promise<MarketSnapshotV1 | null>;
   afterEvaluation(snapshot: MarketSnapshotV1, decision: StrategyDecisionEnvelope): Promise<void>;
 }

@@ -44,11 +44,29 @@ describe('JsonlDecisionEvidenceSink', () => {
 
       await sink.append(record);
       await sink.append({ ...record, decisionId: 'd2' });
+      await sink.appendPersistenceTiming({
+        schema: 'DECISION_PERSISTENCE_TIMING',
+        schemaVersion: 1,
+        decisionId: 'd1',
+        persistenceStartedAtMs: 2,
+        persistenceFinishedAtMs: 8,
+        persistenceDurationMs: 6,
+        serializationDurationMs: 1,
+        timestampClock: 'LOCAL_RECEIVE_TIME',
+        durationClock: 'MONOTONIC',
+        completionBoundary: 'SINK_ACK_NOT_FSYNC_ATTESTATION',
+      });
+      await sink.drain();
 
       const lines = (await readFile(path, 'utf8')).trim().split('\n');
       expect(lines).toHaveLength(2);
       expect(JSON.parse(lines[0]).decisionId).toBe('d1');
       expect(JSON.parse(lines[1]).decisionId).toBe('d2');
+      expect(JSON.parse(await readFile(`${path}.timing.jsonl`, 'utf8'))).toMatchObject({
+        schema: 'DECISION_PERSISTENCE_TIMING',
+        decisionId: 'd1',
+        persistenceDurationMs: 6,
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

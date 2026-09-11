@@ -77,7 +77,8 @@ export interface CandleFeaturesV1 {
 }
 
 export interface OrderBookFeatureInput {
-  readonly state: OrderBookState;
+  readonly state: Pick<OrderBookState, 'bids' | 'asks' | 'health' | 'observedAtMs'> &
+    Partial<OrderBookState>;
   readonly health?: OrderBookHealth;
 }
 

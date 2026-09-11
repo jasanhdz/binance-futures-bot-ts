@@ -60,6 +60,12 @@ export interface NearestLevels {
 export interface SupportResistanceResult {
   levels: SupportResistanceLevel[];
   nearest: NearestLevels;
+  /** Complete immutable cluster states at confirmation boundaries within the same lookback. */
+  history?: readonly {
+    asOfMs: number;
+    levels: readonly SupportResistanceLevel[];
+  }[];
+  invalidReasons?: readonly string[];
 }
 
 // ── Momentum ─────────────────────────────────────────────────
@@ -163,6 +169,13 @@ export interface DataQualityDiagnostics {
 }
 
 export interface MicroBurstContext {
+  /** Captured builder inputs; absent only for legacy/direct pure callers. */
+  inputSources?: {
+    rawCandles: MicroBurstCandleSet;
+    book: OrderBookSnapshot | null;
+    builderConfig: MicroBurstConfig;
+    timing: Record<string, unknown>;
+  };
   symbol: string;
   timestamp: number;
   /** Latest closed 1m candle close available at timestamp; not a live bid/ask. */

@@ -43,6 +43,21 @@ export interface StrategyDecisionEvidenceV2 {
 
 export interface DecisionEvidenceSink {
   append(record: StrategyDecisionEvidenceV2): Promise<void>;
+  appendPersistenceTiming?(record: DecisionPersistenceTiming): Promise<void>;
+}
+
+/** Separate completion evidence; never counted as a second trading decision. */
+export interface DecisionPersistenceTiming {
+  schema: 'DECISION_PERSISTENCE_TIMING';
+  schemaVersion: 1;
+  decisionId: string;
+  persistenceStartedAtMs: number;
+  persistenceFinishedAtMs: number;
+  persistenceDurationMs: number;
+  serializationDurationMs: number;
+  timestampClock: 'LOCAL_RECEIVE_TIME';
+  durationClock: 'MONOTONIC';
+  completionBoundary: 'SINK_ACK_NOT_FSYNC_ATTESTATION';
 }
 
 export function assertStrategyDecisionEvidenceV2(
@@ -268,6 +283,7 @@ function compactDecisionDiagnostics(
     return { evidenceLevel: 'COMPACT', diagnostics: { ...diagnostics } };
   }
   const keepFullReplay =
+    (replay as Record<string, unknown>).schema === 'MICRO_EXACT_INPUT' ||
     decision.decision === 'ENTRY_INTENT' ||
     diagnostics.patternMatched === true ||
     diagnostics.evaluationError !== undefined;

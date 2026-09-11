@@ -102,6 +102,7 @@ export function evaluateMicroBurstStructuralEntry(
   ctx: MicroBurstContext,
   config: MicroBurstConfig,
   side: Side,
+  visitStage?: (stage: string) => void,
 ): MicroBurstEntryDecision {
   // ── Structural levels required (no fallback) ──
   // For LONG near support: target = resistance (above), stop = below support
@@ -110,6 +111,7 @@ export function evaluateMicroBurstStructuralEntry(
   const structuralLevel =
     side === 'LONG' ? ctx.levels.nearest.support : ctx.levels.nearest.resistance;
 
+  visitStage?.('STRUCTURAL_LEVELS');
   if (!structuralLevel || !targetLevel) {
     return {
       action: 'NO_TRADE',
@@ -129,6 +131,7 @@ export function evaluateMicroBurstStructuralEntry(
   const targetPrice = targetLevel.price;
 
   // ── Room gate ──
+  visitStage?.('EXECUTABLE_GEOMETRY');
   const validGeometry =
     side === 'LONG'
       ? stopInvalidationPrice < ctx.currentPrice && targetPrice > ctx.currentPrice
@@ -145,6 +148,7 @@ export function evaluateMicroBurstStructuralEntry(
   const roomToTargetBps = priceDistanceToBps(ctx.currentPrice, targetPrice);
   const riskToInvalidationBps = priceDistanceToBps(ctx.currentPrice, stopInvalidationPrice);
 
+  visitStage?.('GROSS_ROOM');
   if (!Number.isFinite(roomToTargetBps) || roomToTargetBps < config.minRoomBps) {
     return {
       action: 'NO_TRADE',
@@ -154,6 +158,7 @@ export function evaluateMicroBurstStructuralEntry(
     };
   }
 
+  visitStage?.('GROSS_REWARD_RISK');
   const rewardRisk = roomToTargetBps / riskToInvalidationBps;
   if (
     !Number.isFinite(riskToInvalidationBps) ||
@@ -182,6 +187,7 @@ export function evaluateMicroBurstStructuralEntry(
   }
 
   // ── Leverage selection ──
+  visitStage?.('LEVERAGE_TIER');
   const leverageResult = selectLeverageTier(ctx.momentum.strength, config);
   if (leverageResult.tier === 'NO_TRADE') {
     return {

@@ -121,21 +121,25 @@ function clusterPivots(
   return clusters
     .map((cluster): SupportResistanceLevel => {
       const price = cluster.reduce((sum, item) => sum + item.price, 0) / cluster.length;
-      const touches = countTouches(candles, price, toleranceBps);
-      const volume = volumeAtLevel(candles, price, toleranceBps);
+      const latestConfirmation = cluster.reduce((latest, item) =>
+        item.availableAtMs > latest.availableAtMs ? item : latest,
+      );
+      // Every attribute must exist at the declared availability boundary.
+      const confirmedCandles = candles.filter(
+        ({ candle }) => candle.closeTime <= latestConfirmation.availableAtMs,
+      );
+      const touches = countTouches(confirmedCandles, price, toleranceBps);
+      const volume = volumeAtLevel(confirmedCandles, price, toleranceBps);
       const strength = Math.min(
         1,
         (touches / 5) * 0.5 + (cluster.length / 3) * 0.3 + (volume > 0 ? 0.2 : 0),
-      );
-      const latestConfirmation = cluster.reduce((latest, item) =>
-        item.availableAtMs > latest.availableAtMs ? item : latest,
       );
       return {
         price,
         type,
         strength,
         touches,
-        lastTouchIndex: findLastTouchIndex(candles, price, toleranceBps),
+        lastTouchIndex: findLastTouchIndex(confirmedCandles, price, toleranceBps),
         pivotCandleIndex: latestConfirmation.pivotCandleIndex,
         availableAtCandleIndex: latestConfirmation.availableAtCandleIndex,
         pivotAtMs: latestConfirmation.pivotAtMs,
@@ -183,6 +187,33 @@ export function detectSupportResistance(
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const deterministicSnapshotAtMs =
     opts.snapshotAtMs ?? candles.reduce((latest, candle) => Math.max(latest, candle.closeTime), 0);
+  const invalidReasons: string[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    // This pure detector's archive contract explicitly excludes future candles.
+    // Live response sequence validation remains in prepareClosedCandles.
+    if (c.closeTime > deterministicSnapshotAtMs) continue;
+    if (
+      ![c.openTime, c.closeTime, c.open, c.high, c.low, c.close, c.volume].every(Number.isFinite) ||
+      c.openTime >= c.closeTime ||
+      c.volume < 0 ||
+      c.low <= 0 ||
+      c.high < Math.max(c.open, c.close) ||
+      c.low > Math.min(c.open, c.close)
+    )
+      invalidReasons.push('INVALID_CANDLE');
+    if (i && c.openTime <= candles[i - 1].openTime)
+      invalidReasons.push('DUPLICATE_OR_OUT_OF_ORDER');
+    if (i && c.openTime < candles[i - 1].closeTime) invalidReasons.push('OVERLAPPING_CANDLES');
+    if (i && c.openTime > candles[i - 1].closeTime + 1) invalidReasons.push('CANDLE_GAP');
+  }
+  if (invalidReasons.length)
+    return {
+      levels: [],
+      nearest: findNearest(0, [], opts.nearLevelThresholdBps),
+      history: [],
+      invalidReasons: [...new Set(invalidReasons)],
+    };
   const availableCandles = candles
     .map((candle, sourceIndex) => ({ candle, sourceIndex }))
     .filter(({ candle }) => candle.closeTime <= deterministicSnapshotAtMs)
@@ -212,9 +243,38 @@ export function detectSupportResistance(
     ),
   ].filter((level) => level.availableAtMs <= deterministicSnapshotAtMs);
   const currentPrice = availableCandles[availableCandles.length - 1]?.candle.close ?? 0;
+  const boundaries = [...new Set([...support, ...resistance].map((p) => p.availableAtMs))].sort(
+    (a, b) => a - b,
+  );
+  const history = Object.freeze(
+    boundaries.map((asOfMs) =>
+      Object.freeze({
+        asOfMs,
+        levels: Object.freeze(
+          [
+            ...clusterPivots(
+              support.filter((p) => p.availableAtMs <= asOfMs),
+              'support',
+              availableCandles,
+              opts.clusterToleranceBps,
+              opts.minStrength,
+            ),
+            ...clusterPivots(
+              resistance.filter((p) => p.availableAtMs <= asOfMs),
+              'resistance',
+              availableCandles,
+              opts.clusterToleranceBps,
+              opts.minStrength,
+            ),
+          ].map((level) => Object.freeze(level)),
+        ),
+      }),
+    ),
+  );
 
   return {
     levels,
     nearest: findNearest(currentPrice, levels, opts.nearLevelThresholdBps),
+    history,
   };
 }

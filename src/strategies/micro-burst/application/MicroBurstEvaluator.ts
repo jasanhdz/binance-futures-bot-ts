@@ -58,23 +58,49 @@ export class MicroBurstEvaluator {
       return this.buildDisabledResult(symbol, input.snapshotAtMs ?? this.deps.clock.now());
     }
 
+    const serverRequestStartedMono = performance.now();
+    const localRequestStartedAtMs = this.deps.clock.now();
     const snapshotAtMs = input.snapshotAtMs ?? (await this.deps.getServerTime());
+    const serverResponseReceivedMono = performance.now();
+    const localResponseReceivedAtMs = this.deps.clock.now();
 
     try {
       const context = await buildMicroBurstContext(symbol, this.deps.contextBuilderDeps, {
         snapshotAtMs,
         getLocalNowAtMs: () => this.deps.clock.now(),
+        timingClock: {
+          localNow: () => this.deps.clock.now(),
+          monotonicNow: () => performance.now(),
+        },
         config:
           symConfig.btcConflictThresholdBps !== undefined
             ? { btcConflictThresholdBps: symConfig.btcConflictThresholdBps }
             : undefined,
       });
 
+      const contextBuiltMono = performance.now();
       const strategyContext: MicroBurstStrategyContext = {
         ...context,
         entryPolicy: 'MICRO',
-        executionBook: this.deps.contextBuilderDeps.book?.getDepthSnapshot(symbol),
+        executionBook: context.inputSources?.book ?? undefined,
         observedAtMs: this.deps.clock.now(),
+        // The server sample happened somewhere within request/response. Using request-start
+        // elapsed gives an upper bound on exchange-now, conservatively consuming freshness.
+        exchangeObservedAtMs: snapshotAtMs + contextBuiltMono - serverRequestStartedMono,
+        clockReference: {
+          source:
+            input.snapshotAtMs === undefined
+              ? 'SERVER_REQUEST_RESPONSE_BOUND'
+              : 'CALLER_DECLARED_AS_OF',
+          serverSampleAtMs: snapshotAtMs,
+          localRequestStartedAtMs,
+          localResponseReceivedAtMs,
+          requestRoundTripMs: serverResponseReceivedMono - serverRequestStartedMono,
+          contextBuiltExchangeLowerBoundMs:
+            snapshotAtMs + contextBuiltMono - serverResponseReceivedMono,
+          contextBuiltExchangeUpperBoundMs:
+            snapshotAtMs + contextBuiltMono - serverRequestStartedMono,
+        },
         config: {
           ...this.runtimeConfig.exitPolicy,
           contextualPolicyVersion: 'MICRO',
@@ -123,6 +149,10 @@ export class MicroBurstEvaluator {
           : null;
 
       const wouldEnter = envelope.decision === 'ENTRY_INTENT';
+      // Full original inputs belong to the observational sink, never to entry PREPARED,
+      // trade policy, signal journals or account metadata.
+      const { strategyInputReplay: _observationalReplay, ...executionDiagnostics } =
+        envelope.diagnostics;
 
       let shadowSignalId = '';
       let duplicateSuppressed = false;
@@ -194,7 +224,7 @@ export class MicroBurstEvaluator {
         firstObservedAt,
         lastObservedAt,
         diagnostics: {
-          ...envelope.diagnostics,
+          ...executionDiagnostics,
           ...(context.aggTradeFlow
             ? {
                 takerBuyVolume: context.aggTradeFlow.buyTakerVolume,

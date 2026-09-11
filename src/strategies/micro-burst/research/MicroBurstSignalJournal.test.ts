@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { MicroBurstSignalJournal } from '../research/MicroBurstSignalJournal';
 import type { MicroBurstShadowEvaluationResult } from '../application/MicroBurstShadowEvaluationTypes';
 
-const TEST_JOURNAL_DIR = path.join(__dirname, '__test_journal__');
+const TEST_JOURNAL_DIR = fs.mkdtempSync(path.join(tmpdir(), 'micro-signal-journal-'));
 
 function makeResult(
   overrides: Partial<MicroBurstShadowEvaluationResult> = {},

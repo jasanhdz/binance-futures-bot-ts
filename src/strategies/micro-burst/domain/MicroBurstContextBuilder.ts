@@ -21,6 +21,9 @@ import { hasBtcConflict } from './MicroBurstBtcContext';
 import { analyzeMicroMomentum } from './MicroBurstMomentumAnalyzer';
 import { classifyMicroRegime } from './MicroBurstMicroRegime';
 import { detectSupportResistance } from './MicroBurstSupportResistance';
+import { copyObservation } from '../../../core/blackbox/BoundedObservationQueue';
+
+const SOURCE_COPY_LIMITS = { maxBytes: 2 * 1024 * 1024, maxNodes: 40_000, maxDepth: 16 };
 
 export interface CandleSnapshotProvider {
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
@@ -73,6 +76,7 @@ export interface MicroBurstContextBuildOptions {
   snapshotAtMs: number;
   localNowAtMs?: number;
   getLocalNowAtMs?: () => number;
+  timingClock?: { localNow(): number; monotonicNow(): number };
   config?: Partial<MicroBurstConfig>;
 }
 
@@ -219,10 +223,34 @@ export async function buildMicroBurstContext(
     throw new Error('MICRO_BURST_INVALID_SNAPSHOT_AT');
   }
 
+  const localNow = () => options.timingClock?.localNow() ?? null;
+  const monotonicNow = () => options.timingClock?.monotonicNow() ?? null;
+  const elapsed = (start: number | null) => (start === null ? null : monotonicNow()! - start);
+  const contextStartedMono = monotonicNow();
+  const contextStartedAtMs = localNow();
+  const candleReads: Record<string, unknown> = {};
+  const readCandles = async (interval: string, limit: number) => {
+    const requestedAtMs = localNow();
+    const start = monotonicNow();
+    const result = await deps.candles.getCandles(symbol, interval, limit);
+    const receivedAtMs = localNow();
+    // Detach adapter-owned cache arrays at each response, before waiting for other series.
+    const candles = copyObservation(result, SOURCE_COPY_LIMITS).value;
+    const closed = candles.filter((c) => c.closeTime <= snapshotAtMs);
+    candleReads[interval] = {
+      requestedAtMs,
+      receivedAtMs,
+      durationMs: elapsed(start),
+      lastClosedAtMs: closed[closed.length - 1]?.closeTime ?? null,
+      adapterEnqueuedAtMs: null,
+      adapterDequeuedAtMs: null,
+    };
+    return candles;
+  };
   const [rawCandles1m, rawCandles3m, rawCandles5m] = await Promise.all([
-    deps.candles.getCandles(symbol, '1m', 100),
-    deps.candles.getCandles(symbol, '3m', 80),
-    deps.candles.getCandles(symbol, '5m', 60),
+    readCandles('1m', 100),
+    readCandles('3m', 80),
+    readCandles('5m', 60),
   ]);
   const localNowAtMs = options.getLocalNowAtMs?.() ?? options.localNowAtMs ?? snapshotAtMs;
   const rawCandleSets = {
@@ -279,7 +307,10 @@ export async function buildMicroBurstContext(
     candles.candles5m,
     config.momentumSlopePeriod,
   );
-  const bookSnapshot = deps.book?.getDepthSnapshot(symbol);
+  const sourceBook = deps.book?.getDepthSnapshot(symbol);
+  const bookSnapshot = sourceBook
+    ? copyObservation(sourceBook, SOURCE_COPY_LIMITS).value
+    : undefined;
   const bookPressure = analyzeBookPressure(
     bookSnapshot,
     localNowAtMs ?? snapshotAtMs,
@@ -338,6 +369,27 @@ export async function buildMicroBurstContext(
   }
 
   return {
+    inputSources: {
+      rawCandles: rawCandleSets,
+      book: bookSnapshot ?? null,
+      builderConfig: config,
+      timing: {
+        contextStartedAtMs,
+        contextBuiltAtMs: localNow(),
+        contextDurationMs: elapsed(contextStartedMono),
+        durationClock: 'MONOTONIC',
+        localClock: 'LOCAL_RECEIVE_TIME',
+        asOfClock: 'EXCHANGE_TIME',
+        candleReads,
+        depthEventAtMs: null,
+        depthTransactionAtMs: null,
+        depthReceivedAtMs: bookSnapshot?.observedAtMs ?? null,
+        btcEventAtMs: btcRaw?.observedAtMs ?? null,
+        btcReceivedAtMs: btcRaw?.receivedAtMs ?? null,
+        aggTradeEventAtMs: aggTradeFlow?.eventWatermarkMs ?? null,
+        aggTradeReceivedAtMs: null,
+      },
+    },
     symbol,
     timestamp: snapshotAtMs,
     currentPrice,

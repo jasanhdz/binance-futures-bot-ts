@@ -65,6 +65,7 @@ interface Clock {
 }
 
 export interface MicroBurstRuntimeHealth {
+  observationQueue?: Readonly<Record<string, unknown>>;
   running: boolean;
   symbolCount: number;
   healthyBooks: number;
@@ -596,8 +597,8 @@ export class MicroBurstRuntime {
   }
 
   stop(): Promise<void> {
-    this.deps.strategyRouter.setObservationHook(undefined);
     if (this.stopPromise) return this.stopPromise;
+    const observationDrained = this.deps.strategyRouter.closeObservation();
     this.running = false;
 
     if (this.evaluationTimer) {
@@ -650,6 +651,7 @@ export class MicroBurstRuntime {
       } catch (error) {
         failures.push(`market storage: ${String(error)}`);
       }
+      await observationDrained;
 
       if (failures.length > 0) {
         const error = new Error(`MICRO_BURST_RUNTIME_SHUTDOWN_FAILED: ${failures.join('; ')}`);
@@ -909,6 +911,7 @@ export class MicroBurstRuntime {
       healthyBooks,
       btcHealthy,
       totalEvaluations: this.totalEvaluations,
+      observationQueue: this.deps.strategyRouter.observationHealth(),
       totalUniqueSignals: this.totalUniqueSignals,
       paperSuppressedEntries: this.paperSuppressedEntries,
       totalDuplicateSignals: this.totalDuplicateSignals,

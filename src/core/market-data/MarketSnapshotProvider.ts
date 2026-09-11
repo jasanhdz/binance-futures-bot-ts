@@ -73,6 +73,10 @@ export interface SnapshotBenchmarkMarketData {
 }
 
 export interface MarketSnapshotProvenance {
+  readonly derivation?: {
+    readonly kind: 'POST_EVALUATION_FROM_EXACT_INPUTS';
+    readonly derivedAtReceivedMs: number;
+  };
   readonly snapshotSchemaVersion: 1;
   readonly featureSchema: 'SHARED_MARKET_FEATURES_V1';
   readonly symbol: string;

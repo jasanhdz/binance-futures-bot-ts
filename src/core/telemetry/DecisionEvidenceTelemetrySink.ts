@@ -1,6 +1,7 @@
 import type {
   DecisionEvidenceSink,
   StrategyDecisionEvidenceV2,
+  DecisionPersistenceTiming,
 } from '../blackbox/StrategyDecisionBlackBox';
 import type { StrategyTelemetryBus } from './StrategyTelemetryBus';
 
@@ -10,6 +11,10 @@ export class DecisionEvidenceTelemetrySink implements DecisionEvidenceSink {
     private readonly primary: DecisionEvidenceSink,
     private readonly telemetry: StrategyTelemetryBus,
   ) {}
+
+  async appendPersistenceTiming(record: DecisionPersistenceTiming): Promise<void> {
+    await this.primary.appendPersistenceTiming?.(record);
+  }
 
   async append(record: StrategyDecisionEvidenceV2): Promise<void> {
     await this.primary.append(record);

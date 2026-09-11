@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { MicroBurstOutcomeJournal } from '../research/MicroBurstOutcomeJournal';
 import { ProspectiveOutcomeRecord } from '../research/MicroBurstOutcomeTypes';
 
-const TEST_DIR = path.join(__dirname, '__test_outcome_journal__');
+const TEST_DIR = fs.mkdtempSync(path.join(tmpdir(), 'micro-outcome-journal-'));
 
 function makeRecord(overrides: Partial<ProspectiveOutcomeRecord> = {}): ProspectiveOutcomeRecord {
   return {

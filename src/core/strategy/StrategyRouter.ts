@@ -6,6 +6,7 @@ import { StrategyId } from './StrategyIdentity';
 export class StrategyRouter<TContext = unknown> {
   private readonly strategies = new Map<StrategyId, EntryStrategy<TContext>>();
   private observationHook?: StrategyDecisionObservationHook<TContext>;
+  private lastObservationHealth?: Readonly<Record<string, unknown>>;
 
   constructor(observationHook?: StrategyDecisionObservationHook<TContext>) {
     this.observationHook = observationHook;
@@ -14,6 +15,17 @@ export class StrategyRouter<TContext = unknown> {
   /** Runtime composition hook. Observation remains side-effect-only and may be detached on shutdown. */
   setObservationHook(observationHook?: StrategyDecisionObservationHook<TContext>): void {
     this.observationHook = observationHook;
+  }
+
+  async closeObservation(): Promise<void> {
+    const hook = this.observationHook;
+    this.observationHook = undefined;
+    await hook?.close?.();
+    this.lastObservationHealth = hook?.observationHealth?.();
+  }
+
+  observationHealth(): Readonly<Record<string, unknown>> | undefined {
+    return this.observationHook?.observationHealth?.() ?? this.lastObservationHealth;
   }
 
   register(strategy: EntryStrategy<TContext>): void {
@@ -42,7 +54,28 @@ export class StrategyRouter<TContext = unknown> {
       throw new Error(`STRATEGY_NOT_REGISTERED:${strategyId}`);
     }
 
-    const snapshot = await this.captureObservation(strategyId, context);
+    const hook = this.observationHook;
+    const waitStarted = performance.now();
+    let snapshot: Awaited<
+      ReturnType<StrategyDecisionObservationHook<TContext>['beforeEvaluation']>
+    > = null;
+    const exact = !!hook?.captureExactInput && !!hook.enqueueExactDecision;
+    if (exact) {
+      try {
+        const captured = hook!.captureExactInput!(strategyId, context);
+        if (captured) {
+          context = captured.context;
+          snapshot = captured.snapshot;
+        }
+      } catch {
+        /* Observational capture failure does not confer execution authority. */
+      }
+    } else {
+      snapshot = await this.captureObservation(strategyId, context);
+    }
+    context = strategy.afterObservationWait?.(context, performance.now() - waitStarted) ?? context;
+    const evaluationStartedAtMs = Date.now();
+    const evaluationStartedMono = performance.now();
 
     let envelope: StrategyDecisionEnvelope;
     if (strategy.mode === 'OFF') {
@@ -65,7 +98,60 @@ export class StrategyRouter<TContext = unknown> {
       };
     }
 
-    await this.persistObservation(snapshot, envelope);
+    const evaluationFinishedAtMs = Date.now();
+    if (exact)
+      envelope = {
+        ...envelope,
+        diagnostics: {
+          ...envelope.diagnostics,
+          evaluationTiming: {
+            evaluationStartedAtMs,
+            evaluationFinishedAtMs,
+            evaluationDurationMs: performance.now() - evaluationStartedMono,
+            durationClock: 'MONOTONIC',
+            timestampClock: 'LOCAL_RECEIVE_TIME',
+          },
+        },
+      };
+    if (hook?.requiredAudit && envelope.decision === 'ENTRY_INTENT') {
+      try {
+        await hook.requiredAudit.acknowledge(envelope);
+      } catch {
+        envelope = {
+          identity: envelope.identity,
+          mode: envelope.mode,
+          symbol: envelope.symbol,
+          timestamp: envelope.timestamp,
+          decision: 'NO_TRADE',
+          reason: 'REQUIRED_DECISION_AUDIT_FAILED',
+          diagnostics: { ...envelope.diagnostics, requiredAuditAcknowledged: false },
+        };
+      }
+    }
+    if (exact) {
+      if (snapshot) {
+        try {
+          const status = hook!.enqueueExactDecision!(snapshot, envelope);
+          envelope = {
+            ...envelope,
+            diagnostics: { ...envelope.diagnostics, exactInputObservation: status ?? 'SUBMITTED' },
+          };
+        } catch {
+          envelope = {
+            ...envelope,
+            diagnostics: { ...envelope.diagnostics, exactInputObservation: 'OBSERVATIONAL_DROP' },
+          };
+        }
+      } else {
+        envelope = {
+          ...envelope,
+          diagnostics: {
+            ...envelope.diagnostics,
+            exactInputObservation: 'OBSERVATIONAL_DROP_CAPTURE',
+          },
+        };
+      }
+    } else await this.persistObservation(snapshot, envelope);
     return envelope;
   }
 

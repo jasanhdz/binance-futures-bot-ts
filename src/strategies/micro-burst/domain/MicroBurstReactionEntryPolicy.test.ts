@@ -21,6 +21,8 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
   ctx.levels.nearest.structuralPosition = side === 'LONG' ? 'near_support' : 'near_resistance';
   ctx.levels.nearest.support = makeLevel('support', side === 'LONG' ? 99.7 : 98);
   ctx.levels.nearest.resistance = makeLevel('resistance', side === 'LONG' ? 102 : 100.3);
+  // The complete candidate list and nearest view describe the same market.
+  ctx.levels.levels = [ctx.levels.nearest.support, ctx.levels.nearest.resistance];
   ctx.candles.candles1m = [
     {
       timestamp: now,

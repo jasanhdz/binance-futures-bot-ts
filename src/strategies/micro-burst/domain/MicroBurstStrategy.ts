@@ -8,12 +8,31 @@ import {
 import { MicroBurstConfig, MicroBurstContext, defaultMicroBurstConfig } from './MicroBurstTypes';
 import { evaluateMicroBurstReactionEntry } from './MicroBurstReactionEntryPolicy';
 import type { OrderBookSnapshot } from './MicroBurstTypes';
+import { captureMicroBurstReplay } from './MicroBurstExactReplay';
 
 export interface MicroBurstStrategyContext extends MicroBurstContext {
   config?: Partial<MicroBurstConfig>;
   entryPolicy?: 'MICRO';
   executionBook?: OrderBookSnapshot;
   observedAtMs?: number;
+  /** Conservative exchange-time upper bound, sampled by the caller without a new capture REST call. */
+  exchangeObservedAtMs?: number;
+  clockReference?: {
+    source: 'SERVER_REQUEST_RESPONSE_BOUND' | 'CALLER_DECLARED_AS_OF';
+    serverSampleAtMs: number;
+    localRequestStartedAtMs: number;
+    localResponseReceivedAtMs: number;
+    requestRoundTripMs: number;
+    contextBuiltExchangeLowerBoundMs: number;
+    contextBuiltExchangeUpperBoundMs: number;
+  };
+  inputCaptureTiming?: {
+    captureStartedAtMs: number;
+    capturedAtMs: number;
+    captureDurationMs: number;
+    timestampClock: 'LOCAL_RECEIVE_TIME';
+    durationClock: 'MONOTONIC';
+  };
 }
 
 export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyContext> {
@@ -48,11 +67,19 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
         },
       };
     }
+    let replay;
+    try {
+      replay = captureMicroBurstReplay(context, config, this.identity.codeCommitSha);
+    } catch {
+      // Input capture is observational. Oversized evidence is explicitly incomplete.
+    }
+    const input = replay?.context ?? context;
     const decision = evaluateMicroBurstReactionEntry(
-      context,
-      config,
-      context.executionBook,
-      context.observedAtMs ?? NaN,
+      input,
+      replay?.config ?? config,
+      input.executionBook,
+      input.observedAtMs ?? NaN,
+      input.exchangeObservedAtMs ?? input.observedAtMs ?? NaN,
     );
     return {
       symbol: context.symbol,
@@ -65,6 +92,9 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
       structuralInvalidation: decision.stopInvalidationPrice,
       diagnostics: {
         ...decision.diagnostics,
+        ...(replay
+          ? { strategyInputReplay: replay }
+          : { exactInputStatus: 'OBSERVATIONAL_DROP_INPUT_LIMIT' }),
         policy: 'MICRO',
         leverage: decision.leverage,
         positionFraction: decision.positionFraction,
@@ -73,6 +103,18 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
         riskToInvalidationBps: decision.riskToInvalidationBps,
         rewardRisk: decision.rewardRisk,
       },
+    };
+  }
+
+  afterObservationWait(
+    context: MicroBurstStrategyContext,
+    elapsedMs: number,
+  ): MicroBurstStrategyContext {
+    return {
+      ...context,
+      observedAtMs: (context.observedAtMs ?? NaN) + elapsedMs,
+      exchangeObservedAtMs:
+        (context.exchangeObservedAtMs ?? context.observedAtMs ?? NaN) + elapsedMs,
     };
   }
 }

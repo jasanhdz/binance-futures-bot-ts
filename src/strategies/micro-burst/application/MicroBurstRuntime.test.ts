@@ -1,5 +1,11 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { MicroBurstRuntime, MicroBurstRuntimeDeps } from './MicroBurstRuntime';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  MicroBurstRuntime as ProductionMicroBurstRuntime,
+  MicroBurstRuntimeDeps,
+} from './MicroBurstRuntime';
 import type { MicroBurstRuntimeConfig } from './MicroBurstRuntimeTypes';
 import { StrategyRouter } from '../../../core/strategy/StrategyRouter';
 import { MicroBurstStrategyContext, MicroBurstStrategy } from '../domain/MicroBurstStrategy';
@@ -7,6 +13,29 @@ import { createMicroBurstIdentity } from '../domain/MicroBurstIdentity';
 import { Exchange } from '../../../app/ports/Exchange';
 import { ShadowJournal } from '../../../core/shadow/ShadowTradeJournal';
 import { ShadowPosition, ShadowTradeEvent } from '../../../core/shadow/ShadowTradingTypes';
+
+const temporaryJournals: string[] = [];
+class MicroBurstRuntime extends ProductionMicroBurstRuntime {
+  constructor(
+    deps: MicroBurstRuntimeDeps,
+    config: MicroBurstRuntimeConfig,
+    interval?: number,
+    journalDir?: string,
+  ) {
+    const directory = journalDir ?? mkdtempSync(join(tmpdir(), 'micro-runtime-test-'));
+    if (!journalDir) temporaryJournals.push(directory);
+    super(
+      { ...deps, shadowTradeJournal: deps.shadowTradeJournal ?? new MemoryShadowJournal() },
+      config,
+      interval,
+      directory,
+    );
+  }
+}
+afterEach(() => {
+  for (const directory of temporaryJournals.splice(0))
+    rmSync(directory, { recursive: true, force: true });
+});
 
 function makeConfig(overrides: Partial<MicroBurstRuntimeConfig> = {}): MicroBurstRuntimeConfig {
   return {
