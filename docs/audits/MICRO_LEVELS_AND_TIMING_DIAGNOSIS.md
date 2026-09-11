@@ -724,8 +724,8 @@ Las pruebas de persistencia usan archivos temporales; las de cuenta usan mocks.
 
 ### Tabla De Implementacion
 
-Todos los cambios de esta tabla pertenecen al commit de implementacion que contiene
-esta seccion (**este commit**, referencia completa publicada en el cierre posterior).
+Todos los cambios de esta tabla pertenecen al commit de implementacion
+`e1bbd7da23a93f6ce73226b6446beb2d3527ab63` (`fix Micro temporal selection and exact decision evidence`).
 No se confunde ese commit con una aprobacion de artefacto LIVE.
 
 | Alcance                          | Implementacion / funcion                                                                                                                                                                                                                                                                         | Regresion y resultado final                                                                                                                                                                          |
@@ -955,3 +955,20 @@ Siguen pendientes de una futura ventana autorizada las edades reales de cada fue
 latencia y drops observados, cobertura del nuevo replay, RSS del proceso de trading
 y comportamiento fuera de muestra. Los 721 casos, 115 rechazos de calidad y 43 BTC
 del informe original siguen siendo historicos. No hay promesa de latency ni profit.
+
+### Cierre De Publicacion Verificado
+
+Al reanudar el bloque, el worktree y el staging ya estaban limpios y la implementacion
+completa ya estaba publicada. `git fetch origin` confirmo **0 commits locales y
+0 remotos divergentes** respecto a `origin/work/micro-burst-rider-v1-20260826`,
+con HEAD `e1bbd7da23a93f6ce73226b6446beb2d3527ab63`. No habia los 22 archivos
+modificados mencionados en el resumen de traspaso ni trabajo pendiente que recuperar.
+
+Implementacion publicada:
+[e1bbd7d](https://github.com/jasanhdz/binance-futures-bot-ts/commit/e1bbd7da23a93f6ce73226b6446beb2d3527ab63).
+Este cierre documental fija esa referencia sin cambiar source. Los resultados de
+1.004 tests son los de las ejecuciones anteriores detalladas arriba, no una nueva
+ejecucion durante el cierre. El usuario tambien comunico `tsc --noEmit` PASS.
+Se comprobo nuevamente `git diff --check`; no se repitieron suites ya satisfactorias.
+Se conserva expresamente la incidencia previa de journals sinteticos de la seccion 10.
+La verificacion remota y este cierre no constituyen deployment ni validacion LIVE.
