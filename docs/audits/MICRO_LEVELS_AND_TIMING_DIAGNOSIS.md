@@ -972,3 +972,201 @@ ejecucion durante el cierre. El usuario tambien comunico `tsc --noEmit` PASS.
 Se comprobo nuevamente `git diff --check`; no se repitieron suites ya satisfactorias.
 Se conserva expresamente la incidencia previa de journals sinteticos de la seccion 10.
 La verificacion remota y este cierre no constituyen deployment ni validacion LIVE.
+
+## 11. Cierre De Frescura, Procedencia Y Compatibilidad, 2026-09-12
+
+Implementacion nueva: [b2d1fed5f39fc34de7bbb98629db18e67a55637b](https://github.com/jasanhdz/binance-futures-bot-ts/commit/b2d1fed5f39fc34de7bbb98629db18e67a55637b).
+Base local y remoto real comprobados: `a466fffe6205c4ba2f3a4ef8f79db82f2b339674`.
+Se leyeron AGENTS, este informe, el script original de cuatro reproducciones
+`/tmp/opencode/micro-diagnostic-contracts.cjs`, sus regresiones versionadas y los
+contratos de router, replay, admission y journal. Los cambios de e1bbd7d/a466fff
+son antecedentes; los resultados siguientes corresponden a esta continuacion.
+
+### Hallazgos Cerrados En Source
+
+| Hallazgo                                       | Implementacion                                                                                                                                                | Regresion / resultado                                                                                                                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Candle 1m fresca al as-of pero caducada al uso | `MicroBurstReactionEntryPolicy`, `MicroBurstInputFreshness.isMicroInputFresh`                                                                                 | Baseline LONG/SHORT: ENTRY_INTENT incorrecto tras 200 ms; corregido NO_TRADE / REACTION_CANDLE_UNAVAILABLE. Limites menor/igual/mayor, offsets locales +/-100 s, timestamps invalidos y candle futura excluida: PASS |
+| Espera critica ACK                             | `EntryStrategy.validateAfterRequiredAudit`, `StrategyRouter`, `MicroBurstStrategy`                                                                            | ACK avanza 200 ms; MICRO_CANDLE_STALE, conserva replay de la evaluacion original ENTRY_INTENT y etiqueta postAuditAdmissionRejected: PASS                                                                            |
+| Expiracion de inputs consumidos antes del send | Proof compacto `inputFreshness` trasladado por Evaluator -> Runtime -> TradingService -> ExecutionIntentFactory; `validateEntryMarket` exige proof en runtime | Candle/BTC/flow/book originales revalidados; un nuevo book no renueva los originales. PREPARED caduca candle: cero llamadas a send, cierre durable: PASS                                                             |
+| PREPARED conocido como no enviado              | `DurableEntryCoordinator.execute/reconcile`                                                                                                                   | Outcome CANCELLED_BEFORE_SEND, transiciones existentes PREPARED -> CLOSE_PENDING -> CLOSED. Crash entre las dos ultimas: recupera sin lookup ni resend, identidad no reutilizable: PASS                              |
+| Contaminacion de investigacion                 | `EvidenceEligibility`, Prospective/Paper/Generic Shadow analyzers y CLI generic                                                                               | Sinteticos explicitos/legacy excluidos; incompletos visibles con INSUFFICIENT_PROVENANCE; SHADOW UNOFFICIAL completo permitido; outcomes requieren union compatible: PASS                                            |
+| Aislamiento y compatibilidad                   | `OfflineTestBootstrap`, fixtures Aegis/ExitEye/ML/logger                                                                                                      | Suite completa offline, un worker; 2867 PASS, dos checkpoints historicos FAIL, sin exclusiones nuevas                                                                                                                |
+| Observabilidad accesible                       | `MicroBurstBlackBoxObservation.observationHealth`, `MicroBurstRuntime.reportHealth`, `DurableEntryCoordinator.getTimingHealth`, router ACK timing             | Capture attempts/failures, cola, memoria del proceso y tiempos acotados; writer bloqueado y contabilizacion incluyendo in-flight: PASS                                                                               |
+
+**Temporalidad:** se mantiene `ctx.timestamp` como as-of original y se seleccionan
+solo candles `closeTime <= ctx.timestamp`. La edad se mide contra
+`exchangeObservedAtMs`, cota exchange ya construida con request/response y elapsed
+monotonic. No se descarga otra candle para rescatar el trigger. El proof conserva
+localDecisionAtMs/exchangeDecisionAtMs y close/event/receive originales. El guard
+de envio traslada el reloj exchange con el elapsed local desde esa pareja; rechaza
+retroceso local, finitud invalida, eventos futuros, as-of incompatible y expiracion.
+La seleccion y los limites de politica tienen una autoridad compartida de edad.
+El modo legacy del helper queda compatible; la apertura Micro de runtime exige proof.
+
+La revision de evaluador pasa a `micro-reaction-at-use-freshness-2`. Un replay sin
+exchangeObservedAtMs es incompleto; una revision anterior no se evalua como actual.
+El replay reproduce la evaluacion, no la decision posterior de admission, fills ni
+beneficios. El test ACK demuestra expresamente ENTRY_INTENT en replay original y
+NO_TRADE posterior. Los 721 registros historicos no contienen inputs exactos y
+siguen sin ser replay exacto. No se demostro una orden real obsoleta.
+
+No se cambiaron stop independiente, TP opcional, salida inteligente, obstaculo mas
+cercano, thresholds, costes, presupuesto, leverage, lookback, pivots ni confirmaciones.
+La terminacion nueva certifica que el propietario aun no llamo send; no cancela una
+orden del exchange. Crash sin evidencia terminal conserva el comportamiento fail-closed.
+
+### Journals De La Incidencia, Lectura Y Elegibilidad
+
+Se inspeccionaron las dos filas originales. No se movieron, borraron, reescribieron
+ni versionaron. Hash inicial, repetido durante el trabajo y al cierre de source:
+
+| Archivo bajo logs/micro-burst/shadow-signals | SHA-256 sin cambios                                              | Clasificacion                            |
+| -------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------- |
+| 2026-09-11-1789113398078.jsonl               | d79c735336340674f5bcbdcf8e0fe331ea558277ab5272eeeeebb4036ff12523 | SYNTHETIC / KNOWN_LEGACY_RUNTIME_FIXTURE |
+| 2026-09-11-1789113398220.jsonl               | 2169289cf045fe6e951b4a9c42d81e5a3537332b069e961dad4c765415900850 | SYNTHETIC / KNOWN_LEGACY_RUNTIME_FIXTURE |
+
+El reconocimiento legacy exige la combinacion schema=1, cohort UNOFFICIAL, ambos
+hashes UNKNOWN, snapshot/observed=1000, liveExecution=false y el par exacto
+id/version (`live-signal`/`0.8.0-expected-continuation-shadow` o
+`runtime-golden`/`golden`). UNKNOWN aislado no se etiqueta como sintetico. Origin
+TEST/SYNTHETIC explicito siempre excluye aunque el timestamp parezca real.
+
+Comprobacion readonly adicional con el clasificador implementado:
+`2026-09-11-1789164936957.jsonl`, una fila SUI del commit declarado 8c04b21,
+hash `bdace3072cf7482e27665496069c7f453a75fee34dc72bbeb5695dc7d054186b`, es
+MARKET_RESEARCH / LEGACY_COMPLETE_PROVENANCE pese a liveExecution=false. Es otra
+ventana posterior, no una entrada de las 721 decisiones del diagnostico. Los tres
+archivos devuelven MICRO_REPLAY_INCOMPLETE_OR_UNSUPPORTED: son journals compactos.
+Script readonly usado: `/tmp/opencode/micro-followup-eligibility.cjs`.
+
+La elegibilidad requiere version/schema, identidad, simbolo/lado, timestamp finito,
+commit completo y config SHA-256 (con o sin prefijo sha256:). Es elegibilidad de
+investigacion declarada, no autenticacion criptografica de mercado. No hay cutoff
+de fecha arbitrario ni exclusion global de SHADOW/UNOFFICIAL. Los reportes mantienen
+filas/IDs brutos, duplicados e incompletitud; publican elegibles/excluidos y razones.
+Prospective excluye del rendimiento los outcomes huerfanos, con senal excluida o
+proveniencia incompatible. Paper y generic etiquetan SHADOW_PROJECTION, nunca PnL
+LIVE. Ni mode=LIVE ni accountVerified suministrados en una fila conceden esa autoridad.
+Las metricas de cuenta siguen requiriendo su evidencia de ejecucion/settlement.
+
+Consumidores revisados: `scripts/micro-burst-analyze-shadow.ts` -> Prospective;
+`scripts/micro-burst-analyze-paper.ts` -> Paper; generic CLI -> core ShadowTradeAnalyzer.
+No se encontro un consumidor Python de estos journals ni se creo pipeline ML.
+Los loaders siguen leyendo los originales; esta correccion es de elegibilidad al
+consumir. Inventario final directo: 451 archivos en shadow-signals. No se capturo
+inventario inicial completo, por lo que no se presenta un delta de directorio como
+prueba; los hashes de los dos archivos y las barreras del runner son evidencia separada.
+
+### Validacion Ejecutada, Sin Sumar Ejecuciones Solapadas
+
+Comando completo final (timeout de herramienta 600 s, prioridad reducida):
+
+```sh
+env -i PATH="$PATH" HOME=/tmp/opencode TMPDIR=/tmp/opencode \
+  NODE_OPTIONS="--require=$PWD/src/testing/OfflineTestBootstrap.cjs" \
+  nice -n 10 ./node_modules/.bin/vitest run \
+  --config src/testing/OfflineVitest.config.ts --configLoader runner \
+  --no-cache --reporter=dot --silent
+```
+
+| Ejecucion                                                             | Resultado                                                                                   |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Repro nueva antes de corregir                                         | 16 tests: 14 PASS, 2 FAIL esperados LONG/SHORT; 661 ms                                      |
+| Primer bloque dirigido                                                | 94 PASS / 6 archivos; 15.64 s                                                               |
+| Primer noEmit                                                         | FAIL: Array.at incompatible con lib del proyecto; sustituido por slice sin cambiar target   |
+| Primera suite completa intentada                                      | Interrumpida por timeout de herramienta 120 s; sin conteo final, no contada como validacion |
+| Primera suite completa terminada                                      | 2865 tests: 2839 PASS, 26 FAIL; 219 archivos, 326.79 s                                      |
+| Reparacion dirigida de fixtures/aislamiento                           | 33 tests: 31 PASS, 2 FAIL logger; corregido mock default fs                                 |
+| Journal durable y logger despues                                      | 46 PASS / 2 archivos; 14.68 s                                                               |
+| Suite completa final, inicio 2026-09-12 03:25:40 UTC                  | **2869 tests: 2867 PASS, 2 FAIL; 218 archivos PASS, 1 FAIL, 219 total; 319.21 s**           |
+| TypeScript --noEmit, Prettier de archivos cambiados, git diff --check | PASS                                                                                        |
+
+Los dos FAIL finales son `original-operational-semantics.test.ts`:
+`binds the exact owner-authorized current-brain contract exception` y
+`tracks branch bytes separately from deployment authorization`. Ambos esperan
+TradingService SHA-256 `8355482271127029f6854c470146045cfc3e9751fadede44afb26b7f81de5e28`;
+source nuevo mide `7f96b5f54a52f25fa2ec24391682c14fec86ee3ccf78925457da259dd779356d`.
+No se editaron hashes/checkpoints, aprobaciones, exclusiones ni estas expectativas.
+La suite completa no se declara verde. Estos dos contratos requieren revision
+de autorizacion futura, no una actualizacion automatica para permitir deploy.
+
+La suite incluye Micro, Aegis, Momentum, router/blackbox, shared execution,
+persistencia, market data, configuracion, stops y recovery. Fixtures Aegis ahora
+habilitan solo CONFIG en memoria dentro de tests con puertos mock y restauracion;
+axios es mock en MLAdapter. Ningun servicio Aegis real fue habilitado. El preload
+anula dotenv/credenciales antes de imports, bloquea escrituras de workspace
+(incluyendo promises.open, streams y SQLite nativo), y bloquea red salvo puertos
+loopback efimeros creados por el mismo proceso de test. Esto permite el test de
+diagnostico mock sin acceso a localhost:8010 ni exchange. El logger test usa fs mock
+y verifica las dos escrituras locales mock, sin tocar logs operativos. El fixture
+Runtime ya temporal en e1bbd7d se conservo. No hubo bootstrap main, bot, deploy,
+restart, build a dist, peticion de cuenta, orden real ni escritura operativa.
+
+Se aplico Prettier solo a los archivos modificados: `npm run format` expande a
+`prettier --write .` y su alcance global contradiria la preservacion de journals.
+
+### Procedimiento Futuro Para Una Ventana Autorizada
+
+Este procedimiento queda documentado; no se ejecuto un deploy ni una ventana LIVE.
+
+1. Fijar una ventana cerrada `[inicio, fin)` de **al menos 30 minutos**, posterior
+   a una futura instalacion autorizada. Registrar proceso/PID/boot, commit declarado,
+   config efectiva canonica y manifest/firma del artefacto aprobado. Comparar bytes
+   del artefacto y source; no basta HEAD ni una variable approvedCommit. Resolver los
+   checkpoints anteriores mediante su proceso de autorizacion antes de operar.
+2. Leer prefijos acotados de `data/strategy-blackbox/strategy-decisions/decisions-v2.jsonl`,
+   snapshots y `<decisions>.timing.jsonl`, mas logs `MICRO_BURST_SHADOW_HEALTH` y
+   `micro_burst_entry_policy_selected`. Guardar limites de bytes/hashes en un directorio
+   de auditoria separado. Mantener filas malformed/duplicadas/conflictivas visibles.
+   El endpoint existente `/diagnostics/market-data` es salud generic compartida;
+   no confundir sus contadores observacionales con la cola exacta Micro.
+3. La cola exacta se obtiene sin REST adicional mediante `MicroBurstRuntime.getHealth().observationQueue`
+   y el evento periodico/graceful_shutdown `MICRO_BURST_SHADOW_HEALTH.observationQueue`.
+   Contiene captureAttempts/captureFailures, accepted/written/failed/dropped,
+   pendingRecords/pendingBytes y peakRecords/peakBytes, incluyendo in-flight,
+   lastQueueWaitMs/lastWriteDurationMs y drainTimedOut. Muestrear antes/despues dentro
+   del mismo boot. Shutdown drops pueden incluir records previamente aceptados:
+   no usar accepted+dropped como denominador universal.
+4. Denominador de cobertura: todas las decisiones unicas observadas en la ventana,
+   reconciliadas con totalEvaluations y captureAttempts; numerador: IDs escritos con
+   replay completo y revision/commit compatibles. Informar pendientes, fallidas,
+   descartadas, fallos de captura y diferencias. Si un drop perdio su ID, no inventar
+   su simbolo, lado o rechazo ni inferir cobertura total desde written solamente.
+5. Construir embudo disjunto por decisionId: guards comunes una vez, candidatos y
+   primer rechazo por lado aparte, mejor etapa alcanzada, ENTRY_INTENT evaluado,
+   rechazo post-ACK, admission y send. Unir signal/episode/trade/operation IDs sin
+   sumar LONG+SHORT como decisiones. Publicar simbolo/lado y razones de exclusion de
+   evidencia antes de hablar de resultados economicos. Las proyecciones SHADOW y
+   outcomes no prueban fills; LIVE requiere ejecucion/settlement verificados.
+6. Medir contextStartedAtMs/contextBuiltAtMs/contextDurationMs y candleReads desde
+   `strategyInputReplay.context.inputSources.timing`; capture desde inputCaptureTiming;
+   evaluacion desde diagnostics.evaluationTiming. Duraciones monotonic; timestamps
+   locales explicitamente separados de as-of/event time exchange. Candle/BTC/flow
+   age = exchangeDecisionAtMs menos evento original; book age = localDecisionAtMs
+   menos receive original. Conservar cotas de clockReference. No restar medianas de
+   series diferentes ni llamar CPU al elapsed total.
+7. ACK: diagnostics.requiredAuditTiming con inicio/fin locales y durationMs monotonic,
+   separado de evaluacion. PREPARED append+flush: `DurableEntryCoordinator.getTimingHealth()`
+   disponible en `TradingService.getAegisRuntimeSnapshot().entryPreparationTiming`;
+   count/total/max/ultimo inicio-fin-duracion, sin buffer creciente. Es agregado de
+   preparaciones completadas; no da percentiles por simbolo ni duracion de fallos.
+   Persistencia observacional completada: unir DECISION_PERSISTENCE_TIMING por ID;
+   sink ACK no equivale a atestacion fsync. Nunca mutar el record ya encolado para
+   insertar tiempos futuros. Usar los timestamps de cada tramo solo en su dominio.
+8. Memoria: observationQueue.processMemory y memorySampleAtMs son RSS/heap/external/
+   arrayBuffers del proceso muestreado. pendingBytes/peakBytes son estimacion
+   conservadora de copia, no bytes JSON ni heap retenido medido. Los 84 drops del
+   benchmark writer-bloqueado de seccion 10 siguen siendo sinteticos, no tasa LIVE.
+   No derivar p95 de max/ultimo valor; calcular nearest-rank solo con muestras completas
+   de cada metrica y declarar n/cobertura. E/T depth y receive aggTrade ausentes siguen
+   null; no reemplazarlos por una consulta actual.
+9. Ejecutar replay solo de registros completos en checkout limpio de su commit y
+   revision correspondiente. Comparar evaluacion con evaluacion, admission con su
+   prueba posterior; no afirmar que replay representa ejecucion o rentabilidad.
+   Publicar diferencias e incompletos. Mantener separadas las ventanas historicas y
+   futuras, sin promesa de mas entradas, menos latencia real o profit.
+
+Pendiente exclusivamente operativo: autorizacion de artefacto/checkpoints y medicion
+de una ventana futura con estos campos. Esta entrega implementa y prueba los cambios
+offline; no certifica el proceso actualmente cargado ni sus resultados de mercado.
