@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 import { FileShadowTradeJournal } from '../src/core/shadow/ShadowTradeJournal';
 import { analyzeShadow } from '../src/core/shadow/ShadowTradeAnalyzer';
+import { classifyEvidence } from '../src/core/strategy/EvidenceEligibility';
 
 const strategyId = argument('--strategy') ?? 'MICRO_BURST';
 const symbol = argument('--symbol');
@@ -14,7 +15,10 @@ const selected = positions.filter(
   (position) => position.strategyId === strategyId && (!symbol || position.symbol === symbol),
 );
 const durations = selected
-  .filter((position) => position.closedReceivedAtMs !== undefined)
+  .filter(
+    (position) =>
+      position.closedReceivedAtMs !== undefined && classifyEvidence(position).researchEligible,
+  )
   .map((position) => position.closedReceivedAtMs! - position.openedReceivedAtMs);
 const bySymbol = Object.fromEntries(
   [...new Set(selected.map((position) => position.symbol))].map((currentSymbol) => [

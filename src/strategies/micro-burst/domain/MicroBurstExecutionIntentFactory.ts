@@ -29,6 +29,9 @@ export function createMicroBurstExecutionIntent(
     metadata: {
       strategy: 'MICRO_BURST',
       signalSnapshotAtMs: approved.signalSnapshotAtMs,
+      ...(approved.inputFreshness !== undefined
+        ? { inputFreshness: structuredClone(approved.inputFreshness) }
+        : {}),
       leverageTier: approved.leverage === 30 ? 'HIGH' : 'MEDIUM',
       ...(approved.episodeId ? { episodeId: approved.episodeId } : {}),
       ...(approved.contextualPolicy

@@ -159,14 +159,23 @@ export function createMicroBurstBlackBoxObservation(
       completionBoundary: 'SINK_ACK_NOT_FSYNC_ATTESTATION',
     });
   });
+  let captureAttempts = 0;
+  let captureFailures = 0;
   return {
     beforeEvaluation: legacy.beforeEvaluation.bind(legacy),
     afterEvaluation: legacy.afterEvaluation.bind(legacy),
     captureExactInput(strategyId, context) {
       if (strategyId !== 'MICRO_BURST') return null;
+      captureAttempts++;
       const captureStartedAtMs = deps.clock.now();
       const captureStartedMono = performance.now();
-      const captured = copyObservation(context, MICRO_INPUT_COPY_LIMITS).value;
+      let captured: MicroBurstStrategyContext;
+      try {
+        captured = copyObservation(context, MICRO_INPUT_COPY_LIMITS).value;
+      } catch (error) {
+        captureFailures++;
+        throw error;
+      }
       const capturedAtMs = deps.clock.now();
       const absent = {
         requested: false,
@@ -214,7 +223,14 @@ export function createMicroBurstBlackBoxObservation(
       return queue.enqueue({ snapshot, decision });
     },
     close: () => queue.close(),
-    observationHealth: () => ({ ...queue.health() }),
+    observationHealth: () => ({
+      ...queue.health(),
+      captureAttempts,
+      captureFailures,
+      memorySampleAtMs: deps.clock.now(),
+      processMemory: process.memoryUsage(),
+      byteAccounting: 'CONSERVATIVE_COPY_ESTIMATE_NOT_RETAINED_HEAP',
+    }),
   };
 }
 

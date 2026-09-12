@@ -69,6 +69,99 @@ const run = (ctx: MicroBurstStrategyContext) =>
 afterEach(() => vi.restoreAllMocks());
 
 describe('Micro temporal diagnostic regressions', () => {
+  it.each([-100_000, 100_000])(
+    'keeps exchange candle age independent of local offset %s',
+    (offset) => {
+      const ctx = temporalFixture();
+      ctx.observedAtMs! += offset;
+      ctx.executionBook!.observedAtMs += offset;
+      const candle = ctx.candles.candles1m[0];
+      candle.closeTime -= config.candleFreshness1mMaxMs - 100;
+      candle.openTime = candle.closeTime - 60_000;
+      ctx.levels.levels.forEach((l) => {
+        l.availableAtMs -= config.candleFreshness1mMaxMs;
+      });
+      for (const elapsed of [99, 100, 101]) {
+        ctx.exchangeObservedAtMs = now + elapsed;
+        const result = run(ctx);
+        expect(result.action).toBe(elapsed <= 100 ? 'ENTRY_INTENT' : 'NO_TRADE');
+        expect(
+          replayMicroBurstExact(
+            encodeMicroReplay(captureMicroBurstReplay(ctx, config, commit)),
+            commit,
+          ),
+        ).toEqual(result);
+      }
+      ctx.candles.candles1m.push({ ...candle, openTime: now, closeTime: now + 100 });
+      expect(run(ctx).reason).toBe('REACTION_CANDLE_UNAVAILABLE');
+      const wire = encodeMicroReplay(captureMicroBurstReplay(ctx, config, commit)) as any;
+      delete wire.context.exchangeObservedAtMs;
+      expect(() => replayMicroBurstExact(wire, commit)).toThrow('MICRO_REPLAY_INCOMPLETE:context');
+    },
+  );
+  it.each([NaN, Infinity, undefined, -1])(
+    'rejects invalid original candle time %s explicitly',
+    (timestamp) => {
+      const ctx = temporalFixture();
+      ctx.candles.candles1m[0].closeTime = timestamp as number;
+      expect(run(ctx).reason).toBe('REACTION_CANDLE_INVALID');
+    },
+  );
+  it('rejects candle expiry during required ACK with the original evaluation preserved', async () => {
+    const ctx = temporalFixture();
+    const age = config.candleFreshness1mMaxMs - 100;
+    ctx.candles.candles1m.forEach((c) => {
+      c.openTime -= age;
+      c.closeTime -= age;
+    });
+    ctx.levels.levels.forEach((l) => {
+      l.availableAtMs -= age;
+    });
+    let mono = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => mono);
+    const router = new StrategyRouter<MicroBurstStrategyContext>({
+      beforeEvaluation: async () => null,
+      afterEvaluation: async () => {},
+      requiredAudit: {
+        acknowledge: async () => {
+          mono += 200;
+        },
+      },
+    });
+    router.register(
+      new MicroBurstStrategy(createMicroBurstIdentity(commit, 'b'.repeat(64)), 'SHADOW'),
+    );
+    const result = await router.evaluate('MICRO_BURST', ctx);
+    expect(result).toMatchObject({
+      decision: 'NO_TRADE',
+      reason: 'MICRO_CANDLE_STALE',
+      diagnostics: { postAuditAdmissionRejected: true, requiredAuditTiming: { durationMs: 200 } },
+    });
+    expect(
+      replayMicroBurstExact(
+        encodeMicroReplay(result.diagnostics.strategyInputReplay as any),
+        commit,
+      ).action,
+    ).toBe('ENTRY_INTENT');
+  });
+  it.each(['LONG', 'SHORT'] as const)(
+    '%s expires the original candle at use, not at as-of',
+    (side) => {
+      const ctx = temporalFixture(side);
+      const age = config.candleFreshness1mMaxMs - 100;
+      ctx.candles.candles1m.forEach((c) => {
+        c.openTime -= age;
+        c.closeTime -= age;
+      });
+      ctx.levels.levels.forEach((l) => {
+        l.availableAtMs -= age;
+      });
+      expect(run(ctx).action).toBe('ENTRY_INTENT');
+      ctx.exchangeObservedAtMs! += 200;
+      ctx.observedAtMs! += 200;
+      expect(run(ctx)).toMatchObject({ action: 'NO_TRADE', reason: 'REACTION_CANDLE_UNAVAILABLE' });
+    },
+  );
   it.each(['LONG', 'SHORT'] as const)(
     'B1 %s considers a valid nearby alternative after a late primary',
     (side) => {
@@ -248,6 +341,17 @@ describe('Micro temporal diagnostic regressions', () => {
     release();
     await router.closeObservation();
     expect(records).toHaveLength(1);
+    expect(observer.observationHealth!()).toMatchObject({
+      captureAttempts: 1,
+      captureFailures: 0,
+      accepted: 1,
+      written: 1,
+      pendingRecords: 0,
+      pendingBytes: 0,
+    });
+    expect((observer.observationHealth!().processMemory as NodeJS.MemoryUsage).rss).toBeGreaterThan(
+      0,
+    );
     expect(snapshots[0]).toMatchObject({
       provenance: { derivation: { kind: 'POST_EVALUATION_FROM_EXACT_INPUTS' } },
       primary: {

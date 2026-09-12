@@ -23,20 +23,21 @@ describe('MicroBurstProspectiveAnalyzer', () => {
     expect(report.uniqueOutcomeCount).toBe(2);
     expect(report.duplicateSignalRows).toBe(1);
     expect(report.duplicateOutcomeRows).toBe(1);
-    expect(report.text).toContain('LONG SIGNAL_PRICE version=v1 config=cfg-a commit=sha-a N=1');
-    expect(report.text).toContain('SHORT SIGNAL_PRICE version=v2 config=cfg-b commit=sha-b N=1');
-    expect(report.text).toContain('missing usable 300s=1');
+    expect(report.text).toContain('"excludedRows":2');
+    expect(report.text).toContain('INSUFFICIENT_PROVENANCE');
+    expect(report.text).toContain('No completed entry-model outcomes.');
     expect(report.text).toContain('RANDOM_SIDE (seed=42): unavailable');
     expect(report.text).toContain('TIME_SHIFT (forward): unavailable');
   });
 
   it('reconstructs time-shift entry from the first post-shift trade without crossing symbols', () => {
     const signal = {
+      schemaVersion: 1,
       shadowSignalId: 'shifted',
       strategyId: 'MICRO_BURST',
       strategyVersion: 'v1',
-      codeCommitSha: 'sha',
-      configHash: 'cfg',
+      codeCommitSha: 'a'.repeat(40),
+      configHash: 'b'.repeat(64),
       symbol: 'BTCUSDT',
       side: 'LONG',
       signalAtMs: 100,

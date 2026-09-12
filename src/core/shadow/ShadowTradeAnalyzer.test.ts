@@ -31,10 +31,37 @@ const position = (strategyId: 'AEGIS_TURBO' | 'MOMENTUM_RIDE'): ShadowPosition =
   exitReason: 'TARGET',
   grossBps: 99,
   netBpsByCostScenario: { cost_0: 99, cost_10: 89 },
-  provenance: { strategyVersion: 'v1', codeCommitSha: 'sha' },
+  provenance: { strategyVersion: 'v1', codeCommitSha: 'a'.repeat(40), configHash: 'b'.repeat(64) },
 });
 
 describe('analyzeShadow', () => {
+  it('keeps legitimate SHADOW metrics and exposes exclusions without claiming LIVE economics', () => {
+    const market = position('MOMENTUM_RIDE');
+    const report = analyzeShadow(
+      [
+        market,
+        {
+          ...market,
+          tradeId: 'test',
+          provenance: { ...market.provenance, origin: 'TEST' },
+        } as ShadowPosition,
+        {
+          ...market,
+          tradeId: 'unknown',
+          provenance: { ...market.provenance, codeCommitSha: 'UNKNOWN' },
+        },
+      ],
+      [],
+    );
+    expect(report.completedTrades).toBe(1);
+    expect(report.grossBps).toEqual([99]);
+    expect(report.evidenceEligibility).toMatchObject({
+      rowsSeen: 3,
+      eligibleRows: 1,
+      excludedRows: 2,
+    });
+    expect(report.economicsKind).toBe('SHADOW_PROJECTION');
+  });
   it('filters by strategy and preserves independent scenario metrics', () => {
     const events: ShadowTradeEvent[] = [
       {

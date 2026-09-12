@@ -18,10 +18,13 @@ describe('MicroBurstExecutionIntentFactory determinism', () => {
       requestedAt: 1_700_000_000_000,
       tradeId: 'MICRO-BURST-ETHUSDT-1700000000000',
       signalId: 'signal-1',
+      inputFreshness: { schemaVersion: 1, candleCloseTimeMs: 1_699_999_999_000 },
     };
     const first = createMicroBurstExecutionIntent(approved);
     const second = createMicroBurstExecutionIntent(approved);
     expect(first).toEqual(second);
+    expect(first.metadata.inputFreshness).toEqual(approved.inputFreshness);
+    expect(first.metadata.inputFreshness).not.toBe(approved.inputFreshness);
     expect(first).toMatchObject({
       requestedAt: approved.requestedAt,
       tradeId: approved.tradeId,

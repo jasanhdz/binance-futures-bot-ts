@@ -114,8 +114,44 @@ export class StrategyRouter<TContext = unknown> {
         },
       };
     if (hook?.requiredAudit && envelope.decision === 'ENTRY_INTENT') {
+      const auditStartedMono = performance.now();
+      const auditStartedAtMs = Date.now();
       try {
         await hook.requiredAudit.acknowledge(envelope);
+        const auditFinishedAtMs = Date.now();
+        const auditDurationMs = performance.now() - auditStartedMono;
+        const reason = strategy.validateAfterRequiredAudit?.(
+          context,
+          envelope,
+          performance.now() - evaluationStartedMono,
+        );
+        envelope = {
+          ...envelope,
+          diagnostics: {
+            ...envelope.diagnostics,
+            requiredAuditAcknowledged: true,
+            requiredAuditTiming: {
+              auditStartedAtMs,
+              auditFinishedAtMs,
+              durationMs: auditDurationMs,
+              durationClock: 'MONOTONIC',
+            },
+          },
+        };
+        if (reason)
+          envelope = {
+            identity: envelope.identity,
+            mode: envelope.mode,
+            symbol: envelope.symbol,
+            timestamp: envelope.timestamp,
+            decision: 'NO_TRADE',
+            reason,
+            diagnostics: {
+              ...envelope.diagnostics,
+              postAuditAdmissionRejected: true,
+              evaluatedDecision: 'ENTRY_INTENT',
+            },
+          };
       } catch {
         envelope = {
           identity: envelope.identity,
@@ -124,7 +160,16 @@ export class StrategyRouter<TContext = unknown> {
           timestamp: envelope.timestamp,
           decision: 'NO_TRADE',
           reason: 'REQUIRED_DECISION_AUDIT_FAILED',
-          diagnostics: { ...envelope.diagnostics, requiredAuditAcknowledged: false },
+          diagnostics: {
+            ...envelope.diagnostics,
+            requiredAuditAcknowledged: false,
+            requiredAuditTiming: {
+              auditStartedAtMs,
+              auditFinishedAtMs: Date.now(),
+              durationMs: performance.now() - auditStartedMono,
+              durationClock: 'MONOTONIC',
+            },
+          },
         };
       }
     }

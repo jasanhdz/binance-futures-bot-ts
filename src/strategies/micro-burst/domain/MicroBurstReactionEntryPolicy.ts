@@ -1,4 +1,5 @@
 import type { Side } from '../../../core/types';
+import { isMicroInputFresh } from './MicroBurstInputFreshness';
 import { hasBtcConflict } from './MicroBurstBtcContext';
 import { evaluateMicroBurstStructuralEntry } from './MicroBurstEntryPolicy';
 import { createMicroBurstEpisodeId } from './MicroBurstIdentity';
@@ -54,26 +55,21 @@ export function evaluateMicroBurstReactionEntry(
   commonStagesVisited.push('BTC_EVENT_FRESHNESS');
   if (
     !ctx.btcContext ||
-    !Number.isFinite(ctx.btcContext.observedAtMs) ||
-    !Number.isFinite(exchangeObservedAtMs) ||
-    ctx.btcContext.observedAtMs > exchangeObservedAtMs ||
-    exchangeObservedAtMs - ctx.btcContext.observedAtMs > config.btcFreshnessMaxMs
+    !isMicroInputFresh(ctx.btcContext.observedAtMs, exchangeObservedAtMs, config.btcFreshnessMaxMs)
   )
     return reject('BTC_UNAVAILABLE');
   commonStagesVisited.push('SNAPSHOT_FRESHNESS');
   if (
     !Number.isFinite(observedAtMs) ||
-    exchangeObservedAtMs < ctx.timestamp ||
-    exchangeObservedAtMs - ctx.timestamp > config.bookFreshnessMaxMs
+    observedAtMs < 0 ||
+    !isMicroInputFresh(ctx.timestamp, exchangeObservedAtMs, config.bookFreshnessMaxMs)
   )
     return reject('REACTION_SNAPSHOT_EXPIRED');
   commonStagesVisited.push('EXECUTION_BOOK_FRESHNESS');
   if (
     !book ||
     book.status !== 'HEALTHY' ||
-    !Number.isFinite(book.observedAtMs) ||
-    book.observedAtMs > observedAtMs ||
-    observedAtMs - book.observedAtMs > config.bookFreshnessMaxMs
+    !isMicroInputFresh(book.observedAtMs, observedAtMs, config.bookFreshnessMaxMs)
   )
     return reject('REACTION_BOOK_NOT_FRESH');
   commonStagesVisited.push('EXECUTABLE_SPREAD');
@@ -105,6 +101,8 @@ export function evaluateMicroBurstReactionEntry(
     return reject('REACTION_FLOW_UNAVAILABLE');
 
   commonStagesVisited.push('CANDLE_INTEGRITY');
+  if (ctx.candles.candles1m.some((c) => !Number.isFinite(c.closeTime) || c.closeTime < 0))
+    return reject('REACTION_CANDLE_INVALID');
   const candles = ctx.candles.candles1m.filter((c) => c.closeTime <= ctx.timestamp);
   if (
     candles.some(
@@ -123,7 +121,10 @@ export function evaluateMicroBurstReactionEntry(
     return reject('REACTION_CANDLE_INVALID');
   commonStagesVisited.push('CANDLE_FRESHNESS');
   const latest = candles[candles.length - 1];
-  if (!latest || ctx.timestamp - latest.closeTime > config.candleFreshness1mMaxMs)
+  if (
+    !latest ||
+    !isMicroInputFresh(latest.closeTime, exchangeObservedAtMs, config.candleFreshness1mMaxMs)
+  )
     return reject('REACTION_CANDLE_UNAVAILABLE');
   commonStagesVisited.push('LEVEL_INPUT_BOUND');
   if (

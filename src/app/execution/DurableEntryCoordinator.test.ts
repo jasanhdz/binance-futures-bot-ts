@@ -309,10 +309,11 @@ function shared(coordinator: DurableEntryCoordinator) {
   return { service, exchange };
 }
 
-it.each(['expiry', 'crossed-target'] as const)(
+it.each(['expiry', 'crossed-target', 'candle'] as const)(
   'does not send after Micro %s while PREPARED is persisted',
   async (failure) => {
-    let now = 1000;
+    let now = 1_700_000_000_000;
+    const initial = now;
     let price = 100;
     const journal = new InMemoryExecutionJournal();
     const append = journal.append.bind(journal);
@@ -320,6 +321,7 @@ it.each(['expiry', 'crossed-target'] as const)(
       const persisted = await append(entry);
       if (entry.event === 'PREPARED') {
         if (failure === 'expiry') now += 30_001;
+        else if (failure === 'candle') now += 200;
         else price = 103;
       }
       return persisted;
@@ -330,7 +332,24 @@ it.each(['expiry', 'crossed-target'] as const)(
       ...intent(),
       structuralStopPrice: 99.5,
       destinationPrice: 102,
-      metadata: { signalSnapshotAtMs: 1000 },
+      requestedAt: initial,
+      metadata: {
+        signalSnapshotAtMs: initial,
+        ...(failure === 'candle'
+          ? {
+              inputFreshness: {
+                schemaVersion: 1,
+                signalAsOfMs: initial,
+                localDecisionAtMs: initial,
+                exchangeDecisionAtMs: initial,
+                candleCloseTimeMs: initial - defaultMicroBurstConfig().candleFreshness1mMaxMs + 100,
+                btcEventAtMs: initial,
+                flowEventAtMs: initial,
+                bookReceivedAtMs: initial,
+              },
+            }
+          : {}),
+      },
     };
     const send = vi.fn().mockResolvedValue(order);
     const reason = () =>
@@ -350,12 +369,53 @@ it.each(['expiry', 'crossed-target'] as const)(
     const result = await h.coordinator.execute(request, 2, 'micro-expiry', send, () => !reason());
     expect(result).toMatchObject({ status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' });
     expect(reason()).toBe(
-      failure === 'expiry' ? 'MICRO_SIGNAL_EXPIRED' : 'MICRO_EXECUTABLE_GEOMETRY_INVALID',
+      failure === 'expiry'
+        ? 'MICRO_SIGNAL_EXPIRED'
+        : failure === 'candle'
+          ? 'MICRO_CANDLE_STALE'
+          : 'MICRO_EXECUTABLE_GEOMETRY_INVALID',
     );
     expect(send).not.toHaveBeenCalled();
-    expect(h.coordinator.blockedReason()).toBeDefined();
+    if (failure === 'candle') {
+      expect(h.coordinator.blockedReason()).toBeUndefined();
+      expect((await journal.readLatest(result.operationId))?.event).toBe('CLOSED');
+      expect((await journal.readLatest(result.operationId))?.metadata?.outcome).toMatchObject({
+        status: 'CANCELLED_BEFORE_SEND',
+      });
+    } else expect(h.coordinator.blockedReason()).toBeDefined();
   },
 );
+
+it('recovers a durable before-send cancellation without lookup or resending', async () => {
+  const h = harness();
+  await h.coordinator.start();
+  let current = true;
+  const append = h.journal.append.bind(h.journal);
+  const spy = vi.spyOn(h.journal, 'append').mockImplementation(async (entry) => {
+    if (entry.event === 'CLOSED') throw new Error('crash before terminal append');
+    const row = await append(entry);
+    if (entry.event === 'PREPARED') current = false;
+    return row;
+  });
+  const request = intent();
+  request.metadata.inputFreshness = { schemaVersion: 1 };
+  const send = vi.fn().mockResolvedValue(order);
+  const result = await h.coordinator.execute(request, 2, 'se_cancelled', send, () => current);
+  expect(result.status).toBe('UNKNOWN');
+  expect((await h.journal.readLatest(result.operationId))?.event).toBe('CLOSE_PENDING');
+  spy.mockRestore();
+  await h.coordinator.close().catch(() => undefined);
+  const lookup = vi.fn(async () => null);
+  const recovered = reopen(h.file, lookup);
+  await recovered.coordinator.start();
+  expect((await recovered.journal.readLatest(result.operationId))?.event).toBe('CLOSED');
+  expect(recovered.coordinator.blockedReason()).toBeUndefined();
+  expect(lookup).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+  expect(await recovered.coordinator.execute(request, 2, 'se_cancelled', send)).toMatchObject({
+    reason: 'ENTRY_MUTATION_ALREADY_RECORDED',
+  });
+});
 
 afterEach(async () => {
   for (const coordinator of coordinators.splice(0))

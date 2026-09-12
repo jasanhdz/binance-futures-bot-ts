@@ -11,6 +11,7 @@ import {
   computeHorizonOutcome,
   OUTCOME_HORIZONS_MS,
 } from '../../strategies/micro-burst/research/MicroBurstOutcomeEngine';
+import { classifyEvidence, summarizeEvidence } from '../../core/strategy/EvidenceEligibility';
 
 export interface MicroBurstProspectiveAnalysisInput {
   signals: readonly Record<string, unknown>[];
@@ -43,6 +44,11 @@ export interface MicroBurstProspectiveAnalysisInput {
 }
 
 export interface MicroBurstProspectiveAnalysis {
+  readonly evidenceEligibility: {
+    signals: ReturnType<typeof summarizeEvidence>;
+    eligibleOutcomes: number;
+    excludedOutcomeReasons: Record<string, number>;
+  };
   readonly text: string;
   readonly uniqueSignalCount: number;
   readonly uniqueOutcomeCount: number;
@@ -121,11 +127,42 @@ export function analyzeMicroBurstProspective(
   const outcomeEpisodes = new Set(
     outcomes.rows.map((row) => stringValue(row.episodeId)).filter(isPresent),
   );
-  const modelRecords = outcomes.rows.flatMap(modelRecordsFor);
+  const eligibility = summarizeEvidence(signals.rows);
+  const eligibleSignals = new Map(
+    signals.rows
+      .filter((row) => classifyEvidence(row).researchEligible)
+      .map((row) => [stringValue(row.shadowSignalId), row]),
+  );
+  const allSignals = new Map(signals.rows.map((row) => [stringValue(row.shadowSignalId), row]));
+  const excludedOutcomeReasons: Record<string, number> = {};
+  const eligibleOutcomes = outcomes.rows.filter((row) => {
+    const signal = allSignals.get(row.shadowSignalId);
+    const eligibility = signal ? classifyEvidence(signal) : undefined;
+    const outcomeEligibility = classifyEvidence({ strategyId: signal?.strategyId, ...row });
+    const reason = !signal
+      ? 'ORPHAN_OUTCOME'
+      : !eligibility?.researchEligible
+        ? `SIGNAL_${eligibility?.reason}`
+        : !outcomeEligibility.researchEligible
+          ? outcomeEligibility.reason
+          : !['codeCommitSha', 'configHash', 'strategyVersion', 'symbol', 'side', 'cohortId'].every(
+                (key) => signal[key] === (row as unknown as Record<string, unknown>)[key],
+              )
+            ? 'SIGNAL_OUTCOME_PROVENANCE_MISMATCH'
+            : undefined;
+    if (reason) excludedOutcomeReasons[reason] = (excludedOutcomeReasons[reason] ?? 0) + 1;
+    return reason === undefined;
+  });
+  const modelRecords = eligibleOutcomes.flatMap(modelRecordsFor);
   const lines: string[] = [];
 
   lines.push('MICRO BURST - PROSPECTIVE SHADOW OUTCOME ANALYSIS');
   lines.push('Immutable journal analysis; no signal-time data is changed.');
+  lines.push(`Evidence eligibility (unique signals): ${JSON.stringify(eligibility)}`);
+  lines.push(
+    `Research outcomes eligible=${eligibleOutcomes.length}; excluded=${outcomes.rows.length - eligibleOutcomes.length} (synthetic, insufficient provenance, orphan or mismatched signal). LIVE economics: unavailable; projected shadow outcomes are not account fills.`,
+  );
+  lines.push(`Outcome exclusion reasons (disjoint): ${JSON.stringify(excludedOutcomeReasons)}`);
   lines.push('');
   lines.push('COVERAGE AND STORAGE');
   lines.push(
@@ -258,7 +295,7 @@ export function analyzeMicroBurstProspective(
       'Controls are intentionally not simulated by row reordering, return inversion, or timestamp shuffling.',
     );
   } else {
-    const snapshots = signals.rows.filter(isSnapshot);
+    const snapshots = [...eligibleSignals.values()].filter(isSnapshot);
     const rng = seededRandom(input.seed ?? 1);
     const randomSide = snapshots.flatMap((signal) =>
       controlReturn(
@@ -301,6 +338,11 @@ export function analyzeMicroBurstProspective(
   }
 
   return {
+    evidenceEligibility: {
+      signals: eligibility,
+      eligibleOutcomes: eligibleOutcomes.length,
+      excludedOutcomeReasons,
+    },
     text: `${lines.join('\n')}\n`,
     uniqueSignalCount: signals.rows.length,
     uniqueOutcomeCount: outcomes.rows.length,

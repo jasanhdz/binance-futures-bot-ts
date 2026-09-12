@@ -28,6 +28,33 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG') {
   return { intent, book };
 }
 describe('Micro final executable admission', () => {
+  it('requires original inputs in the runtime aperture while preserving legacy callers', () => {
+    const { intent, book } = fixture();
+    expect(validateMicroBurstEntryMarket(intent, 2, book, now, config, true)).toBe(
+      'MICRO_INPUT_FRESHNESS_MISSING',
+    );
+    intent.metadata.inputFreshness = {
+      schemaVersion: 1,
+      signalAsOfMs: now - 1000,
+      localDecisionAtMs: now,
+      exchangeDecisionAtMs: now,
+      candleCloseTimeMs: now - config.candleFreshness1mMaxMs + 100,
+      btcEventAtMs: now,
+      flowEventAtMs: now,
+      bookReceivedAtMs: now,
+    };
+    expect(validateMicroBurstEntryMarket(intent, 2, book, now, config, true)).toBeUndefined();
+    expect(
+      validateMicroBurstEntryMarket(
+        intent,
+        2,
+        { ...book, observedAtMs: now + 200 },
+        now + 200,
+        config,
+        true,
+      ),
+    ).toBe('MICRO_CANDLE_STALE');
+  });
   it.each(['LONG', 'SHORT'] as const)(
     'retains gross gates and adds quantity-adjusted net costs for %s',
     (side) => {

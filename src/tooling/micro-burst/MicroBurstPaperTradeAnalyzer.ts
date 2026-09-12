@@ -2,8 +2,11 @@ import { MicroBurstPaperPosition } from '../../strategies/micro-burst/research/M
 import { DEFAULT_COST_SCENARIOS } from '../../strategies/micro-burst/research/MicroBurstOutcomeTypes';
 import { MicroBurstPaperLifecycleEvent } from '../../strategies/micro-burst/research/MicroBurstPaperTrading';
 import { MicroBurstSuppressionAccounting } from '../../strategies/micro-burst/research/MicroBurstPaperTradeJournal';
+import { classifyEvidence, summarizeEvidence } from '../../core/strategy/EvidenceEligibility';
 
 export interface MicroBurstPaperTradeReport {
+  evidenceEligibility: ReturnType<typeof summarizeEvidence>;
+  economicsKind: 'SHADOW_PROJECTION';
   sampleSize: number;
   independentTrades: number;
   longCount: number;
@@ -50,10 +53,16 @@ export function analyzeMicroBurstPaperTrades(
   events: MicroBurstPaperLifecycleEvent[] = [],
   suppressionAccounting: MicroBurstSuppressionAccounting[] = [],
 ): MicroBurstPaperTradeReport & { suppressedEntryCount: number; incompleteCount: number } {
+  const uniquePositions = [
+    ...new Map(positions.map((position) => [position.tradeId, position])).values(),
+  ];
+  const evidenceEligibility = summarizeEvidence(uniquePositions);
   const closed = [
     ...new Map(
-      positions
-        .filter((position) => position.state === 'CLOSED')
+      uniquePositions
+        .filter(
+          (position) => position.state === 'CLOSED' && classifyEvidence(position).researchEligible,
+        )
         .map((position) => [position.tradeId, position]),
     ).values(),
   ];
@@ -120,6 +129,8 @@ export function analyzeMicroBurstPaperTrades(
     .map((position) => (position.closedAtMs ?? 0) - position.openedAtMs)
     .filter((value) => value >= 0);
   return {
+    evidenceEligibility,
+    economicsKind: 'SHADOW_PROJECTION',
     sampleSize: closed.length,
     independentTrades: closed.length,
     longCount: closed.filter((position) => position.side === 'LONG').length,

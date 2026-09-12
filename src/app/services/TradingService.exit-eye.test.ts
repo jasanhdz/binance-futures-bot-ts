@@ -1,8 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../../infra/config/environment';
 import { BotState, Side } from '../../core/types';
 import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import { TradingService } from './TradingService';
+const originallyEnabled = CONFIG.AEGIS_ENABLED;
+beforeEach(() => {
+  Object.assign(CONFIG, { AEGIS_ENABLED: true });
+});
+afterEach(() => {
+  Object.assign(CONFIG, { AEGIS_ENABLED: originallyEnabled });
+});
 
 function oppositeSignal(action: 'LONG' | 'SHORT'): AegisTradingSignal {
   return {

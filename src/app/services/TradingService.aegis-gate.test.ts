@@ -4,6 +4,7 @@ import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy'
 import { TradingService } from './TradingService';
 
 const originalConfig = {
+  AEGIS_ENABLED: CONFIG.AEGIS_ENABLED,
   TRADING_MODE: CONFIG.TRADING_MODE,
   AEGIS_LIVE_ENABLED: CONFIG.AEGIS_LIVE_ENABLED,
   AEGIS_TURBO_ALLOW_SHORT: CONFIG.AEGIS_TURBO_ALLOW_SHORT,
@@ -16,6 +17,7 @@ const originalConfig = {
 };
 
 function setAegisTurboConfig(liveEnabled: boolean): void {
+  Object.assign(CONFIG, { AEGIS_ENABLED: true });
   (CONFIG as any).TRADING_MODE = 'AEGIS_TURBO_MICRO_LIVE';
   (CONFIG as any).AEGIS_LIVE_ENABLED = liveEnabled;
   (CONFIG as any).AEGIS_TURBO_ALLOW_SHORT = false;

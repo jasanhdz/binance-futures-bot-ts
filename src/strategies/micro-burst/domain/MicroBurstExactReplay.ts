@@ -5,7 +5,7 @@ import { evaluateMicroBurstReactionEntry } from './MicroBurstReactionEntryPolicy
 import { copyObservation } from '../../../core/blackbox/BoundedObservationQueue';
 
 export const MICRO_EXACT_REPLAY_SCHEMA = 'MICRO_EXACT_INPUT' as const;
-export const MICRO_EVALUATOR_REVISION = 'micro-reaction-temporal-selection-1' as const;
+export const MICRO_EVALUATOR_REVISION = 'micro-reaction-at-use-freshness-2' as const;
 export const MICRO_EVIDENCE_LIMITS = {
   maxRecords: 16,
   maxBytes: 8 * 1024 * 1024,

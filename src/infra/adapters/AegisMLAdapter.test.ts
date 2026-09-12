@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONFIG } from '../config/environment';
 import { AegisMLServiceClient } from './AegisMLAdapter';
 
@@ -10,6 +10,10 @@ vi.mock('axios', () => ({
 }));
 
 describe('AegisMLServiceClient', () => {
+  const originallyEnabled = CONFIG.AEGIS_ENABLED;
+  beforeEach(() => {
+    Object.assign(CONFIG, { AEGIS_ENABLED: true });
+  });
   it('disconnects prediction, exit and health HTTP requests when disabled', async () => {
     const post = vi.fn();
     const get = vi.fn();
@@ -31,6 +35,7 @@ describe('AegisMLServiceClient', () => {
     }
   });
   afterEach(() => {
+    Object.assign(CONFIG, { AEGIS_ENABLED: originallyEnabled });
     vi.clearAllMocks();
   });
 

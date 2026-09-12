@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FsLogger, resetFsLoggerTelegramDedupeForTests } from './FsLogger';
 import { TelegramService } from '../adapters/TelegramAdapter';
+import * as fs from 'fs';
+
+vi.mock('fs', async (importOriginal) => {
+  const mocked = {
+    ...(await importOriginal<typeof import('fs')>()),
+    readdirSync: vi.fn(() => []),
+    appendFile: vi.fn((_file, _line, callback) => callback(null)),
+  };
+  return { ...mocked, default: mocked };
+});
 
 vi.mock('../adapters/TelegramAdapter', () => ({
   TelegramService: {
@@ -26,6 +36,7 @@ describe('FsLogger Telegram system error dedupe', () => {
     await flushAsync();
 
     expect(TelegramService.sendSystemLog).toHaveBeenCalledTimes(1);
+    expect(fs.appendFile).toHaveBeenCalledTimes(2);
   });
 
   it('does not dedupe different error causes', async () => {

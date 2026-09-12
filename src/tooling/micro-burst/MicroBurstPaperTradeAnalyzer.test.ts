@@ -29,8 +29,8 @@ function trade(overrides: Partial<MicroBurstPaperPosition> = {}): MicroBurstPape
     breakEvenArmed: true,
     lastObservedAtMs: 1000,
     cohortId: 'C',
-    codeCommitSha: 'S',
-    configHash: 'H',
+    codeCommitSha: 'a'.repeat(40),
+    configHash: 'b'.repeat(64),
     spreadBps: 1,
     slippageBps: 0,
     exitReason: 'TARGET',
@@ -49,6 +49,24 @@ function trade(overrides: Partial<MicroBurstPaperPosition> = {}): MicroBurstPape
 }
 
 describe('MicroBurst paper trade analyzer', () => {
+  it('excludes synthetic and unknown provenance from economics while exposing raw coverage', () => {
+    const report = analyzeMicroBurstPaperTrades([
+      trade(),
+      {
+        ...trade({ tradeId: 'synthetic' }),
+        evidenceOrigin: 'SYNTHETIC',
+      } as MicroBurstPaperPosition,
+      trade({ tradeId: 'unknown', codeCommitSha: 'UNKNOWN' }),
+    ]);
+    expect(report.sampleSize).toBe(1);
+    expect(report.economicsKind).toBe('SHADOW_PROJECTION');
+    expect(report.evidenceEligibility).toMatchObject({
+      rowsSeen: 3,
+      eligibleRows: 1,
+      excludedRows: 2,
+      reasons: { EXPLICIT_SYNTHETIC_ORIGIN: 1, INSUFFICIENT_PROVENANCE: 1 },
+    });
+  });
   it('deduplicates trade snapshots and reports sample size and costs', () => {
     const report = analyzeMicroBurstPaperTrades(
       [trade(), trade({ tradeId: 'T', netBps: -2, grossPriceReturnBps: -1 })],

@@ -1,6 +1,7 @@
 import type { StrategyExecutionIntent } from '../../../core/strategy/StrategyExecution';
 import type { MicroBurstConfig, OrderBookSnapshot } from './MicroBurstTypes';
 import { priceDistanceToBps } from './MicroBurstUnits';
+import { validateMicroBurstInputFreshness } from './MicroBurstInputFreshness';
 
 /** No I/O: called before PREPARED and again at the durable send boundary. */
 export function validateMicroBurstEntryMarket(
@@ -9,15 +10,24 @@ export function validateMicroBurstEntryMarket(
   book: OrderBookSnapshot | undefined,
   now: number,
   config: MicroBurstConfig,
+  requireOriginalInputs = false,
 ): string | undefined {
+  const proof = intent.metadata.inputFreshness;
+  if (requireOriginalInputs || proof !== undefined) {
+    const reason = validateMicroBurstInputFreshness(proof, now, config);
+    if (reason) return reason;
+  }
   const snapshotAt = Number(intent.metadata.signalSnapshotAtMs);
+  if (proof !== undefined && (proof as { signalAsOfMs?: unknown }).signalAsOfMs !== snapshotAt)
+    return 'MICRO_SIGNAL_EXPIRED';
   if (
     !Number.isFinite(now) ||
+    !Number.isFinite(intent.requestedAt) ||
     !Number.isFinite(snapshotAt) ||
     snapshotAt <= 0 ||
-    snapshotAt > intent.requestedAt ||
+    (proof === undefined && snapshotAt > intent.requestedAt) ||
     intent.requestedAt > now ||
-    now - snapshotAt > config.candleFreshness1mMaxMs ||
+    (proof === undefined && now - snapshotAt > config.candleFreshness1mMaxMs) ||
     now - intent.requestedAt > config.bookFreshnessMaxMs
   )
     return 'MICRO_SIGNAL_EXPIRED';

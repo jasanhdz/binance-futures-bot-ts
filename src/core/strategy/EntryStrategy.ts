@@ -6,5 +6,10 @@ export interface EntryStrategy<TContext = unknown> {
   readonly mode: StrategyMode;
   /** Refresh only evaluation clocks after a router wait; never renew input timestamps. */
   afterObservationWait?(context: TContext, elapsedMs: number): TContext;
+  validateAfterRequiredAudit?(
+    context: TContext,
+    decision: StrategyEvaluationResult,
+    elapsedMs: number,
+  ): string | undefined;
   evaluate(context: TContext): Promise<StrategyEvaluationResult> | StrategyEvaluationResult;
 }

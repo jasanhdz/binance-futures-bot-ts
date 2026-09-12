@@ -197,6 +197,7 @@ export interface AegisRuntimeSnapshot {
   liquidityStressInputVersionBySymbol: Record<string, typeof LIQUIDITY_STRESS_INPUT_VERSION>;
   microBurstReadiness: MicroBurstRuntimeReadiness | null;
   entryMutationBlockedReason?: string;
+  entryPreparationTiming?: ReturnType<DurableEntryCoordinator['getTimingHealth']>;
   stopMutationBlockedReason?: string;
   closeMutationBlockedReason?: string;
 }
@@ -1155,6 +1156,7 @@ export class TradingService {
       tradingMode: this.getTradingMode(),
       isRunning: this.isRunning,
       entryMutationBlockedReason: this.deps.entryCoordinator?.blockedReason(),
+      entryPreparationTiming: this.deps.entryCoordinator?.getTimingHealth(),
       stopMutationBlockedReason: this.deps.stopCoordinator?.blockedReason(),
       closeMutationBlockedReason: this.deps.closeCoordinator?.blockedReason(),
       tradesToday: riskSession.tradesToday,
@@ -1899,6 +1901,7 @@ export class TradingService {
           identity: this.microBurstIdentity,
           symbol: request.symbol,
           signalSnapshotAtMs: Number(request.diagnostics.signalSnapshotAtMs),
+          inputFreshness: request.diagnostics.inputFreshness,
           side: request.side,
           leverage,
           positionFraction: request.positionFraction,

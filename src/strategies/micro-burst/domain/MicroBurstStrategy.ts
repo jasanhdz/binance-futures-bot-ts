@@ -9,6 +9,7 @@ import { MicroBurstConfig, MicroBurstContext, defaultMicroBurstConfig } from './
 import { evaluateMicroBurstReactionEntry } from './MicroBurstReactionEntryPolicy';
 import type { OrderBookSnapshot } from './MicroBurstTypes';
 import { captureMicroBurstReplay } from './MicroBurstExactReplay';
+import { validateMicroBurstInputFreshness } from './MicroBurstInputFreshness';
 
 export interface MicroBurstStrategyContext extends MicroBurstContext {
   config?: Partial<MicroBurstConfig>;
@@ -92,6 +93,18 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
       structuralInvalidation: decision.stopInvalidationPrice,
       diagnostics: {
         ...decision.diagnostics,
+        inputFreshness: {
+          schemaVersion: 1,
+          signalAsOfMs: input.timestamp,
+          localDecisionAtMs: input.observedAtMs,
+          exchangeDecisionAtMs: input.exchangeObservedAtMs,
+          candleCloseTimeMs: input.candles.candles1m
+            .filter((c) => c.closeTime <= input.timestamp)
+            .slice(-1)[0]?.closeTime,
+          btcEventAtMs: input.btcContext?.observedAtMs,
+          flowEventAtMs: input.aggTradeFlow?.eventWatermarkMs,
+          bookReceivedAtMs: input.executionBook?.observedAtMs,
+        },
         ...(replay
           ? { strategyInputReplay: replay }
           : { exactInputStatus: 'OBSERVATIONAL_DROP_INPUT_LIMIT' }),
@@ -104,6 +117,18 @@ export class MicroBurstStrategy implements EntryStrategy<MicroBurstStrategyConte
         rewardRisk: decision.rewardRisk,
       },
     };
+  }
+
+  validateAfterRequiredAudit(
+    context: MicroBurstStrategyContext,
+    decision: StrategyEvaluationResult,
+    elapsedMs: number,
+  ): string | undefined {
+    return validateMicroBurstInputFreshness(
+      decision.diagnostics.inputFreshness,
+      (context.observedAtMs ?? NaN) + elapsedMs,
+      { ...this.config, ...context.config },
+    );
   }
 
   afterObservationWait(

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CONFIG } from '../../infra/config/environment';
 import { TradingService } from './TradingService';
 import { AegisTradingSignal } from '../../strategies/aegis/domain/AegisStrategy';
 import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
@@ -14,6 +15,13 @@ function microBurstConfig(mode: 'OFF' | 'SHADOW' | 'LIVE'): MicroBurstRuntimeCon
 }
 
 describe('TradingService Aegis integration', () => {
+  const originallyEnabled = CONFIG.AEGIS_ENABLED;
+  beforeEach(() => {
+    Object.assign(CONFIG, { AEGIS_ENABLED: true });
+  });
+  afterEach(() => {
+    Object.assign(CONFIG, { AEGIS_ENABLED: originallyEnabled });
+  });
   it.each([
     ['OFF', 'OFF'],
     ['SHADOW', 'SHADOW'],

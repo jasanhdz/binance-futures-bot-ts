@@ -42,7 +42,8 @@ export type DurableEntryResult = {
 
 type TerminalEvidence =
   | { status: 'CONFIRMED'; order: EntryOrderReceipt }
-  | { status: 'REJECTED'; code: number };
+  | { status: 'REJECTED'; code: number }
+  | { status: 'CANCELLED_BEFORE_SEND'; reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
 
 export interface DurableEntryCoordinatorDeps {
   scope: OperationScope;
@@ -67,6 +68,18 @@ export class DurableEntryCoordinator {
   private startup?: Promise<void>;
   private shutdown?: Promise<void>;
   private readonly scope: OperationScope;
+  private readonly preparationTiming = {
+    count: 0,
+    totalDurationMs: 0,
+    maxDurationMs: 0,
+    lastStartedAtMs: null as number | null,
+    lastFinishedAtMs: null as number | null,
+    lastDurationMs: null as number | null,
+  };
+
+  getTimingHealth(): Readonly<typeof this.preparationTiming> {
+    return { ...this.preparationTiming };
+  }
   private recoverPosition?: (
     request: DurableEntryRequest,
     order: EntryOrderReceipt,
@@ -219,10 +232,36 @@ export class DurableEntryCoordinator {
           this.pending.delete(operationId);
           return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
         }
+        const preparedStartedAtMs = Date.now();
+        const preparedStartedMono = performance.now();
         await this.append(request, 'PREPARED');
         await this.journal!.flush();
+        const preparedDurationMs = performance.now() - preparedStartedMono;
+        this.preparationTiming.count++;
+        this.preparationTiming.totalDurationMs += preparedDurationMs;
+        this.preparationTiming.maxDurationMs = Math.max(
+          this.preparationTiming.maxDurationMs,
+          preparedDurationMs,
+        );
+        this.preparationTiming.lastStartedAtMs = preparedStartedAtMs;
+        this.preparationTiming.lastFinishedAtMs = Date.now();
+        this.preparationTiming.lastDurationMs = preparedDurationMs;
         // A change during persistence must not turn a stale intent into a send.
         if (this.stopping || !current()) {
+          if (
+            isMicroBurstStrategy(request.intent.identity.strategyId) &&
+            request.intent.metadata.inputFreshness !== undefined &&
+            !this.stopping
+          ) {
+            // This live owner has not invoked send. This is not an exchange rejection or cancel.
+            await this.finish(request, {
+              status: 'CANCELLED_BEFORE_SEND',
+              reason: 'ENTRY_IDENTITY_NOT_CURRENT',
+            });
+            await this.journal!.flush();
+            this.pending.delete(operationId);
+            return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
+          }
           await this.append(request, 'RECOVERY_REQUIRED', undefined, 'ENTRY_IDENTITY_NOT_CURRENT');
           return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
         }
@@ -279,6 +318,18 @@ export class DurableEntryCoordinator {
           if (!latest) throw new Error('ENTRY_PENDING_RECORD_MISSING');
           const request = this.requestFrom(latest);
           const persisted = latest.metadata?.outcome as TerminalEvidence | undefined;
+          if (
+            latest.event === 'CLOSE_PENDING' &&
+            isMicroBurstStrategy(request.intent.identity.strategyId) &&
+            request.intent.metadata.inputFreshness !== undefined &&
+            persisted?.status === 'CANCELLED_BEFORE_SEND' &&
+            persisted.reason === 'ENTRY_IDENTITY_NOT_CURRENT'
+          ) {
+            await this.finish(request, persisted);
+            await this.journal!.flush();
+            this.pending.delete(operationId);
+            continue;
+          }
           if (
             persisted?.status === 'REJECTED' &&
             definiteEntryRejectionCode(persisted) !== undefined

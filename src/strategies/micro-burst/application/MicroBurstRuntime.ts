@@ -1004,6 +1004,7 @@ export class MicroBurstRuntime {
       this.symbolStates.get(intent.symbol)?.book.getSnapshot(),
       this.deps.clock.now(),
       { ...defaultMicroBurstConfig(), ...this.config.exitPolicy },
+      true,
     );
   }
 
@@ -1252,6 +1253,7 @@ export class MicroBurstRuntime {
       healthyBooks: health.healthyBooks,
       btcHealthy: health.btcHealthy,
       evaluations: health.totalEvaluations,
+      observationQueue: health.observationQueue,
       uniqueSignals: health.totalUniqueSignals,
       duplicates: health.totalDuplicateSignals,
       invalidContexts: health.totalInvalidContexts,

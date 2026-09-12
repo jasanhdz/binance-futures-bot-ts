@@ -1,6 +1,9 @@
 import { ShadowPosition, ShadowTradeEvent } from './ShadowTradingTypes';
+import { classifyEvidence, summarizeEvidence } from '../strategy/EvidenceEligibility';
 
 export interface ShadowResearchReport {
+  evidenceEligibility: ReturnType<typeof summarizeEvidence>;
+  economicsKind: 'SHADOW_PROJECTION';
   strategyId?: string;
   symbol?: string;
   completedTrades: number;
@@ -37,21 +40,24 @@ export function analyzeShadow(
       (!filter.strategyId || e.strategyId === filter.strategyId) &&
       (!filter.symbol || e.symbol === filter.symbol),
   );
-  const completed = selected.filter((p) => p.state === 'CLOSED');
+  const eligible = selected.filter((p) => classifyEvidence(p).researchEligible);
+  const completed = eligible.filter((p) => p.state === 'CLOSED');
   const net: Record<string, number[]> = {};
   for (const position of completed)
     for (const [scenario, bps] of Object.entries(position.netBpsByCostScenario ?? {}))
       (net[scenario] ??= []).push(bps);
   return {
     ...filter,
+    evidenceEligibility: summarizeEvidence(selected),
+    economicsKind: 'SHADOW_PROJECTION',
     completedTrades: completed.length,
     openTrades: selected.filter((p) => p.state !== 'CLOSED').length,
     longCount: selected.filter((p) => p.side === 'LONG').length,
     shortCount: selected.filter((p) => p.side === 'SHORT').length,
     grossBps: completed.flatMap((p) => (p.grossBps === undefined ? [] : [p.grossBps])),
     netBpsByScenario: net,
-    mfeBps: selected.map((p) => p.mfeBps),
-    maeBps: selected.map((p) => p.maeBps),
+    mfeBps: eligible.map((p) => p.mfeBps),
+    maeBps: eligible.map((p) => p.maeBps),
     exitReasons: count(completed.map((p) => p.exitReason).filter((x): x is string => Boolean(x))),
     suppressionCount: uniqueEventCount(relevantEvents, 'ENTRY_SUPPRESSED'),
     dataUncertainTrades: selected.filter((p) => p.state === 'DATA_UNCERTAIN').length,
