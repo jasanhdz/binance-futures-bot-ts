@@ -312,19 +312,21 @@ inferir rentabilidad.
 
 ### Publicacion Posterior
 
-La correccion de comportamiento y las regresiones se publicaron en dos commits
-de la misma rama:
+La correccion de comportamiento, las regresiones y la actualizacion de
+checkpoints se publicaron en tres commits de la misma rama:
 
 - `38b09a4c29e1635030b73361af915c5ba21d4a5b` - `restore Micro runtime observability`.
 - `6871a118beda510f921876c5485e537d0a682c2f` - `instrument TradingService startup progress`.
+- `cb38ca2b9a9f7e040ec6ff3d847ecdb5ac13df60` - `refresh Micro source checkpoints`.
 
-El nuevo candidato fue compilado despues del ultimo commit, sin despliegue:
+El candidato final fue compilado despues del ultimo commit, sin despliegue:
 
-- Directorio: `/tmp/opencode/micro-38b09a4-candidate`.
-- Commit del manifiesto: `6871a118beda510f921876c5485e537d0a682c2f`.
+- Directorio: `/tmp/opencode/micro-cb38ca2-candidate`.
+- Commit del manifiesto: `cb38ca2b9a9f7e040ec6ff3d847ecdb5ac13df60`.
 - Estado: `PREPARED_NOT_AUTHORIZED`.
-- Tarball SHA-256: `92fb21c553d29b6edf63cd0b5c320902d205023c0aea3e9edda480fa3ea0d9c9`.
-- Manifiesto SHA-256: `38e41d26efe2ed8cf64cc3aa37082634bbde9409a2594f348006984170bbef1a`.
+- Tarball y manifiesto SHA-256: registrados en la salida de preparacion del
+  artefacto y sujetos al commit exacto del manifiesto; no son autorizacion de
+  despliegue.
 - Configuracion efectiva: `132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1`.
 
 La suite offline completa posterior termino con `2.873 PASS`, `0 FAIL`, en
