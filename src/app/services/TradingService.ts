@@ -1649,6 +1649,9 @@ export class TradingService {
           if (!this.isRunning) break;
           await this.processSymbol(symbol);
         }
+        if (this.runtimeProgress.startupPhase === 'LOOP_STARTING') {
+          this.markRuntimeProgress('RUNNING', 'LOOP_READY');
+        }
         await this.sleep(this.config.tickIntervalMs);
         this.runtimeProgress = { ...this.runtimeProgress, lastLoopCompletedAtMs: Date.now() };
       } catch (error) {

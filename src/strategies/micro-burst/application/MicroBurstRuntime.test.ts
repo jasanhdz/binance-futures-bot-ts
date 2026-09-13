@@ -460,6 +460,36 @@ describe('MicroBurstRuntime', () => {
     await runtime.stop();
   });
 
+  it('reports invalid context reasons overall and by symbol', async () => {
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    await runtime.start();
+    (runtime as any).evaluator = {
+      evaluate: vi.fn(async ({ symbol }: { symbol: string }) => ({
+        symbol,
+        dataQuality: {
+          contextValid: false,
+          invalidReasons: ['stale_5m_candles', 'agg_trade_gap'],
+        },
+        wouldEnter: false,
+        duplicateSuppressed: false,
+      })),
+    };
+
+    await runtime.evaluateSymbol('ETHUSDT');
+    await runtime.evaluateSymbol('ETHUSDT');
+    await runtime.evaluateSymbol('SOLUSDT');
+
+    expect(runtime.getHealth()).toMatchObject({
+      totalInvalidContexts: 3,
+      invalidReasonCounts: { stale_5m_candles: 3, agg_trade_gap: 3 },
+      invalidReasonCountsBySymbol: {
+        ETHUSDT: { stale_5m_candles: 2, agg_trade_gap: 2 },
+        SOLUSDT: { stale_5m_candles: 1, agg_trade_gap: 1 },
+      },
+    });
+    await runtime.stop();
+  });
+
   it('reports health with correct symbol count', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig());
     await runtime.start();

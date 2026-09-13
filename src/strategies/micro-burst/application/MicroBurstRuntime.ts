@@ -80,6 +80,8 @@ export interface MicroBurstRuntimeHealth {
   paperSuppressedEntries: number;
   totalDuplicateSignals: number;
   totalInvalidContexts: number;
+  invalidReasonCounts: Readonly<Record<string, number>>;
+  invalidReasonCountsBySymbol: Readonly<Record<string, Readonly<Record<string, number>>>>;
   totalResyncs: number;
   liveExecution: boolean;
   paperEngine: 'GENERIC';
@@ -262,6 +264,8 @@ export class MicroBurstRuntime {
   private readonly paperSuppressionDiagnostics = new Set<string>();
   private totalDuplicateSignals = 0;
   private totalInvalidContexts = 0;
+  private readonly invalidReasonCounts = new Map<string, number>();
+  private readonly invalidReasonCountsBySymbol = new Map<string, Map<string, number>>();
   private lastHealthReportAt = 0;
   private readonly evaluationIntervalMs: number;
   private readonly journal: MicroBurstSignalJournal;
@@ -886,6 +890,12 @@ export class MicroBurstRuntime {
       } else {
         state.invalidContextCount++;
         this.totalInvalidContexts++;
+        for (const reason of result.dataQuality.invalidReasons) {
+          this.invalidReasonCounts.set(reason, (this.invalidReasonCounts.get(reason) ?? 0) + 1);
+          const symbolReasons = this.invalidReasonCountsBySymbol.get(symbol) ?? new Map();
+          symbolReasons.set(reason, (symbolReasons.get(reason) ?? 0) + 1);
+          this.invalidReasonCountsBySymbol.set(symbol, symbolReasons);
+        }
       }
 
       const bookState = state.book.getState();
@@ -937,6 +947,13 @@ export class MicroBurstRuntime {
       paperSuppressedEntries: this.paperSuppressedEntries,
       totalDuplicateSignals: this.totalDuplicateSignals,
       totalInvalidContexts: this.totalInvalidContexts,
+      invalidReasonCounts: Object.fromEntries(this.invalidReasonCounts),
+      invalidReasonCountsBySymbol: Object.fromEntries(
+        [...this.invalidReasonCountsBySymbol].map(([symbol, reasons]) => [
+          symbol,
+          Object.fromEntries(reasons),
+        ]),
+      ),
       totalResyncs: this.getTotalResyncs(),
       liveExecution: this.config.mode === 'LIVE' && this.deps.liveTrading !== undefined,
       paperEngine: 'GENERIC',
@@ -1283,6 +1300,8 @@ export class MicroBurstRuntime {
       uniqueSignals: health.totalUniqueSignals,
       duplicates: health.totalDuplicateSignals,
       invalidContexts: health.totalInvalidContexts,
+      invalidReasonCounts: health.invalidReasonCounts,
+      invalidReasonCountsBySymbol: health.invalidReasonCountsBySymbol,
       resyncs: health.totalResyncs,
       liveExecution: health.liveExecution,
       signalJournalHealthy: health.signalJournalHealthy,

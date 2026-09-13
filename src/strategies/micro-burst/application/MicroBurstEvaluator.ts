@@ -129,6 +129,9 @@ export class MicroBurstEvaluator {
         strategyVersion: envelope.identity.strategyVersion,
         decision: envelope.decision,
         reason: envelope.reason,
+        ...(envelope.diagnostics?.invalidReasons
+          ? { invalidReasons: envelope.diagnostics.invalidReasons }
+          : {}),
         ...(envelope.diagnostics?.sides ? { sides: envelope.diagnostics.sides } : {}),
       });
       const resistancePrice = context.levels.nearest.resistance?.price ?? null;
