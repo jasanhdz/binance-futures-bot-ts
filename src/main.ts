@@ -4,6 +4,21 @@ import { createCommandListener } from './app/bootstrap/CommandComposition';
 import { composeStrategyRuntime } from './app/bootstrap/StrategyComposition';
 import { MarketDataDiagnosticsServer } from './app/diagnostics/MarketDataDiagnosticsServer';
 
+export async function cleanupFailedStartup(input: {
+  commands?: { stop(): void } | null;
+  service: { stop(): Promise<void> };
+  diagnostics: { stop(): Promise<void> };
+  logger: { error(message: string, context?: unknown): void };
+}): Promise<void> {
+  input.commands?.stop();
+  await input.service.stop().catch((error) => {
+    input.logger.error('startup_cleanup_failed', { error: String(error) });
+  });
+  await input.diagnostics.stop().catch((error) => {
+    input.logger.error('startup_diagnostics_cleanup_failed', { error: String(error) });
+  });
+}
+
 /** Process entry point and application composition root. */
 async function main(): Promise<void> {
   console.log('Trading System');
@@ -28,13 +43,11 @@ async function main(): Promise<void> {
     shutdownStarted = true;
     commands?.stop();
     const completed = await stopWithTimeout(runtime.service.stop(), infrastructure.logger, signal);
-    await diagnostics
-      .stop()
-      .catch((error) =>
-        infrastructure.logger.error('market_data_diagnostics_stop_failed', {
-          error: String(error),
-        }),
-      );
+    await diagnostics.stop().catch((error) =>
+      infrastructure.logger.error('market_data_diagnostics_stop_failed', {
+        error: String(error),
+      }),
+    );
     process.exit(completed ? 0 : 1);
   };
 
@@ -46,6 +59,12 @@ async function main(): Promise<void> {
     await runtime.service.start();
   } catch (error) {
     console.error('Fatal startup error:', error);
+    await cleanupFailedStartup({
+      commands,
+      service: runtime.service,
+      diagnostics,
+      logger: infrastructure.logger,
+    });
     process.exitCode = 1;
   }
 }
@@ -74,4 +93,4 @@ async function stopWithTimeout(
   }
 }
 
-void main();
+if (require.main === module) void main();

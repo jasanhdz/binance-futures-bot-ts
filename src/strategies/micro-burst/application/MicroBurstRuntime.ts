@@ -71,6 +71,11 @@ export interface MicroBurstRuntimeHealth {
   healthyBooks: number;
   btcHealthy: boolean;
   totalEvaluations: number;
+  totalEvaluationAttempts: number;
+  totalEvaluationFailures: number;
+  evaluationInFlight: number;
+  lastEvaluationAt: number | null;
+  lastEvaluationSymbol: string | null;
   totalUniqueSignals: number;
   paperSuppressedEntries: number;
   totalDuplicateSignals: number;
@@ -247,6 +252,11 @@ export class MicroBurstRuntime {
   private evaluator: MicroBurstEvaluator | null = null;
   private readonly symbolStates = new Map<string, SymbolRuntimeState>();
   private totalEvaluations = 0;
+  private totalEvaluationAttempts = 0;
+  private totalEvaluationFailures = 0;
+  private evaluationInFlight = 0;
+  private lastEvaluationAt: number | null = null;
+  private lastEvaluationSymbol: string | null = null;
   private totalUniqueSignals = 0;
   private paperSuppressedEntries = 0;
   private readonly paperSuppressionDiagnostics = new Set<string>();
@@ -674,6 +684,10 @@ export class MicroBurstRuntime {
     if (!this.running) return null;
 
     state.evaluationInFlight = true;
+    this.totalEvaluationAttempts++;
+    this.evaluationInFlight++;
+    this.lastEvaluationAt = this.deps.clock.now();
+    this.lastEvaluationSymbol = symbol;
     const t0 = this.deps.clock.now();
 
     try {
@@ -879,6 +893,7 @@ export class MicroBurstRuntime {
 
       return result;
     } catch (err) {
+      this.totalEvaluationFailures++;
       this.deps.logger.error('micro_burst_runtime_evaluation_error', {
         symbol,
         error: String(err),
@@ -886,6 +901,7 @@ export class MicroBurstRuntime {
       return null;
     } finally {
       state.evaluationInFlight = false;
+      this.evaluationInFlight = Math.max(0, this.evaluationInFlight - 1);
     }
   }
 
@@ -911,6 +927,11 @@ export class MicroBurstRuntime {
       healthyBooks,
       btcHealthy,
       totalEvaluations: this.totalEvaluations,
+      totalEvaluationAttempts: this.totalEvaluationAttempts,
+      totalEvaluationFailures: this.totalEvaluationFailures,
+      evaluationInFlight: this.evaluationInFlight,
+      lastEvaluationAt: this.lastEvaluationAt,
+      lastEvaluationSymbol: this.lastEvaluationSymbol,
       observationQueue: this.deps.strategyRouter.observationHealth(),
       totalUniqueSignals: this.totalUniqueSignals,
       paperSuppressedEntries: this.paperSuppressedEntries,
@@ -1253,6 +1274,11 @@ export class MicroBurstRuntime {
       healthyBooks: health.healthyBooks,
       btcHealthy: health.btcHealthy,
       evaluations: health.totalEvaluations,
+      evaluationAttempts: health.totalEvaluationAttempts,
+      evaluationFailures: health.totalEvaluationFailures,
+      evaluationInFlight: health.evaluationInFlight,
+      lastEvaluationAt: health.lastEvaluationAt,
+      lastEvaluationSymbol: health.lastEvaluationSymbol,
       observationQueue: health.observationQueue,
       uniqueSignals: health.totalUniqueSignals,
       duplicates: health.totalDuplicateSignals,

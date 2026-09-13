@@ -16,6 +16,7 @@ import {
   MicroBurstRuntime,
   type MicroBurstRuntimeDeps,
   type MicroBurstRuntimeReadiness,
+  type MicroBurstRuntimeHealth,
 } from '../../strategies/micro-burst/application/MicroBurstRuntime';
 import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import type {
@@ -183,6 +184,10 @@ export class StrategyRuntimeCoordinator {
     return this.microBurstReadiness;
   }
 
+  getMicroBurstHealth(): MicroBurstRuntimeHealth | null {
+    return this.microBurstRuntime?.getHealth() ?? null;
+  }
+
   validateMicroBurstEntryMarket(
     intent: StrategyExecutionIntent,
     quantity: number,
@@ -211,13 +216,32 @@ export class StrategyRuntimeCoordinator {
         }[];
       };
     };
-    const diagnostics = buildMarketDataDiagnostics(this.sharedMarketDataRuntime!, {
+    if (!this.sharedMarketDataRuntime) {
+      return {
+        version: 'MARKET_DATA_DIAGNOSTICS_V1',
+        timestamp: new Date().toISOString(),
+        status: 'NOT_READY',
+        reason: 'SHARED_MARKET_DATA_NOT_INITIALIZED',
+        symbols: [],
+        summary: {
+          symbolCount: null,
+          healthySymbols: null,
+          unhealthySymbols: null,
+          expectedStreams: null,
+          activeStreams: null,
+          watchdog: { status: 'NOT_STARTED' },
+        },
+      };
+    }
+    const diagnostics = buildMarketDataDiagnostics(this.sharedMarketDataRuntime, {
       symbols: AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS,
       streams: exchangeRuntime.wsManager?.getMarketDataHealth(),
       rateLimit: getRateLimitMetrics(),
     });
     const summary = diagnostics.summary as Record<string, unknown>;
     summary.depthSnapshotMetrics = this.sharedMarketDataRuntime?.getDepthSnapshotMetrics();
+    diagnostics.status = 'READY';
+    diagnostics.microBurstRuntime = this.getMicroBurstHealth();
     return diagnostics;
   }
 

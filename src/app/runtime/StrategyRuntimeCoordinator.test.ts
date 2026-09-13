@@ -108,6 +108,16 @@ function runtimeHarness(exchange: Exchange = {} as never): RuntimeHarness {
 }
 
 describe('StrategyRuntimeCoordinator', () => {
+  it('reports explicit not-ready diagnostics before shared market data exists', () => {
+    const { coordinator } = runtimeHarness();
+
+    expect(coordinator.getMarketDataDiagnostics()).toMatchObject({
+      status: 'NOT_READY',
+      reason: 'SHARED_MARKET_DATA_NOT_INITIALIZED',
+      summary: { watchdog: { status: 'NOT_STARTED' } },
+    });
+  });
+
   it('feeds shared liquidity from the real synchronized plane with Aegis off and releases one shared stream', async () => {
     const now = 1_700_000_000_000;
     let emit: ((event: any) => void) | undefined;
@@ -161,6 +171,10 @@ describe('StrategyRuntimeCoordinator', () => {
           stress: 0,
         }),
       );
+      expect(coordinator.getMarketDataDiagnostics()).toMatchObject({
+        status: 'READY',
+        version: 'MARKET_DATA_DIAGNOSTICS_V1',
+      });
       const shared = vi.mocked(factories.createSharedMarketDataRuntime).mock.results[0].value;
       const consumerLease = shared.orderBookDataPlane.acquire('ETHUSDT');
       expect(exchange.subscribeToDepthDiff).toHaveBeenCalledTimes(1);

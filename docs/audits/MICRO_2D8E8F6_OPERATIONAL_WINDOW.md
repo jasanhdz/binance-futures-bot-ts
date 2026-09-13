@@ -207,3 +207,103 @@ debe corregir o aislar la ruta de diagnostico y repetir una ventana con:
 
 La estrategia debe evaluarse despues con una muestra economica suficiente y
 separada de esta prueba operacional.
+
+## Investigacion Posterior Y Correccion
+
+### Causa Raiz Confirmada
+
+La ausencia de evidencia no fue demostrada como ausencia de evaluaciones. La
+causa confirmada de la ventana inutilizable fue una inicializacion fallida que
+dejo el proceso vivo:
+
+1. Durante la transicion, `DurableStopCoordinator.start()` intento abrir el
+   journal de mutaciones mientras el escritor anterior todavia retenia su lock.
+   El proceso registro `JOURNAL_WRITER_LOCKED` y luego `shutdown_failed`.
+2. `TradingService.initializeRuntime()` no alcanzo `runtime_boot`, la
+   coordinacion de market data ni `strategyRuntimeCoordinator.start()`. La
+   ausencia de sockets WebSocket de Binance y de esos eventos posteriores es
+   consistente con el bloqueo antes de iniciar productores y loop.
+3. `main()` capturaba el error de `runtime.service.start()` y solo establecia
+   `process.exitCode=1`. El servidor HTTP de diagnostico y el listener de
+   comandos mantenian el event loop, por lo que PM2 podia mostrar `online` para
+   un proceso que nunca habia quedado listo.
+4. `StrategyRuntimeCoordinator.getMarketDataDiagnostics()` usaba
+   `this.sharedMarketDataRuntime!`. Al consultarlo antes de que terminara la
+   composicion, lanzaba por `null`; `MarketDataDiagnosticsServer` convertia
+   eso en `503`. Este `null` no significaba que Micro tuviera o no tuviera un
+   libro: significaba que la instancia compartida aun no se habia creado.
+
+Esta secuencia explica simultaneamente `PM2 online`, `binance_connected`, cero
+eventos de Micro y `orderBookDataPlane=null`. No se activo Aegis ni se creo un
+productor alternativo para probar la hipotesis.
+
+### Cambios Implementados
+
+- `main()` ahora ejecuta cleanup de comandos, servicio y diagnostico cuando el
+  startup falla, registra errores de cleanup y permite que el proceso termine
+  con estado no saludable en vez de quedarse aparentemente online.
+- El cleanup se extrae a `cleanupFailedStartup()` para probar su orden y su
+  manejo de fallos sin arrancar el bot real.
+- El diagnostico previo a la composicion devuelve estado explicito
+  `NOT_READY`, causa `SHARED_MARKET_DATA_NOT_INITIALIZED` y watchdog
+  `NOT_STARTED`; no inventa filas, salud ni streams. Una vez creada la
+  composicion, devuelve `READY` y la salud de la misma instancia compartida
+  que consume Micro.
+- `TradingService` expone progreso acotado con PID, fase de startup, error,
+  inicio y ultimo tick del loop, sin cardinalidad ilimitada.
+- `MicroBurstRuntime` incrementa contadores de intento, fallo, ejecuciones en
+  curso y ultimo simbolo/instante en el sitio real de evaluacion, antes de
+  depender del Black Box o de un journal.
+- No se modificaron estrategia, filtros, riesgo, apalancamiento, credenciales,
+  checkpoints, journals ni configuracion LIVE.
+
+### Regresiones
+
+Se agregaron o ampliaron regresiones en:
+
+- `src/main.test.ts`: cleanup completo y reporte de fallos de cleanup.
+- `src/app/runtime/StrategyRuntimeCoordinator.test.ts`: diagnostico explicito
+  antes de startup y estado READY sobre la instancia compartida con Aegis off.
+- `src/strategies/micro-burst/application/MicroBurstRuntime.test.ts`: intento y
+  fallo de evaluacion visibles aunque el constructor de contexto/evaluador
+  rechace.
+
+### Validacion
+
+| Comando                                                  | Resultado                            |
+| -------------------------------------------------------- | ------------------------------------ |
+| Tests dirigidos de startup, diagnostico, runtime y Micro | **44 PASS**                          |
+| `npx tsc -p tsconfig.json --noEmit`                      | **PASS**                             |
+| Suite offline completa                                   | **2.871 PASS, 2 FAIL, 220 archivos** |
+| `npx prettier --check` sobre archivos modificados        | **PASS**                             |
+| `git diff --check`                                       | **PASS**                             |
+
+Los dos fallos de la suite completa son deliberados y conocidos: los
+checkpoints byte-exactos de `src/main.ts` y `src/app/services/TradingService.ts`
+siguen exigiendo sus digests anteriores. No se cambiaron para ocultar el
+delta. Antes de autorizar un nuevo artefacto, el propietario debe revisar y
+autorizar nuevos checkpoints de fuentes para esas dos rutas o mantener la
+revision como no aprobada por ese contrato.
+
+### Artefacto Y Nueva Ventana
+
+La correccion esta publicada en fuentes, pero **no fue desplegada ni se
+reinicio produccion**. El proceso `28256` sigue siendo el proceso del artefacto
+anterior y no valida estos bytes nuevos. La preparacion del siguiente artefacto
+debe verificar nuevamente commit, arbol, `dist`, YAML, configuracion efectiva,
+dependencias y manifiesto; no debe reutilizar la autorizacion de `2d8e8f6`.
+
+La proxima ventana solo puede comenzar despues de comprobar, en pocas muestras:
+
+- `runtimeProgress.status=RUNNING`, `startupPhase=LOOP_READY` y ticks que
+  avancen;
+- `MARKET_DATA_DIAGNOSTICS_V1` con `status=READY`, las mismas fuentes y
+  razones de frescura reales;
+- `microBurstRuntime.running=true`, intentos y fallos creciendo aunque no haya
+  entradas;
+- Black Box y telemetry con salud legible y contadores diferenciados;
+- cero procesos duplicados y un PID estable.
+
+Si alguno falta, la ventana debe marcarse `INSUFFICIENT_OBSERVABILITY` sin
+esperar otros 30 minutos. Esta correccion no autoriza despliegue ni permite
+inferir rentabilidad.

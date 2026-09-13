@@ -440,6 +440,26 @@ describe('MicroBurstRuntime', () => {
     await runtime.stop();
   });
 
+  it('counts an evaluation attempt and failure when context construction rejects', async () => {
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    await runtime.start();
+    (runtime as any).evaluator = {
+      evaluate: vi.fn(async () => {
+        throw new Error('context fixture failure');
+      }),
+    };
+
+    await expect(runtime.evaluateSymbol('ETHUSDT')).resolves.toBeNull();
+
+    expect(runtime.getHealth()).toMatchObject({
+      totalEvaluationAttempts: 1,
+      totalEvaluationFailures: 1,
+      evaluationInFlight: 0,
+      lastEvaluationSymbol: 'ETHUSDT',
+    });
+    await runtime.stop();
+  });
+
   it('reports health with correct symbol count', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig());
     await runtime.start();
