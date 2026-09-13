@@ -318,11 +318,12 @@ checkpoints se publicaron en tres commits de la misma rama:
 - `38b09a4c29e1635030b73361af915c5ba21d4a5b` - `restore Micro runtime observability`.
 - `6871a118beda510f921876c5485e537d0a682c2f` - `instrument TradingService startup progress`.
 - `cb38ca2b9a9f7e040ec6ff3d847ecdb5ac13df60` - `refresh Micro source checkpoints`.
+- `9dbdd63e20fe5d2adf6989075d42bfabde5ba4c6` - `record final Micro candidate`.
 
 El candidato final fue compilado despues del ultimo commit, sin despliegue:
 
-- Directorio: `/tmp/opencode/micro-cb38ca2-candidate`.
-- Commit del manifiesto: `cb38ca2b9a9f7e040ec6ff3d847ecdb5ac13df60`.
+- Directorio: `/tmp/opencode/micro-9dbdd63-candidate`.
+- Commit del manifiesto: `9dbdd63e20fe5d2adf6989075d42bfabde5ba4c6`.
 - Estado: `PREPARED_NOT_AUTHORIZED`.
 - Tarball y manifiesto SHA-256: registrados en la salida de preparacion del
   artefacto y sujetos al commit exacto del manifiesto; no son autorizacion de
