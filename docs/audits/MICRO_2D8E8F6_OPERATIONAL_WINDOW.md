@@ -278,12 +278,14 @@ Se agregaron o ampliaron regresiones en:
 | `npx prettier --check` sobre archivos modificados        | **PASS**                             |
 | `git diff --check`                                       | **PASS**                             |
 
-Los dos fallos de la suite completa son deliberados y conocidos: los
-checkpoints byte-exactos de `src/main.ts` y `src/app/services/TradingService.ts`
-siguen exigiendo sus digests anteriores. No se cambiaron para ocultar el
-delta. Antes de autorizar un nuevo artefacto, el propietario debe revisar y
-autorizar nuevos checkpoints de fuentes para esas dos rutas o mantener la
-revision como no aprobada por ese contrato.
+En la primera ejecucion posterior a la correccion, los dos fallos de la suite
+fueron los checkpoints byte-exactos de `src/main.ts` y
+`src/app/services/TradingService.ts`. La revision de procedencia confirmo que
+son referencias actuales de fuente, no baselines historicos inmutables. Se
+actualizaron de forma documentada a `bb605c4264eb185e76f482f37a6808c16c55b69e7aff26541ab4b33289a4deaf`
+y `d4b39fd445e03c03925ff0237230313bd483ad99515450651aeb276efeb8e58a`,
+respectivamente. No se alteraron los baselines historicos ni se concedio
+autoridad LIVE. La suite completa posterior pasa sin fallos.
 
 ### Artefacto Y Nueva Ventana
 
@@ -325,12 +327,9 @@ El nuevo candidato fue compilado despues del ultimo commit, sin despliegue:
 - Manifiesto SHA-256: `38e41d26efe2ed8cf64cc3aa37082634bbde9409a2594f348006984170bbef1a`.
 - Configuracion efectiva: `132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1`.
 
-La suite offline completa termino con `2.871 PASS`, `2 FAIL`, en `220`
-archivos (`2.873` tests totales). Los dos fallos son unicamente los
-checkpoints byte-exactos historicos de `src/main.ts` y
-`src/app/services/TradingService.ts`; no se cambiaron automaticamente. Tests
-dirigidos: `44 PASS`; TypeScript sin emision: `PASS`; Prettier y
-`git diff --check`: `PASS`.
+La suite offline completa posterior termino con `2.873 PASS`, `0 FAIL`, en
+`220` archivos. Tests dirigidos: `60 PASS`; TypeScript sin emision: `PASS`;
+Prettier y `git diff --check`: `PASS`.
 
 El proceso PM2 y el `dist` activo no fueron reiniciados despues de esta
 correccion. No se modificaron produccion, `.env`, YAML LIVE, journals, estado,

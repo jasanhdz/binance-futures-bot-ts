@@ -68,8 +68,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Reviewed historical GET-only discovery and fresh complete open-order observations.
     // See micro-historical-reconciliation.md; source checkpoint, not deployment authority.
     '0efb2753ce49ccbe909e6067df5cc68fbfc6b822a6f81645b96f8eaf49309b87',
-  // Owner-authorized neutral process bootstrap; strategy composition moved behind app boundary.
-  'src/main.ts': '2bbb4b68f4683a74ac2fdc3da825a8be269cfe4ccf4763e7a8deff1ef414bb82',
+  // Current source checkpoint: failed startup now cleans up and exits instead of remaining online.
+  // Source checkpoint only; not a LIVE authorization.
+  'src/main.ts': 'bb605c4264eb185e76f482f37a6808c16c55b69e7aff26541ab4b33289a4deaf',
   'config/regime_config.example.yaml':
     'c9ccac14d769da29497f38538f21ba1f3e0abf96c8dbc8647407e8007750ede5',
   // Phase 1 cleanup: removed the dormant Sentinel config surface.
@@ -97,8 +98,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Canonical admission/management and historical read boundaries; not artifact approval.
     // Runtime-owned historical settlement under pending/shared admission reservations.
     // Reviewed delta from 8f7da23: preparation metrics and original input-freshness metadata.
-    // Source checkpoint approval only; audit section 12 retains the previous digest.
-    '7f96b5f54a52f25fa2ec24391682c14fec86ee3ccf78925457da259dd779356d',
+    // Current source checkpoint: startup/loop progress is observable; not artifact approval.
+    'd4b39fd445e03c03925ff0237230313bd483ad99515450651aeb276efeb8e58a',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -148,7 +149,7 @@ const contextualSourceCheckpoints: Record<string, string> = {
   'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   'src/app/services/TradingService.ts':
     // Same reviewed source delta, not a grant of runtime or artifact authority.
-    '7f96b5f54a52f25fa2ec24391682c14fec86ee3ccf78925457da259dd779356d',
+    'd4b39fd445e03c03925ff0237230313bd483ad99515450651aeb276efeb8e58a',
 };
 
 type GuardFixture = [
