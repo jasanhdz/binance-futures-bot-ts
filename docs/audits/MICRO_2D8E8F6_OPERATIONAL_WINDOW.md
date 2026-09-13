@@ -283,7 +283,7 @@ fueron los checkpoints byte-exactos de `src/main.ts` y
 `src/app/services/TradingService.ts`. La revision de procedencia confirmo que
 son referencias actuales de fuente, no baselines historicos inmutables. Se
 actualizaron de forma documentada a `bb605c4264eb185e76f482f37a6808c16c55b69e7aff26541ab4b33289a4deaf`
-y `d4b39fd445e03c03925ff0237230313bd483ad99515450651aeb276efeb8e58a`,
+y `95298fe4f63adf361227de8120d24a261e9b7e95fb98241afd1f85f867bb8f18`,
 respectivamente. No se alteraron los baselines historicos ni se concedio
 autoridad LIVE. La suite completa posterior pasa sin fallos.
 
@@ -330,8 +330,8 @@ El candidato final fue compilado despues del ultimo commit, sin despliegue:
   despliegue.
 - Configuracion efectiva: `132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1`.
 
-La suite offline completa posterior termino con `2.873 PASS`, `0 FAIL`, en
-`220` archivos. Tests dirigidos: `60 PASS`; TypeScript sin emision: `PASS`;
+La suite offline completa posterior termino con `2.874 PASS`, `0 FAIL`, en
+`220` archivos. Tests dirigidos: `37 PASS`; TypeScript sin emision: `PASS`;
 Prettier y `git diff --check`: `PASS`.
 
 El proceso PM2 y el `dist` activo no fueron reiniciados despues de esta
