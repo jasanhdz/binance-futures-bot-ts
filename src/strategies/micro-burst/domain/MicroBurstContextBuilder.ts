@@ -59,6 +59,9 @@ export interface AggTradeFlowProvider {
     eventWatermarkMs: number | null;
     capacityTruncated: boolean;
     coverageStartedAtMs: number | null;
+    continuityUncertain?: boolean;
+    pendingGapCount?: number;
+    confirmedGapCount?: number;
     windowComplete: boolean;
     gapFree: boolean;
   };
@@ -165,8 +168,23 @@ function getDataQuality(
     invalidReasons.push('future_support_resistance_level');
   if (aggTradeFlow && !aggTradeFlow.windowComplete)
     invalidReasons.push('agg_trade_window_incomplete');
+  if (
+    aggTradeFlow &&
+    !aggTradeFlow.gapFree &&
+    (aggTradeFlow.confirmedGapCount ?? 0) === 0 &&
+    (aggTradeFlow.pendingGapCount ?? 0) === 0 &&
+    aggTradeFlow.continuityUncertain
+  )
+    invalidReasons.push('agg_trade_continuity_uncertain');
   if (aggTradeFlow?.capacityTruncated) invalidReasons.push('agg_trade_capacity_truncated');
-  if (aggTradeFlow && !aggTradeFlow.gapFree) invalidReasons.push('agg_trade_gap');
+  if (
+    aggTradeFlow &&
+    !aggTradeFlow.gapFree &&
+    ((aggTradeFlow.confirmedGapCount ?? 0) > 0 ||
+      (aggTradeFlow.pendingGapCount ?? 0) > 0 ||
+      aggTradeFlow.continuityUncertain !== true)
+  )
+    invalidReasons.push('agg_trade_gap');
 
   const closedCandlesOnly = Object.values(closedCandleSets)
     .flat()

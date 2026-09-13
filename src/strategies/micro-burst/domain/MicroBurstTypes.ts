@@ -202,6 +202,9 @@ export interface MicroBurstContext {
     eventWatermarkMs: number | null;
     capacityTruncated: boolean;
     coverageStartedAtMs: number | null;
+    continuityUncertain?: boolean;
+    pendingGapCount?: number;
+    confirmedGapCount?: number;
     windowComplete: boolean;
     gapFree: boolean;
   };

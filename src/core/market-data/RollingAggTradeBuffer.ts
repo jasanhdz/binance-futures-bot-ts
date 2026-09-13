@@ -211,6 +211,9 @@ export class RollingAggTradeBuffer {
     eventWatermarkMs: number | null;
     capacityTruncated: boolean;
     coverageStartedAtMs: number | null;
+    continuityUncertain: boolean;
+    pendingGapCount: number;
+    confirmedGapCount: number;
     windowComplete: boolean;
     gapFree: boolean;
   } {
@@ -243,6 +246,9 @@ export class RollingAggTradeBuffer {
         this.eventWatermarkMs !== null &&
         this.lastCapacityEvictedEventTime > this.eventWatermarkMs - requestedWindowMs,
       coverageStartedAtMs: this.coverageStartedAtMs,
+      continuityUncertain: this.continuityUncertain,
+      pendingGapCount: this.pendingGaps.size,
+      confirmedGapCount: this.gapIntervals.length,
       windowComplete:
         this.coverageStartedAtMs !== null &&
         this.eventWatermarkMs !== null &&

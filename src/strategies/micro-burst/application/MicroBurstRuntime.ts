@@ -563,6 +563,9 @@ export class MicroBurstRuntime {
               eventWatermarkMs: null,
               capacityTruncated: false,
               coverageStartedAtMs: null,
+              continuityUncertain: true,
+              pendingGapCount: 0,
+              confirmedGapCount: 0,
               windowComplete: false,
               gapFree: true,
             };
