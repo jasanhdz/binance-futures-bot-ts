@@ -83,6 +83,10 @@ export interface MicroBurstRuntimeHealth {
   totalInvalidContexts: number;
   invalidReasonCounts: Readonly<Record<string, number>>;
   invalidReasonCountsBySymbol: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  decisionReasonCounts: Readonly<Record<string, number>>;
+  sideRejectionCountsBySymbol: Readonly<
+    Record<string, Readonly<Record<string, Readonly<Record<string, number>>>>>
+  >;
   symbolHealth: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   totalResyncs: number;
   liveExecution: boolean;
@@ -268,6 +272,11 @@ export class MicroBurstRuntime {
   private totalInvalidContexts = 0;
   private readonly invalidReasonCounts = new Map<string, number>();
   private readonly invalidReasonCountsBySymbol = new Map<string, Map<string, number>>();
+  private readonly decisionReasonCounts = new Map<string, number>();
+  private readonly sideRejectionCountsBySymbol = new Map<
+    string,
+    Map<string, Map<string, number>>
+  >();
   private lastHealthReportAt = 0;
   private readonly evaluationIntervalMs: number;
   private readonly journal: MicroBurstSignalJournal;
@@ -705,6 +714,27 @@ export class MicroBurstRuntime {
         snapshotAtMs,
       });
 
+      const decisionReason = result.diagnostics?.decisionReason;
+      if (typeof decisionReason === 'string')
+        this.decisionReasonCounts.set(
+          decisionReason,
+          (this.decisionReasonCounts.get(decisionReason) ?? 0) + 1,
+        );
+      const sides = result.diagnostics?.sides;
+      if (sides && typeof sides === 'object') {
+        const symbolSides = this.sideRejectionCountsBySymbol.get(symbol) ?? new Map();
+        for (const side of ['LONG', 'SHORT']) {
+          const sideDiagnostics = (sides as Record<string, unknown>)[side];
+          if (!sideDiagnostics || typeof sideDiagnostics !== 'object') continue;
+          const reason = (sideDiagnostics as Record<string, unknown>).firstCandidateReject;
+          if (typeof reason !== 'string') continue;
+          const counts = symbolSides.get(side) ?? new Map();
+          counts.set(reason, (counts.get(reason) ?? 0) + 1);
+          symbolSides.set(side, counts);
+        }
+        this.sideRejectionCountsBySymbol.set(symbol, symbolSides);
+      }
+
       let paperSuppressed = false;
       if (
         this.config.mode === 'SHADOW' &&
@@ -957,6 +987,15 @@ export class MicroBurstRuntime {
         [...this.invalidReasonCountsBySymbol].map(([symbol, reasons]) => [
           symbol,
           Object.fromEntries(reasons),
+        ]),
+      ),
+      decisionReasonCounts: Object.fromEntries(this.decisionReasonCounts),
+      sideRejectionCountsBySymbol: Object.fromEntries(
+        [...this.sideRejectionCountsBySymbol].map(([symbol, sides]) => [
+          symbol,
+          Object.fromEntries(
+            [...sides].map(([side, reasons]) => [side, Object.fromEntries(reasons)]),
+          ),
         ]),
       ),
       symbolHealth: Object.fromEntries(
@@ -1312,6 +1351,8 @@ export class MicroBurstRuntime {
       invalidContexts: health.totalInvalidContexts,
       invalidReasonCounts: health.invalidReasonCounts,
       invalidReasonCountsBySymbol: health.invalidReasonCountsBySymbol,
+      decisionReasonCounts: health.decisionReasonCounts,
+      sideRejectionCountsBySymbol: health.sideRejectionCountsBySymbol,
       symbolHealth: health.symbolHealth,
       resyncs: health.totalResyncs,
       liveExecution: health.liveExecution,

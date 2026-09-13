@@ -228,6 +228,7 @@ export class MicroBurstEvaluator {
         lastObservedAt,
         diagnostics: {
           ...executionDiagnostics,
+          decisionReason: envelope.reason,
           ...(context.aggTradeFlow
             ? {
                 takerBuyVolume: context.aggTradeFlow.buyTakerVolume,
