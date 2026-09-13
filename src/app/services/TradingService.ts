@@ -202,6 +202,19 @@ export interface AegisRuntimeSnapshot {
   closeMutationBlockedReason?: string;
 }
 
+export interface TradingRuntimeProgress {
+  readonly pid: number;
+  readonly startedAtMs: number;
+  readonly status: 'CONSTRUCTED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'FAILED';
+  readonly startupPhase: string;
+  readonly startupPhaseAtMs: number;
+  readonly startupError?: string;
+  readonly loopStartedAtMs?: number;
+  readonly lastLoopTickAtMs?: number;
+  readonly lastLoopCompletedAtMs?: number;
+  readonly loopTicks: number;
+}
+
 export class TradingService {
   private isRunning = false;
   private acceptingEntries = true;
@@ -213,6 +226,14 @@ export class TradingService {
   private lastLogTime: Record<string, number> = {};
   private lastAlivePulseMs = Date.now();
   private hardWatchdogTimer: NodeJS.Timeout | null = null;
+  private runtimeProgress: TradingRuntimeProgress = {
+    pid: process.pid,
+    startedAtMs: Date.now(),
+    status: 'CONSTRUCTED',
+    startupPhase: 'CONSTRUCTED',
+    startupPhaseAtMs: Date.now(),
+    loopTicks: 0,
+  };
   private detector: Record<string, LiquidityVoidDetector> = {};
   private readonly historyLogger: AegisTurboHistoryLogger;
   private readonly symbolStateStores = new Map<string, StateStore>();
@@ -1178,6 +1199,7 @@ export class TradingService {
 
   getMarketDataDiagnostics(): Record<string, unknown> {
     return {
+      runtimeProgress: this.runtimeProgress,
       ...this.strategyRuntimeCoordinator.getMarketDataDiagnostics(),
       blackBoxStorage: {
         decisions: this.decisionJsonlSink.health(),
@@ -1193,13 +1215,28 @@ export class TradingService {
 
   async start(startLoop = true): Promise<void> {
     if (this.runtimeStopping) throw new Error('RUNTIME_STOPPING');
+    this.markRuntimeProgress('STARTING', 'START_REQUESTED');
     if (!this.startupTask) {
       this.acceptingEntries = false;
       // Publish before initialization callbacks so reentrant stop can await startup.
       this.startupTask = Promise.resolve().then(() => this.initializeRuntime());
     }
-    await this.startupTask;
+    try {
+      await this.startupTask;
+    } catch (error) {
+      this.runtimeProgress = {
+        ...this.runtimeProgress,
+        status: 'FAILED',
+        startupError: String(error),
+      };
+      throw error;
+    }
     if (startLoop && !this.runtimeStopping) {
+      this.markRuntimeProgress('RUNNING', 'LOOP_STARTING');
+      this.runtimeProgress = {
+        ...this.runtimeProgress,
+        loopStartedAtMs: Date.now(),
+      };
       this.loopTask ??= Promise.resolve().then(() => this.runLoop());
       await this.loopTask;
     }
@@ -1208,19 +1245,25 @@ export class TradingService {
   private async initializeRuntime(): Promise<void> {
     if (this.runtimeStopping) return;
     this.acceptingEntries = false;
+    this.markRuntimeProgress('STARTING', 'STOP_COORDINATOR_STARTING');
     await this.deps.stopCoordinator?.start();
     if (this.runtimeStopping) return;
+    this.markRuntimeProgress('STARTING', 'CLOSE_COORDINATOR_STARTING');
     await this.deps.closeCoordinator?.start();
     if (this.runtimeStopping) return;
+    this.markRuntimeProgress('STARTING', 'CLOSE_RECONCILIATION');
     await this.deps.closeCoordinator?.reconcile(
       (symbol) => this.stateForSymbol(symbol),
       this.positionProtection,
     );
     if (this.runtimeStopping) return;
+    this.markRuntimeProgress('STARTING', 'ENTRY_COORDINATOR_STARTING');
     await this.deps.entryCoordinator?.start();
     if (this.runtimeStopping) return;
+    this.markRuntimeProgress('STARTING', 'STOP_RECONCILIATION');
     await this.deps.stopCoordinator?.reconcileClosed((symbol) => this.stateForSymbol(symbol));
     if (this.runtimeStopping) return;
+    this.markRuntimeProgress('STARTING', 'EXCHANGE_BOOTSTRAP');
     const { logger, notifier, mlService, configManager, exchange } = this.deps;
     const identity = readStartupIdentity();
     logger.info('runtime_boot', { ...identity });
@@ -1478,6 +1521,7 @@ export class TradingService {
     }
 
     if (this.runtimeStopping) return;
+    this.markRuntimeProgress('STARTING', 'MICRO_SETTLEMENT_RECONCILIATION');
     await this.reconcileMicroNetSettlements();
     if (this.runtimeStopping) return;
     this.isRunning = true;
@@ -1517,6 +1561,8 @@ export class TradingService {
     });
 
     if (this.runtimeStopping) return;
+
+    this.markRuntimeProgress('RUNNING', 'LOOP_READY');
 
     this.hardWatchdogTimer = setInterval(() => {
       this.microAdmissionDiagnostics.heartbeat();
@@ -1587,6 +1633,11 @@ export class TradingService {
   private async runLoop(): Promise<void> {
     while (this.isRunning) {
       try {
+        this.runtimeProgress = {
+          ...this.runtimeProgress,
+          lastLoopTickAtMs: Date.now(),
+          loopTicks: this.runtimeProgress.loopTicks + 1,
+        };
         this.riskSession.checkDailyReset();
         const recoverySymbols = [...this.symbolStateStores]
           .filter(
@@ -1599,11 +1650,25 @@ export class TradingService {
           await this.processSymbol(symbol);
         }
         await this.sleep(this.config.tickIntervalMs);
+        this.runtimeProgress = { ...this.runtimeProgress, lastLoopCompletedAtMs: Date.now() };
       } catch (error) {
         this.deps.logger.error('Loop error', { error: String(error) });
         await this.sleep(1000);
       }
     }
+  }
+
+  private markRuntimeProgress(
+    status: TradingRuntimeProgress['status'],
+    startupPhase: string,
+  ): void {
+    const now = Date.now();
+    this.runtimeProgress = {
+      ...this.runtimeProgress,
+      status,
+      startupPhase,
+      startupPhaseAtMs: now,
+    };
   }
 
   private trackRuntimeTask<T>(operation: () => Promise<T>): Promise<T> {
