@@ -307,3 +307,31 @@ La proxima ventana solo puede comenzar despues de comprobar, en pocas muestras:
 Si alguno falta, la ventana debe marcarse `INSUFFICIENT_OBSERVABILITY` sin
 esperar otros 30 minutos. Esta correccion no autoriza despliegue ni permite
 inferir rentabilidad.
+
+### Publicacion Posterior
+
+La correccion de comportamiento y las regresiones se publicaron en dos commits
+de la misma rama:
+
+- `38b09a4c29e1635030b73361af915c5ba21d4a5b` - `restore Micro runtime observability`.
+- `6871a118beda510f921876c5485e537d0a682c2f` - `instrument TradingService startup progress`.
+
+El nuevo candidato fue compilado despues del ultimo commit, sin despliegue:
+
+- Directorio: `/tmp/opencode/micro-38b09a4-candidate`.
+- Commit del manifiesto: `6871a118beda510f921876c5485e537d0a682c2f`.
+- Estado: `PREPARED_NOT_AUTHORIZED`.
+- Tarball SHA-256: `92fb21c553d29b6edf63cd0b5c320902d205023c0aea3e9edda480fa3ea0d9c9`.
+- Manifiesto SHA-256: `38e41d26efe2ed8cf64cc3aa37082634bbde9409a2594f348006984170bbef1a`.
+- Configuracion efectiva: `132879584379e97474309df05d99552a6b835fecdcbe38d3b586b7bfb76633e1`.
+
+La suite offline completa termino con `2.871 PASS`, `2 FAIL`, en `220`
+archivos (`2.873` tests totales). Los dos fallos son unicamente los
+checkpoints byte-exactos historicos de `src/main.ts` y
+`src/app/services/TradingService.ts`; no se cambiaron automaticamente. Tests
+dirigidos: `44 PASS`; TypeScript sin emision: `PASS`; Prettier y
+`git diff --check`: `PASS`.
+
+El proceso PM2 y el `dist` activo no fueron reiniciados despues de esta
+correccion. No se modificaron produccion, `.env`, YAML LIVE, journals, estado,
+locks ni credenciales, y no se enviaron ordenes.
