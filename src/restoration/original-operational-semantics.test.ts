@@ -96,7 +96,9 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // V3 policy/episode/sizing and durable exits; deployment and ADA quarantine unchanged.
     // Canonical admission/management and historical read boundaries; not artifact approval.
     // Runtime-owned historical settlement under pending/shared admission reservations.
-    '8355482271127029f6854c470146045cfc3e9751fadede44afb26b7f81de5e28',
+    // Reviewed delta from 8f7da23: preparation metrics and original input-freshness metadata.
+    // Source checkpoint approval only; audit section 12 retains the previous digest.
+    '7f96b5f54a52f25fa2ec24391682c14fec86ee3ccf78925457da259dd779356d',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -145,7 +147,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
 const contextualSourceCheckpoints: Record<string, string> = {
   'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   'src/app/services/TradingService.ts':
-    '8355482271127029f6854c470146045cfc3e9751fadede44afb26b7f81de5e28',
+    // Same reviewed source delta, not a grant of runtime or artifact authority.
+    '7f96b5f54a52f25fa2ec24391682c14fec86ee3ccf78925457da259dd779356d',
 };
 
 type GuardFixture = [

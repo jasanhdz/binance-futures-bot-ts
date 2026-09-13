@@ -1106,6 +1106,87 @@ restart, build a dist, peticion de cuenta, orden real ni escritura operativa.
 Se aplico Prettier solo a los archivos modificados: `npm run format` expande a
 `prettier --write .` y su alcance global contradiria la preservacion de journals.
 
+### Revision Independiente De ACK, PREPARED Y Checkpoints (2026-09-12)
+
+Revision sobre HEAD `2cedde0810981a6983eedff20dbf058199575945`, con arbol
+inicial limpio. No se inspecciono ni modifico el proceso operativo en esta revision.
+Se reviso el diff de `b2d1fed` y las implementaciones actuales del router,
+coordinador durable, estrategia y autoridad Micro.
+
+- El router espera el ACK obligatorio y llama a `validateAfterRequiredAudit`.
+  Un vencimiento transforma el resultado en NO_TRADE conservando timestamp e
+  identidad, y registra `postAuditAdmissionRejected`; no es una nueva senal.
+- `DurableEntryCoordinator.execute` conserva una copia de la intencion, comprueba
+  identidad antes de PREPARED y vuelve a comprobarla despues de append/flush,
+  inmediatamente antes de llamar a send.
+- CANCELLED_BEFORE_SEND se produce antes de invocar send, para Micro con metadata
+  inputFreshness y sin shutdown en curso. No representa cancelacion en Binance.
+  El pending solo se libera despues de persistir y hacer flush del terminal.
+- La recuperacion de CLOSE_PENDING exige ese outcome y motivo persistidos y la
+  identidad correspondiente; completa CLOSED sin lookup ni reenvio. PREPARED
+  aislado no se interpreta como prueba de que nunca se envio una orden.
+- La prueba de crash cubre fallo antes del append CLOSED tras CLOSE_PENDING.
+  No constituye una exploracion exhaustiva de todos los interleavings de fsync,
+  fallos del sistema operativo o corrupcion del journal.
+
+**Correccion de la interpretacion anterior de los dos fallos:** ambos comparan
+los mismos bytes actuales de TradingService contra el mismo digest anterior.
+No son dos autorizaciones de despliegue independientes.
+
+| Comprobacion                                                        | Contrato observado en el codigo                                                                                              | Tratamiento correcto                                                                                                                                                                        |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `binds the exact owner-authorized current-brain contract exception` | `ownerAuthorizedCurrentBrainContractDigests`: checkpoint de fuentes/config; comentarios excluyen expresamente autoridad LIVE | Conservar el registro historico. Una nueva referencia requiere revision explicita del delta; no inferir aprobacion operativa del nombre del test                                            |
+| `tracks branch bytes separately from deployment authorization`      | `contextualSourceCheckpoints`: checkpoint de los bytes de rama, expresamente separado de aprobacion                          | Actualizar solo mediante una revision de checkpoint documentada, o separar una fixture historica inmutable de la comprobacion de fuentes actuales; no fabricar coincidencia automaticamente |
+
+Los dos esperan `8355482271127029f6854c470146045cfc3e9751fadede44afb26b7f81de5e28`
+y reciben `7f96b5f54a52f25fa2ec24391682c14fec86ee3ccf78925457da259dd779356d`.
+El mapa `baselineOperationalDigests` es una comprobacion distinta y paso.
+No debe modificarse un checkpoint de baseline inmutable para seguir los cambios
+de la rama. En particular, las dos tablas fallidas consultan fuentes actuales,
+no un blob historico fijado a un commit: no prueban por si mismas inmutabilidad
+de aquel blob.
+
+La autorizacion efectiva es otro contrato: `createMicroBurstIdentity` lee
+`MICRO_BURST_APPROVED_COMMIT` y `MICRO_BURST_APPROVED_CONFIG_SHA256`;
+`hasMicroBurstLiveAuthority` compara identidad, revision declarada y config
+efectiva. `diagnoseMicroBurstAuthority` requiere ademas evidencia del artefacto
+y devuelve `grantsAuthority: false`. Una coincidencia entre variables de entorno
+no atestigua por si sola los bytes ejecutados.
+
+Procedimiento antes de aprobar un despliegue:
+
+1. Revisar el delta completo desde la revision de fuentes anteriormente revisada,
+   no solo los tres cambios de TradingService en b2d1fed; incluir sus dependencias.
+2. Registrar por separado la aceptacion del nuevo checkpoint de rama, manteniendo
+   el checkpoint historico y su procedencia. Esta revision no modifica ninguno.
+3. Volver a ejecutar los dos contratos y las regresiones afectadas tras cualquier
+   cambio expresamente revisado de checkpoint. No declarar verde mientras fallen.
+4. Fijar revision final, configuracion normalizada y manifest del build reproducible;
+   obtener autorizacion de despliegue para ese conjunto exacto por separado.
+5. Solo despues, durante una ventana autorizada, verificar bytes/manifest y
+   aprobaciones del proceso y medir al menos 30 minutos segun el procedimiento
+   siguiente. No usar resultados sinteticos como medicion operacional.
+
+Validacion ejecutada personalmente en esta revision:
+
+```bash
+env -i PATH="$PATH" HOME=/tmp/opencode \
+  NODE_OPTIONS="--require=$PWD/src/testing/OfflineTestBootstrap.cjs" \
+  node node_modules/vitest/vitest.mjs run \
+  --config src/testing/OfflineVitest.config.ts \
+  src/app/execution/DurableEntryCoordinator.test.ts \
+  src/strategies/micro-burst/domain/MicroBurstTemporalContracts.test.ts \
+  src/strategies/micro-burst/domain/MicroBurstInputFreshness.test.ts \
+  src/strategies/micro-burst/domain/MicroBurstEntryMarketGuard.test.ts \
+  src/restoration/original-operational-semantics.test.ts
+```
+
+Resultado: **113 PASS, 2 FAIL, 115 tests en 5 archivos**, 15.11 s; ambos FAIL
+son los checkpoints descritos. Las cuatro suites de mecanismo suman 95 PASS;
+no se suman otra vez al total. Es una seleccion dirigida, no una suite completa.
+No se actualizaron hashes, expectativas, configuracion LIVE, procesos, estados
+ni journals. No se ha autorizado ni efectuado despliegue con esta revision.
+
 ### Procedimiento Futuro Para Una Ventana Autorizada
 
 Este procedimiento queda documentado; no se ejecuto un deploy ni una ventana LIVE.
@@ -1170,3 +1251,88 @@ Este procedimiento queda documentado; no se ejecuto un deploy ni una ventana LIV
 Pendiente exclusivamente operativo: autorizacion de artefacto/checkpoints y medicion
 de una ventana futura con estos campos. Esta entrega implementa y prueba los cambios
 offline; no certifica el proceso actualmente cargado ni sus resultados de mercado.
+
+## 12. Revision Autorizada De Los Checkpoints De TradingService
+
+Esta seccion sucede a la revision anterior: el operador autorizo expresamente
+actualizar las dos referencias de fuentes solo tras revisar el delta completo.
+No autorizo despliegue ni cambios de aprobaciones LIVE. Se conserva la revision
+documental local anterior y sus resultados fallidos como evidencia historica.
+
+### Procedencia Y Delta Completo
+
+HEAD inicial local y remoto: `2cedde0810981a6983eedff20dbf058199575945`, rama
+`work/micro-burst-rider-v1-20260826`. El unico cambio local inicial era este informe.
+Se verifico directamente el blob de `TradingService.ts` en `8f7da23` mediante
+`git show 8f7da23:src/app/services/TradingService.ts | sha256sum`.
+
+| Referencia                                                              | SHA-256 de TradingService.ts                                       |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Checkpoint anterior, blob en `8f7da23`                                  | `8355482271127029f6854c470146045cfc3e9751fadede44afb26b7f81de5e28` |
+| Fuente revisada, introducida por `b2d1fed` y conservada en HEAD inicial | `7f96b5f54a52f25fa2ec24391682c14fec86ee3ccf78925457da259dd779356d` |
+
+`git diff 8f7da23 HEAD -- src/app/services/TradingService.ts` contiene exactamente
+tres lineas agregadas y ninguna eliminada:
+
+1. `AegisRuntimeSnapshot`: campo opcional `entryPreparationTiming` tipado desde
+   `DurableEntryCoordinator.getTimingHealth`. No agrega autoridad de ejecucion.
+2. `getAegisRuntimeSnapshot`: expone una copia acotada de esas metricas, mediante
+   el getter del coordinador; no consulta REST ni escribe journals.
+3. Construccion de la intencion Micro: propaga `request.diagnostics.inputFreshness`
+   para que la barrera existente compruebe los inputs originales antes del envio.
+   No cambia el timestamp original ni renueva la identidad de la senal.
+
+No hay cambios ajenos en ese delta, ni cambios de presupuesto, apalancamiento,
+costes, confirmaciones, stop independiente, salidas, reservas o orden de guards.
+Se revisaron tambien el consumidor `validateMicroBurstEntryMarket`, la validacion
+post-ACK y el protocolo durable ya descritos arriba. PREPARED conserva su flush
+previo al envio; CANCELLED_BEFORE_SEND no representa cancelacion en el exchange
+y la recuperacion terminal no reutiliza la identidad.
+
+### Alcance De La Actualizacion
+
+Se actualizan exclusivamente las entradas de TradingService en
+`ownerAuthorizedCurrentBrainContractDigests` y `contextualSourceCheckpoints`,
+en `src/restoration/original-operational-semantics.test.ts`. Los predicados de
+los tests se mantienen: comparacion exacta de bytes. No se omiten comprobaciones.
+
+Permanecen intactos `baselineOperationalDigests`, sus referencias historicas,
+los digests de los demas archivos, YAML operativo, identidad/config de aprobacion,
+credenciales, artefactos instalados y procesos. El digest anterior se conserva
+arriba y en el historial Git. Esta aprobacion de fuentes no aprueba un build ni
+autoriza el despliegue: la revision final y su manifest/configuracion necesitan
+su autorizacion operativa separada.
+
+### Validacion De Este Ajuste
+
+Validacion ejecutada el **2026-09-13 UTC**, sin reintentos ni exclusiones nuevas:
+
+| Ejecucion                                                                                                             | Resultado                                            |
+| --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Dirigida: checkpoints, DurableEntryCoordinator, TemporalContracts, EntryMarketGuard e InputFreshness; inicio 03:41:42 | **115 PASS en 5 archivos**, 14.91 s                  |
+| Suite completa offline; inicio 03:42:11                                                                               | **2869 PASS en 219 archivos**, 310.50 s; cero fallos |
+| `node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit`                                                      | PASS                                                 |
+| `git diff --check`                                                                                                    | PASS                                                 |
+
+Las 115 pruebas dirigidas estan incluidas en la suite completa; no se suman al
+total. Los mensajes de error de fixtures de estado corrupto/logger corresponden
+a casos negativos aprobados, no a errores ocultados ni a peticiones reales.
+
+Comando completo de la suite (sin seleccion de archivos):
+
+```bash
+env -i PATH="$PATH" HOME=/tmp/opencode \
+  NODE_OPTIONS="--require=$PWD/src/testing/OfflineTestBootstrap.cjs" \
+  node node_modules/vitest/vitest.mjs run \
+  --config src/testing/OfflineVitest.config.ts
+```
+
+Se empleo el bootstrap offline existente: credenciales fuera del entorno,
+dotenv desactivado, escrituras del workspace bloqueadas y red externa bloqueada.
+Los tests de compatibilidad no habilitaron servicios reales. No se emitio build
+a `dist` ni se ejecuto el bot. La actualizacion consiste unicamente en los dos
+checkpoints comentados y este informe, conservando su edicion local previa.
+
+La suite completa ahora pasa para esta revision de fuentes. Sigue pendiente la
+autorizacion independiente del artefacto y la medicion operacional posterior;
+estos resultados no autorizan despliegue ni demuestran rentabilidad.
