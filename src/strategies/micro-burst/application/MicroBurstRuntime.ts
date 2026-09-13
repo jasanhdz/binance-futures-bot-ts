@@ -7,6 +7,7 @@ import {
 } from '../../../core/market-data/SynchronizedOrderBook';
 import { BtcMicroContextProvider, BtcMicroContextDeps } from '../domain/BtcMicroContextProvider';
 import { RollingAggTradeBuffer } from '../../../core/market-data/RollingAggTradeBuffer';
+import type { AggTradeContinuityDiagnostics } from '../../../core/market-data/RollingAggTradeBuffer';
 import {
   MicroBurstReferencePriceProvider,
   MicroBurstReferencePriceDeps,
@@ -82,6 +83,7 @@ export interface MicroBurstRuntimeHealth {
   totalInvalidContexts: number;
   invalidReasonCounts: Readonly<Record<string, number>>;
   invalidReasonCountsBySymbol: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  symbolHealth: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   totalResyncs: number;
   liveExecution: boolean;
   paperEngine: 'GENERIC';
@@ -954,6 +956,9 @@ export class MicroBurstRuntime {
           Object.fromEntries(reasons),
         ]),
       ),
+      symbolHealth: Object.fromEntries(
+        [...this.symbolStates.keys()].map((symbol) => [symbol, this.getSymbolHealth(symbol)!]),
+      ),
       totalResyncs: this.getTotalResyncs(),
       liveExecution: this.config.mode === 'LIVE' && this.deps.liveTrading !== undefined,
       paperEngine: 'GENERIC',
@@ -1199,6 +1204,7 @@ export class MicroBurstRuntime {
     capacityTruncated: boolean;
     gapFree: boolean;
     tradeCount: number;
+    continuity: AggTradeContinuityDiagnostics;
   } | null {
     const state = this.symbolStates.get(symbol);
     if (!state) return null;
@@ -1224,6 +1230,7 @@ export class MicroBurstRuntime {
       capacityTruncated: flow.capacityTruncated,
       gapFree: flow.gapFree,
       tradeCount: flow.tradeCount,
+      continuity: state.aggTradeBuffer.getContinuityDiagnostics(),
     };
   }
 
@@ -1302,6 +1309,7 @@ export class MicroBurstRuntime {
       invalidContexts: health.totalInvalidContexts,
       invalidReasonCounts: health.invalidReasonCounts,
       invalidReasonCountsBySymbol: health.invalidReasonCountsBySymbol,
+      symbolHealth: health.symbolHealth,
       resyncs: health.totalResyncs,
       liveExecution: health.liveExecution,
       signalJournalHealthy: health.signalJournalHealthy,

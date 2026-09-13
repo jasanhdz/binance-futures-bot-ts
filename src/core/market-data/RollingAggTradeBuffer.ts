@@ -20,6 +20,18 @@ export interface AggTradeGap {
   dedupeKey: string;
 }
 
+export interface AggTradeContinuityDiagnostics {
+  coverageStartedAtMs: number | null;
+  eventWatermarkMs: number | null;
+  firstAggregateTradeId: number | null;
+  lastAggregateTradeId: number | null;
+  lastAggregateEventTimeMs: number | null;
+  pendingGapCount: number;
+  confirmedGapCount: number;
+  latestGap: AggTradeGap | null;
+  continuityUncertain: boolean;
+}
+
 interface AggTradeGapInterval {
   startedAtMs: number;
   endedAtMs: number;
@@ -49,11 +61,14 @@ export class RollingAggTradeBuffer {
   private readonly gapIntervals: AggTradeGapInterval[] = [];
   private readonly gapKeys = new Set<string>();
   private lastAggregateTradeId: number | null = null;
+  private lastAggregateEventTimeMs: number | null = null;
   private missingIdentityEventTimeMs: number | null = null;
   private lastAggregateEvent: AggTradeEvent | null = null;
   private lastTradeEventTimeMs: number | null = null;
   private readonly pendingGaps = new Map<number, PendingGap>();
   private continuityUncertain = false;
+  private firstAggregateTradeId: number | null = null;
+  private latestGap: AggTradeGap | null = null;
 
   constructor(
     clock: Clock,
@@ -83,6 +98,7 @@ export class RollingAggTradeBuffer {
         event.eventTime,
       );
     if (hasAggregateIdentity) {
+      this.firstAggregateTradeId ??= event.aggregateTradeId!;
       this.pendingGaps.delete(event.aggregateTradeId!);
       for (const [missingId, pending] of this.pendingGaps) {
         if (event.aggregateTradeId! > missingId + 1) {
@@ -114,6 +130,8 @@ export class RollingAggTradeBuffer {
         event.aggregateTradeId!,
       );
       if (this.lastAggregateTradeId === event.aggregateTradeId) this.lastAggregateEvent = event;
+      if (this.lastAggregateTradeId === event.aggregateTradeId)
+        this.lastAggregateEventTimeMs = event.eventTime;
     }
     this.lastTradeEventTimeMs = Math.max(
       this.lastTradeEventTimeMs ?? event.eventTime,
@@ -145,7 +163,7 @@ export class RollingAggTradeBuffer {
       nextAggregateTradeId: pending.nextAggregateTradeId,
       dedupeKey,
     });
-    this.onGap?.({
+    const gap = {
       previousAggregateTradeId: pending.previousAggregateTradeId,
       nextAggregateTradeId: pending.nextAggregateTradeId,
       previousFirstTradeId: pending.previousEvent?.firstTradeId,
@@ -155,7 +173,23 @@ export class RollingAggTradeBuffer {
       previousEventTimeMs: pending.previousEvent?.eventTime ?? null,
       nextEventTimeMs: pending.nextEvent.eventTime,
       dedupeKey,
-    });
+    };
+    this.latestGap = gap;
+    this.onGap?.(gap);
+  }
+
+  getContinuityDiagnostics(): AggTradeContinuityDiagnostics {
+    return {
+      coverageStartedAtMs: this.coverageStartedAtMs,
+      eventWatermarkMs: this.eventWatermarkMs,
+      firstAggregateTradeId: this.firstAggregateTradeId,
+      lastAggregateTradeId: this.lastAggregateTradeId,
+      lastAggregateEventTimeMs: this.lastAggregateEventTimeMs,
+      pendingGapCount: this.pendingGaps.size,
+      confirmedGapCount: this.gapIntervals.length,
+      latestGap: this.latestGap,
+      continuityUncertain: this.continuityUncertain,
+    };
   }
 
   getRecent(maxAgeMs?: number): ReadonlyArray<AggTradeEvent> {
@@ -230,6 +264,9 @@ export class RollingAggTradeBuffer {
     this.gapIntervals.length = 0;
     this.gapKeys.clear();
     this.lastAggregateTradeId = null;
+    this.lastAggregateEventTimeMs = null;
+    this.firstAggregateTradeId = null;
+    this.latestGap = null;
     this.missingIdentityEventTimeMs = null;
     this.lastAggregateEvent = null;
     this.lastTradeEventTimeMs = null;
@@ -245,6 +282,9 @@ export class RollingAggTradeBuffer {
     this.gapIntervals.length = 0;
     this.gapKeys.clear();
     this.lastAggregateTradeId = null;
+    this.lastAggregateEventTimeMs = null;
+    this.firstAggregateTradeId = null;
+    this.latestGap = null;
     this.missingIdentityEventTimeMs = null;
     this.lastAggregateEvent = null;
     this.lastTradeEventTimeMs = null;
