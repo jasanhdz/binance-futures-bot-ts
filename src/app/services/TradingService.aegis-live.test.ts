@@ -1592,7 +1592,7 @@ describe('TradingService Aegis live execution', () => {
       });
       await configureMicroAdmission(h);
       const { service, exchange, mlService, logger, historyLogger, state } = h;
-      Object.assign(CONFIG, { AEGIS_ENABLED: false });
+      Object.assign(CONFIG, { AEGIS_ENABLED: false, AEGIS_LIVE_ENABLED: false });
       (service as any).detector = {};
       const liquidity = attachSharedLiquidity(service, logger, status);
       // Explicit approved fixture, never a replacement of deployment approval.
@@ -1615,12 +1615,17 @@ describe('TradingService Aegis live execution', () => {
           diagnostics: {
             episodeId: `MB-EP-${'1'.repeat(24)}`,
             signalSnapshotAtMs: Date.now() - 1000,
+            decisionId: 'micro-decision-simulated-1',
           },
         });
         expect(opened, JSON.stringify(logger.warn.mock.calls)).toBe(status === 'FRESH');
         expect(execute).toHaveBeenCalledTimes(status === 'FRESH' ? 1 : 0);
         expect(exchange.marketOpen).toHaveBeenCalledTimes(status === 'FRESH' ? 1 : 0);
         if (opened) {
+          expect(logger.info).toHaveBeenCalledWith(
+            'micro_burst_live_entry_admitted',
+            expect.objectContaining({ decisionId: 'micro-decision-simulated-1' }),
+          );
           expect(exchange.sendStopCloseOnce).toHaveBeenCalled();
           expect(state.get().lastStrategy).toBe('MICRO_BURST');
           expect(historyLogger.logTradeOpen).toHaveBeenCalledWith(
@@ -1636,6 +1641,42 @@ describe('TradingService Aegis live execution', () => {
       }
     },
   );
+
+  it('keeps unauthorized Micro blocked while Aegis is stopped', async () => {
+    const h = makeHarness({
+      balance: 2_000,
+      microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+    });
+    await configureMicroAdmission(h);
+    Object.assign(CONFIG, { AEGIS_ENABLED: false, AEGIS_LIVE_ENABLED: false });
+    (h.service as any).microBurstIdentity = createMicroBurstIdentity();
+    (h.service as any).acceptingEntries = true;
+    const opened = await (h.service as any).openMicroBurstLivePosition({
+      symbol: 'ETHUSDT',
+      side: 'LONG',
+      signalId: 'unauthorized-micro',
+      strategyVersion: 'MICRO',
+      requestedAt: Date.now(),
+      leverage: 20,
+      positionFraction: 0.9,
+      structuralStopPrice: 2990,
+      destinationPrice: 3030,
+      diagnostics: {
+        decisionId: 'micro-decision-unauthorized',
+        episodeId: `MB-EP-${'9'.repeat(24)}`,
+        signalSnapshotAtMs: Date.now() - 1000,
+      },
+    });
+    expect(opened).toBe(false);
+    expect(h.exchange.marketOpen).not.toHaveBeenCalled();
+    expect(h.logger.info).toHaveBeenCalledWith(
+      'micro_burst_live_entry_denied',
+      expect.objectContaining({
+        decisionId: 'micro-decision-unauthorized',
+        reason: 'MICRO_CONTEXTUAL_LIVE_IDENTITY_REQUIRED',
+      }),
+    );
+  });
 
   it('does not let manual adoption steal a Micro fill before its ownership handoff', async () => {
     const h = makeHarness({

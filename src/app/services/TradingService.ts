@@ -73,7 +73,7 @@ import {
 } from '../strategy/OwnedPositionManagers';
 import { MicroBurstPositionManager } from '../../strategies/micro-burst/application/MicroBurstPositionManager';
 import { MicroBurstExitObservation } from '../../strategies/micro-burst/application/MicroBurstExitObservation';
-import { hasLiveAuthority, StrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
 import { evaluateSharedEntrySafety } from '../../core/risk/SharedEntrySafetyGate';
 import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOwnership';
 import { createAegisMigrationIdentity } from '../../strategies/aegis/domain/AegisIdentity';
@@ -1760,7 +1760,11 @@ export class TradingService {
     {
       const reason = this.microNetLossBlockedReason();
       if (reason) {
-        this.recordMicroAdmissionDenied({ symbol: request.symbol, reason });
+        this.recordMicroAdmissionDenied({
+          symbol: request.symbol,
+          reason,
+          decisionId: this.microDecisionId(request),
+        });
         return false;
       }
     }
@@ -1780,6 +1784,7 @@ export class TradingService {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
           reason: 'MICRO_CONTEXTUAL_EXECUTION_CAPABILITIES_REQUIRED',
+          decisionId: this.microDecisionId(request),
         });
         return false;
       }
@@ -1796,8 +1801,14 @@ export class TradingService {
         ) ||
         ![20, 30].includes(request.leverage) ||
         request.positionFraction !== config.contextualRisk.marginFraction
-      )
+      ) {
+        this.recordMicroAdmissionDenied({
+          symbol: request.symbol,
+          reason: 'MICRO_CONTEXTUAL_LIVE_IDENTITY_REQUIRED',
+          decisionId: this.microDecisionId(request),
+        });
         return false;
+      }
       contextualPolicy = createMicroBurstTradePolicy(
         this.microBurstIdentity,
         config.contextualRisk,
@@ -1808,20 +1819,17 @@ export class TradingService {
       !config.enabled ||
       config.mode !== 'LIVE' ||
       MICRO_BURST_LIVE_AUTHORITY_ENABLED !== true ||
-      !hasLiveAuthority(this.microBurstIdentity, 'LIVE') ||
       !hasMicroBurstLiveAuthority(
         this.microBurstIdentity,
         provenance.configHash,
         provenance.codeCommitSha,
       ) ||
-      this.getTradingMode() !== 'AEGIS_TURBO_MICRO_LIVE' ||
-      CONFIG.AEGIS_LIVE_ENABLED !== true ||
-      config.symbols[request.symbol]?.enabled !== true ||
-      this.getSymbolMode(request.symbol) !== 'LIVE'
+      config.symbols[request.symbol]?.enabled !== true
     ) {
       this.recordMicroAdmissionDenied({
         symbol: request.symbol,
-        reason: 'LIVE_AUTHORITY_NOT_ENABLED',
+        reason: 'MICRO_BURST_LIVE_AUTHORITY_NOT_ENABLED',
+        decisionId: this.microDecisionId(request),
         deployedCodeCommitSha: provenance.codeCommitSha,
         effectiveConfigHash: `sha256:${provenance.configHash}`,
         approvedConfigHash: this.microBurstIdentity.configHash,
@@ -1842,6 +1850,7 @@ export class TradingService {
       this.recordMicroAdmissionDenied({
         symbol: request.symbol,
         reason: 'MICRO_BURST_ENTRY_IN_FLIGHT',
+        decisionId: this.microDecisionId(request),
       });
       return false;
     }
@@ -1850,6 +1859,7 @@ export class TradingService {
       this.recordMicroAdmissionDenied({
         symbol: request.symbol,
         reason: reservation.reason,
+        decisionId: this.microDecisionId(request),
       });
       return false;
     }
@@ -1873,6 +1883,7 @@ export class TradingService {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
           reason: 'MICRO_SAFETY_RECONCILIATION_PENDING',
+          decisionId: this.microDecisionId(request),
         });
         return false;
       }
@@ -1927,6 +1938,7 @@ export class TradingService {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
           reason: liquidity?.status !== 'FRESH' ? 'LIQUIDITY_DATA_NOT_FRESH' : safety.reason,
+          decisionId: this.microDecisionId(request),
         });
         return false;
       }
@@ -1956,13 +1968,24 @@ export class TradingService {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
           reason: portfolio.reason,
+          decisionId: this.microDecisionId(request),
           ...portfolio.metadata,
         });
         return false;
       }
 
       const tradeId = generateStrategyTradeId('MICRO_BURST', request.symbol);
-      this.microAdmissionDiagnostics.record('admission', 'ALLOWED', { symbol: request.symbol });
+      const decisionId = this.microDecisionId(request);
+      this.microAdmissionDiagnostics.record('admission', 'ALLOWED', {
+        symbol: request.symbol,
+        decisionId,
+      });
+      this.deps.logger.info('micro_burst_live_entry_admitted', {
+        symbol: request.symbol,
+        side: request.side,
+        decisionId,
+        tradeId,
+      });
       const leverage = Math.min(request.leverage, contextualPolicy.config.maxLeverageHardCap);
       const execution = await this.sharedStrategyExecution.execute(
         createMicroBurstExecutionIntent({
@@ -2033,6 +2056,7 @@ export class TradingService {
         this.deps.logger.warn('micro_burst_live_entry_not_opened', {
           symbol: request.symbol,
           side: request.side,
+          decisionId,
           tradeId,
           status: execution.status,
           reason: execution.reason,
@@ -2152,6 +2176,7 @@ export class TradingService {
       this.deps.logger.warn('micro_burst_live_entry_opened', {
         symbol: request.symbol,
         side: request.side,
+        decisionId,
         tradeId,
         leverage: execution.leverage,
         trailingEnabled: false,
@@ -2163,6 +2188,12 @@ export class TradingService {
       this.microBurstEntryInFlight = false;
       this.entryInFlight = false;
     }
+  }
+
+  private microDecisionId(request: MicroBurstLiveEntryRequest): string | null {
+    return typeof request.diagnostics?.decisionId === 'string'
+      ? request.diagnostics.decisionId
+      : null;
   }
 
   private microNetLossBlockedReason(): string | undefined {
@@ -2295,7 +2326,7 @@ export class TradingService {
 
   private recordMicroAdmissionDenied(sample: Record<string, unknown>): void {
     this.microAdmissionDiagnostics.record('admission', String(sample.reason), sample);
-    this.deps.logger.debug('micro_burst_live_entry_denied', sample);
+    this.deps.logger.info('micro_burst_live_entry_denied', sample);
   }
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {
