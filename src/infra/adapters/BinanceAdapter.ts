@@ -108,6 +108,13 @@ type CandleCacheEntry = {
   ttl: number;
 };
 
+type CandleInflightEntry = {
+  promise: Promise<Candle[]>;
+  requestedAtMs: number;
+  fetchLimit: number;
+  timeoutMs: number;
+};
+
 type HedgeMode = boolean | 'UNKNOWN';
 
 const CANDLE_INTERVAL_SETTINGS: Record<string, { minFetch: number; ttl: number }> = {
@@ -207,7 +214,7 @@ export class BinanceExchange implements Exchange {
 
   private hedgeCache?: { value: boolean; at: number };
   private candleCache = new Map<string, CandleCacheEntry>();
-  private candleInflight = new Map<string, Promise<Candle[]>>();
+  private candleInflight = new Map<string, CandleInflightEntry>();
   private markCache = new Map<string, { price: number; ts: number }>();
   private markPriceInflight?: Promise<void>;
   private fundingCache = new Map<string, { snapshot: FundingSnapshot; ts: number }>();
@@ -571,15 +578,25 @@ export class BinanceExchange implements Exchange {
     }
 
     let request = this.candleInflight.get(key);
+    if (request && request.fetchLimit < fetch) {
+      await withTimeout(request.promise, CANDLE_REQUEST_TIMEOUT_MS, `candles:${key}`);
+      request = this.candleInflight.get(key);
+    }
     if (!request) {
-      request = this.fetchCandles(symbol, interval, fetch);
+      const promise = this.fetchCandles(symbol, interval, fetch);
+      request = {
+        promise,
+        requestedAtMs: now,
+        fetchLimit: fetch,
+        timeoutMs: CANDLE_REQUEST_TIMEOUT_MS,
+      };
       this.candleInflight.set(key, request);
-      void request.then(
+      void request.promise.then(
         () => this.candleInflight.get(key) === request && this.candleInflight.delete(key),
         () => this.candleInflight.get(key) === request && this.candleInflight.delete(key),
       );
     }
-    const candles = await withTimeout(request, CANDLE_REQUEST_TIMEOUT_MS, `candles:${key}`);
+    const candles = await withTimeout(request.promise, request.timeoutMs, `candles:${key}`);
     const receivedAtMs = Date.now();
     setCandleProvenance(candles, {
       requestedAtMs: now,
@@ -594,6 +611,25 @@ export class BinanceExchange implements Exchange {
     });
     this.candleCache.set(key, { candles, ts: now, interval, ttl });
     return setCandleProvenance(candles.slice(-limit), getCandleProvenance(candles)!);
+  }
+
+  getCandleRequestDiagnostics(): ReadonlyArray<{
+    key: string;
+    requestedAtMs: number;
+    ageMs: number;
+    fetchLimit: number;
+    timeoutMs: number;
+    cause: 'TRANSPORT_PENDING';
+  }> {
+    const now = Date.now();
+    return [...this.candleInflight.entries()].map(([key, request]) => ({
+      key,
+      requestedAtMs: request.requestedAtMs,
+      ageMs: Math.max(0, now - request.requestedAtMs),
+      fetchLimit: request.fetchLimit,
+      timeoutMs: request.timeoutMs,
+      cause: 'TRANSPORT_PENDING' as const,
+    }));
   }
 
   async getLastCandle(symbol: string): Promise<Candle | null> {

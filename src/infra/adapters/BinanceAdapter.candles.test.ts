@@ -111,10 +111,62 @@ describe('BinanceExchange candle compatibility path', () => {
         message: 'BINANCE_REQUEST_TIMEOUT:candles:ETHUSDT|1m',
       });
       expect(mockClient.futuresCandles).toHaveBeenCalledOnce();
+      expect(exchange.getCandleRequestDiagnostics()).toMatchObject([
+        {
+          key: 'ETHUSDT|1m',
+          fetchLimit: 240,
+          timeoutMs: 15_000,
+          cause: 'TRANSPORT_PENDING',
+        },
+      ]);
       resolve([]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exchange.getCandleRequestDiagnostics()).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not satisfy a larger in-flight limit with a smaller response', async () => {
+    let resolveFirst!: (candles: unknown[]) => void;
+    mockClient.futuresCandles
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolveFirst = done;
+          }),
+      )
+      .mockImplementationOnce(async () =>
+        Array.from({ length: 6 }, (_, index) => ({
+          openTime: index,
+          open: '100',
+          high: '110',
+          low: '90',
+          close: '105',
+          volume: '10',
+          baseAssetVolume: '4',
+          closeTime: index + 1,
+        })),
+      );
+    const exchange = new BinanceExchange(logger);
+    const first = exchange.getCandles('ETHUSDT', '1d', 1);
+    const larger = exchange.getCandles('ETHUSDT', '1d', 6);
+    await vi.waitFor(() => expect(mockClient.futuresCandles).toHaveBeenCalledOnce());
+    resolveFirst(
+      Array.from({ length: 5 }, (_, index) => ({
+        openTime: index,
+        open: '100',
+        high: '110',
+        low: '90',
+        close: '105',
+        volume: '10',
+        baseAssetVolume: '4',
+        closeTime: index + 1,
+      })),
+    );
+    await expect(first).resolves.toHaveLength(1);
+    await expect(larger).resolves.toHaveLength(6);
+    expect(mockClient.futuresCandles).toHaveBeenCalledTimes(2);
   });
 
   it('preserves the 5m WS candle and AggTrade buyVolume overlay', async () => {
