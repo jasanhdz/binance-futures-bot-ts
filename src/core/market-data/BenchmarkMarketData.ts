@@ -7,6 +7,7 @@ export interface BenchmarkDescriptor {
 
 export interface BenchmarkCandlePort {
   getSeries(interval: string, limit: number): ReturnType<CandlePort['getSeries']>;
+  getCandleRequestDiagnostics?(): ReadonlyArray<Record<string, unknown>>;
 }
 
 export interface BenchmarkMarketData {
@@ -43,6 +44,7 @@ export class ComposedBenchmarkMarketDataPort implements BenchmarkMarketDataPort 
       candles: Object.freeze({
         getSeries: (interval: string, limit: number) =>
           candles.getSeries(normalized.symbol, interval, limit),
+        getCandleRequestDiagnostics: () => candles.getCandleRequestDiagnostics?.() ?? [],
       }),
       quote,
       orderBook,

@@ -114,6 +114,7 @@ export interface CandleSeriesSnapshot {
 
 export interface CandlePort {
   getSeries(symbol: string, interval: string, limit: number): Promise<CandleSeriesSnapshot>;
+  getCandleRequestDiagnostics?(): ReadonlyArray<Record<string, unknown>>;
 }
 
 export interface TemporalOrderBookObservation {

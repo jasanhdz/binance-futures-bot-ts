@@ -15,6 +15,10 @@ symbol and interval. A timed-out caller does not start a replacement while the u
 request remains unresolved, so the adapter fails boundedly without creating overlapping transport
 requests. The SDK path does not expose cancellation; a permanently unresolved transport request
 can therefore retain its in-flight slot until process restart.
+The pending slot is exposed through `MicroBurstRuntimeHealth.btcCandleRequests` with its key,
+request age, fetch limit, timeout and `TRANSPORT_PENDING` cause. A provider stop/restart does not
+cancel this adapter-owned request; process restart or eventual transport settlement is required to
+release the slot.
 
 ## Freshness reporting
 

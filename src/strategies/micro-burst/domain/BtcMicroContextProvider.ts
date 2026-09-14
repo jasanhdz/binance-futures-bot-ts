@@ -230,6 +230,10 @@ export class BtcMicroContextProvider {
     };
   }
 
+  getCandleRequestDiagnostics(): ReadonlyArray<Record<string, unknown>> {
+    return this.deps.benchmark.candles.getCandleRequestDiagnostics?.() ?? [];
+  }
+
   private async pollAndSchedule(lifecycleVersion: number): Promise<void> {
     if (this.activePoll) {
       await this.activePoll;

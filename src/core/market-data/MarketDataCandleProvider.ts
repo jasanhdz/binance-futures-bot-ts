@@ -11,6 +11,7 @@ import type {
 export interface CandleSource {
   getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
   getServerTime(): Promise<number>;
+  getCandleRequestDiagnostics?(): ReadonlyArray<Record<string, unknown>>;
 }
 
 export interface CandleClock {
@@ -46,6 +47,10 @@ export class MarketDataCandleProvider implements CandlePort {
     private readonly source: CandleSource,
     private readonly clock: CandleClock,
   ) {}
+
+  getCandleRequestDiagnostics(): ReadonlyArray<Record<string, unknown>> {
+    return this.source.getCandleRequestDiagnostics?.() ?? [];
+  }
 
   async getSeries(symbol: string, interval: string, limit: number): Promise<CandleSeriesSnapshot> {
     const normalizedSymbol = symbol.toUpperCase();
