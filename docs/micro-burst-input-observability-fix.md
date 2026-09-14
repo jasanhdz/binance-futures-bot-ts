@@ -10,6 +10,12 @@ There are at most three short retries (1, 2, 4 seconds) per exchange-estimated i
 
 Server-request elapsed time is recorded as sample uncertainty, not proof of clock accuracy. Server-time caching, asymmetric latency and local wall-clock changes remain uncertainties. Legacy candle ports lacking the optional sample pairing retain the completion-time fallback; the corrected path requires `MarketDataCandleProvider` metadata.
 
+The Binance candle adapter applies a 15-second consumer timeout and shares one in-flight request per
+symbol and interval. A timed-out caller does not start a replacement while the underlying SDK
+request remains unresolved, so the adapter fails boundedly without creating overlapping transport
+requests. The SDK path does not expose cancellation; a permanently unresolved transport request
+can therefore retain its in-flight slot until process restart.
+
 ## Freshness reporting
 
 The builder's additive `dataQuality.btcFreshness` exposes RECEIVE age/status on LOCAL_WALL and EVENT age/status on EXCHANGE_SNAPSHOT. Legacy `btcAgeMs` and `btcStatus` retain their receive semantics. `microEligibleAtSnapshot` means BTC-only eligibility at the builder snapshot, not entry approval: the reaction policy still checks the evaluation exchange upper bound. Event uncertainty is explicitly unknown (`null`). The evaluator carries this object into existing telemetry; exact replay retains the context object.

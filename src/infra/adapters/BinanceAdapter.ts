@@ -99,6 +99,7 @@ const REQUEST_WEIGHT_WINDOW_MS = 60_000;
 const MAX_REQUEST_WEIGHT_PER_MINUTE = Number(
   process.env.BINANCE_MAX_REQUEST_WEIGHT_PER_MINUTE ?? 2_000,
 );
+const CANDLE_REQUEST_TIMEOUT_MS = Number(process.env.BINANCE_CANDLE_TIMEOUT_MS ?? 15_000);
 
 type CandleCacheEntry = {
   candles: Candle[];
@@ -206,6 +207,7 @@ export class BinanceExchange implements Exchange {
 
   private hedgeCache?: { value: boolean; at: number };
   private candleCache = new Map<string, CandleCacheEntry>();
+  private candleInflight = new Map<string, Promise<Candle[]>>();
   private markCache = new Map<string, { price: number; ts: number }>();
   private markPriceInflight?: Promise<void>;
   private fundingCache = new Map<string, { snapshot: FundingSnapshot; ts: number }>();
@@ -568,7 +570,16 @@ export class BinanceExchange implements Exchange {
       });
     }
 
-    const candles = await this.fetchCandles(symbol, interval, fetch);
+    let request = this.candleInflight.get(key);
+    if (!request) {
+      request = this.fetchCandles(symbol, interval, fetch);
+      this.candleInflight.set(key, request);
+      void request.then(
+        () => this.candleInflight.get(key) === request && this.candleInflight.delete(key),
+        () => this.candleInflight.get(key) === request && this.candleInflight.delete(key),
+      );
+    }
+    const candles = await withTimeout(request, CANDLE_REQUEST_TIMEOUT_MS, `candles:${key}`);
     const receivedAtMs = Date.now();
     setCandleProvenance(candles, {
       requestedAtMs: now,
@@ -3130,4 +3141,24 @@ export class BinanceExchange implements Exchange {
       }
     }
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+  const boundedTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15_000;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`BINANCE_REQUEST_TIMEOUT:${operation}`)),
+      boundedTimeout,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }

@@ -88,6 +88,35 @@ describe('BinanceExchange candle compatibility path', () => {
     expect(mockClient.futuresCandles).toHaveBeenCalledOnce();
   });
 
+  it('times out a hung candle consumer without starting an overlapping request', async () => {
+    vi.useFakeTimers();
+    let resolve!: (candles: unknown[]) => void;
+    mockClient.futuresCandles.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const exchange = new BinanceExchange(logger);
+    try {
+      const first = exchange.getCandles('ETHUSDT', '1m', 1);
+      const second = exchange.getCandles('ETHUSDT', '1m', 1);
+      const firstError = first.catch((error) => error);
+      const secondError = second.catch((error) => error);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(firstError).resolves.toMatchObject({
+        message: 'BINANCE_REQUEST_TIMEOUT:candles:ETHUSDT|1m',
+      });
+      await expect(secondError).resolves.toMatchObject({
+        message: 'BINANCE_REQUEST_TIMEOUT:candles:ETHUSDT|1m',
+      });
+      expect(mockClient.futuresCandles).toHaveBeenCalledOnce();
+      resolve([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves the 5m WS candle and AggTrade buyVolume overlay', async () => {
     const candleUnsubscribe = vi.fn();
     const aggTradeUnsubscribe = vi.fn();
