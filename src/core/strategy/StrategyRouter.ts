@@ -2,6 +2,7 @@ import type { StrategyDecisionObservationHook } from '../blackbox/StrategyDecisi
 import { StrategyDecisionEnvelope, StrategyEvaluationResult } from './StrategyDecision';
 import { EntryStrategy } from './EntryStrategy';
 import { StrategyId } from './StrategyIdentity';
+import { randomUUID } from 'node:crypto';
 
 export class StrategyRouter<TContext = unknown> {
   private readonly strategies = new Map<StrategyId, EntryStrategy<TContext>>();
@@ -174,6 +175,12 @@ export class StrategyRouter<TContext = unknown> {
       }
     }
     if (exact) {
+      if (envelope.decision === 'ENTRY_INTENT') {
+        envelope = {
+          ...envelope,
+          diagnostics: { ...envelope.diagnostics, decisionId: randomUUID() },
+        };
+      }
       if (snapshot) {
         try {
           const status = hook!.enqueueExactDecision!(snapshot, envelope);

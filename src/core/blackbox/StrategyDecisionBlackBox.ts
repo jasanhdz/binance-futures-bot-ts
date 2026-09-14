@@ -217,22 +217,26 @@ export function createDecisionEvidenceV2(
   }
 
   const marketSnapshotId = snapshotReference.marketSnapshotId;
-  const decisionId = createHash('sha256')
-    .update(
-      JSON.stringify({
-        evidenceSchemaVersion: STRATEGY_DECISION_BLACKBOX_SCHEMA_VERSION,
-        strategyId: decision.identity.strategyId,
-        strategyVersion: decision.identity.strategyVersion,
-        codeCommitSha: decision.identity.codeCommitSha,
-        symbol: decision.symbol,
-        strategyTimestampMs: decision.timestamp,
-        evaluatedAtReceivedMs,
-        marketSnapshotId,
-        decision: decision.decision,
-        side: decision.side ?? null,
-      }),
-    )
-    .digest('hex');
+  const suppliedDecisionId = decision.diagnostics.decisionId;
+  const decisionId =
+    typeof suppliedDecisionId === 'string' && suppliedDecisionId.length > 0
+      ? suppliedDecisionId
+      : createHash('sha256')
+          .update(
+            JSON.stringify({
+              evidenceSchemaVersion: STRATEGY_DECISION_BLACKBOX_SCHEMA_VERSION,
+              strategyId: decision.identity.strategyId,
+              strategyVersion: decision.identity.strategyVersion,
+              codeCommitSha: decision.identity.codeCommitSha,
+              symbol: decision.symbol,
+              strategyTimestampMs: decision.timestamp,
+              evaluatedAtReceivedMs,
+              marketSnapshotId,
+              decision: decision.decision,
+              side: decision.side ?? null,
+            }),
+          )
+          .digest('hex');
 
   const compacted = compactDecisionDiagnostics(decision, snapshot);
   return {

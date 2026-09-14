@@ -1522,6 +1522,8 @@ export class TradingService {
 
     if (this.runtimeStopping) return;
     this.markRuntimeProgress('STARTING', 'MICRO_SETTLEMENT_RECONCILIATION');
+    await this.deps.microNetLossLedger?.ready();
+    if (this.runtimeStopping) return;
     await this.reconcileMicroNetSettlements();
     if (this.runtimeStopping) return;
     this.isRunning = true;

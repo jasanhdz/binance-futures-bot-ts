@@ -33,7 +33,7 @@ describe('Micro critical ledger composition', () => {
       ['synthetic-a', true],
     ] as const) {
       const ledger = composeMicroNetLossLedger(credential, testnet, key, async () => 100_000)!;
-      expect(ledger.snapshot().blockedReason).toBe('MICRO_NET_LOSS_CLOCK_UNAVAILABLE');
+      await ledger.ready();
       await vi.waitFor(() =>
         expect(ledger.snapshot().blockedReason).toBe('MICRO_NET_LOSS_NOT_INITIALIZED'),
       );

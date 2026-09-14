@@ -72,6 +72,7 @@ export class MicroBurstNetLossLedger {
   private failure: string | null = null;
   private readonly scope: { account: string; environment: string };
   private readonly now: () => number;
+  private readonly clockReady: () => Promise<void>;
   private lastClock = 0;
 
   constructor(options: {
@@ -80,9 +81,11 @@ export class MicroBurstNetLossLedger {
     environment: string;
     operatorPublicKey: string | KeyObject;
     now?: () => number;
+    clockReady?: () => Promise<void>;
   }) {
     this.scope = { account: options.account, environment: options.environment };
     this.now = options.now ?? Date.now;
+    this.clockReady = options.clockReady ?? (() => Promise.resolve());
     if (!Object.values(this.scope).every((v) => typeof v === 'string' && !!v.trim()))
       throw new Error('MICRO_NET_LOSS_SCOPE_REQUIRED');
     this.publicKey =
@@ -155,6 +158,10 @@ export class MicroBurstNetLossLedger {
       this.db.close();
       throw error;
     }
+  }
+
+  async ready(): Promise<void> {
+    await this.clockReady();
   }
 
   snapshot(): MicroBurstNetLossSnapshot {

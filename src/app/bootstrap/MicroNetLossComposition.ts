@@ -58,5 +58,6 @@ export function composeMicroNetLossLedger(
     environment,
     operatorPublicKey,
     now: () => clock.now(),
+    clockReady: () => clock.ready(),
   });
 }
