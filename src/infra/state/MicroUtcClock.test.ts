@@ -41,16 +41,18 @@ describe('Micro Binance UTC authority', () => {
     await vi.waitFor(() => expect(() => clock.now()).toThrow('CLOCK_INVALID'));
   });
 
-  it('rejects slow initial authority rather than using a stale sample', async () => {
+  it('rejects a slow initial authority without poisoning the clock', async () => {
     let monotonic = 0;
-    const clock = new MicroUtcClock(
-      async () => {
-        monotonic = 2_001;
-        return 100_000;
-      },
-      () => monotonic,
-    );
+    let slow = true;
+    const read = vi.fn(async () => {
+      if (slow) monotonic = 2_001;
+      return 100_000;
+    });
+    const clock = new MicroUtcClock(read, () => monotonic);
     expect(() => clock.now()).toThrow('CLOCK_UNAVAILABLE');
-    await vi.waitFor(() => expect(() => clock.now()).toThrow('CLOCK_INVALID'));
+    await vi.waitFor(() => expect(() => clock.now()).toThrow('CLOCK_UNAVAILABLE'));
+    await new Promise((resolve) => setTimeout(resolve, 2_100));
+    await vi.waitFor(() => expect((clock as any).pending).toBe(false));
+    expect((clock as any).invalid).toBe(false);
   });
 });

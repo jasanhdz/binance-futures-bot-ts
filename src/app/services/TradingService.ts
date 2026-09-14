@@ -476,21 +476,24 @@ export class TradingService {
           };
         },
         isEntryCurrent: (intent, quantity) => {
+          const isMicro = intent.identity.strategyId === 'MICRO_BURST';
           const admitted =
             this.acceptingEntries &&
             !this.microSettlementTask &&
             !deps.stopCoordinator?.blockedReason() &&
             !deps.closeCoordinator?.blockedReason() &&
             !this.runtimeStopping &&
-            this.getSymbolMode(intent.symbol) === 'LIVE';
-          if (!admitted || intent.identity.strategyId !== 'MICRO_BURST') return admitted;
+            (isMicro || this.getSymbolMode(intent.symbol) === 'LIVE');
+          if (!admitted || !isMicro) return admitted;
           if (intent.identity.strategyVersion === 'MICRO' && this.microNetLossBlockedReason())
             return false;
           if (intent.identity.strategyVersion === 'MICRO') {
             const cfg = this.runtimeConfig.getMicroBurstConfig();
             const provenance = this.runtimeConfig.getMicroBurstProvenance(cfg);
             if (
+              !cfg.enabled ||
               cfg.mode !== 'LIVE' ||
+              cfg.symbols[intent.symbol]?.enabled !== true ||
               cfg.exitPolicy?.contextualPolicyVersion !== 'MICRO' ||
               !hasMicroBurstLiveAuthority(
                 intent.identity,

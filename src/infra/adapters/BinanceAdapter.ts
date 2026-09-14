@@ -100,6 +100,7 @@ const MAX_REQUEST_WEIGHT_PER_MINUTE = Number(
   process.env.BINANCE_MAX_REQUEST_WEIGHT_PER_MINUTE ?? 2_000,
 );
 const CANDLE_REQUEST_TIMEOUT_MS = Number(process.env.BINANCE_CANDLE_TIMEOUT_MS ?? 15_000);
+const REQUEST_EXECUTION_TIMEOUT_MS = Number(process.env.BINANCE_REQUEST_TIMEOUT_MS ?? 15_000);
 
 type CandleCacheEntry = {
   candles: Candle[];
@@ -304,7 +305,9 @@ export class BinanceExchange implements Exchange {
         this.recentRequestWeights.push({ at, weight: requestWeight });
         this.requestMetrics.requests++;
         this.requestMetrics.totalWeight += requestWeight;
-        const result = await task();
+        // Bound the queue slot as well as the caller promise; a hung request must not serialize all
+        // subsequent reads forever. The SDK request remains responsible for its own cancellation.
+        const result = await withTimeout(task(), REQUEST_EXECUTION_TIMEOUT_MS, endpoint);
         this.nextRequestAt = Date.now() + this.minReqGapMs;
         return result;
       } catch (err) {

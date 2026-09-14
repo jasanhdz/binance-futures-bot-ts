@@ -105,6 +105,7 @@ export class StrategyRouter<TContext = unknown> {
         ...envelope,
         diagnostics: {
           ...envelope.diagnostics,
+          decisionId: randomUUID(),
           evaluationTiming: {
             evaluationStartedAtMs,
             evaluationFinishedAtMs,
@@ -175,12 +176,6 @@ export class StrategyRouter<TContext = unknown> {
       }
     }
     if (exact) {
-      if (envelope.decision === 'ENTRY_INTENT') {
-        envelope = {
-          ...envelope,
-          diagnostics: { ...envelope.diagnostics, decisionId: randomUUID() },
-        };
-      }
       if (snapshot) {
         try {
           const status = hook!.enqueueExactDecision!(snapshot, envelope);

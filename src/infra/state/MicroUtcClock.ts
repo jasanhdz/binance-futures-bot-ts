@@ -2,11 +2,13 @@ import { performance } from 'node:perf_hooks';
 
 /** UTC authority comes from Binance; elapsed time comes from a monotonic clock. */
 export class MicroUtcClock {
+  private static readonly SYNC_TIMEOUT_MS = 2_000;
   private anchor?: { server: number; monotonic: number };
   private pending = false;
   private nextRead = 0;
   private invalid = false;
   private synchronization?: Promise<void>;
+  private synchronizationId = 0;
 
   constructor(
     private readonly readServerTime: () => Promise<number>,
@@ -31,19 +33,20 @@ export class MicroUtcClock {
       throw new Error('MICRO_NET_LOSS_CLOCK_INVALID');
     }
     if (!this.pending && at >= this.nextRead) {
+      const synchronizationId = ++this.synchronizationId;
       this.pending = true;
       this.nextRead = at + 5_000;
-      this.synchronization = Promise.resolve()
-        .then(this.readServerTime)
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error('MICRO_NET_LOSS_CLOCK_SYNC_TIMEOUT')),
+          MicroUtcClock.SYNC_TIMEOUT_MS,
+        );
+      });
+      this.synchronization = Promise.race([Promise.resolve().then(this.readServerTime), timeout])
         .then((server) => {
           const received = this.monotonic();
-          if (
-            !Number.isSafeInteger(server) ||
-            server < 0 ||
-            received < at ||
-            received - at > 2_000
-          ) {
-            this.invalid = true;
+          if (!Number.isSafeInteger(server) || server < 0 || received < at) {
             return;
           }
           if (this.anchor) {
@@ -52,16 +55,20 @@ export class MicroUtcClock {
               this.invalid = true;
               return;
             }
+            if (received - at > MicroUtcClock.SYNC_TIMEOUT_MS) return;
             // Do not roll time back after network jitter; retain the conservative lower bound.
             this.anchor = { server: Math.max(server, Math.floor(projected)), monotonic: received };
-          } else this.anchor = { server, monotonic: received };
+          } else if (received - at <= MicroUtcClock.SYNC_TIMEOUT_MS) {
+            this.anchor = { server, monotonic: received };
+          }
           this.nextRead = received + 30_000;
         })
         .catch(() => {
           // Expired authority blocks new entries, not position management; retry after backoff.
         })
         .finally(() => {
-          this.pending = false;
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (this.synchronizationId === synchronizationId) this.pending = false;
         });
     }
     if (!this.anchor || at - this.anchor.monotonic > 60_000)
