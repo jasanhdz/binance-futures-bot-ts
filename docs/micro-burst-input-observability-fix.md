@@ -30,6 +30,7 @@ Provenance is currently available for successful series observations; unavailabl
 
 Targeted suites cover variable 400/6,000/35,000 ms reads through the real neutral provider, minute crossing, failure retry bounds, overlap, stop/restart, closure equality and cached forming-to-closed provenance through Binance normalization → neutral provider → CandleIntegrity. Builder tests explicitly distinguish healthy RECEIVE from stale EVENT; runtime tests preserve legacy health separately from Micro ineligibility.
 
-No environment settings are added. Work is local only; no deployment, process restart or commit.
+No environment settings are added. This change is prepared for deployment authorization; no
+deployment or process restart has occurred.
 
 Completed checks: **207 tests passed in 9 suites** (BTC provider 65, Binance candles 3, neutral candles 37, integrity 29, builder 12, evaluator 8, runtime 29, temporal contracts 23, exact replay CLI 1). After adding BTC provenance to exact context, the affected provider/temporal/replay suites passed again (**89 tests in 3 suites**). `npx tsc --noEmit`, targeted Prettier formatting and `git diff --check` passed.
