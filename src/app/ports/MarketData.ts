@@ -96,6 +96,10 @@ export interface CandleObservation {
 }
 
 export interface CandleSeriesSnapshot {
+  /** Local receipt of the pre-candle server-time sample; not candle receipt. */
+  readonly exchangeSampleReceivedAtMs?: number;
+  readonly exchangeSampleUncertaintyMs?: number;
+  readonly provenance?: import('../../core/market-data/CandleProvenance').CandleReadProvenance;
   readonly symbol: string;
   readonly interval: string;
   readonly candles: readonly CandleObservation[];

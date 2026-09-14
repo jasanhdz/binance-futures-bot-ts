@@ -126,6 +126,7 @@ export interface MicroBurstDecisionPrice {
 // ── BTC ──────────────────────────────────────────────────────
 
 export interface BtcContext {
+  candleProvenance?: import('../../../core/market-data/CandleProvenance').CandleReadProvenance;
   /** Decimal price return: 0.001 = 0.1% = 10 bps. */
   ret1m: number;
   ret3m: number;
@@ -151,6 +152,17 @@ export interface MicroBurstCandleSet {
 // ── Context ──────────────────────────────────────────────────
 
 export interface DataQualityDiagnostics {
+  /** Additive diagnostics; legacy btcAgeMs/btcStatus remain RECEIVE-domain aliases. */
+  btcFreshness?: {
+    receiveAgeMs: number | null;
+    receiveStatus: BtcDataStatus;
+    receiveClock: 'LOCAL_WALL';
+    eventAgeMs: number | null;
+    eventStatus: BtcDataStatus;
+    eventClock: 'EXCHANGE_SNAPSHOT';
+    eventUncertaintyMs: null;
+    microEligibleAtSnapshot: boolean;
+  };
   snapshotAtMs: number;
   latestClosed1mAt: number;
   latestClosed3mAt: number;

@@ -11,6 +11,8 @@ vi.mock('binance-api-node', () => ({
 
 import { BinanceExchange } from './BinanceAdapter';
 import { WebSocketManager } from './WebSocketManager';
+import { MarketDataCandleProvider } from '../../core/market-data/MarketDataCandleProvider';
+import { prepareClosedCandles } from '../../core/market-data/CandleIntegrity';
 
 const logger = {
   info: vi.fn(),
@@ -20,6 +22,34 @@ const logger = {
 };
 
 describe('BinanceExchange candle compatibility path', () => {
+  it('retains cache origin when a forming REST-derived value becomes application-closed', async () => {
+    const exchange = new BinanceExchange(logger);
+    let exchangeNow = 59_998;
+    const provider = new MarketDataCandleProvider(
+      {
+        getServerTime: async () => exchangeNow,
+        getCandles: (symbol, interval, limit) => exchange.getCandles(symbol, interval, limit),
+      },
+      { now: () => Date.now() },
+    );
+    const before = await provider.getSeries('ETHUSDT', '1m', 1);
+    exchangeNow = 59_999;
+    const after = await provider.getSeries('ETHUSDT', '1m', 1);
+    expect(before.candles[0].status).toBe('OPEN');
+    expect(after.candles[0].status).toBe('CLOSED');
+    expect(before.provenance?.normalizedCache).toBe('MISS');
+    expect(after.provenance).toMatchObject({
+      normalizedCache: 'HIT',
+      transportCache: 'UNKNOWN',
+      exchangeFinalization: 'UNKNOWN',
+      originRequestedAtMs: before.provenance!.originRequestedAtMs,
+      originReceivedAtMs: before.provenance!.originReceivedAtMs,
+      classificationExchangeTimeMs: 59_999,
+    });
+    expect(prepareClosedCandles(after.candles, 60_000, 59_998, 120_000).candles).toHaveLength(0);
+    expect(prepareClosedCandles(after.candles, 60_000, 59_999, 120_000).candles).toHaveLength(1);
+    expect(mockClient.futuresCandles).toHaveBeenCalledOnce();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mockClient.futuresPing.mockResolvedValue({});

@@ -239,7 +239,7 @@ describe('MarketDataCandleProvider', () => {
 
     expect(source.getCandles).toHaveBeenCalledOnce();
     expect(source.getServerTime).toHaveBeenCalledOnce();
-    expect(clock.now).toHaveBeenCalledOnce();
+    expect(clock.now).toHaveBeenCalledTimes(4);
   });
 
   it('returns unavailable and skips candle fetch when server time fails', async () => {

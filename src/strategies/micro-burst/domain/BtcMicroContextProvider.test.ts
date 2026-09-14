@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BtcMicroContextProvider } from './BtcMicroContextProvider';
 import type { Candle } from '../../../core/types';
+import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
 
 const NOW_MS = 1_700_000_000_000;
 
@@ -57,6 +58,86 @@ function createDeps(candles: Candle[]) {
 }
 
 describe('BtcMicroContextProvider', () => {
+  it.each([400, 6_000, 35_000])(
+    'accounts for actual read latency %s across minute boundaries',
+    async (latency) => {
+      vi.useFakeTimers();
+      const boundary = Math.floor(NOW_MS / 60_000) * 60_000;
+      vi.setSystemTime(boundary + 30_000);
+      const starts: number[] = [];
+      const source = new MarketDataCandleProvider(
+        {
+          getServerTime: async () => Date.now(),
+          getCandles: async () => {
+            starts.push(Date.now());
+            const latest = Math.floor(Date.now() / 60_000) * 60_000 - 1;
+            await new Promise((resolve) => setTimeout(resolve, latency));
+            return makeCandles(8, latest - 420_000);
+          },
+        },
+        { now: () => Date.now() },
+      );
+      const deps = createDeps([]);
+      const provider = new BtcMicroContextProvider(
+        'BTCUSDT',
+        {
+          ...deps,
+          benchmark: {
+            ...deps.benchmark,
+            candles: {
+              getSeries: (interval, limit) => source.getSeries('BTCUSDT', interval, limit),
+            },
+          },
+        },
+        { now: () => Date.now() },
+      );
+      try {
+        provider.start();
+        await vi.advanceTimersByTimeAsync(latency > 30_000 ? 36_000 : 30_250);
+        expect(starts).toEqual([
+          boundary + 30_000,
+          boundary + (latency > 30_000 ? 66_000 : 60_250),
+        ]);
+        provider.stop();
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(starts).toHaveLength(2);
+        expect(provider.getBtcContext()).toBeUndefined();
+      } finally {
+        provider.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('restart waits for the stopped read and immediately starts a new lifecycle without overlap', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_MS);
+    const deps = createDeps(makeCandles(8, NOW_MS - 420_000));
+    let resolve!: (value: ReturnType<typeof makeSeries>) => void;
+    deps.benchmark.candles.getSeries.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const provider = new BtcMicroContextProvider('BTCUSDT', deps, { now: () => Date.now() });
+    try {
+      provider.start();
+      provider.stop();
+      provider.start();
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(deps.benchmark.candles.getSeries).toHaveBeenCalledTimes(1);
+      resolve(makeSeries(makeCandles(8, NOW_MS - 420_000)));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.benchmark.candles.getSeries).toHaveBeenCalledTimes(2);
+      provider.stop();
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(deps.benchmark.candles.getSeries).toHaveBeenCalledTimes(2);
+    } finally {
+      provider.stop();
+      vi.useRealTimers();
+    }
+  });
   it.each(
     [0, 10_000, 30_000, 55_000].flatMap((phase) =>
       [0, 400, 1_500].flatMap((latency) =>

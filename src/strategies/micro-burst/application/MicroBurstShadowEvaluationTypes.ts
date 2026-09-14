@@ -38,6 +38,7 @@ export interface MicroBurstShadowEvaluationResult {
   };
   microRegime: string;
   dataQuality: {
+    btcFreshness?: import('../domain/MicroBurstTypes').DataQualityDiagnostics['btcFreshness'];
     contextValid: boolean;
     invalidReasons: string[];
   };
@@ -77,6 +78,7 @@ export interface MicroBurstShadowTelemetryLog {
   imbalanceSlope: number | null;
   btcStatus: BtcDataStatus;
   btcAgeMs: number | null;
+  btcFreshness?: import('../domain/MicroBurstTypes').DataQualityDiagnostics['btcFreshness'];
   btcRet1m: number | null;
   btcRet3m: number | null;
   btcRet5m: number | null;

@@ -67,7 +67,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Reviewed quantity-stop transport and exact quantity/flag/child-order evidence contract.
     // Reviewed historical GET-only discovery and fresh complete open-order observations.
     // See micro-historical-reconciliation.md; source checkpoint, not deployment authority.
-    '0efb2753ce49ccbe909e6067df5cc68fbfc6b822a6f81645b96f8eaf49309b87',
+    'c78a5d78cce6473c3006423370c4ca07fec3e946a3c9bac5eaf4cf829ad7d631',
   // Current source checkpoint: failed startup now cleans up and exits instead of remaining online.
   // Source checkpoint only; not a LIVE authorization.
   'src/main.ts': 'bb605c4264eb185e76f482f37a6808c16c55b69e7aff26541ab4b33289a4deaf',

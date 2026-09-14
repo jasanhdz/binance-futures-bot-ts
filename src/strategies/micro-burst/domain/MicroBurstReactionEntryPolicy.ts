@@ -13,12 +13,15 @@ import type {
 } from './MicroBurstTypes';
 
 /** The current Micro entry algorithm; execution admission remains separate. */
+export type MicroBurstAlignmentPolicy = 'CURRENT' | 'RECOVERY_ONLY' | 'CONTINUATION_ONLY';
+
 export function evaluateMicroBurstReactionEntry(
   ctx: MicroBurstContext,
   config: MicroBurstConfig,
   book: OrderBookSnapshot | undefined,
   observedAtMs: number,
   exchangeObservedAtMs: number = observedAtMs,
+  alignmentPolicy: MicroBurstAlignmentPolicy = 'CURRENT',
 ): MicroBurstEntryDecision {
   const commonStagesVisited: string[] = [];
   config = {
@@ -289,7 +292,8 @@ export function evaluateMicroBurstReactionEntry(
         continue;
       }
       stagesVisited.push('DIRECTION_AND_FLOW');
-      if (ctx.momentum.direction !== side || sign * flow.netTakerFlow <= 0) {
+      const alignmentMismatch = ctx.momentum.direction !== side || sign * flow.netTakerFlow <= 0;
+      if (alignmentPolicy === 'CURRENT' && alignmentMismatch) {
         fail('REACTION_DIRECTION_NOT_CONFIRMED', {
           momentumDir: ctx.momentum.direction,
           netFlow: flow.netTakerFlow,
@@ -356,6 +360,43 @@ export function evaluateMicroBurstReactionEntry(
           hasRetest: retest,
           regime: ctx.microRegime,
           visitsCount: visits.length,
+          triggerInputs: {
+            levelPrice: level.price,
+            tolerancePrice: tolerance,
+            toleranceBps: config.srClusterToleranceBps,
+            latest: {
+              open: latest.open,
+              high: latest.high,
+              low: latest.low,
+              close: latest.close,
+              openTime: latest.openTime,
+              closeTime: latest.closeTime,
+            },
+            levelAvailableAtMs: level.availableAtMs,
+            triggerEligibleAtMs: latest.openTime,
+            favorableCloseDistanceBps: priceDistanceToBps(level.price, latest.close),
+            penetrationBps:
+              ((sign * (level.price - (side === 'LONG' ? latest.low : latest.high))) /
+                level.price) *
+              10_000,
+            lastVisit: lastVisit ?? null,
+            priorVisit: visits[visits.length - 2] ?? null,
+          },
+        });
+        continue;
+      }
+      if (
+        alignmentMismatch &&
+        !(
+          (alignmentPolicy === 'RECOVERY_ONLY' && reclaim) ||
+          (alignmentPolicy === 'CONTINUATION_ONLY' && retest)
+        )
+      ) {
+        fail('REACTION_DIRECTION_NOT_CONFIRMED', {
+          momentumDir: ctx.momentum.direction,
+          netFlow: flow.netTakerFlow,
+          recovery: reclaim,
+          continuationRetest: retest,
         });
         continue;
       }

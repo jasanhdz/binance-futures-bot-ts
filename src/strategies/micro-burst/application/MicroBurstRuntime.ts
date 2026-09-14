@@ -71,6 +71,7 @@ export interface MicroBurstRuntimeHealth {
   symbolCount: number;
   healthyBooks: number;
   btcHealthy: boolean;
+  btcFreshness?: ReturnType<BtcMicroContextProvider['getFreshness']>;
   totalEvaluations: number;
   totalEvaluationAttempts: number;
   totalEvaluationFailures: number;
@@ -971,6 +972,7 @@ export class MicroBurstRuntime {
       symbolCount: this.symbolStates.size,
       healthyBooks,
       btcHealthy,
+      btcFreshness: this.btcProvider?.getFreshness(defaultMicroBurstConfig().btcFreshnessMaxMs),
       totalEvaluations: this.totalEvaluations,
       totalEvaluationAttempts: this.totalEvaluationAttempts,
       totalEvaluationFailures: this.totalEvaluationFailures,
@@ -1339,6 +1341,7 @@ export class MicroBurstRuntime {
       symbols: health.symbolCount,
       healthyBooks: health.healthyBooks,
       btcHealthy: health.btcHealthy,
+      btcFreshness: health.btcFreshness,
       evaluations: health.totalEvaluations,
       evaluationAttempts: health.totalEvaluationAttempts,
       evaluationFailures: health.totalEvaluationFailures,

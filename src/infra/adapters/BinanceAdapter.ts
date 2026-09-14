@@ -1,5 +1,6 @@
 // src/infra/adapters/BinanceAdapter.ts
 import Binance, { type QueryFuturesOrderResult } from 'binance-api-node';
+import { getCandleProvenance, setCandleProvenance } from '../../core/market-data/CandleProvenance';
 import {
   Exchange,
   PositionInfo,
@@ -559,12 +560,29 @@ export class BinanceExchange implements Exchange {
     const { fetch, ttl } = resolveCandleSettings(interval, limit);
 
     if (cached && now - cached.ts < ttl && cached.candles.length >= limit) {
-      return cached.candles.slice(-limit);
+      return setCandleProvenance(cached.candles.slice(-limit), {
+        ...getCandleProvenance(cached.candles)!,
+        requestedAtMs: now,
+        receivedAtMs: Date.now(),
+        normalizedCache: 'HIT',
+      });
     }
 
     const candles = await this.fetchCandles(symbol, interval, fetch);
+    const receivedAtMs = Date.now();
+    setCandleProvenance(candles, {
+      requestedAtMs: now,
+      receivedAtMs,
+      normalizedCache: 'MISS',
+      originRequestedAtMs: now,
+      originReceivedAtMs: receivedAtMs,
+      transportCache: 'UNKNOWN',
+      closureCriterion: 'closeTime <= exchangeSnapshotTimeMs',
+      classificationExchangeTimeMs: null,
+      exchangeFinalization: 'UNKNOWN',
+    });
     this.candleCache.set(key, { candles, ts: now, interval, ttl });
-    return candles.slice(-limit);
+    return setCandleProvenance(candles.slice(-limit), getCandleProvenance(candles)!);
   }
 
   async getLastCandle(symbol: string): Promise<Candle | null> {

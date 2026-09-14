@@ -217,6 +217,7 @@ export class MicroBurstEvaluator {
         },
         microRegime: context.microRegime,
         dataQuality: {
+          btcFreshness: context.dataQuality.btcFreshness,
           contextValid: context.dataQuality.contextValid,
           invalidReasons: context.dataQuality.invalidReasons,
         },
@@ -291,6 +292,7 @@ export class MicroBurstEvaluator {
       imbalanceSlope: result.book.imbalanceSlope,
       btcStatus: result.btc.status,
       btcAgeMs: result.btc.ageMs,
+      btcFreshness: result.dataQuality.btcFreshness,
       btcRet1m: result.btc.ret1m,
       btcRet3m: result.btc.ret3m,
       btcRet5m: result.btc.ret5m,

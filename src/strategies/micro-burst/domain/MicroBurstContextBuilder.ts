@@ -1,4 +1,5 @@
 import { Candle, Side } from '../../../core/types';
+import { getCandleProvenance } from '../../../core/market-data/CandleProvenance';
 import {
   prepareClosedCandles,
   validateCandleSequence,
@@ -131,6 +132,15 @@ function getDataQuality(
   const btcStatus = btcStatusAt(btcContext, localNowAtMs, config.btcFreshnessMaxMs);
   const bookAgeMs = bookSnapshot ? localNowAtMs - bookSnapshot.observedAtMs : null;
   const btcAgeMs = btcContext ? localNowAtMs - btcContext.receivedAtMs : null;
+  const btcEventAgeMs = btcContext ? snapshotAtMs - btcContext.observedAtMs : null;
+  const btcEventStatus: BtcDataStatus =
+    btcEventAgeMs === null
+      ? 'UNAVAILABLE'
+      : Number.isFinite(btcEventAgeMs) &&
+          btcEventAgeMs >= 0 &&
+          btcEventAgeMs <= config.btcFreshnessMaxMs
+        ? 'HEALTHY'
+        : 'STALE';
   const invalidReasons: string[] = [];
 
   for (const [label, values, interval] of [
@@ -205,6 +215,19 @@ function getDataQuality(
     btcAgeMs,
     bookStatus,
     btcStatus,
+    btcFreshness: {
+      receiveAgeMs: btcAgeMs,
+      receiveStatus: btcStatus,
+      receiveClock: 'LOCAL_WALL',
+      eventAgeMs: btcEventAgeMs,
+      eventStatus: btcEventStatus,
+      eventClock: 'EXCHANGE_SNAPSHOT',
+      eventUncertaintyMs: null,
+      microEligibleAtSnapshot:
+        btcStatus === 'HEALTHY' &&
+        btcEventStatus === 'HEALTHY' &&
+        !invalidReasons.includes('btc_invalid_returns'),
+    },
     closedCandlesOnly,
     levelsAvailableAt,
     contextValid: invalidReasons.length === 0,
@@ -262,6 +285,16 @@ export async function buildMicroBurstContext(
       lastClosedAtMs: closed[closed.length - 1]?.closeTime ?? null,
       adapterEnqueuedAtMs: null,
       adapterDequeuedAtMs: null,
+      provenance: {
+        normalizedCache: 'UNKNOWN',
+        transportCache: 'UNKNOWN',
+        originRequestedAtMs: null,
+        originReceivedAtMs: null,
+        ...getCandleProvenance(result),
+        closureCriterion: 'closeTime <= exchangeSnapshotTimeMs',
+        classificationExchangeTimeMs: snapshotAtMs,
+        exchangeFinalization: 'UNKNOWN',
+      },
     };
     return candles;
   };

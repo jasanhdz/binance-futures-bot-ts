@@ -1,4 +1,5 @@
 import type { Candle } from '../types';
+import { getCandleProvenance } from './CandleProvenance';
 import type {
   CandleGapCheck,
   CandleHealth,
@@ -55,8 +56,13 @@ export class MarketDataCandleProvider implements CandlePort {
 
     let sourceCandles: Candle[];
     let exchangeSnapshotTimeMs: number;
+    const sampleRequestedAtMs = this.clock.now();
+    let exchangeSampleReceivedAtMs: number;
+    let requestedAtMs: number;
     try {
       exchangeSnapshotTimeMs = await this.source.getServerTime();
+      exchangeSampleReceivedAtMs = this.clock.now();
+      requestedAtMs = this.clock.now();
       sourceCandles = await this.source.getCandles(normalizedSymbol, interval, limit);
     } catch {
       return unavailable(normalizedSymbol, interval, definition.gapCheck);
@@ -149,17 +155,33 @@ export class MarketDataCandleProvider implements CandlePort {
       exchangeSnapshotTimeMs - (latest.status === 'OPEN' ? latest.openTime : latest.closeTime) >=
         definition.durationMs;
     const health: CandleHealth = gapCount > 0 ? 'GAPPED' : stale ? 'STALE' : 'HEALTHY';
-    return snapshot(
-      normalizedSymbol,
-      interval,
-      observations,
-      health,
-      observedAtMs,
-      exchangeSnapshotTimeMs,
-      gapCount,
-      definition.gapCheck === 'CHECKED' ? gapCount > 0 : null,
-      definition.gapCheck,
-    );
+    return Object.freeze({
+      ...snapshot(
+        normalizedSymbol,
+        interval,
+        observations,
+        health,
+        observedAtMs,
+        exchangeSnapshotTimeMs,
+        gapCount,
+        definition.gapCheck === 'CHECKED' ? gapCount > 0 : null,
+        definition.gapCheck,
+      ),
+      exchangeSampleReceivedAtMs,
+      exchangeSampleUncertaintyMs: Math.max(0, exchangeSampleReceivedAtMs - sampleRequestedAtMs),
+      provenance: Object.freeze({
+        requestedAtMs,
+        receivedAtMs: observedAtMs,
+        normalizedCache: 'UNKNOWN' as const,
+        originRequestedAtMs: null,
+        originReceivedAtMs: null,
+        transportCache: 'UNKNOWN' as const,
+        ...getCandleProvenance(sourceCandles),
+        closureCriterion: 'closeTime <= exchangeSnapshotTimeMs' as const,
+        classificationExchangeTimeMs: exchangeSnapshotTimeMs,
+        exchangeFinalization: 'UNKNOWN' as const,
+      }),
+    });
   }
 }
 

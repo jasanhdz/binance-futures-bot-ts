@@ -317,4 +317,110 @@ describe('Micro reaction entry policy', () => {
       'REACTION_FLOW_UNAVAILABLE',
     );
   });
+  it('allows a recovery-only disagreement only after reclaim', () => {
+    const { ctx, book } = fixture();
+    ctx.aggTradeFlow!.netTakerFlow = -20;
+    expect(evaluateMicroBurstReactionEntry(ctx, config, book, now).reason).toBe(
+      'REACTION_NO_QUALIFIED_SIDE',
+    );
+    expect(
+      evaluateMicroBurstReactionEntry(ctx, config, book, now, now, 'RECOVERY_ONLY'),
+    ).toMatchObject({ action: 'ENTRY_INTENT', side: 'LONG' });
+  });
+  describe.each(['LONG', 'SHORT'] as const)('explicit %s trigger scenarios', (side) => {
+    const sign = side === 'LONG' ? 1 : -1;
+    const mirror = (price: number): number => (side === 'LONG' ? price : 200 - price);
+    function scenario(low: number, open: number, close: number) {
+      const { ctx, book } = fixture(side);
+      const candle = ctx.candles.candles1m[0];
+      Object.assign(candle, {
+        open: mirror(open),
+        close: mirror(close),
+        low: side === 'LONG' ? low : mirror(100.05),
+        high: side === 'LONG' ? 100.05 : mirror(low),
+      });
+      return { ctx, book, candle };
+    }
+    it('accepts central-price reclaim in one candle through downstream filters', () => {
+      const { ctx, book } = scenario(99.65, 99.8, 100);
+      expect(evaluateMicroBurstReactionEntry(ctx, config, book, now)).toMatchObject({
+        action: 'ENTRY_INTENT',
+        side,
+        diagnostics: { setup: 'RECLAIM_REVERSAL' },
+      });
+    });
+    it('does not carry penetration from an earlier candle into a later zone defense', () => {
+      const { ctx, book, candle } = scenario(99.75, 99.8, 100);
+      ctx.microRegime = 'RANGING';
+      ctx.candles.candles1m.unshift({
+        ...candle,
+        openTime: now - 120_000,
+        closeTime: now - 60_000,
+        open: mirror(99.8),
+        close: mirror(99.78),
+        low: side === 'LONG' ? 99.65 : mirror(100.05),
+        high: side === 'LONG' ? 100.05 : mirror(99.65),
+      });
+      const result = evaluateMicroBurstReactionEntry(ctx, config, book, now);
+      expect(result.action).toBe('NO_TRADE');
+      expect(result.diagnostics.sides).toMatchObject({
+        [side]: {
+          reason: 'REACTION_TRIGGER_MISSING',
+          touchesNow: true,
+          hasReclaim: false,
+          hasRetest: false,
+          candleDirection: 'favorable',
+        },
+      });
+    });
+    it('rejects favorable zone defense without central penetration in a range', () => {
+      const { ctx, book } = scenario(99.75, 99.8, 100);
+      ctx.microRegime = 'RANGING';
+      expect(
+        evaluateMicroBurstReactionEntry(ctx, config, book, now).diagnostics.sides,
+      ).toMatchObject({
+        [side]: {
+          reason: 'REACTION_TRIGGER_MISSING',
+          touchesNow: true,
+          hasReclaim: false,
+          hasRetest: false,
+        },
+      });
+    });
+    it('accepts held trend retest without central penetration', () => {
+      const { ctx, book, candle } = scenario(99.75, 99.8, 100);
+      ctx.microRegime = sign === 1 ? 'TRENDING_UP' : 'TRENDING_DOWN';
+      ctx.candles.candles1m.unshift({
+        ...candle,
+        openTime: now - 120_000,
+        closeTime: now - 60_000,
+      });
+      expect(evaluateMicroBurstReactionEntry(ctx, config, book, now)).toMatchObject({
+        action: 'ENTRY_INTENT',
+        side,
+        diagnostics: { setup: 'TREND_RETEST_CONTINUATION' },
+      });
+    });
+    it('rejects penetration that closes on the adverse side without recovery', () => {
+      const { ctx, book } = scenario(99.6, 99.8, 99.65);
+      ctx.microRegime = 'RANGING';
+      expect(
+        evaluateMicroBurstReactionEntry(ctx, config, book, now).diagnostics.sides,
+      ).toMatchObject({
+        [side]: {
+          reason: 'REACTION_TRIGGER_MISSING',
+          hasReclaim: false,
+          candleDirection: 'adverse',
+        },
+      });
+    });
+    it('keeps the economic rejection after a valid reclaim', () => {
+      const { ctx, book } = scenario(99.65, 99.8, 100);
+      const target = side === 'LONG' ? ctx.levels.nearest.resistance! : ctx.levels.nearest.support!;
+      target.price = mirror(100.8);
+      expect(
+        evaluateMicroBurstReactionEntry(ctx, config, book, now).diagnostics.sides,
+      ).toMatchObject({ [side]: { reason: 'REACTION_NET_ROOM_INSUFFICIENT' } });
+    });
+  });
 });

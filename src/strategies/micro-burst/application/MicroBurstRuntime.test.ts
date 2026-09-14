@@ -614,12 +614,14 @@ describe('MicroBurstRuntime', () => {
     await runtime.start();
     (runtime as any).btcProvider = {
       getBtcContext: () => ({ receivedAtMs: 2_000 }),
+      getFreshness: () => ({ microEligibility: 'INELIGIBLE' }),
       stop: vi.fn(),
     };
 
     expect(runtime.getHealth().btcHealthy).toBe(false);
     now = 2_001;
     expect(runtime.getHealth().btcHealthy).toBe(true);
+    expect(runtime.getHealth().btcFreshness?.microEligibility).toBe('INELIGIBLE');
     await runtime.stop();
   });
 

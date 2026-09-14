@@ -161,6 +161,16 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     expect(context.dataQuality.bookAgeMs).toBe(500_000);
     expect(context.dataQuality.btcAgeMs).toBe(1_000);
     expect(context.dataQuality.btcStatus).toBe('HEALTHY');
+    expect(context.dataQuality.btcFreshness).toEqual({
+      receiveAgeMs: 1_000,
+      receiveStatus: 'HEALTHY',
+      receiveClock: 'LOCAL_WALL',
+      eventAgeMs: 500_000,
+      eventStatus: 'STALE',
+      eventClock: 'EXCHANGE_SNAPSHOT',
+      eventUncertaintyMs: null,
+      microEligibleAtSnapshot: false,
+    });
     expect(context.dataQuality.invalidReasons).toContain('btc_event_stale');
     expect(context.dataQuality.contextValid).toBe(false);
   });

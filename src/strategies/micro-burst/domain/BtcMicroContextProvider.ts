@@ -48,10 +48,13 @@ export class BtcMicroContextProvider {
   private lastAcceleration = 0;
   private running = false;
   private pollInFlight = false;
+  private activePoll?: Promise<void>;
   private pollTimer: NodeJS.Timeout | null = null;
   private lifecycleVersion = 0;
   private exchangeClock?: { timestamp: number; receivedAt: number };
   private delayedRefreshes = 0;
+  private retryBoundary = -1;
+  private candleProvenance?: BtcContext['candleProvenance'];
 
   constructor(
     private readonly btcSymbol: string,
@@ -79,6 +82,7 @@ export class BtcMicroContextProvider {
     this.candleBuffer.length = 0;
     this.lastObservationMs = 0;
     this.lastReceivedAtMs = 0;
+    this.lastEventAgeMs = 0;
     this.lastDirection = 'NEUTRAL';
     this.lastRet1m = 0;
     this.lastRet3m = 0;
@@ -86,9 +90,21 @@ export class BtcMicroContextProvider {
     this.lastAcceleration = 0;
     this.exchangeClock = undefined;
     this.delayedRefreshes = 0;
+    this.retryBoundary = -1;
+    this.candleProvenance = undefined;
   }
 
-  async pollCandles(): Promise<void> {
+  pollCandles(): Promise<void> {
+    if (this.activePoll) return this.activePoll;
+    const poll = this.readCandles();
+    this.activePoll = poll;
+    void poll.finally(() => {
+      if (this.activePoll === poll) this.activePoll = undefined;
+    });
+    return poll;
+  }
+
+  private async readCandles(): Promise<void> {
     if (this.pollInFlight) return;
     this.pollInFlight = true;
     const lifecycleVersion = this.lifecycleVersion;
@@ -96,6 +112,7 @@ export class BtcMicroContextProvider {
       const series = await this.deps.benchmark.candles.getSeries('1m', 60);
       if (lifecycleVersion !== this.lifecycleVersion) return;
       const localReceivedAtMs = this.clock.now();
+      this.candleProvenance = series.provenance;
       // A rejected refresh must not leave the previous assessment looking current.
       this.lastObservationMs = 0;
       this.candleBuffer.length = 0;
@@ -104,7 +121,10 @@ export class BtcMicroContextProvider {
       const exchangeSnapshotTimeMs = series.exchangeSnapshotTimeMs;
       if (lifecycleVersion !== this.lifecycleVersion) return;
       if (exchangeSnapshotTimeMs === null || !Number.isFinite(exchangeSnapshotTimeMs)) return;
-      this.exchangeClock = { timestamp: exchangeSnapshotTimeMs, receivedAt: localReceivedAtMs };
+      this.exchangeClock = {
+        timestamp: exchangeSnapshotTimeMs,
+        receivedAt: series.exchangeSampleReceivedAtMs ?? localReceivedAtMs,
+      };
 
       const prepared = prepareClosedCandles(
         series.candles,
@@ -168,6 +188,7 @@ export class BtcMicroContextProvider {
       direction: this.lastDirection,
       observedAtMs: this.lastObservationMs,
       receivedAtMs: this.lastReceivedAtMs,
+      candleProvenance: this.candleProvenance,
     };
   }
 
@@ -175,7 +196,45 @@ export class BtcMicroContextProvider {
     return this.candleBuffer;
   }
 
+  getFreshness(freshnessMaxMs: number): {
+    receiveAgeMs: number | null;
+    eventAgeLowerBoundMs: number | null;
+    receiveClock: 'LOCAL_WALL';
+    eventClock: 'EXCHANGE_SAMPLE_ADVANCED_BY_LOCAL_ELAPSED';
+    uncertaintyMs: null;
+    microEligibility: 'INELIGIBLE' | 'REQUIRES_EVALUATION_CLOCK';
+  } {
+    const now = this.clock.now();
+    const receiveAgeMs = this.lastObservationMs ? now - this.lastReceivedAtMs : null;
+    const eventAgeLowerBoundMs =
+      this.lastObservationMs && this.exchangeClock
+        ? this.exchangeClock.timestamp +
+          Math.max(0, now - this.exchangeClock.receivedAt) -
+          this.lastObservationMs
+        : null;
+    return {
+      receiveAgeMs,
+      eventAgeLowerBoundMs,
+      receiveClock: 'LOCAL_WALL',
+      eventClock: 'EXCHANGE_SAMPLE_ADVANCED_BY_LOCAL_ELAPSED',
+      uncertaintyMs: null,
+      microEligibility:
+        receiveAgeMs === null ||
+        receiveAgeMs < 0 ||
+        receiveAgeMs > freshnessMaxMs ||
+        eventAgeLowerBoundMs === null ||
+        eventAgeLowerBoundMs < 0 ||
+        eventAgeLowerBoundMs > freshnessMaxMs
+          ? 'INELIGIBLE'
+          : 'REQUIRES_EVALUATION_CLOCK',
+    };
+  }
+
   private async pollAndSchedule(lifecycleVersion: number): Promise<void> {
+    if (this.activePoll) {
+      await this.activePoll;
+      if (!this.running || lifecycleVersion !== this.lifecycleVersion) return;
+    }
     await this.pollCandles();
     if (!this.running || lifecycleVersion !== this.lifecycleVersion) return;
     const localNow = this.clock.now();
@@ -188,9 +247,15 @@ export class BtcMicroContextProvider {
     const boundaryDelay = this.pollIntervalMs - phase + 250;
     const delayed =
       !this.lastObservationMs || exchangeNow - this.lastObservationMs >= this.pollIntervalMs;
+    const boundary = Math.floor(exchangeNow / this.pollIntervalMs);
+    if (boundary !== this.retryBoundary) {
+      this.retryBoundary = boundary;
+      this.delayedRefreshes = 0;
+    }
+    const retry = delayed && this.delayedRefreshes < 3;
     const retryDelay = 1_000 * 2 ** this.delayedRefreshes;
-    this.delayedRefreshes = delayed ? Math.min(this.delayedRefreshes + 1, 6) : 0;
-    const delay = delayed ? Math.min(retryDelay, boundaryDelay) : boundaryDelay;
+    if (retry) this.delayedRefreshes++;
+    const delay = retry ? Math.min(retryDelay, boundaryDelay) : boundaryDelay;
     this.pollTimer = setTimeout(() => {
       void this.pollAndSchedule(lifecycleVersion);
     }, delay);
