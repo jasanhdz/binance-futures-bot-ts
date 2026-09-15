@@ -70,4 +70,14 @@ describe('Micro Binance UTC authority', () => {
     expect(read).toHaveBeenCalledTimes(2);
     expect(monotonic).toBe(0);
   });
+
+  it('stops after three failed ready attempts without starting a fourth', async () => {
+    const read = vi
+      .fn<(signal: AbortSignal) => Promise<number>>()
+      .mockRejectedValue(new Error('network unavailable'));
+    const clock = new MicroUtcClock(read);
+
+    await expect(clock.ready()).rejects.toThrow('MICRO_NET_LOSS_CLOCK_UNAVAILABLE');
+    expect(read).toHaveBeenCalledTimes(3);
+  });
 });

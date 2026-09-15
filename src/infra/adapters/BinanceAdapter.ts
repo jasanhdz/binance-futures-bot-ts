@@ -562,10 +562,54 @@ export class BinanceExchange implements Exchange {
   }
 
   async getServerTimeWithSignal(signal: AbortSignal): Promise<number> {
-    const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/time`, { signal });
-    if (!response.ok) throw new Error(`BINANCE_SERVER_TIME_HTTP_${response.status}`);
-    const payload = (await response.json()) as { serverTime?: unknown };
-    return Number(payload.serverTime);
+    return this.runIndependentRead(
+      async () => {
+        const response = await fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/time`, { signal });
+        if (!response.ok) {
+          const error = new Error(`BINANCE_SERVER_TIME_HTTP_${response.status}`) as Error & {
+            status?: number;
+            retryAfter?: string;
+          };
+          error.status = response.status;
+          error.retryAfter = response.headers.get('retry-after') ?? undefined;
+          throw error;
+        }
+        const payload = (await response.json()) as { serverTime?: unknown };
+        return Number(payload.serverTime);
+      },
+      1,
+      'server_time',
+    );
+  }
+
+  private async runIndependentRead<T>(
+    task: () => Promise<T>,
+    weight: number,
+    endpoint: string,
+  ): Promise<T> {
+    await this.sharedRateLimiter.acquire(weight, endpoint, 'high');
+    while (isRateLimited()) {
+      noteRateLimitBlockedRequest();
+      this.requestMetrics.cooldownBlocked++;
+      await sleep(Math.max(25, Math.min(5_000, getRateLimitMetrics().banUntil - Date.now())));
+    }
+    const requestWeight = Math.max(1, weight);
+    while (this.getRequestWeightUsed() + requestWeight > MAX_REQUEST_WEIGHT_PER_MINUTE) {
+      this.requestMetrics.weightBlocked++;
+      const oldest = this.recentRequestWeights[0];
+      await sleep(Math.max(25, oldest.at + REQUEST_WEIGHT_WINDOW_MS - Date.now()));
+    }
+    this.recentRequestWeights.push({ at: Date.now(), weight: requestWeight });
+    this.requestMetrics.requests++;
+    this.requestMetrics.totalWeight += requestWeight;
+    try {
+      return await task();
+    } catch (error) {
+      noteRateLimitFromError(error);
+      const details = parseRateLimitError(error);
+      if (details?.banUntil) this.sharedRateLimiter.noteRateLimit(details.banUntil, details.status);
+      throw error;
+    }
   }
 
   async getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]> {

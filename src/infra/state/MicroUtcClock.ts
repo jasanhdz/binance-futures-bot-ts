@@ -29,7 +29,7 @@ export class MicroUtcClock {
       if (!this.pending) continue;
       await this.transport?.catch(() => undefined);
     }
-    this.now();
+    throw new Error('MICRO_NET_LOSS_CLOCK_UNAVAILABLE');
   }
 
   now(): number {
