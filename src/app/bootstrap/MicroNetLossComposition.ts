@@ -9,7 +9,7 @@ export function composeMicroNetLossLedger(
   apiKey: string,
   isTestnet: boolean,
   publicKeyFile = process.env.MICRO_NET_LOSS_OPERATOR_PUBLIC_KEY_FILE,
-  readServerTime?: () => Promise<number>,
+  readServerTime?: (signal: AbortSignal) => Promise<number>,
   clock = readServerTime ? new MicroUtcClock(readServerTime) : undefined,
 ): MicroBurstNetLossLedger | undefined {
   if (!publicKeyFile) return undefined;
