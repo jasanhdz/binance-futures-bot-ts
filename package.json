@@ -27,7 +27,9 @@
     "dump:effective-config": "ts-node scripts/aegis/dump_effective_config.ts",
     "micro-burst:preflight-contextual": "ts-node src/tooling/micro-burst/MicroBurstContextualPreflight.ts",
     "micro-burst:analyze-shadow": "ts-node scripts/micro-burst-analyze-shadow.ts",
-    "micro-burst:analyze-generic-shadow": "ts-node scripts/micro-burst-analyze-generic-shadow.ts"
+    "micro-burst:analyze-generic-shadow": "ts-node scripts/micro-burst-analyze-generic-shadow.ts",
+    "micro-burst:audit-historical-export": "ts-node scripts/micro-burst-audit-historical-export.ts",
+    "micro-burst:audit-historical-get": "ts-node scripts/micro-burst-audit-historical-get.ts"
   },
   "dependencies": {
     "axios": "^1.20.0",

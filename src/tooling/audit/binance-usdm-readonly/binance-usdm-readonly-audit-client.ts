@@ -10,6 +10,10 @@ export const AUDIT_ENDPOINTS = [
   '/fapi/v1/positionSide/dual',
   '/fapi/v1/openOrders',
   '/fapi/v1/openAlgoOrders',
+  '/fapi/v1/allOrders',
+  '/fapi/v1/userTrades',
+  '/fapi/v1/income',
+  '/fapi/v1/allAlgoOrders',
 ] as const;
 
 export type AuditEndpoint = (typeof AUDIT_ENDPOINTS)[number];
@@ -90,7 +94,15 @@ export function assertAuditRequestPolicy(input: AuditPolicyInput): asserts input
   origin: typeof BINANCE_USDM_PRODUCTION_ORIGIN;
   mode: typeof AUDIT_MODE;
   body?: undefined;
-  queryParameterNames?: readonly ('timestamp' | 'recvWindow' | 'signature')[];
+  queryParameterNames?: readonly (
+    | 'timestamp'
+    | 'recvWindow'
+    | 'signature'
+    | 'symbol'
+    | 'startTime'
+    | 'endTime'
+    | 'limit'
+  )[];
 } {
   if (input.mode !== AUDIT_MODE) throw new AuditPolicyError('AEGIS_AUDIT_MODE_INVALID');
   if (input.method !== 'GET') throw new AuditPolicyError('AEGIS_AUDIT_NON_GET_METHOD_PROHIBITED');
@@ -101,7 +113,15 @@ export function assertAuditRequestPolicy(input: AuditPolicyInput): asserts input
     throw new AuditPolicyError('AEGIS_AUDIT_WRONG_HOST');
   }
   if (input.body !== undefined) throw new AuditPolicyError('AEGIS_AUDIT_REQUEST_BODY_PROHIBITED');
-  const allowed = new Set(['timestamp', 'recvWindow', 'signature']);
+  const allowed = new Set([
+    'timestamp',
+    'recvWindow',
+    'signature',
+    'symbol',
+    'startTime',
+    'endTime',
+    'limit',
+  ]);
   if ((input.queryParameterNames ?? []).some((name) => !allowed.has(name))) {
     throw new AuditPolicyError('AEGIS_AUDIT_UNSUPPORTED_QUERY_PARAMETER');
   }
@@ -222,16 +242,71 @@ export class BinanceUsdmReadOnlyAuditClient {
     return this.#get('/fapi/v1/openAlgoOrders');
   }
 
+  getHistoricalOrders(
+    symbol: string,
+    startTime: number,
+    endTime: number,
+  ): Promise<AuditedResponse> {
+    return this.#getHistorical('/fapi/v1/allOrders', { symbol, startTime, endTime, limit: 1000 });
+  }
+
+  getHistoricalUserTrades(
+    symbol: string,
+    startTime: number,
+    endTime: number,
+  ): Promise<AuditedResponse> {
+    return this.#getHistorical('/fapi/v1/userTrades', { symbol, startTime, endTime, limit: 1000 });
+  }
+
+  getHistoricalIncome(
+    symbol: string,
+    startTime: number,
+    endTime: number,
+  ): Promise<AuditedResponse> {
+    return this.#getHistorical('/fapi/v1/income', { symbol, startTime, endTime, limit: 1000 });
+  }
+
+  getHistoricalAlgoOrders(
+    symbol: string,
+    startTime: number,
+    endTime: number,
+  ): Promise<AuditedResponse> {
+    return this.#getHistorical('/fapi/v1/allAlgoOrders', {
+      symbol,
+      startTime,
+      endTime,
+      limit: 1000,
+    });
+  }
+
   async #get(endpoint: AuditEndpoint): Promise<AuditedResponse> {
+    return this.#getHistorical(endpoint);
+  }
+
+  async #getHistorical(
+    endpoint: AuditEndpoint,
+    parameters: Readonly<Record<string, string | number>> = {},
+  ): Promise<AuditedResponse> {
+    const queryParameterNames = [
+      ...Object.keys(parameters),
+      'timestamp',
+      'recvWindow',
+      'signature',
+    ];
     assertAuditRequestPolicy({
       method: 'GET',
       path: endpoint,
       origin: this.origin,
       mode: this.options.mode,
-      queryParameterNames: ['timestamp', 'recvWindow', 'signature'],
+      queryParameterNames,
     });
     const requestedAt = this.now();
-    const unsigned = `recvWindow=${this.recvWindowMs}&timestamp=${requestedAt}`;
+    const unsignedParameters = new URLSearchParams({
+      ...Object.fromEntries(Object.entries(parameters).map(([key, value]) => [key, String(value)])),
+      recvWindow: String(this.recvWindowMs),
+      timestamp: String(requestedAt),
+    });
+    const unsigned = unsignedParameters.toString();
     const signature = createHmac('sha256', this.options.apiSecret).update(unsigned).digest('hex');
     const url = `${this.origin}${endpoint}?${unsigned}&signature=${signature}`;
     const controller = new AbortController();

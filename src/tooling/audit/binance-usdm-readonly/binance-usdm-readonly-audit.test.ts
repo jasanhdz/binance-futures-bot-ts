@@ -95,6 +95,30 @@ describe('Binance USD-M read-only audit network boundary', () => {
     });
   }
 
+  it('allows only bounded historical GET endpoints with no retries', async () => {
+    const transport = fakeTransport();
+    const auditedClient = client(transport);
+    const result = await auditedClient.getHistoricalOrders(
+      'SUIUSDT',
+      1_700_000_000_000,
+      1_700_086_400_000,
+    );
+    const url = new URL(transport.requests[0].url);
+    expect(url.pathname).toBe('/fapi/v1/allOrders');
+    expect(url.searchParams.get('symbol')).toBe('SUIUSDT');
+    expect(url.searchParams.get('startTime')).toBe('1700000000000');
+    expect(url.searchParams.get('endTime')).toBe('1700086400000');
+    expect(url.searchParams.get('limit')).toBe('1000');
+    expect(result.value).toEqual([]);
+    expect(auditedClient.counters).toMatchObject({
+      total_network_attempts: 1,
+      authenticated_user_data_get_requests: 1,
+      non_get_attempts: 0,
+      retries: 0,
+      mutation_requests: 0,
+    });
+  });
+
   for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
     it(`rejects ${method} before transport`, () => {
       expect(() =>
@@ -147,7 +171,7 @@ describe('Binance USD-M read-only audit network boundary', () => {
         path: '/fapi/v3/account',
         origin: 'https://fapi.binance.com',
         mode: AUDIT_MODE,
-        queryParameterNames: ['timestamp', 'symbol'],
+        queryParameterNames: ['timestamp', 'unexpected'],
       }),
     ).toThrow('AEGIS_AUDIT_UNSUPPORTED_QUERY_PARAMETER');
   });
@@ -517,19 +541,27 @@ describe('static mutation surface', () => {
       'getCurrentPositionMode',
       'getAllOpenOrders',
       'getAllOpenAlgoOrders',
+      'getHistoricalOrders',
+      'getHistoricalUserTrades',
+      'getHistoricalIncome',
+      'getHistoricalAlgoOrders',
     ]);
     expect(publicNames).not.toContain('request');
     expect(publicNames).not.toContain('signedRequest');
     expect(publicNames).not.toContain('send');
   });
 
-  it('freezes exactly five endpoint paths', () => {
+  it('freezes the current and historical endpoint paths', () => {
     expect(AUDIT_ENDPOINTS).toEqual([
       '/fapi/v3/account',
       '/fapi/v3/positionRisk',
       '/fapi/v1/positionSide/dual',
       '/fapi/v1/openOrders',
       '/fapi/v1/openAlgoOrders',
+      '/fapi/v1/allOrders',
+      '/fapi/v1/userTrades',
+      '/fapi/v1/income',
+      '/fapi/v1/allAlgoOrders',
     ]);
   });
 });
