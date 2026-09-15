@@ -203,7 +203,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
         }
         this.awaitingBridge = false;
         this.apply(event);
-        if (this.getState().health === 'HEALTHY') {
+        if (this.getState().health === 'HEALTHY' && this.recoveryStartedAtMs > 0) {
           this.resyncFailureStreak = 0;
           this.lastRecoveryLatencyMs = this.deps.clock.now() - this.recoveryStartedAtMs;
           this.deps.logger.info('market_data_order_book_resynchronized', {
@@ -306,16 +306,18 @@ export class SynchronizedOrderBook implements OrderBookPort {
       }
       this.health = 'HEALTHY';
       this.resyncFailureStreak = 0;
-      this.lastRecoveryLatencyMs = this.deps.clock.now() - this.recoveryStartedAtMs;
-      this.deps.logger.info('market_data_order_book_resynchronized', {
-        symbol: this.symbol,
-        requestedAtMs,
-        recoveredAtMs: this.deps.clock.now(),
-        recoveryLatencyMs: this.lastRecoveryLatencyMs,
-        snapshotLastUpdateId: snapshotUpdateId,
-        finalUpdateId: this.lastUpdateId,
-        bufferedEvents: buffered.length,
-      });
+      if (this.recoveryStartedAtMs > 0) {
+        this.lastRecoveryLatencyMs = this.deps.clock.now() - this.recoveryStartedAtMs;
+        this.deps.logger.info('market_data_order_book_resynchronized', {
+          symbol: this.symbol,
+          requestedAtMs,
+          recoveredAtMs: this.deps.clock.now(),
+          recoveryLatencyMs: this.lastRecoveryLatencyMs,
+          snapshotLastUpdateId: snapshotUpdateId,
+          finalUpdateId: this.lastUpdateId,
+          bufferedEvents: buffered.length,
+        });
+      }
     } catch (error) {
       if (generation !== this.lifecycleGeneration || !this.diffUnsubscribe) return;
       this.invalidate('UNAVAILABLE', 'snapshot request failed');
