@@ -34,10 +34,30 @@ async function main(): Promise<void> {
   const results: Record<string, unknown> = {};
   for (const symbol of symbols) {
     results[symbol] = {
-      orders: (await client.getHistoricalOrders(symbol, startTime, endTime)).value,
-      trades: (await client.getHistoricalUserTrades(symbol, startTime, endTime)).value,
-      income: (await client.getHistoricalIncome(symbol, startTime, endTime)).value,
-      algoOrders: (await client.getHistoricalAlgoOrders(symbol, startTime, endTime)).value,
+      orders: await fetchPages(
+        (from, to) => client.getHistoricalOrders(symbol, from, to),
+        startTime,
+        endTime,
+        ['time', 'updateTime'],
+      ),
+      trades: await fetchPages(
+        (from, to) => client.getHistoricalUserTrades(symbol, from, to),
+        startTime,
+        endTime,
+        ['time'],
+      ),
+      income: await fetchPages(
+        (from, to) => client.getHistoricalIncome(symbol, from, to),
+        startTime,
+        endTime,
+        ['time'],
+      ),
+      algoOrders: await fetchPages(
+        (from, to) => client.getHistoricalAlgoOrders(symbol, from, to),
+        startTime,
+        endTime,
+        ['createTime', 'updateTime'],
+      ),
     };
   }
   const outputRoot = resolve(outputArg);
@@ -59,6 +79,32 @@ async function main(): Promise<void> {
     { mode: 0o600 },
   );
   console.log(JSON.stringify({ outputRoot, symbols, network_counters: client.counters }, null, 2));
+}
+
+async function fetchPages(
+  request: (startTime: number, endTime: number) => Promise<{ value: unknown }>,
+  startTime: number,
+  endTime: number,
+  timestampFields: readonly string[],
+): Promise<{ rows: unknown[]; pages: number; complete: boolean }> {
+  const rows: unknown[] = [];
+  let pageStart = startTime;
+  let pages = 0;
+  for (let page = 0; page < 20 && pageStart <= endTime; page += 1) {
+    pages += 1;
+    const value = await request(pageStart, endTime);
+    if (!Array.isArray(value.value)) return { rows, pages, complete: false };
+    rows.push(...value.value);
+    if (value.value.length < 1000) return { rows, pages, complete: true };
+    const timestamps = value.value
+      .filter((row): row is Record<string, unknown> => Boolean(row && typeof row === 'object'))
+      .map((row) => timestampFields.map((field) => Number(row[field])).find(Number.isFinite))
+      .filter((timestamp): timestamp is number => timestamp !== undefined);
+    const latest = Math.max(...timestamps);
+    if (!Number.isFinite(latest) || latest < pageStart) return { rows, pages, complete: false };
+    pageStart = latest + 1;
+  }
+  return { rows, pages, complete: pageStart > endTime };
 }
 
 void main().catch((error) => {
