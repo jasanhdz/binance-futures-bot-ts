@@ -9,20 +9,26 @@ export class MicroUtcClock {
   private invalid = false;
   private synchronization?: Promise<void>;
   private synchronizationId = 0;
+  private transport?: Promise<number>;
 
   constructor(
-    private readonly readServerTime: () => Promise<number>,
+    private readonly readServerTime: (signal: AbortSignal) => Promise<number>,
     private readonly monotonic: () => number = () => performance.now(),
   ) {}
 
   async ready(): Promise<void> {
-    try {
-      this.now();
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'MICRO_NET_LOSS_CLOCK_UNAVAILABLE')
-        throw error;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        this.now();
+        return;
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== 'MICRO_NET_LOSS_CLOCK_UNAVAILABLE')
+          throw error;
+      }
+      await this.synchronization;
+      if (!this.pending) continue;
+      await this.transport?.catch(() => undefined);
     }
-    await this.synchronization;
     this.now();
   }
 
@@ -36,14 +42,16 @@ export class MicroUtcClock {
       const synchronizationId = ++this.synchronizationId;
       this.pending = true;
       this.nextRead = at + 5_000;
+      const controller = new AbortController();
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(
-          () => reject(new Error('MICRO_NET_LOSS_CLOCK_SYNC_TIMEOUT')),
-          MicroUtcClock.SYNC_TIMEOUT_MS,
-        );
+        timeoutHandle = setTimeout(() => {
+          controller.abort();
+          reject(new Error('MICRO_NET_LOSS_CLOCK_SYNC_TIMEOUT'));
+        }, MicroUtcClock.SYNC_TIMEOUT_MS);
       });
-      this.synchronization = Promise.race([Promise.resolve().then(this.readServerTime), timeout])
+      this.transport = Promise.resolve().then(() => this.readServerTime(controller.signal));
+      this.synchronization = Promise.race([this.transport, timeout])
         .then((server) => {
           const received = this.monotonic();
           if (!Number.isSafeInteger(server) || server < 0 || received < at) {
@@ -68,8 +76,21 @@ export class MicroUtcClock {
         })
         .finally(() => {
           if (timeoutHandle) clearTimeout(timeoutHandle);
-          if (this.synchronizationId === synchronizationId) this.pending = false;
         });
+      void this.transport.then(
+        () => {
+          if (this.synchronizationId === synchronizationId) {
+            this.pending = false;
+            if (!this.anchor) this.nextRead = 0;
+          }
+        },
+        () => {
+          if (this.synchronizationId === synchronizationId) {
+            this.pending = false;
+            if (!this.anchor) this.nextRead = 0;
+          }
+        },
+      );
     }
     if (!this.anchor || at - this.anchor.monotonic > 60_000)
       throw new Error('MICRO_NET_LOSS_CLOCK_UNAVAILABLE');

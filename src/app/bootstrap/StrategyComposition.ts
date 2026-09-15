@@ -54,7 +54,7 @@ export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure
         CONFIG.API_KEY,
         CONFIG.IS_TESTNET,
         undefined,
-        () => exchange.getServerTime(),
+        (signal) => exchange.getServerTimeWithSignal(signal),
       ),
     },
     config,
