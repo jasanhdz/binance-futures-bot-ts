@@ -138,6 +138,7 @@ export interface OrderBookState {
   lastDiffAtMs: number;
   gapCount: number;
   resyncCount: number;
+  lastRecoveryLatencyMs?: number | null;
 }
 
 export interface OrderBookSnapshot {

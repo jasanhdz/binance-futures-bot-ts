@@ -99,6 +99,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
   private lastDiffAtMs = 0;
   private gapCount = 0;
   private resyncCount = 0;
+  private lastRecoveryLatencyMs: number | null = null;
   private isSyncing = false;
   private resyncRequested = false;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -107,6 +108,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
   private diffUnsubscribe: (() => void) | null = null;
   private lifecycleGeneration = 0;
   private awaitingBridge = false;
+  private recoveryStartedAtMs = 0;
 
   constructor(
     private readonly symbol: string,
@@ -150,6 +152,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
       lastDiffAtMs: this.lastDiffAtMs,
       gapCount: this.gapCount,
       resyncCount: this.resyncCount,
+      lastRecoveryLatencyMs: this.lastRecoveryLatencyMs,
     };
   }
 
@@ -195,12 +198,25 @@ export class SynchronizedOrderBook implements OrderBookPort {
       if (this.awaitingBridge && this.health === 'UNSYNCED') {
         if (event.u < this.lastUpdateId) return;
         if (!(event.U <= this.lastUpdateId && this.lastUpdateId <= event.u)) {
-          this.desync('snapshot bridge missing');
+          this.desync('snapshot bridge missing', event);
           return;
         }
         this.awaitingBridge = false;
         this.apply(event);
-        if (this.getState().health === 'HEALTHY') this.resyncFailureStreak = 0;
+        if (this.getState().health === 'HEALTHY') {
+          this.resyncFailureStreak = 0;
+          this.lastRecoveryLatencyMs = this.deps.clock.now() - this.recoveryStartedAtMs;
+          this.deps.logger.info('market_data_order_book_resynchronized', {
+            symbol: this.symbol,
+            requestedAtMs: this.recoveryStartedAtMs,
+            recoveredAtMs: this.deps.clock.now(),
+            recoveryLatencyMs: this.lastRecoveryLatencyMs,
+            snapshotLastUpdateId: this.lastUpdateId,
+            finalUpdateId: this.lastUpdateId,
+            bufferedEvents: 0,
+            bridge: true,
+          });
+        }
         return;
       }
       this.buffer(event);
@@ -210,7 +226,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
     if (this.health !== 'HEALTHY') return;
     if (event.u <= this.lastUpdateId) return; // stale/duplicate event
     if (event.pu !== this.lastUpdateId) {
-      this.desync('diff-depth predecessor mismatch');
+      this.desync('diff-depth predecessor mismatch', event);
       return;
     }
     this.apply(event);
@@ -218,7 +234,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
 
   private buffer(event: BinanceDepthDiffEvent): void {
     if (this.diffBuffer.length >= this.maxDiffBuffer) {
-      this.desync('diff-depth buffer overflow');
+      this.desync('diff-depth buffer overflow', event);
       return;
     }
     this.diffBuffer.push(event);
@@ -227,6 +243,8 @@ export class SynchronizedOrderBook implements OrderBookPort {
   private async syncFromSnapshot(): Promise<void> {
     if (this.isSyncing || !this.diffUnsubscribe) return;
     const generation = this.lifecycleGeneration;
+    const requestedAtMs = this.deps.clock.now();
+    const bufferLengthBefore = this.diffBuffer.length;
     this.isSyncing = true;
     this.awaitingBridge = false;
     try {
@@ -234,6 +252,14 @@ export class SynchronizedOrderBook implements OrderBookPort {
         this.symbol,
         ORDER_BOOK_SNAPSHOT_DEPTH,
       );
+      this.deps.logger.info('market_data_order_book_snapshot_received', {
+        symbol: this.symbol,
+        requestedAtMs,
+        receivedAtMs: this.deps.clock.now(),
+        snapshotLastUpdateId: snapshot.lastUpdateId,
+        bufferLengthBefore,
+        bufferLengthAfter: this.diffBuffer.length,
+      });
       if (generation !== this.lifecycleGeneration || !this.diffUnsubscribe) return;
       if (!isUpdateId(snapshot.lastUpdateId) || !this.loadSnapshot(snapshot)) {
         this.invalidate('ANOMALOUS', 'invalid order-book snapshot');
@@ -258,7 +284,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
         const first = buffered[0];
         // USD-M requires U <= snapshot lastUpdateId <= u, including equality.
         if (!(first.U <= this.lastUpdateId && this.lastUpdateId <= first.u)) {
-          this.desync('snapshot bridge missing');
+          this.desync('snapshot bridge missing', first);
           return;
         }
         this.apply(first);
@@ -267,7 +293,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
           const event = buffered[index];
           if (event.u <= this.lastUpdateId) continue;
           if (event.pu !== this.lastUpdateId) {
-            this.desync('buffered diff-depth predecessor mismatch');
+            this.desync('buffered diff-depth predecessor mismatch', event);
             return;
           }
           this.apply(event);
@@ -280,6 +306,16 @@ export class SynchronizedOrderBook implements OrderBookPort {
       }
       this.health = 'HEALTHY';
       this.resyncFailureStreak = 0;
+      this.lastRecoveryLatencyMs = this.deps.clock.now() - this.recoveryStartedAtMs;
+      this.deps.logger.info('market_data_order_book_resynchronized', {
+        symbol: this.symbol,
+        requestedAtMs,
+        recoveredAtMs: this.deps.clock.now(),
+        recoveryLatencyMs: this.lastRecoveryLatencyMs,
+        snapshotLastUpdateId: snapshotUpdateId,
+        finalUpdateId: this.lastUpdateId,
+        bufferedEvents: buffered.length,
+      });
     } catch (error) {
       if (generation !== this.lifecycleGeneration || !this.diffUnsubscribe) return;
       this.invalidate('UNAVAILABLE', 'snapshot request failed');
@@ -347,8 +383,20 @@ export class SynchronizedOrderBook implements OrderBookPort {
     return bids.length > 0 && asks.length > 0 && bids[0].price < asks[0].price;
   }
 
-  private desync(reason: string): void {
+  private desync(reason: string, event?: Partial<BinanceDepthDiffEvent>): void {
     this.invalidate('UNSYNCED', reason);
+    if (event) {
+      this.deps.logger.warn('market_data_order_book_sequence_break', {
+        symbol: this.symbol,
+        reason,
+        eventU: event.U,
+        eventu: event.u,
+        eventPu: event.pu,
+        lastUpdateId: this.lastUpdateId,
+        bufferLength: this.diffBuffer.length,
+        observedAtMs: event.receivedAtMs,
+      });
+    }
   }
 
   private invalidate(health: OrderBookHealth, reason: string): void {
@@ -362,6 +410,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
     this.temporalHistory = [];
     if (!alreadyRecovering) {
       this.resyncCount++;
+      this.recoveryStartedAtMs = this.deps.clock.now();
       this.deps.logger.warn('market_data_order_book_desynchronized', {
         symbol: this.symbol,
         reason,

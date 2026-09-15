@@ -123,6 +123,7 @@ export function buildMarketDataDiagnostics(
         lastDiffAgeMs: age(now, bookState?.lastDiffAtMs),
         gapCount: bookState?.gapCount ?? 0,
         resyncCount: bookState?.resyncCount ?? 0,
+        recoveryLatencyMs: bookState?.lastRecoveryLatencyMs ?? null,
       },
       aggTrades: {
         lastTradeAgeMs: age(now, lastTradeAtMs),
@@ -178,6 +179,9 @@ export function buildMarketDataDiagnostics(
   }));
   const healthy = normalizedRows.filter((row) => row.status === 'FRESH').length;
   const routeStreams = streams.filter((stream) => stream.consumers > 0);
+  const recoveryLatencies = normalizedRows
+    .map((row) => (row.orderBook as { recoveryLatencyMs?: number | null }).recoveryLatencyMs)
+    .filter((value): value is number => typeof value === 'number');
   const reconnects = routeStreams.reduce((sum, stream) => sum + stream.reconnectCount, 0);
   const rateLimit = options.rateLimit ?? {
     rateLimitEvents: 0,
@@ -199,7 +203,7 @@ export function buildMarketDataDiagnostics(
       commonClosedCandleMs: commonTimestamp,
       candlesAligned: commonTimestamp !== null,
       watchdog: { status: routeStreams.length > 0 ? 'ACTIVE' : 'NO_ACTIVE_STREAMS' },
-      recoveryLatencyMs: null,
+      recoveryLatencyMs: recoveryLatencies.length ? Math.max(...recoveryLatencies) : null,
       restFallbackCount: rows.reduce(
         (sum, row) => sum + (row.candles as { restFallbackCount: number }).restFallbackCount,
         0,
