@@ -25,36 +25,43 @@ if (
   );
 }
 
-const client = new BinanceUsdmReadOnlyAuditClient({
-  apiKey: process.env.BINANCE_API_KEY ?? process.env.API_KEY ?? '',
-  apiSecret: process.env.BINANCE_API_SECRET ?? process.env.API_SECRET ?? '',
-  mode: AUDIT_MODE,
-});
-const results: Record<string, unknown> = {};
-for (const symbol of symbols) {
-  results[symbol] = {
-    orders: (await client.getHistoricalOrders(symbol, startTime, endTime)).value,
-    trades: (await client.getHistoricalUserTrades(symbol, startTime, endTime)).value,
-    income: (await client.getHistoricalIncome(symbol, startTime, endTime)).value,
-    algoOrders: (await client.getHistoricalAlgoOrders(symbol, startTime, endTime)).value,
-  };
+async function main(): Promise<void> {
+  const client = new BinanceUsdmReadOnlyAuditClient({
+    apiKey: process.env.BINANCE_API_KEY ?? process.env.API_KEY ?? '',
+    apiSecret: process.env.BINANCE_API_SECRET ?? process.env.API_SECRET ?? '',
+    mode: AUDIT_MODE,
+  });
+  const results: Record<string, unknown> = {};
+  for (const symbol of symbols) {
+    results[symbol] = {
+      orders: (await client.getHistoricalOrders(symbol, startTime, endTime)).value,
+      trades: (await client.getHistoricalUserTrades(symbol, startTime, endTime)).value,
+      income: (await client.getHistoricalIncome(symbol, startTime, endTime)).value,
+      algoOrders: (await client.getHistoricalAlgoOrders(symbol, startTime, endTime)).value,
+    };
+  }
+  const outputRoot = resolve(outputArg);
+  mkdirSync(outputRoot, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    resolve(outputRoot, 'historical_get_evidence.json'),
+    JSON.stringify(
+      {
+        schema_id: 'micro-burst-historical-get-evidence-v1',
+        symbols,
+        from: new Date(startTime).toISOString(),
+        to: new Date(endTime).toISOString(),
+        results,
+        network_counters: client.counters,
+      },
+      null,
+      2,
+    ) + '\n',
+    { mode: 0o600 },
+  );
+  console.log(JSON.stringify({ outputRoot, symbols, network_counters: client.counters }, null, 2));
 }
-const outputRoot = resolve(outputArg);
-mkdirSync(outputRoot, { recursive: true, mode: 0o700 });
-writeFileSync(
-  resolve(outputRoot, 'historical_get_evidence.json'),
-  JSON.stringify(
-    {
-      schema_id: 'micro-burst-historical-get-evidence-v1',
-      symbols,
-      from: new Date(startTime).toISOString(),
-      to: new Date(endTime).toISOString(),
-      results,
-      network_counters: client.counters,
-    },
-    null,
-    2,
-  ) + '\n',
-  { mode: 0o600 },
-);
-console.log(JSON.stringify({ outputRoot, symbols, network_counters: client.counters }, null, 2));
+
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.message : 'MICRO_HISTORICAL_GET_AUDIT_FAILED');
+  process.exit(1);
+});
