@@ -28,6 +28,32 @@ class FakeWebSocket implements RawWebSocket {
 const logger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 describe('CombinedMarketDataHub', () => {
+  it('records a current socket close and ignores obsolete close callbacks', () => {
+    vi.useFakeTimers();
+    const socket = new FakeWebSocket();
+    const warn = vi.fn();
+    const hub = new CombinedMarketDataHub(
+      { ...logger, warn },
+      {
+        webSocketFactory: () => socket,
+      },
+    );
+    try {
+      hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn());
+      vi.advanceTimersByTime(0);
+      socket.open();
+      socket.onclose?.({ code: 1006 });
+      expect(warn).toHaveBeenCalledWith(
+        'market_data_combined_ws_closed',
+        expect.objectContaining({ code: 1006, generation: 1, streams: ['btcusdt@aggTrade'] }),
+      );
+      socket.onclose?.({ code: 1000 });
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      hub.close();
+      vi.useRealTimers();
+    }
+  });
   it('opens one combined socket for streams subscribed in the same turn', () => {
     vi.useFakeTimers();
     const sockets: FakeWebSocket[] = [];

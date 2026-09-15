@@ -170,8 +170,18 @@ export class CombinedMarketDataHub {
           this.logger.warn('market_data_ws_error', { error: String(event) });
         }
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (!this.isCurrentSocket(route!, socket, generation)) return;
+        const close = event && typeof event === 'object' ? (event as { code?: unknown }) : {};
+        this.logger.warn('market_data_combined_ws_closed', {
+          route: route.descriptor.accessMode,
+          generation,
+          code: typeof close.code === 'number' ? close.code : null,
+          openedAtMs: route.openedAtMs,
+          lastMessageAtMs: route.lastMessageAtMs,
+          observedAtMs: Date.now(),
+          streams: [...route.streams.keys()],
+        });
         route!.socket = undefined;
         if (!route!.intentionallyClosed) this.scheduleReconnect(route!);
       };
