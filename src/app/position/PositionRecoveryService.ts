@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { BotState, Side } from '../../core/types';
 import type { Exchange, PositionInfo } from '../ports/Exchange';
 import type { Logger } from '../ports/Logger';
@@ -189,7 +190,10 @@ export class PositionRecoveryService {
           lastEntryMargin: position.isolatedMargin,
           posSideMode: position.sideMode,
           lastEntryAt: Date.now(),
-          lastTradeId: `MANUAL-${symbol}-${Date.now()}`,
+          lastTradeId: currentState.lastTradeId ?? `MANUAL-${symbol}-${Date.now()}`,
+          manualEpisodeId: currentState.manualEpisodeId ?? randomUUID(),
+          manualOrderIds: currentState.manualOrderIds ?? [],
+          manualFillIds: currentState.manualFillIds ?? [],
           positionOwner: 'EXTERNAL',
           tradeOrigin: 'MANUAL_EXTERNAL',
           ownershipStatus: 'UNKNOWN',
@@ -299,7 +303,10 @@ export class PositionRecoveryService {
         lastEntryMargin: position.isolatedMargin,
         posSideMode: position.sideMode,
         lastEntryAt: Date.now(),
-        lastTradeId: `MANUAL-${symbol}-${Date.now()}`,
+        lastTradeId: currentState.lastTradeId ?? `MANUAL-${symbol}-${Date.now()}`,
+        manualEpisodeId: currentState.manualEpisodeId ?? randomUUID(),
+        manualOrderIds: currentState.manualOrderIds ?? [],
+        manualFillIds: currentState.manualFillIds ?? [],
         positionOwner: 'EXTERNAL',
         tradeOrigin: 'MANUAL_EXTERNAL',
         ownershipStatus: 'UNKNOWN',

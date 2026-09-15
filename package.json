@@ -30,6 +30,7 @@
     "micro-burst:analyze-generic-shadow": "ts-node scripts/micro-burst-analyze-generic-shadow.ts",
     "micro-burst:audit-historical-export": "ts-node scripts/micro-burst-audit-historical-export.ts",
     "micro-burst:audit-historical-get": "ts-node scripts/micro-burst-audit-historical-get.ts",
+    "micro-burst:migrate-historical-external": "ts-node scripts/micro-burst-migrate-historical-external.ts",
     "micro-burst:reconcile-historical": "ts-node scripts/micro-burst-reconcile-historical.ts"
   },
   "dependencies": {

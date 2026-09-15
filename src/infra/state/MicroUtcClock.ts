@@ -55,6 +55,7 @@ export class MicroUtcClock {
         .then((server) => {
           const received = this.monotonic();
           if (!Number.isSafeInteger(server) || server < 0 || received < at) {
+            this.invalid = true;
             return;
           }
           if (this.anchor) {

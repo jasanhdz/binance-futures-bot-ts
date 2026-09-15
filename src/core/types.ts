@@ -59,6 +59,19 @@ export type BotState = {
   lastOrderId?: string;
   marketOpenAmbiguous?: boolean;
   marketOpenClientOrderId?: string;
+  /** Manual/external history remains economically unresolved after operational retirement. */
+  historicalAccountingStatus?: 'UNRESOLVED' | 'VERIFIED';
+  historicalResolution?: {
+    kind: 'HISTORICAL_EXTERNAL_STATE_RETIRED_BY_OPERATOR';
+    migrationId: string;
+    authorizedAt: string;
+    evidenceSha256: string;
+    previousStateSha256: string;
+  };
+  /** Stable manual identity, retained across restarts and partial/multiple fills. */
+  manualEpisodeId?: string;
+  manualOrderIds?: string[];
+  manualFillIds?: string[];
   /** Rebuilt from durable entry evidence; accounting/admission remain quarantined. */
   recoveredEntryMutationId?: string;
   /** BOT is canonical. AEGIS remains readable only for persisted legacy state migration. */
