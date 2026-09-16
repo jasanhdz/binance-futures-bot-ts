@@ -140,7 +140,10 @@ describe('SharedStrategyExecutionService protection policy', () => {
     const result = await service.execute(intent());
     expect(result).toMatchObject({
       reason: 'INVALID_SIZE',
-      metadata: { sizingReason: 'INVALID_QUANTITY_FILTERS' },
+      metadata: {
+        sizingReason: 'INVALID_QUANTITY_FILTERS',
+        reasonDetail: 'INVALID_QUANTITY_FILTERS',
+      },
     });
     expect(exchange.marketOpen).not.toHaveBeenCalled();
   });

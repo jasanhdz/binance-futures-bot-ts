@@ -25,6 +25,7 @@ import {
 } from './rate-limit';
 import { SharedBinanceRateLimiter } from './shared-binance-rate-limit';
 import { randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import {
   validMicroBurstSettlementIdentity,
   reconcileMicroBurstEconomics,
@@ -248,6 +249,10 @@ export class BinanceExchange implements Exchange {
     totalWeight: 0,
     weightBlocked: 0,
     cooldownBlocked: 0,
+    totalQueueWaitMs: 0,
+    totalRequestDurationMs: 0,
+    maxQueueWaitMs: 0,
+    maxRequestDurationMs: 0,
   };
   private readonly accountInfoTtlMs = Number(process.env.BINANCE_ACCOUNTINFO_TTL_MS ?? 250);
 
@@ -284,7 +289,14 @@ export class BinanceExchange implements Exchange {
     endpoint = 'unknown',
     priority: SharedRequestPriority = 'normal',
   ): Promise<T> {
+    const enqueuedAt = performance.now();
     const run = async () => {
+      const queueWaitMs = performance.now() - enqueuedAt;
+      this.requestMetrics.totalQueueWaitMs += queueWaitMs;
+      this.requestMetrics.maxQueueWaitMs = Math.max(
+        this.requestMetrics.maxQueueWaitMs,
+        queueWaitMs,
+      );
       await this.sharedRateLimiter.acquire(weight, endpoint, priority);
       while (isRateLimited()) {
         noteRateLimitBlockedRequest();
@@ -301,10 +313,17 @@ export class BinanceExchange implements Exchange {
       if (wait > 0) await sleep(wait);
       try {
         const at = Date.now();
+        const requestStartedAt = performance.now();
         this.recentRequestWeights.push({ at, weight: requestWeight });
         this.requestMetrics.requests++;
         this.requestMetrics.totalWeight += requestWeight;
         const result = await task();
+        const requestDurationMs = performance.now() - requestStartedAt;
+        this.requestMetrics.totalRequestDurationMs += requestDurationMs;
+        this.requestMetrics.maxRequestDurationMs = Math.max(
+          this.requestMetrics.maxRequestDurationMs,
+          requestDurationMs,
+        );
         this.nextRequestAt = Date.now() + this.minReqGapMs;
         return result;
       } catch (err) {

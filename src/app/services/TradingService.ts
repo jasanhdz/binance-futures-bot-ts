@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { prepareClosedCandles } from '../../core/market-data/CandleIntegrity';
 import { isMicroBurstPolicy, isMicroBurstStrategy } from '../../core/strategy/MicroBurstLegacy';
 import { EntryGateDiagnostics } from '../diagnostics/EntryGateDiagnostics';
@@ -1899,8 +1900,15 @@ export class TradingService {
       this.riskSession.initializeDailyStartBalance(dailyEquity, request.requestedAt);
       const dailyStartBalance = this.riskSession.snapshot().dailyStartBalance;
       const dayStart = Math.floor(request.requestedAt / 86_400_000) * 86_400_000;
+      const outcomeReadStartedAt = performance.now();
       const verifiedOutcomes = await (this.deps.closedTradeOutcomeReader?.() ??
         readStrategyClosedTradeOutcomes(undefined, this.getTradingMode()));
+      this.deps.logger.debug('micro_burst_entry_outcome_read_timing', {
+        symbol: request.symbol,
+        decisionId: this.microDecisionId(request),
+        durationMs: Math.round(performance.now() - outcomeReadStartedAt),
+        outcomeCount: verifiedOutcomes.length,
+      });
       const botDailyPnlUsdt = verifiedOutcomes.reduce((total, outcome) => {
         const closedAt = Date.parse(outcome.closedAt);
         return Number.isFinite(closedAt) && closedAt >= dayStart ? total + outcome.pnlUsdt : total;
@@ -2066,6 +2074,12 @@ export class TradingService {
           status: execution.status,
           reason: execution.reason,
           reasonDetail: executionMetadata.reasonDetail,
+          sizingReason: executionMetadata.sizingReason,
+          wallet: executionMetadata.wallet,
+          availableWallet: executionMetadata.availableWallet,
+          requestedNotional: executionMetadata.requestedNotional,
+          minNotional: executionMetadata.minNotional,
+          admissionElapsedMs: Date.now() - request.requestedAt,
           failureStage: executionMetadata.failureStage,
           positionStillOpen: executionMetadata.positionStillOpen,
           protectionPending: executionMetadata.protectionPending,

@@ -207,6 +207,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           requestedNotional,
           minNotional: filters.minNotional,
           sizingReason: sizing.reason,
+          reasonDetail: sizing.reason,
         });
       }
 
@@ -224,6 +225,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
           return denied(intent, 'INVALID_SIZE', {
             ...baseMetadata,
             reasonDetail: 'MICRO_CONTEXTUAL_SIZING_SNAPSHOT_REQUIRED',
+            sizingReason: 'MICRO_CONTEXTUAL_SIZING_SNAPSHOT_REQUIRED',
           });
         intent = {
           ...intent,

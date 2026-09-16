@@ -1769,7 +1769,12 @@ describe('TradingService Aegis live execution', () => {
       expect(state.get().marketOpenAmbiguous).not.toBe(true);
       expect(logger.warn).toHaveBeenCalledWith(
         'micro_burst_live_entry_not_opened',
-        expect.objectContaining({ status: 'DENIED', reason: 'INVALID_SIZE' }),
+        expect.objectContaining({
+          status: 'DENIED',
+          reason: 'INVALID_SIZE',
+          sizingReason: expect.any(String),
+          admissionElapsedMs: 30_001,
+        }),
       );
     } finally {
       clock.mockRestore();

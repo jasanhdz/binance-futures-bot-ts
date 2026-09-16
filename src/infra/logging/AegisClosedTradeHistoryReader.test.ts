@@ -123,4 +123,25 @@ describe('readAegisClosedTradeOutcomes', () => {
     });
     expect(await fs.readFile(file, 'utf8')).toBe(original);
   });
+
+  it('reuses unchanged files and rereads only a journal file that changed', async () => {
+    const file = path.join(tempDir, 'turbo_trades_2026-07-27.jsonl');
+    const record = {
+      trade_id: 'MICRO-BURST-1',
+      closed_at: '2026-07-27T01:30:00.000Z',
+      pnl_usdt: -1,
+      status: 'CLOSED',
+      strategy: 'MICRO_BURST',
+      mode: 'AEGIS_TURBO_MICRO_LIVE',
+      owner: 'AEGIS',
+      origin: 'BOT',
+      ownership_status: 'VERIFIED',
+      eligible_for_bot_metrics: true,
+    };
+    await fs.writeFile(file, `${JSON.stringify(record)}\n`);
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(1);
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(1);
+    await fs.appendFile(file, `${JSON.stringify({ ...record, trade_id: 'MICRO-BURST-2' })}\n`);
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(2);
+  });
 });
