@@ -5,7 +5,7 @@ import type { AegisClosedTradeOutcome } from '../../strategies/aegis/domain/serv
 import { isVerifiedAegisMetricRecord } from './AegisTradeOwnership';
 import { isMicroBurstStrategy } from '../../core/strategy/MicroBurstLegacy';
 
-type CachedFile<T> = { mtimeMs: number; size: number; outcomes: T[] };
+type CachedFile<T> = { ino: number; mtimeMs: number; size: number; outcomes: T[] };
 
 const aegisCache = new Map<string, Map<string, CachedFile<AegisClosedTradeOutcome>>>();
 const strategyCache = new Map<string, Map<string, CachedFile<ClosedTradeOutcome>>>();
@@ -32,7 +32,12 @@ async function readCachedOutcomeFiles<T>(
     const filePath = path.join(baseDir, file);
     const stat = await fs.stat(filePath);
     const cached = previous.get(file);
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    if (
+      cached &&
+      cached.ino === stat.ino &&
+      cached.mtimeMs === stat.mtimeMs &&
+      cached.size === stat.size
+    ) {
       current.set(file, cached);
       continue;
     }
@@ -47,7 +52,7 @@ async function readCachedOutcomeFiles<T>(
         // Ignore incomplete or malformed journal lines.
       }
     }
-    current.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, outcomes });
+    current.set(file, { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size, outcomes });
   }
   cache.set(cacheKey, current);
   return files.flatMap((file) => current.get(file)?.outcomes ?? []);

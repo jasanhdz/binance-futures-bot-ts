@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
+import { performance } from 'node:perf_hooks';
 import {
   readAegisClosedTradeOutcomes,
   readStrategyClosedTradeOutcomes,
@@ -143,5 +144,79 @@ describe('readAegisClosedTradeOutcomes', () => {
     await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(1);
     await fs.appendFile(file, `${JSON.stringify({ ...record, trade_id: 'MICRO-BURST-2' })}\n`);
     await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(2);
+  });
+
+  it('handles rotation, truncation, replacement, and an incomplete tail without stale results', async () => {
+    const first = path.join(tempDir, 'turbo_trades_2026-07-27.jsonl');
+    const second = path.join(tempDir, 'turbo_trades_2026-07-28.jsonl');
+    const record = (tradeId: string) => ({
+      trade_id: tradeId,
+      closed_at: '2026-07-27T01:30:00.000Z',
+      pnl_usdt: -1,
+      status: 'CLOSED',
+      strategy: 'MICRO_BURST',
+      mode: 'AEGIS_TURBO_MICRO_LIVE',
+      owner: 'AEGIS',
+      origin: 'BOT',
+      ownership_status: 'VERIFIED',
+      eligible_for_bot_metrics: true,
+    });
+    await fs.writeFile(first, `${JSON.stringify(record('old'))}\n`);
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(1);
+
+    await fs.writeFile(first, `${JSON.stringify(record('replacement'))}\n`);
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toEqual([
+      expect.objectContaining({ tradeId: 'replacement' }),
+    ]);
+
+    await fs.writeFile(first, '');
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toEqual([]);
+    const complete = JSON.stringify(record('complete'));
+    await fs.writeFile(first, complete.slice(0, -1));
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toEqual([]);
+    await fs.appendFile(first, '}\n');
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toHaveLength(1);
+
+    await fs.rename(first, second);
+    await expect(readStrategyClosedTradeOutcomes(tempDir)).resolves.toEqual([
+      expect.objectContaining({ tradeId: 'complete' }),
+    ]);
+  });
+
+  it('returns the same complete-file accounting on cold and warm reads', async () => {
+    const files = ['2026-07-27', '2026-07-28', '2026-07-29'];
+    const records = files.flatMap((day, index) =>
+      Array.from({ length: 100 }, (_, offset) => ({
+        trade_id: `MICRO-BURST-${index}-${offset}`,
+        closed_at: `${day}T01:30:00.000Z`,
+        pnl_usdt: offset % 2 ? -1 : 2,
+        status: 'CLOSED',
+        strategy: 'MICRO_BURST',
+        mode: 'AEGIS_TURBO_MICRO_LIVE',
+        owner: 'AEGIS',
+        origin: 'BOT',
+        ownership_status: 'VERIFIED',
+        eligible_for_bot_metrics: true,
+      })),
+    );
+    for (const day of files) {
+      await fs.writeFile(
+        path.join(tempDir, `turbo_trades_${day}.jsonl`),
+        `${records
+          .filter((record) => record.closed_at.startsWith(day))
+          .map((record) => JSON.stringify(record))
+          .join('\n')}\n`,
+      );
+    }
+    const coldStartedAt = performance.now();
+    const cold = await readStrategyClosedTradeOutcomes(tempDir);
+    const coldDurationMs = performance.now() - coldStartedAt;
+    const warmStartedAt = performance.now();
+    const warm = await readStrategyClosedTradeOutcomes(tempDir);
+    const warmDurationMs = performance.now() - warmStartedAt;
+    expect(warm).toEqual(cold);
+    expect(warm).toHaveLength(records.length);
+    // Keep this as an observation, not a flaky wall-clock threshold.
+    expect(Number.isFinite(coldDurationMs) && Number.isFinite(warmDurationMs)).toBe(true);
   });
 });
