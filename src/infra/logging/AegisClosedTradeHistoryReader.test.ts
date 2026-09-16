@@ -218,5 +218,8 @@ describe('readAegisClosedTradeOutcomes', () => {
     expect(warm).toHaveLength(records.length);
     // Keep this as an observation, not a flaky wall-clock threshold.
     expect(Number.isFinite(coldDurationMs) && Number.isFinite(warmDurationMs)).toBe(true);
+    console.info(
+      `micro-history-reader-benchmark coldMs=${coldDurationMs.toFixed(2)} warmMs=${warmDurationMs.toFixed(2)} records=${records.length}`,
+    );
   });
 });

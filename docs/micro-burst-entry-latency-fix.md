@@ -25,7 +25,9 @@ an expired signal.
 
 - Deterministic sizing and durable-entry tests pass.
 - History-reader tests cover unchanged-file reuse and changed-file refresh.
-- Full offline suite and build must remain green before publication.
+- Full serial offline suite: 224 files and 2,952 tests, exit code 0.
+- Build: passes.
+- Controlled 300-record fixture: cold read 4.09 ms, warm read 0.30 ms; both returned identical accounting.
 
 ## Pending LIVE Observation
 
