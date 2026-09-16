@@ -27,7 +27,8 @@ an expired signal.
 - History-reader tests cover unchanged-file reuse and changed-file refresh.
 - Full serial offline suite: 224 files and 2,952 tests, exit code 0.
 - Build: passes.
-- Controlled 300-record fixture: cold read 4.09 ms, warm read 0.30 ms; both returned identical accounting.
+- Controlled 300-record fixture: cold read 0.65 ms, warm read 0.08 ms; both returned identical accounting.
+- A fresh child process reconstructed the same 300 outcomes after restart.
 
 ## Pending LIVE Observation
 

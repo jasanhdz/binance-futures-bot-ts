@@ -3,10 +3,14 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { performance } from 'node:perf_hooks';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   readAegisClosedTradeOutcomes,
   readStrategyClosedTradeOutcomes,
 } from './AegisClosedTradeHistoryReader';
+
+const execFileAsync = promisify(execFile);
 
 describe('readAegisClosedTradeOutcomes', () => {
   let tempDir: string;
@@ -221,5 +225,17 @@ describe('readAegisClosedTradeOutcomes', () => {
     console.info(
       `micro-history-reader-benchmark coldMs=${coldDurationMs.toFixed(2)} warmMs=${warmDurationMs.toFixed(2)} records=${records.length}`,
     );
+    const child = await execFileAsync(
+      process.execPath,
+      [
+        '-r',
+        'ts-node/register',
+        '-e',
+        "require('./src/infra/logging/AegisClosedTradeHistoryReader').readStrategyClosedTradeOutcomes(process.argv[1]).then(r => process.stdout.write(JSON.stringify(r))).catch(e => { console.error(e); process.exit(1) })",
+        tempDir,
+      ],
+      { cwd: process.cwd(), maxBuffer: 1024 * 1024 },
+    );
+    expect(JSON.parse(child.stdout)).toEqual(cold);
   });
 });
