@@ -37,7 +37,7 @@ export type DurableEntryResult = {
 } & (
   | { status: 'CONFIRMED'; order: EntryOrderReceipt }
   | { status: 'REJECTED'; code: number }
-  | { status: 'UNKNOWN' | 'BLOCKED'; reason: string }
+  | { status: 'UNKNOWN' | 'BLOCKED'; reason: string; transportAttempted?: boolean }
 );
 
 type TerminalEvidence =
@@ -269,11 +269,14 @@ export class DurableEntryCoordinator {
           return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
         }
         let evidence: TerminalEvidence;
+        let transportAttempted = false;
         try {
           const order = await send(jsonSnapshot(request) as DurableEntryRequest, current);
+          transportAttempted = true;
           if (!validOrder(order)) throw new Error('ENTRY_ACK_INVALID');
           evidence = { status: 'CONFIRMED', order: { ...order } };
         } catch (error) {
+          transportAttempted = (error as { transportAttempted?: unknown })?.transportAttempted === true;
           if ((error as { code?: unknown })?.code === 'ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND') {
             await this.finish(request, {
               status: 'CANCELLED_BEFORE_SEND',
@@ -281,14 +284,25 @@ export class DurableEntryCoordinator {
             });
             await this.journal!.flush();
             this.pending.delete(operationId);
-            return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
+            return {
+              ...identity,
+              status: 'BLOCKED',
+              reason: 'ENTRY_IDENTITY_NOT_CURRENT',
+              transportAttempted: false,
+            };
           }
           const code = definiteEntryRejectionCode(error);
           if (code === undefined) {
             await this.append(request, 'UNKNOWN', undefined, 'ENTRY_SEND_UNKNOWN');
             // No resend, even if exact lookup is unavailable or returns -2013.
             const order = await this.lookup(request);
-            if (!order) return { ...identity, status: 'UNKNOWN', reason: 'ENTRY_SEND_UNKNOWN' };
+            if (!order)
+              return {
+                ...identity,
+                status: 'UNKNOWN',
+                reason: 'ENTRY_SEND_UNKNOWN',
+                transportAttempted,
+              };
             evidence = { status: 'CONFIRMED', order };
           } else {
             evidence = { status: 'REJECTED', code };

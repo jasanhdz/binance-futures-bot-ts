@@ -63,7 +63,7 @@ export class TelegramService {
         // Fallback: If Markdown fails, send as plain text
         if (err.includes("can't parse entities")) {
           console.warn('⚠️ Retrying as Plain Text...');
-          await fetch(url, {
+          const fallback = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -71,10 +71,14 @@ export class TelegramService {
               text: message.replace(/\*\*/g, ''),
             }),
           });
+          if (!fallback.ok) throw new Error(`Telegram HTTP ${fallback.status}`);
+          return;
         }
+        throw new Error(`Telegram HTTP ${response.status}: ${err}`);
       }
     } catch (error) {
       console.error('❌ Error en Telegram Gateway:', error);
+      throw error;
     }
   }
 

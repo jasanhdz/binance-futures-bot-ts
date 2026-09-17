@@ -1772,7 +1772,25 @@ export class TradingService {
       });
       return false;
     }
-    return this.trackRuntimeTask(() => this.openMicroBurstLivePositionTask(request));
+    const preparationTimer = setTimeout(() => {
+      this.notifyMicroEntryOutcome(
+        {
+          symbol: request.symbol,
+          side: request.side,
+          decisionId: this.microDecisionId(request),
+          reason: 'MICRO_PREPARATION_PROLONGED',
+          admissionElapsedMs: Date.now() - request.requestedAt,
+          orderState: 'PENDING',
+        },
+        'PREPARATION_PROLONGED',
+      );
+    }, 15_000);
+    preparationTimer.unref?.();
+    try {
+      return await this.trackRuntimeTask(() => this.openMicroBurstLivePositionTask(request));
+    } finally {
+      clearTimeout(preparationTimer);
+    }
   }
 
   private async openMicroBurstLivePositionTask(
@@ -2152,10 +2170,9 @@ export class TradingService {
             reason: execution.reason,
             reasonDetail: executionMetadata.reasonDetail,
             admissionElapsedMs,
-            orderSent:
-              execution.status === 'FAILED' && executionMetadata.failureStage !== undefined,
+            orderSent: executionMetadata.marketOpenTransportAttempted === true,
           },
-          executionMetadata.failureStage !== undefined
+          executionMetadata.marketOpenTransportAttempted === true
             ? 'SEND_OR_RECONCILIATION'
             : 'PRE_SEND_BLOCKED',
         );
@@ -2439,12 +2456,17 @@ export class TradingService {
     const reason = String(sample.reasonDetail ?? sample.reason ?? 'UNKNOWN');
     const elapsed = Number(sample.admissionElapsedMs);
     const elapsedText = Number.isFinite(elapsed) ? `${Math.round(elapsed / 1000)} s` : 'N/D';
-    const sent = sample.orderSent === true;
+    const orderState =
+      sample.orderState === 'PENDING'
+        ? 'estado pendiente'
+        : sample.orderSent === true
+          ? 'resultado incierto'
+          : 'no enviada';
     this.microEntryNotificationKeys.add(key);
     const message =
       `⚠️ Micro: entrada bloqueada\n${symbol} · ${side}\n` +
       `Motivo: ${reason}\nEtapa: ${stage}\nTiempo transcurrido: ${elapsedText}\n` +
-      `Orden: ${sent ? 'resultado incierto' : 'no enviada'}\nDecisionId: ${decisionId}`;
+      `Orden: ${orderState}\nDecisionId: ${decisionId}`;
     void this.sendMicroEntryNotification(message, { symbol, side, decisionId, stage, key });
   }
 

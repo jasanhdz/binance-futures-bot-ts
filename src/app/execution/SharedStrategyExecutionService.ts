@@ -162,6 +162,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
     let openedQuantity = 0;
     let openedSideMode: PositionInfo['sideMode'] = 'BOTH';
     let marketOpenAttempt = 0;
+    let marketOpenTransportAttempted = false;
     let failureStage: 'POSITION_CONFIRMATION' | 'PROTECTION' | 'EXCHANGE' | undefined;
     let emergencyCloseError: string | undefined;
     const quantityAdjustments: Array<Record<string, unknown>> = [];
@@ -295,10 +296,12 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                 ...baseMetadata,
                 clientOrderId,
                 marketOpenAttempts: marketOpenAttempt,
+                marketOpenTransportAttempted: result.transportAttempted === true,
                 reasonDetail: result.reason,
               });
             }
             order = result.order;
+            marketOpenTransportAttempted = true;
           } else {
             if (this.config.isEntryCurrent?.(intent, quantity) === false)
               return denied(intent, 'SHARED_SAFETY_DENIED', {
@@ -314,6 +317,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                   () => this.config.isEntryCurrent?.(intent, quantity) !== false,
                 )
               : await this.exchange.marketOpen(intent.symbol, intent.side, quantity, clientOrderId);
+            marketOpenTransportAttempted = true;
           }
           break;
         } catch (error) {
@@ -703,6 +707,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             (!intent.protection.requireTakeProfit || hasTakeProfit),
           sideMode: position.sideMode,
           marketOpenAttempts: marketOpenAttempt,
+          marketOpenTransportAttempted,
           quantityAdjustments,
           clientOrderId,
         },

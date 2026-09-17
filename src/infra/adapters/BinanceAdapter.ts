@@ -1257,8 +1257,15 @@ export class BinanceExchange implements Exchange {
           if (beforeSend && !(await beforeSend()))
             throw Object.assign(new Error('ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND'), {
               code: 'ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND',
+              transportAttempted: false,
             });
-          return this.cli.futuresOrder(payload);
+          try {
+            return await this.cli.futuresOrder(payload);
+          } catch (error) {
+            throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
+              transportAttempted: true,
+            });
+          }
         },
         DEFAULT_REQUEST_WEIGHT,
         'order_mutation',
