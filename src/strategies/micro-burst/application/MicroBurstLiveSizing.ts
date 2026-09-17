@@ -47,19 +47,21 @@ export async function sizeMicroBurstLiveEntry(
     return fail('MICRO_SIZING_POLICY_UNVERIFIED');
   const evidence = await exchange.readMicroBurstEntryRisk?.(intent.symbol, intent.leverage);
   const observedAt = now();
+  if (!evidence) return fail('MICRO_RISK_EVIDENCE_MISSING');
   if (
-    !evidence ||
     evidence.source !== 'BINANCE_ISOLATED_USDT_TIERS_V1' ||
     evidence.marginType !== 'ISOLATED' ||
     evidence.positionSide !== 'BOTH' ||
-    evidence.leverage !== intent.leverage ||
-    !Number.isFinite(evidence.availableWallet) ||
-    evidence.availableWallet <= 0 ||
-    !Number.isFinite(evidence.observedAtMs) ||
-    evidence.observedAtMs > observedAt ||
-    observedAt - evidence.observedAtMs > policy.config.exitIntelligenceMaxObservationGapMs
+    evidence.leverage !== intent.leverage
   )
-    return fail('MICRO_LIQUIDATION_EVIDENCE_UNVERIFIED');
+    return fail('MICRO_RISK_EVIDENCE_INCOMPATIBLE');
+  if (!Number.isFinite(evidence.availableWallet)) return fail('MICRO_RISK_EVIDENCE_INVALID_WALLET');
+  if (evidence.availableWallet <= 0) return fail('MICRO_INSUFFICIENT_MARGIN');
+  if (!Number.isFinite(observedAt) || !Number.isFinite(evidence.observedAtMs))
+    return fail('MICRO_RISK_EVIDENCE_INVALID_TIMESTAMP');
+  if (evidence.observedAtMs > observedAt) return fail('MICRO_RISK_EVIDENCE_IN_FUTURE');
+  if (observedAt - evidence.observedAtMs > policy.config.exitIntelligenceMaxObservationGapMs)
+    return fail('MICRO_RISK_EVIDENCE_EXPIRED');
   const book = readBook();
   const depth = intent.side === 'LONG' ? book?.askDepth : book?.bidDepth;
   if (!depth?.length) return fail('MICRO_EXECUTABLE_DEPTH_INSUFFICIENT');

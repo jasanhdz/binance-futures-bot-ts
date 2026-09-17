@@ -22,6 +22,36 @@ const logger = {
 };
 
 describe('BinanceExchange candle compatibility path', () => {
+  it('allows preparation through the real serial queue while candle transport is pending', async () => {
+    let release!: (value: never[]) => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    mockClient.futuresCandles.mockImplementationOnce(() => {
+      started();
+      return new Promise<never[]>((resolve) => {
+        release = resolve;
+      });
+    });
+    const exchange = new BinanceExchange(logger);
+    const candles = exchange.getCandles('ETHUSDT', '1m', 1);
+    await entered;
+    let prepared = false;
+    const preparation = (exchange as any).enqueue(
+      async () => {
+        prepared = true;
+      },
+      1,
+      'test_prepare',
+    );
+    try {
+      await vi.waitFor(() => expect(prepared).toBe(true), { timeout: 1000 });
+    } finally {
+      release([]);
+      await Promise.all([candles, preparation]);
+    }
+  });
   it('retains cache origin when a forming REST-derived value becomes application-closed', async () => {
     const exchange = new BinanceExchange(logger);
     let exchangeNow = 59_998;

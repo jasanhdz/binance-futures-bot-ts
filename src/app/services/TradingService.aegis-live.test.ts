@@ -1736,7 +1736,7 @@ describe('TradingService Aegis live execution', () => {
       microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
     });
     await configureMicroAdmission(h);
-    const { service, exchange, logger, state } = h;
+    const { service, exchange, logger, notifier, state } = h;
     const start = Date.now();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(start);
     const liquidity = attachSharedLiquidity(service, logger, 'FRESH');
@@ -1760,7 +1760,11 @@ describe('TradingService Aegis live execution', () => {
           positionFraction: 0.9,
           structuralStopPrice: 2990,
           destinationPrice: 3030,
-          diagnostics: { episodeId: `MB-EP-${'3'.repeat(24)}`, signalSnapshotAtMs: start - 1000 },
+          diagnostics: {
+            episodeId: `MB-EP-${'3'.repeat(24)}`,
+            signalSnapshotAtMs: start - 1000,
+            decisionId: 'expires-during-sizing-decision',
+          },
         }),
       ).toBe(false);
       expect(exchange.marketOpen).not.toHaveBeenCalled();
@@ -1775,6 +1779,11 @@ describe('TradingService Aegis live execution', () => {
           sizingReason: expect.any(String),
           admissionElapsedMs: 30_001,
         }),
+      );
+      await vi.waitFor(() =>
+        expect(notifier.sendMessage).toHaveBeenCalledWith(
+          expect.stringContaining('DecisionId: expires-during-sizing-decision'),
+        ),
       );
     } finally {
       clock.mockRestore();

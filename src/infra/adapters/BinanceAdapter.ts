@@ -399,10 +399,14 @@ export class BinanceExchange implements Exchange {
 
   private async fetchCandles(symbol: string, interval: string, limit: number) {
     try {
-      const raw = await this.enqueue(
+      // Observational candle transport must not own the mutation/preparation turn.
+      // Keep the same shared weight/cooldown accounting; the inflight candle promise
+      // remains owned until transport settles, even when its consumer times out.
+      const raw = await this.runIndependentRead(
         () => this.cli.futuresCandles({ symbol, interval: interval as any, limit }),
         DEFAULT_REQUEST_WEIGHT,
         'candles',
+        'normal',
       );
       return raw.map((c) => this.fromRestCandle(c));
     } catch (err) {
@@ -605,8 +609,9 @@ export class BinanceExchange implements Exchange {
     task: () => Promise<T>,
     weight: number,
     endpoint: string,
+    priority: SharedRequestPriority = 'critical',
   ): Promise<T> {
-    await this.sharedRateLimiter.acquire(weight, endpoint, 'high');
+    await this.sharedRateLimiter.acquire(weight, endpoint, priority);
     while (isRateLimited()) {
       noteRateLimitBlockedRequest();
       this.requestMetrics.cooldownBlocked++;
@@ -2468,21 +2473,29 @@ export class BinanceExchange implements Exchange {
   }
 
   private async microCommissionRate(symbol: string): Promise<number | null> {
-    const params = new URLSearchParams({
-      symbol,
-      timestamp: String(await this.getServerTime()),
-      recvWindow: '5000',
-    });
-    const signature = require('node:crypto')
-      .createHmac('sha256', CONFIG.API_SECRET)
-      .update(params.toString())
-      .digest('hex');
+    const serverTime = await this.getServerTime();
+    const sampledMono = performance.now();
     const response = await this.enqueue(
-      () =>
-        fetch(`${CONFIG.HTTP_FUTURES}/fapi/v1/commissionRate?${params}&signature=${signature}`, {
-          headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
-          signal: AbortSignal.timeout(5000),
-        }),
+      () => {
+        // Sign at transport dispatch, after queue/rate-limit waits. Advancing the
+        // server sample does not refresh any account or signal evidence.
+        const params = new URLSearchParams({
+          symbol,
+          timestamp: String(Math.floor(serverTime + performance.now() - sampledMono)),
+          recvWindow: '5000',
+        });
+        const signature = require('node:crypto')
+          .createHmac('sha256', CONFIG.API_SECRET)
+          .update(params.toString())
+          .digest('hex');
+        return fetch(
+          `${CONFIG.HTTP_FUTURES}/fapi/v1/commissionRate?${params}&signature=${signature}`,
+          {
+            headers: { 'X-MBX-APIKEY': CONFIG.API_KEY },
+            signal: AbortSignal.timeout(5000),
+          },
+        );
+      },
       20,
       'micro_commission_rate',
     );
@@ -2510,16 +2523,10 @@ export class BinanceExchange implements Exchange {
   ): Promise<MicroBurstEntryRiskEvidence | null> {
     if (!/^[A-Z0-9]+$/.test(symbol) || ![20, 30].includes(leverage)) return null;
     const observedAtMs = await this.getServerTime();
-    const account = await this.enqueue(
-      () => this.cli.futuresAccountInfo(),
-      5,
-      'micro_entry_account',
-    );
-    const mode = await this.enqueue(
-      () => this.cli.futuresPositionMode(),
-      30,
-      'micro_entry_position_mode',
-    );
+    const [account, mode] = await Promise.all([
+      this.enqueue(() => this.cli.futuresAccountInfo(), 5, 'micro_entry_account'),
+      this.enqueue(() => this.cli.futuresPositionMode(), 30, 'micro_entry_position_mode'),
+    ]);
     const accountData = account as unknown as {
       canTrade?: unknown;
       multiAssetsMargin?: unknown;
@@ -2557,18 +2564,20 @@ export class BinanceExchange implements Exchange {
       return null;
     const availableWallet = Math.min(num(asset[0].walletBalance), num(asset[0].availableBalance));
     if (!Number.isFinite(availableWallet) || availableWallet <= 0) return null;
-    const tiers = await this.enqueue(
-      () => this.cli.futuresLeverageBracket({ symbol, recvWindow: 5000 }),
-      1,
-      'micro_entry_tiers',
-    );
+    const [tiers, info, takerFeeRate] = await Promise.all([
+      this.enqueue(
+        () => this.cli.futuresLeverageBracket({ symbol, recvWindow: 5000 }),
+        1,
+        'micro_entry_tiers',
+      ),
+      this.getExchangeInfoSnapshot(),
+      this.microCommissionRate(symbol),
+    ]);
     const rows = (
       tiers as unknown as { symbol: string; brackets: MicroBurstEntryRiskEvidence['brackets'] }[]
     ).filter((r) => r.symbol === symbol);
-    const info = await this.getExchangeInfoSnapshot();
     const symbols = info.symbols.filter((s: { symbol: string }) => s.symbol === symbol);
     const liquidationFeeRate = num(symbols[0]?.liquidationFee);
-    const takerFeeRate = await this.microCommissionRate(symbol);
     if (
       rows.length !== 1 ||
       !Array.isArray(rows[0].brackets) ||

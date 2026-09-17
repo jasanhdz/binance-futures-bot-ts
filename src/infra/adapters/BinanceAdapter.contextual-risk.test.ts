@@ -138,6 +138,28 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG', leverage = 20) {
 
 describe('Binance contextual risk evidence and production sizing', () => {
   it.each([
+    ['missing', 'MICRO_RISK_EVIDENCE_MISSING'],
+    ['incompatible', 'MICRO_RISK_EVIDENCE_INCOMPATIBLE'],
+    ['expired', 'MICRO_RISK_EVIDENCE_EXPIRED'],
+    ['future', 'MICRO_RISK_EVIDENCE_IN_FUTURE'],
+    ['invalid-time', 'MICRO_RISK_EVIDENCE_INVALID_TIMESTAMP'],
+    ['invalid-wallet', 'MICRO_RISK_EVIDENCE_INVALID_WALLET'],
+    ['no-margin', 'MICRO_INSUFFICIENT_MARGIN'],
+  ])('distinguishes %s risk evidence without relaxing its contract', async (fault, reason) => {
+    const f = fixture('SHORT', 30);
+    const evidence = (await f.exchange.readMicroBurstEntryRisk('ETHUSDT', 30))!;
+    if (fault === 'incompatible') evidence.leverage = 20;
+    if (fault === 'expired') evidence.observedAtMs = f.now - 15_001;
+    if (fault === 'future') evidence.observedAtMs = f.now + 1;
+    if (fault === 'invalid-time') evidence.observedAtMs = NaN;
+    if (fault === 'invalid-wallet') evidence.availableWallet = NaN;
+    if (fault === 'no-margin') evidence.availableWallet = 0;
+    vi.spyOn(f.exchange, 'readMicroBurstEntryRisk').mockResolvedValue(
+      fault === 'missing' ? null : evidence,
+    );
+    expect(await f.size()).toMatchObject({ valid: false, reason });
+  });
+  it.each([
     'complete',
     'missing-trade-time',
     'missing-funding-time',

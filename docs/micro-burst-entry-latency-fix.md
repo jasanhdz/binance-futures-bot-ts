@@ -3,15 +3,18 @@
 ## Finding
 
 The historical XRPUSDT and SUIUSDT records cannot identify the exact sizing
-denial because the deployed rejection log discarded `sizingReason`. The
-measured 62-67 second interval is consistent with the entry admission path
-scanning the complete `logs/aegis` history before shared execution. That
-directory is currently about 852 MB. The scan was repeated for every entry and
-could allow the original signal to expire before final validation.
+denial because the deployed rejection log discarded `sizingReason`.
 
-The failure is reproduced deterministically by delaying admission until the
-signal freshness window expires. It is not safe to solve that case by sending
-an expired signal.
+Correction to the initial report: 852 MB was the size of the directory, not
+the bytes read by this reader. It selects only `turbo_trades_YYYY-MM-DD.jsonl`;
+the inspected directory contained `turbo_trade_events_*`, account snapshots and
+signals, but no matching trade files. The assertion that a repeated 852 MB scan
+caused the LIVE delays was not demonstrated and is withdrawn. Caching changed
+files is an optimization, not evidence of the historical cause. It rereads an
+entire changed file; it is not incremental byte-tail parsing.
+
+An offline delay test demonstrates rejection of an expired signal, not the
+source of the LIVE delay. It is not safe to solve that case by sending an expired signal.
 
 ## Changes
 

@@ -240,6 +240,7 @@ export class TradingService {
   private readonly symbolStateStores = new Map<string, StateStore>();
   private readonly aegisTelegramBlockNotifier = new AegisTelegramBlockNotifier();
   private readonly aegisEntryNotificationService: AegisEntryNotificationService;
+  private readonly microEntryNotificationKeys = new Set<string>();
   private readonly positionManagerRouter = new PositionManagerRouter<{
     symbol: string;
     botState: BotState;
@@ -2084,6 +2085,18 @@ export class TradingService {
           positionStillOpen: executionMetadata.positionStillOpen,
           protectionPending: executionMetadata.protectionPending,
         });
+        this.notifyMicroEntryOutcome(
+          {
+            symbol: request.symbol,
+            side: request.side,
+            decisionId,
+            reason: execution.reason,
+            reasonDetail: executionMetadata.reasonDetail,
+            admissionElapsedMs: Date.now() - request.requestedAt,
+            orderSent: execution.status === 'FAILED',
+          },
+          execution.status === 'FAILED' ? 'SEND_OR_RECONCILIATION' : 'PRE_SEND_BLOCKED',
+        );
         return false;
       }
 
@@ -2346,6 +2359,38 @@ export class TradingService {
   private recordMicroAdmissionDenied(sample: Record<string, unknown>): void {
     this.microAdmissionDiagnostics.record('admission', String(sample.reason), sample);
     this.deps.logger.info('micro_burst_live_entry_denied', sample);
+    this.notifyMicroEntryOutcome(sample, 'PRE_SEND_BLOCKED');
+  }
+
+  private notifyMicroEntryOutcome(sample: Record<string, unknown>, stage: string): void {
+    const decisionId = typeof sample.decisionId === 'string' ? sample.decisionId : undefined;
+    if (!decisionId) return;
+    const key = `${decisionId}:${stage}`;
+    if (this.microEntryNotificationKeys.has(key)) return;
+    this.microEntryNotificationKeys.add(key);
+    const symbol = typeof sample.symbol === 'string' ? sample.symbol : 'UNKNOWN';
+    const side = typeof sample.side === 'string' ? sample.side : 'UNKNOWN';
+    const reason = String(sample.reasonDetail ?? sample.reason ?? 'UNKNOWN');
+    const elapsed = Number(sample.admissionElapsedMs);
+    const elapsedText = Number.isFinite(elapsed) ? `${Math.round(elapsed / 1000)} s` : 'N/D';
+    const sent = sample.orderSent === true;
+    void Promise.resolve()
+      .then(() =>
+        this.deps.notifier.sendMessage(
+          `⚠️ Micro: entrada bloqueada\n${symbol} · ${side}\n` +
+            `Motivo: ${reason}\nEtapa: ${stage}\nTiempo transcurrido: ${elapsedText}\n` +
+            `Orden: ${sent ? 'resultado incierto' : 'no enviada'}\nDecisionId: ${decisionId}`,
+        ),
+      )
+      .catch((error) =>
+        this.deps.logger.warn('micro_entry_telegram_failed', {
+          symbol,
+          side,
+          decisionId,
+          stage,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
   }
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {
