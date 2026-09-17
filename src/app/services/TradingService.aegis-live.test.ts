@@ -1394,6 +1394,37 @@ async function configureMicroAdmission(h: ReturnType<typeof makeHarness>): Promi
 }
 
 describe('TradingService Aegis live execution', () => {
+  it('retries Micro Telegram notifications without blocking or duplicating them', async () => {
+    const h = makeHarness();
+    h.notifier.sendMessage
+      .mockRejectedValueOnce(new Error('temporary Telegram failure'))
+      .mockRejectedValueOnce(new Error('temporary Telegram failure'))
+      .mockResolvedValue(undefined);
+    (h.service as any).notifyMicroEntryOutcome(
+      {
+        symbol: 'ETHUSDT',
+        side: 'LONG',
+        decisionId: 'telegram-retry-decision',
+        reason: 'TEST_BLOCK',
+        admissionElapsedMs: 16_000,
+        orderSent: false,
+      },
+      'PRE_SEND_BLOCKED',
+    );
+    (h.service as any).notifyMicroEntryOutcome(
+      {
+        symbol: 'ETHUSDT',
+        side: 'LONG',
+        decisionId: 'telegram-retry-decision',
+        reason: 'TEST_BLOCK',
+        admissionElapsedMs: 16_000,
+        orderSent: false,
+      },
+      'PRE_SEND_BLOCKED',
+    );
+    await vi.waitFor(() => expect(h.notifier.sendMessage).toHaveBeenCalledTimes(3));
+  });
+
   it('boots canonical Micro through the full orchestrator and shared feed planes with Aegis disabled', async () => {
     const now = 1_780_000_020_000;
     vi.spyOn(Date, 'now').mockReturnValue(now);

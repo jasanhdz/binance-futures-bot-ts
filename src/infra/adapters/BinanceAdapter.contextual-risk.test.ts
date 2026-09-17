@@ -74,6 +74,15 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG', leverage = 20) {
   Object.assign(exchange, {
     cli,
     enqueue: async (work: () => unknown) => work(),
+    sharedRateLimiter: { acquire: async () => undefined },
+    recentRequestWeights: [],
+    requestMetrics: {
+      cooldownBlocked: 0,
+      weightBlocked: 0,
+      totalQueueWaitMs: 0,
+      maxQueueWaitMs: 0,
+    },
+    nextRequestAt: 0,
     getServerTime: async () => now,
     getExchangeInfoSnapshot: async () => info,
   });
@@ -137,6 +146,35 @@ function fixture(side: 'LONG' | 'SHORT' = 'LONG', leverage = 20) {
 }
 
 describe('Binance contextual risk evidence and production sizing', () => {
+  it('runs independent reads through shared limits while another read is pending', async () => {
+    const f = fixture();
+    const acquire = vi.fn(async () => undefined);
+    Object.assign(f.exchange, {
+      sharedRateLimiter: { acquire },
+    });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = (f.exchange as any).runIndependentRead(
+      () => pending.then(() => 'first'),
+      5,
+      'first_read',
+      'critical',
+    );
+    const second = (f.exchange as any).runIndependentRead(
+      async () => 'second',
+      30,
+      'second_read',
+      'normal',
+    );
+    await expect(second).resolves.toBe('second');
+    expect(acquire).toHaveBeenNthCalledWith(1, 5, 'first_read', 'critical');
+    expect(acquire).toHaveBeenNthCalledWith(2, 30, 'second_read', 'normal');
+    release();
+    await expect(first).resolves.toBe('first');
+  });
+
   it.each([
     ['missing', 'MICRO_RISK_EVIDENCE_MISSING'],
     ['incompatible', 'MICRO_RISK_EVIDENCE_INCOMPATIBLE'],

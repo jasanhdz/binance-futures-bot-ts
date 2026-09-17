@@ -1231,7 +1231,13 @@ export class BinanceExchange implements Exchange {
     };
   }
 
-  async marketOpen(symbol: string, side: Side, quantity: number, clientOrderId?: string) {
+  async marketOpen(
+    symbol: string,
+    side: Side,
+    quantity: number,
+    clientOrderId?: string,
+    beforeSend?: () => Promise<boolean> | boolean,
+  ) {
     const hedge = await this.mutationHedgeMode();
 
     const base: any = {
@@ -1247,7 +1253,13 @@ export class BinanceExchange implements Exchange {
     const t0 = Date.now();
     try {
       const res = await this.enqueue(
-        () => this.cli.futuresOrder(payload),
+        async () => {
+          if (beforeSend && !(await beforeSend()))
+            throw Object.assign(new Error('ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND'), {
+              code: 'ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND',
+            });
+          return this.cli.futuresOrder(payload);
+        },
         DEFAULT_REQUEST_WEIGHT,
         'order_mutation',
         'critical',
@@ -2524,8 +2536,18 @@ export class BinanceExchange implements Exchange {
     if (!/^[A-Z0-9]+$/.test(symbol) || ![20, 30].includes(leverage)) return null;
     const observedAtMs = await this.getServerTime();
     const [account, mode] = await Promise.all([
-      this.enqueue(() => this.cli.futuresAccountInfo(), 5, 'micro_entry_account'),
-      this.enqueue(() => this.cli.futuresPositionMode(), 30, 'micro_entry_position_mode'),
+      this.runIndependentRead(
+        () => this.cli.futuresAccountInfo(),
+        5,
+        'micro_entry_account',
+        'critical',
+      ),
+      this.runIndependentRead(
+        () => this.cli.futuresPositionMode(),
+        30,
+        'micro_entry_position_mode',
+        'critical',
+      ),
     ]);
     const accountData = account as unknown as {
       canTrade?: unknown;
@@ -2565,10 +2587,11 @@ export class BinanceExchange implements Exchange {
     const availableWallet = Math.min(num(asset[0].walletBalance), num(asset[0].availableBalance));
     if (!Number.isFinite(availableWallet) || availableWallet <= 0) return null;
     const [tiers, info, takerFeeRate] = await Promise.all([
-      this.enqueue(
+      this.runIndependentRead(
         () => this.cli.futuresLeverageBracket({ symbol, recvWindow: 5000 }),
         1,
         'micro_entry_tiers',
+        'normal',
       ),
       this.getExchangeInfoSnapshot(),
       this.microCommissionRate(symbol),

@@ -240,7 +240,7 @@ export class TradingService {
   private readonly symbolStateStores = new Map<string, StateStore>();
   private readonly aegisTelegramBlockNotifier = new AegisTelegramBlockNotifier();
   private readonly aegisEntryNotificationService: AegisEntryNotificationService;
-  private readonly microEntryNotificationKeys = new Set<string>();
+  private microEntryNotificationKeys = new Set<string>();
   private readonly positionManagerRouter = new PositionManagerRouter<{
     symbol: string;
     botState: BotState;
@@ -509,7 +509,14 @@ export class TradingService {
             intent,
             quantity,
           );
-          if (reason) this.recordMicroAdmissionDenied({ symbol: intent.symbol, reason });
+          if (reason)
+            this.recordMicroAdmissionDenied({
+              symbol: intent.symbol,
+              side: intent.side,
+              reason,
+              decisionId: this.microDecisionIdFromIntent(intent),
+              admissionElapsedMs: Date.now() - intent.requestedAt,
+            });
           return reason === undefined;
         },
         feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,
@@ -1755,22 +1762,42 @@ export class TradingService {
   }
 
   private async openMicroBurstLivePosition(request: MicroBurstLiveEntryRequest): Promise<boolean> {
-    if (this.acceptingEntries === false) return false;
+    if (this.acceptingEntries === false) {
+      this.recordMicroAdmissionDenied({
+        symbol: request.symbol,
+        side: request.side,
+        reason: 'ENTRY_ADMISSION_CLOSED',
+        decisionId: this.microDecisionId(request),
+        admissionElapsedMs: Date.now() - request.requestedAt,
+      });
+      return false;
+    }
     return this.trackRuntimeTask(() => this.openMicroBurstLivePositionTask(request));
   }
 
   private async openMicroBurstLivePositionTask(
     request: MicroBurstLiveEntryRequest,
   ): Promise<boolean> {
-    if (this.acceptingEntries === false) return false;
+    if (this.acceptingEntries === false) {
+      this.recordMicroAdmissionDenied({
+        symbol: request.symbol,
+        side: request.side,
+        reason: 'ENTRY_ADMISSION_CLOSED',
+        decisionId: this.microDecisionId(request),
+        admissionElapsedMs: Date.now() - request.requestedAt,
+      });
+      return false;
+    }
     const config = this.runtimeConfig.getMicroBurstConfig();
     {
       const reason = this.microNetLossBlockedReason();
       if (reason) {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
+          side: request.side,
           reason,
           decisionId: this.microDecisionId(request),
+          admissionElapsedMs: Date.now() - request.requestedAt,
         });
         return false;
       }
@@ -1790,8 +1817,10 @@ export class TradingService {
       ) {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
+          side: request.side,
           reason: 'MICRO_CONTEXTUAL_EXECUTION_CAPABILITIES_REQUIRED',
           decisionId: this.microDecisionId(request),
+          admissionElapsedMs: Date.now() - request.requestedAt,
         });
         return false;
       }
@@ -1811,8 +1840,10 @@ export class TradingService {
       ) {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
+          side: request.side,
           reason: 'MICRO_CONTEXTUAL_LIVE_IDENTITY_REQUIRED',
           decisionId: this.microDecisionId(request),
+          admissionElapsedMs: Date.now() - request.requestedAt,
         });
         return false;
       }
@@ -1835,8 +1866,10 @@ export class TradingService {
     ) {
       this.recordMicroAdmissionDenied({
         symbol: request.symbol,
+        side: request.side,
         reason: 'MICRO_BURST_LIVE_AUTHORITY_NOT_ENABLED',
         decisionId: this.microDecisionId(request),
+        admissionElapsedMs: Date.now() - request.requestedAt,
         deployedCodeCommitSha: provenance.codeCommitSha,
         effectiveConfigHash: `sha256:${provenance.configHash}`,
         approvedConfigHash: this.microBurstIdentity.configHash,
@@ -1856,8 +1889,10 @@ export class TradingService {
     ) {
       this.recordMicroAdmissionDenied({
         symbol: request.symbol,
+        side: request.side,
         reason: 'MICRO_BURST_ENTRY_IN_FLIGHT',
         decisionId: this.microDecisionId(request),
+        admissionElapsedMs: Date.now() - request.requestedAt,
       });
       return false;
     }
@@ -1865,8 +1900,10 @@ export class TradingService {
     if (!reservation.acquired) {
       this.recordMicroAdmissionDenied({
         symbol: request.symbol,
+        side: request.side,
         reason: reservation.reason,
         decisionId: this.microDecisionId(request),
+        admissionElapsedMs: Date.now() - request.requestedAt,
       });
       return false;
     }
@@ -1876,21 +1913,26 @@ export class TradingService {
     try {
       const symbolState = this.stateForSymbol(request.symbol);
       if (symbolState.get().microBurstPnlUnverified === true) {
-        this.microAdmissionDiagnostics.record('admission', 'PREVIOUS_CLOSE_PNL_UNVERIFIED', {
+        const sample = {
           symbol: request.symbol,
-        });
-        this.deps.logger.error('micro_burst_live_entry_denied', {
-          symbol: request.symbol,
+          side: request.side,
           reason: 'PREVIOUS_CLOSE_PNL_UNVERIFIED',
+          decisionId: this.microDecisionId(request),
+          admissionElapsedMs: Date.now() - request.requestedAt,
           quarantinedAt: symbolState.get().microBurstPnlUnverifiedAt,
-        });
+        };
+        this.microAdmissionDiagnostics.record('admission', sample.reason, sample);
+        this.deps.logger.error('micro_burst_live_entry_denied', sample);
+        this.notifyMicroEntryOutcome(sample, 'PRE_SEND_BLOCKED');
         return false;
       }
       if (this.hasPendingMicroSafety()) {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
+          side: request.side,
           reason: 'MICRO_SAFETY_RECONCILIATION_PENDING',
           decisionId: this.microDecisionId(request),
+          admissionElapsedMs: Date.now() - request.requestedAt,
         });
         return false;
       }
@@ -1951,8 +1993,10 @@ export class TradingService {
       if (liquidity?.status !== 'FRESH' || !safety.allowed) {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
+          side: request.side,
           reason: liquidity?.status !== 'FRESH' ? 'LIQUIDITY_DATA_NOT_FRESH' : safety.reason,
           decisionId: this.microDecisionId(request),
+          admissionElapsedMs: Date.now() - request.requestedAt,
         });
         return false;
       }
@@ -1981,8 +2025,10 @@ export class TradingService {
       if (!portfolio.allowed) {
         this.recordMicroAdmissionDenied({
           symbol: request.symbol,
+          side: request.side,
           reason: portfolio.reason,
           decisionId: this.microDecisionId(request),
+          admissionElapsedMs: Date.now() - request.requestedAt,
           ...portfolio.metadata,
         });
         return false;
@@ -2085,6 +2131,19 @@ export class TradingService {
           positionStillOpen: executionMetadata.positionStillOpen,
           protectionPending: executionMetadata.protectionPending,
         });
+        const admissionElapsedMs = Date.now() - request.requestedAt;
+        if (admissionElapsedMs > 15_000)
+          this.notifyMicroEntryOutcome(
+            {
+              symbol: request.symbol,
+              side: request.side,
+              decisionId,
+              reason: 'MICRO_PREPARATION_PROLONGED',
+              admissionElapsedMs,
+              orderSent: false,
+            },
+            'PREPARATION_PROLONGED',
+          );
         this.notifyMicroEntryOutcome(
           {
             symbol: request.symbol,
@@ -2092,10 +2151,13 @@ export class TradingService {
             decisionId,
             reason: execution.reason,
             reasonDetail: executionMetadata.reasonDetail,
-            admissionElapsedMs: Date.now() - request.requestedAt,
-            orderSent: execution.status === 'FAILED',
+            admissionElapsedMs,
+            orderSent:
+              execution.status === 'FAILED' && executionMetadata.failureStage !== undefined,
           },
-          execution.status === 'FAILED' ? 'SEND_OR_RECONCILIATION' : 'PRE_SEND_BLOCKED',
+          executionMetadata.failureStage !== undefined
+            ? 'SEND_OR_RECONCILIATION'
+            : 'PRE_SEND_BLOCKED',
         );
         return false;
       }
@@ -2228,6 +2290,10 @@ export class TradingService {
       : null;
   }
 
+  private microDecisionIdFromIntent(intent: { metadata?: Record<string, unknown> }): string | null {
+    return typeof intent.metadata?.decisionId === 'string' ? intent.metadata.decisionId : null;
+  }
+
   private microNetLossBlockedReason(): string | undefined {
     if (this.microSettlementTask) return 'MICRO_NET_SETTLEMENT_RECONCILING';
     const ledger = this.deps.microNetLossLedger;
@@ -2357,7 +2423,7 @@ export class TradingService {
   }
 
   private recordMicroAdmissionDenied(sample: Record<string, unknown>): void {
-    this.microAdmissionDiagnostics.record('admission', String(sample.reason), sample);
+    this.microAdmissionDiagnostics?.record('admission', String(sample.reason), sample);
     this.deps.logger.info('micro_burst_live_entry_denied', sample);
     this.notifyMicroEntryOutcome(sample, 'PRE_SEND_BLOCKED');
   }
@@ -2365,32 +2431,46 @@ export class TradingService {
   private notifyMicroEntryOutcome(sample: Record<string, unknown>, stage: string): void {
     const decisionId = typeof sample.decisionId === 'string' ? sample.decisionId : undefined;
     if (!decisionId) return;
+    this.microEntryNotificationKeys ??= new Set<string>();
     const key = `${decisionId}:${stage}`;
     if (this.microEntryNotificationKeys.has(key)) return;
-    this.microEntryNotificationKeys.add(key);
     const symbol = typeof sample.symbol === 'string' ? sample.symbol : 'UNKNOWN';
     const side = typeof sample.side === 'string' ? sample.side : 'UNKNOWN';
     const reason = String(sample.reasonDetail ?? sample.reason ?? 'UNKNOWN');
     const elapsed = Number(sample.admissionElapsedMs);
     const elapsedText = Number.isFinite(elapsed) ? `${Math.round(elapsed / 1000)} s` : 'N/D';
     const sent = sample.orderSent === true;
-    void Promise.resolve()
-      .then(() =>
-        this.deps.notifier.sendMessage(
-          `⚠️ Micro: entrada bloqueada\n${symbol} · ${side}\n` +
-            `Motivo: ${reason}\nEtapa: ${stage}\nTiempo transcurrido: ${elapsedText}\n` +
-            `Orden: ${sent ? 'resultado incierto' : 'no enviada'}\nDecisionId: ${decisionId}`,
-        ),
-      )
-      .catch((error) =>
-        this.deps.logger.warn('micro_entry_telegram_failed', {
-          symbol,
-          side,
-          decisionId,
-          stage,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
+    this.microEntryNotificationKeys.add(key);
+    const message =
+      `⚠️ Micro: entrada bloqueada\n${symbol} · ${side}\n` +
+      `Motivo: ${reason}\nEtapa: ${stage}\nTiempo transcurrido: ${elapsedText}\n` +
+      `Orden: ${sent ? 'resultado incierto' : 'no enviada'}\nDecisionId: ${decisionId}`;
+    void this.sendMicroEntryNotification(message, { symbol, side, decisionId, stage, key });
+  }
+
+  private async sendMicroEntryNotification(
+    message: string,
+    context: { symbol: string; side: string; decisionId: string; stage: string; key: string },
+  ): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await this.deps.notifier.sendMessage(message);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+      }
+    }
+    this.microEntryNotificationKeys.delete(context.key);
+    this.deps.logger.warn('micro_entry_telegram_failed', {
+      symbol: context.symbol,
+      side: context.side,
+      decisionId: context.decisionId,
+      stage: context.stage,
+      attempts: 3,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
   }
 
   private async lookForEntryWithLock(symbol: string): Promise<void> {

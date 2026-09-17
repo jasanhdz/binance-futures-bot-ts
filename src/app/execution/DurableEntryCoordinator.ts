@@ -135,7 +135,10 @@ export class DurableEntryCoordinator {
     intent: StrategyExecutionIntent,
     quantity: number,
     clientOrderId: string,
-    send: (request: DurableEntryRequest) => Promise<EntryOrderReceipt>,
+    send: (
+      request: DurableEntryRequest,
+      beforeSend?: () => Promise<boolean> | boolean,
+    ) => Promise<EntryOrderReceipt>,
     isCurrent: () => boolean = () => true,
   ): Promise<DurableEntryResult> {
     const contextual =
@@ -267,10 +270,19 @@ export class DurableEntryCoordinator {
         }
         let evidence: TerminalEvidence;
         try {
-          const order = await send(jsonSnapshot(request) as DurableEntryRequest);
+          const order = await send(jsonSnapshot(request) as DurableEntryRequest, current);
           if (!validOrder(order)) throw new Error('ENTRY_ACK_INVALID');
           evidence = { status: 'CONFIRMED', order: { ...order } };
         } catch (error) {
+          if ((error as { code?: unknown })?.code === 'ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND') {
+            await this.finish(request, {
+              status: 'CANCELLED_BEFORE_SEND',
+              reason: 'ENTRY_IDENTITY_NOT_CURRENT',
+            });
+            await this.journal!.flush();
+            this.pending.delete(operationId);
+            return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
+          }
           const code = definiteEntryRejectionCode(error);
           if (code === undefined) {
             await this.append(request, 'UNKNOWN', undefined, 'ENTRY_SEND_UNKNOWN');

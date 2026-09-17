@@ -246,13 +246,21 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
               intent,
               quantity,
               clientOrderId,
-              (request) =>
-                this.exchange.marketOpen(
-                  request.intent.symbol,
-                  request.intent.side,
-                  request.quantity,
-                  request.clientOrderId,
-                ),
+              (request, beforeSend) =>
+                contextual
+                  ? this.exchange.marketOpen(
+                      request.intent.symbol,
+                      request.intent.side,
+                      request.quantity,
+                      request.clientOrderId,
+                      beforeSend,
+                    )
+                  : this.exchange.marketOpen(
+                      request.intent.symbol,
+                      request.intent.side,
+                      request.quantity,
+                      request.clientOrderId,
+                    ),
               () => {
                 if (contextual) {
                   const now = Date.now();
@@ -297,12 +305,15 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                 ...baseMetadata,
                 reasonDetail: 'ENTRY_IDENTITY_NOT_CURRENT',
               });
-            order = await this.exchange.marketOpen(
-              intent.symbol,
-              intent.side,
-              quantity,
-              clientOrderId,
-            );
+            order = contextual
+              ? await this.exchange.marketOpen(
+                  intent.symbol,
+                  intent.side,
+                  quantity,
+                  clientOrderId,
+                  () => this.config.isEntryCurrent?.(intent, quantity) !== false,
+                )
+              : await this.exchange.marketOpen(intent.symbol, intent.side, quantity, clientOrderId);
           }
           break;
         } catch (error) {

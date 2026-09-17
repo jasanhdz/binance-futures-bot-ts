@@ -200,6 +200,15 @@ async function fixture() {
     cli: client,
     log: logger,
     enqueue: async (work: () => unknown) => work(),
+    sharedRateLimiter: { acquire: async () => undefined },
+    recentRequestWeights: [],
+    requestMetrics: {
+      cooldownBlocked: 0,
+      weightBlocked: 0,
+      totalQueueWaitMs: 0,
+      maxQueueWaitMs: 0,
+    },
+    nextRequestAt: 0,
     getExchangeInfoSnapshot: async () => ({
       symbols: [
         {

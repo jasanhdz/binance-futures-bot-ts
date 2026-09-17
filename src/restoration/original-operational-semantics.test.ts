@@ -42,7 +42,7 @@ const baselineOperationalDigests: Record<string, string> = {
   // Contextual fee/tier/triggered-stop evidence capabilities; not deployment approval.
   // Quantity-bound one-way reduce-only stops; legacy close-all reads retained, not LIVE approval.
   // Historical exact-close discovery and unfiltered flat/order proof. No new mutation capability.
-  'src/app/ports/Exchange.ts': '4496ffe2533b200831c9345ee95d8726c7462a74427ef24e63d58949955960de',
+  'src/app/ports/Exchange.ts': '7208afd07a28c87435af418b6a700c29908e1c7b3d378f80f7ec3d0027b19fbc',
   'src/infra/config/environment.ts':
     // User-requested AEGIS_ENABLED disconnect; existing defaults and LIVE values unchanged.
     'b35c9984d4a756c53cc424350317cb4131c4c973f038f08d77bac103b7217ee3',
@@ -67,7 +67,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Reviewed quantity-stop transport and exact quantity/flag/child-order evidence contract.
     // Reviewed historical GET-only discovery and fresh complete open-order observations.
     // See micro-historical-reconciliation.md; source checkpoint, not deployment authority.
-    '92d0b1b994b64eaa8611945865a564e4cf2b7f0bd33c4212937caf1fea59bdae',
+    '4a6f072324d2d3837fc66445bf0f9e61dfbdc7406666ab6d3ff0bfc6930baa44',
   // Current source checkpoint: failed startup now cleans up and exits instead of remaining online.
   // Source checkpoint only; not a LIVE authorization.
   'src/main.ts': 'bb605c4264eb185e76f482f37a6808c16c55b69e7aff26541ab4b33289a4deaf',
@@ -99,7 +99,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Runtime-owned historical settlement under pending/shared admission reservations.
     // Reviewed delta from 8f7da23: preparation metrics and original input-freshness metadata.
     // Current source checkpoint: startup/loop progress is observable; not artifact approval.
-    '9ad99b121438e6f2735fa0ad826a330a62da20236ce9b1cec526b18deacbbee2',
+    '473414632b4e9ac6348ed0fd61b5f339c2a8ca3672b6cebcb6d35a4140bfa90c',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -149,7 +149,7 @@ const contextualSourceCheckpoints: Record<string, string> = {
   'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   'src/app/services/TradingService.ts':
     // Same reviewed source delta, not a grant of runtime or artifact authority.
-    '9ad99b121438e6f2735fa0ad826a330a62da20236ce9b1cec526b18deacbbee2',
+    '473414632b4e9ac6348ed0fd61b5f339c2a8ca3672b6cebcb6d35a4140bfa90c',
 };
 
 type GuardFixture = [

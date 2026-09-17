@@ -202,6 +202,7 @@ export interface TradingExchangePort
     side: Side,
     quantity: number,
     clientOrderId?: string,
+    beforeSend?: () => Promise<boolean> | boolean,
   ): Promise<{ avgPrice: number; orderId: string }>;
   placeStopClose(symbol: string, side: Side, stopPrice: number, qty?: number): Promise<boolean>;
   placeTpClose(symbol: string, side: Side, triggerPrice: number, qty?: number): Promise<boolean>;

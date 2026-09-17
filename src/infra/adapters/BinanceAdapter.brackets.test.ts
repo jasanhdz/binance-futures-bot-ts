@@ -47,6 +47,37 @@ const logger = {
 };
 
 describe('BinanceExchange bracket placement', () => {
+  it('rechecks the entry guard after queue delay and never sends a stale order', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const exchange = new BinanceExchange(logger);
+    const queued = (exchange as any).enqueue(
+      () => {
+        started();
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+      1,
+      'test_blocking_read',
+    );
+    const opening = exchange.marketOpen(
+      'BTCUSDT',
+      'LONG',
+      0.02,
+      'se_client-order-123',
+      () => false,
+    );
+    await blocked;
+    release();
+    await queued;
+    await expect(opening).rejects.toThrow('ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND');
+    expect(mockClient.futuresOrder).not.toHaveBeenCalled();
+  });
+
   it.each(['BOTH', 'LONG', 'SHORT'] as const)(
     'identified close sends once and queries exact %s evidence',
     async (positionSide) => {
