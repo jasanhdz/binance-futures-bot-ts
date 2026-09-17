@@ -35,4 +35,28 @@ describe('TelegramService', () => {
     await expect(TelegramService.sendAlert('**startup**')).rejects.toThrow('Telegram HTTP 400');
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
+
+  it('keeps the timeout active while reading a pending error body', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('TELEGRAM_BOT_TOKEN', 'alert-token');
+    vi.stubEnv('TELEGRAM_CHAT_ID', 'chat-id');
+    const fetchMock = vi.fn((_url: string, options: RequestInit) =>
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        text: () =>
+          new Promise<string>((_resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      } as Response),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sending = TelegramService.sendAlert('startup').catch((error) => error);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    await expect(sending).resolves.toMatchObject({ message: 'aborted' });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
 });

@@ -42,10 +42,9 @@ export class TelegramService {
       ? `${message.slice(0, this.MAX_MESSAGE_LENGTH - 16)}\n[message truncated]`
       : formattedMessage;
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT_MS);
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT_MS);
-
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -56,8 +55,6 @@ export class TelegramService {
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
         const err = await response.text();
         console.warn(`⚠️ Telegram API Error: ${err}`);
@@ -70,16 +67,20 @@ export class TelegramService {
             () => fallbackController.abort(),
             this.REQUEST_TIMEOUT_MS,
           );
-          const fallback = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: this.CHAT_ID,
-              text: message.replace(/\*\*/g, ''),
-            }),
-            signal: fallbackController.signal,
-          });
-          clearTimeout(fallbackTimeoutId);
+          let fallback: Response;
+          try {
+            fallback = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: this.CHAT_ID,
+                text: message.replace(/\*\*/g, ''),
+              }),
+              signal: fallbackController.signal,
+            });
+          } finally {
+            clearTimeout(fallbackTimeoutId);
+          }
           if (!fallback.ok) throw new Error(`Telegram HTTP ${fallback.status}`);
           return;
         }
@@ -88,6 +89,8 @@ export class TelegramService {
     } catch (error) {
       console.error('❌ Error en Telegram Gateway:', error);
       throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 

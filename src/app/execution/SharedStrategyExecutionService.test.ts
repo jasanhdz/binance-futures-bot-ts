@@ -232,6 +232,48 @@ describe('SharedStrategyExecutionService protection policy', () => {
     });
   });
 
+  it('reports an explicit coordinator rejection as transport-attempted', async () => {
+    const coordinator = {
+      blockedReason: () => undefined,
+      withLiveHandoff: (work: () => Promise<unknown>) => work(),
+      execute: vi.fn().mockResolvedValue({
+        operationId: 'op-1',
+        mutationId: 'mutation-1',
+        status: 'REJECTED',
+        code: -2019,
+        transportAttempted: true,
+      }),
+    };
+    const coordinated = new SharedStrategyExecutionService(
+      exchange,
+      {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+      {
+        feeBufferPct: 0,
+        confirmationAttempts: 1,
+        confirmationDelaysMs: [0],
+        maxMarketOpenAttempts: 2,
+        marketOpenAmbiguityDelaysMs: [0, 0, 0, 0],
+        entryCoordinator: coordinator as any,
+      },
+    );
+
+    const result = await coordinated.execute(intent());
+
+    expect(result).toMatchObject({
+      status: 'FAILED',
+      reason: 'EXCHANGE_REJECTED',
+      metadata: {
+        marketOpenTransportAttempted: true,
+        error: 'Error: ENTRY_MUTATION_REJECTED',
+      },
+    });
+  });
+
   it('does not treat -2013 during ambiguity lookup as definitive absence', async () => {
     vi.mocked(exchange.marketOpen).mockRejectedValueOnce(new Error('transport timeout'));
     vi.mocked(exchange.readMarketOpenByClientOrderId).mockRejectedValue({

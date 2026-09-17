@@ -285,7 +285,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
               status: result.status,
             });
             if (result.status === 'REJECTED')
-              throw Object.assign(new Error('ENTRY_MUTATION_REJECTED'), { code: result.code });
+              throw Object.assign(new Error('ENTRY_MUTATION_REJECTED'), {
+                code: result.code,
+                transportAttempted: result.transportAttempted === true,
+              });
             if (result.status === 'BLOCKED' && result.reason === 'ENTRY_IDENTITY_NOT_CURRENT')
               return denied(intent, 'SHARED_SAFETY_DENIED', {
                 ...baseMetadata,

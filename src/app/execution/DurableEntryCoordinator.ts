@@ -36,13 +36,13 @@ export type DurableEntryResult = {
   mutationId: string;
 } & (
   | { status: 'CONFIRMED'; order: EntryOrderReceipt }
-  | { status: 'REJECTED'; code: number }
+  | { status: 'REJECTED'; code: number; transportAttempted?: boolean }
   | { status: 'UNKNOWN' | 'BLOCKED'; reason: string; transportAttempted?: boolean }
 );
 
 type TerminalEvidence =
   | { status: 'CONFIRMED'; order: EntryOrderReceipt }
-  | { status: 'REJECTED'; code: number }
+  | { status: 'REJECTED'; code: number; transportAttempted?: boolean }
   | { status: 'CANCELLED_BEFORE_SEND'; reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
 
 export interface DurableEntryCoordinatorDeps {
@@ -306,7 +306,7 @@ export class DurableEntryCoordinator {
               };
             evidence = { status: 'CONFIRMED', order };
           } else {
-            evidence = { status: 'REJECTED', code };
+            evidence = { status: 'REJECTED', code, transportAttempted };
           }
         }
         await this.finish(request, evidence);
