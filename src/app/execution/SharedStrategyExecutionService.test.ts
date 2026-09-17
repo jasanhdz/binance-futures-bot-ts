@@ -218,6 +218,20 @@ describe('SharedStrategyExecutionService protection policy', () => {
     expect(exchange.marketOpen).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves transport-attempted when an opening response cannot be reconciled', async () => {
+    vi.mocked(exchange.marketOpen).mockRejectedValueOnce(
+      Object.assign(new Error('ENTRY_ACK_IDENTITY_MISMATCH'), { transportAttempted: true }),
+    );
+
+    const result = await service.execute(intent());
+
+    expect(result).toMatchObject({
+      status: 'FAILED',
+      reason: 'MARKET_OPEN_AMBIGUOUS',
+      metadata: { marketOpenTransportAttempted: true },
+    });
+  });
+
   it('does not treat -2013 during ambiguity lookup as definitive absence', async () => {
     vi.mocked(exchange.marketOpen).mockRejectedValueOnce(new Error('transport timeout'));
     vi.mocked(exchange.readMarketOpenByClientOrderId).mockRejectedValue({

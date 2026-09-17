@@ -6,12 +6,18 @@ import { FsStateStore } from '../../infra/logging/FsStateStore';
 import type { Notifier } from '../ports/Notifier';
 
 class TelegramNotifier implements Notifier {
+  constructor(private readonly logger: { error(message: string, context?: unknown): void }) {}
+
   async sendMessage(message: string): Promise<void> {
-    await TelegramService.sendAlert(message);
+    try {
+      await TelegramService.sendAlert(message);
+    } catch (error) {
+      this.logger.error('telegram_notification_failed', { error: String(error) });
+    }
   }
 
   async sendAlert(title: string, body: string): Promise<void> {
-    await TelegramService.sendAlert(`⚠️ ${title}\n${body}`);
+    await this.sendMessage(`⚠️ ${title}\n${body}`);
   }
 }
 
@@ -21,7 +27,7 @@ export function createApplicationInfrastructure() {
     logger,
     exchange: new BinanceExchange(logger),
     stateStore: new FsStateStore('aegis_state.json'),
-    notifier: new TelegramNotifier(),
+    notifier: new TelegramNotifier(logger),
     configManager: new NinjaConfigManager(),
   };
 }

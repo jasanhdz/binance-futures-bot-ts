@@ -1283,7 +1283,9 @@ export class BinanceExchange implements Exchange {
         Number(res.orderId) <= 0 ||
         (clientOrderId && (res.clientOrderId !== clientOrderId || res.symbol !== symbol))
       )
-        throw new Error('ENTRY_ACK_IDENTITY_MISMATCH');
+        throw Object.assign(new Error('ENTRY_ACK_IDENTITY_MISMATCH'), {
+          transportAttempted: true,
+        });
       return { avgPrice: +(res.avgPrice || 0), orderId: String(res.orderId) };
     } catch (e: any) {
       noteRateLimitFromError(e);

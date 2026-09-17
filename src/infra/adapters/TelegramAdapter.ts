@@ -1,5 +1,7 @@
 export class TelegramService {
   private static readonly MAX_MESSAGE_LENGTH = 3900;
+  private static readonly REQUEST_TIMEOUT_MS = 5000;
+  private static readonly MAX_ATTEMPTS = 3;
   static getAlertBotToken(): string {
     return this.ALERT_BOT_TOKEN;
   }
@@ -42,7 +44,7 @@ export class TelegramService {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+      const timeoutId = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT_MS);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -63,6 +65,11 @@ export class TelegramService {
         // Fallback: If Markdown fails, send as plain text
         if (err.includes("can't parse entities")) {
           console.warn('⚠️ Retrying as Plain Text...');
+          const fallbackController = new AbortController();
+          const fallbackTimeoutId = setTimeout(
+            () => fallbackController.abort(),
+            this.REQUEST_TIMEOUT_MS,
+          );
           const fallback = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -70,7 +77,9 @@ export class TelegramService {
               chat_id: this.CHAT_ID,
               text: message.replace(/\*\*/g, ''),
             }),
+            signal: fallbackController.signal,
           });
+          clearTimeout(fallbackTimeoutId);
           if (!fallback.ok) throw new Error(`Telegram HTTP ${fallback.status}`);
           return;
         }
@@ -83,7 +92,17 @@ export class TelegramService {
   }
 
   static async sendAlert(message: string) {
-    await this.send(this.ALERT_BOT_TOKEN, message);
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.MAX_ATTEMPTS; attempt++) {
+      try {
+        await this.send(this.ALERT_BOT_TOKEN, message);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < this.MAX_ATTEMPTS) continue;
+      }
+    }
+    throw lastError;
   }
 
   static async sendPlainTextToChat(chatId: string, message: string, token = this.ALERT_BOT_TOKEN) {

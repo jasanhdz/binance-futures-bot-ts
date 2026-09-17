@@ -292,6 +292,8 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                 reasonDetail: result.reason,
               });
             if (result.status !== 'CONFIRMED') {
+              marketOpenTransportAttempted ||= result.transportAttempted === true;
+              Object.assign(baseMetadata, { marketOpenTransportAttempted });
               return failed(intent, 'MARKET_OPEN_AMBIGUOUS', {
                 ...baseMetadata,
                 clientOrderId,
@@ -302,6 +304,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
             }
             order = result.order;
             marketOpenTransportAttempted = true;
+            Object.assign(baseMetadata, { marketOpenTransportAttempted });
           } else {
             if (this.config.isEntryCurrent?.(intent, quantity) === false)
               return denied(intent, 'SHARED_SAFETY_DENIED', {
@@ -318,9 +321,13 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
                 )
               : await this.exchange.marketOpen(intent.symbol, intent.side, quantity, clientOrderId);
             marketOpenTransportAttempted = true;
+            Object.assign(baseMetadata, { marketOpenTransportAttempted });
           }
           break;
         } catch (error) {
+          marketOpenTransportAttempted ||=
+            (error as { transportAttempted?: unknown })?.transportAttempted === true;
+          Object.assign(baseMetadata, { marketOpenTransportAttempted });
           if (contextual && isDefiniteBusinessRejection(error)) throw error;
           if (isDefiniteBusinessRejection(error) && !isRecoverableEntrySizeError(error)) {
             throw error;
@@ -747,6 +754,7 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
         ...baseMetadata,
         error: String(error),
         marketOpenAttempts: marketOpenAttempt,
+        marketOpenTransportAttempted,
         recoverableEntrySizeError: isRecoverableEntrySizeError(error),
         failureStage,
         emergencyCloseError,

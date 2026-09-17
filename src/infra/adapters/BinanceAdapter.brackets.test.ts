@@ -839,6 +839,22 @@ describe('BinanceExchange bracket placement', () => {
     expect(order).toEqual({ avgPrice: 100, orderId: '123' });
   });
 
+  it('marks an invalid opening ACK as transport-attempted', async () => {
+    mockClient.futuresOrder.mockResolvedValueOnce({
+      orderId: 123,
+      symbol: 'OTHERUSDT',
+      clientOrderId: 'se_client-order-123',
+    });
+    const exchange = new BinanceExchange(logger);
+
+    await expect(
+      exchange.marketOpen('BTCUSDT', 'LONG', 0.02, 'se_client-order-123'),
+    ).rejects.toMatchObject({
+      message: 'ENTRY_ACK_IDENTITY_MISMATCH',
+      transportAttempted: true,
+    });
+  });
+
   it('does not fallback or resend an identified open after position-mode rejection', async () => {
     const error = Object.assign(new Error('Position side does not match'), { code: -4061 });
     mockClient.futuresOrder.mockRejectedValueOnce(error);

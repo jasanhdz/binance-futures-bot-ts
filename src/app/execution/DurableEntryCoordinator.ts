@@ -207,6 +207,7 @@ export class DurableEntryCoordinator {
       isCurrent() && JSON.stringify(jsonSnapshot(intent)) === JSON.stringify(request.intent);
     // Reserve synchronously, before reads/awaits, across every strategy and symbol.
     this.pending.add(operationId);
+    let transportAttempted = false;
     return this.track(async (): Promise<DurableEntryResult> => {
       try {
         // Renaming an episode must not reopen its immutable historical mutation.
@@ -269,14 +270,14 @@ export class DurableEntryCoordinator {
           return { ...identity, status: 'BLOCKED', reason: 'ENTRY_IDENTITY_NOT_CURRENT' };
         }
         let evidence: TerminalEvidence;
-        let transportAttempted = false;
         try {
           const order = await send(jsonSnapshot(request) as DurableEntryRequest, current);
           transportAttempted = true;
           if (!validOrder(order)) throw new Error('ENTRY_ACK_INVALID');
           evidence = { status: 'CONFIRMED', order: { ...order } };
         } catch (error) {
-          transportAttempted = (error as { transportAttempted?: unknown })?.transportAttempted === true;
+          transportAttempted ||=
+            (error as { transportAttempted?: unknown })?.transportAttempted === true;
           if ((error as { code?: unknown })?.code === 'ENTRY_IDENTITY_NOT_CURRENT_BEFORE_SEND') {
             await this.finish(request, {
               status: 'CANCELLED_BEFORE_SEND',
@@ -315,7 +316,7 @@ export class DurableEntryCoordinator {
       } catch {
         // An ACK whose append failed is not a durable success. Keep the reservation.
         this.failure = 'ENTRY_JOURNAL_UNCERTAIN';
-        return { ...identity, status: 'UNKNOWN', reason: this.failure };
+        return { ...identity, status: 'UNKNOWN', reason: this.failure, transportAttempted };
       }
     });
   }

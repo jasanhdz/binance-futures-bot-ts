@@ -1502,7 +1502,12 @@ export class TradingService {
       },
       activePositions: startupPositions,
     });
-    await notifier.sendMessage(startupMsg);
+    try {
+      await notifier.sendMessage(startupMsg);
+    } catch (error) {
+      // Telegram is operational telemetry, not a prerequisite for trading.
+      logger.error('startup_telegram_notification_failed', { error: String(error) });
+    }
     for (const symbol of this.config.symbols) {
       // Existing-position protection needs candles even when entry producers are disabled.
       if (!this.strategyRuntimeCoordinator.hasAegisRealtimeMarketState()) {
