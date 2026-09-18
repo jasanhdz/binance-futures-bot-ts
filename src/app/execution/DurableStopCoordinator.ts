@@ -214,6 +214,30 @@ export class DurableStopCoordinator {
     return this.cancelBlockedReason() ?? (this.pending.size ? 'STOP_MUTATION_PENDING' : undefined);
   }
 
+  /** Read the original identity only; uncertainty never authorizes a new mutation. */
+  async recoveryEvidence(
+    input: Omit<
+      StopMutationRequest,
+      'protocol' | 'scope' | 'mutationId' | 'operationId' | 'clientOrderId'
+    >,
+  ): Promise<{ clientOrderId: string; event: JournalEventType } | undefined> {
+    await this.start();
+    const id = `stop:${mutationDigest(this.scope, input.parentTradeId, input.replacementKey)}`;
+    if (this.failure || this.busy.has(id) || this.retired.has(id)) return undefined;
+    const latest = await this.journal!.readLatest(id);
+    if (!latest) return undefined;
+    const request = this.requestFrom(latest);
+    if (
+      Object.entries(input).some(
+        ([key, value]) =>
+          !(key === 'strategyId' && samePersistedStrategy(request.strategyId, value)) &&
+          request[key as keyof StopMutationRequest] !== value,
+      )
+    )
+      return undefined;
+    return { clientOrderId: request.clientOrderId, event: latest.event };
+  }
+
   cancelBlockedReason(): string | undefined {
     return (
       this.failure ??

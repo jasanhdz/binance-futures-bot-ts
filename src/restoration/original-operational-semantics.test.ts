@@ -53,7 +53,8 @@ const baselineOperationalDigests: Record<string, string> = {
   // Source checkpoint only; no production configuration or model approval change.
   'src/infra/logging/FsStateStore.ts':
     // Canonical daily counts include historical Micro keys without rewriting trade provenance.
-    '97a46d730072daf5ab01f54b4598a3df57c339885baba68ed4f36f85d12549e2',
+    // Validated persistent stop-uncertainty deadline and parent identity; not deployment approval.
+    '9dc8501a9fffd101af752d61b0364bb8bdf46ef6240d7e74bf2bad1001cc2887',
 };
 
 // Phase 1 owner-authorized architecture checkpoint. These are operational
@@ -103,7 +104,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Reviewed delta from 8f7da23: preparation metrics and original input-freshness metadata.
     // Current source checkpoint: startup/loop progress is observable; not artifact approval.
     // Exit observation logs expose the decision reason and context summary.
-    '92d97966652d1ccc6d7b216f9834a4a1f2e48826340cca3dce5e134d3a1334fc',
+    // Durable uncertainty admission latch and stale management continuation guard.
+    'be754352a4f6c21a4bb6e41239994e004ae398486f7388fa3304a65748bb500f',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -153,7 +155,8 @@ const contextualSourceCheckpoints: Record<string, string> = {
   'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   'src/app/services/TradingService.ts':
     // Exit observation logs expose the decision reason and context summary.
-    '92d97966652d1ccc6d7b216f9834a4a1f2e48826340cca3dce5e134d3a1334fc',
+    // Durable uncertainty admission latch and stale management continuation guard.
+    'be754352a4f6c21a4bb6e41239994e004ae398486f7388fa3304a65748bb500f',
 };
 
 type GuardFixture = [

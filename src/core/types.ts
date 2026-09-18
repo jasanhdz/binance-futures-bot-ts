@@ -134,6 +134,15 @@ export type BotState = {
   microBurstPnlUnverifiedAt?: number;
   /** Protection uncertainty is separate from an ambiguous entry submission. */
   microProtectionBlocked?: boolean;
+  /** Durable stop uncertainty, independent of the economic entry clock. */
+  microStopUncertainty?: {
+    tradeId: string;
+    entryOrderId: string;
+    clientOrderId: string;
+    startedAt: number;
+    deadlineAt: number;
+    recoveryRequested: boolean;
+  };
   /** Persisted before sending a replacement stop; never blindly resubmit after restart. */
   microStopSubmission?: {
     attemptedAt: number;

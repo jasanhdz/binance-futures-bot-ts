@@ -103,6 +103,37 @@ describe('FsStateStore', () => {
     ).toEqual(expect.objectContaining({ lastTradeId: 'child-trade' }));
   });
 
+  it.each([
+    null,
+    {},
+    { deadlineAt: 1 },
+    { clientOrderId: 'wrong' },
+    { tradeId: 'other' },
+    { entryOrderId: 'other' },
+    { startedAt: -1 },
+    { recoveryRequested: 'true' },
+  ])('rejects malformed or cross-trade durable uncertainty %j', async (patch) => {
+    const pending = {
+      tradeId: 'trade',
+      entryOrderId: '42',
+      clientOrderId: `bot_sl_${'a'.repeat(28)}`,
+      startedAt: 1000,
+      deadlineAt: 31000,
+      recoveryRequested: false,
+    };
+    await fs.writeFile(
+      path.join(directory, 'state_TEST.json'),
+      JSON.stringify({
+        mode: 'SHORT_RIDE',
+        lastTradeId: 'trade',
+        lastOrderId: '42',
+        microStopUncertainty:
+          patch === null ? null : Object.keys(patch).length ? { ...pending, ...patch } : {},
+      }),
+    );
+    expect(() => new FsStateStore('default', 'test', directory)).toThrow('BOT_STATE_LOAD_FAILED');
+  });
+
   it('fails closed for corrupt or incompatible state', async () => {
     await fs.writeFile(path.join(directory, 'state_TEST.json'), '{not-json');
     expect(() => new FsStateStore('default', 'test', directory)).toThrow('BOT_STATE_LOAD_FAILED');

@@ -5,6 +5,7 @@ import { Logger } from '../ports/Logger';
 import { RegimeConfig } from '../ports/RegimeStrategy';
 import { StateStore } from '../ports/StateStore';
 import type { DurableStopCoordinator } from '../execution/DurableStopCoordinator';
+import { isDeepStrictEqual } from 'node:util';
 import {
   LifecycleTradeEventInput,
   SafeStopMoveInput,
@@ -108,6 +109,8 @@ export class PositionProtectionService {
         current.lastEntryAt === state.lastEntryAt &&
         current.recoveredEntryMutationId === state.recoveredEntryMutationId &&
         current.ownershipStatus === state.ownershipStatus &&
+        current.microBurstActiveStopKey === state.microBurstActiveStopKey &&
+        isDeepStrictEqual(current.microBurstStopMove, state.microBurstStopMove) &&
         (!this.deps.stopCoordinator ||
           (current.microStopSubmission?.attemptedAt === state.microStopSubmission?.attemptedAt &&
             current.microStopSubmission?.tradeId === state.microStopSubmission?.tradeId &&
@@ -179,26 +182,47 @@ export class PositionProtectionService {
           return { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
         store.set({ microProtectionBlocked: true });
         await store.flush();
+        if (!samePosition())
+          return { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
+        const request = {
+          symbol,
+          side,
+          positionSide: position.sideMode,
+          triggerPrice: stopPrice,
+          ...(activeStopKey
+            ? { closePosition: false, quantity: position.qtyAbs, reduceOnly: true as const }
+            : { closePosition: true }),
+          workingType: 'MARK_PRICE' as const,
+          parentTradeId: state.lastTradeId,
+          parentOrderId: state.lastOrderId,
+          strategyId: state.lastStrategy,
+          positionQuantity: position.qtyAbs,
+          entryPrice: position.entryPrice,
+          ...(activeStopKey ? { replacementKey: activeStopKey } : {}),
+        };
         const protectedNow = await this.deps.stopCoordinator.supervise(
-          {
-            symbol,
-            side,
-            positionSide: position.sideMode,
-            triggerPrice: stopPrice,
-            ...(activeStopKey
-              ? { closePosition: false, quantity: position.qtyAbs, reduceOnly: true as const }
-              : { closePosition: true }),
-            workingType: 'MARK_PRICE',
-            parentTradeId: state.lastTradeId,
-            parentOrderId: state.lastOrderId,
-            strategyId: state.lastStrategy,
-            positionQuantity: position.qtyAbs,
-            entryPrice: position.entryPrice,
-            ...(activeStopKey ? { replacementKey: activeStopKey } : {}),
-          },
+          request,
           samePosition,
-          safeToSend && !state.microStopSubmission,
+          safeToSend && !state.microStopSubmission && !state.microStopUncertainty,
         );
+        if (!samePosition())
+          return { status: 'UNKNOWN', reason: 'MICRO_STOP_IDENTITY_OR_ATTEMPT_CHANGED' };
+        const uncertainty = state.microStopUncertainty && { ...state.microStopUncertainty };
+        const ownsUncertainty = () =>
+          samePosition() && isDeepStrictEqual(store.get().microStopUncertainty, uncertainty);
+        if (protectedNow && uncertainty) {
+          if (!ownsUncertainty())
+            return { status: 'UNKNOWN', reason: 'MICRO_STOP_UNCERTAINTY_CHANGED' };
+          store.set({ microStopUncertainty: undefined });
+          await store.flush();
+          if (!samePosition() || store.get().microStopUncertainty !== undefined)
+            return { status: 'UNKNOWN', reason: 'MICRO_STOP_UNCERTAINTY_CHANGED' };
+          this.deps.logger.info('micro_stop_uncertainty_resolved', {
+            symbol,
+            ...uncertainty,
+            evidence: 'CURRENT_STOP_CONFIRMED',
+          });
+        }
         if (!protectedNow && activeStopKey && samePosition()) {
           // Two successful inventory reads plus a fresh unchanged position distinguish
           // missing protection from an unknown query. Only the former permits durable close.
@@ -237,6 +261,78 @@ export class PositionProtectionService {
               };
           }
           return { status: 'RECOVERY_REQUIRED', reason: 'MICRO_REPLACEMENT_COVERAGE_MISSING' };
+        }
+        if (!protectedNow && !activeStopKey) {
+          const evidence = await this.deps.stopCoordinator.recoveryEvidence(request);
+          if (!evidence || !ownsUncertainty())
+            return { status: 'UNKNOWN', reason: 'MICRO_STOP_RECOVERY_IDENTITY_UNVERIFIED' };
+          const now = this.deps.now?.() ?? Date.now();
+          const timeout = this.deps.microStopRecoveryTimeoutMs ?? 30_000;
+          const pending = uncertainty ?? {
+            tradeId: state.lastTradeId,
+            entryOrderId: state.lastOrderId,
+            clientOrderId: evidence.clientOrderId,
+            startedAt: now,
+            deadlineAt: now + timeout,
+            recoveryRequested: false,
+          };
+          if (
+            pending.tradeId !== state.lastTradeId ||
+            pending.entryOrderId !== state.lastOrderId ||
+            pending.clientOrderId !== evidence.clientOrderId ||
+            !Number.isSafeInteger(now) ||
+            !Number.isSafeInteger(pending.startedAt) ||
+            pending.startedAt < 0 ||
+            pending.startedAt > now ||
+            !Number.isSafeInteger(pending.deadlineAt) ||
+            pending.deadlineAt <= pending.startedAt ||
+            typeof pending.recoveryRequested !== 'boolean'
+          )
+            return { status: 'UNKNOWN', reason: 'MICRO_STOP_UNCERTAINTY_INVALID' };
+          // Flush even an existing deadline: a previous failed flush is not durable evidence.
+          store.set({ microStopUncertainty: pending });
+          await store.flush();
+          const samePending = () =>
+            samePosition() && isDeepStrictEqual(store.get().microStopUncertainty, pending);
+          if (!samePending())
+            return { status: 'UNKNOWN', reason: 'MICRO_STOP_UNCERTAINTY_CHANGED' };
+          if (!uncertainty)
+            this.deps.logger.warn('micro_stop_uncertainty_started', {
+              symbol,
+              ...pending,
+              evidence: evidence.event,
+            });
+          if (now >= pending.deadlineAt && this.deps.closeCoordinator) {
+            const fresh = await exchange.readFreshActivePosition?.(symbol, side);
+            if (
+              !fresh ||
+              fresh.sideMode !== position.sideMode ||
+              fresh.qtyAbs !== position.qtyAbs ||
+              fresh.entryPrice !== position.entryPrice ||
+              !samePending()
+            )
+              return { status: 'UNKNOWN', reason: 'MICRO_STOP_RECOVERY_POSITION_UNVERIFIED' };
+            if (!pending.recoveryRequested) {
+              const escalated = { ...pending, recoveryRequested: true };
+              store.set({ microStopUncertainty: escalated });
+              await store.flush();
+              if (
+                !samePosition() ||
+                !isDeepStrictEqual(store.get().microStopUncertainty, escalated)
+              )
+                return { status: 'UNKNOWN', reason: 'MICRO_STOP_UNCERTAINTY_CHANGED' };
+              this.deps.logger.warn('micro_stop_uncertainty_expired', {
+                symbol,
+                ...escalated,
+                evidence: evidence.event,
+                positionEvidence: 'FRESH_MATCHING_POSITION',
+              });
+            }
+            return {
+              status: 'RECOVERY_REQUIRED',
+              reason: 'MICRO_STOP_DURABLE_UNCERTAINTY_TIMEOUT',
+            };
+          }
         }
         return protectedNow && samePosition()
           ? { status: 'PROTECTED', stopPrice }
@@ -581,6 +677,7 @@ export class PositionProtectionService {
       bracketsAttached: false,
       microProtectionBlocked: false,
       microStopSubmission: undefined,
+      microStopUncertainty: undefined,
       microBurstStopMove: undefined,
       microBurstActiveStopKey: undefined,
       microBurstExitState: undefined,
@@ -608,6 +705,7 @@ export class PositionProtectionService {
           mode: previous.mode,
           bracketsAttached: previous.bracketsAttached,
           microStopSubmission: previous.microStopSubmission,
+          microStopUncertainty: previous.microStopUncertainty,
           microBurstStopMove: previous.microBurstStopMove,
           microBurstActiveStopKey: previous.microBurstActiveStopKey,
           microBurstExitState: previous.microBurstExitState,

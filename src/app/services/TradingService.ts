@@ -2571,6 +2571,7 @@ export class TradingService {
         state.microProtectionBlocked === true ||
         state.microBurstStopMove !== undefined ||
         state.microStopSubmission !== undefined ||
+        state.microStopUncertainty !== undefined ||
         state.microBurstPnlUnverified === true
       );
     });
@@ -2614,6 +2615,24 @@ export class TradingService {
 
     let managementContext: Record<string, unknown> = { symbol, botState, symbolState };
     if (identity.strategyId === 'MICRO_BURST') {
+      const expected = { ...botState };
+      const sameManagedPosition = () => {
+        const current = symbolState.get();
+        return (
+          [
+            'lastTradeId',
+            'lastOrderId',
+            'lastSide',
+            'lastStrategy',
+            'positionOwner',
+            'mode',
+            'lastEntryAt',
+            'lastEntryQty',
+            'lastEntryPrice',
+            'ownershipStatus',
+          ] as const
+        ).every((key) => current[key] === expected[key]);
+      };
       if (this.deps.closeCoordinator?.blocksPosition(symbol, botState.lastTradeId)) {
         await this.deps.closeCoordinator.reconcile(
           (s) => this.stateForSymbol(s),
@@ -2628,6 +2647,7 @@ export class TradingService {
           botState,
           symbolState,
         );
+        if (this.deps.closeCoordinator && !sameManagedPosition()) return;
         if (protection.status === 'MISSING') {
           symbolState.set({ microProtectionBlocked: true });
           const reconciled = await this.positionProtection.reconcileMissingMicroPosition(
@@ -2664,6 +2684,7 @@ export class TradingService {
           throw new Error(protection.reason ?? 'MICRO_STOP_RECOVERY_REQUIRED');
         }
       } catch (error) {
+        if (this.deps.closeCoordinator && !sameManagedPosition()) return;
         symbolState.set({ microProtectionBlocked: true, bracketsAttached: false });
         this.deps.logger.error('micro_stop_recovery_pending', {
           symbol,

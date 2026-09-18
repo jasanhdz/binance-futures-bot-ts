@@ -181,6 +181,29 @@ function parseState(raw: string): BotState {
       throw new Error('BOT_STATE_INVALID_MICRO_STOP_SUBMISSION');
     }
   }
+  if (state.microStopUncertainty !== undefined) {
+    const pending = state.microStopUncertainty;
+    if (
+      !pending ||
+      typeof pending !== 'object' ||
+      Array.isArray(pending) ||
+      typeof pending.tradeId !== 'string' ||
+      !pending.tradeId.trim() ||
+      pending.tradeId !== state.lastTradeId ||
+      typeof pending.entryOrderId !== 'string' ||
+      !pending.entryOrderId.trim() ||
+      pending.entryOrderId !== state.lastOrderId ||
+      typeof pending.clientOrderId !== 'string' ||
+      !/^bot_sl_[a-f0-9]{28}$/.test(pending.clientOrderId) ||
+      !Number.isSafeInteger(pending.startedAt) ||
+      pending.startedAt < 0 ||
+      !Number.isSafeInteger(pending.deadlineAt) ||
+      pending.deadlineAt <= pending.startedAt ||
+      typeof pending.recoveryRequested !== 'boolean'
+    ) {
+      throw new Error('BOT_STATE_INVALID_MICRO_STOP_UNCERTAINTY');
+    }
+  }
   if (
     dailyRisk !== undefined &&
     (!Number.isInteger(dailyRisk.dayKey) ||
