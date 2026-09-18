@@ -20,8 +20,10 @@ type Route = {
   streams: Map<string, Stream>;
   socket?: RawWebSocket;
   socketGeneration: number;
+  socketCreatedAtMs?: number;
   openedAtMs?: number;
   lastMessageAtMs?: number;
+  socketOpenTimeout?: NodeJS.Timeout;
   openTimer?: NodeJS.Timeout;
   reconnectTimer?: NodeJS.Timeout;
   intentionallyClosed: boolean;
@@ -97,6 +99,7 @@ export class CombinedMarketDataHub {
       if (!current.consumers.size) route!.streams.delete(stream);
       if (!route!.streams.size) {
         if (route!.openTimer) clearTimeout(route!.openTimer);
+        if (route!.socketOpenTimeout) clearTimeout(route!.socketOpenTimeout);
         if (route!.reconnectTimer) clearTimeout(route!.reconnectTimer);
         route!.intentionallyClosed = true;
         this.closeSocket(route!, true);
@@ -126,6 +129,7 @@ export class CombinedMarketDataHub {
     clearInterval(this.watchdogTimer);
     for (const route of this.routes.values()) {
       if (route.openTimer) clearTimeout(route.openTimer);
+      if (route.socketOpenTimeout) clearTimeout(route.socketOpenTimeout);
       if (route.reconnectTimer) clearTimeout(route.reconnectTimer);
       route.intentionallyClosed = true;
       this.closeSocket(route, true);
@@ -153,8 +157,20 @@ export class CombinedMarketDataHub {
         combinedStreamWebSocketUrl(this.endpoint, [...route.streams.keys()], route.descriptor),
       );
       route.socket = socket;
+      route.socketCreatedAtMs = Date.now();
+      route.socketOpenTimeout = setTimeout(() => {
+        if (!this.isCurrentSocket(route!, socket, generation)) return;
+        this.logger.warn('market_data_combined_ws_open_timeout', {
+          route: route!.descriptor.accessMode,
+          generation,
+          elapsed: Date.now() - route!.socketCreatedAtMs!,
+        });
+        this.reconnect(route!);
+      }, this.watchdogTimeoutMs);
       socket.onopen = () => {
         if (!this.isCurrentSocket(route, socket, generation)) return;
+        if (route.socketOpenTimeout) clearTimeout(route.socketOpenTimeout);
+        route.socketOpenTimeout = undefined;
         route.openedAtMs = Date.now();
         route.lastMessageAtMs = undefined;
         for (const stream of route!.streams.values()) {
@@ -168,10 +184,13 @@ export class CombinedMarketDataHub {
       socket.onerror = (event) => {
         if (this.isCurrentSocket(route!, socket, generation)) {
           this.logger.warn('market_data_ws_error', { error: String(event) });
+          this.reconnect(route!);
         }
       };
       socket.onclose = (event) => {
         if (!this.isCurrentSocket(route!, socket, generation)) return;
+        if (route!.socketOpenTimeout) clearTimeout(route!.socketOpenTimeout);
+        route!.socketOpenTimeout = undefined;
         const close = event && typeof event === 'object' ? (event as { code?: unknown }) : {};
         this.logger.warn('market_data_combined_ws_closed', {
           route: route.descriptor.accessMode,
@@ -183,11 +202,15 @@ export class CombinedMarketDataHub {
           streams: [...route.streams.keys()],
         });
         route!.socket = undefined;
+        route!.socketCreatedAtMs = undefined;
+        route!.openedAtMs = undefined;
         if (!route!.intentionallyClosed) this.scheduleReconnect(route!);
       };
     } catch (error) {
       this.logger.error('market_data_ws_connect_failed', { error: String(error) });
       route.socket = undefined;
+      route.socketCreatedAtMs = undefined;
+      route.openedAtMs = undefined;
       this.scheduleReconnect(route);
     }
   }
@@ -251,7 +274,8 @@ export class CombinedMarketDataHub {
     const now = Date.now();
     for (const route of this.routes.values()) {
       if (!route.socket) continue;
-      const lastRouteActivityAtMs = route.lastMessageAtMs ?? route.openedAtMs;
+      const lastRouteActivityAtMs =
+        route.lastMessageAtMs ?? route.openedAtMs ?? route.socketCreatedAtMs;
       if (
         lastRouteActivityAtMs !== undefined &&
         now - lastRouteActivityAtMs > this.watchdogTimeoutMs
@@ -273,6 +297,10 @@ export class CombinedMarketDataHub {
     const socket = route.socket;
     route.socket = undefined;
     route.socketGeneration++;
+    if (route.socketOpenTimeout) clearTimeout(route.socketOpenTimeout);
+    route.socketOpenTimeout = undefined;
+    route.socketCreatedAtMs = undefined;
+    route.openedAtMs = undefined;
     if (intentionallyClosed) route.intentionallyClosed = true;
     try {
       socket?.close();

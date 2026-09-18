@@ -99,7 +99,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Runtime-owned historical settlement under pending/shared admission reservations.
     // Reviewed delta from 8f7da23: preparation metrics and original input-freshness metadata.
     // Current source checkpoint: startup/loop progress is observable; not artifact approval.
-    'bfc64d790195c985edb046b2cc0156e26b8cd92d056b00640c97d7da5cd2a09e',
+    'b06378c077c305567a497900f410000326007ecdbf5af3e1030de299daa1e106',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -149,7 +149,7 @@ const contextualSourceCheckpoints: Record<string, string> = {
   'regime_config.live.yaml': '5935f7cbf9c1837efa82e84e226dcb9f4e7e4a182ff06b975f98ebae6ce97a1e',
   'src/app/services/TradingService.ts':
     // Same reviewed source delta, not a grant of runtime or artifact authority.
-    'bfc64d790195c985edb046b2cc0156e26b8cd92d056b00640c97d7da5cd2a09e',
+    'b06378c077c305567a497900f410000326007ecdbf5af3e1030de299daa1e106',
 };
 
 type GuardFixture = [

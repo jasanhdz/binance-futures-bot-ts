@@ -557,7 +557,7 @@ export class FileBackedExecutionJournal extends InMemoryExecutionJournal {
         if (!this.sameFile(this.lockIdentity, this.io.lstatSync(this.lockPath)))
           throw new Error('JOURNAL_LOCK_LOST');
         if (dataClosed) {
-          if (!this.closed || this.dataIdentity) this.assertLock();
+          this.assertLock();
           this.io.unlinkSync(this.lockPath);
           this.syncDirectory();
         }

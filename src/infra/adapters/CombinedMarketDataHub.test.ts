@@ -72,7 +72,7 @@ describe('CombinedMarketDataHub', () => {
 
     hub.subscribe('btcusdt@aggTrade', MARKET, first);
     hub.subscribe('ethusdt@aggTrade', MARKET, second);
-    vi.runOnlyPendingTimers();
+    vi.advanceTimersByTime(0);
 
     expect(sockets).toHaveLength(1);
     expect(urls[0]).toContain('btcusdt@aggTrade/ethusdt@aggTrade');
@@ -114,10 +114,10 @@ describe('CombinedMarketDataHub', () => {
     const eth = vi.fn();
 
     hub.subscribe('btcusdt@aggTrade', MARKET, btc);
-    vi.runOnlyPendingTimers();
+    vi.advanceTimersByTime(0);
     sockets[0].open();
     hub.subscribe('ethusdt@aggTrade', MARKET, eth);
-    vi.runOnlyPendingTimers();
+    vi.advanceTimersByTime(0);
 
     expect(sockets).toHaveLength(2);
     expect(sockets[0].closed).toBe(true);
@@ -150,7 +150,7 @@ describe('CombinedMarketDataHub', () => {
     });
 
     hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn(), (status) => statuses.push(status));
-    vi.runOnlyPendingTimers();
+    vi.advanceTimersByTime(0);
     sockets[0].open();
     hub.reconnectAll();
     expect(sockets[0].closed).toBe(true);
@@ -178,12 +178,60 @@ describe('CombinedMarketDataHub', () => {
     });
 
     hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn());
-    vi.runOnlyPendingTimers();
+    vi.advanceTimersByTime(0);
     sockets[0].open();
     vi.advanceTimersByTime(5_000);
+    expect(hub.getHealth()[0]?.reconnectCount).toBeGreaterThan(0);
+    hub.close();
+    vi.useRealTimers();
+  });
+
+  it('reconnects when a socket reports an error without closing', () => {
+    vi.useFakeTimers();
+    const sockets: FakeWebSocket[] = [];
+    const statuses: string[] = [];
+    const hub = new CombinedMarketDataHub(logger, {
+      reconnectDelayMs: 5,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn(), (status) => statuses.push(status));
+    vi.advanceTimersByTime(0);
+    sockets[0].open();
+    sockets[0].onerror?.(new Error('socket failed'));
+
+    expect(statuses).toContain('reconnecting');
+    vi.advanceTimersByTime(5);
+    expect(sockets).toHaveLength(2);
+    hub.close();
+    vi.useRealTimers();
+  });
+
+  it('reconnects a socket that never completes the open handshake', () => {
+    vi.useFakeTimers();
+    const sockets: FakeWebSocket[] = [];
+    const hub = new CombinedMarketDataHub(logger, {
+      watchdogTimeoutMs: 10,
+      reconnectDelayMs: 5,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn());
+    vi.advanceTimersByTime(0);
+    vi.advanceTimersByTime(10);
     expect(hub.getHealth()[0]).toEqual(
       expect.objectContaining({ status: 'reconnecting', reconnectCount: 1 }),
     );
+    vi.advanceTimersByTime(5);
+    expect(sockets).toHaveLength(2);
     hub.close();
     vi.useRealTimers();
   });
@@ -203,7 +251,7 @@ describe('CombinedMarketDataHub', () => {
 
     hub.subscribe('btcusdt@aggTrade', MARKET, vi.fn());
     hub.subscribe('ltcusdt@aggTrade', MARKET, vi.fn());
-    vi.runOnlyPendingTimers();
+    vi.advanceTimersByTime(0);
     sockets[0].open();
 
     vi.advanceTimersByTime(4_000);

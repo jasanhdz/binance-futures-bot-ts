@@ -226,6 +226,7 @@ export class TradingService {
   private lastErrorTime: Record<string, number> = {};
   private lastLogTime: Record<string, number> = {};
   private lastAlivePulseMs = Date.now();
+  private deadlockShutdownStarted = false;
   private hardWatchdogTimer: NodeJS.Timeout | null = null;
   private runtimeProgress: TradingRuntimeProgress = {
     pid: process.pid,
@@ -1593,9 +1594,20 @@ export class TradingService {
       );
       void this.deps.stopCoordinator?.reconcileClosed((symbol) => this.stateForSymbol(symbol));
       void this.reconcileMicroNetSettlements();
-      if (this.isRunning && Date.now() - this.lastAlivePulseMs > 180000) {
+      if (
+        this.isRunning &&
+        !this.deadlockShutdownStarted &&
+        Date.now() - this.lastAlivePulseMs > 180000
+      ) {
+        this.deadlockShutdownStarted = true;
         this.deps.logger.error('system_deadlock_detected');
-        process.exit(1);
+        void this.stop().then(
+          () => process.exit(1),
+          (error) => {
+            this.deps.logger.error('system_deadlock_shutdown_failed', { error: String(error) });
+            process.exit(1);
+          },
+        );
       }
     }, 10000);
   }
