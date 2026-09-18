@@ -193,7 +193,7 @@ export interface TradingExchangePort
   sendStopCloseOnce?(request: IdentifiedStopRequest): Promise<StopOrderReceipt>;
   /** Positive result requires exact identity and a currently NEW, BOT-owned covering stop. */
   readStopCloseByClientOrderId?(request: IdentifiedStopRequest): Promise<StopOrderReceipt | null>;
-  /** Exact identity; only NEW or definitively CANCELED are understood, all others unknown. */
+  /** Exact identity; terminal non-triggered expiry is equivalent to cancellation. */
   readStopCloseState?(request: IdentifiedStopRequest): Promise<StopOrderState | null>;
   setLeverage(symbol: string, leverage: number): Promise<void>;
   ensureMarginType(symbol: string, marginType?: 'ISOLATED' | 'CROSSED'): Promise<void>;
@@ -250,7 +250,7 @@ export interface StopOrderReceipt {
 }
 
 export interface StopOrderState extends StopOrderReceipt {
-  status: 'NEW' | 'CANCELED';
+  status: 'NEW' | 'CANCELED' | 'EXPIRED';
 }
 
 export type {

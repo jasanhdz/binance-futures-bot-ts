@@ -1573,8 +1573,8 @@ export class BinanceExchange implements Exchange {
     request: import('../../app/ports/Exchange').IdentifiedStopRequest,
   ): Promise<import('../../app/ports/Exchange').StopOrderState | null> {
     if (!validIdentifiedStop(request)) throw new Error('STOP_REQUEST_INVALID');
-    // Only NEW protection and definitive cancellation are interpreted. Not-found,
-    // triggered and unexpected statuses never authorize resubmission or retirement.
+    // Only NEW protection and definitive terminal cancellation/expiry are interpreted.
+    // Not-found and triggered/unexpected statuses never authorize retirement.
     const order = await this.enqueue(
       () => this.placeAlgoOrderRaw({ clientAlgoId: request.clientOrderId }, 'GET'),
       DEFAULT_REQUEST_WEIGHT,
@@ -1587,7 +1587,7 @@ export class BinanceExchange implements Exchange {
       !order.algoId ||
       (typeof order.algoId === 'number' && !Number.isSafeInteger(order.algoId)) ||
       !/^\d+$/.test(String(order.algoId)) ||
-      !['NEW', 'CANCELED'].includes(order.algoStatus) ||
+      !['NEW', 'CANCELED', 'EXPIRED'].includes(order.algoStatus) ||
       order.algoType !== 'CONDITIONAL' ||
       order.orderType !== 'STOP_MARKET' ||
       order.side !== (request.side === 'LONG' ? 'SELL' : 'BUY') ||
@@ -1595,6 +1595,13 @@ export class BinanceExchange implements Exchange {
       Number(order.triggerPrice) !== request.triggerPrice ||
       order.workingType !== 'MARK_PRICE' ||
       !matchesStopCoverage(request, order)
+    )
+      return null;
+    if (
+      order.algoStatus === 'EXPIRED' &&
+      (String(order.actualOrderId ?? '') !== '' ||
+        Number(order.triggerTime ?? 0) !== 0 ||
+        Number(order.actualPrice ?? 0) !== 0)
     )
       return null;
     return {

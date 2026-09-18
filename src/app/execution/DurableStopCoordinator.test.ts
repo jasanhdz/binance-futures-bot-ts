@@ -143,6 +143,26 @@ describe('durable Micro stop vertical with real journal and projection', () => {
     expect(f.store.get().microBurstPnlUnverified).toBe(true);
   });
 
+  it('preserves an exchange EXPIRED stop state while retiring it after confirmed flat evidence', async () => {
+    const f = await closedFixture();
+    f.exchange.readStopCloseState.mockImplementation(async (request) => ({
+      clientOrderId: request.clientOrderId,
+      orderId: '99',
+      status: 'EXPIRED',
+    }));
+
+    await f.first.coordinator.reconcileClosed(() => f.store);
+    const raw = fs.readFileSync(f.file, 'utf8');
+    expect(raw).toContain('"status":"EXPIRED"');
+    expect(f.first.coordinator.blockedReason()).toBeUndefined();
+
+    await f.first.coordinator.close();
+    const restarted = f.make();
+    await restarted.coordinator.start();
+    await restarted.coordinator.reconcileClosed(() => f.store);
+    expect(fs.readFileSync(f.file, 'utf8')).toBe(raw);
+  });
+
   it.each([
     'unknown-order',
     'working-stop',

@@ -296,7 +296,26 @@ export class TradingService {
     private config: TradingServiceConfig,
   ) {
     this.microExitObservation = new MicroBurstExitObservation({
-      append: (record) => this.deps.logger.info('micro_burst_exit_decision', record),
+      append: (record) =>
+        this.deps.logger.info('micro_burst_exit_decision', {
+          ...record,
+          decisionAction: record.decision.action,
+          decisionReason: record.decision.reason,
+          decisionDiagnostics: record.decision.diagnostics,
+          exitContextSummary: record.context
+            ? {
+                currentPrice: record.context.currentPrice,
+                entryPrice: record.context.entryPrice,
+                priceReturn: record.context.priceReturn,
+                unrealizedRoe: record.context.unrealizedRoe,
+                timeInTradeMs: record.context.timeInTradeMs,
+                peakPrice: record.context.peakPrice,
+                troughPrice: record.context.troughPrice,
+                structuralInvalidationPrice: record.context.structuralInvalidationPrice,
+                destinationPrice: record.context.destinationPrice,
+              }
+            : null,
+        }),
     });
     this.microAdmissionDiagnostics = new EntryGateDiagnostics(deps.logger, 'MICRO_BURST', () =>
       Date.now(),

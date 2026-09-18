@@ -568,6 +568,9 @@ describe('BinanceExchange bracket placement', () => {
         triggerPrice: '90',
         workingType: 'MARK_PRICE',
         closePosition: true,
+        ...(status === 'EXPIRED'
+          ? { actualOrderId: '', actualPrice: '0', triggerTime: 0 }
+          : {}),
       };
       const fetch = vi
         .spyOn(globalThis, 'fetch')
@@ -575,7 +578,7 @@ describe('BinanceExchange bracket placement', () => {
       try {
         const exchange = new BinanceExchange(logger);
         const observed = await exchange.readStopCloseState(request);
-        if (status === 'NEW' || status === 'CANCELED')
+        if (status === 'NEW' || status === 'CANCELED' || status === 'EXPIRED')
           expect(observed).toEqual({
             clientOrderId: request.clientOrderId,
             orderId: '456',
@@ -613,6 +616,46 @@ describe('BinanceExchange bracket placement', () => {
     });
     expect(mockClient.futuresPositionRisk).toHaveBeenCalledTimes(2);
     expect(mockClient.futuresAccountInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { actualOrderId: '789', actualPrice: '90', triggerTime: 123 },
+    { actualOrderId: '', actualPrice: '90', triggerTime: 0 },
+    { actualOrderId: '', actualPrice: '0', triggerTime: 123 },
+  ])('does not resolve an expired stop with execution evidence %s', async (evidence) => {
+    const request = {
+      symbol: 'BTCUSDT',
+      side: 'LONG' as const,
+      positionSide: 'BOTH' as const,
+      triggerPrice: 90,
+      closePosition: true as const,
+      workingType: 'MARK_PRICE' as const,
+      clientOrderId: `bot_sl_${'b'.repeat(28)}`,
+    };
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          symbol: request.symbol,
+          clientAlgoId: request.clientOrderId,
+          algoId: 456,
+          algoStatus: 'EXPIRED',
+          algoType: 'CONDITIONAL',
+          orderType: 'STOP_MARKET',
+          side: 'SELL',
+          positionSide: 'BOTH',
+          triggerPrice: '90',
+          workingType: 'MARK_PRICE',
+          closePosition: true,
+          ...evidence,
+        }),
+      ),
+    );
+    try {
+      const exchange = new BinanceExchange(logger);
+      expect(await exchange.readStopCloseState(request)).toBeNull();
+    } finally {
+      fetch.mockRestore();
+    }
   });
 
   it.each([

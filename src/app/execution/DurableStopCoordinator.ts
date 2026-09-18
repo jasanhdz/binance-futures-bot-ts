@@ -26,7 +26,7 @@ interface StopRetirement {
   targetOperationId: string;
   request: StopMutationRequest;
   orderId?: string;
-  status: 'CANCELED' | 'FILLED' | 'RETIRED_AFTER_CONFIRMED_FLAT';
+  status: 'CANCELED' | 'EXPIRED' | 'FILLED' | 'RETIRED_AFTER_CONFIRMED_FLAT';
   externalClose?: MicroHistoricalCloseProof;
   executedOrderId?: string;
   lastExitAt: number;
@@ -1031,7 +1031,7 @@ export class DurableStopCoordinator {
               const last = history[history.length - 1];
               if (
                 !observed ||
-                !['CANCELED', 'FILLED'].includes(observed.status) ||
+                !['CANCELED', 'EXPIRED', 'FILLED'].includes(observed.status) ||
                 observed.clientOrderId !== request.clientOrderId ||
                 !observed.orderId ||
                 (last.orderId && last.orderId !== observed.orderId)
@@ -1058,7 +1058,7 @@ export class DurableStopCoordinator {
                 targetOperationId: id,
                 request,
                 orderId: observed.orderId,
-                status: observed.status as 'CANCELED' | 'FILLED',
+                status: observed.status as 'CANCELED' | 'EXPIRED' | 'FILLED',
                 ...(triggered ? { executedOrderId: triggered.executedOrderId } : {}),
                 lastExitAt: lastExitAt!,
                 flatObservedAt,
@@ -1155,7 +1155,7 @@ export class DurableStopCoordinator {
       entry.metadata?.journalOperationMeaning !== 'STOP_RETIREMENT_NOT_ACCOUNTING' ||
       !['PREPARED', 'CLOSE_PENDING', 'CLOSED'].includes(entry.event) ||
       JSON.stringify(proof.request) !== JSON.stringify(request) ||
-      !['CANCELED', 'FILLED', 'RETIRED_AFTER_CONFIRMED_FLAT'].includes(proof.status) ||
+      !['CANCELED', 'EXPIRED', 'FILLED', 'RETIRED_AFTER_CONFIRMED_FLAT'].includes(proof.status) ||
       (proof.status === 'FILLED' &&
         (typeof proof.executedOrderId !== 'string' || !/^[1-9]\d*$/.test(proof.executedOrderId))) ||
       (proof.status !== 'RETIRED_AFTER_CONFIRMED_FLAT' &&
