@@ -1599,9 +1599,17 @@ export class BinanceExchange implements Exchange {
       return null;
     if (
       order.algoStatus === 'EXPIRED' &&
-      (String(order.actualOrderId ?? '') !== '' ||
-        Number(order.triggerTime ?? 0) !== 0 ||
-        Number(order.actualPrice ?? 0) !== 0)
+      (!Object.prototype.hasOwnProperty.call(order, 'actualOrderId') ||
+        !Object.prototype.hasOwnProperty.call(order, 'triggerTime') ||
+        !Object.prototype.hasOwnProperty.call(order, 'actualPrice') ||
+        typeof order.actualOrderId !== 'string' ||
+        order.actualOrderId !== '' ||
+        typeof order.triggerTime !== 'number' ||
+        !Number.isFinite(order.triggerTime) ||
+        order.triggerTime !== 0 ||
+        !(['string', 'number'].includes(typeof order.actualPrice) &&
+          Number.isFinite(Number(order.actualPrice)) &&
+          Number(order.actualPrice) === 0))
     )
       return null;
     return {

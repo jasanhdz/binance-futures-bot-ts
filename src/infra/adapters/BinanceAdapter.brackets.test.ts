@@ -622,6 +622,10 @@ describe('BinanceExchange bracket placement', () => {
     { actualOrderId: '789', actualPrice: '90', triggerTime: 123 },
     { actualOrderId: '', actualPrice: '90', triggerTime: 0 },
     { actualOrderId: '', actualPrice: '0', triggerTime: 123 },
+    {},
+    { actualOrderId: null, actualPrice: '0', triggerTime: 0 },
+    { actualOrderId: '', actualPrice: null, triggerTime: 0 },
+    { actualOrderId: '', actualPrice: '0', triggerTime: null },
   ])('does not resolve an expired stop with execution evidence %s', async (evidence) => {
     const request = {
       symbol: 'BTCUSDT',
