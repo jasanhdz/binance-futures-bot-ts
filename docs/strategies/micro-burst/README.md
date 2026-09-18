@@ -194,6 +194,8 @@ Outcome Plane (new):
 - Validate temporal absorption/sweep thresholds.
 - Backtest signal quality with shadow journal data.
 - Evaluate economic edge with accumulated prospective data.
+- Evaluate the research-only `MICRO_OFFLINE_NO_TIME_CLOSE_V1` reducer with paired causal replay;
+  it is not a LIVE policy and does not alter the current defaults.
 
 ## M3.1 Correctness And Archive
 
