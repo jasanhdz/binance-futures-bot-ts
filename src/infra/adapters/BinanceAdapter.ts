@@ -1608,6 +1608,7 @@ export class BinanceExchange implements Exchange {
         !Number.isFinite(order.triggerTime) ||
         order.triggerTime !== 0 ||
         !(['string', 'number'].includes(typeof order.actualPrice) &&
+          (typeof order.actualPrice !== 'string' || order.actualPrice.trim() !== '') &&
           Number.isFinite(Number(order.actualPrice)) &&
           Number(order.actualPrice) === 0))
     )

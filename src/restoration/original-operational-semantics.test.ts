@@ -69,7 +69,8 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Reviewed historical GET-only discovery and fresh complete open-order observations.
     // See micro-historical-reconciliation.md; source checkpoint, not deployment authority.
     // Conditional EXPIRED stops require explicit empty execution evidence.
-    '2441d19d178ae6e087548074c5f1ed9c056602bd40fa96bc11b7fe9189ce493c',
+    // Blank or whitespace execution prices remain unknown, not terminal evidence.
+    'b1ef4bcb1d67c942ad09c14ed94c83157bc8f3e9de516482624f4c540b4993df',
   // Current source checkpoint: failed startup now cleans up and exits instead of remaining online.
   // Source checkpoint only; not a LIVE authorization.
   'src/main.ts': 'bb605c4264eb185e76f482f37a6808c16c55b69e7aff26541ab4b33289a4deaf',
