@@ -2167,6 +2167,40 @@ export class TradingService {
             });
           }
         }
+        const positionStillOpen = executionMetadata.positionStillOpen === true;
+        if (positionStillOpen) {
+          this.deps.logger.warn('micro_burst_live_entry_protection_pending', {
+            symbol: request.symbol,
+            side: request.side,
+            decisionId,
+            tradeId,
+            status: execution.status,
+            reason: execution.reason,
+            reasonDetail: executionMetadata.reasonDetail,
+            admissionElapsedMs: Date.now() - request.requestedAt,
+            failureStage: executionMetadata.failureStage,
+            positionStillOpen: true,
+            protectionPending: executionMetadata.protectionPending,
+            orderId: executionMetadata.orderId,
+            entryPrice: executionMetadata.entryPrice,
+            quantity: executionMetadata.quantity,
+          });
+          this.notifyMicroEntryOutcome(
+            {
+              symbol: request.symbol,
+              side: request.side,
+              decisionId,
+              reason: 'MICRO_ENTRY_PROTECTION_PENDING',
+              admissionElapsedMs: Date.now() - request.requestedAt,
+              orderState: 'OPEN',
+              orderSent: true,
+            },
+            'PROTECTION_PENDING',
+          );
+          // The position is owned and blocked for recovery, but it is not a confirmed
+          // entry until protection has been reconciled and the normal open path completes.
+          return false;
+        }
         this.deps.logger.warn('micro_burst_live_entry_not_opened', {
           symbol: request.symbol,
           side: request.side,
@@ -2182,7 +2216,7 @@ export class TradingService {
           minNotional: executionMetadata.minNotional,
           admissionElapsedMs: Date.now() - request.requestedAt,
           failureStage: executionMetadata.failureStage,
-          positionStillOpen: executionMetadata.positionStillOpen,
+          positionStillOpen,
           protectionPending: executionMetadata.protectionPending,
         });
         const admissionElapsedMs = Date.now() - request.requestedAt;
@@ -2493,14 +2527,16 @@ export class TradingService {
     const elapsed = Number(sample.admissionElapsedMs);
     const elapsedText = Number.isFinite(elapsed) ? `${Math.round(elapsed / 1000)} s` : 'N/D';
     const orderState =
-      sample.orderState === 'PENDING'
-        ? 'estado pendiente'
-        : sample.orderSent === true
-          ? 'resultado incierto'
-          : 'no enviada';
+      sample.orderState === 'OPEN'
+        ? 'posición abierta, protección pendiente'
+        : sample.orderState === 'PENDING'
+          ? 'estado pendiente'
+          : sample.orderSent === true
+            ? 'resultado incierto'
+            : 'no enviada';
     this.microEntryNotificationKeys.add(key);
     const message =
-      `⚠️ Micro: entrada bloqueada\n${symbol} · ${side}\n` +
+      `${sample.orderState === 'OPEN' ? '⚠️ Micro: protección pendiente' : '⚠️ Micro: entrada bloqueada'}\n${symbol} · ${side}\n` +
       `Motivo: ${reason}\nEtapa: ${stage}\nTiempo transcurrido: ${elapsedText}\n` +
       `Orden: ${orderState}\nDecisionId: ${decisionId}`;
     void this.sendMicroEntryNotification(message, { symbol, side, decisionId, stage, key });

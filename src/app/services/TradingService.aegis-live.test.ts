@@ -1822,6 +1822,69 @@ describe('TradingService Aegis live execution', () => {
     }
   });
 
+  it('classifies an owned position with pending protection separately from no entry', async () => {
+    const h = makeHarness({
+      balance: 2_000,
+      microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
+    });
+    await configureMicroAdmission(h);
+    const { service, logger, state } = h;
+    const liquidity = attachSharedLiquidity(service, logger, 'FRESH');
+    Object.assign(CONFIG, { AEGIS_ENABLED: false, AEGIS_LIVE_ENABLED: false });
+    vi.spyOn((service as any).runtimeConfig, 'getMicroBurstProvenance').mockReturnValue({
+      configHash: (service as any).microBurstIdentity.configHash.replace('sha256:', ''),
+      codeCommitSha: (service as any).microBurstIdentity.codeCommitSha,
+    });
+    vi.spyOn((service as any).sharedStrategyExecution, 'execute').mockResolvedValue({
+      status: 'FAILED',
+      reason: 'BRACKETS_FAILED',
+      metadata: {
+        failureStage: 'PROTECTION',
+        positionStillOpen: true,
+        protectionPending: true,
+        orderId: 'entry-1',
+        entryPrice: 3000,
+        quantity: 0.02,
+        reasonDetail: 'STOP_MUTATION_PENDING',
+      },
+    } as any);
+    try {
+      const opened = await (service as any).openMicroBurstLivePosition({
+        symbol: 'ETHUSDT',
+        side: 'LONG',
+        signalId: 'protection-pending',
+        strategyVersion: 'MICRO',
+        requestedAt: Date.now(),
+        leverage: 20,
+        positionFraction: 0.9,
+        structuralStopPrice: 2990,
+        destinationPrice: 3030,
+        diagnostics: {
+          episodeId: `MB-EP-${'4'.repeat(24)}`,
+          signalSnapshotAtMs: Date.now() - 1000,
+          decisionId: 'protection-pending-decision',
+        },
+      });
+
+      expect(opened).toBe(false);
+      expect(state.get()).toMatchObject({
+        mode: 'LONG_RIDE',
+        lastTradeId: expect.any(String),
+        metricsExclusionReason: 'ENTRY_RECOVERY_PENDING',
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        'micro_burst_live_entry_protection_pending',
+        expect.objectContaining({ positionStillOpen: true, protectionPending: true }),
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        'micro_burst_live_entry_not_opened',
+        expect.anything(),
+      );
+    } finally {
+      liquidity.close();
+    }
+  });
+
   it('aggregates the mandatory Micro ledger veto without account reads or warning spam', async () => {
     const { service, exchange, logger } = makeHarness({
       microBurst: { enabled: true, mode: 'LIVE', symbols: { ETHUSDT: { enabled: true } } },
