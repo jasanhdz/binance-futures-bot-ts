@@ -73,6 +73,18 @@ function context(now: number, side: 'LONG' | 'SHORT', exitPrice: number): MicroB
   };
 }
 
+function neutralContext(now: number, side: 'LONG' | 'SHORT'): MicroBurstExitContext {
+  const value = context(now, side, side === 'LONG' ? 99.9 : 100.1);
+  value.currentBookPressure!.signedTopOfBookImbalance = 0;
+  value.marketEvidence!.shortHorizonReturnBps = 0;
+  value.marketEvidence!.mediumHorizonReturnBps = 0;
+  value.marketEvidence!.buyTakerVolume = 50;
+  value.marketEvidence!.sellTakerVolume = 50;
+  value.currentBtcContext!.direction = 'NEUTRAL';
+  value.currentBtcContext!.ret3m = 0;
+  return value;
+}
+
 describe('MicroBurst offline no-time-close variant', () => {
   it.each(['LONG', 'SHORT'] as const)(
     'reevaluates at five minutes without time-only close for %s',
@@ -92,6 +104,84 @@ describe('MicroBurst offline no-time-close variant', () => {
         },
       });
       expect(first.decision.diagnostics).not.toMatchObject({ absoluteExposureLimit: true });
+      expect(first.state.phase).toBe('CONTINUING');
+    },
+  );
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'continues through strategic and proof milestones without time-only close: %s',
+    (side) => {
+      const state = initialMicroBurstOfflineExitState();
+      const atStrategic = context(config.exitMaxHoldMs, side, side === 'LONG' ? 100.2 : 99.8);
+      const first = advanceMicroBurstOfflineExit(state, atStrategic, config, side);
+      expect(first.decision).toMatchObject({ action: 'HOLD', reason: 'HOLD' });
+      expect(first.state.phase).toBe('CONTINUING');
+      expect(first.state.strategicReevaluationAtMs).toBe(config.exitMaxHoldMs);
+      const beforeAbsolute = context(
+        config.exitMaxHoldMs + config.exitMaxHoldExtensionMs - 1,
+        side,
+        side === 'LONG' ? 100.2 : 99.8,
+      );
+      const held = advanceMicroBurstOfflineExit(first.state, beforeAbsolute, config, side);
+      expect(held.decision.action).toBe('HOLD');
+      const atAbsolute = context(
+        config.exitMaxHoldMs + config.exitMaxHoldExtensionMs,
+        side,
+        side === 'LONG' ? 100.2 : 99.8,
+      );
+      expect(
+        advanceMicroBurstOfflineExit(held.state, atAbsolute, config, side).decision,
+      ).toMatchObject({
+        action: 'CLOSE_MARKET',
+        reason: 'MAX_HOLD',
+      });
+    },
+  );
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'keeps a tolerable pullback bounded by safety: %s',
+    (side) => {
+      const pullback = neutralContext(20_000, side);
+      const transition = advanceMicroBurstOfflineExit(
+        initialMicroBurstOfflineExitState(),
+        pullback,
+        config,
+        side,
+      );
+      expect(transition.state.phase).toBe('TOLERABLE_PULLBACK');
+      expect(transition.decision).toMatchObject({ action: 'HOLD', reason: 'HOLD' });
+      expect(transition.decision.diagnostics).toMatchObject({
+        holdBasis: 'NEUTRAL_OR_INSUFFICIENT_EVIDENCE',
+      });
+      const invalid = structuredClone(pullback);
+      invalid.currentPrice =
+        side === 'LONG' ? invalid.structuralInvalidationPrice : invalid.structuralInvalidationPrice;
+      expect(evaluateMicroBurstOfflineExit(invalid, config, side).reason).toBe('HARD_INVALIDATION');
+    },
+  );
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'bounds neutral waiting without restarting its deadline: %s',
+    (side) => {
+      const first = advanceMicroBurstOfflineExit(
+        initialMicroBurstOfflineExitState(),
+        neutralContext(300_000, side),
+        config,
+        side,
+      );
+      const secondContext = neutralContext(350_000, side);
+      const second = advanceMicroBurstOfflineExit(first.state, secondContext, config, side);
+      expect(second.decision.action).toBe('HOLD');
+      expect(second.state.absoluteExposureDeadlineAtMs).toBe(
+        config.exitMaxHoldMs + config.exitMaxHoldExtensionMs,
+      );
+      const atDeadline = neutralContext(360_000, side);
+      expect(
+        advanceMicroBurstOfflineExit(second.state, atDeadline, config, side).decision,
+      ).toMatchObject({
+        action: 'CLOSE_MARKET',
+        reason: 'MAX_HOLD',
+      });
     },
   );
 
@@ -132,6 +222,7 @@ describe('MicroBurst offline no-time-close variant', () => {
       second.currentBookObservedAtMs = 23_000;
       const two = advanceMicroBurstOfflineExit(one.state, second, config, side);
       expect(two.decision).toMatchObject({ action: 'CLOSE_MARKET', reason: 'INTELLIGENT_EXIT' });
+      expect(two.state.phase).toBe('CLOSING');
       expect(two.decision.diagnostics).toMatchObject({ deteriorationConfirmed: true });
     },
   );
@@ -159,6 +250,10 @@ describe('MicroBurst offline no-time-close variant', () => {
     delete degraded.marketEvidence;
     const decision = evaluateMicroBurstOfflineExit(degraded, config, 'LONG');
     expect(decision).toMatchObject({ action: 'HOLD', diagnostics: { holdBasis: 'DATA_DEGRADED' } });
+    expect(
+      advanceMicroBurstOfflineExit(initialMicroBurstOfflineExitState(), degraded, config, 'LONG')
+        .state.phase,
+    ).toBe('PROBING');
     expect(decision.diagnostics).toMatchObject({ estimatedNetReturnBps: null });
   });
 
@@ -192,13 +287,55 @@ describe('MicroBurst offline no-time-close variant', () => {
     );
   });
 
+  it('preserves deterioration timers and economic quote age across reconstruction', () => {
+    const adverse = context(20_000, 'LONG', 99.9);
+    adverse.marketEvidence!.shortHorizonReturnBps = -3;
+    adverse.marketEvidence!.buyTakerVolume = 20;
+    adverse.marketEvidence!.sellTakerVolume = 80;
+    adverse.currentBookPressure!.signedTopOfBookImbalance = -0.3;
+    const first = advanceMicroBurstOfflineExit(
+      initialMicroBurstOfflineExitState(),
+      adverse,
+      config,
+      'LONG',
+    );
+    const restored = JSON.parse(JSON.stringify(first.state));
+    const stale = structuredClone(adverse);
+    stale.observedAtMs = stale.timeInTradeMs = 40_000;
+    const staleTransition = advanceMicroBurstOfflineExit(restored, stale, config, 'LONG');
+    expect(staleTransition.decision.diagnostics).toMatchObject({
+      executableEconomicsUnavailable: true,
+    });
+    expect(restored.riskStartedAtMs).toBe(first.state.riskStartedAtMs);
+    const fresh = structuredClone(stale);
+    fresh.observedAtMs = fresh.timeInTradeMs = 50_000;
+    fresh.executableEconomics!.observedAtMs = 50_000;
+    fresh.currentBookObservedAtMs = 50_000;
+    fresh.marketEvidence!.observedAtMs = 50_000;
+    const rearmed = advanceMicroBurstOfflineExit(staleTransition.state, fresh, config, 'LONG');
+    expect(rearmed.state.consecutiveRiskObservations).toBe(1);
+    const confirmed = structuredClone(fresh);
+    confirmed.observedAtMs = confirmed.timeInTradeMs = 53_000;
+    confirmed.executableEconomics!.observedAtMs = 53_000;
+    confirmed.currentBookObservedAtMs = 53_000;
+    confirmed.marketEvidence!.observedAtMs = 53_000;
+    expect(
+      advanceMicroBurstOfflineExit(rearmed.state, confirmed, config, 'LONG').decision.reason,
+    ).toBe('INTELLIGENT_EXIT');
+  });
+
   it('does not confirm repeated market evidence under a later evaluation clock', () => {
     const adverse = context(20_000, 'LONG', 99.9);
     adverse.marketEvidence!.shortHorizonReturnBps = -3;
     adverse.marketEvidence!.buyTakerVolume = 20;
     adverse.marketEvidence!.sellTakerVolume = 80;
     adverse.currentBookPressure!.signedTopOfBookImbalance = -0.3;
-    const first = advanceMicroBurstOfflineExit(initialMicroBurstOfflineExitState(), adverse, config, 'LONG');
+    const first = advanceMicroBurstOfflineExit(
+      initialMicroBurstOfflineExitState(),
+      adverse,
+      config,
+      'LONG',
+    );
     const later = structuredClone(adverse);
     later.observedAtMs = later.timeInTradeMs = 23_000;
     later.executableEconomics!.observedAtMs = 23_000;

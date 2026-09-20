@@ -40,12 +40,14 @@ describe('causal CURRENT versus offline variant comparison', () => {
     missing.context.executableEconomics = undefined;
     const result = compareMicroBurstOfflineExitPolicies([missing, observation(361_000)], 'LONG');
     expect(result.complete).toBe(false);
+    expect(result.alternativeOutcome).toBe('NO_EVALUABLE');
     expect(result.current).toBeNull();
     expect(result.variant).toBeNull();
   });
 
   it.each(['future', 'stale', 'uncovered', 'nonfinite', 'negative-cost'])(
-    'does not price an absolute deadline with %s economics', (kind) => {
+    'does not price an absolute deadline with %s economics',
+    (kind) => {
       const row = observation(360_000);
       const e = row.context.executableEconomics!;
       if (kind === 'future') e.observedAtMs++;
@@ -70,7 +72,9 @@ describe('causal CURRENT versus offline variant comparison', () => {
     const changed = observation(360_000);
     changed.context.entryPrice = 101;
     changed.context.timeInTradeMs = 100;
-    expect(compareMicroBurstOfflineExitPolicies([observation(300_000), changed], 'LONG').complete).toBe(false);
+    expect(
+      compareMicroBurstOfflineExitPolicies([observation(300_000), changed], 'LONG').complete,
+    ).toBe(false);
   });
 
   it('uses identical observations and leaves the six-minute bound explicit', () => {
@@ -84,6 +88,7 @@ describe('causal CURRENT versus offline variant comparison', () => {
       config,
     );
     expect(result.complete).toBe(true);
+    expect(result.alternativeOutcome).toBe('EVALUABLE');
     expect(result.current).toMatchObject({
       counterfactualExitReason: 'MAX_HOLD',
       counterfactualExitAtMs: config.exitMaxHoldMs,
@@ -91,6 +96,16 @@ describe('causal CURRENT versus offline variant comparison', () => {
     expect(result.variant).toMatchObject({
       counterfactualExitReason: 'MAX_HOLD',
       counterfactualExitAtMs: config.exitMaxHoldMs + config.exitMaxHoldExtensionMs,
+    });
+    expect(result.divergences.length).toBeGreaterThan(0);
+    expect(result.divergences[0]).toMatchObject({
+      observedAtMs: config.exitMaxHoldMs,
+      current: { action: 'CLOSE_MARKET' },
+      variant: { action: 'HOLD', reason: 'HOLD' },
+      evidence: {
+        currentTimeInTradeMs: config.exitMaxHoldMs,
+        variantTimeInTradeMs: config.exitMaxHoldMs,
+      },
     });
   });
 
@@ -100,5 +115,29 @@ describe('causal CURRENT versus offline variant comparison', () => {
     expect(result.incompleteReason).toBe('HORIZON_ENDED_OPEN');
     expect(result.current).toMatchObject({ counterfactualExitReason: 'MAX_HOLD' });
     expect(result.variant).toBeNull();
+  });
+
+  it('keeps CURRENT economics and protection inputs unchanged', () => {
+    const config = defaultMicroBurstConfig();
+    const source = observation(config.exitMaxHoldMs);
+    const snapshot = {
+      stop: source.context.currentStopPrice,
+      destination: source.context.destinationPrice,
+      proof: config.exitProofWindowMs,
+      proofExtension: config.exitProofExtensionMs,
+      maxHold: config.exitMaxHoldMs,
+      maxHoldExtension: config.exitMaxHoldExtensionMs,
+      cost: config.exitEstimatedRoundTripCostBps,
+    };
+    compareMicroBurstOfflineExitPolicies([source], 'LONG', config);
+    expect({
+      stop: source.context.currentStopPrice,
+      destination: source.context.destinationPrice,
+      proof: config.exitProofWindowMs,
+      proofExtension: config.exitProofExtensionMs,
+      maxHold: config.exitMaxHoldMs,
+      maxHoldExtension: config.exitMaxHoldExtensionMs,
+      cost: config.exitEstimatedRoundTripCostBps,
+    }).toEqual(snapshot);
   });
 });
