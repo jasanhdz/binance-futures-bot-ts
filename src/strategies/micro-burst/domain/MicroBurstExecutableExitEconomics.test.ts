@@ -69,4 +69,20 @@ describe('Micro executable exit economics', () => {
       ).toBeNull();
     }
   });
+
+  it.each(['LONG', 'SHORT'] as const)('fails closed on an empty %s depth instead of throwing', (side) => {
+    expect(
+      microBurstExecutableExitEconomics(
+        {
+          book: { ...book, bidDepth: [], askDepth: [] },
+          side,
+          quantity: 1,
+          observedAtMs: 2000,
+          residualCostBps: 14,
+          volatilityBps: 3,
+        },
+        config,
+      ),
+    ).toBeNull();
+  });
 });
