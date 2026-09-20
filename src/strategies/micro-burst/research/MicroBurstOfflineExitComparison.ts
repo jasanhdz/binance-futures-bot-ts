@@ -13,6 +13,7 @@ import {
   MICRO_BURST_OFFLINE_EXIT_VARIANT,
 } from './MicroBurstOfflineExitVariant';
 import { DynamicExitOutcome, CounterfactualExitReason } from './MicroBurstOutcomeTypes';
+import { calculateSignedReturnBps } from '../domain/MicroBurstEconomicContract';
 
 export interface MicroBurstOfflineExitObservation {
   observedAtMs: number;
@@ -47,10 +48,7 @@ function outcome(
     economics.residualCostBps < config.exitEstimatedRoundTripCostBps ||
     economics.observedAtMs > now! || now! - economics.observedAtMs > config.exitIntelligenceMaxObservationGapMs
   ) return null;
-  const grossBps =
-    (side === 'LONG'
-      ? (economics.exitPrice - context.entryPrice) / context.entryPrice
-      : (context.entryPrice - economics.exitPrice) / context.entryPrice) * 10_000;
+  const grossBps = calculateSignedReturnBps(side, context.entryPrice, economics.exitPrice);
   return {
     counterfactualExitReason: reason,
     counterfactualExitAtMs: context.observedAtMs ?? context.timeInTradeMs,

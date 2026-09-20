@@ -4,6 +4,7 @@
 // ───────────────────────────────────────────────────────────
 
 import { Side } from '../../../core/types';
+import { calculateSignedReturnBps } from '../domain/MicroBurstEconomicContract';
 import {
   ShadowSignalSnapshot,
   EntryPriceModel,
@@ -40,19 +41,7 @@ const BPS_PER_UNIT = 10_000;
 // ── Side-Aware Return ──────────────────────────────────────
 
 export function sideAwareReturnBps(entryPrice: number, currentPrice: number, side: Side): number {
-  if (
-    !Number.isFinite(entryPrice) ||
-    !Number.isFinite(currentPrice) ||
-    entryPrice <= 0 ||
-    currentPrice <= 0
-  ) {
-    return Number.NaN;
-  }
-  const signedReturn =
-    side === 'LONG'
-      ? (currentPrice - entryPrice) / entryPrice
-      : (entryPrice - currentPrice) / entryPrice;
-  return signedReturn * BPS_PER_UNIT;
+  return calculateSignedReturnBps(side, entryPrice, currentPrice);
 }
 
 // ── Entry Price Models ─────────────────────────────────────

@@ -1,4 +1,5 @@
 import type { MicroBurstConfig, MicroBurstExitContext, OrderBookSnapshot } from './MicroBurstTypes';
+import { resolveMicroBurstExecutablePrice } from './MicroBurstEconomicContract';
 
 /** Full visible exit VWAP. Residual fees/funding and volatility are explicit inputs, not guessed. */
 export function microBurstExecutableExitEconomics(
@@ -40,27 +41,18 @@ export function microBurstExecutableExitEconomics(
   )
     return null;
   const depth = input.side === 'LONG' ? book.bidDepth : book.askDepth;
-  let remaining = input.quantity;
-  let notional = 0;
-  let previous = depth[0].price;
-  for (const level of depth) {
-    if (
-      ![level.price, level.qty].every(Number.isFinite) ||
-      level.price <= 0 ||
-      level.qty < 0 ||
-      (input.side === 'LONG' ? level.price > previous : level.price < previous)
-    )
-      return null;
-    const taken = Math.min(remaining, level.qty);
-    notional += taken * level.price;
-    remaining -= taken;
-    previous = level.price;
-    if (remaining <= 0) break;
-  }
-  if (remaining > 0 || !Number.isFinite(notional) || notional <= 0) return null;
+  const executable = resolveMicroBurstExecutablePrice({
+    side: input.side,
+    quantity: input.quantity,
+    depth,
+    observedAtMs: book.observedAtMs,
+    asOfMs: input.observedAtMs,
+    maxAgeMs: config.exitIntelligenceMaxObservationGapMs,
+  });
+  if (executable.status === 'UNAVAILABLE') return null;
   return {
     observedAtMs: book.observedAtMs,
-    exitPrice: notional / input.quantity,
+    exitPrice: executable.value,
     quantityCovered: true,
     residualCostBps: input.residualCostBps,
     volatilityBps: input.volatilityBps,
