@@ -21,6 +21,7 @@ export interface MicroBurstOfflineExitState {
   phase: 'OBSERVING' | 'ARMED' | 'EXIT_CONFIRMED';
   riskStartedAtMs: number | null;
   lastObservedAtMs: number | null;
+  lastEvidenceAtMs?: number;
   consecutiveRiskObservations: number;
   evidenceSources: MicroBurstExitEvidenceSource[];
   baseline?: MicroBurstExitBaseline;
@@ -61,6 +62,7 @@ export function isMicroBurstOfflineExitState(value: unknown): value is MicroBurs
     ['OBSERVING', 'ARMED', 'EXIT_CONFIRMED'].includes(state.phase ?? '') &&
     (state.riskStartedAtMs === null || Number.isFinite(state.riskStartedAtMs)) &&
     (state.lastObservedAtMs === null || Number.isFinite(state.lastObservedAtMs)) &&
+    (state.lastEvidenceAtMs === undefined || Number.isFinite(state.lastEvidenceAtMs)) &&
     Number.isInteger(state.consecutiveRiskObservations) &&
     (state.consecutiveRiskObservations ?? -1) >= 0 &&
     Array.isArray(state.evidenceSources) &&
@@ -274,7 +276,11 @@ export function advanceMicroBurstOfflineExit(
       (assessment.estimatedNetReturnBps > 0
         ? config.exitWinnerExitPressureThreshold
         : config.exitIntelligenceExitPressureThreshold);
-  const advancing = previous.lastObservedAtMs === null || now > previous.lastObservedAtMs;
+  const evidenceAt = context.marketEvidence?.observedAtMs;
+  const advancing = (previous.lastObservedAtMs === null || now > previous.lastObservedAtMs) &&
+    Number.isFinite(evidenceAt) && evidenceAt! <= now &&
+    now - evidenceAt! <= config.exitIntelligenceMaxObservationGapMs &&
+    (previous.lastEvidenceAtMs === undefined || evidenceAt! > previous.lastEvidenceAtMs);
   if (!advancing) {
     return {
       state: previous,
@@ -314,6 +320,7 @@ export function advanceMicroBurstOfflineExit(
     phase: riskQualified ? 'ARMED' : 'OBSERVING',
     riskStartedAtMs,
     lastObservedAtMs: now,
+    lastEvidenceAtMs: evidenceAt,
     consecutiveRiskObservations: nextRiskCount,
     evidenceSources: riskQualified ? assessment.adverseSources : [],
     baseline,

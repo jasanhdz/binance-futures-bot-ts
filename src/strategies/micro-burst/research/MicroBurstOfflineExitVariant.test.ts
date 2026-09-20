@@ -127,6 +127,9 @@ describe('MicroBurst offline no-time-close variant', () => {
       expect(one.decision.action).toBe('HOLD');
       const second = structuredClone(first);
       second.observedAtMs = second.timeInTradeMs = 23_000;
+      second.marketEvidence!.observedAtMs = 23_000;
+      second.executableEconomics!.observedAtMs = 23_000;
+      second.currentBookObservedAtMs = 23_000;
       const two = advanceMicroBurstOfflineExit(one.state, second, config, side);
       expect(two.decision).toMatchObject({ action: 'CLOSE_MARKET', reason: 'INTELLIGENT_EXIT' });
       expect(two.decision.diagnostics).toMatchObject({ deteriorationConfirmed: true });
@@ -187,5 +190,20 @@ describe('MicroBurst offline no-time-close variant', () => {
     expect(repeated.state.consecutiveRiskObservations).toBe(
       first.state.consecutiveRiskObservations,
     );
+  });
+
+  it('does not confirm repeated market evidence under a later evaluation clock', () => {
+    const adverse = context(20_000, 'LONG', 99.9);
+    adverse.marketEvidence!.shortHorizonReturnBps = -3;
+    adverse.marketEvidence!.buyTakerVolume = 20;
+    adverse.marketEvidence!.sellTakerVolume = 80;
+    adverse.currentBookPressure!.signedTopOfBookImbalance = -0.3;
+    const first = advanceMicroBurstOfflineExit(initialMicroBurstOfflineExitState(), adverse, config, 'LONG');
+    const later = structuredClone(adverse);
+    later.observedAtMs = later.timeInTradeMs = 23_000;
+    later.executableEconomics!.observedAtMs = 23_000;
+    const repeated = advanceMicroBurstOfflineExit(first.state, later, config, 'LONG');
+    expect(repeated.decision.action).toBe('HOLD');
+    expect(repeated.state.consecutiveRiskObservations).toBe(1);
   });
 });

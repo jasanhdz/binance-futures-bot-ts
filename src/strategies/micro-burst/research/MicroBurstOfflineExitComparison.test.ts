@@ -35,6 +35,44 @@ function observation(now: number): { observedAtMs: number; context: MicroBurstEx
 }
 
 describe('causal CURRENT versus offline variant comparison', () => {
+  it('never repairs an unpriced terminal decision with a later quote', () => {
+    const missing = observation(360_000);
+    missing.context.executableEconomics = undefined;
+    const result = compareMicroBurstOfflineExitPolicies([missing, observation(361_000)], 'LONG');
+    expect(result.complete).toBe(false);
+    expect(result.current).toBeNull();
+    expect(result.variant).toBeNull();
+  });
+
+  it.each(['future', 'stale', 'uncovered', 'nonfinite', 'negative-cost'])(
+    'does not price an absolute deadline with %s economics', (kind) => {
+      const row = observation(360_000);
+      const e = row.context.executableEconomics!;
+      if (kind === 'future') e.observedAtMs++;
+      if (kind === 'stale') e.observedAtMs = 0;
+      if (kind === 'uncovered') e.quantityCovered = false;
+      if (kind === 'nonfinite') e.exitPrice = NaN;
+      if (kind === 'negative-cost') e.residualCostBps = -1;
+      const result = compareMicroBurstOfflineExitPolicies([row], 'LONG');
+      expect(result.complete).toBe(false);
+      expect(result.current).toBeNull();
+      expect(result.variant).toBeNull();
+    },
+  );
+
+  it('rejects mismatched clocks rather than sorting into an invented chronology', () => {
+    const row = observation(360_000);
+    row.context.observedAtMs = 1;
+    expect(compareMicroBurstOfflineExitPolicies([row], 'LONG').complete).toBe(false);
+  });
+
+  it('rejects changing entry identity and economic age', () => {
+    const changed = observation(360_000);
+    changed.context.entryPrice = 101;
+    changed.context.timeInTradeMs = 100;
+    expect(compareMicroBurstOfflineExitPolicies([observation(300_000), changed], 'LONG').complete).toBe(false);
+  });
+
   it('uses identical observations and leaves the six-minute bound explicit', () => {
     const config = defaultMicroBurstConfig();
     const result = compareMicroBurstOfflineExitPolicies(
