@@ -42,6 +42,15 @@ policy and must not be imported by the runtime exit adapter.
 
 ## Exact timers
 
+With `defaultMicroBurstConfig()` the effective values are:
+
+| Purpose                          | Configuration                            |     Effective value | Candidate behavior                |
+| -------------------------------- | ---------------------------------------- | ------------------: | --------------------------------- |
+| Strategic reevaluation milestone | `exitMaxHoldMs`                          | `300000 ms` (5 min) | Reevaluate and may hold           |
+| Absolute exposure limit          | `exitMaxHoldMs + exitMaxHoldExtensionMs` | `360000 ms` (6 min) | Mandatory `MAX_HOLD` close        |
+| Deterioration confirmation       | `exitIntelligenceConfirmationMs`         |           `3000 ms` | Required before intelligent close |
+| Evidence freshness               | `exitIntelligenceMaxObservationGapMs`    |          `15000 ms` | Older evidence is not evaluable   |
+
 - `strategicReevaluationAtMs` is reconstructed as `enteredAtMs + exitMaxHoldMs`.
   Crossing it changes evaluation priority only; it does not close the position.
 - `absoluteExposureDeadlineAtMs` is reconstructed as
@@ -76,3 +85,19 @@ policy and must not be imported by the runtime exit adapter.
 The candidate changes only strategic classification and confirmation. It does not
 change safety precedence, executable pricing, sizing, leverage, order placement,
 or LIVE configuration.
+
+## Prospectively captured evidence
+
+`MicroBurstProspectiveExitObserver` is a bounded research collector. Each
+registered entry creates independent CURRENT and CANDIDATE state, stop, decision,
+and horizon tracking. It continues recording supplied observations after the real
+position closes and marks each hypothetical decision separately from any real order
+or fill metadata. It has no exchange, order, logger, or REST dependency.
+
+The observer is not wired into LIVE by default. A future integration must feed it
+the already-consumed market snapshot and explicitly supplied provenance; it must not
+query historical data to repair gaps. Missing depth coverage, causal gaps, invalid
+timestamps, or missing execution assumptions mark the affected simulation
+`NO_EVALUABLE`. Queue depth is fixed at zero because the collector performs no I/O.
+Metrics expose accepted observations, validation failures, capacity drops,
+discarded observations, `NO_EVALUABLE` entries, queue depth, and I/O errors.

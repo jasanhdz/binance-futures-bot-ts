@@ -139,6 +139,41 @@ describe('MicroBurst offline no-time-close variant', () => {
   );
 
   it.each(['LONG', 'SHORT'] as const)(
+    'separates the strategic reevaluation milestone from the absolute MAX_HOLD: %s',
+    (side) => {
+      const strategic = advanceMicroBurstOfflineExit(
+        initialMicroBurstOfflineExitState(),
+        context(config.exitMaxHoldMs, side, side === 'LONG' ? 100.2 : 99.8),
+        config,
+        side,
+      );
+      expect(strategic.decision).toMatchObject({
+        action: 'HOLD',
+        diagnostics: { strategicReevaluationDue: true },
+      });
+      expect(strategic.decision.diagnostics).not.toMatchObject({ absoluteExposureLimit: true });
+      expect(strategic.state.absoluteExposureDeadlineAtMs).toBe(
+        config.exitMaxHoldMs + config.exitMaxHoldExtensionMs,
+      );
+      const absolute = advanceMicroBurstOfflineExit(
+        strategic.state,
+        context(
+          config.exitMaxHoldMs + config.exitMaxHoldExtensionMs,
+          side,
+          side === 'LONG' ? 100.2 : 99.8,
+        ),
+        config,
+        side,
+      );
+      expect(absolute.decision).toMatchObject({
+        action: 'CLOSE_MARKET',
+        reason: 'MAX_HOLD',
+        diagnostics: { absoluteExposureLimit: true },
+      });
+    },
+  );
+
+  it.each(['LONG', 'SHORT'] as const)(
     'keeps a tolerable pullback bounded by safety: %s',
     (side) => {
       const pullback = neutralContext(20_000, side);

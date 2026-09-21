@@ -5,6 +5,15 @@ Date: 2026-09-20
 This report separates implementation, test coverage, comparison, and economic
 evidence. The candidate remains research-only.
 
+## Status
+
+| Area                   | Status             |
+| ---------------------- | ------------------ |
+| Phase 3 implementation | COMPLETE           |
+| Technical review       | COMPLETE           |
+| Economic evidence      | PENDING            |
+| Prospective capture    | PREPARED, DISABLED |
+
 ## Implementation: COMPLETE
 
 - `MicroBurstOfflineExitVariant` implements explicit `PROBING`, `CONTINUING`,
@@ -16,6 +25,8 @@ evidence. The candidate remains research-only.
 - State reconstruction persists state/deadline/evidence/economic-age diagnostics.
 - No runtime adapter, LIVE configuration, stop, target, extension, sizing, leverage,
   or journal path imports the candidate.
+- `MicroBurstProspectiveExitObserver` is prepared as a bounded, pure collector;
+  activation is disabled and requires a separate adapter review.
 
 ## Coverage: COMPLETE
 
@@ -30,7 +41,7 @@ The directed offline suites cover mirrored LONG/SHORT behavior for:
 - JSON reconstruction, deterioration timers, and quote age;
 - invalidation, anomalies, and absolute exposure.
 
-Current directed result: `31/31` tests passing.
+Current directed result: `37/37` tests passing.
 
 ## Comparison: COMPLETE FOR AVAILABLE FIXTURES
 
@@ -69,3 +80,5 @@ Longer holding time is not treated as economic improvement.
 - [ ] Keep incomplete post-close histories explicitly `NO_EVALUABLE`.
 - [ ] Do not promote the candidate to LIVE without separate approval and economic
       evidence.
+- [ ] Keep prospective capture disabled until the adapter can provide complete
+      event/receive/evaluation timestamps, full-depth quotes, and causal gaps.
