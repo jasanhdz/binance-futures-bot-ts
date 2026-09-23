@@ -109,6 +109,7 @@ function identity(entryId: string, side: 'LONG' | 'SHORT') {
     symbol: 'BTCUSDT',
     side,
     enteredAtMs: 0,
+    quantity: 2,
     entryPrice: 100,
     strategyVersion: 'test',
     codeCommitSha: 'test-sha',
@@ -167,6 +168,20 @@ describe('MicroBurst prospective dual exit observer', () => {
       gap: { kind: 'DEPTH' },
     });
     expect(observer.getMetrics()).toMatchObject({ gapObservations: 1, noEvaluableEntries: 0 });
+  });
+
+  it('marks unresolved stop crossings between observations as NO_EVALUABLE', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    observer.registerEntry(identity('crossing', 'LONG'));
+    expect(observer.observe('crossing', observation(1_000, 'LONG', 100.1))).toBe(true);
+    expect(observer.observe('crossing', observation(2_000, 'LONG', 97.5))).toBe(true);
+    const simulation = observer.getEntry('crossing')!.simulations.CURRENT;
+    expect(simulation.status).toBe('NO_EVALUABLE');
+    expect(simulation.decisions[1]).toMatchObject({
+      decision: null,
+      evaluable: false,
+      gap: { reason: 'STOP_CROSS_BETWEEN_OBSERVATIONS' },
+    });
   });
 
   it('bounds entries and observations without an I/O or REST queue', () => {

@@ -26,12 +26,24 @@ export interface ProspectiveExitIdentity {
   symbol: string;
   side: 'LONG' | 'SHORT';
   enteredAtMs: number;
+  quantity: number;
   entryPrice: number;
   strategyVersion: string;
   codeCommitSha: string;
   configHash: string;
   currentPolicyVersion: string;
   candidatePolicyVersion: typeof MICRO_BURST_OFFLINE_EXIT_VARIANT;
+}
+
+export interface ProspectiveRealFill {
+  fillId: string;
+  orderId: string;
+  eventAtMs: number;
+  receivedAtMs: number;
+  price: number;
+  quantity: number;
+  feeBps: number | null;
+  fundingBps: number | null;
 }
 
 export interface ProspectiveExitDepthEvidence {
@@ -99,6 +111,7 @@ export interface ProspectiveExitSimulationSnapshot {
   closedAtMs: number | null;
   closeDecision: MicroBurstExitDecision | null;
   stopPrice: number | null;
+  lastObservedPrice: number | null;
   state: MicroBurstExitEngineState | MicroBurstOfflineExitState;
   decisions: readonly ProspectiveExitDecisionRecord[];
 }
@@ -107,6 +120,7 @@ export interface ProspectiveExitEntrySnapshot {
   identity: ProspectiveExitIdentity;
   horizonAtMs: number;
   realPositionClosedAtMs: number | null;
+  realFills: readonly ProspectiveRealFill[];
   simulations: Readonly<Record<ProspectiveExitPolicy, ProspectiveExitSimulationSnapshot>>;
 }
 
@@ -131,6 +145,7 @@ interface Simulation {
   closedAtMs: number | null;
   closeDecision: MicroBurstExitDecision | null;
   stopPrice: number | null;
+  lastObservedPrice: number | null;
   state: MicroBurstExitEngineState | MicroBurstOfflineExitState;
   decisions: ProspectiveExitDecisionRecord[];
 }
@@ -139,6 +154,7 @@ interface EntryRecord {
   identity: ProspectiveExitIdentity;
   horizonAtMs: number;
   realPositionClosedAtMs: number | null;
+  realFills: ProspectiveRealFill[];
   simulations: Record<ProspectiveExitPolicy, Simulation>;
 }
 
@@ -198,6 +214,7 @@ export class MicroBurstProspectiveExitObserver {
       identity,
       horizonAtMs,
       realPositionClosedAtMs: null,
+      realFills: [],
       simulations: {
         CURRENT: {
           policy: 'CURRENT',
@@ -206,6 +223,7 @@ export class MicroBurstProspectiveExitObserver {
           closedAtMs: null,
           closeDecision: null,
           stopPrice: baseStop,
+          lastObservedPrice: null,
           state: initialMicroBurstExitEngineState(),
           decisions: [],
         },
@@ -216,6 +234,7 @@ export class MicroBurstProspectiveExitObserver {
           closedAtMs: null,
           closeDecision: null,
           stopPrice: baseStop,
+          lastObservedPrice: null,
           state: initialMicroBurstOfflineExitState(),
           decisions: [],
         },
@@ -233,6 +252,74 @@ export class MicroBurstProspectiveExitObserver {
     const entry = this.entries.get(entryId);
     if (!entry || !Number.isFinite(closedAtMs)) return false;
     entry.realPositionClosedAtMs = closedAtMs;
+    return true;
+  }
+
+  public recordRealFill(entryId: string, fill: ProspectiveRealFill): boolean {
+    const entry = this.entries.get(entryId);
+    if (
+      !entry ||
+      entry.realFills.length >= this.maxObservationsPerEntry ||
+      !Number.isFinite(fill.eventAtMs) ||
+      !Number.isFinite(fill.receivedAtMs) ||
+      fill.eventAtMs > fill.receivedAtMs ||
+      !Number.isFinite(fill.price) ||
+      fill.price <= 0 ||
+      !Number.isFinite(fill.quantity) ||
+      fill.quantity <= 0
+    ) {
+      this.metrics = {
+        ...this.metrics,
+        observationsDiscarded: this.metrics.observationsDiscarded + 1,
+        validationFailures: this.metrics.validationFailures + 1,
+      };
+      return false;
+    }
+    if (entry.realFills.some((existing) => existing.fillId === fill.fillId)) return true;
+    entry.realFills.push({ ...fill });
+    return true;
+  }
+
+  public restoreEntry(snapshot: ProspectiveExitEntrySnapshot): boolean {
+    if (
+      this.entries.has(snapshot.identity.entryId) ||
+      this.entries.size >= this.maxEntries ||
+      !Number.isFinite(snapshot.identity.quantity) ||
+      snapshot.identity.quantity <= 0
+    )
+      return false;
+    if (
+      snapshot.simulations.CURRENT.decisions.length > this.maxObservationsPerEntry ||
+      snapshot.simulations.CANDIDATE.decisions.length > this.maxObservationsPerEntry
+    )
+      return false;
+    this.entries.set(snapshot.identity.entryId, {
+      identity: { ...snapshot.identity },
+      horizonAtMs: snapshot.horizonAtMs,
+      realPositionClosedAtMs: snapshot.realPositionClosedAtMs,
+      realFills: snapshot.realFills.map((fill) => ({ ...fill })),
+      simulations: {
+        CURRENT: {
+          ...snapshot.simulations.CURRENT,
+          lastObservedPrice: snapshot.simulations.CURRENT.lastObservedPrice ?? null,
+          decisions: [...snapshot.simulations.CURRENT.decisions],
+        },
+        CANDIDATE: {
+          ...snapshot.simulations.CANDIDATE,
+          lastObservedPrice: snapshot.simulations.CANDIDATE.lastObservedPrice ?? null,
+          decisions: [...snapshot.simulations.CANDIDATE.decisions],
+        },
+      },
+    });
+    const completed = Object.values(snapshot.simulations).every(
+      (simulation) => simulation.status !== 'ACTIVE',
+    );
+    this.metrics = {
+      ...this.metrics,
+      registeredEntries: this.metrics.registeredEntries + 1,
+      activeEntries: this.metrics.activeEntries + (completed ? 0 : 1),
+      completedEntries: this.metrics.completedEntries + (completed ? 1 : 0),
+    };
     return true;
   }
 
@@ -288,6 +375,44 @@ export class MicroBurstProspectiveExitObserver {
     const economics = observation.context.executableEconomics;
     const economicAgeMs = economics ? observation.evaluatedAtMs - economics.observedAtMs : null;
     const evaluable = observation.gap === undefined && observation.depth?.quantityCovered === true;
+    const previousPrice = simulation.lastObservedPrice;
+    const currentPrice = observation.context.currentPrice;
+    const crossedStopLevel = (level: number): boolean =>
+      previousPrice !== null &&
+      (side === 'LONG'
+        ? previousPrice > level && currentPrice <= level
+        : previousPrice < level && currentPrice >= level);
+    const crossedTargetLevel = (level: number): boolean =>
+      previousPrice !== null &&
+      (side === 'LONG'
+        ? previousPrice < level && currentPrice >= level
+        : previousPrice > level && currentPrice <= level);
+    const crossedStop = simulation.stopPrice !== null && crossedStopLevel(simulation.stopPrice);
+    const crossedTarget = crossedTargetLevel(observation.context.destinationPrice);
+    simulation.lastObservedPrice = currentPrice;
+    if (simulation.status === 'ACTIVE' && evaluable && (crossedStop || crossedTarget)) {
+      this.markNoEvaluableState(simulation);
+      return {
+        policy,
+        observedAtMs: observation.eventAtMs,
+        evaluatedAtMs: observation.evaluatedAtMs,
+        decision: null,
+        hypothetical: true,
+        actualExecution: observation.actualExecution,
+        economicObservedAtMs: economics?.observedAtMs ?? null,
+        economicAgeMs,
+        evaluable: false,
+        gap: {
+          kind: 'UNKNOWN',
+          fromMs: observation.eventAtMs,
+          toMs: observation.eventAtMs,
+          reason: crossedStop
+            ? 'STOP_CROSS_BETWEEN_OBSERVATIONS'
+            : 'TARGET_CROSS_BETWEEN_OBSERVATIONS',
+        },
+        executionAssumptions: observation.executionAssumptions,
+      };
+    }
     if (simulation.status === 'ACTIVE' && evaluable) {
       simulation.stopPrice ??= observation.context.currentStopPrice;
       const context: MicroBurstExitContext = {
@@ -403,6 +528,7 @@ export class MicroBurstProspectiveExitObserver {
       identity: entry.identity,
       horizonAtMs: entry.horizonAtMs,
       realPositionClosedAtMs: entry.realPositionClosedAtMs,
+      realFills: entry.realFills.map((fill) => ({ ...fill })),
       simulations: {
         CURRENT: {
           ...entry.simulations.CURRENT,

@@ -1,0 +1,175 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import type { MicroBurstExitContext } from '../domain/MicroBurstTypes';
+import {
+  MicroBurstProspectiveExitObserver,
+  ProspectiveExitObservation,
+} from './MicroBurstProspectiveExitObserver';
+import {
+  MicroBurstProspectiveExitCapture,
+  MicroBurstProspectiveExitJsonlStore,
+} from './MicroBurstProspectiveExitCapture';
+
+function identity(entryId: string) {
+  return {
+    entryId,
+    symbol: 'BTCUSDT',
+    side: 'LONG' as const,
+    enteredAtMs: 0,
+    quantity: 2,
+    entryPrice: 100,
+    strategyVersion: 'micro-test-v1',
+    codeCommitSha: 'capture-test-sha',
+    configHash: 'capture-test-config',
+    currentPolicyVersion: 'EXPECTED_CONTINUATION_V2',
+    candidatePolicyVersion: 'MICRO_OFFLINE_NO_TIME_CLOSE_V1' as const,
+  };
+}
+
+function observation(
+  now: number,
+  gap?: ProspectiveExitObservation['gap'],
+): ProspectiveExitObservation {
+  const context: MicroBurstExitContext = {
+    observedAtMs: now,
+    timeInTradeMs: now,
+    currentPrice: 100.1,
+    entryPrice: 100,
+    peakPrice: 100.1,
+    troughPrice: 100,
+    structuralInvalidationPrice: 98,
+    destinationPrice: 104,
+    currentStopPrice: 98,
+    unrealizedRoe: 0,
+    priceReturn: 0.001,
+    leverage: 20,
+    momentumDecayFlag: false,
+    anomalyExitFlag: false,
+    currentBookPressure: null,
+    currentBtcContext: null,
+    marketEvidence: null,
+    executableEconomics: {
+      observedAtMs: now,
+      exitPrice: 100.1,
+      quantityCovered: true,
+      residualCostBps: 14,
+      volatilityBps: 4,
+    },
+  };
+  return {
+    eventAtMs: now,
+    receivedAtMs: now + 1,
+    evaluatedAtMs: now + 2,
+    context,
+    executionAssumptions: {
+      roundTripCostBps: 14,
+      feeBps: 10,
+      slippageBps: 4,
+      source: 'TEST_EXECUTION_QUOTE',
+    },
+    depth: {
+      status: 'HEALTHY',
+      observedAtMs: now,
+      requiredQuantity: 2,
+      availableQuantity: 2,
+      levelsUsed: 3,
+      quantityCovered: true,
+    },
+    inputProvenance: {
+      btcAvailable: false,
+      flowAvailable: false,
+      structureAvailable: true,
+      quality: { closedCandlesOnly: true },
+    },
+    gap,
+  };
+}
+
+describe('MicroBurst prospective capture integration boundary', () => {
+  it('is disabled unless explicitly enabled by a separate observer-only composition', () => {
+    const observer = new MicroBurstProspectiveExitObserver();
+    const capture = new MicroBurstProspectiveExitCapture(observer);
+    expect(capture.onExecutedEntry(identity('disabled'))).toBe(false);
+    expect(observer.getEntry('disabled')).toBeNull();
+  });
+
+  it('restarts an episode, preserves real fills, and continues after real close', () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-capture-'));
+    const store = new MicroBurstProspectiveExitJsonlStore(join(root, 'episodes.jsonl'));
+    const first = new MicroBurstProspectiveExitCapture(
+      new MicroBurstProspectiveExitObserver(),
+      store,
+      { enabled: true },
+    );
+    const entry = identity('entry-1');
+    expect(
+      first.onExecutedEntry(entry, [
+        {
+          fillId: 'fill-1',
+          orderId: 'order-1',
+          eventAtMs: 10,
+          receivedAtMs: 11,
+          price: 100,
+          quantity: 2,
+          feeBps: 10,
+          fundingBps: 0,
+        },
+      ]),
+    ).toBe(true);
+    expect(first.onObservation('entry-1', observation(300_000))).toBe(true);
+    expect(first.onRealPositionClosed('entry-1', 301_000)).toBe(true);
+
+    const restartedObserver = new MicroBurstProspectiveExitObserver();
+    const restarted = new MicroBurstProspectiveExitCapture(restartedObserver, store, {
+      enabled: true,
+    });
+    expect(restarted.restore()).toBe(1);
+    expect(
+      restarted.onObservation(
+        'entry-1',
+        observation(320_000, {
+          kind: 'DEPTH',
+          fromMs: 319_000,
+          toMs: 320_000,
+          reason: 'FULL_DEPTH_GAP',
+        }),
+      ),
+    ).toBe(true);
+    expect(restarted.onObservation('entry-1', observation(360_000))).toBe(true);
+
+    const report = restartedObserver.getEntry('entry-1')!;
+    expect(report.identity.quantity).toBe(2);
+    expect(report.realFills).toHaveLength(1);
+    expect(report.realPositionClosedAtMs).toBe(301_000);
+    expect(report.simulations.CURRENT.decisions.length).toBe(3);
+    expect(report.simulations.CANDIDATE.decisions.length).toBe(3);
+    expect(report.simulations.CANDIDATE.status).toBe('NO_EVALUABLE');
+    expect(report.simulations.CANDIDATE.decisions[1]).toMatchObject({
+      decision: null,
+      evaluable: false,
+      gap: { kind: 'DEPTH' },
+    });
+    expect(report.simulations.CURRENT.decisions[0].hypothetical).toBe(true);
+    expect(store.getHealth().healthy).toBe(true);
+  });
+
+  it('keeps same-symbol episodes distinct and isolates persistence failure', () => {
+    const observer = new MicroBurstProspectiveExitObserver();
+    const capture = new MicroBurstProspectiveExitCapture(
+      observer,
+      {
+        save: () => false,
+        load: () => [],
+        getHealth: () => ({ healthy: false, malformedRecords: 0, writeFailures: 1 }),
+      },
+      { enabled: true },
+    );
+    expect(capture.onExecutedEntry(identity('entry-a'))).toBe(false);
+    expect(capture.onExecutedEntry(identity('entry-b'))).toBe(false);
+    expect(observer.getEntry('entry-a')?.identity.entryId).toBe('entry-a');
+    expect(observer.getEntry('entry-b')?.identity.entryId).toBe('entry-b');
+    expect(capture.getMetrics().persistenceFailures).toBe(2);
+  });
+});

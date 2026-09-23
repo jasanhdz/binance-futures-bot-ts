@@ -27,6 +27,9 @@ evidence. The candidate remains research-only.
   or journal path imports the candidate.
 - `MicroBurstProspectiveExitObserver` is prepared as a bounded, pure collector;
   activation is disabled and requires a separate adapter review.
+- `MicroBurstProspectiveExitCapture` and its bounded JSONL store define the
+  reconciled-entry/fill, post-close observation, and restart boundary without
+  receiving order authority.
 
 ## Coverage: COMPLETE
 
@@ -82,3 +85,5 @@ Longer holding time is not treated as economic improvement.
       evidence.
 - [ ] Keep prospective capture disabled until the adapter can provide complete
       event/receive/evaluation timestamps, full-depth quotes, and causal gaps.
+- [ ] Activate only the separate observer-only composition described in
+      `docs/micro-burst/prospective-capture-protocol.md`.
