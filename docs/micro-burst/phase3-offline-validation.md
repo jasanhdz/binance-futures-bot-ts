@@ -30,6 +30,8 @@ evidence. The candidate remains research-only.
 - `MicroBurstProspectiveExitCapture` and its bounded JSONL store define the
   reconciled-entry/fill, post-close observation, and restart boundary without
   receiving order authority.
+- `MicroBurstProspectiveExitRuntime` provides the reviewed observer-only event
+  composition and remains disabled with no call site in `MicroBurstRuntime`.
 
 ## Coverage: COMPLETE
 

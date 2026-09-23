@@ -112,6 +112,10 @@ export interface ProspectiveExitSimulationSnapshot {
   closeDecision: MicroBurstExitDecision | null;
   stopPrice: number | null;
   lastObservedPrice: number | null;
+  lastObservedTargetPrice: number | null;
+  lastObservedAtMs: number | null;
+  noEvaluableAtMs: number | null;
+  noEvaluableReason: string | null;
   state: MicroBurstExitEngineState | MicroBurstOfflineExitState;
   decisions: readonly ProspectiveExitDecisionRecord[];
 }
@@ -146,6 +150,10 @@ interface Simulation {
   closeDecision: MicroBurstExitDecision | null;
   stopPrice: number | null;
   lastObservedPrice: number | null;
+  lastObservedTargetPrice: number | null;
+  lastObservedAtMs: number | null;
+  noEvaluableAtMs: number | null;
+  noEvaluableReason: string | null;
   state: MicroBurstExitEngineState | MicroBurstOfflineExitState;
   decisions: ProspectiveExitDecisionRecord[];
 }
@@ -224,6 +232,10 @@ export class MicroBurstProspectiveExitObserver {
           closeDecision: null,
           stopPrice: baseStop,
           lastObservedPrice: null,
+          lastObservedTargetPrice: null,
+          lastObservedAtMs: null,
+          noEvaluableAtMs: null,
+          noEvaluableReason: null,
           state: initialMicroBurstExitEngineState(),
           decisions: [],
         },
@@ -235,6 +247,10 @@ export class MicroBurstProspectiveExitObserver {
           closeDecision: null,
           stopPrice: baseStop,
           lastObservedPrice: null,
+          lastObservedTargetPrice: null,
+          lastObservedAtMs: null,
+          noEvaluableAtMs: null,
+          noEvaluableReason: null,
           state: initialMicroBurstOfflineExitState(),
           decisions: [],
         },
@@ -302,11 +318,19 @@ export class MicroBurstProspectiveExitObserver {
         CURRENT: {
           ...snapshot.simulations.CURRENT,
           lastObservedPrice: snapshot.simulations.CURRENT.lastObservedPrice ?? null,
+          lastObservedTargetPrice: snapshot.simulations.CURRENT.lastObservedTargetPrice ?? null,
+          lastObservedAtMs: snapshot.simulations.CURRENT.lastObservedAtMs ?? null,
+          noEvaluableAtMs: snapshot.simulations.CURRENT.noEvaluableAtMs ?? null,
+          noEvaluableReason: snapshot.simulations.CURRENT.noEvaluableReason ?? null,
           decisions: [...snapshot.simulations.CURRENT.decisions],
         },
         CANDIDATE: {
           ...snapshot.simulations.CANDIDATE,
           lastObservedPrice: snapshot.simulations.CANDIDATE.lastObservedPrice ?? null,
+          lastObservedTargetPrice: snapshot.simulations.CANDIDATE.lastObservedTargetPrice ?? null,
+          lastObservedAtMs: snapshot.simulations.CANDIDATE.lastObservedAtMs ?? null,
+          noEvaluableAtMs: snapshot.simulations.CANDIDATE.noEvaluableAtMs ?? null,
+          noEvaluableReason: snapshot.simulations.CANDIDATE.noEvaluableReason ?? null,
           decisions: [...snapshot.simulations.CANDIDATE.decisions],
         },
       },
@@ -376,22 +400,38 @@ export class MicroBurstProspectiveExitObserver {
     const economicAgeMs = economics ? observation.evaluatedAtMs - economics.observedAtMs : null;
     const evaluable = observation.gap === undefined && observation.depth?.quantityCovered === true;
     const previousPrice = simulation.lastObservedPrice;
+    const previousObservedAtMs = simulation.lastObservedAtMs;
     const currentPrice = observation.context.currentPrice;
     const crossedStopLevel = (level: number): boolean =>
       previousPrice !== null &&
       (side === 'LONG'
-        ? previousPrice > level && currentPrice <= level
-        : previousPrice < level && currentPrice >= level);
+        ? previousPrice > level && currentPrice < level
+        : previousPrice < level && currentPrice > level);
+    const targetPrice =
+      policy === 'CURRENT' ? currentPrice : (economics?.exitPrice ?? currentPrice);
+    const previousTargetPrice = simulation.lastObservedTargetPrice;
     const crossedTargetLevel = (level: number): boolean =>
-      previousPrice !== null &&
+      previousTargetPrice !== null &&
       (side === 'LONG'
-        ? previousPrice < level && currentPrice >= level
-        : previousPrice > level && currentPrice <= level);
+        ? previousTargetPrice < level && targetPrice > level
+        : previousTargetPrice > level && targetPrice < level);
     const crossedStop = simulation.stopPrice !== null && crossedStopLevel(simulation.stopPrice);
     const crossedTarget = crossedTargetLevel(observation.context.destinationPrice);
-    simulation.lastObservedPrice = currentPrice;
+    if (evaluable) {
+      simulation.lastObservedPrice = currentPrice;
+      simulation.lastObservedTargetPrice = targetPrice;
+      simulation.lastObservedAtMs = observation.eventAtMs;
+    } else {
+      simulation.lastObservedPrice = null;
+      simulation.lastObservedTargetPrice = null;
+      simulation.lastObservedAtMs = null;
+    }
     if (simulation.status === 'ACTIVE' && evaluable && (crossedStop || crossedTarget)) {
-      this.markNoEvaluableState(simulation);
+      this.markNoEvaluableState(
+        simulation,
+        observation.evaluatedAtMs,
+        crossedStop ? 'STOP_CROSS_BETWEEN_OBSERVATIONS' : 'TARGET_CROSS_BETWEEN_OBSERVATIONS',
+      );
       return {
         policy,
         observedAtMs: observation.eventAtMs,
@@ -404,7 +444,7 @@ export class MicroBurstProspectiveExitObserver {
         evaluable: false,
         gap: {
           kind: 'UNKNOWN',
-          fromMs: observation.eventAtMs,
+          fromMs: previousObservedAtMs ?? observation.eventAtMs,
           toMs: observation.eventAtMs,
           reason: crossedStop
             ? 'STOP_CROSS_BETWEEN_OBSERVATIONS'
@@ -468,7 +508,12 @@ export class MicroBurstProspectiveExitObserver {
         executionAssumptions: observation.executionAssumptions,
       };
     }
-    if (observation.gap !== undefined || !evaluable) this.markNoEvaluableState(simulation);
+    if (observation.gap !== undefined || !evaluable)
+      this.markNoEvaluableState(
+        simulation,
+        observation.evaluatedAtMs,
+        observation.gap?.reason ?? 'OBSERVATION_NOT_EVALUABLE',
+      );
     return {
       policy,
       observedAtMs: observation.eventAtMs,
@@ -486,7 +531,10 @@ export class MicroBurstProspectiveExitObserver {
 
   private completeEntry(entry: EntryRecord): void {
     for (const simulation of Object.values(entry.simulations)) {
-      if (simulation.status === 'ACTIVE') simulation.status = 'OPEN_AT_HORIZON';
+      if (simulation.status === 'ACTIVE') {
+        simulation.status =
+          simulation.noEvaluableAtMs === null ? 'OPEN_AT_HORIZON' : 'NO_EVALUABLE';
+      }
     }
     if (Object.values(entry.simulations).some((simulation) => simulation.status === 'NO_EVALUABLE'))
       this.metrics = { ...this.metrics, noEvaluableEntries: this.metrics.noEvaluableEntries + 1 };
@@ -499,11 +547,14 @@ export class MicroBurstProspectiveExitObserver {
 
   private markNoEvaluable(entry: EntryRecord): void {
     for (const simulation of Object.values(entry.simulations))
-      this.markNoEvaluableState(simulation);
+      this.markNoEvaluableState(simulation, null, 'CAPACITY_LIMIT');
   }
 
-  private markNoEvaluableState(simulation: Simulation): void {
-    if (simulation.status === 'ACTIVE') simulation.status = 'NO_EVALUABLE';
+  private markNoEvaluableState(simulation: Simulation, atMs: number | null, reason: string): void {
+    if (simulation.noEvaluableAtMs === null) {
+      simulation.noEvaluableAtMs = atMs;
+      simulation.noEvaluableReason = reason;
+    }
   }
 
   private validObservation(observation: ProspectiveExitObservation): boolean {

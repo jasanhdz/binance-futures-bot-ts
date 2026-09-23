@@ -159,8 +159,9 @@ describe('MicroBurst prospective dual exit observer', () => {
     degraded.gap = { kind: 'DEPTH', fromMs: 299_000, toMs: 300_000, reason: 'BOOK_GAP' };
     expect(observer.observe('degraded', degraded)).toBe(true);
     const snapshot = observer.getEntry('degraded')!;
-    expect(snapshot.simulations.CURRENT.status).toBe('NO_EVALUABLE');
-    expect(snapshot.simulations.CANDIDATE.status).toBe('NO_EVALUABLE');
+    expect(snapshot.simulations.CURRENT.status).toBe('ACTIVE');
+    expect(snapshot.simulations.CANDIDATE.status).toBe('ACTIVE');
+    expect(snapshot.simulations.CURRENT.noEvaluableReason).toBe('BOOK_GAP');
     expect(snapshot.simulations.CURRENT.decisions[0]).toMatchObject({
       hypothetical: true,
       decision: null,
@@ -176,12 +177,30 @@ describe('MicroBurst prospective dual exit observer', () => {
     expect(observer.observe('crossing', observation(1_000, 'LONG', 100.1))).toBe(true);
     expect(observer.observe('crossing', observation(2_000, 'LONG', 97.5))).toBe(true);
     const simulation = observer.getEntry('crossing')!.simulations.CURRENT;
-    expect(simulation.status).toBe('NO_EVALUABLE');
+    expect(simulation.status).toBe('ACTIVE');
+    expect(simulation.noEvaluableAtMs).toBe(2_002);
+    expect(simulation.noEvaluableReason).toBe('STOP_CROSS_BETWEEN_OBSERVATIONS');
     expect(simulation.decisions[1]).toMatchObject({
       decision: null,
       evaluable: false,
-      gap: { reason: 'STOP_CROSS_BETWEEN_OBSERVATIONS' },
+      gap: { reason: 'STOP_CROSS_BETWEEN_OBSERVATIONS', fromMs: 1_000, toMs: 2_000 },
     });
+  });
+
+  it('keeps an observed target arrival evaluable and applies candidate target semantics to executable price', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    observer.registerEntry(identity('target', 'LONG'));
+    const first = observation(1_000, 'LONG', 100.1);
+    first.context.destinationPrice = 101;
+    expect(observer.observe('target', first)).toBe(true);
+    const arrival = observation(2_000, 'LONG', 101);
+    arrival.context.destinationPrice = 101;
+    arrival.context.executableEconomics!.exitPrice = 100.9;
+    expect(observer.observe('target', arrival)).toBe(true);
+    const snapshot = observer.getEntry('target')!;
+    expect(snapshot.simulations.CURRENT.decisions[1].decision).not.toBeNull();
+    expect(snapshot.simulations.CURRENT.noEvaluableReason).toBeNull();
+    expect(snapshot.simulations.CANDIDATE.noEvaluableReason).toBeNull();
   });
 
   it('bounds entries and observations without an I/O or REST queue', () => {

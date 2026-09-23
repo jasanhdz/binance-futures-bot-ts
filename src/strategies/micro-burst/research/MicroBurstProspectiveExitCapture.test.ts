@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -88,14 +88,14 @@ function observation(
 }
 
 describe('MicroBurst prospective capture integration boundary', () => {
-  it('is disabled unless explicitly enabled by a separate observer-only composition', () => {
+  it('is disabled unless explicitly enabled by a separate observer-only composition', async () => {
     const observer = new MicroBurstProspectiveExitObserver();
     const capture = new MicroBurstProspectiveExitCapture(observer);
-    expect(capture.onExecutedEntry(identity('disabled'))).toBe(false);
+    expect(await capture.onExecutedEntry(identity('disabled'))).toBe(false);
     expect(observer.getEntry('disabled')).toBeNull();
   });
 
-  it('restarts an episode, preserves real fills, and continues after real close', () => {
+  it('restarts an episode, preserves real fills, and continues after real close', async () => {
     const root = mkdtempSync(join(tmpdir(), 'micro-prospective-capture-'));
     const store = new MicroBurstProspectiveExitJsonlStore(join(root, 'episodes.jsonl'));
     const first = new MicroBurstProspectiveExitCapture(
@@ -104,7 +104,7 @@ describe('MicroBurst prospective capture integration boundary', () => {
       { enabled: true },
     );
     const entry = identity('entry-1');
-    expect(
+    await expect(
       first.onExecutedEntry(entry, [
         {
           fillId: 'fill-1',
@@ -117,16 +117,16 @@ describe('MicroBurst prospective capture integration boundary', () => {
           fundingBps: 0,
         },
       ]),
-    ).toBe(true);
-    expect(first.onObservation('entry-1', observation(300_000))).toBe(true);
-    expect(first.onRealPositionClosed('entry-1', 301_000)).toBe(true);
+    ).resolves.toBe(true);
+    await expect(first.onObservation('entry-1', observation(300_000))).resolves.toBe(true);
+    await expect(first.onRealPositionClosed('entry-1', 301_000)).resolves.toBe(true);
 
     const restartedObserver = new MicroBurstProspectiveExitObserver();
     const restarted = new MicroBurstProspectiveExitCapture(restartedObserver, store, {
       enabled: true,
     });
-    expect(restarted.restore()).toBe(1);
-    expect(
+    await expect(restarted.restore()).resolves.toBe(1);
+    await expect(
       restarted.onObservation(
         'entry-1',
         observation(320_000, {
@@ -136,8 +136,8 @@ describe('MicroBurst prospective capture integration boundary', () => {
           reason: 'FULL_DEPTH_GAP',
         }),
       ),
-    ).toBe(true);
-    expect(restarted.onObservation('entry-1', observation(360_000))).toBe(true);
+    ).resolves.toBe(true);
+    await expect(restarted.onObservation('entry-1', observation(360_000))).resolves.toBe(true);
 
     const report = restartedObserver.getEntry('entry-1')!;
     expect(report.identity.quantity).toBe(2);
@@ -145,7 +145,8 @@ describe('MicroBurst prospective capture integration boundary', () => {
     expect(report.realPositionClosedAtMs).toBe(301_000);
     expect(report.simulations.CURRENT.decisions.length).toBe(3);
     expect(report.simulations.CANDIDATE.decisions.length).toBe(3);
-    expect(report.simulations.CANDIDATE.status).toBe('NO_EVALUABLE');
+    expect(report.simulations.CANDIDATE.status).toBe('CLOSED');
+    expect(report.simulations.CANDIDATE.noEvaluableReason).toBe('FULL_DEPTH_GAP');
     expect(report.simulations.CANDIDATE.decisions[1]).toMatchObject({
       decision: null,
       evaluable: false,
@@ -155,21 +156,67 @@ describe('MicroBurst prospective capture integration boundary', () => {
     expect(store.getHealth().healthy).toBe(true);
   });
 
-  it('keeps same-symbol episodes distinct and isolates persistence failure', () => {
+  it('keeps same-symbol episodes distinct and isolates persistence failure', async () => {
     const observer = new MicroBurstProspectiveExitObserver();
     const capture = new MicroBurstProspectiveExitCapture(
       observer,
       {
-        save: () => false,
-        load: () => [],
-        getHealth: () => ({ healthy: false, malformedRecords: 0, writeFailures: 1 }),
+        save: async () => false,
+        load: async () => [],
+        getHealth: () => ({
+          healthy: false,
+          malformedRecords: 0,
+          truncatedRecords: 0,
+          writeFailures: 1,
+          pendingWrites: 0,
+        }),
       },
       { enabled: true },
     );
-    expect(capture.onExecutedEntry(identity('entry-a'))).toBe(false);
-    expect(capture.onExecutedEntry(identity('entry-b'))).toBe(false);
+    await expect(capture.onExecutedEntry(identity('entry-a'))).resolves.toBe(false);
+    await expect(capture.onExecutedEntry(identity('entry-b'))).resolves.toBe(false);
     expect(observer.getEntry('entry-a')?.identity.entryId).toBe('entry-a');
     expect(observer.getEntry('entry-b')?.identity.entryId).toBe('entry-b');
     expect(capture.getMetrics().persistenceFailures).toBe(2);
+  });
+
+  it('keeps valid JSONL rows, reports a truncated tail, and does not duplicate restore', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-truncated-'));
+    const path = join(root, 'episodes.jsonl');
+    const store = new MicroBurstProspectiveExitJsonlStore(path);
+    const observer = new MicroBurstProspectiveExitObserver();
+    const capture = new MicroBurstProspectiveExitCapture(observer, store, { enabled: true });
+    await expect(capture.onExecutedEntry(identity('durable'))).resolves.toBe(true);
+    const snapshot = observer.getEntry('durable')!;
+    writeFileSync(
+      path,
+      `${JSON.stringify(snapshot)}\n${JSON.stringify({ identity: { entryId: 'schema-invalid' } })}\n{"identity":{"entryId":"truncated"`,
+    );
+
+    const restartedObserver = new MicroBurstProspectiveExitObserver();
+    const restarted = new MicroBurstProspectiveExitCapture(restartedObserver, store, {
+      enabled: true,
+    });
+    await expect(restarted.restore()).resolves.toBe(1);
+    await expect(restarted.restore()).resolves.toBe(0);
+    expect(restartedObserver.getEntry('durable')).not.toBeNull();
+    expect(restarted.getMetrics().rejectedEntries).toBe(2);
+    expect(store.getHealth()).toMatchObject({ malformedRecords: 1, truncatedRecords: 1 });
+  });
+
+  it('bounds pending disk writes and records saturation without throwing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-saturation-'));
+    const store = new MicroBurstProspectiveExitJsonlStore(
+      join(root, 'episodes.jsonl'),
+      64 * 1024,
+      1,
+    );
+    const observer = new MicroBurstProspectiveExitObserver();
+    observer.registerEntry(identity('saturated'));
+    const snapshot = observer.getEntry('saturated')!;
+    const first = store.save(snapshot);
+    await expect(store.save(snapshot)).resolves.toBe(false);
+    await expect(first).resolves.toBe(true);
+    expect(store.getHealth()).toMatchObject({ writeFailures: 1, pendingWrites: 0 });
   });
 });

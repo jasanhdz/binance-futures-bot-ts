@@ -16,6 +16,10 @@ The current runtime path is intentionally not wired to the capture adapter:
 - `MicroBurstProspectiveExitCapture` is the explicit boundary for a future
   reconciler. It is disabled unless constructed with `{ enabled: true }` and has no
   exchange, order, logger, or REST dependency.
+- `MicroBurstProspectiveExitRuntime` is the prepared composition. It subscribes
+  only to an execution-reconciler/event-source interface and the already-consumed
+  market snapshot stream; it has no `MicroBurstRuntime` order port and is not
+  instantiated by the normal runtime.
 
 ## Event Contract
 
@@ -41,12 +45,14 @@ becomes a hypothetical fill.
 
 ## Persistence And Restart
 
-`MicroBurstProspectiveExitJsonlStore` appends bounded snapshots with a 64 MiB
-default cap. The latest valid snapshot per `entryId` is loaded on restart and
+`MicroBurstProspectiveExitJsonlStore` appends bounded snapshots asynchronously
+with a 64 MiB default cap and a 1024-write pending queue. The latest valid snapshot per `entryId` is loaded on restart and
 `restore()` reconstructs both policy states, stops, decisions, real fills, real
 close time, and identity. Corrupt rows are skipped and surfaced through store
-health. A full store or failed write returns failure metrics and does not throw into
-the trading path.
+health. A truncated final JSONL row is separately reported as `truncatedRecords`.
+A full store or failed write returns failure metrics and does not throw into the
+trading path. Writes are serialized asynchronously; the source callback does not
+wait for disk I/O.
 
 The `entryId` is the operation identity, not the symbol. A second BTCUSDT operation
 therefore cannot overwrite the first episode.
@@ -55,11 +61,18 @@ therefore cannot overwrite the first episode.
 
 - A stop decision is not a stop activation and neither is a fill.
 - The observer never replaces a hypothetical exit with the stop price.
-- If a stop or target is crossed between two supplied observations, the affected
-  simulation is marked `NO_EVALUABLE` because order of touch and fill price are
-  unresolved.
-- Missing depth coverage, causal gaps, invalid timestamps, missing economics, or
-  missing assumptions mark the affected segment/result `NO_EVALUABLE`.
+- If a stop or policy-specific target is crossed strictly between two supplied
+  observations, the affected decision records `NO_EVALUABLE` with the exact prior
+  and current event times because order of touch and fill price are unresolved.
+- An exact target arrival at the current observation remains evaluable and is passed
+  to the policy reducer. CURRENT uses observed current price; CANDIDATE uses the
+  executable economics price for target evaluation.
+- Missing depth coverage, causal gaps, invalid timestamps, or missing assumptions
+  mark only the affected segment/result `NO_EVALUABLE`; later complete observations
+  can continue the episode. Candidate economics that are unavailable follow the
+  candidate policy's explicit `HOLD`/`DATA_DEGRADED` semantics rather than being
+  converted into a fabricated exit. The first reason and timestamp remain in the
+  simulation snapshot.
 - The observer does not query later history to repair a missing interval.
 
 ## Activation Procedure
@@ -68,15 +81,36 @@ Current state: **PREPARED, DISABLED**.
 
 1. Keep `MicroBurstProspectiveExitCapture` unconstructed in the normal runtime, or
    construct it without `enabled: true`.
-2. Build a separate observer-only composition that receives reconciled fills and
-   already-consumed market snapshots; never pass `liveTrading`, exchange, order, or
-   position-authority ports to it.
+2. Build `MicroBurstProspectiveExitRuntime` in a separate observer-only composition
+   using the exact config below and an event source that receives reconciled fills
+   and already-consumed market snapshots; never pass `liveTrading`, exchange, order,
+   or position-authority ports to it.
 3. Freeze and record the CURRENT/candidate policy versions, config hash, code SHA,
    cost assumptions, maximum entries, observation cap, and journal path.
 4. Enable only that composition with `{ enabled: true }`, while leaving the LIVE
    strategy configuration and order path unchanged.
 5. Disable by stopping that composition or removing `{ enabled: true }`; do not
    change the strategy policy to disable observation.
+
+Exact prepared configuration:
+
+```ts
+const config = {
+  enabled: false, // change only in the separately reviewed observer process
+  journalPath: 'logs/micro-burst/prospective-exits.jsonl',
+  maxJournalBytes: 64 * 1024 * 1024,
+  maxPendingWrites: 1024,
+  maxEntries: 256,
+  maxObservationsPerEntry: 512,
+};
+const runtime = createMicroBurstProspectiveExitRuntime(config, reconciledEventSource);
+await runtime.start();
+```
+
+The event source must emit `onExecutedEntry` only after an authoritative fill,
+then `onRealFill`, `onRealPositionClosed`, and `onObservation` events. The runtime
+composition is currently **PREPARED, DISABLED** and has no call site in
+`MicroBurstRuntime`.
 
 Before collecting results, require all eligible episodes, report coverage and
 exclusions, compare paired net PnL/risk under the same cost assumptions, and retain
