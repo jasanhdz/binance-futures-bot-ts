@@ -16,6 +16,7 @@ import type {
   ProspectiveExitObservation,
   ProspectiveRealFill,
 } from './MicroBurstProspectiveExitObserver';
+import { MicroBurstProspectiveExitEventBus } from './MicroBurstProspectiveExitEventBus';
 
 class FakeProspectiveEventSource implements MicroBurstProspectiveExitEventSource {
   private readonly entries = new Set<
@@ -196,6 +197,28 @@ describe('MicroBurst prospective runtime composition', () => {
     );
     expect(await runtime.start()).toBe(false);
     expect(runtime.getHealth()).toMatchObject({ enabled: false, started: false, restored: 0 });
+  });
+
+  it('uses the production event bus without blocking its publisher on persistence', async () => {
+    const source = new MicroBurstProspectiveExitEventBus();
+    const runtime = createMicroBurstProspectiveExitRuntime(
+      {
+        enabled: true,
+        journalPath: join(mkdtempSync(join(tmpdir(), 'micro-runtime-bus-')), 'episodes.jsonl'),
+      },
+      source,
+    );
+    await runtime.start();
+    const entry = identity('runtime-bus-entry');
+    source.publishExecutedEntry(entry, [fill]);
+    source.publishObservation(entry.entryId, observation(300_000));
+    source.publishRealPositionClosed(entry.entryId, 301_000);
+    source.publishObservation(entry.entryId, observation(360_000));
+    await settle();
+
+    expect(runtime.getEntry(entry.entryId)?.realPositionClosedAtMs).toBe(301_000);
+    expect(source.getSynchronousCost().maxMs).toBeLessThan(25);
+    await expect(runtime.stop()).resolves.toBe(true);
   });
 
   it('serializes concurrent start and cancels subscription after stop during restore', async () => {

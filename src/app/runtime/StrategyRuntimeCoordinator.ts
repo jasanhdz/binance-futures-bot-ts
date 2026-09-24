@@ -48,6 +48,10 @@ import { SharedLiquidityState } from '../services/SharedLiquidityState';
 import { buildMarketDataDiagnostics } from '../diagnostics/MarketDataDiagnostics';
 import { AEGIS_CURRENT_BRAIN_CANONICAL_SYMBOLS } from '../../strategies/aegis/application/AegisMarketContext';
 import { getRateLimitMetrics } from '../../infra/adapters/rate-limit';
+import type { MicroBurstProspectiveExitEventSource } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitRuntime';
+import { createMicroBurstProspectiveExitRuntime } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitRuntime';
+import type { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
+import type { ProspectiveExitObservation } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitObserver';
 
 export type MicroBurstRuntimeProvenance = NonNullable<MicroBurstRuntimeDeps['provenance']>;
 
@@ -62,6 +66,10 @@ export interface StrategyRuntimeCoordinatorDeps {
   marketSnapshotSink: MarketSnapshotEvidenceSink;
   microBurstLiveTrading?: {
     open(request: MicroBurstLiveEntryRequest): Promise<boolean>;
+  };
+  microBurstProspectiveExit?: {
+    source: MicroBurstProspectiveExitEventSource;
+    bus?: MicroBurstProspectiveExitEventBus;
   };
 }
 
@@ -123,6 +131,9 @@ export class StrategyRuntimeCoordinator {
   private momentumCandleState: MomentumCandleState | null = null;
   private microBurstRuntime: MicroBurstRuntime | null = null;
   private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
+  private prospectiveExitRuntime: ReturnType<typeof createMicroBurstProspectiveExitRuntime> | null =
+    null;
+  private prospectiveObservationTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly deps: StrategyRuntimeCoordinatorDeps,
@@ -322,6 +333,10 @@ export class StrategyRuntimeCoordinator {
   async stop(): Promise<void> {
     const microBurstRuntime = this.microBurstRuntime;
     this.microBurstRuntime = null;
+    const prospectiveExitRuntime = this.prospectiveExitRuntime;
+    this.prospectiveExitRuntime = null;
+    if (this.prospectiveObservationTimer) clearInterval(this.prospectiveObservationTimer);
+    this.prospectiveObservationTimer = null;
 
     this.aegisBlackBoxObservation?.close();
     this.aegisBlackBoxObservation = null;
@@ -335,6 +350,7 @@ export class StrategyRuntimeCoordinator {
     this.momentumCandleState?.close();
     this.momentumCandleState = null;
     await microBurstRuntime?.stop();
+    await prospectiveExitRuntime?.stop();
     this.sharedLiquidityState?.close();
     this.sharedLiquidityState = null;
     this.sharedMarketDataRuntime?.close();
@@ -433,6 +449,25 @@ export class StrategyRuntimeCoordinator {
         },
         config,
       );
+      if (this.deps.microBurstProspectiveExit) {
+        this.prospectiveExitRuntime = createMicroBurstProspectiveExitRuntime(
+          {
+            enabled: config.prospectiveValidation?.enabled === true,
+            journalPath: 'logs/micro-burst/prospective-exits.jsonl',
+          },
+          this.deps.microBurstProspectiveExit.source,
+        );
+        await this.prospectiveExitRuntime.start();
+        if (
+          config.prospectiveValidation?.enabled === true &&
+          this.deps.microBurstProspectiveExit.bus
+        ) {
+          this.prospectiveObservationTimer = setInterval(() => {
+            void this.publishProspectiveObservations();
+          }, 250);
+          this.prospectiveObservationTimer.unref?.();
+        }
+      }
       outcomeTracker.recoverPending();
       await this.microBurstRuntime.start();
       const readiness = this.microBurstRuntime.getReadiness();
@@ -479,6 +514,68 @@ export class StrategyRuntimeCoordinator {
       this.deps.logger.error('MICRO_BURST_PROSPECTIVE_COHORT_NOT_READY', {
         ...this.microBurstReadiness,
       });
+    }
+  }
+
+  private async publishProspectiveObservations(): Promise<void> {
+    const bus = this.deps.microBurstProspectiveExit?.bus;
+    const runtime = this.microBurstRuntime;
+    if (!bus || !runtime) return;
+    for (const identity of bus.entriesSnapshot()) {
+      const snapshot = runtime.readExitMarketSnapshot(identity.symbol);
+      if (!snapshot) continue;
+      const entryPrice = identity.entryPrice;
+      const sideSign = identity.side === 'LONG' ? 1 : -1;
+      const priceReturn =
+        entryPrice > 0 ? ((snapshot.currentPrice - entryPrice) / entryPrice) * sideSign : 0;
+      const observation: ProspectiveExitObservation = {
+        eventAtMs: snapshot.observedAtMs,
+        receivedAtMs: snapshot.observedAtMs,
+        evaluatedAtMs: this.deps.clock.now(),
+        context: {
+          unrealizedRoe: priceReturn * (identity.leverage ?? 1),
+          priceReturn,
+          currentPrice: snapshot.currentPrice,
+          entryPrice,
+          peakPrice: snapshot.currentPrice,
+          troughPrice: snapshot.currentPrice,
+          structuralInvalidationPrice: identity.structuralInvalidationPrice ?? entryPrice,
+          destinationPrice: identity.destinationPrice ?? entryPrice,
+          currentStopPrice: identity.currentStopPrice ?? null,
+          timeInTradeMs: Math.max(0, snapshot.observedAtMs - identity.enteredAtMs),
+          observedAtMs: snapshot.observedAtMs,
+          momentumDecayFlag: false,
+          anomalyExitFlag: false,
+          currentBookPressure: snapshot.currentBookPressure,
+          currentBookObservedAtMs: snapshot.book?.observedAtMs,
+          currentBtcContext: snapshot.currentBtcContext,
+          marketEvidence: snapshot.marketEvidence,
+          leverage: identity.leverage ?? 1,
+        },
+        executionAssumptions: {
+          roundTripCostBps: 0,
+          feeBps: 0,
+          slippageBps: 0,
+          source: 'UNSPECIFIED_OBSERVATIONAL_COSTS',
+        },
+        depth: snapshot.book
+          ? {
+              status: snapshot.book.status,
+              observedAtMs: snapshot.book.observedAtMs,
+              requiredQuantity: identity.quantity,
+              availableQuantity: identity.quantity,
+              levelsUsed: 0,
+              quantityCovered: true,
+            }
+          : null,
+        inputProvenance: {
+          btcAvailable: snapshot.currentBtcContext !== null,
+          flowAvailable: snapshot.marketEvidence !== null,
+          structureAvailable: false,
+          quality: { source: 'MICRO_BURST_RUNTIME_CONSUMED_SNAPSHOT' },
+        },
+      };
+      bus.publishObservation(identity.entryId, observation);
     }
   }
 }

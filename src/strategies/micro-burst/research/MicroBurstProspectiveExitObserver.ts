@@ -42,6 +42,10 @@ export interface ProspectiveExitIdentity {
   configHash: string;
   currentPolicyVersion: string;
   candidatePolicyVersion: typeof MICRO_BURST_OFFLINE_EXIT_VARIANT;
+  structuralInvalidationPrice?: number;
+  destinationPrice?: number;
+  leverage?: number;
+  currentStopPrice?: number | null;
 }
 
 export interface ProspectiveRealFill {

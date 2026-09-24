@@ -154,6 +154,12 @@ import { sizeMicroBurstLiveEntry } from '../../strategies/micro-burst/applicatio
 import { microBurstExecutableExitEconomics } from '../../strategies/micro-burst/domain/MicroBurstExecutableExitEconomics';
 import { readMicroBurstNextObstacle } from '../../strategies/micro-burst/application/MicroBurstLiveExitEvidence';
 import { validMicroBurstSettlementIdentity } from '../../strategies/micro-burst/domain/MicroBurstSettlement';
+import type { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
+import type {
+  ProspectiveExitIdentity,
+  ProspectiveRealFill,
+} from '../../strategies/micro-burst/research/MicroBurstProspectiveExitObserver';
+import type { StrategyExecutionResult } from '../../core/strategy/StrategyExecution';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -175,6 +181,7 @@ export interface TradingServiceDeps {
   stopCoordinator?: DurableStopCoordinator;
   closeCoordinator?: import('../execution/DurableCloseCoordinator').DurableCloseCoordinator;
   microNetLossLedger?: MicroBurstNetLossLedger;
+  microBurstProspectiveExit?: MicroBurstProspectiveExitEventBus;
 }
 
 export interface TradingServiceConfig {
@@ -697,6 +704,12 @@ export class TradingService {
       microBurstLiveTrading: {
         open: (request) => this.openMicroBurstLivePosition(request),
       },
+      microBurstProspectiveExit: this.deps.microBurstProspectiveExit
+        ? {
+            source: this.deps.microBurstProspectiveExit,
+            bus: this.deps.microBurstProspectiveExit,
+          }
+        : undefined,
     });
     const thisService = this;
     this.aegisEntryWorkflow = new AegisEntryWorkflow({
@@ -885,12 +898,19 @@ export class TradingService {
           },
           close: async (context, decision) => {
             if (this.deps.closeCoordinator) {
-              return this.deps.closeCoordinator.closeManaged(
+              const closed = await this.deps.closeCoordinator.closeManaged(
                 context.symbol,
                 context.symbolState,
                 this.positionProtection,
                 context.botState,
               );
+              if (closed) {
+                this.deps.microBurstProspectiveExit?.publishRealPositionClosed(
+                  context.botState.lastTradeId ?? '',
+                  Date.now(),
+                );
+              }
+              return closed;
             }
             const closeIdentity = { ...context.botState };
             const closeStartedAt = Date.now();
@@ -1011,6 +1031,10 @@ export class TradingService {
               pnl: realizedFills.length > 0 ? realizedPnl : estimatedPnl,
               pnlEstimated: realizedFills.length === 0,
             });
+            this.deps.microBurstProspectiveExit?.publishRealPositionClosed(
+              context.botState.lastTradeId ?? '',
+              Date.now(),
+            );
             return true;
           },
           moveStop: async (context, decision) => {
@@ -2354,6 +2378,7 @@ export class TradingService {
           decisionDiagnostics: request.diagnostics,
         },
       });
+      void this.publishReconciledMicroBurstEntry(request, execution);
       this.deps.logger.warn('micro_burst_live_entry_opened', {
         symbol: request.symbol,
         side: request.side,
@@ -2368,6 +2393,72 @@ export class TradingService {
       this.microBurstEntryInFlightSymbols.delete(request.symbol);
       this.microBurstEntryInFlight = false;
       this.entryInFlight = false;
+    }
+  }
+
+  private async publishReconciledMicroBurstEntry(
+    request: MicroBurstLiveEntryRequest,
+    execution: Extract<StrategyExecutionResult, { status: 'OPENED' }>,
+  ): Promise<void> {
+    const bus = this.deps.microBurstProspectiveExit;
+    const clientOrderId = execution.metadata.clientOrderId;
+    if (
+      !bus ||
+      typeof clientOrderId !== 'string' ||
+      !this.deps.exchange.readRecoverableEntryPosition
+    )
+      return;
+    try {
+      const reconciled = await this.deps.exchange.readRecoverableEntryPosition(
+        request.symbol,
+        clientOrderId,
+        { side: request.side, quantity: execution.quantity, notBeforeMs: request.requestedAt },
+      );
+      if (
+        !reconciled ||
+        reconciled.orderId !== execution.orderId ||
+        reconciled.fillIds.length === 0
+      )
+        return;
+      const fills = (
+        await this.deps.exchange.getRecentFills(request.symbol, request.requestedAt, 100)
+      )
+        .filter((fill) => fill.orderId === reconciled.orderId)
+        .map<ProspectiveRealFill>((fill, index) => ({
+          fillId: reconciled.fillIds[index] ?? `${fill.orderId}:${fill.time}:${index}`,
+          orderId: fill.orderId,
+          eventAtMs: fill.time,
+          receivedAtMs: Date.now(),
+          price: fill.price,
+          quantity: fill.qty,
+          feeBps: null,
+          fundingBps: null,
+          role: 'ENTRY',
+        }));
+      if (fills.length === 0) return;
+      const identity: ProspectiveExitIdentity = {
+        entryId: execution.tradeId,
+        symbol: reconciled.symbol,
+        side: reconciled.side,
+        enteredAtMs: reconciled.filledAt,
+        quantity: reconciled.position.qtyAbs,
+        entryPrice: reconciled.position.entryPrice,
+        strategyVersion: this.microBurstIdentity.strategyVersion,
+        codeCommitSha: this.microBurstIdentity.codeCommitSha,
+        configHash: this.microBurstIdentity.configHash ?? 'UNKNOWN',
+        currentPolicyVersion: 'MICRO',
+        candidatePolicyVersion: 'MICRO_OFFLINE_NO_TIME_CLOSE_V1',
+        structuralInvalidationPrice: request.structuralStopPrice,
+        destinationPrice: request.destinationPrice,
+        leverage: execution.leverage,
+      };
+      bus.publishExecutedEntry(identity, fills);
+    } catch (error) {
+      this.deps.logger.warn('micro_burst_prospective_entry_reconciliation_failed', {
+        symbol: request.symbol,
+        tradeId: execution.tradeId,
+        error: String(error),
+      });
     }
   }
 

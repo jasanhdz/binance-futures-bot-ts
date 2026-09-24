@@ -8,9 +8,11 @@ import { composeDurableEntryCoordinator } from './DurableEntryComposition';
 import { composeDurableStopCoordinator } from './DurableStopComposition';
 import { composeDurableCloseCoordinator } from './DurableCloseComposition';
 import { composeMicroNetLossLedger } from './MicroNetLossComposition';
+import { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
 
 export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure) {
   const { exchange, logger, stateStore, notifier, configManager } = infrastructure;
+  const microBurstProspectiveExit = new MicroBurstProspectiveExitEventBus();
 
   const mlService = new AegisMLService();
   const lossStates = new StrategyLossStateRegistry({
@@ -56,9 +58,10 @@ export function composeStrategyRuntime(infrastructure: ApplicationInfrastructure
         undefined,
         (signal) => exchange.getServerTimeWithSignal(signal),
       ),
+      microBurstProspectiveExit,
     },
     config,
   );
 
-  return { service, config, mlService, lossStates };
+  return { service, config, mlService, lossStates, microBurstProspectiveExit };
 }

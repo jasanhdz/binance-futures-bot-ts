@@ -5,7 +5,8 @@ stops, cancellations, or any exchange mutation.
 
 ## Current Integration Point
 
-The current runtime path is intentionally not wired to the capture adapter:
+The observer is composed into the real application runtime, but remains disabled
+by default:
 
 - `MicroBurstRuntime` creates an entry intent and calls `liveTrading.open` at
   `src/strategies/micro-burst/application/MicroBurstRuntime.ts:794-817`.
@@ -13,13 +14,26 @@ The current runtime path is intentionally not wired to the capture adapter:
   order ID, fill quantity, fill price, fees, or funding.
 - `outcomeTracker.trackSignal` at `:837-925` records prospective signal outcomes,
   but is not an executed-entry/fill reconciler and cannot be used to claim fills.
-- `MicroBurstProspectiveExitCapture` is the explicit boundary for a future
-  reconciler. It is disabled unless constructed with `{ enabled: true }` and has no
+- `StrategyComposition` creates an app-owned `MicroBurstProspectiveExitEventBus`
+  and passes it to `TradingService`.
+- `TradingService` publishes an entry only after `readRecoverableEntryPosition`
+  and matching authoritative entry fills succeed. It publishes close only after
+  the real close path reports confirmed flatness.
+- `StrategyRuntimeCoordinator` creates the observer from that bus only when
+  `prospectiveValidation.enabled` is true. It reads snapshots already consumed
+  by `MicroBurstRuntime`; it does not add REST calls or an order port.
+- `MicroBurstProspectiveExitCapture` remains the persistence boundary and has no
   exchange, order, logger, or REST dependency.
-- `MicroBurstProspectiveExitRuntime` is the prepared composition. It subscribes
-  only to an execution-reconciler/event-source interface and the already-consumed
-  market snapshot stream; it has no `MicroBurstRuntime` order port and is not
-  instantiated by the normal runtime.
+
+The integration boundary is demonstrated by
+`MicroBurstProspectiveExitRuntime.test.ts`:
+`onExecutedEntry` receives a reconciled entry and fill, `onRealFill` receives a
+later fill, `onObservation` continues before and after `onRealPositionClosed`,
+and both simulations reach their independent horizon. Runtime listeners invoke
+capture asynchronously (`void` promise handling), so the event source is not
+held waiting for JSONL persistence. The test source exposes no exchange, order,
+or position-authority methods. The test proves the component contract; the
+production composition is now present, but capture remains disabled by default.
 
 ## Event Contract
 
@@ -73,9 +87,10 @@ The snapshot contains the latest episode state without duplicating observations
 or decision histories; the record contains only observations and CURRENT/CANDIDATE
 decisions added since the preceding durable record. The store uses the same
 complete snapshot validator as the observer after applying increments, so an
-incomplete observation or decision cannot replace the last valid episode. It reconstructs its
-latest-entry and per-entry counts once when opened, then appends from those
-indices. Each later save checks the expected file size and modification time;
+incomplete observation or decision cannot replace the last valid episode. The
+store reconstructs the latest snapshot per entry and the per-entry counts once
+when opened, then appends from those indices. Each later save checks the expected
+file size and modification time;
 an external change blocks append and requires an explicit reload/review instead
 of silently reparsing or merging unknown bytes.
 The shared validator is total: malformed top-level objects, missing fields, and
@@ -129,12 +144,10 @@ therefore cannot overwrite the first episode.
 
 Current state: **PREPARED, DISABLED**.
 
-1. Keep `MicroBurstProspectiveExitCapture` unconstructed in the normal runtime, or
-   construct it without `enabled: true`.
-2. Build `MicroBurstProspectiveExitRuntime` in a separate observer-only composition
-   using the exact config below and an event source that receives reconciled fills
-   and already-consumed market snapshots; never pass `liveTrading`, exchange, order,
-   or position-authority ports to it.
+1. Keep `prospectiveValidation.enabled` false (the current default).
+2. The normal application composition already constructs the observer-only
+   boundary. It receives reconciled fills and consumed snapshots through the bus;
+   it never receives `liveTrading`, exchange, order, or position-authority ports.
 3. Freeze and record the CURRENT/candidate policy versions, config hash, code SHA,
    cost assumptions, maximum entries, observation cap, and journal path.
 4. Enable only that composition with `{ enabled: true }`, while leaving the LIVE
@@ -157,23 +170,25 @@ const runtime = createMicroBurstProspectiveExitRuntime(config, reconciledEventSo
 await runtime.start();
 ```
 
-The event source must emit `onExecutedEntry` only after an authoritative fill,
-then `onRealFill`, `onRealPositionClosed`, and `onObservation` events. The runtime
-composition is currently **PREPARED, DISABLED** and has no call site in
-`MicroBurstRuntime`.
+The event source emits `onExecutedEntry` only after authoritative fill
+reconciliation, then `onRealPositionClosed` and consumed observations. The bus
+records synchronous listener cost (`publishCount`, `totalMs`, `maxMs`); this is
+the relevant latency measure because `void promise` alone is not a latency proof.
 
-The real production points still requiring a separate integration review are:
+The production points are now:
 
-- Entry/fill source: the execution reconciler that knows the authoritative order
-  ID, fill quantity, fill price, fees, and funding. `MicroBurstRuntime.liveTrading.open`
-  currently returns only `boolean` and is not sufficient.
-- Observation source: the market-data evaluation path after it has consumed the
-  exact context, executable economics, depth, provenance, and clock timestamps.
-- Close source: the position reconciler when the actual position is confirmed flat.
+- Entry/fill source: `TradingService.publishReconciledMicroBurstEntry`, which
+  rejects intent/ACK-only data and requires the recoverable-entry contract plus
+  matching fills.
+- Observation source: `StrategyRuntimeCoordinator.publishProspectiveObservations`,
+  reading the snapshot already consumed by `MicroBurstRuntime`.
+- Close source: the identified close path after its confirmed-close result.
 
-Do not substitute entry intent, `outcomeTracker.trackSignal`, or later REST reads for
-these sources. Until those ports are wired and reviewed, this remains a testable
-observer composition only, not a completed production integration.
+Do not substitute entry intent, `outcomeTracker.trackSignal`, or an ACK for these
+sources. Slow disk and a full queue are isolated by the asynchronous bounded store;
+the synchronous bus metric must be reviewed separately. Restart restores persisted
+episodes, while a position that was already active before the observer started is
+not fabricated into a new episode without fresh authoritative entry evidence.
 
 Before collecting results, require all eligible episodes, report coverage and
 exclusions, compare paired net PnL/risk under the same cost assumptions, and retain
