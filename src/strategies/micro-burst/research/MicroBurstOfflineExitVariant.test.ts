@@ -7,6 +7,10 @@ import {
   MICRO_BURST_OFFLINE_EXIT_VARIANT,
 } from './MicroBurstOfflineExitVariant';
 import { defaultMicroBurstConfig, type MicroBurstExitContext } from '../domain/MicroBurstTypes';
+import {
+  advanceMicroBurstExit,
+  initialMicroBurstExitEngineState,
+} from '../domain/MicroBurstExitPolicy';
 
 const config = defaultMicroBurstConfig();
 
@@ -85,6 +89,15 @@ function neutralContext(now: number, side: 'LONG' | 'SHORT'): MicroBurstExitCont
   return value;
 }
 
+function advanceMicroBurstExitForTest(value: MicroBurstExitContext, side: 'LONG' | 'SHORT') {
+  return advanceMicroBurstExit(
+    initialMicroBurstExitEngineState(),
+    value,
+    { ...config, contextualPolicyVersion: 'MICRO' },
+    side,
+  ).decision;
+}
+
 describe('MicroBurst offline no-time-close variant', () => {
   it.each(['LONG', 'SHORT'] as const)(
     'reevaluates at five minutes without time-only close for %s',
@@ -107,6 +120,48 @@ describe('MicroBurst offline no-time-close variant', () => {
       expect(first.state.phase).toBe('CONTINUING');
     },
   );
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'keeps degraded-data protection timing and does not convert it to a strategic close: %s',
+    (side) => {
+      const degraded = context(1_000, side, side === 'LONG' ? 99.9 : 100.1);
+      degraded.executableEconomics = undefined;
+      degraded.anomalyExitFlag = true;
+      const current = advanceMicroBurstExitForTest(degraded, side);
+      const first = advanceMicroBurstOfflineExit(
+        initialMicroBurstOfflineExitState(),
+        degraded,
+        config,
+        side,
+      );
+      const restored = structuredClone(first.state);
+      const secondContext = { ...degraded, observedAtMs: 21_000, timeInTradeMs: 21_000 };
+      const second = advanceMicroBurstOfflineExit(restored, secondContext, config, side);
+      expect(current.reason).toBe('ANOMALY');
+      expect(first.decision).toMatchObject({ action: 'HOLD', reason: 'HOLD' });
+      expect(second.decision).toMatchObject({ action: 'HOLD', reason: 'HOLD' });
+      expect(second.state.strategicReevaluationAtMs).toBe(config.exitMaxHoldMs);
+      expect(second.state.absoluteExposureDeadlineAtMs).toBe(
+        config.exitMaxHoldMs + config.exitMaxHoldExtensionMs,
+      );
+    },
+  );
+
+  it.each(['LONG', 'SHORT'] as const)('preserves CURRENT protective stop movement: %s', (side) => {
+    const protectedContext = context(60_000, side, side === 'LONG' ? 103 : 97);
+    const current = advanceMicroBurstExitForTest(protectedContext, side);
+    const candidate = advanceMicroBurstOfflineExit(
+      initialMicroBurstOfflineExitState(),
+      protectedContext,
+      config,
+      side,
+    );
+    expect(current.action).toBe('MOVE_STOP');
+    expect(candidate.decision).toMatchObject({
+      action: 'MOVE_STOP',
+      requestedStopPrice: current.requestedStopPrice,
+    });
+  });
 
   it.each(['LONG', 'SHORT'] as const)(
     'continues through strategic and proof milestones without time-only close: %s',

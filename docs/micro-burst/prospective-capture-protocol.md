@@ -45,14 +45,35 @@ becomes a hypothetical fill.
 
 ## Persistence And Restart
 
-`MicroBurstProspectiveExitJsonlStore` appends bounded snapshots asynchronously
+`MicroBurstProspectiveExitJsonlStore` appends bounded incremental records asynchronously
 with a 64 MiB default cap and a 1024-write pending queue. The latest valid snapshot per `entryId` is loaded on restart and
 `restore()` reconstructs both policy states, stops, decisions, real fills, real
-close time, and identity. Corrupt rows are skipped and surfaced through store
+close time, identity, and the original consumed observations. Corrupt rows are skipped and surfaced through store
 health. A truncated final JSONL row is separately reported as `truncatedRecords`.
 A full store or failed write returns failure metrics and does not throw into the
 trading path. Writes are serialized asynchronously; the source callback does not
-wait for disk I/O.
+wait for disk I/O. `save()` returns true only after the record is appended and
+`datasync()` completes; a corrupt or incomplete existing file blocks subsequent
+append and preserves the corrupt bytes for investigation. A missing journal is
+reported separately from a read/permission error.
+
+The on-disk format is explicitly versioned:
+
+```json
+{
+  "formatVersion": 1,
+  "recordType": "EPISODE_SNAPSHOT",
+  "snapshot": { "observations": [] },
+  "observations": []
+}
+```
+
+The snapshot contains the latest episode state without duplicating observations;
+the record contains only observations added since the preceding durable record.
+Rows without `formatVersion: 1`, legacy full-snapshot rows, and unknown record
+types or versions are rejected as `incompatibleRecords`, set `appendBlocked`,
+and are never silently migrated or rewritten. Existing operational files are
+not modified. A future format requires an explicit reviewed reader or migration.
 
 The `entryId` is the operation identity, not the symbol. A second BTCUSDT operation
 therefore cannot overwrite the first episode.
@@ -61,6 +82,11 @@ therefore cannot overwrite the first episode.
 
 - A stop decision is not a stop activation and neither is a fill.
 - The observer never replaces a hypothetical exit with the stop price.
+- CANDIDATE inherits the CURRENT protection reducer for hard invalidation, stops,
+  targets, protective stop movement, and absolute exposure safety. It filters only
+  the temporary strategic close reasons under evaluation (`EARLY_FAILURE`,
+  `INTELLIGENT_EXIT`, `BTC_REVERSAL`, `MAX_HOLD`) and then applies its offline
+  continuation diagnostics. This is the intentional policy difference.
 - If a stop or policy-specific target is crossed strictly between two supplied
   observations, the affected decision records `NO_EVALUABLE` with the exact prior
   and current event times because order of touch and fill price are unresolved.
@@ -111,6 +137,19 @@ The event source must emit `onExecutedEntry` only after an authoritative fill,
 then `onRealFill`, `onRealPositionClosed`, and `onObservation` events. The runtime
 composition is currently **PREPARED, DISABLED** and has no call site in
 `MicroBurstRuntime`.
+
+The real production points still requiring a separate integration review are:
+
+- Entry/fill source: the execution reconciler that knows the authoritative order
+  ID, fill quantity, fill price, fees, and funding. `MicroBurstRuntime.liveTrading.open`
+  currently returns only `boolean` and is not sufficient.
+- Observation source: the market-data evaluation path after it has consumed the
+  exact context, executable economics, depth, provenance, and clock timestamps.
+- Close source: the position reconciler when the actual position is confirmed flat.
+
+Do not substitute entry intent, `outcomeTracker.trackSignal`, or later REST reads for
+these sources. Until those ports are wired and reviewed, this remains a testable
+observer composition only, not a completed production integration.
 
 Before collecting results, require all eligible episodes, report coverage and
 exclusions, compare paired net PnL/risk under the same cost assumptions, and retain

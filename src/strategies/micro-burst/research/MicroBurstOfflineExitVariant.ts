@@ -11,13 +11,18 @@ import {
   MicroBurstExitDecision,
   validMicroBurstContextualConfig,
 } from '../domain/MicroBurstTypes';
-import { classifyMicroBurstStopExitReason } from '../domain/MicroBurstExitPolicy';
+import {
+  advanceMicroBurstExit,
+  classifyMicroBurstStopExitReason,
+  initialMicroBurstExitEngineState,
+  MicroBurstExitEngineState,
+} from '../domain/MicroBurstExitPolicy';
 
 /** Research-only variant. It is not a runtime policy marker and has no LIVE adapter. */
 export const MICRO_BURST_OFFLINE_EXIT_VARIANT = 'MICRO_OFFLINE_NO_TIME_CLOSE_V1' as const;
 
 export interface MicroBurstOfflineExitState {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   phase: 'PROBING' | 'CONTINUING' | 'TOLERABLE_PULLBACK' | 'DETERIORATING' | 'CLOSING';
   stateSinceAtMs: number | null;
   strategicReevaluationAtMs: number | null;
@@ -30,6 +35,7 @@ export interface MicroBurstOfflineExitState {
   evidenceSources: MicroBurstExitEvidenceSource[];
   baseline?: MicroBurstExitBaseline;
   confirmedDecision?: MicroBurstExitDecision;
+  protectionState?: MicroBurstExitEngineState;
 }
 
 export interface MicroBurstOfflineExitTransition {
@@ -39,7 +45,7 @@ export interface MicroBurstOfflineExitTransition {
 
 export function initialMicroBurstOfflineExitState(): MicroBurstOfflineExitState {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     phase: 'PROBING',
     stateSinceAtMs: null,
     strategicReevaluationAtMs: null,
@@ -49,6 +55,7 @@ export function initialMicroBurstOfflineExitState(): MicroBurstOfflineExitState 
     lastEconomicObservedAtMs: null,
     consecutiveRiskObservations: 0,
     evidenceSources: [],
+    protectionState: initialMicroBurstExitEngineState(),
   };
 }
 
@@ -66,7 +73,7 @@ export function isMicroBurstOfflineExitState(value: unknown): value is MicroBurs
   if (!value || typeof value !== 'object') return false;
   const state = value as Partial<MicroBurstOfflineExitState>;
   return (
-    state.schemaVersion === 2 &&
+    (state.schemaVersion as number) === 3 &&
     ['PROBING', 'CONTINUING', 'TOLERABLE_PULLBACK', 'DETERIORATING', 'CLOSING'].includes(
       state.phase ?? '',
     ) &&
@@ -88,7 +95,8 @@ export function isMicroBurstOfflineExitState(value: unknown): value is MicroBurs
     (state.baseline === undefined || validBaseline(state.baseline)) &&
     (state.confirmedDecision === undefined ||
       (state.confirmedDecision.action === 'CLOSE_MARKET' &&
-        typeof state.confirmedDecision.reason === 'string'))
+        typeof state.confirmedDecision.reason === 'string')) &&
+    (state.protectionState === undefined || typeof state.protectionState === 'object')
   );
 }
 
@@ -123,10 +131,6 @@ function stopCrossed(context: MicroBurstExitContext, side: 'LONG' | 'SHORT'): bo
       ? context.currentPrice <= context.currentStopPrice
       : context.currentPrice >= context.currentStopPrice)
   );
-}
-
-function targetReached(price: number, context: MicroBurstExitContext, side: 'LONG' | 'SHORT') {
-  return side === 'LONG' ? price >= context.destinationPrice : price <= context.destinationPrice;
 }
 
 function close(
@@ -234,12 +238,6 @@ export function advanceMicroBurstOfflineExit(
   if (invalidPrices(context))
     return close(previous, 'ANOMALY', now, config, { invalidPriceContract: true });
   if (hardInvalidated(context, side)) return close(previous, 'HARD_INVALIDATION', now, config);
-  if (
-    context.anomalyExitFlag ||
-    context.currentBookPressure?.status === 'ANOMALOUS' ||
-    context.currentBookPressure?.anomalyFlag
-  )
-    return close(previous, 'ANOMALY', now, config);
   if (stopCrossed(context, side))
     return close(
       previous,
@@ -261,7 +259,11 @@ export function advanceMicroBurstOfflineExit(
   const deadlines = timing(context, now, config);
   if (!freshEconomics(context, config, now)) {
     return {
-      state: neutralState(previous, now, baseline, 'PROBING', deadlines),
+      state: {
+        ...neutralState(previous, now, baseline, 'PROBING', deadlines),
+        schemaVersion: 3,
+        protectionState: previous.protectionState ?? initialMicroBurstExitEngineState(),
+      },
       decision: {
         action: 'HOLD',
         reason: 'HOLD',
@@ -278,23 +280,70 @@ export function advanceMicroBurstOfflineExit(
   }
 
   const economics = context.executableEconomics!;
+  const protectionConfig: MicroBurstConfig = { ...config, contextualPolicyVersion: 'MICRO' };
+  const protectionTransition = advanceMicroBurstExit(
+    previous.protectionState ?? initialMicroBurstExitEngineState(),
+    context,
+    protectionConfig,
+    side,
+  );
+  if (protectionTransition.decision.action === 'MOVE_STOP') {
+    return {
+      state: {
+        ...previous,
+        schemaVersion: 3,
+        protectionState: protectionTransition.state,
+      },
+      decision: {
+        ...protectionTransition.decision,
+        diagnostics: {
+          ...protectionTransition.decision.diagnostics,
+          exitPolicyVersion: MICRO_BURST_OFFLINE_EXIT_VARIANT,
+          protectionPolicyVersion: 'EXPECTED_CONTINUATION_V2',
+        },
+      },
+    };
+  }
+  const strategicProtectionReason = [
+    'EARLY_FAILURE',
+    'INTELLIGENT_EXIT',
+    'BTC_REVERSAL',
+    'MAX_HOLD',
+  ];
+  const protectionState = strategicProtectionReason.includes(protectionTransition.decision.reason)
+    ? previous.protectionState
+    : protectionTransition.state;
+  const protectionPrevious = { ...previous, protectionState };
+  if (
+    protectionTransition.decision.action === 'CLOSE_MARKET' &&
+    !strategicProtectionReason.includes(protectionTransition.decision.reason)
+  ) {
+    return {
+      state: { ...protectionPrevious, schemaVersion: 3 },
+      decision: {
+        ...protectionTransition.decision,
+        diagnostics: {
+          ...protectionTransition.decision.diagnostics,
+          exitPolicyVersion: MICRO_BURST_OFFLINE_EXIT_VARIANT,
+          protectionPolicyVersion: 'EXPECTED_CONTINUATION_V2',
+        },
+      },
+    };
+  }
+  if (
+    context.anomalyExitFlag ||
+    context.currentBookPressure?.status === 'ANOMALOUS' ||
+    context.currentBookPressure?.anomalyFlag
+  )
+    return close(protectionPrevious, 'ANOMALY', now, config);
   if (
     side === 'LONG'
       ? economics.exitPrice <= context.structuralInvalidationPrice
       : economics.exitPrice >= context.structuralInvalidationPrice
   )
-    return close(previous, 'HARD_INVALIDATION', now, config, { executableInvalidation: true });
-  if (targetReached(economics.exitPrice, context, side)) {
-    const netBps =
-      (side === 'LONG'
-        ? (economics.exitPrice - context.entryPrice) / context.entryPrice
-        : (context.entryPrice - economics.exitPrice) / context.entryPrice) *
-        10_000 -
-      economics.residualCostBps;
-    if (netBps > 0)
-      return close(previous, 'TARGET', now, config, { estimatedNetReturnBps: netBps });
-  }
-
+    return close(protectionPrevious, 'HARD_INVALIDATION', now, config, {
+      executableInvalidation: true,
+    });
   const executableContext = {
     ...context,
     currentPrice: economics.exitPrice,
@@ -315,16 +364,18 @@ export function advanceMicroBurstOfflineExit(
       (assessment.estimatedNetReturnBps > 0
         ? config.exitWinnerExitPressureThreshold
         : config.exitIntelligenceExitPressureThreshold);
+  const candidatePrevious = protectionPrevious;
   const evidenceAt = context.marketEvidence?.observedAtMs;
   const advancing =
-    (previous.lastObservedAtMs === null || now > previous.lastObservedAtMs) &&
+    (candidatePrevious.lastObservedAtMs === null || now > candidatePrevious.lastObservedAtMs) &&
     Number.isFinite(evidenceAt) &&
     evidenceAt! <= now &&
     now - evidenceAt! <= config.exitIntelligenceMaxObservationGapMs &&
-    (previous.lastEvidenceAtMs === undefined || evidenceAt! > previous.lastEvidenceAtMs);
+    (candidatePrevious.lastEvidenceAtMs === undefined ||
+      evidenceAt! > candidatePrevious.lastEvidenceAtMs);
   if (!advancing) {
     return {
-      state: previous,
+      state: candidatePrevious,
       decision: {
         action: 'HOLD',
         reason: 'HOLD',
@@ -337,9 +388,12 @@ export function advanceMicroBurstOfflineExit(
     };
   }
   const sourcesPersist = assessment.adverseSources.some((source) =>
-    previous.evidenceSources.includes(source),
+    candidatePrevious.evidenceSources.includes(source),
   );
-  const gap = previous.lastObservedAtMs === null ? Infinity : now - previous.lastObservedAtMs;
+  const gap =
+    candidatePrevious.lastObservedAtMs === null
+      ? Infinity
+      : now - candidatePrevious.lastObservedAtMs;
   const continues =
     riskQualified &&
     advancing &&
@@ -347,12 +401,12 @@ export function advanceMicroBurstOfflineExit(
     gap > 0 &&
     gap <= config.exitIntelligenceMaxObservationGapMs;
   const nextRiskCount = continues
-    ? previous.consecutiveRiskObservations + 1
+    ? candidatePrevious.consecutiveRiskObservations + 1
     : riskQualified && advancing
       ? 1
       : 0;
   const riskStartedAtMs = continues
-    ? (previous.riskStartedAtMs ?? now)
+    ? (candidatePrevious.riskStartedAtMs ?? now)
     : riskQualified && advancing
       ? now
       : null;
@@ -364,16 +418,16 @@ export function advanceMicroBurstOfflineExit(
           assessment.exitPressure < config.exitIntelligenceExitPressureThreshold
         ? 'TOLERABLE_PULLBACK'
         : 'PROBING';
-  const phaseChanged = previous.phase !== nextPhase;
+  const phaseChanged = candidatePrevious.phase !== nextPhase;
   const riskState: MicroBurstOfflineExitState = {
-    ...previous,
-    schemaVersion: 2,
+    ...candidatePrevious,
+    schemaVersion: 3,
     phase: nextPhase,
-    stateSinceAtMs: phaseChanged ? now : (previous.stateSinceAtMs ?? now),
+    stateSinceAtMs: phaseChanged ? now : (candidatePrevious.stateSinceAtMs ?? now),
     strategicReevaluationAtMs:
-      previous.strategicReevaluationAtMs ?? deadlines.strategicReevaluationAtMs,
+      candidatePrevious.strategicReevaluationAtMs ?? deadlines.strategicReevaluationAtMs,
     absoluteExposureDeadlineAtMs:
-      previous.absoluteExposureDeadlineAtMs ?? deadlines.absoluteExposureDeadlineAtMs,
+      candidatePrevious.absoluteExposureDeadlineAtMs ?? deadlines.absoluteExposureDeadlineAtMs,
     riskStartedAtMs,
     lastObservedAtMs: now,
     lastEvidenceAtMs: evidenceAt,
@@ -381,6 +435,7 @@ export function advanceMicroBurstOfflineExit(
     consecutiveRiskObservations: nextRiskCount,
     evidenceSources: riskQualified ? assessment.adverseSources : [],
     baseline,
+    protectionState: protectionTransition.state,
   };
   if (
     riskQualified &&

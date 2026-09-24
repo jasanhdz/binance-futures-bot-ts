@@ -48,6 +48,8 @@ export class MicroBurstProspectiveExitRuntime {
   private readonly unsubs: Array<() => void> = [];
   private started = false;
   private restored = 0;
+  private startPromise: Promise<boolean> | null = null;
+  private lifecycleGeneration = 0;
 
   public constructor(
     private readonly capture: MicroBurstProspectiveExitCapture,
@@ -57,7 +59,19 @@ export class MicroBurstProspectiveExitRuntime {
 
   public async start(): Promise<boolean> {
     if (!this.enabled || this.started) return false;
+    if (this.startPromise) return this.startPromise;
+    const generation = ++this.lifecycleGeneration;
+    this.startPromise = this.startAfterRestore(generation);
+    try {
+      return await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  private async startAfterRestore(generation: number): Promise<boolean> {
     this.restored = await this.capture.restore();
+    if (generation !== this.lifecycleGeneration) return false;
     this.unsubs.push(
       this.source.onExecutedEntry((identity, fills) => {
         void this.capture.onExecutedEntry(identity, fills);
@@ -76,9 +90,11 @@ export class MicroBurstProspectiveExitRuntime {
     return true;
   }
 
-  public stop(): void {
+  public async stop(timeoutMs = 5_000): Promise<boolean> {
+    this.lifecycleGeneration++;
     for (const unsubscribe of this.unsubs.splice(0)) unsubscribe();
     this.started = false;
+    return this.capture.drain(timeoutMs);
   }
 
   public getHealth(): {

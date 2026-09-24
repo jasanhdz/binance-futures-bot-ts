@@ -9,6 +9,8 @@ import {
   MicroBurstProspectiveExitEventSource,
   createMicroBurstProspectiveExitRuntime,
 } from './MicroBurstProspectiveExitRuntime';
+import { MicroBurstProspectiveExitCapture } from './MicroBurstProspectiveExitCapture';
+import { MicroBurstProspectiveExitObserver } from './MicroBurstProspectiveExitObserver';
 import type {
   ProspectiveExitIdentity,
   ProspectiveExitObservation,
@@ -163,7 +165,12 @@ describe('MicroBurst prospective runtime composition', () => {
     expect(await runtime.start()).toBe(true);
     const entry = identity('runtime-entry');
     source.emitEntry(entry, [fill]);
-    source.emitFill(entry.entryId, { ...fill, fillId: 'fill-runtime-2', quantity: 0.5 });
+    source.emitFill(entry.entryId, {
+      ...fill,
+      fillId: 'fill-runtime-2',
+      quantity: 0.5,
+      role: 'EXIT',
+    });
     source.emitObservation(entry.entryId, observation(300_000));
     source.emitClose(entry.entryId, 301_000);
     source.emitObservation(entry.entryId, observation(360_000));
@@ -177,7 +184,7 @@ describe('MicroBurst prospective runtime composition', () => {
     expect(snapshot.simulations.CANDIDATE.decisions).toHaveLength(2);
     expect(snapshot.simulations.CANDIDATE.status).toBe('CLOSED');
     expect(snapshot.simulations.CANDIDATE.closeDecision).not.toBeNull();
-    runtime.stop();
+    await expect(runtime.stop()).resolves.toBe(true);
     expect(runtime.getHealth().started).toBe(false);
   });
 
@@ -189,5 +196,40 @@ describe('MicroBurst prospective runtime composition', () => {
     );
     expect(await runtime.start()).toBe(false);
     expect(runtime.getHealth()).toMatchObject({ enabled: false, started: false, restored: 0 });
+  });
+
+  it('serializes concurrent start and cancels subscription after stop during restore', async () => {
+    const source = new FakeProspectiveEventSource();
+    let resolveLoad!: (value: readonly never[]) => void;
+    const store = {
+      save: async () => true,
+      load: () => new Promise<readonly never[]>((resolve) => (resolveLoad = resolve)),
+      drain: async () => true,
+      getHealth: () => ({
+        healthy: true,
+        malformedRecords: 0,
+        truncatedRecords: 0,
+        writeFailures: 0,
+        pendingWrites: 0,
+        readFailures: 0,
+        incompatibleRecords: 0,
+        fileMissing: false,
+        appendBlocked: false,
+      }),
+    };
+    const capture = new MicroBurstProspectiveExitCapture(
+      new MicroBurstProspectiveExitObserver(),
+      store,
+      { enabled: true },
+    );
+    const runtime = new MicroBurstProspectiveExitRuntime(capture, source, true);
+    const firstStart = runtime.start();
+    const secondStart = runtime.start();
+    const stopped = runtime.stop();
+    resolveLoad([]);
+    expect(await stopped).toBe(true);
+    expect(await firstStart).toBe(false);
+    expect(await secondStart).toBe(false);
+    expect(runtime.getHealth().started).toBe(false);
   });
 });

@@ -151,6 +151,19 @@ describe('MicroBurst prospective dual exit observer', () => {
     },
   );
 
+  it.each(['LONG', 'SHORT'] as const)('keeps protective stop invariants aligned: %s', (side) => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    observer.registerEntry(identity(`protection-${side}`, side));
+    const value = observation(60_000, side, side === 'LONG' ? 103 : 97);
+    expect(observer.observe(`protection-${side}`, value)).toBe(true);
+    const snapshot = observer.getEntry(`protection-${side}`)!;
+    expect(snapshot.simulations.CURRENT.decisions[0].decision?.action).toBe('MOVE_STOP');
+    expect(snapshot.simulations.CANDIDATE.decisions[0].decision?.action).toBe('MOVE_STOP');
+    expect(snapshot.simulations.CURRENT.decisions[0].decision?.requestedStopPrice).toBe(
+      snapshot.simulations.CANDIDATE.decisions[0].decision?.requestedStopPrice,
+    );
+  });
+
   it('does not invent execution when depth is incomplete or a gap is declared', () => {
     const observer = new MicroBurstProspectiveExitObserver({ config });
     observer.registerEntry(identity('degraded', 'LONG'));
@@ -201,6 +214,82 @@ describe('MicroBurst prospective dual exit observer', () => {
     expect(snapshot.simulations.CURRENT.decisions[1].decision).not.toBeNull();
     expect(snapshot.simulations.CURRENT.noEvaluableReason).toBeNull();
     expect(snapshot.simulations.CANDIDATE.noEvaluableReason).toBeNull();
+  });
+
+  it('rejects insufficient depth as non-evaluable evidence instead of accepting it as covered', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    observer.registerEntry(identity('quantity', 'LONG'));
+    const value = observation(1_000, 'LONG', 100.1);
+    value.depth!.requiredQuantity = 2;
+    value.depth!.availableQuantity = 1;
+    expect(observer.observe('quantity', value)).toBe(true);
+    const snapshot = observer.getEntry('quantity')!;
+    expect(snapshot.simulations.CURRENT.decisions[0]).toMatchObject({
+      evaluable: false,
+      economicEvaluable: false,
+      gap: { reason: 'DEPTH_QUANTITY_INSUFFICIENT' },
+    });
+    expect(snapshot.simulations.CURRENT.resultEvaluable).toBe(false);
+  });
+
+  it('rejects incompatible identity/fill duplicates and protects returned state from mutation', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    const entry = identity('identity', 'LONG');
+    expect(observer.registerEntry(entry)).toBe(true);
+    expect(observer.registerEntry({ ...entry, entryPrice: 101 })).toBe(false);
+    const fill = {
+      fillId: 'fill-identity',
+      orderId: 'order-identity',
+      eventAtMs: 1,
+      receivedAtMs: 2,
+      price: 100,
+      quantity: 2,
+      feeBps: 1,
+      fundingBps: 0,
+    };
+    expect(observer.recordRealFill('identity', fill)).toBe(true);
+    expect(observer.recordRealFill('identity', { ...fill })).toBe(true);
+    expect(observer.recordRealFill('identity', { ...fill, quantity: 1 })).toBe(false);
+    const returned = observer.getEntry('identity')!;
+    returned.identity.entryPrice = 999;
+    returned.realFills[0].price = 999;
+    expect(observer.getEntry('identity')!.identity.entryPrice).toBe(100);
+    expect(observer.getEntry('identity')!.realFills[0].price).toBe(100);
+  });
+
+  it('keeps result unevaluable after a pre-close gap but not after a resolved close', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    observer.registerEntry(identity('gap-result', 'LONG'));
+    const gap = observation(1_000, 'LONG', 100.1);
+    gap.gap = { kind: 'DEPTH', fromMs: 900, toMs: 1_000, reason: 'BOOK_GAP' };
+    expect(observer.observe('gap-result', gap)).toBe(true);
+    expect(observer.observe('gap-result', observation(360_000, 'LONG', 100.1))).toBe(true);
+    const unresolved = observer.getEntry('gap-result')!;
+    expect(unresolved.simulations.CURRENT.resultEvaluable).toBe(false);
+    expect(observer.getMetrics().noEvaluableEntries).toBe(1);
+
+    observer.registerEntry(identity('closed-gap', 'LONG'));
+    const target = observation(1_000, 'LONG', 104);
+    expect(observer.observe('closed-gap', target)).toBe(true);
+    const afterClose = observation(2_000, 'LONG', 104);
+    afterClose.gap = { kind: 'DEPTH', fromMs: 1_500, toMs: 2_000, reason: 'LATE_GAP' };
+    expect(observer.observe('closed-gap', afterClose)).toBe(true);
+    expect(observer.getEntry('closed-gap')!.simulations.CURRENT.resultEvaluable).toBe(true);
+  });
+
+  it('makes observations idempotent, rejects reverse time, and completes once', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    observer.registerEntry(identity('lifecycle', 'LONG'));
+    const first = observation(1_000, 'LONG', 100.1);
+    expect(observer.observe('lifecycle', first)).toBe(true);
+    expect(observer.observe('lifecycle', structuredClone(first))).toBe(true);
+    expect(observer.getEntry('lifecycle')!.observations).toHaveLength(1);
+    expect(observer.observe('lifecycle', observation(900, 'LONG', 100.1))).toBe(false);
+    const horizon = observer.getEntry('lifecycle')!.horizonAtMs;
+    expect(observer.observe('lifecycle', observation(horizon, 'LONG', 100.1))).toBe(true);
+    expect(observer.getMetrics()).toMatchObject({ completedEntries: 1, activeEntries: 0 });
+    expect(observer.observe('lifecycle', observation(horizon + 1_000, 'LONG', 100.1))).toBe(false);
+    expect(observer.getMetrics()).toMatchObject({ completedEntries: 1 });
   });
 
   it('bounds entries and observations without an I/O or REST queue', () => {

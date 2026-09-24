@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -120,6 +120,15 @@ describe('MicroBurst prospective capture integration boundary', () => {
     ).resolves.toBe(true);
     await expect(first.onObservation('entry-1', observation(300_000))).resolves.toBe(true);
     await expect(first.onRealPositionClosed('entry-1', 301_000)).resolves.toBe(true);
+    const journalRecords = readFileSync(join(root, 'episodes.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(
+        (line) =>
+          JSON.parse(line) as { snapshot: { observations: unknown[] }; observations: unknown[] },
+      );
+    expect(journalRecords.every((record) => record.snapshot.observations.length === 0)).toBe(true);
+    expect(journalRecords.reduce((sum, record) => sum + record.observations.length, 0)).toBe(1);
 
     const restartedObserver = new MicroBurstProspectiveExitObserver();
     const restarted = new MicroBurstProspectiveExitCapture(restartedObserver, store, {
@@ -163,12 +172,17 @@ describe('MicroBurst prospective capture integration boundary', () => {
       {
         save: async () => false,
         load: async () => [],
+        drain: async () => true,
         getHealth: () => ({
           healthy: false,
           malformedRecords: 0,
           truncatedRecords: 0,
           writeFailures: 1,
           pendingWrites: 0,
+          readFailures: 0,
+          incompatibleRecords: 0,
+          fileMissing: false,
+          appendBlocked: false,
         }),
       },
       { enabled: true },
@@ -190,7 +204,12 @@ describe('MicroBurst prospective capture integration boundary', () => {
     const snapshot = observer.getEntry('durable')!;
     writeFileSync(
       path,
-      `${JSON.stringify(snapshot)}\n${JSON.stringify({ identity: { entryId: 'schema-invalid' } })}\n{"identity":{"entryId":"truncated"`,
+      `${JSON.stringify({
+        formatVersion: 1,
+        recordType: 'EPISODE_SNAPSHOT',
+        snapshot: { ...snapshot, observations: [] },
+        observations: snapshot.observations,
+      })}\n${JSON.stringify({ identity: { entryId: 'durable' } })}\n{"identity":{"entryId":"truncated"`,
     );
 
     const restartedObserver = new MicroBurstProspectiveExitObserver();
@@ -200,8 +219,75 @@ describe('MicroBurst prospective capture integration boundary', () => {
     await expect(restarted.restore()).resolves.toBe(1);
     await expect(restarted.restore()).resolves.toBe(0);
     expect(restartedObserver.getEntry('durable')).not.toBeNull();
-    expect(restarted.getMetrics().rejectedEntries).toBe(2);
-    expect(store.getHealth()).toMatchObject({ malformedRecords: 1, truncatedRecords: 1 });
+    expect(restarted.getMetrics().rejectedEntries).toBe(0);
+    expect(store.getHealth()).toMatchObject({
+      malformedRecords: 2,
+      incompatibleRecords: 0,
+      truncatedRecords: 1,
+    });
+    await expect(store.save(snapshot)).resolves.toBe(false);
+    expect(store.getHealth().appendBlocked).toBe(true);
+  });
+
+  it('rejects legacy snapshot rows and unsupported journal versions without migration', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-format-'));
+    const path = join(root, 'episodes.jsonl');
+    const store = new MicroBurstProspectiveExitJsonlStore(path);
+    const observer = new MicroBurstProspectiveExitObserver();
+    const capture = new MicroBurstProspectiveExitCapture(observer, store, { enabled: true });
+    await expect(capture.onExecutedEntry(identity('legacy'))).resolves.toBe(true);
+    const snapshot = observer.getEntry('legacy')!;
+    writeFileSync(
+      path,
+      `${JSON.stringify(snapshot)}\n${JSON.stringify({
+        formatVersion: 999,
+        recordType: 'EPISODE_SNAPSHOT',
+        snapshot: { ...snapshot, observations: [] },
+        observations: [],
+      })}\n`,
+    );
+    expect(await store.load()).toEqual([]);
+    expect(store.getHealth()).toMatchObject({ incompatibleRecords: 2, appendBlocked: true });
+    await expect(store.save(snapshot)).resolves.toBe(false);
+  });
+
+  it('restores original observations and reproduces decisions without original objects', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-evidence-'));
+    const path = join(root, 'episodes.jsonl');
+    const store = new MicroBurstProspectiveExitJsonlStore(path);
+    const observer = new MicroBurstProspectiveExitObserver();
+    const capture = new MicroBurstProspectiveExitCapture(observer, store, { enabled: true });
+    const original = observation(1_000);
+    await expect(capture.onExecutedEntry(identity('evidence'))).resolves.toBe(true);
+    await expect(capture.onObservation('evidence', original)).resolves.toBe(true);
+    const expected = observer.getEntry('evidence')!;
+    original.context.currentPrice = 999;
+    const restoredObserver = new MicroBurstProspectiveExitObserver();
+    const restored = new MicroBurstProspectiveExitCapture(restoredObserver, store, {
+      enabled: true,
+    });
+    await expect(restored.restore()).resolves.toBe(1);
+    const actual = restoredObserver.getEntry('evidence')!;
+    expect(actual.observations[0].context.currentPrice).toBe(100.1);
+    expect(actual.simulations).toEqual(expected.simulations);
+  });
+
+  it('distinguishes a missing journal from a read error', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-read-'));
+    const missing = new MicroBurstProspectiveExitJsonlStore(join(root, 'missing.jsonl'));
+    expect(await missing.load()).toEqual([]);
+    expect(missing.getHealth()).toMatchObject({
+      fileMissing: true,
+      readFailures: 0,
+      healthy: false,
+    });
+    const directory = new MicroBurstProspectiveExitJsonlStore(root);
+    expect(await directory.load()).toEqual([]);
+    expect(directory.getHealth()).toMatchObject({
+      fileMissing: false,
+      readFailures: 1,
+      healthy: false,
+    });
   });
 
   it('bounds pending disk writes and records saturation without throwing', async () => {
