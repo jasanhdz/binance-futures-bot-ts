@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import {
 import {
   MicroBurstProspectiveExitCapture,
   MicroBurstProspectiveExitJsonlStore,
+  writeAllBytes,
 } from './MicroBurstProspectiveExitCapture';
 
 function identity(entryId: string) {
@@ -88,6 +89,27 @@ function observation(
 }
 
 describe('MicroBurst prospective capture integration boundary', () => {
+  it('retries partial writes and rejects a zero-progress writer', async () => {
+    const chunks: Buffer[] = [];
+    const partialHandle = {
+      write: async (bytes: Buffer, offset: number, length: number) => {
+        const size = Math.min(3, length);
+        chunks.push(Buffer.from(bytes.subarray(offset, offset + size)));
+        return { bytesWritten: size };
+      },
+    };
+    await expect(
+      writeAllBytes(partialHandle, Buffer.from('journal-record')),
+    ).resolves.toBeUndefined();
+    expect(Buffer.concat(chunks).toString()).toBe('journal-record');
+    const stalledHandle = {
+      write: async () => ({ bytesWritten: 0 }),
+    };
+    await expect(writeAllBytes(stalledHandle, Buffer.from('journal-record'))).rejects.toThrow(
+      'JOURNAL_WRITE_NO_PROGRESS',
+    );
+  });
+
   it('is disabled unless explicitly enabled by a separate observer-only composition', async () => {
     const observer = new MicroBurstProspectiveExitObserver();
     const capture = new MicroBurstProspectiveExitCapture(observer);
@@ -125,10 +147,33 @@ describe('MicroBurst prospective capture integration boundary', () => {
       .split('\n')
       .map(
         (line) =>
-          JSON.parse(line) as { snapshot: { observations: unknown[] }; observations: unknown[] },
+          JSON.parse(line) as {
+            snapshot: {
+              observations: unknown[];
+              simulations: {
+                CURRENT: { decisions: unknown[] };
+                CANDIDATE: { decisions: unknown[] };
+              };
+            };
+            observations: unknown[];
+            decisions: { CURRENT: unknown[]; CANDIDATE: unknown[] };
+          },
       );
     expect(journalRecords.every((record) => record.snapshot.observations.length === 0)).toBe(true);
     expect(journalRecords.reduce((sum, record) => sum + record.observations.length, 0)).toBe(1);
+    expect(
+      journalRecords.every(
+        (record) =>
+          record.snapshot.simulations.CURRENT.decisions.length === 0 &&
+          record.snapshot.simulations.CANDIDATE.decisions.length === 0,
+      ),
+    ).toBe(true);
+    expect(journalRecords.reduce((sum, record) => sum + record.decisions.CURRENT.length, 0)).toBe(
+      1,
+    );
+    expect(journalRecords.reduce((sum, record) => sum + record.decisions.CANDIDATE.length, 0)).toBe(
+      1,
+    );
 
     const restartedObserver = new MicroBurstProspectiveExitObserver();
     const restarted = new MicroBurstProspectiveExitCapture(restartedObserver, store, {
@@ -207,8 +252,19 @@ describe('MicroBurst prospective capture integration boundary', () => {
       `${JSON.stringify({
         formatVersion: 1,
         recordType: 'EPISODE_SNAPSHOT',
-        snapshot: { ...snapshot, observations: [] },
+        snapshot: {
+          ...snapshot,
+          observations: [],
+          simulations: {
+            CURRENT: { ...snapshot.simulations.CURRENT, decisions: [] },
+            CANDIDATE: { ...snapshot.simulations.CANDIDATE, decisions: [] },
+          },
+        },
         observations: snapshot.observations,
+        decisions: {
+          CURRENT: snapshot.simulations.CURRENT.decisions,
+          CANDIDATE: snapshot.simulations.CANDIDATE.decisions,
+        },
       })}\n${JSON.stringify({ identity: { entryId: 'durable' } })}\n{"identity":{"entryId":"truncated"`,
     );
 
@@ -249,6 +305,35 @@ describe('MicroBurst prospective capture integration boundary', () => {
     expect(await store.load()).toEqual([]);
     expect(store.getHealth()).toMatchObject({ incompatibleRecords: 2, appendBlocked: true });
     await expect(store.save(snapshot)).resolves.toBe(false);
+  });
+
+  it('retains the previous valid snapshot when a later same-entry row is invalid', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-invalid-row-'));
+    const path = join(root, 'episodes.jsonl');
+    const writer = new MicroBurstProspectiveExitJsonlStore(path);
+    const observer = new MicroBurstProspectiveExitObserver();
+    const capture = new MicroBurstProspectiveExitCapture(observer, writer, { enabled: true });
+    await expect(capture.onExecutedEntry(identity('fallback'))).resolves.toBe(true);
+    const valid = observer.getEntry('fallback')!;
+    appendFileSync(
+      path,
+      `${JSON.stringify({
+        formatVersion: 1,
+        recordType: 'EPISODE_SNAPSHOT',
+        snapshot: { ...valid, identity: { ...valid.identity, side: 'INVALID' } },
+        observations: [],
+      })}\n`,
+    );
+    await expect(writer.save(valid)).resolves.toBe(false);
+    expect(writer.getHealth().appendBlocked).toBe(true);
+    const restartedStore = new MicroBurstProspectiveExitJsonlStore(path);
+    const restored = await restartedStore.load();
+    expect(restored).toHaveLength(1);
+    expect(restored[0].identity.side).toBe(valid.identity.side);
+    expect(restartedStore.getHealth()).toMatchObject({
+      incompatibleRecords: 1,
+      appendBlocked: true,
+    });
   });
 
   it('restores original observations and reproduces decisions without original objects', async () => {

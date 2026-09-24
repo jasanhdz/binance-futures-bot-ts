@@ -257,29 +257,6 @@ export function advanceMicroBurstOfflineExit(
   const trackedBaseline = previous.baseline;
   const baseline = trackedBaseline ?? captureMicroBurstExitBaseline(context, config, side);
   const deadlines = timing(context, now, config);
-  if (!freshEconomics(context, config, now)) {
-    return {
-      state: {
-        ...neutralState(previous, now, baseline, 'PROBING', deadlines),
-        schemaVersion: 3,
-        protectionState: previous.protectionState ?? initialMicroBurstExitEngineState(),
-      },
-      decision: {
-        action: 'HOLD',
-        reason: 'HOLD',
-        diagnostics: {
-          exitPolicyVersion: MICRO_BURST_OFFLINE_EXIT_VARIANT,
-          executableEconomicsUnavailable: true,
-          estimatedNetReturnBps: null,
-          holdBasis: 'DATA_DEGRADED',
-          strategicReevaluationDue: context.timeInTradeMs >= config.exitMaxHoldMs,
-          absoluteExposureLimitMs,
-        },
-      },
-    };
-  }
-
-  const economics = context.executableEconomics!;
   const protectionConfig: MicroBurstConfig = { ...config, contextualPolicyVersion: 'MICRO' };
   const protectionTransition = advanceMicroBurstExit(
     previous.protectionState ?? initialMicroBurstExitEngineState(),
@@ -336,6 +313,29 @@ export function advanceMicroBurstOfflineExit(
     context.currentBookPressure?.anomalyFlag
   )
     return close(protectionPrevious, 'ANOMALY', now, config);
+  if (!freshEconomics(context, config, now)) {
+    return {
+      state: {
+        ...neutralState(protectionPrevious, now, baseline, 'PROBING', deadlines),
+        schemaVersion: 3,
+        protectionState: protectionPrevious.protectionState ?? initialMicroBurstExitEngineState(),
+      },
+      decision: {
+        action: 'HOLD',
+        reason: 'HOLD',
+        diagnostics: {
+          exitPolicyVersion: MICRO_BURST_OFFLINE_EXIT_VARIANT,
+          executableEconomicsUnavailable: true,
+          estimatedNetReturnBps: null,
+          holdBasis: 'DATA_DEGRADED',
+          strategicReevaluationDue: context.timeInTradeMs >= config.exitMaxHoldMs,
+          absoluteExposureLimitMs,
+        },
+      },
+    };
+  }
+
+  const economics = context.executableEconomics!;
   if (
     side === 'LONG'
       ? economics.exitPrice <= context.structuralInvalidationPrice

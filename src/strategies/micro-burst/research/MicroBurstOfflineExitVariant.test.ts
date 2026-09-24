@@ -122,7 +122,7 @@ describe('MicroBurst offline no-time-close variant', () => {
   );
 
   it.each(['LONG', 'SHORT'] as const)(
-    'keeps degraded-data protection timing and does not convert it to a strategic close: %s',
+    'keeps explicit anomaly priority without economics: %s',
     (side) => {
       const degraded = context(1_000, side, side === 'LONG' ? 99.9 : 100.1);
       degraded.executableEconomics = undefined;
@@ -138,12 +138,8 @@ describe('MicroBurst offline no-time-close variant', () => {
       const secondContext = { ...degraded, observedAtMs: 21_000, timeInTradeMs: 21_000 };
       const second = advanceMicroBurstOfflineExit(restored, secondContext, config, side);
       expect(current.reason).toBe('ANOMALY');
-      expect(first.decision).toMatchObject({ action: 'HOLD', reason: 'HOLD' });
-      expect(second.decision).toMatchObject({ action: 'HOLD', reason: 'HOLD' });
-      expect(second.state.strategicReevaluationAtMs).toBe(config.exitMaxHoldMs);
-      expect(second.state.absoluteExposureDeadlineAtMs).toBe(
-        config.exitMaxHoldMs + config.exitMaxHoldExtensionMs,
-      );
+      expect(first.decision).toMatchObject({ action: 'CLOSE_MARKET', reason: 'ANOMALY' });
+      expect(second.decision).toMatchObject({ action: 'CLOSE_MARKET', reason: 'ANOMALY' });
     },
   );
 

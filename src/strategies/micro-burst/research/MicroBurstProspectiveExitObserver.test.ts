@@ -89,8 +89,8 @@ function observation(
     depth: {
       status: 'HEALTHY',
       observedAtMs: now,
-      requiredQuantity: 1,
-      availableQuantity: 1,
+      requiredQuantity: 2,
+      availableQuantity: 2,
       levelsUsed: 2,
       quantityCovered: true,
     },
@@ -255,6 +255,14 @@ describe('MicroBurst prospective dual exit observer', () => {
     returned.realFills[0].price = 999;
     expect(observer.getEntry('identity')!.identity.entryPrice).toBe(100);
     expect(observer.getEntry('identity')!.realFills[0].price).toBe(100);
+
+    const restoredObserver = new MicroBurstProspectiveExitObserver({ config });
+    const restored = observer.getEntry('identity')!;
+    expect(restoredObserver.restoreEntry(restored)).toBe(true);
+    (restored.simulations.CANDIDATE.state as { phase: string }).phase = 'CLOSING';
+    expect(restoredObserver.getEntry('identity')!.simulations.CANDIDATE.state).not.toMatchObject({
+      phase: 'CLOSING',
+    });
   });
 
   it('keeps result unevaluable after a pre-close gap but not after a resolved close', () => {

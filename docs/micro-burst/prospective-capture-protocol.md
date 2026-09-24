@@ -64,12 +64,33 @@ The on-disk format is explicitly versioned:
   "formatVersion": 1,
   "recordType": "EPISODE_SNAPSHOT",
   "snapshot": { "observations": [] },
-  "observations": []
+  "observations": [],
+  "decisions": { "CURRENT": [], "CANDIDATE": [] }
 }
 ```
 
-The snapshot contains the latest episode state without duplicating observations;
-the record contains only observations added since the preceding durable record.
+The snapshot contains the latest episode state without duplicating observations
+or decision histories; the record contains only observations and CURRENT/CANDIDATE
+decisions added since the preceding durable record. The store reconstructs its
+latest-entry and per-entry counts once when opened, then appends from those
+indices. Each later save checks the expected file size and modification time;
+an external change blocks append and requires an explicit reload/review instead
+of silently reparsing or merging unknown bytes.
+
+`writeAllBytes()` retries short writes until the complete UTF-8 record is written
+and rejects zero progress. The store advances its byte/observation/decision
+indices only after the full write and `datasync()` succeed. Any write, close,
+or datasync failure increments `writeFailures`, blocks further append, and does
+not advance those indices; a possible partial tail is preserved for diagnosis.
+
+The writer contract is single-writer per store instance: calls are serialized by
+`writeTail`, and the in-memory indices describe only writes acknowledged by that
+instance. The store does not acquire a cross-process filesystem lock and does
+not exclude another writer. Size/mtime verification detects many external
+changes before the next append, but it is not an exclusion mechanism and cannot
+prove that no concurrent writer raced between verification and append. A
+multi-process deployment therefore requires an external single-writer/lock
+contract; this observer store does not provide that guarantee itself.
 Rows without `formatVersion: 1`, legacy full-snapshot rows, and unknown record
 types or versions are rejected as `incompatibleRecords`, set `appendBlocked`,
 and are never silently migrated or rewritten. Existing operational files are

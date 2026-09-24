@@ -1,4 +1,4 @@
-import { mkdir, open, readFile } from 'node:fs/promises';
+import { mkdir, open, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   MicroBurstProspectiveExitObserver,
@@ -7,8 +7,29 @@ import {
   ProspectiveExitObservation,
   ProspectiveRealFill,
 } from './MicroBurstProspectiveExitObserver';
+import { isMicroBurstOfflineExitState } from './MicroBurstOfflineExitVariant';
 
 export const PROSPECTIVE_EXIT_JOURNAL_FORMAT_VERSION = 1 as const;
+
+export async function writeAllBytes(
+  handle: {
+    write(
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ): Promise<{ bytesWritten: number }>;
+  },
+  bytes: Buffer,
+): Promise<void> {
+  let written = 0;
+  while (written < bytes.length) {
+    const result = await handle.write(bytes, written, bytes.length - written, written);
+    if (!Number.isInteger(result.bytesWritten) || result.bytesWritten <= 0)
+      throw new Error('JOURNAL_WRITE_NO_PROGRESS');
+    written += result.bytesWritten;
+  }
+}
 
 export interface ProspectiveExitSnapshotStore {
   save(snapshot: ProspectiveExitEntrySnapshot): Promise<boolean>;
@@ -39,6 +60,12 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
   private pendingWrites = 0;
   private writeTail = Promise.resolve();
   private readonly persistedObservationCounts = new Map<string, number>();
+  private readonly persistedDecisionCounts = new Map<string, number>();
+  private readonly latestSnapshots = new Map<string, ProspectiveExitEntrySnapshot>();
+  private initialized = false;
+  private journalBytes = 0;
+  private journalMtimeMs = 0;
+  private journalExists = false;
 
   public constructor(
     private readonly filePath: string,
@@ -58,40 +85,70 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
     this.pendingWrites++;
     const operation = this.writeTail.then(async () => {
       try {
-        const existing = await this.readExistingForAppend();
-        if (existing === null) {
+        if (!(await this.ensureReadyForAppend())) {
           this.writeFailures++;
           return false;
         }
         const previousObservationCount =
           this.persistedObservationCounts.get(snapshot.identity.entryId) ?? 0;
+        const previousCurrentDecisionCount =
+          this.persistedDecisionCounts.get(`${snapshot.identity.entryId}:CURRENT`) ?? 0;
+        const previousCandidateDecisionCount =
+          this.persistedDecisionCounts.get(`${snapshot.identity.entryId}:CANDIDATE`) ?? 0;
         const record = {
           formatVersion: PROSPECTIVE_EXIT_JOURNAL_FORMAT_VERSION,
           recordType: 'EPISODE_SNAPSHOT' as const,
-          snapshot: { ...snapshot, observations: [] },
+          snapshot: {
+            ...snapshot,
+            observations: [],
+            simulations: {
+              CURRENT: { ...snapshot.simulations.CURRENT, decisions: [] },
+              CANDIDATE: { ...snapshot.simulations.CANDIDATE, decisions: [] },
+            },
+          },
           observations: snapshot.observations.slice(previousObservationCount),
+          decisions: {
+            CURRENT: snapshot.simulations.CURRENT.decisions.slice(previousCurrentDecisionCount),
+            CANDIDATE: snapshot.simulations.CANDIDATE.decisions.slice(
+              previousCandidateDecisionCount,
+            ),
+          },
         };
         const line = `${JSON.stringify(record)}\n`;
-        if (Buffer.byteLength(existing, 'utf8') + Buffer.byteLength(line, 'utf8') > this.maxBytes) {
+        if (this.journalBytes + Buffer.byteLength(line, 'utf8') > this.maxBytes) {
           this.writeFailures++;
           return false;
         }
         await mkdir(dirname(this.filePath), { recursive: true });
         const handle = await open(this.filePath, 'a');
         try {
-          await handle.write(line, undefined, 'utf8');
+          await writeAllBytes(handle, Buffer.from(line, 'utf8'));
           await handle.datasync();
         } finally {
           await handle.close();
         }
         this.fileMissing = false;
+        this.journalBytes += Buffer.byteLength(line, 'utf8');
+        this.journalExists = true;
+        const fileStats = await stat(this.filePath);
+        this.journalMtimeMs = fileStats.mtimeMs;
         this.persistedObservationCounts.set(
           snapshot.identity.entryId,
           snapshot.observations.length,
         );
+        this.persistedDecisionCounts.set(
+          `${snapshot.identity.entryId}:CURRENT`,
+          snapshot.simulations.CURRENT.decisions.length,
+        );
+        this.persistedDecisionCounts.set(
+          `${snapshot.identity.entryId}:CANDIDATE`,
+          snapshot.simulations.CANDIDATE.decisions.length,
+        );
+        this.latestSnapshots.set(snapshot.identity.entryId, snapshot);
         return true;
       } catch {
         this.writeFailures++;
+        this.appendBlocked = true;
         return false;
       }
     });
@@ -104,6 +161,25 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
   }
 
   public async load(): Promise<readonly ProspectiveExitEntrySnapshot[]> {
+    if (this.initialized) {
+      try {
+        const fileStats = await stat(this.filePath);
+        if (
+          this.journalExists &&
+          fileStats.size === this.journalBytes &&
+          fileStats.mtimeMs === this.journalMtimeMs
+        )
+          return [...this.latestSnapshots.values()];
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+          !this.journalExists &&
+          this.journalBytes === 0
+        )
+          return [...this.latestSnapshots.values()];
+      }
+      this.initialized = false;
+    }
     this.malformedRecords = 0;
     this.truncatedRecords = 0;
     this.incompatibleRecords = 0;
@@ -114,10 +190,12 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         this.fileMissing = true;
+        this.initialized = true;
         return [];
       }
       this.readFailures++;
       this.appendBlocked = true;
+      this.initialized = true;
       return [];
     }
     const latest = new Map<string, ProspectiveExitEntrySnapshot>();
@@ -139,6 +217,27 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
     }
     for (const snapshot of latest.values())
       this.persistedObservationCounts.set(snapshot.identity.entryId, snapshot.observations.length);
+    for (const snapshot of latest.values()) {
+      this.persistedDecisionCounts.set(
+        `${snapshot.identity.entryId}:CURRENT`,
+        snapshot.simulations.CURRENT.decisions.length,
+      );
+      this.persistedDecisionCounts.set(
+        `${snapshot.identity.entryId}:CANDIDATE`,
+        snapshot.simulations.CANDIDATE.decisions.length,
+      );
+    }
+    this.latestSnapshots.clear();
+    for (const [entryId, snapshot] of latest) this.latestSnapshots.set(entryId, snapshot);
+    this.journalBytes = Buffer.byteLength(content, 'utf8');
+    this.journalExists = true;
+    try {
+      this.journalMtimeMs = (await stat(this.filePath)).mtimeMs;
+    } catch {
+      this.readFailures++;
+      this.appendBlocked = true;
+    }
+    this.initialized = true;
     return [...latest.values()];
   }
 
@@ -180,46 +279,29 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
     };
   }
 
-  private async readExistingForAppend(): Promise<string | null> {
-    if (this.appendBlocked) return null;
+  private async ensureReadyForAppend(): Promise<boolean> {
+    if (!this.initialized) await this.load();
+    if (this.appendBlocked) return false;
     try {
-      const content = await readFile(this.filePath, 'utf8');
-      this.fileMissing = false;
-      if (content.length > 0 && !content.endsWith('\n')) {
-        this.truncatedRecords++;
+      const fileStats = await stat(this.filePath);
+      if (
+        !this.journalExists ||
+        fileStats.size !== this.journalBytes ||
+        fileStats.mtimeMs !== this.journalMtimeMs
+      ) {
         this.appendBlocked = true;
-        return null;
+        return false;
       }
-      const latest = new Map<string, ProspectiveExitEntrySnapshot>();
-      for (const line of content.split('\n')) {
-        if (!line.trim()) continue;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line) as unknown;
-          const snapshot = this.snapshotFromJournalRecord(parsed, latest);
-          if (!snapshot) throw new Error('SNAPSHOT_SCHEMA_INVALID');
-          latest.set(snapshot.identity.entryId, snapshot);
-        } catch {
-          if (this.isIncompatibleJournalRecord(parsed)) this.incompatibleRecords++;
-          else this.malformedRecords++;
-          this.appendBlocked = true;
-          return null;
-        }
-      }
-      for (const snapshot of latest.values())
-        this.persistedObservationCounts.set(
-          snapshot.identity.entryId,
-          snapshot.observations.length,
-        );
-      return content;
+      return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        this.fileMissing = true;
-        return '';
+        if (!this.journalExists && this.journalBytes === 0) return true;
+        this.appendBlocked = true;
+        return false;
       }
       this.readFailures++;
       this.appendBlocked = true;
-      return null;
+      return false;
     }
   }
 
@@ -233,6 +315,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
       recordType?: unknown;
       snapshot?: unknown;
       observations?: unknown;
+      decisions?: unknown;
     };
     if (
       record.formatVersion !== PROSPECTIVE_EXIT_JOURNAL_FORMAT_VERSION ||
@@ -251,11 +334,48 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
       })
     )
       return null;
+    if (
+      !record.decisions ||
+      typeof record.decisions !== 'object' ||
+      !Array.isArray((record.decisions as { CURRENT?: unknown }).CURRENT) ||
+      !Array.isArray((record.decisions as { CANDIDATE?: unknown }).CANDIDATE) ||
+      !(record.decisions as { CURRENT: unknown[]; CANDIDATE: unknown[] }).CURRENT.every(
+        validDecisionShape,
+      ) ||
+      !(record.decisions as { CURRENT: unknown[]; CANDIDATE: unknown[] }).CANDIDATE.every(
+        validDecisionShape,
+      )
+    )
+      return null;
     const snapshot = record.snapshot;
     const previous = latest.get(snapshot.identity.entryId);
     const observations = [...(previous?.observations ?? []), ...record.observations];
-    if (observations.length > 512) return null;
-    return { ...snapshot, observations };
+    const decisions = record.decisions as {
+      CURRENT: ProspectiveExitEntrySnapshot['simulations']['CURRENT']['decisions'];
+      CANDIDATE: ProspectiveExitEntrySnapshot['simulations']['CANDIDATE']['decisions'];
+    };
+    const currentDecisions = [
+      ...(previous?.simulations.CURRENT.decisions ?? []),
+      ...decisions.CURRENT,
+    ];
+    const candidateDecisions = [
+      ...(previous?.simulations.CANDIDATE.decisions ?? []),
+      ...decisions.CANDIDATE,
+    ];
+    if (
+      observations.length > 512 ||
+      currentDecisions.length > 512 ||
+      candidateDecisions.length > 512
+    )
+      return null;
+    return {
+      ...snapshot,
+      observations,
+      simulations: {
+        CURRENT: { ...snapshot.simulations.CURRENT, decisions: currentDecisions },
+        CANDIDATE: { ...snapshot.simulations.CANDIDATE, decisions: candidateDecisions },
+      },
+    };
   }
 
   private isIncompatibleJournalRecord(value: unknown): boolean {
@@ -267,6 +387,17 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
       validSnapshotShape(value)
     );
   }
+}
+
+function validDecisionShape(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const decision = value as Record<string, unknown>;
+  return (
+    (decision.policy === 'CURRENT' || decision.policy === 'CANDIDATE') &&
+    decision.hypothetical === true &&
+    typeof decision.evaluable === 'boolean' &&
+    typeof decision.economicEvaluable === 'boolean'
+  );
 }
 
 function validSnapshotShape(value: unknown): value is ProspectiveExitEntrySnapshot {
@@ -281,22 +412,53 @@ function validSnapshotShape(value: unknown): value is ProspectiveExitEntrySnapsh
       typeof identity.entryId === 'string' &&
       identity.entryId.length > 0 &&
       typeof identity.symbol === 'string' &&
-      typeof identity.side === 'string' &&
+      identity.symbol.length > 0 &&
+      (identity.side === 'LONG' || identity.side === 'SHORT') &&
+      typeof identity.enteredAtMs === 'number' &&
+      Number.isFinite(identity.enteredAtMs) &&
+      identity.enteredAtMs >= 0 &&
       typeof identity.quantity === 'number' &&
       Number.isFinite(identity.quantity) &&
       identity.quantity > 0 &&
       typeof identity.entryPrice === 'number' &&
       Number.isFinite(identity.entryPrice) &&
       identity.entryPrice > 0 &&
+      typeof identity.candidatePolicyVersion === 'string' &&
+      identity.candidatePolicyVersion.length > 0 &&
       simulations?.CURRENT &&
       simulations.CANDIDATE &&
+      validSimulationShape(simulations.CURRENT, false) &&
+      validSimulationShape(simulations.CANDIDATE, true) &&
       Array.isArray(simulations.CURRENT.decisions) &&
       Array.isArray(simulations.CANDIDATE.decisions) &&
       typeof simulations.CURRENT.resultEvaluable === 'boolean' &&
       typeof simulations.CANDIDATE.resultEvaluable === 'boolean' &&
       Array.isArray(snapshot.realFills) &&
       Array.isArray(snapshot.observations) &&
-      typeof snapshot.completed === 'boolean',
+      typeof snapshot.completed === 'boolean' &&
+      Number.isFinite(snapshot.horizonAtMs),
+  );
+}
+
+function validSimulationShape(
+  simulation: ProspectiveExitEntrySnapshot['simulations'][keyof ProspectiveExitEntrySnapshot['simulations']],
+  candidate: boolean,
+): boolean {
+  return (
+    (simulation.policy === 'CURRENT' || simulation.policy === 'CANDIDATE') &&
+    (!candidate || simulation.policy === 'CANDIDATE') &&
+    ['ACTIVE', 'CLOSED', 'OPEN_AT_HORIZON', 'NO_EVALUABLE'].includes(simulation.status) &&
+    typeof simulation.resultEvaluable === 'boolean' &&
+    typeof simulation.state === 'object' &&
+    (!candidate || isMicroBurstOfflineExitState(simulation.state)) &&
+    Array.isArray(simulation.decisions) &&
+    simulation.decisions.every(
+      (decision) =>
+        (decision.policy === 'CURRENT' || decision.policy === 'CANDIDATE') &&
+        decision.hypothetical === true &&
+        typeof decision.evaluable === 'boolean' &&
+        typeof decision.economicEvaluable === 'boolean',
+    )
   );
 }
 

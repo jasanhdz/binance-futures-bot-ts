@@ -411,6 +411,7 @@ export class MicroBurstProspectiveExitObserver {
           resultEvaluable: snapshot.simulations.CURRENT.resultEvaluable,
           resultNotEvaluableAtMs: snapshot.simulations.CURRENT.resultNotEvaluableAtMs ?? null,
           resultNotEvaluableReason: snapshot.simulations.CURRENT.resultNotEvaluableReason ?? null,
+          state: deepClone(snapshot.simulations.CURRENT.state),
           decisions: [...deepClone(snapshot.simulations.CURRENT.decisions)],
         },
         CANDIDATE: {
@@ -423,6 +424,7 @@ export class MicroBurstProspectiveExitObserver {
           resultEvaluable: snapshot.simulations.CANDIDATE.resultEvaluable,
           resultNotEvaluableAtMs: snapshot.simulations.CANDIDATE.resultNotEvaluableAtMs ?? null,
           resultNotEvaluableReason: snapshot.simulations.CANDIDATE.resultNotEvaluableReason ?? null,
+          state: deepClone(snapshot.simulations.CANDIDATE.state),
           decisions: [...deepClone(snapshot.simulations.CANDIDATE.decisions)],
         },
       },
@@ -786,10 +788,9 @@ export class MicroBurstProspectiveExitObserver {
       depth !== null &&
       Number.isFinite(depth.requiredQuantity) &&
       Number.isFinite(depth.availableQuantity) &&
-      depth.requiredQuantity > 0 &&
-      depth.requiredQuantity <= quantity &&
-      depth.availableQuantity >= 0 &&
-      (!depth.quantityCovered || depth.availableQuantity >= depth.requiredQuantity)
+      depth.requiredQuantity === quantity &&
+      depth.availableQuantity >= quantity &&
+      depth.quantityCovered
     );
   }
 
