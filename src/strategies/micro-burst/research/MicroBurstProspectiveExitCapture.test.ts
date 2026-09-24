@@ -336,6 +336,56 @@ describe('MicroBurst prospective capture integration boundary', () => {
     });
   });
 
+  it('retains the previous valid snapshot when an incremental observation is incomplete', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-incomplete-observation-'));
+    const path = join(root, 'episodes.jsonl');
+    const writer = new MicroBurstProspectiveExitJsonlStore(path);
+    const observer = new MicroBurstProspectiveExitObserver();
+    const capture = new MicroBurstProspectiveExitCapture(observer, writer, { enabled: true });
+    await expect(capture.onExecutedEntry(identity('incomplete'))).resolves.toBe(true);
+    const valid = observer.getEntry('incomplete')!;
+    appendFileSync(
+      path,
+      `${JSON.stringify({
+        formatVersion: 1,
+        recordType: 'EPISODE_SNAPSHOT',
+        snapshot: {
+          ...valid,
+          observations: [],
+          simulations: {
+            CURRENT: { ...valid.simulations.CURRENT, decisions: [] },
+            CANDIDATE: { ...valid.simulations.CANDIDATE, decisions: [] },
+          },
+        },
+        observations: [{ eventAtMs: 1_000 }],
+        decisions: { CURRENT: [], CANDIDATE: [] },
+      })}\n`,
+    );
+    const restartedStore = new MicroBurstProspectiveExitJsonlStore(path);
+    const restored = await restartedStore.load();
+    expect(restored).toHaveLength(1);
+    expect(restored[0].observations).toHaveLength(0);
+    expect(restartedStore.getHealth()).toMatchObject({
+      incompatibleRecords: 1,
+      appendBlocked: true,
+    });
+  });
+
+  it('isolates the in-memory cache from save inputs and load outputs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-cache-'));
+    const store = new MicroBurstProspectiveExitJsonlStore(join(root, 'episodes.jsonl'));
+    const observer = new MicroBurstProspectiveExitObserver();
+    observer.registerEntry(identity('cache'));
+    const snapshot = observer.getEntry('cache')!;
+    await expect(store.save(snapshot)).resolves.toBe(true);
+    snapshot.identity.entryPrice = 200;
+    const firstLoad = await store.load();
+    expect(firstLoad[0].identity.entryPrice).toBe(100);
+    firstLoad[0].identity.entryPrice = 300;
+    const secondLoad = await store.load();
+    expect(secondLoad[0].identity.entryPrice).toBe(100);
+  });
+
   it('restores original observations and reproduces decisions without original objects', async () => {
     const root = mkdtempSync(join(tmpdir(), 'micro-prospective-evidence-'));
     const path = join(root, 'episodes.jsonl');

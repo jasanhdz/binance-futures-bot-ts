@@ -6,8 +6,8 @@ import {
   ProspectiveExitIdentity,
   ProspectiveExitObservation,
   ProspectiveRealFill,
+  isValidProspectiveExitEntrySnapshot,
 } from './MicroBurstProspectiveExitObserver';
-import { isMicroBurstOfflineExitState } from './MicroBurstOfflineExitVariant';
 
 export const PROSPECTIVE_EXIT_JOURNAL_FORMAT_VERSION = 1 as const;
 
@@ -74,7 +74,14 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
   ) {}
 
   public save(snapshot: ProspectiveExitEntrySnapshot): Promise<boolean> {
-    if (!validSnapshotShape(snapshot)) {
+    let snapshotCopy: ProspectiveExitEntrySnapshot;
+    try {
+      snapshotCopy = structuredClone(snapshot);
+    } catch {
+      this.writeFailures++;
+      return Promise.resolve(false);
+    }
+    if (!isValidProspectiveExitEntrySnapshot(snapshotCopy)) {
       this.writeFailures++;
       return Promise.resolve(false);
     }
@@ -85,6 +92,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
     this.pendingWrites++;
     const operation = this.writeTail.then(async () => {
       try {
+        const snapshot = snapshotCopy;
         if (!(await this.ensureReadyForAppend())) {
           this.writeFailures++;
           return false;
@@ -144,7 +152,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
           `${snapshot.identity.entryId}:CANDIDATE`,
           snapshot.simulations.CANDIDATE.decisions.length,
         );
-        this.latestSnapshots.set(snapshot.identity.entryId, snapshot);
+        this.latestSnapshots.set(snapshot.identity.entryId, structuredClone(snapshot));
         return true;
       } catch {
         this.writeFailures++;
@@ -169,14 +177,14 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
           fileStats.size === this.journalBytes &&
           fileStats.mtimeMs === this.journalMtimeMs
         )
-          return [...this.latestSnapshots.values()];
+          return [...this.latestSnapshots.values()].map((snapshot) => structuredClone(snapshot));
       } catch (error) {
         if (
           (error as NodeJS.ErrnoException).code === 'ENOENT' &&
           !this.journalExists &&
           this.journalBytes === 0
         )
-          return [...this.latestSnapshots.values()];
+          return [...this.latestSnapshots.values()].map((snapshot) => structuredClone(snapshot));
       }
       this.initialized = false;
     }
@@ -238,7 +246,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
       this.appendBlocked = true;
     }
     this.initialized = true;
-    return [...latest.values()];
+    return [...latest.values()].map((snapshot) => structuredClone(snapshot));
   }
 
   public async drain(timeoutMs = 5_000): Promise<boolean> {
@@ -320,7 +328,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
     if (
       record.formatVersion !== PROSPECTIVE_EXIT_JOURNAL_FORMAT_VERSION ||
       record.recordType !== 'EPISODE_SNAPSHOT' ||
-      !validSnapshotShape(record.snapshot)
+      !isValidProspectiveExitEntrySnapshot(record.snapshot)
     )
       return null;
     if (
@@ -338,13 +346,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
       !record.decisions ||
       typeof record.decisions !== 'object' ||
       !Array.isArray((record.decisions as { CURRENT?: unknown }).CURRENT) ||
-      !Array.isArray((record.decisions as { CANDIDATE?: unknown }).CANDIDATE) ||
-      !(record.decisions as { CURRENT: unknown[]; CANDIDATE: unknown[] }).CURRENT.every(
-        validDecisionShape,
-      ) ||
-      !(record.decisions as { CURRENT: unknown[]; CANDIDATE: unknown[] }).CANDIDATE.every(
-        validDecisionShape,
-      )
+      !Array.isArray((record.decisions as { CANDIDATE?: unknown }).CANDIDATE)
     )
       return null;
     const snapshot = record.snapshot;
@@ -368,7 +370,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
       candidateDecisions.length > 512
     )
       return null;
-    return {
+    const reconstructed = {
       ...snapshot,
       observations,
       simulations: {
@@ -376,6 +378,7 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
         CANDIDATE: { ...snapshot.simulations.CANDIDATE, decisions: candidateDecisions },
       },
     };
+    return isValidProspectiveExitEntrySnapshot(reconstructed) ? reconstructed : null;
   }
 
   private isIncompatibleJournalRecord(value: unknown): boolean {
@@ -384,82 +387,9 @@ export class MicroBurstProspectiveExitJsonlStore implements ProspectiveExitSnaps
     return (
       record.formatVersion !== undefined ||
       record.recordType !== undefined ||
-      validSnapshotShape(value)
+      isValidProspectiveExitEntrySnapshot(value)
     );
   }
-}
-
-function validDecisionShape(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const decision = value as Record<string, unknown>;
-  return (
-    (decision.policy === 'CURRENT' || decision.policy === 'CANDIDATE') &&
-    decision.hypothetical === true &&
-    typeof decision.evaluable === 'boolean' &&
-    typeof decision.economicEvaluable === 'boolean'
-  );
-}
-
-function validSnapshotShape(value: unknown): value is ProspectiveExitEntrySnapshot {
-  if (!value || typeof value !== 'object') return false;
-  const snapshot = value as Partial<ProspectiveExitEntrySnapshot>;
-  const identity = snapshot.identity as Partial<ProspectiveExitIdentity> | undefined;
-  const simulations = snapshot.simulations as
-    | ProspectiveExitEntrySnapshot['simulations']
-    | undefined;
-  return Boolean(
-    identity &&
-      typeof identity.entryId === 'string' &&
-      identity.entryId.length > 0 &&
-      typeof identity.symbol === 'string' &&
-      identity.symbol.length > 0 &&
-      (identity.side === 'LONG' || identity.side === 'SHORT') &&
-      typeof identity.enteredAtMs === 'number' &&
-      Number.isFinite(identity.enteredAtMs) &&
-      identity.enteredAtMs >= 0 &&
-      typeof identity.quantity === 'number' &&
-      Number.isFinite(identity.quantity) &&
-      identity.quantity > 0 &&
-      typeof identity.entryPrice === 'number' &&
-      Number.isFinite(identity.entryPrice) &&
-      identity.entryPrice > 0 &&
-      typeof identity.candidatePolicyVersion === 'string' &&
-      identity.candidatePolicyVersion.length > 0 &&
-      simulations?.CURRENT &&
-      simulations.CANDIDATE &&
-      validSimulationShape(simulations.CURRENT, false) &&
-      validSimulationShape(simulations.CANDIDATE, true) &&
-      Array.isArray(simulations.CURRENT.decisions) &&
-      Array.isArray(simulations.CANDIDATE.decisions) &&
-      typeof simulations.CURRENT.resultEvaluable === 'boolean' &&
-      typeof simulations.CANDIDATE.resultEvaluable === 'boolean' &&
-      Array.isArray(snapshot.realFills) &&
-      Array.isArray(snapshot.observations) &&
-      typeof snapshot.completed === 'boolean' &&
-      Number.isFinite(snapshot.horizonAtMs),
-  );
-}
-
-function validSimulationShape(
-  simulation: ProspectiveExitEntrySnapshot['simulations'][keyof ProspectiveExitEntrySnapshot['simulations']],
-  candidate: boolean,
-): boolean {
-  return (
-    (simulation.policy === 'CURRENT' || simulation.policy === 'CANDIDATE') &&
-    (!candidate || simulation.policy === 'CANDIDATE') &&
-    ['ACTIVE', 'CLOSED', 'OPEN_AT_HORIZON', 'NO_EVALUABLE'].includes(simulation.status) &&
-    typeof simulation.resultEvaluable === 'boolean' &&
-    typeof simulation.state === 'object' &&
-    (!candidate || isMicroBurstOfflineExitState(simulation.state)) &&
-    Array.isArray(simulation.decisions) &&
-    simulation.decisions.every(
-      (decision) =>
-        (decision.policy === 'CURRENT' || decision.policy === 'CANDIDATE') &&
-        decision.hypothetical === true &&
-        typeof decision.evaluable === 'boolean' &&
-        typeof decision.economicEvaluable === 'boolean',
-    )
-  );
 }
 
 export interface ProspectiveExitCaptureMetrics {

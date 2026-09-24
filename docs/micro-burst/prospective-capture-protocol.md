@@ -71,7 +71,9 @@ The on-disk format is explicitly versioned:
 
 The snapshot contains the latest episode state without duplicating observations
 or decision histories; the record contains only observations and CURRENT/CANDIDATE
-decisions added since the preceding durable record. The store reconstructs its
+decisions added since the preceding durable record. The store uses the same
+complete snapshot validator as the observer after applying increments, so an
+incomplete observation or decision cannot replace the last valid episode. It reconstructs its
 latest-entry and per-entry counts once when opened, then appends from those
 indices. Each later save checks the expected file size and modification time;
 an external change blocks append and requires an explicit reload/review instead

@@ -381,7 +381,7 @@ export class MicroBurstProspectiveExitObserver {
   }
 
   public restoreEntry(snapshot: ProspectiveExitEntrySnapshot): boolean {
-    if (!this.validSnapshot(snapshot)) {
+    if (!this.validateSnapshot(snapshot)) {
       this.metrics = { ...this.metrics, schemaFailures: this.metrics.schemaFailures + 1 };
       return false;
     }
@@ -817,7 +817,7 @@ export class MicroBurstProspectiveExitObserver {
     );
   }
 
-  private validSnapshot(snapshot: ProspectiveExitEntrySnapshot): boolean {
+  public validateSnapshot(snapshot: ProspectiveExitEntrySnapshot): boolean {
     return (
       Boolean(snapshot) &&
       this.validIdentity(snapshot.identity) &&
@@ -928,4 +928,14 @@ export class MicroBurstProspectiveExitObserver {
       },
     });
   }
+}
+
+export function isValidProspectiveExitEntrySnapshot(
+  snapshot: unknown,
+  maxObservationsPerEntry = 512,
+): snapshot is ProspectiveExitEntrySnapshot {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  return new MicroBurstProspectiveExitObserver({ maxObservationsPerEntry }).validateSnapshot(
+    snapshot as ProspectiveExitEntrySnapshot,
+  );
 }
