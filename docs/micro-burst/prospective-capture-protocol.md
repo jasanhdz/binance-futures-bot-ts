@@ -78,6 +78,7 @@ latest-entry and per-entry counts once when opened, then appends from those
 indices. Each later save checks the expected file size and modification time;
 an external change blocks append and requires an explicit reload/review instead
 of silently reparsing or merging unknown bytes.
+The shared validator is total: malformed top-level objects, missing fields, and
 
 `writeAllBytes()` retries short writes until the complete UTF-8 record is written
 and rejects zero progress. The store advances its byte/observation/decision

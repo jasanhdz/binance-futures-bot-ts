@@ -66,6 +66,7 @@ reportados en la auditoría, no sólo pruebas de cobertura genérica.
 | Escritura parcial / confirmación prematura      | Un `write()` corto podía dejar un registro parcial o avanzar el estado lógico | `writeAllBytes()` reintenta todos los bytes; índices sólo avanzan después de `datasync()`; fallo bloquea append                      | `retries partial writes and rejects a zero-progress writer`       | Pasa dirigido; suite completa no repetida después de esta corrección |
 | Validación incompleta de incrementos             | Observación `{eventAtMs: 1000}` podía desplazar un snapshot válido          | Se valida el snapshot reconstruido completo con el mismo validador del observador | `retains the previous valid snapshot when an incremental observation is incomplete` | Pasa; snapshot previo conservado |
 | Caché mutable del almacén                        | Mutar el objeto tras `save()` discrepaba de disco y `load()` devolvía referencias internas | Clonado profundo al recibir y al devolver snapshots | `isolates the in-memory cache from save inputs and load outputs` | Pasa |
+| Validador lanzaba ante malformaciones             | `{}`, identidad/simulaciones ausentes o elementos `null` podían provocar acceso inválido | Validador compartido total: siempre devuelve booleano; `save()` rechaza sin lanzar | `rejects malformed snapshots without throwing` | Pasa |
 
 ## Coverage: COMPLETE
 
@@ -80,7 +81,7 @@ The directed offline suites cover mirrored LONG/SHORT behavior for:
 - JSON reconstruction, deterioration timers, and quote age;
 - invalidation, anomalies, and absolute exposure.
 
-Current directed result: `53/53` tests passing across the offline variant, observer,
+Current directed result: `54/54` tests passing across the offline variant, observer,
 capture, and runtime suites.
 
 ## Follow-up Audit

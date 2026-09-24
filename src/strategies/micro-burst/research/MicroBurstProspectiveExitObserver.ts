@@ -818,29 +818,33 @@ export class MicroBurstProspectiveExitObserver {
   }
 
   public validateSnapshot(snapshot: ProspectiveExitEntrySnapshot): boolean {
-    return (
-      Boolean(snapshot) &&
-      this.validIdentity(snapshot.identity) &&
-      Number.isFinite(snapshot.horizonAtMs) &&
-      (snapshot.realPositionClosedAtMs === null ||
-        Number.isFinite(snapshot.realPositionClosedAtMs)) &&
-      Array.isArray(snapshot.realFills) &&
-      snapshot.realFills.every((fill) => this.validFill(fill, snapshot.identity.quantity)) &&
-      ['ENTRY', 'EXIT'].every(
-        (role) =>
-          snapshot.realFills
-            .filter((fill) => (fill.role ?? 'ENTRY') === role)
-            .reduce((sum, fill) => sum + fill.quantity, 0) <= snapshot.identity.quantity,
-      ) &&
-      Array.isArray(snapshot.observations) &&
-      snapshot.observations.length <= this.maxObservationsPerEntry &&
-      snapshot.observations.every((observation) => this.validObservation(observation)) &&
-      typeof snapshot.completed === 'boolean' &&
-      (snapshot.lastObservationEventAtMs === null ||
-        Number.isFinite(snapshot.lastObservationEventAtMs)) &&
-      this.validSimulationSnapshot(snapshot.simulations.CURRENT) &&
-      this.validSimulationSnapshot(snapshot.simulations.CANDIDATE)
-    );
+    try {
+      return (
+        Boolean(snapshot) &&
+        this.validIdentity(snapshot.identity) &&
+        Number.isFinite(snapshot.horizonAtMs) &&
+        (snapshot.realPositionClosedAtMs === null ||
+          Number.isFinite(snapshot.realPositionClosedAtMs)) &&
+        Array.isArray(snapshot.realFills) &&
+        snapshot.realFills.every((fill) => this.validFill(fill, snapshot.identity.quantity)) &&
+        ['ENTRY', 'EXIT'].every(
+          (role) =>
+            snapshot.realFills
+              .filter((fill) => (fill.role ?? 'ENTRY') === role)
+              .reduce((sum, fill) => sum + fill.quantity, 0) <= snapshot.identity.quantity,
+        ) &&
+        Array.isArray(snapshot.observations) &&
+        snapshot.observations.length <= this.maxObservationsPerEntry &&
+        snapshot.observations.every((observation) => this.validObservation(observation)) &&
+        typeof snapshot.completed === 'boolean' &&
+        (snapshot.lastObservationEventAtMs === null ||
+          Number.isFinite(snapshot.lastObservationEventAtMs)) &&
+        this.validSimulationSnapshot(snapshot.simulations.CURRENT) &&
+        this.validSimulationSnapshot(snapshot.simulations.CANDIDATE)
+      );
+    } catch {
+      return false;
+    }
   }
 
   private validFill(fill: ProspectiveRealFill, quantity: number): boolean {

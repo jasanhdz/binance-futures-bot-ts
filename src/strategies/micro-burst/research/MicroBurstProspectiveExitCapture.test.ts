@@ -110,6 +110,31 @@ describe('MicroBurst prospective capture integration boundary', () => {
     );
   });
 
+  it('rejects malformed snapshots without throwing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'micro-prospective-malformed-'));
+    const store = new MicroBurstProspectiveExitJsonlStore(join(root, 'episodes.jsonl'));
+    const observer = new MicroBurstProspectiveExitObserver();
+    observer.registerEntry(identity('malformed'));
+    const valid = observer.getEntry('malformed')!;
+    const malformed: unknown[] = [
+      {},
+      { identity: null },
+      { ...valid, identity: undefined },
+      { ...valid, simulations: undefined },
+      { ...valid, realFills: [null] },
+      { ...valid, observations: [null] },
+      {
+        ...valid,
+        simulations: {
+          ...valid.simulations,
+          CURRENT: { ...valid.simulations.CURRENT, decisions: [null] },
+        },
+      },
+    ];
+    for (const value of malformed) await expect(store.save(value as never)).resolves.toBe(false);
+    expect(store.getHealth().writeFailures).toBe(malformed.length);
+  });
+
   it('is disabled unless explicitly enabled by a separate observer-only composition', async () => {
     const observer = new MicroBurstProspectiveExitObserver();
     const capture = new MicroBurstProspectiveExitCapture(observer);
