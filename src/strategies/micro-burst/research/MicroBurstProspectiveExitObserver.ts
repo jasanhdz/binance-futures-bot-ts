@@ -82,9 +82,9 @@ export interface ProspectiveExitObservation {
   evaluatedAtMs: number;
   context: MicroBurstExitContext;
   executionAssumptions: {
-    roundTripCostBps: number;
-    feeBps: number;
-    slippageBps: number;
+    roundTripCostBps: number | null;
+    feeBps: number | null;
+    slippageBps: number | null;
     source: string;
   };
   depth: ProspectiveExitDepthEvidence | null;
@@ -541,6 +541,10 @@ export class MicroBurstProspectiveExitObserver {
     return entry ? this.snapshot(entry) : null;
   }
 
+  public entriesSnapshot(): readonly ProspectiveExitEntrySnapshot[] {
+    return [...this.entries.values()].map((entry) => this.snapshot(entry));
+  }
+
   public getMetrics(): ProspectiveExitObserverMetrics {
     return { ...this.metrics };
   }
@@ -556,7 +560,7 @@ export class MicroBurstProspectiveExitObserver {
     const economicAgeMs = economics ? observation.evaluatedAtMs - economics.observedAtMs : null;
     const evaluable =
       observation.gap === undefined && observation.depth?.quantityCovered === true && depthCoherent;
-    const economicEvaluable = evaluable && economics !== null;
+    const economicEvaluable = evaluable && economics != null;
     const previousPrice = simulation.lastObservedPrice;
     const previousObservedAtMs = simulation.lastObservedAtMs;
     const currentPrice = observation.context.currentPrice;
@@ -761,7 +765,7 @@ export class MicroBurstProspectiveExitObserver {
         observation.executionAssumptions.roundTripCostBps,
         observation.executionAssumptions.feeBps,
         observation.executionAssumptions.slippageBps,
-      ].every(Number.isFinite) &&
+      ].every((value) => value === null || Number.isFinite(value)) &&
       (observation.gap === undefined ||
         (Number.isFinite(observation.gap.fromMs) &&
           Number.isFinite(observation.gap.toMs) &&
@@ -911,7 +915,7 @@ export class MicroBurstProspectiveExitObserver {
         record.executionAssumptions.roundTripCostBps,
         record.executionAssumptions.feeBps,
         record.executionAssumptions.slippageBps,
-      ].every(Number.isFinite)
+      ].every((value) => value === null || Number.isFinite(value))
     );
   }
 

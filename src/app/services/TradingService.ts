@@ -157,9 +157,12 @@ import { validMicroBurstSettlementIdentity } from '../../strategies/micro-burst/
 import type { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
 import type {
   ProspectiveExitIdentity,
+  ProspectiveExitObservation,
   ProspectiveRealFill,
 } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitObserver';
 import type { StrategyExecutionResult } from '../../core/strategy/StrategyExecution';
+import type { MicroBurstExitContext } from '../../strategies/micro-burst/domain/MicroBurstTypes';
+import type { MicroBurstExitMarketSnapshot } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 
 const INITIAL_BALANCE = 20;
 const LIQUIDITY_STRESS_FRESHNESS_WINDOW_MS = 30_000;
@@ -330,6 +333,9 @@ export class TradingService {
     if (deps.entryCoordinator || deps.closeCoordinator) this.acceptingEntries = false;
     this.historyLogger = deps.historyLogger ?? new AegisTurboHistoryLogger({ logger: deps.logger });
     this.runtimeConfig = new TradingRuntimeConfigService(deps.configManager);
+    this.deps.microBurstProspectiveExit?.setEnabled(
+      this.runtimeConfig.getMicroBurstConfig().prospectiveValidation?.enabled === true,
+    );
     this.aegisEntryNotificationService = new AegisEntryNotificationService({
       notifier: deps.notifier,
       logger: deps.logger,
@@ -2404,6 +2410,7 @@ export class TradingService {
     const clientOrderId = execution.metadata.clientOrderId;
     if (
       !bus ||
+      this.runtimeConfig.getMicroBurstConfig().prospectiveValidation?.enabled !== true ||
       typeof clientOrderId !== 'string' ||
       !this.deps.exchange.readRecoverableEntryPosition
     )
@@ -2424,8 +2431,12 @@ export class TradingService {
         await this.deps.exchange.getRecentFills(request.symbol, request.requestedAt, 100)
       )
         .filter((fill) => fill.orderId === reconciled.orderId)
+        .filter(
+          (fill) =>
+            typeof fill.fillId === 'string' && reconciled.fillIds.includes(fill.fillId),
+        )
         .map<ProspectiveRealFill>((fill, index) => ({
-          fillId: reconciled.fillIds[index] ?? `${fill.orderId}:${fill.time}:${index}`,
+          fillId: fill.fillId!,
           orderId: fill.orderId,
           eventAtMs: fill.time,
           receivedAtMs: Date.now(),
@@ -2435,7 +2446,7 @@ export class TradingService {
           fundingBps: null,
           role: 'ENTRY',
         }));
-      if (fills.length === 0) return;
+      if (fills.length !== reconciled.fillIds.length) return;
       const identity: ProspectiveExitIdentity = {
         entryId: execution.tradeId,
         symbol: reconciled.symbol,
@@ -2460,6 +2471,85 @@ export class TradingService {
         error: String(error),
       });
     }
+  }
+
+  private publishProspectiveObservation(
+    symbol: string,
+    entryId: string | undefined,
+    side: 'LONG' | 'SHORT',
+    quantity: number | undefined,
+    context: MicroBurstExitContext,
+    market: MicroBurstExitMarketSnapshot | null,
+  ): void {
+    const bus = this.deps.microBurstProspectiveExit;
+    if (
+      !bus ||
+      this.runtimeConfig.getMicroBurstConfig().prospectiveValidation?.enabled !== true ||
+      !entryId ||
+      !Number.isFinite(quantity) ||
+      !Number.isFinite(context.observedAtMs)
+    )
+      return;
+
+    const observedAtMs = context.observedAtMs;
+    if (typeof observedAtMs !== 'number' || !Number.isFinite(observedAtMs)) return;
+    const book = this.strategyRuntimeCoordinator.readMicroBurstExecutionBook(symbol);
+    const levels = side === 'LONG' ? (book?.bidDepth ?? []) : (book?.askDepth ?? []);
+    let availableQuantity = 0;
+    let levelsUsed = 0;
+    for (const level of levels) {
+      if (!Number.isFinite(level.qty) || level.qty < 0) break;
+      availableQuantity += level.qty;
+      levelsUsed++;
+      if (availableQuantity >= quantity!) break;
+    }
+    const quantityCovered = book?.status === 'HEALTHY' && availableQuantity >= quantity!;
+    const economics = context.executableEconomics;
+    const observation: ProspectiveExitObservation = {
+      eventAtMs: observedAtMs,
+      receivedAtMs: Math.max(observedAtMs, book?.observedAtMs ?? observedAtMs),
+      evaluatedAtMs: Date.now(),
+      context,
+      executionAssumptions: {
+        roundTripCostBps: economics?.residualCostBps ?? null,
+        feeBps: null,
+        slippageBps: null,
+        source: economics ? 'MICRO_EXIT_ECONOMICS' : 'UNAVAILABLE',
+      },
+      depth: book
+        ? {
+            status: book.status,
+            observedAtMs: book.observedAtMs,
+            requiredQuantity: quantity!,
+            availableQuantity,
+            levelsUsed,
+            quantityCovered,
+          }
+        : null,
+      inputProvenance: {
+        btcAvailable: context.currentBtcContext !== null,
+        flowAvailable: context.marketEvidence !== null,
+        structureAvailable:
+          Number.isFinite(context.structuralInvalidationPrice) &&
+          Number.isFinite(context.destinationPrice),
+        quality: {
+          source: 'TRADING_SERVICE_CONSUMED_EXIT_CONTEXT',
+          economicsAvailable: economics !== undefined,
+          depthAvailable: book !== undefined,
+        },
+      },
+      ...(quantityCovered && economics
+        ? {}
+        : {
+            gap: {
+              kind: economics ? 'DEPTH' : 'UNKNOWN',
+              fromMs: observedAtMs,
+              toMs: observedAtMs,
+              reason: economics ? 'INSUFFICIENT_EXECUTABLE_DEPTH' : 'EXECUTABLE_ECONOMICS_UNAVAILABLE',
+            },
+          }),
+    };
+    bus.publishObservation(entryId, observation);
   }
 
   private microDecisionId(request: MicroBurstLiveEntryRequest): string | null {
@@ -2517,6 +2607,12 @@ export class TradingService {
             await store.flush();
             identity = candidate;
           }
+        }
+        if (identity) {
+          this.deps.microBurstProspectiveExit?.publishRealPositionClosed(
+            identity.tradeId,
+            identity.closedAtMs,
+          );
         }
         if (
           !identity ||
@@ -2945,36 +3041,45 @@ export class TradingService {
               )
             : undefined;
         const now = Date.now();
-        const price = economics?.exitPrice ?? NaN;
+        const price = economics?.exitPrice ?? market?.currentPrice ?? NaN;
         const priceReturn =
           side === 'LONG' ? (price - entryPrice) / entryPrice : (entryPrice - price) / entryPrice;
+        const exitContext: MicroBurstExitContext = {
+          currentPrice: price,
+          entryPrice,
+          priceReturn,
+          unrealizedRoe: priceReturn * (botState.lastLeverage ?? NaN),
+          peakPrice: botState.microBurstPeakPrice ?? entryPrice,
+          troughPrice: botState.microBurstTroughPrice ?? entryPrice,
+          structuralInvalidationPrice: structuralStop,
+          destinationPrice: destination,
+          currentStopPrice: botState.lastStopPrice ?? null,
+          timeInTradeMs: now - (botState.lastEntryAt ?? NaN),
+          observedAtMs: now,
+          momentumDecayFlag: false,
+          anomalyExitFlag: false,
+          currentBookPressure: market?.currentBookPressure ?? null,
+          currentBtcContext: market?.currentBtcContext ?? null,
+          marketEvidence: market?.marketEvidence ?? null,
+          leverage: botState.lastLeverage ?? NaN,
+          executableEconomics: economics ?? undefined,
+          nextConfirmedObstacle,
+        };
+        this.publishProspectiveObservation(
+          symbol,
+          botState.lastTradeId,
+          side,
+          botState.lastEntryQty,
+          exitContext,
+          market,
+        );
         await this.positionManagerRouter.route(identity, {
           symbol,
           botState: symbolState.get(),
           symbolState,
           strategyMode: 'LIVE',
           side,
-          exitContext: {
-            currentPrice: price,
-            entryPrice,
-            priceReturn,
-            unrealizedRoe: priceReturn * (botState.lastLeverage ?? NaN),
-            peakPrice: entryPrice,
-            troughPrice: entryPrice,
-            structuralInvalidationPrice: structuralStop,
-            destinationPrice: destination,
-            currentStopPrice: botState.lastStopPrice ?? null,
-            timeInTradeMs: now - (botState.lastEntryAt ?? NaN),
-            observedAtMs: now,
-            momentumDecayFlag: false,
-            anomalyExitFlag: false,
-            currentBookPressure: market?.currentBookPressure ?? null,
-            currentBtcContext: market?.currentBtcContext ?? null,
-            marketEvidence: market?.marketEvidence ?? null,
-            leverage: botState.lastLeverage ?? NaN,
-            executableEconomics: economics ?? undefined,
-            nextConfirmedObstacle,
-          },
+           exitContext,
         } as any);
         return;
       }
@@ -3038,6 +3143,14 @@ export class TradingService {
           leverage,
         },
       };
+      this.publishProspectiveObservation(
+        symbol,
+        botState.lastTradeId,
+          side,
+          botState.lastEntryQty,
+        managementContext.exitContext as MicroBurstExitContext,
+        market,
+      );
     }
 
     const routed = await this.positionManagerRouter.route(identity, managementContext as any);

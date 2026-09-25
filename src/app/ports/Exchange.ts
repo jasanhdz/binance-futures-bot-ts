@@ -44,6 +44,7 @@ export interface RecoverableEntryPosition {
 }
 
 export type TradeFill = {
+  fillId?: string;
   orderId: string;
   side: 'BUY' | 'SELL';
   price: number;

@@ -200,7 +200,7 @@ describe('MicroBurst prospective runtime composition', () => {
   });
 
   it('uses the production event bus without blocking its publisher on persistence', async () => {
-    const source = new MicroBurstProspectiveExitEventBus();
+    const source = new MicroBurstProspectiveExitEventBus(true);
     const runtime = createMicroBurstProspectiveExitRuntime(
       {
         enabled: true,
@@ -211,12 +211,14 @@ describe('MicroBurst prospective runtime composition', () => {
     await runtime.start();
     const entry = identity('runtime-bus-entry');
     source.publishExecutedEntry(entry, [fill]);
-    source.publishObservation(entry.entryId, observation(300_000));
+    source.publishObservation(entry.entryId, observation(10_000));
     source.publishRealPositionClosed(entry.entryId, 301_000);
+    await settle();
     source.publishObservation(entry.entryId, observation(360_000));
+    source.publishObservation(entry.entryId, observation(1_000_000));
     await settle();
 
-    expect(runtime.getEntry(entry.entryId)?.realPositionClosedAtMs).toBe(301_000);
+    expect(source.entriesSnapshot()).toHaveLength(0);
     expect(source.getSynchronousCost().maxMs).toBeLessThan(25);
     await expect(runtime.stop()).resolves.toBe(true);
   });

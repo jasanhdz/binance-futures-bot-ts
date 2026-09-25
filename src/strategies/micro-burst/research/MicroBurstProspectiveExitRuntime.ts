@@ -20,6 +20,7 @@ export interface MicroBurstProspectiveExitEventSource {
   onObservation(
     listener: (entryId: string, observation: ProspectiveExitObservation) => void,
   ): () => void;
+  removeEntry?(entryId: string): void;
 }
 
 export interface MicroBurstProspectiveExitRuntimeConfig {
@@ -83,7 +84,9 @@ export class MicroBurstProspectiveExitRuntime {
         void this.capture.onRealPositionClosed(entryId, closedAtMs);
       }),
       this.source.onObservation((entryId, observation) => {
-        void this.capture.onObservation(entryId, observation);
+        void this.capture.onObservation(entryId, observation).then(() => {
+          if (this.capture.getEntry(entryId)?.completed) this.source.removeEntry?.(entryId);
+        });
       }),
     );
     this.started = true;
@@ -113,6 +116,10 @@ export class MicroBurstProspectiveExitRuntime {
 
   public getEntry(entryId: string): ProspectiveExitEntrySnapshot | null {
     return this.capture.getEntry(entryId);
+  }
+
+  public entriesSnapshot(): readonly ProspectiveExitEntrySnapshot[] {
+    return this.capture.entriesSnapshot();
   }
 }
 

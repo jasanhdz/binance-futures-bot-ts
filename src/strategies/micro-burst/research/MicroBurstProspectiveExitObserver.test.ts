@@ -151,6 +151,35 @@ describe('MicroBurst prospective dual exit observer', () => {
     },
   );
 
+  it('records missing economics and insufficient depth as non-evaluable', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    const entryId = 'non-evaluable';
+    expect(observer.registerEntry(identity(entryId, 'LONG'))).toBe(true);
+    const degraded = observation(1_000, 'LONG', 100.1);
+    degraded.context.executableEconomics = undefined;
+    degraded.executionAssumptions = {
+      roundTripCostBps: null,
+      feeBps: null,
+      slippageBps: null,
+      source: 'UNAVAILABLE',
+    };
+    degraded.depth = {
+      ...degraded.depth!,
+      availableQuantity: 1,
+      quantityCovered: false,
+    };
+    degraded.gap = {
+      kind: 'UNKNOWN',
+      fromMs: 1_000,
+      toMs: 1_000,
+      reason: 'EXECUTABLE_ECONOMICS_UNAVAILABLE',
+    };
+    expect(observer.observe(entryId, degraded)).toBe(true);
+    const record = observer.getEntry(entryId)!.simulations.CANDIDATE.decisions[0];
+    expect(record.evaluable).toBe(false);
+    expect(record.economicEvaluable).toBe(false);
+  });
+
   it.each(['LONG', 'SHORT'] as const)('keeps protective stop invariants aligned: %s', (side) => {
     const observer = new MicroBurstProspectiveExitObserver({ config });
     observer.registerEntry(identity(`protection-${side}`, side));

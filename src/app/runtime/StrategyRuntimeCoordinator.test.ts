@@ -10,6 +10,7 @@ import type { MomentumRideBlackBoxObservation } from '../../strategies/momentum/
 import type { MomentumCandleState } from '../../strategies/momentum/application/MomentumCandleState';
 import type { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
 import type { MomentumRideStrategyContext } from '../../strategies/momentum/domain/MomentumRideStrategy';
+import { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
 import { SharedMarketDataRuntime } from '../services/SharedMarketDataRuntime';
 import { SharedLiquidityState } from '../services/SharedLiquidityState';
 import type { Exchange } from '../ports/Exchange';
@@ -25,7 +26,10 @@ interface RuntimeHarness {
   factories: StrategyRuntimeCoordinatorFactories;
 }
 
-function runtimeHarness(exchange: Exchange = {} as never): RuntimeHarness {
+function runtimeHarness(
+  exchange: Exchange = {} as never,
+  prospectiveBus?: MicroBurstProspectiveExitEventBus,
+): RuntimeHarness {
   const events: string[] = [];
   const sharedMarketData = {
     close: vi.fn(() => events.push('shared-market-data:close')),
@@ -100,6 +104,9 @@ function runtimeHarness(exchange: Exchange = {} as never): RuntimeHarness {
           contentHash: `content-hash:${snapshot.snapshotId}`,
         })),
       },
+      microBurstProspectiveExit: prospectiveBus
+        ? { source: prospectiveBus, bus: prospectiveBus }
+        : undefined,
     },
     factories,
   );
@@ -279,6 +286,111 @@ describe('StrategyRuntimeCoordinator', () => {
     await expect(coordinator.stop()).resolves.toBeUndefined();
 
     expect(events).toEqual(['momentum-hook:detach']);
+  });
+
+  it('continues a closed episode from consumed market data without inventing economics', async () => {
+    const bus = new MicroBurstProspectiveExitEventBus(true);
+    const { coordinator } = runtimeHarness({} as never, bus);
+    const identity = {
+      entryId: 'closed-entry',
+      symbol: 'ETHUSDT',
+      side: 'LONG' as const,
+      enteredAtMs: 1_000,
+      quantity: 2,
+      entryPrice: 100,
+      strategyVersion: 'MICRO',
+      codeCommitSha: 'a'.repeat(40),
+      configHash: 'b'.repeat(64),
+      currentPolicyVersion: 'MICRO',
+      candidatePolicyVersion: 'MICRO_OFFLINE_NO_TIME_CLOSE_V1' as const,
+      structuralInvalidationPrice: 98,
+      destinationPrice: 104,
+      leverage: 20,
+    };
+    const previous = {
+      eventAtMs: 2_000,
+      receivedAtMs: 2_001,
+      evaluatedAtMs: 2_002,
+      context: {
+        observedAtMs: 2_000,
+        timeInTradeMs: 1_000,
+        currentPrice: 101,
+        entryPrice: 100,
+        peakPrice: 101,
+        troughPrice: 99,
+        structuralInvalidationPrice: 98,
+        destinationPrice: 104,
+        currentStopPrice: 98,
+        unrealizedRoe: 0.2,
+        priceReturn: 0.01,
+        leverage: 20,
+        momentumDecayFlag: true,
+        anomalyExitFlag: true,
+        currentBookPressure: null,
+        currentBtcContext: null,
+        marketEvidence: null,
+        executableEconomics: {
+          observedAtMs: 2_000,
+          exitPrice: 101,
+          quantityCovered: true,
+          residualCostBps: 14,
+          volatilityBps: 4,
+        },
+      },
+      executionAssumptions: {
+        roundTripCostBps: 14,
+        feeBps: null,
+        slippageBps: null,
+        source: 'TEST',
+      },
+      depth: null,
+      inputProvenance: {
+        btcAvailable: false,
+        flowAvailable: false,
+        structureAvailable: true,
+        quality: {},
+      },
+    } as any;
+    bus.publishExecutedEntry(identity, []);
+    bus.publishObservation(identity.entryId, previous);
+    bus.publishRealPositionClosed(identity.entryId, 2_100);
+    const observations: any[] = [];
+    bus.onObservation((_entryId, observation) => observations.push(observation));
+    (coordinator as any).microBurstRuntime = {
+      readExitMarketSnapshot: vi.fn(() => ({
+        currentPrice: 102,
+        observedAtMs: 3_000,
+        currentBookPressure: null,
+        currentBtcContext: null,
+        marketEvidence: null,
+        book: {
+          status: 'HEALTHY',
+          observedAtMs: 3_000,
+          bidDepth: [{ price: 101.99, qty: 3 }],
+          askDepth: [{ price: 102.01, qty: 3 }],
+        },
+      })),
+    };
+
+    await (coordinator as any).publishClosedProspectiveObservations();
+
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      executionAssumptions: {
+        roundTripCostBps: null,
+        feeBps: null,
+        slippageBps: null,
+      },
+      depth: { availableQuantity: 3, requiredQuantity: 2, quantityCovered: true },
+      context: {
+        currentPrice: 102,
+        peakPrice: 102,
+        troughPrice: 99,
+        momentumDecayFlag: true,
+        anomalyExitFlag: true,
+        executableEconomics: undefined,
+      },
+    });
   });
 
   it('keeps Micro Burst startup failures isolated from the bot startup', async () => {

@@ -21,6 +21,7 @@ import { SharedStrategyExecutionService } from '../execution/SharedStrategyExecu
 import { PositionProtectionService } from '../position/PositionProtectionService';
 import { MicroBurstPositionManager } from '../../strategies/micro-burst/application/MicroBurstPositionManager';
 import { createMicroBurstIdentity } from '../../strategies/micro-burst/domain/MicroBurstIdentity';
+import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 import { sizeMicroBurstLiveEntry } from '../../strategies/micro-burst/application/MicroBurstLiveSizing';
 import { validateMicroBurstEntryMarket } from '../../strategies/micro-burst/domain/MicroBurstEntryMarketGuard';
 import {
@@ -29,6 +30,8 @@ import {
   type MicroBurstLossResetCommand,
 } from '../../infra/state/MicroBurstNetLossLedger';
 import type { TradingExchangePort } from '../ports/Exchange';
+import { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
+import { createMicroBurstProspectiveExitRuntime } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitRuntime';
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => {
@@ -36,7 +39,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function fixture() {
+async function fixture(prospective = false) {
   let clock = Date.now();
   vi.spyOn(Date, 'now').mockImplementation(() => clock);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-full-flow-'));
@@ -62,6 +65,7 @@ async function fixture() {
     symbols: { ETHUSDT: { enabled: true } },
     exitPolicy: { contextualPolicyVersion: 'MICRO' },
     contextualRisk: risk,
+    prospectiveValidation: prospective ? { enabled: true } : undefined,
   };
   const scope = { account: 'simulated-account', environment: 'offline' };
   const keys = generateKeyPairSync('ed25519');
@@ -179,13 +183,17 @@ async function fixture() {
         ],
       },
     ]),
-    futuresGetOrder: vi.fn(async ({ orderId }: any) => orders.get(String(orderId))),
+    futuresGetOrder: vi.fn(async ({ orderId, origClientOrderId }: any) =>
+      orderId !== undefined
+        ? orders.get(String(orderId))
+        : [...orders.values()].find((order) => order.clientOrderId === origClientOrderId),
+    ),
     futuresUserTrades: vi.fn(async ({ startTime, endTime }: any) =>
       trades.filter((t) => t.time >= startTime && t.time <= endTime),
     ),
     futuresIncome: vi.fn(async () => []),
   };
-  const sendOpen = vi.fn(async (_symbol: string, _side: string, q: number) => {
+  const sendOpen = vi.fn(async (_symbol: string, _side: string, q: number, clientOrderId?: string) => {
     expect(fs.readFileSync(path.join(dir, 'entry.jsonl'), 'utf8')).toContain('PREPARED');
     expect(fs.readFileSync(path.join(dir, 'entry.jsonl'), 'utf8')).toContain(
       'contextualSizingEvidence',
@@ -194,10 +202,38 @@ async function fixture() {
     quantity = q;
     const id = String(++sequence);
     fill('BUY', q, id, 100);
+    orders.get(id)!.clientOrderId = clientOrderId;
     return { avgPrice: 100, orderId: id };
   });
   Object.assign(exchange, {
     cli: client,
+    readRecoverableEntryPosition: async (_symbol: string, clientOrderId: string) => {
+      const order = [...orders.values()].find((candidate) => candidate.clientOrderId === clientOrderId);
+      if (!order) return null;
+      const entryTrade = trades.find((trade) => String(trade.orderId) === String(order.orderId));
+      return entryTrade
+        ? {
+            symbol: 'ETHUSDT',
+            side: 'LONG' as const,
+            orderId: String(order.orderId),
+            fillIds: [String(entryTrade.id)],
+            filledAt: entryTrade.time,
+            position: position()!,
+          }
+        : null;
+    },
+    getRecentFills: async () =>
+      trades.map((trade) => ({
+        fillId: String(trade.id),
+        orderId: String(trade.orderId),
+        side: trade.side,
+        price: Number(trade.price),
+        qty: Number(trade.qty),
+        realizedPnl: Number(trade.realizedPnl),
+        commission: Number(trade.commission),
+        commissionAsset: trade.commissionAsset,
+        time: trade.time,
+      })),
     log: logger,
     enqueue: async (work: () => unknown) => work(),
     sharedRateLimiter: { acquire: async () => undefined },
@@ -353,6 +389,19 @@ async function fixture() {
       logTradeEvent: async () => {},
     });
   let protection = makeProtection();
+  const prospectiveBus = new MicroBurstProspectiveExitEventBus(prospective);
+  const prospectiveRuntime = createMicroBurstProspectiveExitRuntime(
+    {
+      enabled: prospective,
+      journalPath: path.join(dir, 'prospective.jsonl'),
+    },
+    prospectiveBus,
+    { config: { ...defaultMicroBurstConfig(), ...config.exitPolicy } as any },
+  );
+  if (prospective) {
+    await prospectiveRuntime.start();
+    cleanups.push(() => prospectiveRuntime.stop());
+  }
   const service = Object.create(TradingService.prototype) as any;
   Object.assign(service, {
     acceptingEntries: true,
@@ -373,6 +422,7 @@ async function fixture() {
       closeCoordinator: close,
       microNetLossLedger: ledger,
       closedTradeOutcomeReader: async () => [],
+      microBurstProspectiveExit: prospectiveBus,
     },
     positionProtection: protection,
     microAdmissionDiagnostics: { record: vi.fn() },
@@ -502,6 +552,9 @@ async function fixture() {
     },
     book,
     sendOpen,
+    prospectiveBus,
+    prospectiveRuntime,
+    prospectiveJournalPath: path.join(dir, 'prospective.jsonl'),
     request,
     ledger: () => ledger,
     setPrice: (p: number) => {
@@ -846,6 +899,47 @@ describe('Micro production entry/protection/exit/accounting flow with simulated 
     expect(f.store.get().microBurstPnlUnverified).toBe(false);
     expect(f.exchange.sendMarketCloseOnce).not.toHaveBeenCalled();
   }, 20_000);
+
+  it('composes reconciled entry, causal observation, real close, and durable restore', async () => {
+    const f = await fixture(true);
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    await vi.waitFor(() => expect(f.prospectiveBus.entriesSnapshot()).toHaveLength(1));
+    const entryId = f.prospectiveBus.entriesSnapshot()[0].entryId;
+
+    f.setPrice(101);
+    await f.service.managePositionByOwner('ETHUSDT', f.store.get(), f.store);
+    await vi.waitFor(() =>
+      expect(f.prospectiveRuntime.getEntry(entryId)?.observations.length).toBeGreaterThan(0),
+    );
+
+    f.triggerStop();
+    await f.protection.reconcileMissingMicroPosition('ETHUSDT', f.store);
+    await f.stop.reconcileClosed(() => f.store);
+    await f.service.reconcileMicroNetSettlements();
+    await vi.waitFor(() => expect(f.prospectiveBus.closedEntriesSnapshot()).toContain(entryId));
+    expect(f.prospectiveRuntime.getEntry(entryId)?.realPositionClosedAtMs).not.toBeNull();
+    const lastObservation = f.prospectiveRuntime.getEntry(entryId)?.observations[
+      (f.prospectiveRuntime.getEntry(entryId)?.observations.length ?? 1) - 1
+    ];
+    expect(lastObservation?.executionAssumptions).toMatchObject({
+      roundTripCostBps: 14,
+      feeBps: null,
+      slippageBps: null,
+    });
+
+    await f.prospectiveRuntime.stop();
+    f.prospectiveBus.setEnabled(false);
+    f.prospectiveBus.setEnabled(true);
+    const restored = createMicroBurstProspectiveExitRuntime(
+      { enabled: true, journalPath: f.prospectiveJournalPath },
+      f.prospectiveBus,
+    );
+    await restored.start();
+    f.prospectiveBus.restoreEntries(restored.entriesSnapshot());
+    expect(f.prospectiveBus.closedEntriesSnapshot()).toContain(entryId);
+    await restored.stop();
+  }, 30_000);
 
   it('does not submit without actual fee/tier evidence, matched policy or a new episode', async () => {
     const f = await fixture();

@@ -52,6 +52,7 @@ import type { MicroBurstProspectiveExitEventSource } from '../../strategies/micr
 import { createMicroBurstProspectiveExitRuntime } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitRuntime';
 import type { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
 import type { ProspectiveExitObservation } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitObserver';
+import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 
 export type MicroBurstRuntimeProvenance = NonNullable<MicroBurstRuntimeDeps['provenance']>;
 
@@ -133,7 +134,7 @@ export class StrategyRuntimeCoordinator {
   private microBurstReadiness: MicroBurstRuntimeReadiness | null = null;
   private prospectiveExitRuntime: ReturnType<typeof createMicroBurstProspectiveExitRuntime> | null =
     null;
-  private prospectiveObservationTimer: NodeJS.Timeout | null = null;
+  private prospectiveObservationTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly deps: StrategyRuntimeCoordinatorDeps,
@@ -450,20 +451,27 @@ export class StrategyRuntimeCoordinator {
         config,
       );
       if (this.deps.microBurstProspectiveExit) {
+        const prospectiveEnabled = config.prospectiveValidation?.enabled === true;
+        this.deps.microBurstProspectiveExit.bus?.setEnabled(prospectiveEnabled);
         this.prospectiveExitRuntime = createMicroBurstProspectiveExitRuntime(
           {
-            enabled: config.prospectiveValidation?.enabled === true,
+            enabled: prospectiveEnabled,
             journalPath: 'logs/micro-burst/prospective-exits.jsonl',
           },
           this.deps.microBurstProspectiveExit.source,
+          {
+            config: { ...defaultMicroBurstConfig(), ...config.exitPolicy },
+          },
         );
         await this.prospectiveExitRuntime.start();
-        if (
-          config.prospectiveValidation?.enabled === true &&
-          this.deps.microBurstProspectiveExit.bus
-        ) {
+        if (prospectiveEnabled && this.deps.microBurstProspectiveExit.bus) {
+          this.deps.microBurstProspectiveExit.bus.restoreEntries(
+            this.prospectiveExitRuntime
+              .entriesSnapshot()
+              .filter((entry) => !entry.completed),
+          );
           this.prospectiveObservationTimer = setInterval(() => {
-            void this.publishProspectiveObservations();
+            void this.publishClosedProspectiveObservations();
           }, 250);
           this.prospectiveObservationTimer.unref?.();
         }
@@ -517,65 +525,98 @@ export class StrategyRuntimeCoordinator {
     }
   }
 
-  private async publishProspectiveObservations(): Promise<void> {
+  private async publishClosedProspectiveObservations(): Promise<void> {
     const bus = this.deps.microBurstProspectiveExit?.bus;
     const runtime = this.microBurstRuntime;
     if (!bus || !runtime) return;
-    for (const identity of bus.entriesSnapshot()) {
-      const snapshot = runtime.readExitMarketSnapshot(identity.symbol);
+
+    for (const entryId of bus.closedEntriesSnapshot()) {
+      const identity = bus.entriesSnapshot().find((entry) => entry.entryId === entryId);
+      const previous = bus.latestObservation(entryId);
+      if (!identity || !previous) continue;
+      const snapshot = runtime.readExitMarketSnapshot(identity.symbol, previous.eventAtMs);
       if (!snapshot) continue;
-      const entryPrice = identity.entryPrice;
+
       const sideSign = identity.side === 'LONG' ? 1 : -1;
       const priceReturn =
-        entryPrice > 0 ? ((snapshot.currentPrice - entryPrice) / entryPrice) * sideSign : 0;
+        identity.entryPrice > 0
+          ? ((snapshot.currentPrice - identity.entryPrice) / identity.entryPrice) * sideSign
+          : 0;
+      const book = snapshot.book;
+      const levels = identity.side === 'LONG' ? (book?.bidDepth ?? []) : (book?.askDepth ?? []);
+      let availableQuantity = 0;
+      let levelsUsed = 0;
+      for (const level of levels) {
+        if (!Number.isFinite(level.qty) || level.qty < 0) break;
+        availableQuantity += level.qty;
+        levelsUsed++;
+        if (availableQuantity >= identity.quantity) break;
+      }
+      const quantityCovered = book?.status === 'HEALTHY' && availableQuantity >= identity.quantity;
+      const context = {
+        ...previous.context,
+        currentPrice: snapshot.currentPrice,
+        priceReturn,
+        unrealizedRoe: priceReturn * (identity.leverage ?? previous.context.leverage),
+        peakPrice:
+          identity.side === 'LONG'
+            ? Math.max(previous.context.peakPrice, snapshot.currentPrice)
+            : Math.min(previous.context.peakPrice, snapshot.currentPrice),
+        troughPrice:
+          identity.side === 'LONG'
+            ? Math.min(previous.context.troughPrice, snapshot.currentPrice)
+            : Math.max(previous.context.troughPrice, snapshot.currentPrice),
+        timeInTradeMs: Math.max(0, snapshot.observedAtMs - identity.enteredAtMs),
+        observedAtMs: snapshot.observedAtMs,
+        currentBookPressure: snapshot.currentBookPressure,
+        currentBookObservedAtMs: snapshot.book?.observedAtMs,
+        currentBtcContext: snapshot.currentBtcContext,
+        marketEvidence: snapshot.marketEvidence,
+      };
       const observation: ProspectiveExitObservation = {
         eventAtMs: snapshot.observedAtMs,
-        receivedAtMs: snapshot.observedAtMs,
+        receivedAtMs: Math.max(snapshot.observedAtMs, book?.observedAtMs ?? snapshot.observedAtMs),
         evaluatedAtMs: this.deps.clock.now(),
-        context: {
-          unrealizedRoe: priceReturn * (identity.leverage ?? 1),
-          priceReturn,
-          currentPrice: snapshot.currentPrice,
-          entryPrice,
-          peakPrice: snapshot.currentPrice,
-          troughPrice: snapshot.currentPrice,
-          structuralInvalidationPrice: identity.structuralInvalidationPrice ?? entryPrice,
-          destinationPrice: identity.destinationPrice ?? entryPrice,
-          currentStopPrice: identity.currentStopPrice ?? null,
-          timeInTradeMs: Math.max(0, snapshot.observedAtMs - identity.enteredAtMs),
-          observedAtMs: snapshot.observedAtMs,
-          momentumDecayFlag: false,
-          anomalyExitFlag: false,
-          currentBookPressure: snapshot.currentBookPressure,
-          currentBookObservedAtMs: snapshot.book?.observedAtMs,
-          currentBtcContext: snapshot.currentBtcContext,
-          marketEvidence: snapshot.marketEvidence,
-          leverage: identity.leverage ?? 1,
-        },
+        context: { ...context, executableEconomics: undefined },
         executionAssumptions: {
-          roundTripCostBps: 0,
-          feeBps: 0,
-          slippageBps: 0,
-          source: 'UNSPECIFIED_OBSERVATIONAL_COSTS',
+          roundTripCostBps: null,
+          feeBps: null,
+          slippageBps: null,
+          source: 'UNAVAILABLE_AFTER_REAL_POSITION_CLOSE',
         },
-        depth: snapshot.book
+        depth: book
           ? {
-              status: snapshot.book.status,
-              observedAtMs: snapshot.book.observedAtMs,
+              status: book.status,
+              observedAtMs: book.observedAtMs,
               requiredQuantity: identity.quantity,
-              availableQuantity: identity.quantity,
-              levelsUsed: 0,
-              quantityCovered: true,
+              availableQuantity,
+              levelsUsed,
+              quantityCovered,
             }
           : null,
         inputProvenance: {
           btcAvailable: snapshot.currentBtcContext !== null,
           flowAvailable: snapshot.marketEvidence !== null,
-          structureAvailable: false,
-          quality: { source: 'MICRO_BURST_RUNTIME_CONSUMED_SNAPSHOT' },
+          structureAvailable:
+            Number.isFinite(context.structuralInvalidationPrice) &&
+            Number.isFinite(context.destinationPrice),
+          quality: {
+            source: 'MICRO_BURST_RUNTIME_CONSUMED_POST_CLOSE_SNAPSHOT',
+            economicsAvailable: false,
+            depthAvailable: book !== undefined,
+          },
+        },
+        gap: {
+          kind: quantityCovered ? 'UNKNOWN' : 'DEPTH',
+          fromMs: previous.eventAtMs,
+          toMs: snapshot.observedAtMs,
+          reason: quantityCovered
+            ? 'EXECUTABLE_ECONOMICS_UNAVAILABLE'
+            : 'INSUFFICIENT_EXECUTABLE_DEPTH',
         },
       };
-      bus.publishObservation(identity.entryId, observation);
+      bus.publishObservation(entryId, observation);
     }
   }
+
 }

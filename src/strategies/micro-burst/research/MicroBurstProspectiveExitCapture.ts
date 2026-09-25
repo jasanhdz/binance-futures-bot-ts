@@ -537,6 +537,10 @@ export class MicroBurstProspectiveExitCapture {
     return this.observer.getEntry(entryId);
   }
 
+  public entriesSnapshot(): readonly ProspectiveExitEntrySnapshot[] {
+    return this.observer.entriesSnapshot();
+  }
+
   private async persist(entryId: string): Promise<boolean> {
     if (!this.store) return true;
     const snapshot = this.observer.getEntry(entryId);

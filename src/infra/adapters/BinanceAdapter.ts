@@ -3081,6 +3081,7 @@ export class BinanceExchange implements Exchange {
         }),
       );
       return (trades as any[]).map((t) => ({
+        fillId: t.id !== undefined ? String(t.id) : undefined,
         orderId: String(t.orderId),
         side: (t.side || '').toUpperCase() === 'BUY' ? 'BUY' : 'SELL',
         price: Number(t.price),
