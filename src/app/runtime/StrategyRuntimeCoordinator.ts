@@ -474,9 +474,7 @@ export class StrategyRuntimeCoordinator {
         await this.prospectiveExitRuntime.start();
         if (prospectiveEnabled && this.deps.microBurstProspectiveExit.bus) {
           this.deps.microBurstProspectiveExit.bus.restoreEntries(
-            this.prospectiveExitRuntime
-              .entriesSnapshot()
-              .filter((entry) => !entry.completed),
+            this.prospectiveExitRuntime.entriesSnapshot().filter((entry) => !entry.completed),
           );
           this.prospectiveObservationTimer = setInterval(() => {
             void this.publishClosedProspectiveObservations();
@@ -580,15 +578,15 @@ export class StrategyRuntimeCoordinator {
         if (availableQuantity >= identity.quantity) break;
       }
       const quantityCovered = book?.status === 'HEALTHY' && availableQuantity >= identity.quantity;
-      const priorEconomics = previous.context.executableEconomics;
+      const costEvidence = bus.latestEconomicEvidence(entryId);
       const economics =
         this.prospectiveExitConfig &&
-        priorEconomics &&
-        Number.isFinite(priorEconomics.observedAtMs) &&
-        snapshot.observedAtMs >= priorEconomics.observedAtMs &&
-        snapshot.observedAtMs - priorEconomics.observedAtMs <=
+        costEvidence &&
+        Number.isFinite(costEvidence.costObservedAtMs ?? costEvidence.observedAtMs) &&
+        snapshot.observedAtMs >= (costEvidence.costObservedAtMs ?? costEvidence.observedAtMs) &&
+        snapshot.observedAtMs - (costEvidence.costObservedAtMs ?? costEvidence.observedAtMs) <=
           this.prospectiveExitConfig.exitIntelligenceMaxObservationGapMs &&
-        Number.isFinite(priorEconomics.residualCostBps) &&
+        Number.isFinite(costEvidence.residualCostBps) &&
         Number.isFinite(snapshot.volatilityBps)
           ? microBurstExecutableExitEconomics(
               {
@@ -596,7 +594,9 @@ export class StrategyRuntimeCoordinator {
                 side: identity.side,
                 quantity: identity.quantity,
                 observedAtMs: snapshot.observedAtMs,
-                residualCostBps: priorEconomics.residualCostBps,
+                costObservedAtMs: costEvidence.costObservedAtMs ?? costEvidence.observedAtMs,
+                costSource: costEvidence.costSource ?? 'PERSISTED_EXIT_COST_EVIDENCE',
+                residualCostBps: costEvidence.residualCostBps,
                 volatilityBps: snapshot.volatilityBps!,
               },
               this.prospectiveExitConfig,
@@ -653,7 +653,7 @@ export class StrategyRuntimeCoordinator {
             Number.isFinite(context.destinationPrice),
           quality: {
             source: 'MICRO_BURST_RUNTIME_CONSUMED_POST_CLOSE_SNAPSHOT',
-            economicsAvailable: false,
+            economicsAvailable: economics !== null,
             depthAvailable: book !== undefined,
           },
         },
@@ -673,5 +673,4 @@ export class StrategyRuntimeCoordinator {
       bus.publishObservation(entryId, observation);
     }
   }
-
 }

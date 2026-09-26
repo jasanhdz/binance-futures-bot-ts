@@ -264,6 +264,8 @@ export interface MicroBurstExitContext {
   /** V3 requires a quantity-covered exit quote and explicitly measured economics. */
   executableEconomics?: {
     observedAtMs: number;
+    costObservedAtMs?: number;
+    costSource?: string;
     exitPrice: number;
     quantityCovered: boolean;
     residualCostBps: number;

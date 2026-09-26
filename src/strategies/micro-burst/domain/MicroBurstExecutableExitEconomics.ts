@@ -8,6 +8,8 @@ export function microBurstExecutableExitEconomics(
     side: 'LONG' | 'SHORT';
     quantity: number;
     observedAtMs: number;
+    costObservedAtMs?: number;
+    costSource?: string;
     residualCostBps: number;
     volatilityBps: number;
   },
@@ -52,6 +54,10 @@ export function microBurstExecutableExitEconomics(
   if (executable.status === 'UNAVAILABLE') return null;
   return {
     observedAtMs: book.observedAtMs,
+    ...(Number.isFinite(input.costObservedAtMs)
+      ? { costObservedAtMs: input.costObservedAtMs }
+      : {}),
+    ...(input.costSource ? { costSource: input.costSource } : {}),
     exitPrice: executable.value,
     quantityCovered: true,
     residualCostBps: input.residualCostBps,

@@ -357,21 +357,22 @@ describe('StrategyRuntimeCoordinator', () => {
     bus.publishRealPositionClosed(identity.entryId, 2_100);
     const observations: any[] = [];
     bus.onObservation((_entryId, observation) => observations.push(observation));
-    (coordinator as any).microBurstRuntime = {
-      readExitMarketSnapshot: vi.fn(() => ({
-        currentPrice: 102,
+    let marketSnapshot: any = {
+      currentPrice: 102,
+      observedAtMs: 3_000,
+      volatilityBps: 4,
+      currentBookPressure: null,
+      currentBtcContext: null,
+      marketEvidence: null,
+      book: {
+        status: 'HEALTHY',
         observedAtMs: 3_000,
-        volatilityBps: 4,
-        currentBookPressure: null,
-        currentBtcContext: null,
-        marketEvidence: null,
-        book: {
-          status: 'HEALTHY',
-          observedAtMs: 3_000,
-          bidDepth: [{ price: 101.99, qty: 3 }],
-          askDepth: [{ price: 102.01, qty: 3 }],
-        },
-      })),
+        bidDepth: [{ price: 101.99, qty: 3 }],
+        askDepth: [{ price: 102.01, qty: 3 }],
+      },
+    };
+    (coordinator as any).microBurstRuntime = {
+      readExitMarketSnapshot: vi.fn(() => marketSnapshot),
     };
     (coordinator as any).prospectiveExitRuntime = {
       getEntry: vi.fn(() => ({ horizonAtMs: 10_000 })),
@@ -404,6 +405,27 @@ describe('StrategyRuntimeCoordinator', () => {
       },
     });
     expect(observations[0].gap).toBeUndefined();
+
+    marketSnapshot = { ...marketSnapshot, observedAtMs: 4_000, volatilityBps: undefined };
+    await (coordinator as any).publishClosedProspectiveObservations();
+    marketSnapshot = {
+      ...marketSnapshot,
+      observedAtMs: 5_000,
+      volatilityBps: 4,
+      book: {
+        status: 'HEALTHY',
+        observedAtMs: 5_000,
+        bidDepth: [{ price: 104.99, qty: 3 }],
+        askDepth: [{ price: 105.01, qty: 3 }],
+      },
+    };
+    await (coordinator as any).publishClosedProspectiveObservations();
+    expect(observations[1].gap?.reason).toBe('EXECUTABLE_ECONOMICS_UNAVAILABLE');
+    expect(observations[2].context.executableEconomics).toMatchObject({
+      costObservedAtMs: 2_000,
+      observedAtMs: 5_000,
+    });
+    expect(observations[2].gap).toBeUndefined();
   });
 
   it('keeps Micro Burst startup failures isolated from the bot startup', async () => {

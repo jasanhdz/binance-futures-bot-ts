@@ -2432,8 +2432,7 @@ export class TradingService {
       )
         .filter((fill) => fill.orderId === reconciled.orderId)
         .filter(
-          (fill) =>
-            typeof fill.fillId === 'string' && reconciled.fillIds.includes(fill.fillId),
+          (fill) => typeof fill.fillId === 'string' && reconciled.fillIds.includes(fill.fillId),
         )
         .map<ProspectiveRealFill>((fill, index) => ({
           fillId: fill.fillId!,
@@ -2545,7 +2544,9 @@ export class TradingService {
               kind: economics ? 'DEPTH' : 'UNKNOWN',
               fromMs: observedAtMs,
               toMs: observedAtMs,
-              reason: economics ? 'INSUFFICIENT_EXECUTABLE_DEPTH' : 'EXECUTABLE_ECONOMICS_UNAVAILABLE',
+              reason: economics
+                ? 'INSUFFICIENT_EXECUTABLE_DEPTH'
+                : 'EXECUTABLE_ECONOMICS_UNAVAILABLE',
             },
           }),
     };
@@ -3015,6 +3016,8 @@ export class TradingService {
                   side,
                   quantity: position.qtyAbs,
                   observedAtMs: now,
+                  costObservedAtMs: costs.observedAtMs,
+                  costSource: 'BINANCE_RECONCILED_EXIT_COSTS',
                   residualCostBps: Math.max(
                     costs.residualCostBps,
                     policy.config.exitEstimatedRoundTripCostBps,
@@ -3081,8 +3084,8 @@ export class TradingService {
                 market?.currentPrice === undefined
                   ? NaN
                   : (side === 'LONG'
-                        ? (market.currentPrice - entryPrice) / entryPrice
-                        : (entryPrice - market.currentPrice) / entryPrice) *
+                      ? (market.currentPrice - entryPrice) / entryPrice
+                      : (entryPrice - market.currentPrice) / entryPrice) *
                     (botState.lastLeverage ?? NaN),
               peakPrice: botState.microBurstPeakPrice ?? entryPrice,
               troughPrice: botState.microBurstTroughPrice ?? entryPrice,
@@ -3102,7 +3105,7 @@ export class TradingService {
           symbolState,
           strategyMode: 'LIVE',
           side,
-           exitContext,
+          exitContext,
         } as any);
         return;
       }
@@ -3169,8 +3172,8 @@ export class TradingService {
       this.publishProspectiveObservation(
         symbol,
         botState.lastTradeId,
-          side,
-          botState.lastEntryQty,
+        side,
+        botState.lastEntryQty,
         managementContext.exitContext as MicroBurstExitContext,
         market,
       );

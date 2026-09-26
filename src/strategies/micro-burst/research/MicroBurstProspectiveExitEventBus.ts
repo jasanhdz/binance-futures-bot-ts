@@ -22,6 +22,10 @@ export class MicroBurstProspectiveExitEventBus implements MicroBurstProspectiveE
   private readonly entries = new Map<string, ProspectiveExitIdentity>();
   private readonly closedEntries = new Set<string>();
   private readonly latestObservations = new Map<string, ProspectiveExitObservation>();
+  private readonly economicEvidence = new Map<
+    string,
+    NonNullable<ProspectiveExitObservation['context']['executableEconomics']>
+  >();
   private readonly entryListeners = new Set<EntryListener>();
   private readonly fillListeners = new Set<FillListener>();
   private readonly closeListeners = new Set<CloseListener>();
@@ -114,6 +118,9 @@ export class MicroBurstProspectiveExitEventBus implements MicroBurstProspectiveE
     const started = performance.now();
     if (!this.entries.has(entryId)) return;
     this.latestObservations.set(entryId, observation);
+    if (observation.context.executableEconomics) {
+      this.economicEvidence.set(entryId, observation.context.executableEconomics);
+    }
     for (const listener of this.observationListeners) {
       try {
         listener(entryId, observation);
@@ -131,15 +138,16 @@ export class MicroBurstProspectiveExitEventBus implements MicroBurstProspectiveE
   restoreEntries(entries: readonly ProspectiveExitEntrySnapshot[]): void {
     if (!this.enabled) return;
     for (const entry of entries) {
-      if (
-        this.entries.size >= this.maxEntries &&
-        !this.entries.has(entry.identity.entryId)
-      )
-        break;
+      if (this.entries.size >= this.maxEntries && !this.entries.has(entry.identity.entryId)) break;
       this.entries.set(entry.identity.entryId, entry.identity);
       if (entry.realPositionClosedAtMs !== null) this.closedEntries.add(entry.identity.entryId);
       const latest = entry.observations[entry.observations.length - 1];
       if (latest) this.latestObservations.set(entry.identity.entryId, latest);
+      const economic = [...entry.observations]
+        .reverse()
+        .find((observation) => observation.context.executableEconomics)
+        ?.context.executableEconomics;
+      if (economic) this.economicEvidence.set(entry.identity.entryId, economic);
     }
   }
 
@@ -151,10 +159,17 @@ export class MicroBurstProspectiveExitEventBus implements MicroBurstProspectiveE
     return this.latestObservations.get(entryId) ?? null;
   }
 
+  latestEconomicEvidence(
+    entryId: string,
+  ): NonNullable<ProspectiveExitObservation['context']['executableEconomics']> | null {
+    return this.economicEvidence.get(entryId) ?? null;
+  }
+
   removeEntry(entryId: string): void {
     this.entries.delete(entryId);
     this.closedEntries.delete(entryId);
     this.latestObservations.delete(entryId);
+    this.economicEvidence.delete(entryId);
   }
 
   getSynchronousCost(): {
@@ -180,5 +195,6 @@ export class MicroBurstProspectiveExitEventBus implements MicroBurstProspectiveE
     this.entries.clear();
     this.closedEntries.clear();
     this.latestObservations.clear();
+    this.economicEvidence.clear();
   }
 }
