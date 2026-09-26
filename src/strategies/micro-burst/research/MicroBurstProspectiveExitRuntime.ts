@@ -100,6 +100,12 @@ export class MicroBurstProspectiveExitRuntime {
     return this.capture.drain(timeoutMs);
   }
 
+  public async finalizeAtHorizon(entryId: string, atMs: number, reason: string): Promise<boolean> {
+    const finalized = await this.capture.finalizeAtHorizon(entryId, atMs, reason);
+    if (finalized && this.capture.getEntry(entryId)?.completed) this.source.removeEntry?.(entryId);
+    return finalized;
+  }
+
   public getHealth(): {
     enabled: boolean;
     started: boolean;

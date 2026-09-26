@@ -11,6 +11,7 @@ import type { MomentumCandleState } from '../../strategies/momentum/application/
 import type { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
 import type { MomentumRideStrategyContext } from '../../strategies/momentum/domain/MomentumRideStrategy';
 import { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
+import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 import { SharedMarketDataRuntime } from '../services/SharedMarketDataRuntime';
 import { SharedLiquidityState } from '../services/SharedLiquidityState';
 import type { Exchange } from '../ports/Exchange';
@@ -360,6 +361,7 @@ describe('StrategyRuntimeCoordinator', () => {
       readExitMarketSnapshot: vi.fn(() => ({
         currentPrice: 102,
         observedAtMs: 3_000,
+        volatilityBps: 4,
         currentBookPressure: null,
         currentBtcContext: null,
         marketEvidence: null,
@@ -371,13 +373,20 @@ describe('StrategyRuntimeCoordinator', () => {
         },
       })),
     };
+    (coordinator as any).prospectiveExitRuntime = {
+      getEntry: vi.fn(() => ({ horizonAtMs: 10_000 })),
+    };
+    (coordinator as any).prospectiveExitConfig = {
+      ...defaultMicroBurstConfig(),
+      exitEstimatedRoundTripCostBps: 10,
+    };
 
     await (coordinator as any).publishClosedProspectiveObservations();
 
     expect(observations).toHaveLength(1);
     expect(observations[0]).toMatchObject({
       executionAssumptions: {
-        roundTripCostBps: null,
+        roundTripCostBps: 14,
         feeBps: null,
         slippageBps: null,
       },
@@ -388,9 +397,13 @@ describe('StrategyRuntimeCoordinator', () => {
         troughPrice: 99,
         momentumDecayFlag: true,
         anomalyExitFlag: true,
-        executableEconomics: undefined,
+        executableEconomics: {
+          quantityCovered: true,
+          residualCostBps: 14,
+        },
       },
     });
+    expect(observations[0].gap).toBeUndefined();
   });
 
   it('keeps Micro Burst startup failures isolated from the bot startup', async () => {

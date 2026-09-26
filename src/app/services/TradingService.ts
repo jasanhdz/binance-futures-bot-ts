@@ -2838,6 +2838,8 @@ export class TradingService {
 
     let managementContext: Record<string, unknown> = { symbol, botState, symbolState };
     if (identity.strategyId === 'MICRO_BURST') {
+      const prospectiveEnabled =
+        this.runtimeConfig?.getMicroBurstConfig?.().prospectiveValidation?.enabled === true;
       const expected = { ...botState };
       const sameManagedPosition = () => {
         const current = symbolState.get();
@@ -3041,7 +3043,7 @@ export class TradingService {
               )
             : undefined;
         const now = Date.now();
-        const price = economics?.exitPrice ?? market?.currentPrice ?? NaN;
+        const price = economics?.exitPrice ?? NaN;
         const priceReturn =
           side === 'LONG' ? (price - entryPrice) / entryPrice : (entryPrice - price) / entryPrice;
         const exitContext: MicroBurstExitContext = {
@@ -3049,8 +3051,8 @@ export class TradingService {
           entryPrice,
           priceReturn,
           unrealizedRoe: priceReturn * (botState.lastLeverage ?? NaN),
-          peakPrice: botState.microBurstPeakPrice ?? entryPrice,
-          troughPrice: botState.microBurstTroughPrice ?? entryPrice,
+          peakPrice: entryPrice,
+          troughPrice: entryPrice,
           structuralInvalidationPrice: structuralStop,
           destinationPrice: destination,
           currentStopPrice: botState.lastStopPrice ?? null,
@@ -3065,12 +3067,33 @@ export class TradingService {
           executableEconomics: economics ?? undefined,
           nextConfirmedObstacle,
         };
+        const observationContext = prospectiveEnabled
+          ? {
+              ...exitContext,
+              currentPrice: market?.currentPrice ?? NaN,
+              priceReturn:
+                market?.currentPrice === undefined
+                  ? NaN
+                  : side === 'LONG'
+                    ? (market.currentPrice - entryPrice) / entryPrice
+                    : (entryPrice - market.currentPrice) / entryPrice,
+              unrealizedRoe:
+                market?.currentPrice === undefined
+                  ? NaN
+                  : (side === 'LONG'
+                        ? (market.currentPrice - entryPrice) / entryPrice
+                        : (entryPrice - market.currentPrice) / entryPrice) *
+                    (botState.lastLeverage ?? NaN),
+              peakPrice: botState.microBurstPeakPrice ?? entryPrice,
+              troughPrice: botState.microBurstTroughPrice ?? entryPrice,
+            }
+          : exitContext;
         this.publishProspectiveObservation(
           symbol,
           botState.lastTradeId,
           side,
           botState.lastEntryQty,
-          exitContext,
+          observationContext,
           market,
         );
         await this.positionManagerRouter.route(identity, {

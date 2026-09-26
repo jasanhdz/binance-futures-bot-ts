@@ -384,6 +384,17 @@ export class MicroBurstProspectiveExitObserver {
     return true;
   }
 
+  public finalizeAtHorizon(entryId: string, atMs: number, reason: string): boolean {
+    const entry = this.entries.get(entryId);
+    if (!entry || entry.completed || !Number.isFinite(atMs) || atMs < entry.horizonAtMs)
+      return false;
+    for (const simulation of Object.values(entry.simulations)) {
+      if (simulation.status === 'ACTIVE') this.markNoEvaluableState(simulation, atMs, reason);
+    }
+    this.completeEntry(entry);
+    return true;
+  }
+
   public restoreEntry(snapshot: ProspectiveExitEntrySnapshot): boolean {
     if (!this.validateSnapshot(snapshot)) {
       this.metrics = { ...this.metrics, schemaFailures: this.metrics.schemaFailures + 1 };

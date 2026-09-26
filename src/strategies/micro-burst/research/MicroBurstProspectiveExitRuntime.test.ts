@@ -199,6 +199,31 @@ describe('MicroBurst prospective runtime composition', () => {
     expect(runtime.getHealth()).toMatchObject({ enabled: false, started: false, restored: 0 });
   });
 
+  it('finalizes a closed episode at horizon without a fabricated market observation', async () => {
+    const source = new MicroBurstProspectiveExitEventBus(true);
+    const runtime = createMicroBurstProspectiveExitRuntime(
+      {
+        enabled: true,
+        journalPath: join(mkdtempSync(join(tmpdir(), 'micro-runtime-finalize-')), 'episodes.jsonl'),
+      },
+      source,
+    );
+    await runtime.start();
+    const entry = identity('runtime-finalize-entry');
+    source.publishExecutedEntry(entry, [fill]);
+    source.publishRealPositionClosed(entry.entryId, 301_000);
+    await settle();
+
+    expect(await runtime.finalizeAtHorizon(entry.entryId, 360_000, 'NO_POST_CLOSE_DATA')).toBe(true);
+    await settle();
+    expect(source.entriesSnapshot()).toHaveLength(0);
+    expect(runtime.getEntry(entry.entryId)?.simulations.CURRENT.status).toBe('NO_EVALUABLE');
+    expect(runtime.getEntry(entry.entryId)?.simulations.CANDIDATE.noEvaluableReason).toBe(
+      'NO_POST_CLOSE_DATA',
+    );
+    await runtime.stop();
+  });
+
   it('uses the production event bus without blocking its publisher on persistence', async () => {
     const source = new MicroBurstProspectiveExitEventBus(true);
     const runtime = createMicroBurstProspectiveExitRuntime(

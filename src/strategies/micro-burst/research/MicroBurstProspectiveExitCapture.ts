@@ -501,6 +501,22 @@ export class MicroBurstProspectiveExitCapture {
     }
   }
 
+  public async finalizeAtHorizon(
+    entryId: string,
+    atMs: number,
+    reason: string,
+  ): Promise<boolean> {
+    if (this.options.enabled !== true) return false;
+    try {
+      const accepted =
+        this.observer.getEntry(entryId)?.completed === true ||
+        this.observer.finalizeAtHorizon(entryId, atMs, reason);
+      return accepted && (await this.persist(entryId));
+    } catch {
+      return false;
+    }
+  }
+
   /** Restore latest snapshots after restart; corrupt rows are isolated by the store. */
   public async restore(): Promise<number> {
     if (this.options.enabled !== true || !this.store) return 0;

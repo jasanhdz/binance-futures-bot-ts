@@ -329,6 +329,27 @@ describe('MicroBurst prospective dual exit observer', () => {
     expect(observer.getMetrics()).toMatchObject({ completedEntries: 1 });
   });
 
+  it('finalizes a closed episode at the horizon when no later market data arrives', () => {
+    const observer = new MicroBurstProspectiveExitObserver({ config });
+    observer.registerEntry(identity('silent-after-close', 'SHORT'));
+    const entry = observer.getEntry('silent-after-close')!;
+    expect(observer.markRealPositionClosed('silent-after-close', 2_000)).toBe(true);
+    expect(
+      observer.finalizeAtHorizon(
+        'silent-after-close',
+        entry.horizonAtMs,
+        'POST_CLOSE_MARKET_DATA_UNAVAILABLE',
+      ),
+    ).toBe(true);
+    const completed = observer.getEntry('silent-after-close')!;
+    expect(completed.completed).toBe(true);
+    expect(completed.simulations.CURRENT.status).toBe('NO_EVALUABLE');
+    expect(completed.simulations.CANDIDATE.status).toBe('NO_EVALUABLE');
+    expect(completed.simulations.CURRENT.noEvaluableReason).toBe(
+      'POST_CLOSE_MARKET_DATA_UNAVAILABLE',
+    );
+  });
+
   it('bounds entries and observations without an I/O or REST queue', () => {
     const observer = new MicroBurstProspectiveExitObserver({
       config,

@@ -53,6 +53,8 @@ import { createMicroBurstProspectiveExitRuntime } from '../../strategies/micro-b
 import type { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
 import type { ProspectiveExitObservation } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitObserver';
 import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
+import type { MicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
+import { microBurstExecutableExitEconomics } from '../../strategies/micro-burst/domain/MicroBurstExecutableExitEconomics';
 
 export type MicroBurstRuntimeProvenance = NonNullable<MicroBurstRuntimeDeps['provenance']>;
 
@@ -135,6 +137,7 @@ export class StrategyRuntimeCoordinator {
   private prospectiveExitRuntime: ReturnType<typeof createMicroBurstProspectiveExitRuntime> | null =
     null;
   private prospectiveObservationTimer: ReturnType<typeof setInterval> | null = null;
+  private prospectiveExitConfig: MicroBurstConfig | null = null;
 
   constructor(
     private readonly deps: StrategyRuntimeCoordinatorDeps,
@@ -338,6 +341,7 @@ export class StrategyRuntimeCoordinator {
     this.prospectiveExitRuntime = null;
     if (this.prospectiveObservationTimer) clearInterval(this.prospectiveObservationTimer);
     this.prospectiveObservationTimer = null;
+    this.prospectiveExitConfig = null;
 
     this.aegisBlackBoxObservation?.close();
     this.aegisBlackBoxObservation = null;
@@ -452,6 +456,10 @@ export class StrategyRuntimeCoordinator {
       );
       if (this.deps.microBurstProspectiveExit) {
         const prospectiveEnabled = config.prospectiveValidation?.enabled === true;
+        this.prospectiveExitConfig = {
+          ...defaultMicroBurstConfig(),
+          ...config.exitPolicy,
+        };
         this.deps.microBurstProspectiveExit.bus?.setEnabled(prospectiveEnabled);
         this.prospectiveExitRuntime = createMicroBurstProspectiveExitRuntime(
           {
@@ -460,7 +468,7 @@ export class StrategyRuntimeCoordinator {
           },
           this.deps.microBurstProspectiveExit.source,
           {
-            config: { ...defaultMicroBurstConfig(), ...config.exitPolicy },
+            config: this.prospectiveExitConfig,
           },
         );
         await this.prospectiveExitRuntime.start();
@@ -533,9 +541,28 @@ export class StrategyRuntimeCoordinator {
     for (const entryId of bus.closedEntriesSnapshot()) {
       const identity = bus.entriesSnapshot().find((entry) => entry.entryId === entryId);
       const previous = bus.latestObservation(entryId);
-      if (!identity || !previous) continue;
-      const snapshot = runtime.readExitMarketSnapshot(identity.symbol, previous.eventAtMs);
-      if (!snapshot) continue;
+      const entry = this.prospectiveExitRuntime?.getEntry(entryId);
+      if (!identity || !entry) continue;
+      const now = this.deps.clock.now();
+      const snapshot = runtime.readExitMarketSnapshot(identity.symbol, previous?.eventAtMs);
+      if (!snapshot) {
+        if (now >= entry.horizonAtMs)
+          await this.prospectiveExitRuntime?.finalizeAtHorizon(
+            entryId,
+            now,
+            'POST_CLOSE_MARKET_DATA_UNAVAILABLE',
+          );
+        continue;
+      }
+      if (!previous) {
+        if (now >= entry.horizonAtMs)
+          await this.prospectiveExitRuntime?.finalizeAtHorizon(
+            entryId,
+            now,
+            'POST_CLOSE_OBSERVATION_CONTEXT_UNAVAILABLE',
+          );
+        continue;
+      }
 
       const sideSign = identity.side === 'LONG' ? 1 : -1;
       const priceReturn =
@@ -553,6 +580,28 @@ export class StrategyRuntimeCoordinator {
         if (availableQuantity >= identity.quantity) break;
       }
       const quantityCovered = book?.status === 'HEALTHY' && availableQuantity >= identity.quantity;
+      const priorEconomics = previous.context.executableEconomics;
+      const economics =
+        this.prospectiveExitConfig &&
+        priorEconomics &&
+        Number.isFinite(priorEconomics.observedAtMs) &&
+        snapshot.observedAtMs >= priorEconomics.observedAtMs &&
+        snapshot.observedAtMs - priorEconomics.observedAtMs <=
+          this.prospectiveExitConfig.exitIntelligenceMaxObservationGapMs &&
+        Number.isFinite(priorEconomics.residualCostBps) &&
+        Number.isFinite(snapshot.volatilityBps)
+          ? microBurstExecutableExitEconomics(
+              {
+                book,
+                side: identity.side,
+                quantity: identity.quantity,
+                observedAtMs: snapshot.observedAtMs,
+                residualCostBps: priorEconomics.residualCostBps,
+                volatilityBps: snapshot.volatilityBps!,
+              },
+              this.prospectiveExitConfig,
+            )
+          : null;
       const context = {
         ...previous.context,
         currentPrice: snapshot.currentPrice,
@@ -577,12 +626,14 @@ export class StrategyRuntimeCoordinator {
         eventAtMs: snapshot.observedAtMs,
         receivedAtMs: Math.max(snapshot.observedAtMs, book?.observedAtMs ?? snapshot.observedAtMs),
         evaluatedAtMs: this.deps.clock.now(),
-        context: { ...context, executableEconomics: undefined },
+        context: { ...context, executableEconomics: economics ?? undefined },
         executionAssumptions: {
-          roundTripCostBps: null,
-          feeBps: null,
-          slippageBps: null,
-          source: 'UNAVAILABLE_AFTER_REAL_POSITION_CLOSE',
+          roundTripCostBps: economics?.residualCostBps ?? null,
+          feeBps: previous.executionAssumptions.feeBps,
+          slippageBps: previous.executionAssumptions.slippageBps,
+          source: economics
+            ? 'MICRO_EXIT_ECONOMICS_RECONSTRUCTED_FROM_CONSUMED_BOOK'
+            : 'UNAVAILABLE_AFTER_REAL_POSITION_CLOSE',
         },
         depth: book
           ? {
@@ -606,14 +657,18 @@ export class StrategyRuntimeCoordinator {
             depthAvailable: book !== undefined,
           },
         },
-        gap: {
-          kind: quantityCovered ? 'UNKNOWN' : 'DEPTH',
-          fromMs: previous.eventAtMs,
-          toMs: snapshot.observedAtMs,
-          reason: quantityCovered
-            ? 'EXECUTABLE_ECONOMICS_UNAVAILABLE'
-            : 'INSUFFICIENT_EXECUTABLE_DEPTH',
-        },
+        ...(economics
+          ? {}
+          : {
+              gap: {
+                kind: quantityCovered ? ('UNKNOWN' as const) : ('DEPTH' as const),
+                fromMs: previous.eventAtMs,
+                toMs: snapshot.observedAtMs,
+                reason: quantityCovered
+                  ? 'EXECUTABLE_ECONOMICS_UNAVAILABLE'
+                  : 'INSUFFICIENT_EXECUTABLE_DEPTH',
+              },
+            }),
       };
       bus.publishObservation(entryId, observation);
     }

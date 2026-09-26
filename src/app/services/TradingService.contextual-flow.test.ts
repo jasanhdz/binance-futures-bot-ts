@@ -941,6 +941,22 @@ describe('Micro production entry/protection/exit/accounting flow with simulated 
     await restored.stop();
   }, 30_000);
 
+  it('keeps the pre-capture LIVE context when prospective capture is disabled', async () => {
+    const f = await fixture(false);
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    f.setPrice(101);
+    await f.service.managePositionByOwner('ETHUSDT', f.store.get(), f.store);
+    const routed =
+      f.service.positionManagerRouter.route.mock.calls[
+        f.service.positionManagerRouter.route.mock.calls.length - 1
+      ]?.[1];
+    expect(routed.exitContext.currentPrice).toBeCloseTo(100.99);
+    expect(routed.exitContext.peakPrice).toBe(100);
+    expect(routed.exitContext.troughPrice).toBe(100);
+    expect(f.prospectiveBus.entriesSnapshot()).toHaveLength(0);
+  }, 20_000);
+
   it('does not submit without actual fee/tier evidence, matched policy or a new episode', async () => {
     const f = await fixture();
     f.client.futuresLeverageBracket.mockResolvedValueOnce([]);
