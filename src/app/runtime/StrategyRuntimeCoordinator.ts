@@ -51,7 +51,10 @@ import { getRateLimitMetrics } from '../../infra/adapters/rate-limit';
 import type { MicroBurstProspectiveExitEventSource } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitRuntime';
 import { createMicroBurstProspectiveExitRuntime } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitRuntime';
 import type { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
-import type { ProspectiveExitObservation } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitObserver';
+import type {
+  ProspectiveExitEntrySnapshot,
+  ProspectiveExitObservation,
+} from '../../strategies/micro-burst/research/MicroBurstProspectiveExitObserver';
 import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 import type { MicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 import { microBurstExecutableExitEconomics } from '../../strategies/micro-burst/domain/MicroBurstExecutableExitEconomics';
@@ -85,6 +88,10 @@ export interface StrategyRuntimeStartInput {
 }
 
 export interface StrategyRuntimeCoordinatorFactories {
+  createMicroBurstRuntime(
+    deps: ConstructorParameters<typeof MicroBurstRuntime>[0],
+    config: ConstructorParameters<typeof MicroBurstRuntime>[1],
+  ): MicroBurstRuntime;
   createSharedLiquidityState(
     deps: ConstructorParameters<typeof SharedLiquidityState>[0],
   ): SharedLiquidityState;
@@ -107,6 +114,7 @@ export interface StrategyRuntimeCoordinatorFactories {
 }
 
 const DEFAULT_FACTORIES: StrategyRuntimeCoordinatorFactories = {
+  createMicroBurstRuntime: (deps, config) => new MicroBurstRuntime(deps, config),
   createSharedLiquidityState: (deps) => new SharedLiquidityState(deps),
   createSharedMarketDataRuntime: (deps) => new SharedMarketDataRuntime(deps),
   createAegisRealtimeMarketState: (deps) => new AegisRealtimeMarketState(deps),
@@ -201,6 +209,10 @@ export class StrategyRuntimeCoordinator {
 
   getMicroBurstHealth(): MicroBurstRuntimeHealth | null {
     return this.microBurstRuntime?.getHealth() ?? null;
+  }
+
+  getMicroBurstProspectiveExitEntries(): readonly ProspectiveExitEntrySnapshot[] {
+    return this.prospectiveExitRuntime?.entriesSnapshot() ?? [];
   }
 
   validateMicroBurstEntryMarket(
@@ -431,7 +443,7 @@ export class StrategyRuntimeCoordinator {
         journal: new MicroBurstOutcomeJournal(),
         storage,
       });
-      this.microBurstRuntime = new MicroBurstRuntime(
+      this.microBurstRuntime = this.factories.createMicroBurstRuntime(
         {
           exchange: readOnlyExchange.exchange,
           logger: this.deps.logger,

@@ -957,6 +957,44 @@ describe('Micro production entry/protection/exit/accounting flow with simulated 
     expect(f.prospectiveBus.entriesSnapshot()).toHaveLength(0);
   }, 20_000);
 
+  it('feeds CURRENT prospective evaluation the exact LIVE exit context', async () => {
+    const f = await fixture(true);
+    expect(await f.service.openMicroBurstLivePosition(f.request(1))).toBe(true);
+    await f.entry.reconcile();
+    f.setPrice(101);
+    await f.service.managePositionByOwner('ETHUSDT', f.store.get(), f.store);
+
+    const routed =
+      f.service.positionManagerRouter.route.mock.calls[
+        f.service.positionManagerRouter.route.mock.calls.length - 1
+      ]?.[1];
+    const entryId = f.prospectiveBus.entriesSnapshot()[0]?.entryId;
+    await vi.waitFor(() =>
+      expect(f.prospectiveRuntime.getEntry(entryId)?.observations.length).toBeGreaterThan(0),
+    );
+    const observation = f.prospectiveRuntime.getEntry(entryId)?.observations[0];
+    expect(observation?.context).toMatchObject({
+      currentPrice: routed.exitContext.currentPrice,
+      entryPrice: routed.exitContext.entryPrice,
+      peakPrice: routed.exitContext.peakPrice,
+      troughPrice: routed.exitContext.troughPrice,
+      structuralInvalidationPrice: routed.exitContext.structuralInvalidationPrice,
+      destinationPrice: routed.exitContext.destinationPrice,
+      currentStopPrice: routed.exitContext.currentStopPrice,
+      timeInTradeMs: routed.exitContext.timeInTradeMs,
+      priceReturn: routed.exitContext.priceReturn,
+      unrealizedRoe: routed.exitContext.unrealizedRoe,
+    });
+    expect(observation?.inputProvenance.quality).toMatchObject({
+      source: 'TRADING_SERVICE_CONSUMED_EXIT_CONTEXT',
+      economicsAvailable: true,
+    });
+    expect(f.prospectiveRuntime.getEntry(entryId)?.simulations.CURRENT.decisions[0]).toMatchObject({
+      evaluable: true,
+      economicEvaluable: true,
+    });
+  }, 20_000);
+
   it('does not submit without actual fee/tier evidence, matched policy or a new episode', async () => {
     const f = await fixture();
     f.client.futuresLeverageBracket.mockResolvedValueOnce([]);

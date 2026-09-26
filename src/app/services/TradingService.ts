@@ -3070,27 +3070,7 @@ export class TradingService {
           executableEconomics: economics ?? undefined,
           nextConfirmedObstacle,
         };
-        const observationContext = prospectiveEnabled
-          ? {
-              ...exitContext,
-              currentPrice: market?.currentPrice ?? NaN,
-              priceReturn:
-                market?.currentPrice === undefined
-                  ? NaN
-                  : side === 'LONG'
-                    ? (market.currentPrice - entryPrice) / entryPrice
-                    : (entryPrice - market.currentPrice) / entryPrice,
-              unrealizedRoe:
-                market?.currentPrice === undefined
-                  ? NaN
-                  : (side === 'LONG'
-                      ? (market.currentPrice - entryPrice) / entryPrice
-                      : (entryPrice - market.currentPrice) / entryPrice) *
-                    (botState.lastLeverage ?? NaN),
-              peakPrice: botState.microBurstPeakPrice ?? entryPrice,
-              troughPrice: botState.microBurstTroughPrice ?? entryPrice,
-            }
-          : exitContext;
+        const observationContext = exitContext;
         this.publishProspectiveObservation(
           symbol,
           botState.lastTradeId,

@@ -6,6 +6,7 @@ import { createUnfrozenStrategyIdentity } from '../../core/strategy/StrategyIden
 import type { AegisBlackBoxObservation } from '../../strategies/aegis/application/AegisBlackBoxObservation';
 import type { AegisRealtimeMarketState } from '../../strategies/aegis/application/AegisRealtimeMarketState';
 import type { MicroBurstStrategyContext } from '../../strategies/micro-burst/domain/MicroBurstStrategy';
+import type { MicroBurstRuntime } from '../../strategies/micro-burst/application/MicroBurstRuntime';
 import type { MomentumRideBlackBoxObservation } from '../../strategies/momentum/application/MomentumRideBlackBoxObservation';
 import type { MomentumCandleState } from '../../strategies/momentum/application/MomentumCandleState';
 import type { MomentumRealtimeMarketState } from '../../strategies/momentum/application/MomentumRealtimeMarketState';
@@ -25,6 +26,7 @@ interface RuntimeHarness {
   events: string[];
   momentumRouter: StrategyRouter<MomentumRideStrategyContext>;
   factories: StrategyRuntimeCoordinatorFactories;
+  setNow(now: number): void;
 }
 
 function runtimeHarness(
@@ -32,6 +34,7 @@ function runtimeHarness(
   prospectiveBus?: MicroBurstProspectiveExitEventBus,
 ): RuntimeHarness {
   const events: string[] = [];
+  let now = 1_700_000_000_000;
   const sharedMarketData = {
     close: vi.fn(() => events.push('shared-market-data:close')),
   } as unknown as SharedMarketDataRuntime;
@@ -66,6 +69,34 @@ function runtimeHarness(
   } as unknown as MomentumRideBlackBoxObservation;
 
   const factories: StrategyRuntimeCoordinatorFactories = {
+    createMicroBurstRuntime: vi.fn(
+      () =>
+        ({
+          start: vi.fn(),
+          stop: vi.fn(),
+          getReadiness: vi.fn(() => ({
+            ready: true,
+            blockers: [],
+            cohortId: null,
+            strategyVersion: null,
+            codeCommitSha: null,
+            configHash: null,
+            liveExecution: false,
+            readyForSoak: false,
+            readyForFreeze: false,
+            official: false,
+            officialAuthority: false,
+            liveAuthority: false,
+            checks: {},
+            warnings: [],
+            symbolBlockers: {},
+          })),
+          getHealth: vi.fn(() => ({})),
+          readExecutionBook: vi.fn(),
+          readExitMarketSnapshot: vi.fn(),
+          validateEntryMarket: vi.fn(),
+        }) as unknown as MicroBurstRuntime,
+    ),
     createSharedLiquidityState: vi.fn(
       () => ({ start: vi.fn(), close: vi.fn(), read: vi.fn() }) as never,
     ),
@@ -93,7 +124,7 @@ function runtimeHarness(
         warn: vi.fn(),
         error: vi.fn(),
       },
-      clock: { now: () => 1_700_000_000_000 },
+      clock: { now: () => now },
       aegisIdentity: createUnfrozenStrategyIdentity('AEGIS_TURBO', 'test', 'test-sha'),
       momentumStrategyRouter: momentumRouter,
       microBurstStrategyRouter: new StrategyRouter<MicroBurstStrategyContext>(),
@@ -112,7 +143,7 @@ function runtimeHarness(
     factories,
   );
 
-  return { coordinator, events, momentumRouter, factories };
+  return { coordinator, events, momentumRouter, factories, setNow: (value) => (now = value) };
 }
 
 describe('StrategyRuntimeCoordinator', () => {
@@ -427,6 +458,239 @@ describe('StrategyRuntimeCoordinator', () => {
     });
     expect(observations[2].gap).toBeUndefined();
   });
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'runs the productive prospective lifecycle across restart, gap, recovery, expiry, and horizon for %s',
+    async (side) => {
+      const bus = new MicroBurstProspectiveExitEventBus(true);
+      const { coordinator, factories, setNow } = runtimeHarness({} as never, bus);
+      const base = 1_700_000_000_000;
+      const config = {
+        ...defaultMicroBurstConfig(),
+        enabled: true,
+        mode: 'SHADOW' as const,
+        symbols: { ETHUSDT: { enabled: true } },
+        prospectiveValidation: { enabled: true },
+      };
+      const identity = {
+        entryId: `lifecycle-${side.toLowerCase()}`,
+        symbol: 'ETHUSDT',
+        side,
+        enteredAtMs: base,
+        quantity: 2,
+        entryPrice: 100,
+        strategyVersion: 'MICRO',
+        codeCommitSha: 'a'.repeat(40),
+        configHash: 'b'.repeat(64),
+        currentPolicyVersion: 'MICRO',
+        candidatePolicyVersion: 'MICRO_OFFLINE_NO_TIME_CLOSE_V1' as const,
+        structuralInvalidationPrice: side === 'LONG' ? 98 : 102,
+        destinationPrice: side === 'LONG' ? 104 : 96,
+        leverage: 20,
+      };
+      const depth = (observedAtMs: number) => ({
+        status: 'HEALTHY' as const,
+        observedAtMs,
+        bidDepth: [{ price: 99.99, qty: 3 }],
+        askDepth: [{ price: 100.01, qty: 3 }],
+      });
+      const observation = (observedAtMs: number) => ({
+        eventAtMs: observedAtMs,
+        receivedAtMs: observedAtMs,
+        evaluatedAtMs: observedAtMs,
+        context: {
+          observedAtMs,
+          timeInTradeMs: observedAtMs - base,
+          currentPrice: 100,
+          entryPrice: 100,
+          peakPrice: 100,
+          troughPrice: 100,
+          structuralInvalidationPrice: identity.structuralInvalidationPrice,
+          destinationPrice: identity.destinationPrice,
+          currentStopPrice: identity.structuralInvalidationPrice,
+          unrealizedRoe: 0,
+          priceReturn: 0,
+          leverage: 20,
+          momentumDecayFlag: false,
+          anomalyExitFlag: false,
+          currentBookPressure: null,
+          currentBtcContext: null,
+          marketEvidence: null,
+          executableEconomics: {
+            observedAtMs,
+            costObservedAtMs: observedAtMs,
+            costSource: 'TEST_RECONCILED_COSTS',
+            exitPrice: 100,
+            quantityCovered: true,
+            residualCostBps: 14,
+            volatilityBps: 4,
+          },
+        },
+        executionAssumptions: {
+          roundTripCostBps: 14,
+          feeBps: null,
+          slippageBps: null,
+          source: 'TEST',
+        },
+        depth: {
+          status: 'HEALTHY',
+          observedAtMs,
+          requiredQuantity: 2,
+          availableQuantity: 3,
+          levelsUsed: 1,
+          quantityCovered: true,
+        },
+        inputProvenance: {
+          btcAvailable: false,
+          flowAvailable: false,
+          structureAvailable: true,
+          quality: { economicsAvailable: true },
+        },
+      });
+      let snapshot: any = {
+        currentPrice: side === 'LONG' ? 101 : 99,
+        observedAtMs: base + 1_000,
+        volatilityBps: undefined,
+        currentBookPressure: null,
+        currentBtcContext: null,
+        marketEvidence: null,
+        book: depth(base + 1_000),
+      };
+      const fakeRuntime = {
+        start: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        getReadiness: vi.fn(() => ({
+          ready: true,
+          blockers: [],
+          cohortId: null,
+          strategyVersion: null,
+          codeCommitSha: null,
+          configHash: null,
+          liveExecution: false,
+          readyForSoak: false,
+          readyForFreeze: false,
+          official: false,
+          officialAuthority: false,
+          liveAuthority: false,
+          checks: {},
+          warnings: [],
+          symbolBlockers: {},
+        })),
+        getHealth: vi.fn(() => ({})),
+        readExecutionBook: vi.fn(),
+        readExitMarketSnapshot: vi.fn(() => snapshot),
+        validateEntryMarket: vi.fn(),
+      };
+      vi.mocked(factories.createMicroBurstRuntime).mockReturnValue(fakeRuntime as never);
+      vi.mocked(factories.createSharedMarketDataRuntime).mockReturnValue({
+        close: vi.fn(),
+        setArchiveObserver: vi.fn(),
+        orderBookDataPlane: {},
+        aggTradeDataPlane: {},
+      } as never);
+      vi.mocked(factories.createSharedLiquidityState).mockReturnValue({
+        start: vi.fn(),
+        close: vi.fn(),
+        read: vi.fn(),
+      } as never);
+
+      try {
+        await coordinator.start({
+          symbols: ['ETHUSDT'],
+          aegisEnabled: false,
+          momentumEnabled: false,
+          microBurstConfig: config,
+          loadMicroBurstProvenance: () => ({
+            codeCommitSha: identity.codeCommitSha,
+            configHash: identity.configHash,
+            cohortId: 'test-cohort',
+            officialCohortReady: false,
+          }),
+        });
+        bus.publishExecutedEntry(identity, []);
+        bus.publishObservation(identity.entryId, observation(base + 100));
+        bus.publishRealPositionClosed(identity.entryId, base + 200);
+        setNow(base + 1_000);
+        await vi.waitFor(() =>
+          expect(
+            coordinator.getMicroBurstProspectiveExitEntries()[0]?.observations.length,
+          ).toBeGreaterThanOrEqual(2),
+        );
+        const firstGap = coordinator.getMicroBurstProspectiveExitEntries()[0]?.observations[1];
+        expect(firstGap?.gap?.reason).toBe('EXECUTABLE_ECONOMICS_UNAVAILABLE');
+        expect(firstGap?.inputProvenance.quality).toMatchObject({ economicsAvailable: false });
+
+        await coordinator.stop();
+        snapshot = {
+          ...snapshot,
+          observedAtMs: base + 2_000,
+          volatilityBps: 4,
+          book: depth(base + 2_000),
+        };
+        setNow(base + 2_000);
+        await coordinator.start({
+          symbols: ['ETHUSDT'],
+          aegisEnabled: false,
+          momentumEnabled: false,
+          microBurstConfig: config,
+          loadMicroBurstProvenance: () => ({
+            codeCommitSha: identity.codeCommitSha,
+            configHash: identity.configHash,
+            cohortId: 'test-cohort',
+            officialCohortReady: false,
+          }),
+        });
+        await vi.waitFor(() =>
+          expect(
+            coordinator
+              .getMicroBurstProspectiveExitEntries()[0]
+              ?.observations.some(
+                (item) =>
+                  item.eventAtMs === base + 2_000 &&
+                  item.gap === undefined &&
+                  item.context.executableEconomics?.costObservedAtMs === base + 100,
+              ),
+          ).toBe(true),
+        );
+        const recovered = coordinator
+          .getMicroBurstProspectiveExitEntries()[0]
+          ?.observations.find((item) => item.eventAtMs === base + 2_000);
+        expect(recovered?.gap).toBeUndefined();
+        expect(recovered?.context.executableEconomics).toMatchObject({
+          costObservedAtMs: base + 100,
+        });
+
+        snapshot = {
+          ...snapshot,
+          observedAtMs: base + config.exitIntelligenceMaxObservationGapMs + 101,
+          book: depth(base + config.exitIntelligenceMaxObservationGapMs + 101),
+        };
+        setNow(snapshot.observedAtMs);
+        await vi.waitFor(() =>
+          expect(
+            coordinator
+              .getMicroBurstProspectiveExitEntries()[0]
+              ?.observations.some(
+                (item) =>
+                  item.eventAtMs === snapshot.observedAtMs &&
+                  item.gap?.reason === 'EXECUTABLE_ECONOMICS_UNAVAILABLE',
+              ),
+          ).toBe(true),
+        );
+
+        snapshot = null;
+        setNow(base + config.exitMaxHoldMs + config.exitMaxHoldExtensionMs + 1);
+        await vi.waitFor(() =>
+          expect(coordinator.getMicroBurstProspectiveExitEntries()[0]?.completed).toBe(true),
+        );
+        expect(
+          coordinator.getMicroBurstProspectiveExitEntries()[0]?.simulations.CURRENT.status,
+        ).toBe('NO_EVALUABLE');
+      } finally {
+        await coordinator.stop();
+      }
+    },
+  );
 
   it('keeps Micro Burst startup failures isolated from the bot startup', async () => {
     const { coordinator } = runtimeHarness();
