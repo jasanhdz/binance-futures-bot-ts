@@ -7,8 +7,27 @@ Date: 2026-09-26
 - Cost evidence remains usable through a market-data gap and retains its original `costObservedAtMs`.
 - A newly observed book is rejected when the persisted cost evidence exceeds `exitIntelligenceMaxObservationGapMs`.
 - The productive `StrategyRuntimeCoordinator` lifecycle is covered for LONG and SHORT: start, real close, post-close gap, restart, economic recovery, cost expiry, and horizon completion.
+- New-process journal recovery is covered for LONG and SHORT by `recovers a closed prospective episode from a new process and journal for LONG` and `recovers a closed prospective episode from a new process and journal for SHORT`. Each case creates new `TradingService` flow fixtures, exchange simulation, event bus, coordinator, prospective runtime, observer, and JSONL store instance for the second process; only the isolated journal path is shared.
 - CURRENT prospective evaluation receives the same `exitContext` that LIVE routes to the position manager. This changes only observational input; LIVE execution authority and decisions remain unchanged.
 - Capture remains disabled in `regime_config.live.yaml`.
+
+## Recovery Scope
+
+The first process exercises the productive simulated exchange reconciliation path, confirmed fills, real position closure, and the coordinator's timer-driven post-close observation. It persists a valid economic observation and a later market-data gap, then drains and stops all components.
+
+The second process does not republish the entry or close and does not reuse the first process's maps, bus, runtime, observer, coordinator, or storage object. The new coordinator restores the episode from the JSONL journal, resumes with new market snapshots, preserves the historical gap and original cost provenance/timestamp, rejects expired costs, and finalizes both CURRENT and CANDIDATE as `NO_EVALUABLE` at the horizon. The completed episode is removed from active bus tracking and is reloaded by a third storage/runtime instance as completed and persisted.
+
+The exchange and market-data providers are deterministic simulations. The test verifies process-memory loss and journal recovery; it does not simulate abrupt termination, interrupted writes, or power loss.
+
+## Executed Results
+
+- LONG recovery test: passed, exit code 0.
+- SHORT recovery test: passed, exit code 0.
+- Related capture, observer, runtime, coordinator, and contextual-flow tests: `65/65` passed, exit code 0.
+- `npm run build`: passed, exit code 0.
+- `git diff --check`: passed, exit code 0.
+- Full serial suite after the production journal-path seam: `231` files passed, `3,096` tests passed, `4` historical checkpoint tests failed, exit code 1.
+- No additional failures were introduced beyond the four documented checkpoint assertions.
 
 ## Historical Checkpoints
 

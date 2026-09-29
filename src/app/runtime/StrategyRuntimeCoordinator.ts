@@ -85,6 +85,7 @@ export interface StrategyRuntimeStartInput {
   symbols: readonly string[];
   microBurstConfig: MicroBurstRuntimeConfig;
   loadMicroBurstProvenance?: () => MicroBurstRuntimeProvenance;
+  prospectiveExitJournalPath?: string;
 }
 
 export interface StrategyRuntimeCoordinatorFactories {
@@ -342,7 +343,11 @@ export class StrategyRuntimeCoordinator {
     }
 
     if (input.microBurstConfig.enabled && input.microBurstConfig.mode !== 'OFF') {
-      await this.startMicroBurst(input.microBurstConfig, input.loadMicroBurstProvenance);
+      await this.startMicroBurst(
+        input.microBurstConfig,
+        input.loadMicroBurstProvenance,
+        input.prospectiveExitJournalPath,
+      );
     }
   }
 
@@ -377,6 +382,7 @@ export class StrategyRuntimeCoordinator {
   private async startMicroBurst(
     config: MicroBurstRuntimeConfig,
     loadProvenance?: () => MicroBurstRuntimeProvenance,
+    prospectiveExitJournalPath?: string,
   ): Promise<void> {
     if (!this.sharedMarketDataRuntime) {
       throw new Error('STRATEGY_RUNTIME_SHARED_MARKET_DATA_NOT_STARTED');
@@ -476,7 +482,8 @@ export class StrategyRuntimeCoordinator {
         this.prospectiveExitRuntime = createMicroBurstProspectiveExitRuntime(
           {
             enabled: prospectiveEnabled,
-            journalPath: 'logs/micro-burst/prospective-exits.jsonl',
+            journalPath:
+              prospectiveExitJournalPath ?? 'logs/micro-burst/prospective-exits.jsonl',
           },
           this.deps.microBurstProspectiveExit.source,
           {

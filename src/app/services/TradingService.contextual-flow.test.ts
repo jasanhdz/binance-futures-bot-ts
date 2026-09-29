@@ -32,6 +32,10 @@ import {
 import type { TradingExchangePort } from '../ports/Exchange';
 import { MicroBurstProspectiveExitEventBus } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitEventBus';
 import { createMicroBurstProspectiveExitRuntime } from '../../strategies/micro-burst/research/MicroBurstProspectiveExitRuntime';
+import { StrategyRuntimeCoordinator } from '../runtime/StrategyRuntimeCoordinator';
+import { StrategyRouter } from '../../core/strategy/StrategyRouter';
+import { createUnfrozenStrategyIdentity } from '../../core/strategy/StrategyIdentity';
+import type { MicroBurstStrategyContext } from '../../strategies/micro-burst/domain/MicroBurstStrategy';
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => {
@@ -39,10 +43,17 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function fixture(prospective = false) {
+interface ContextualFixtureOptions {
+  prospectiveJournalPath?: string;
+  manageProspectiveRuntime?: boolean;
+  side?: 'LONG' | 'SHORT';
+}
+
+async function fixture(prospective = false, options: ContextualFixtureOptions = {}) {
   let clock = Date.now();
   vi.spyOn(Date, 'now').mockImplementation(() => clock);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-full-flow-'));
+  const tradeSide = options.side ?? 'LONG';
   cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
   let store = new FsStateStore('default', 'flow', dir).forSymbol('ETHUSDT');
   cleanups.push(() => store.flush!());
@@ -193,7 +204,7 @@ async function fixture(prospective = false) {
     ),
     futuresIncome: vi.fn(async () => []),
   };
-  const sendOpen = vi.fn(async (_symbol: string, _side: string, q: number, clientOrderId?: string) => {
+  const sendOpen = vi.fn(async (_symbol: string, side: string, q: number, clientOrderId?: string) => {
     expect(fs.readFileSync(path.join(dir, 'entry.jsonl'), 'utf8')).toContain('PREPARED');
     expect(fs.readFileSync(path.join(dir, 'entry.jsonl'), 'utf8')).toContain(
       'contextualSizingEvidence',
@@ -201,7 +212,7 @@ async function fixture(prospective = false) {
     expect(quantity).toBe(0);
     quantity = q;
     const id = String(++sequence);
-    fill('BUY', q, id, 100);
+    fill(side === 'SHORT' ? 'SELL' : 'BUY', q, id, 100);
     orders.get(id)!.clientOrderId = clientOrderId;
     return { avgPrice: 100, orderId: id };
   });
@@ -214,7 +225,7 @@ async function fixture(prospective = false) {
       return entryTrade
         ? {
             symbol: 'ETHUSDT',
-            side: 'LONG' as const,
+            side: tradeSide,
             orderId: String(order.orderId),
             fillIds: [String(entryTrade.id)],
             filledAt: entryTrade.time,
@@ -271,9 +282,8 @@ async function fixture(prospective = false) {
     }),
     getSymbolFilters: async () => filters,
     hasOpenPosition: async () => quantity > 0,
-    readActivePosition: async (_s: string, side: string) => (side === 'SHORT' ? null : position()),
-    readFreshActivePosition: async (_s: string, side: string) =>
-      side === 'SHORT' ? null : position(),
+    readActivePosition: async () => position(),
+    readFreshActivePosition: async () => position(),
     marketOpen: sendOpen,
     sendStopCloseOnce: vi.fn(async (r: any) => {
       if (r.closePosition && [...stops.values()].some((s) => s.status === 'NEW' && s.closePosition))
@@ -327,7 +337,7 @@ async function fixture(prospective = false) {
     },
     sendMarketCloseOnce: vi.fn(async (r: any) => {
       const id = String(++sequence);
-      fill('SELL', quantity, id, price);
+      fill(tradeSide === 'SHORT' ? 'BUY' : 'SELL', quantity, id, price);
       quantity = 0;
       orders.get(id).clientOrderId = r.clientOrderId;
     }),
@@ -390,15 +400,16 @@ async function fixture(prospective = false) {
     });
   let protection = makeProtection();
   const prospectiveBus = new MicroBurstProspectiveExitEventBus(prospective);
-  const prospectiveRuntime = createMicroBurstProspectiveExitRuntime(
+  let prospectiveRuntime: any;
+  prospectiveRuntime = createMicroBurstProspectiveExitRuntime(
     {
       enabled: prospective,
-      journalPath: path.join(dir, 'prospective.jsonl'),
+      journalPath: options.prospectiveJournalPath ?? path.join(dir, 'prospective.jsonl'),
     },
     prospectiveBus,
     { config: { ...defaultMicroBurstConfig(), ...config.exitPolicy } as any },
   );
-  if (prospective) {
+  if (prospective && options.manageProspectiveRuntime !== false) {
     await prospectiveRuntime.start();
     cleanups.push(() => prospectiveRuntime.stop());
   }
@@ -518,14 +529,14 @@ async function fixture(prospective = false) {
   };
   const request = (episode: number, tier = 20) => ({
     symbol: 'ETHUSDT',
-    side: 'LONG',
+    side: tradeSide,
     signalId: `signal-${episode}`,
     strategyVersion: 'MICRO',
     requestedAt: Date.now(),
     leverage: tier,
     positionFraction: 0.9,
-    structuralStopPrice: 99.5,
-    destinationPrice: 102,
+    structuralStopPrice: tradeSide === 'LONG' ? 99.5 : 100.5,
+    destinationPrice: tradeSide === 'LONG' ? 102 : 98,
     diagnostics: {
       episodeId: `MB-EP-${String(episode).padStart(24, '0')}`,
       signalSnapshotAtMs: Date.now(),
@@ -554,7 +565,7 @@ async function fixture(prospective = false) {
     sendOpen,
     prospectiveBus,
     prospectiveRuntime,
-    prospectiveJournalPath: path.join(dir, 'prospective.jsonl'),
+     prospectiveJournalPath: options.prospectiveJournalPath ?? path.join(dir, 'prospective.jsonl'),
     request,
     ledger: () => ledger,
     setPrice: (p: number) => {
@@ -594,11 +605,88 @@ async function fixture(prospective = false) {
     triggerStop: () => {
       const s = [...stops.values()].find((s) => s.status === 'NEW');
       const id = String(++sequence);
-      fill('SELL', quantity, id, 99.5);
+      fill(tradeSide === 'SHORT' ? 'BUY' : 'SELL', quantity, id, 99.5);
       quantity = 0;
       s.status = 'FILLED';
       s.executedOrderId = id;
     },
+  };
+}
+
+function prospectiveCoordinatorFixture(
+  exchange: any,
+  prospectiveBus: MicroBurstProspectiveExitEventBus,
+  journalPath: string,
+  readBook: () => unknown,
+) {
+  let nowOverride: number | undefined;
+  let snapshot: any = null;
+  const fakeRuntime = {
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
+    getReadiness: vi.fn(() => ({
+      ready: true,
+      blockers: [],
+      cohortId: null,
+      strategyVersion: null,
+      codeCommitSha: null,
+      configHash: null,
+      liveExecution: false,
+      readyForSoak: false,
+      readyForFreeze: false,
+      official: false,
+      officialAuthority: false,
+      liveAuthority: false,
+      checks: {},
+      warnings: [],
+      symbolBlockers: {},
+    })),
+    getHealth: vi.fn(() => ({})),
+    readExecutionBook: vi.fn(() => readBook()),
+    readExitMarketSnapshot: vi.fn(() => snapshot),
+    validateEntryMarket: vi.fn(),
+  };
+  const sharedMarketData = {
+    close: vi.fn(),
+    setArchiveObserver: vi.fn(),
+    orderBookDataPlane: {},
+    aggTradeDataPlane: {},
+  };
+  const sharedLiquidity = {
+    start: vi.fn(),
+    close: vi.fn(),
+    read: vi.fn(() => ({ status: 'FRESH', stress: 0 })),
+  };
+  const coordinator = new StrategyRuntimeCoordinator(
+    {
+      exchange,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      clock: { now: () => nowOverride ?? Date.now() },
+      aegisIdentity: createUnfrozenStrategyIdentity('AEGIS_TURBO', 'test', 'test-sha'),
+      momentumStrategyRouter: new StrategyRouter(),
+      microBurstStrategyRouter: new StrategyRouter<MicroBurstStrategyContext>(),
+      decisionSink: { append: vi.fn(async () => undefined) },
+      marketSnapshotSink: {
+        append: vi.fn(async () => ({ snapshotId: 'test', stored: true, contentHash: 'test-hash' })),
+      },
+      microBurstProspectiveExit: { source: prospectiveBus, bus: prospectiveBus },
+    },
+    {
+      createMicroBurstRuntime: vi.fn(() => fakeRuntime as never),
+      createSharedMarketDataRuntime: vi.fn(() => sharedMarketData as never),
+      createSharedLiquidityState: vi.fn(() => sharedLiquidity as never),
+    },
+  );
+  return {
+    coordinator,
+    fakeRuntime,
+    setSnapshot: (value: unknown) => {
+      snapshot = value;
+    },
+    setNow: (value: number | undefined) => {
+      nowOverride = value;
+    },
+    journalPath,
   };
 }
 
@@ -940,6 +1028,233 @@ describe('Micro production entry/protection/exit/accounting flow with simulated 
     expect(f.prospectiveBus.closedEntriesSnapshot()).toContain(entryId);
     await restored.stop();
   }, 30_000);
+
+  it.each(['LONG', 'SHORT'] as const)(
+    'recovers a closed prospective episode from a new process and journal for %s',
+    async (side) => {
+      const journalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-journal-recovery-'));
+      const journalPath = path.join(journalDir, 'prospective.jsonl');
+      cleanups.push(() => fs.rmSync(journalDir, { recursive: true, force: true }));
+      const config = {
+        ...defaultMicroBurstConfig(),
+        enabled: true,
+        mode: 'SHADOW' as const,
+        symbols: { ETHUSDT: { enabled: true } },
+        prospectiveValidation: { enabled: true },
+      };
+      const makeSnapshot = (observedAtMs: number, volatilityBps?: number) => ({
+        currentPrice: 100,
+        observedAtMs,
+        volatilityBps,
+        currentBookPressure: null,
+        currentBtcContext: null,
+        marketEvidence: null,
+        book: {
+          status: 'HEALTHY' as const,
+          observedAtMs,
+          bidDepth: [{ price: side === 'SHORT' ? 99.98 : 100.01, qty: 100 }],
+          askDepth: [{ price: side === 'SHORT' ? 99.99 : 100.01, qty: 100 }],
+        },
+      });
+
+      const first = await fixture(true, {
+        prospectiveJournalPath: journalPath,
+        manageProspectiveRuntime: false,
+        side,
+      });
+      const firstCoordinator = prospectiveCoordinatorFixture(
+        first.exchange,
+        first.prospectiveBus,
+        journalPath,
+        first.book,
+      );
+      first.service.strategyRuntimeCoordinator = firstCoordinator.coordinator;
+      firstCoordinator.setSnapshot(makeSnapshot(Date.now(), 1));
+      await firstCoordinator.coordinator.start({
+        symbols: ['ETHUSDT'],
+        aegisEnabled: false,
+        momentumEnabled: false,
+        microBurstConfig: config,
+        prospectiveExitJournalPath: journalPath,
+        loadMicroBurstProvenance: () => ({
+          codeCommitSha: 'b'.repeat(40),
+          configHash: 'a'.repeat(64),
+          cohortId: 'test-cohort',
+          officialCohortReady: false,
+        }),
+      });
+
+      expect(await first.service.openMicroBurstLivePosition(first.request(1))).toBe(true);
+      await first.entry.reconcile();
+      const entryId = first.prospectiveBus.entriesSnapshot()[0].entryId;
+      first.setPrice(100);
+      firstCoordinator.setSnapshot(makeSnapshot(Date.now(), 1));
+      await first.service.managePositionByOwner('ETHUSDT', first.store.get(), first.store);
+      await vi.waitFor(() =>
+        expect(firstCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0]?.observations.length).toBeGreaterThan(0),
+      );
+
+      first.triggerStop();
+      await first.protection.reconcileMissingMicroPosition('ETHUSDT', first.store);
+      await first.stop.reconcileClosed(() => first.store);
+      await first.service.reconcileMicroNetSettlements();
+      await vi.waitFor(() => expect(first.prospectiveBus.closedEntriesSnapshot()).toContain(entryId));
+
+      first.setPrice(100);
+      firstCoordinator.setSnapshot(makeSnapshot(Date.now(), undefined));
+      await vi.waitFor(() =>
+        expect(
+          firstCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0]?.observations.some(
+            (observation) => observation.gap?.reason === 'EXECUTABLE_ECONOMICS_UNAVAILABLE',
+          ),
+        ).toBe(true),
+      );
+      const firstPersisted = structuredClone(
+        firstCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0],
+      );
+      expect(firstPersisted?.realPositionClosedAtMs).not.toBeNull();
+      const firstEconomicObservation = firstPersisted?.observations.find(
+        (observation) => observation.context.executableEconomics,
+      );
+      expect(firstEconomicObservation?.context.executableEconomics).toMatchObject({
+        costSource: 'BINANCE_RECONCILED_EXIT_COSTS',
+      });
+      const costObservedAtMs =
+        firstEconomicObservation!.context.executableEconomics!.costObservedAtMs ??
+        firstEconomicObservation!.context.executableEconomics!.observedAtMs;
+      const firstObservationCount = firstPersisted!.observations.length;
+      const firstDecisionCounts = {
+        CURRENT: firstPersisted!.simulations.CURRENT.decisions.length,
+        CANDIDATE: firstPersisted!.simulations.CANDIDATE.decisions.length,
+      };
+      await firstCoordinator.coordinator.stop();
+
+      const second = await fixture(true, {
+        prospectiveJournalPath: journalPath,
+        manageProspectiveRuntime: false,
+        side,
+      });
+      const secondCoordinator = prospectiveCoordinatorFixture(
+        second.exchange,
+        second.prospectiveBus,
+        journalPath,
+        second.book,
+      );
+      second.service.strategyRuntimeCoordinator = secondCoordinator.coordinator;
+      const recoveryAt =
+        firstPersisted!.observations[firstPersisted!.observations.length - 1]!.eventAtMs + 1_000;
+      secondCoordinator.setSnapshot(makeSnapshot(recoveryAt, 1));
+      secondCoordinator.setNow(recoveryAt);
+      await secondCoordinator.coordinator.start({
+        symbols: ['ETHUSDT'],
+        aegisEnabled: false,
+        momentumEnabled: false,
+        microBurstConfig: config,
+        prospectiveExitJournalPath: journalPath,
+        loadMicroBurstProvenance: () => ({
+          codeCommitSha: 'b'.repeat(40),
+          configHash: 'a'.repeat(64),
+          cohortId: 'test-cohort',
+          officialCohortReady: false,
+        }),
+      });
+
+      const restored = secondCoordinator.coordinator.getMicroBurstProspectiveExitEntries();
+      expect(restored).toHaveLength(1);
+      expect(restored[0].identity).toEqual(firstPersisted!.identity);
+      expect(restored[0].realPositionClosedAtMs).toBe(firstPersisted!.realPositionClosedAtMs);
+      expect(restored[0].realFills).toHaveLength(firstPersisted!.realFills.length);
+      expect(restored[0].observations).toHaveLength(firstObservationCount);
+      expect(restored[0].simulations.CURRENT.decisions).toHaveLength(firstDecisionCounts.CURRENT);
+      expect(restored[0].simulations.CANDIDATE.decisions).toHaveLength(
+        firstDecisionCounts.CANDIDATE,
+      );
+      expect(restored[0].observations.some((observation) => observation.gap)).toBe(true);
+      expect(
+        restored[0].observations.some(
+          (observation) =>
+            observation.context.executableEconomics?.costSource ===
+              'BINANCE_RECONCILED_EXIT_COSTS' &&
+            observation.context.executableEconomics.costObservedAtMs === costObservedAtMs,
+        ),
+      ).toBe(true);
+      expect(restored[0].simulations.CURRENT).not.toBe(restored[0].simulations.CANDIDATE);
+      expect(restored[0].simulations.CURRENT.decisions).not.toBe(
+        restored[0].simulations.CANDIDATE.decisions,
+      );
+
+      await vi.waitFor(() =>
+        expect(
+          secondCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0]?.observations.length,
+        ).toBeGreaterThan(firstObservationCount),
+      );
+      const recovered = secondCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0];
+      expect(
+        recovered.observations.some(
+          (observation) =>
+            observation.eventAtMs >
+              firstPersisted!.observations[firstPersisted!.observations.length - 1]!.eventAtMs &&
+            observation.gap === undefined &&
+            observation.context.executableEconomics?.costSource ===
+              'BINANCE_RECONCILED_EXIT_COSTS' &&
+            observation.context.executableEconomics.costObservedAtMs === costObservedAtMs,
+        ),
+      ).toBe(true);
+
+      const expiryAt = costObservedAtMs + config.exitIntelligenceMaxObservationGapMs + 1;
+      secondCoordinator.setSnapshot(makeSnapshot(expiryAt, 1));
+      secondCoordinator.setNow(expiryAt);
+      await vi.waitFor(() =>
+        expect(
+          secondCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0]?.observations.some(
+            (observation) =>
+              observation.eventAtMs === expiryAt &&
+              observation.context.executableEconomics === undefined,
+          ),
+        ).toBe(true),
+      );
+
+      const horizonAt = recovered.horizonAtMs;
+      secondCoordinator.setSnapshot(null);
+      secondCoordinator.setNow(horizonAt + 1);
+      await vi.waitFor(() =>
+        expect(secondCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0]?.completed).toBe(
+          true,
+        ),
+      );
+      const completed = secondCoordinator.coordinator.getMicroBurstProspectiveExitEntries()[0];
+      expect(completed.simulations.CURRENT.status, JSON.stringify(completed.simulations.CURRENT)).toBe(
+        'NO_EVALUABLE',
+      );
+      expect(
+        completed.simulations.CANDIDATE.status,
+        JSON.stringify(completed.simulations.CANDIDATE),
+      ).toBe('NO_EVALUABLE');
+      await vi.waitFor(() => {
+        expect(second.prospectiveBus.entriesSnapshot()).toHaveLength(0);
+        expect(second.prospectiveBus.closedEntriesSnapshot()).toHaveLength(0);
+      });
+      expect(second.sendOpen).not.toHaveBeenCalled();
+      expect(second.exchange.sendMarketCloseOnce).not.toHaveBeenCalled();
+      expect(second.exchange.sendStopCloseOnce).toHaveBeenCalledTimes(0);
+
+      await secondCoordinator.coordinator.stop();
+      const finalBus = new MicroBurstProspectiveExitEventBus(true);
+      const finalRuntime = createMicroBurstProspectiveExitRuntime(
+        { enabled: true, journalPath },
+        finalBus,
+      );
+      await finalRuntime.start();
+      const persistedFinal = finalRuntime.entriesSnapshot();
+      expect(persistedFinal).toHaveLength(1);
+      expect(persistedFinal[0].completed).toBe(true);
+      expect(persistedFinal[0].realPositionClosedAtMs).toBe(firstPersisted!.realPositionClosedAtMs);
+      expect(persistedFinal[0].simulations.CURRENT.status).toBe('NO_EVALUABLE');
+      expect(persistedFinal[0].simulations.CANDIDATE.status).toBe('NO_EVALUABLE');
+      expect(finalBus.entriesSnapshot()).toHaveLength(0);
+      await finalRuntime.stop();
+    },
+  );
 
   it('keeps the pre-capture LIVE context when prospective capture is disabled', async () => {
     const f = await fixture(false);
