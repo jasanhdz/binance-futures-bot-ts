@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
 import Database from 'better-sqlite3';
+import { performance } from 'node:perf_hooks';
 import { compareTrades, tradeIdentity } from './MicroBurstTradeHistoryStore';
 import { ProspectiveOutcomeRecord } from './MicroBurstOutcomeTypes';
 import { GapKind, MarketDataFeed } from '../../../core/market-data/NormalizedMarketEvents';
@@ -27,6 +28,10 @@ export interface MicroBurstStorageOptions {
   maxBatchLatencyMs?: number;
   /** Optional age at which health reports a retention warning. */
   retentionWarningAgeMs?: number;
+  /** Append duration at which a synchronous archive write is counted as slow. */
+  slowAppendThresholdMs?: number;
+  /** Defer raw trade/depth file writes off the market-data callback. */
+  deferRawWrites?: boolean;
 }
 
 export interface ArchiveTrade {
@@ -87,6 +92,10 @@ export interface StorageHealth {
   newestArchiveEventTimeMs: number | null;
   archiveRetentionAgeMs: number | null;
   retentionWarning: boolean;
+  synchronousAppendCount: number;
+  synchronousAppendTotalMs: number;
+  synchronousAppendMaxMs: number;
+  synchronousAppendSlowCount: number;
 }
 
 export interface MicroBurstOutcomeReconciliation {
@@ -156,7 +165,12 @@ export class MicroBurstStorage {
   private readonly maxActiveSegmentDurationMs: number;
   private readonly durabilityFlushIntervalMs: number;
   private readonly retentionWarningAgeMs: number | null;
+  private readonly slowAppendThresholdMs: number;
+  private readonly deferRawWrites: boolean;
   private readonly activeSegments = new Map<string, ActiveSegment>();
+  private readonly rawWriteQueue: ArchiveWrite[] = [];
+  private rawWriteScheduled = false;
+  private rawWriteDraining = false;
   private health: StorageHealth = {
     healthy: true,
     errorCount: 0,
@@ -189,6 +203,10 @@ export class MicroBurstStorage {
     newestArchiveEventTimeMs: null,
     archiveRetentionAgeMs: null,
     retentionWarning: false,
+    synchronousAppendCount: 0,
+    synchronousAppendTotalMs: 0,
+    synchronousAppendMaxMs: 0,
+    synchronousAppendSlowCount: 0,
   };
 
   constructor(private readonly options: MicroBurstStorageOptions) {
@@ -214,6 +232,8 @@ export class MicroBurstStorage {
       DEFAULT_DURABILITY_FLUSH_INTERVAL_MS,
     );
     this.retentionWarningAgeMs = positiveInteger(options.retentionWarningAgeMs, 0) || null;
+    this.slowAppendThresholdMs = Math.max(0, options.slowAppendThresholdMs ?? 5);
+    this.deferRawWrites = options.deferRawWrites === true;
     this.health.queueCapacity = this.maxArchiveQueueRecords;
     try {
       fs.mkdirSync(path.dirname(options.databasePath), { recursive: true });
@@ -762,6 +782,7 @@ export class MicroBurstStorage {
 
   flush(): boolean {
     return this.safe(() => {
+      this.drainRawWriteQueue();
       this.finalizeAllActiveSegments();
     });
   }
@@ -842,22 +863,46 @@ export class MicroBurstStorage {
       this.markFailure(new Error('invalid archive record metadata'));
       return false;
     }
-    const hourStartMs = Math.floor(eventTime / 3_600_000) * 3_600_000;
-    const key = `${type}\u0000${symbol}\u0000${hourStartMs}`;
     const write: ArchiveWrite = { type, symbol, eventTime, receivedAtMs, payload };
+    if (this.deferRawWrites) {
+      if (this.closed || this.rawWriteQueue.length >= this.maxArchiveQueueRecords) {
+        this.health = {
+          ...this.health,
+          overflowRecords: this.health.overflowRecords + 1,
+        };
+        this.markFailure(new Error('archive raw write queue overflow'));
+        return false;
+      }
+      this.rawWriteQueue.push(write);
+      this.health = {
+        ...this.health,
+        queueDepth: this.rawWriteQueue.length,
+        queueHighWatermark: Math.max(this.health.queueHighWatermark, this.rawWriteQueue.length),
+        queuedRecords: this.health.queuedRecords + 1,
+      };
+      this.scheduleRawWriteDrain();
+      return true;
+    }
+    return this.writeRaw(write);
+  }
+
+  private writeRaw(write: ArchiveWrite): boolean {
+    const startedAt = performance.now();
     try {
+      const hourStartMs = Math.floor(write.eventTime / 3_600_000) * 3_600_000;
+      const key = `${write.type}\u0000${write.symbol}\u0000${hourStartMs}`;
       let active = this.activeSegments.get(key);
       if (!active) {
-        active = this.openActiveSegment(type, symbol, hourStartMs);
+        active = this.openActiveSegment(write.type, write.symbol, hourStartMs);
         this.activeSegments.set(key, active);
       }
       const line = this.serialize(write);
       fs.appendFileSync(active.activePath, line, 'utf8');
       active.records++;
       active.bytes += Buffer.byteLength(line);
-      active.firstEventTimeMs = Math.min(active.firstEventTimeMs, eventTime);
-      active.lastEventTimeMs = Math.max(active.lastEventTimeMs, eventTime);
-      this.health.queuedRecords++;
+      active.firstEventTimeMs = Math.min(active.firstEventTimeMs, write.eventTime);
+      active.lastEventTimeMs = Math.max(active.lastEventTimeMs, write.eventTime);
+      if (!this.deferRawWrites) this.health.queuedRecords++;
       this.scheduleDurabilityCheckpoint(active);
       this.updateActiveHealth();
       if (
@@ -870,14 +915,53 @@ export class MicroBurstStorage {
     } catch (error) {
       this.markFailure(error);
       this.recordGap({
-        symbol,
-        startedAtMs: eventTime,
-        endedAtMs: eventTime,
+        symbol: write.symbol,
+        startedAtMs: write.eventTime,
+        endedAtMs: write.eventTime,
         reason: 'active_archive_append_failure',
-        dataType: type,
+        dataType: write.type,
       });
       return false;
+    } finally {
+      this.recordSynchronousAppendDuration(performance.now() - startedAt);
     }
+  }
+
+  private scheduleRawWriteDrain(): void {
+    if (!this.deferRawWrites || this.rawWriteScheduled || this.rawWriteDraining || this.closed)
+      return;
+    this.rawWriteScheduled = true;
+    setImmediate(() => {
+      this.rawWriteScheduled = false;
+      this.drainRawWriteQueue();
+    });
+  }
+
+  private drainRawWriteQueue(): void {
+    if (this.rawWriteDraining) return;
+    this.rawWriteDraining = true;
+    try {
+      while (this.rawWriteQueue.length) {
+        const write = this.rawWriteQueue.shift()!;
+        this.health = { ...this.health, queueDepth: this.rawWriteQueue.length };
+        if (!this.writeRaw(write)) break;
+      }
+    } finally {
+      this.rawWriteDraining = false;
+      if (this.rawWriteQueue.length) this.scheduleRawWriteDrain();
+    }
+  }
+
+  private recordSynchronousAppendDuration(durationMs: number): void {
+    this.health = {
+      ...this.health,
+      synchronousAppendCount: this.health.synchronousAppendCount + 1,
+      synchronousAppendTotalMs: this.health.synchronousAppendTotalMs + durationMs,
+      synchronousAppendMaxMs: Math.max(this.health.synchronousAppendMaxMs, durationMs),
+      synchronousAppendSlowCount:
+        this.health.synchronousAppendSlowCount +
+        (durationMs >= this.slowAppendThresholdMs ? 1 : 0),
+    };
   }
 
   private segmentPath(

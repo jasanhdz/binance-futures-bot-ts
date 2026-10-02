@@ -500,6 +500,44 @@ describe('MicroBurstRuntime', () => {
     await runtime.stop();
   });
 
+  it('persists complete order-book checkpoints at the configured interval', async () => {
+    let now = 10_000;
+    const persistCheckpoint = vi.fn(() => true);
+    deps.clock = { now: () => now };
+    deps.marketStorage = {
+      appendDepth: () => true,
+      persistCheckpoint,
+      getHealth: () => ({ healthy: true, errorCount: 0 }),
+    };
+    const runtime = new MicroBurstRuntime(
+      deps,
+      makeConfig({ marketArchive: { enabled: true, bookCheckpointIntervalMs: 1_000 } }),
+    );
+    await runtime.start();
+    const book = (runtime as any).symbolStates.get('ETHUSDT').book;
+    book.getSnapshot = () => ({
+      status: 'HEALTHY',
+      observedAtMs: 9_900,
+      lastUpdateId: 42,
+      bidDepth: [{ price: 99, qty: 2 }],
+      askDepth: [{ price: 101, qty: 3 }],
+    });
+
+    (runtime as any).persistBookCheckpoint('ETHUSDT');
+    expect(persistCheckpoint).toHaveBeenCalledWith(
+      'ETHUSDT',
+      9_900,
+      expect.objectContaining({ lastUpdateId: 42, bids: [{ price: 99, qty: 2 }] }),
+    );
+    now = 10_500;
+    (runtime as any).persistBookCheckpoint('ETHUSDT');
+    expect(persistCheckpoint).toHaveBeenCalledTimes(1);
+    now = 11_000;
+    (runtime as any).persistBookCheckpoint('ETHUSDT');
+    expect(persistCheckpoint).toHaveBeenCalledTimes(2);
+    await runtime.stop();
+  });
+
   it('uses fresh aggregate-trade event time for LIVE exit observations', async () => {
     let now = 10_000;
     deps.clock = { now: () => now };
@@ -527,10 +565,10 @@ describe('MicroBurstRuntime', () => {
       currentPrice: 101,
       observedAtMs: 9_000,
       marketEvidence: {
-        priceSampleCount: 1,
+        priceSampleCount: 2,
         buyTakerVolume: 1,
-        sellTakerVolume: 0,
-        takerTradeCount: 1,
+        sellTakerVolume: 10,
+        takerTradeCount: 2,
         takerFlowWindowComplete: false,
       },
     });

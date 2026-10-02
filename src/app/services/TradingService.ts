@@ -74,6 +74,7 @@ import {
 } from '../strategy/OwnedPositionManagers';
 import { MicroBurstPositionManager } from '../../strategies/micro-burst/application/MicroBurstPositionManager';
 import { MicroBurstExitObservation } from '../../strategies/micro-burst/application/MicroBurstExitObservation';
+import { priceDistanceToBps } from '../../strategies/micro-burst/domain/MicroBurstUnits';
 import { StrategyIdentity } from '../../core/strategy/StrategyIdentity';
 import { evaluateSharedEntrySafety } from '../../core/risk/SharedEntrySafetyGate';
 import { resolveStrategyOwnership } from '../../core/strategy/StrategyPositionOwnership';
@@ -538,18 +539,77 @@ export class TradingService {
             )
               return false;
           }
+          const validationAtMs = Date.now();
           const reason = this.strategyRuntimeCoordinator.validateMicroBurstEntryMarket(
             intent,
             quantity,
           );
-          if (reason)
+          const book = this.strategyRuntimeCoordinator.readMicroBurstExecutionBook(intent.symbol);
+          const inputFreshness =
+            intent.metadata.inputFreshness !== null &&
+            typeof intent.metadata.inputFreshness === 'object'
+              ? (intent.metadata.inputFreshness as Record<string, unknown>)
+              : undefined;
+          const signalSnapshotAtMs = Number(intent.metadata.signalSnapshotAtMs);
+          const validationSample = {
+            executionStage: 'FINAL_PREPARED_SEND',
+            symbol: intent.symbol,
+            side: intent.side,
+            decisionId: this.microDecisionIdFromIntent(intent),
+            signalId:
+              typeof intent.metadata.signalId === 'string' ? intent.metadata.signalId : undefined,
+            validationAtMs,
+            signalSnapshotAtMs,
+            signalAgeMs: Number.isFinite(signalSnapshotAtMs)
+              ? validationAtMs - signalSnapshotAtMs
+              : undefined,
+            requestAgeMs: validationAtMs - intent.requestedAt,
+            bookStatus: book?.status,
+            bookObservedAtMs: book?.observedAtMs,
+            bookAgeMs:
+              book && Number.isFinite(book.observedAtMs)
+                ? validationAtMs - book.observedAtMs
+                : undefined,
+            executableSpreadBps:
+              book?.bidDepth[0]?.price && book.askDepth[0]?.price
+                ? priceDistanceToBps(book.bidDepth[0].price, book.askDepth[0].price)
+                : undefined,
+            inputFreshness,
+            inputFreshnessEvidence:
+              inputFreshness === undefined
+                ? 'MISSING'
+                : {
+                    schemaVersion: inputFreshness.schemaVersion,
+                    signalAsOfMs: inputFreshness.signalAsOfMs,
+                    candleCloseTimeMs: inputFreshness.candleCloseTimeMs,
+                    hasFlow: inputFreshness.flow !== undefined,
+                    hasBook: inputFreshness.book !== undefined,
+                  },
+            executableBookEvidence: book
+              ? {
+                  available: true,
+                  status: book.status,
+                  observedAtMs: book.observedAtMs,
+                  bidLevels: book.bidDepth.length,
+                  askLevels: book.askDepth.length,
+                }
+              : { available: false },
+            quantity,
+          };
+          const validationElapsedMs = Date.now() - validationAtMs;
+          if (reason) {
             this.recordMicroAdmissionDenied({
-              symbol: intent.symbol,
-              side: intent.side,
+              ...validationSample,
               reason,
-              decisionId: this.microDecisionIdFromIntent(intent),
-              admissionElapsedMs: Date.now() - intent.requestedAt,
+              validationElapsedMs,
+              admissionElapsedMs: validationAtMs - intent.requestedAt,
             });
+          } else {
+            this.deps.logger.info('micro_burst_entry_final_validation_passed', {
+              ...validationSample,
+              validationElapsedMs,
+            });
+          }
           return reason === undefined;
         },
         feeBufferPct: deps.configManager.trading?.fee_buffer_pct ?? CONFIG.FEE_BUFFER_PCT ?? 0.05,

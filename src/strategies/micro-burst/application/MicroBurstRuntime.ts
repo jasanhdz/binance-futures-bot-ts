@@ -121,6 +121,10 @@ export interface MicroBurstRuntimeHealth {
   archiveFileCount: number | null;
   archiveRetentionAgeMs: number | null;
   archiveRetentionWarning: boolean | null;
+  archiveSynchronousAppendCount: number | null;
+  archiveSynchronousAppendTotalMs: number | null;
+  archiveSynchronousAppendMaxMs: number | null;
+  archiveSynchronousAppendSlowCount: number | null;
   storageErrors: number;
   mutationAttempts: number;
   forwardedMutations: number;
@@ -224,6 +228,10 @@ export interface MicroBurstRuntimeDeps {
       archiveFileCount?: number;
       archiveRetentionAgeMs?: number | null;
       retentionWarning?: boolean;
+      synchronousAppendCount?: number;
+      synchronousAppendTotalMs?: number;
+      synchronousAppendMaxMs?: number;
+      synchronousAppendSlowCount?: number;
     };
   };
   provenance?: {
@@ -288,6 +296,7 @@ export class MicroBurstRuntime {
   private readonly paperOpenSymbols = new Set<string>();
   private paperRecoveryBlocked = false;
   private paperPersistenceError: string | null = null;
+  private readonly lastBookCheckpointAtMs = new Map<string, number>();
   private orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
   private aggTradeDataPlane?: AggTradeDataPlane<RollingAggTradeBuffer>;
 
@@ -647,6 +656,7 @@ export class MicroBurstRuntime {
       state.evaluationInFlight = false;
     }
     this.symbolStates.clear();
+    this.lastBookCheckpointAtMs.clear();
 
     if (this.btcProvider) {
       this.btcProvider.stop();
@@ -1026,6 +1036,10 @@ export class MicroBurstRuntime {
       archiveFileCount: archiveHealth?.archiveFileCount ?? null,
       archiveRetentionAgeMs: archiveHealth?.archiveRetentionAgeMs ?? null,
       archiveRetentionWarning: archiveHealth?.retentionWarning ?? null,
+      archiveSynchronousAppendCount: archiveHealth?.synchronousAppendCount ?? null,
+      archiveSynchronousAppendTotalMs: archiveHealth?.synchronousAppendTotalMs ?? null,
+      archiveSynchronousAppendMaxMs: archiveHealth?.synchronousAppendMaxMs ?? null,
+      archiveSynchronousAppendSlowCount: archiveHealth?.synchronousAppendSlowCount ?? null,
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       mutationAttempts: mutationAudit.totalMutationAttempts,
       forwardedMutations: mutationAudit.forwardedMutationCalls,
@@ -1049,9 +1063,6 @@ export class MicroBurstRuntime {
   private managePaperTrade(symbol: string, event: AggTradeEvent): void {
     if (!this.paperOpenSymbols.has(symbol)) return;
     const state = this.symbolStates.get(symbol);
-    const openPosition = this.shadowEngine
-      .getOpenPositions()
-      .find((position) => position.strategyId === 'MICRO_BURST' && position.symbol === symbol);
     const snapshot = state?.book.getSnapshot();
     const receivedAtMs = event.receivedAtMs ?? this.deps.clock.now();
     const currentBookPressure = snapshot
@@ -1068,9 +1079,9 @@ export class MicroBurstRuntime {
         strategyContext: {
           currentBookPressure,
           currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
-          marketEvidence: state
-            ? buildExitMarketEvidence(state.aggTradeBuffer, openPosition?.openedAtMs)
-            : null,
+          // The optional timestamp only selects a fresh current price. Exit
+          // evidence must retain its full 5s/20s windows.
+          marketEvidence: state ? buildExitMarketEvidence(state.aggTradeBuffer) : null,
           anomalyExitFlag: false,
         },
       },
@@ -1124,7 +1135,9 @@ export class MicroBurstRuntime {
         ? analyzeBookPressure(bookSnapshot, now, undefined, bookSnapshot.temporalHistory)
         : null,
       currentBtcContext: this.btcProvider?.getBtcContext() ?? null,
-      marketEvidence: buildExitMarketEvidence(state.aggTradeBuffer, sinceMs),
+      // `sinceMs` is a freshness gate for the current price, not the start of
+      // the flow windows used by exit evidence.
+      marketEvidence: buildExitMarketEvidence(state.aggTradeBuffer),
     };
   }
 
@@ -1323,9 +1336,34 @@ export class MicroBurstRuntime {
       if (!this.running) return;
       for (const symbol of this.symbolStates.keys()) {
         if (!this.running) break;
+        this.persistBookCheckpoint(symbol);
         await this.evaluateSymbol(symbol);
       }
     }, this.evaluationIntervalMs);
+  }
+
+  private persistBookCheckpoint(symbol: string): void {
+    const storage = this.deps.marketStorage;
+    if (!storage?.persistCheckpoint) return;
+    const state = this.symbolStates.get(symbol);
+    const snapshot = state?.book.getSnapshot();
+    if (!snapshot) return;
+    const now = this.deps.clock.now();
+    const interval = Math.max(1_000, this.config.marketArchive?.bookCheckpointIntervalMs ?? 5_000);
+    const previous = this.lastBookCheckpointAtMs.get(symbol) ?? -Infinity;
+    if (now - previous < interval) return;
+    if (
+      !storage.persistCheckpoint(symbol, snapshot.observedAtMs, {
+        schemaVersion: 1,
+        symbol,
+        observedAtMs: snapshot.observedAtMs,
+        lastUpdateId: snapshot.lastUpdateId,
+        bids: snapshot.bidDepth,
+        asks: snapshot.askDepth,
+      })
+    )
+      return;
+    this.lastBookCheckpointAtMs.set(symbol, now);
   }
 
   private startHealthReporting(): void {
@@ -1407,12 +1445,9 @@ export class MicroBurstRuntime {
 
 function buildExitMarketEvidence(
   buffer: RollingAggTradeBuffer,
-  sinceMs?: number,
 ): MicroBurstExitMarketEvidence | null {
-  const afterEntry = (trade: AggTradeEvent): boolean =>
-    sinceMs === undefined || trade.eventTime >= sinceMs;
-  const shortTrades = buffer.getRecent(EXIT_SHORT_HORIZON_MS).filter(afterEntry);
-  const mediumTrades = buffer.getRecent(EXIT_MEDIUM_HORIZON_MS).filter(afterEntry);
+  const shortTrades = buffer.getRecent(EXIT_SHORT_HORIZON_MS);
+  const mediumTrades = buffer.getRecent(EXIT_MEDIUM_HORIZON_MS);
   const flow = buffer.getTakerFlow(EXIT_SHORT_HORIZON_MS);
   if (flow.eventWatermarkMs === null) return null;
   let buyTakerVolume = 0;
@@ -1429,9 +1464,7 @@ function buildExitMarketEvidence(
     buyTakerVolume,
     sellTakerVolume,
     takerTradeCount: shortTrades.length,
-    takerFlowWindowComplete:
-      flow.windowComplete &&
-      (sinceMs === undefined || sinceMs <= flow.eventWatermarkMs - flow.requestedWindowMs),
+    takerFlowWindowComplete: flow.windowComplete,
     takerFlowGapFree: flow.gapFree,
   };
 }

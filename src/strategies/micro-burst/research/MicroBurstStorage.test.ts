@@ -419,6 +419,85 @@ describe('MicroBurstStorage', () => {
     storage.close();
   });
 
+  it('reports synchronous archive append latency for load measurement', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-latency-'));
+    temporaryDirectories.push(root);
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      slowAppendThresholdMs: 0,
+    });
+
+    expect(
+      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 101, price: 1 }),
+    ).toBe(true);
+    expect(
+      storage.appendDepth({
+        symbol: 'BTCUSDT',
+        eventTime: 102,
+        receivedAtMs: 103,
+        E: 102,
+        T: 102,
+        U: 1,
+        u: 2,
+        b: [],
+        a: [],
+      }),
+    ).toBe(true);
+    expect(storage.getHealth()).toMatchObject({
+      synchronousAppendCount: 2,
+      synchronousAppendSlowCount: 2,
+    });
+    expect(storage.getHealth().synchronousAppendTotalMs).toBeGreaterThanOrEqual(0);
+    expect(storage.getHealth().synchronousAppendMaxMs).toBeGreaterThanOrEqual(0);
+    storage.close();
+  });
+
+  it('defers raw writes, preserves FIFO order, and drains synchronously on flush', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-deferred-'));
+    temporaryDirectories.push(root);
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      deferRawWrites: true,
+    });
+    for (let index = 0; index < 3; index++)
+      expect(
+        storage.appendTrade({
+          symbol: 'BTCUSDT',
+          eventTime: 100 + index,
+          receivedAtMs: 200 + index,
+          price: index + 1,
+        }),
+      ).toBe(true);
+    expect(storage.getHealth()).toMatchObject({ queueDepth: 3, queuedRecords: 3, writtenRecords: 0 });
+    expect(storage.flush()).toBe(true);
+    expect(storage.getHealth()).toMatchObject({ queueDepth: 0, queuedRecords: 3, writtenRecords: 3 });
+    expect(storage.queryArchivedTrades('BTCUSDT', 100, 102).map((trade) => trade.eventTime)).toEqual([
+      100, 101, 102,
+    ]);
+    storage.close();
+  });
+
+  it('fails closed when the deferred raw-write queue reaches capacity', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-deferred-overflow-'));
+    temporaryDirectories.push(root);
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath: path.join(root, 'archive'),
+      deferRawWrites: true,
+      maxArchiveQueueRecords: 1,
+    });
+    expect(storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 101, price: 1 })).toBe(
+      true,
+    );
+    expect(storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 101, receivedAtMs: 102, price: 2 })).toBe(
+      false,
+    );
+    expect(storage.getHealth()).toMatchObject({ queueDepth: 1, overflowRecords: 1, healthy: false });
+    storage.close();
+  });
+
   it('does not count durable active spools against in-memory queue capacity', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-overflow-'));
     temporaryDirectories.push(root);

@@ -404,6 +404,7 @@ export class StrategyRuntimeCoordinator {
             maxActiveSegmentBytes: archiveConfig.maxActiveSegmentBytes,
             maxActiveSegmentDurationMs: archiveConfig.maxActiveSegmentDurationMs,
             durabilityFlushIntervalMs: archiveConfig.durabilityFlushIntervalMs,
+            deferRawWrites: true,
           })
         : undefined;
 
@@ -626,14 +627,10 @@ export class StrategyRuntimeCoordinator {
         currentPrice: snapshot.currentPrice,
         priceReturn,
         unrealizedRoe: priceReturn * (identity.leverage ?? previous.context.leverage),
-        peakPrice:
-          identity.side === 'LONG'
-            ? Math.max(previous.context.peakPrice, snapshot.currentPrice)
-            : Math.min(previous.context.peakPrice, snapshot.currentPrice),
-        troughPrice:
-          identity.side === 'LONG'
-            ? Math.min(previous.context.troughPrice, snapshot.currentPrice)
-            : Math.max(previous.context.troughPrice, snapshot.currentPrice),
+        // These are absolute market extrema. Side-aware favorable/adverse
+        // returns are calculated separately by the exit policy.
+        peakPrice: Math.max(previous.context.peakPrice, snapshot.currentPrice),
+        troughPrice: Math.min(previous.context.troughPrice, snapshot.currentPrice),
         timeInTradeMs: Math.max(0, snapshot.observedAtMs - identity.enteredAtMs),
         observedAtMs: snapshot.observedAtMs,
         currentBookPressure: snapshot.currentBookPressure,
