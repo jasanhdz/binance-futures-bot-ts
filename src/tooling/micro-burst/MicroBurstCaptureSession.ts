@@ -1,0 +1,1169 @@
+import {
+  createReadStream,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
+import { createGunzip } from 'node:zlib';
+import { createInterface } from 'node:readline';
+import Database from 'better-sqlite3';
+import {
+  hashTree,
+  isVerifiedFrozenCollectorArtifact,
+  verifyFrozenCollectorArtifact,
+  type VerifiedFrozenCollectorArtifact,
+} from './MicroBurstCollectorFreeze';
+import {
+  causalExecutionBook,
+  causalTradeEvidence,
+  readVerifiedSegments,
+  type ArchiveEvent,
+  type ArchiveSegment,
+} from './MicroBurstCausalArchive';
+import type { PullbackEvidence } from './MicroBurstPullbackCandidate';
+import {
+  assertStrategyDecisionEvidenceV2,
+  type StrategyDecisionEvidenceV2,
+} from '../../core/blackbox/StrategyDecisionBlackBox';
+
+export interface CaptureSessionSegment extends Omit<ArchiveSegment, 'filePath'> {
+  readonly relativePath: string;
+  readonly type: 'trades' | 'depth';
+  readonly symbol: string;
+  readonly firstEventTimeMs: number;
+  readonly lastEventTimeMs: number;
+}
+
+export interface CaptureSessionGap {
+  readonly symbol: string;
+  readonly fromMs: number;
+  readonly throughMs: number;
+  readonly kind: string;
+  readonly feed: string | null;
+  readonly reason: string;
+}
+
+interface CaptureSessionBody {
+  readonly schema: 'MICRO_BURST_CAPTURE_SESSION_V1';
+  readonly producerArtifactHash: string;
+  readonly producerCommit: string;
+  readonly configHash: string;
+  readonly startedAtMs: number;
+  readonly completedAtMs: number;
+  readonly captureComplete: boolean;
+  readonly blockers: readonly string[];
+  readonly segments: readonly CaptureSessionSegment[];
+  readonly gaps: readonly CaptureSessionGap[];
+  readonly decisionFiles: readonly { relativePath: string; sha256: string; bytes: number }[];
+  readonly databaseSha256: string;
+}
+
+export interface CaptureSessionManifest extends CaptureSessionBody {
+  readonly manifestSha256: string;
+}
+
+export interface CaptureSessionBuildInput {
+  readonly collectorRoot: string;
+  readonly captureRoot: string;
+  readonly producer: VerifiedFrozenCollectorArtifact;
+  readonly configHash: string;
+  readonly startedAtMs: number;
+  readonly completedAtMs: number;
+  readonly shutdownFailures: readonly string[];
+  readonly auxiliaryWriteFailures: number;
+}
+
+export interface VerifiedCaptureSession {
+  readonly root: string;
+  readonly captureRoot: string;
+  readonly artifactHash: string;
+  readonly producerCommit: string;
+  readonly configHash: string;
+  readonly startedAtMs: number;
+  readonly completedAtMs: number;
+  readonly manifestSha256: string;
+  readonly segments: readonly CaptureSessionSegment[];
+  readonly gaps: readonly CaptureSessionGap[];
+  readonly decisionFiles: CaptureSessionManifest['decisionFiles'];
+}
+
+export interface VerifiedDecisionIndexEntry {
+  readonly symbol: string;
+  readonly evaluatedAtReceivedMs: number;
+  readonly canonicalSha256: string;
+  readonly strategyConfigHash: string;
+  readonly codeCommitSha: string;
+}
+
+export interface VerifiedExecutionBook {
+  readonly decisionId: string;
+  readonly symbol: string;
+  readonly observedAtMs: number;
+  readonly bidDepth: readonly { price: number; qty: number }[];
+  readonly askDepth: readonly { price: number; qty: number }[];
+  readonly lastUpdateId: number;
+  readonly checkpointAtMs: number;
+  readonly checkpointPersistedAtMs: number;
+  readonly depthEventCount: number;
+  readonly sessionManifestSha256: string;
+  readonly evidenceSha256: string;
+}
+
+export interface VerifiedIntervalCoverage {
+  readonly decisionId: string;
+  readonly symbol: string;
+  readonly fromMs: number;
+  readonly throughMs: number;
+  readonly sessionManifestSha256: string;
+  readonly sourceArtifactHash: string;
+  readonly tradeEvidenceSha256: string;
+  readonly evidenceSha256: string;
+}
+
+export interface VerifiedFundingEvidence {
+  readonly symbol: string;
+  readonly fromMs: number;
+  readonly throughMs: number;
+  readonly source: string;
+  readonly evidenceSha256: string;
+  readonly events: readonly {
+    eventAtMs: number;
+    fundingRate: number;
+    markPrice: number;
+    markObservedAtMs: number;
+  }[];
+}
+
+const verifiedSessions = new WeakSet<object>();
+const verifiedTradeEvidence = new WeakSet<object>();
+const verifiedExecutionBooks = new WeakSet<object>();
+const verifiedIntervals = new WeakSet<object>();
+const verifiedFundingEvidence = new WeakSet<object>();
+const verifiedDecisionRecords = new WeakSet<object>();
+const sessionDecisionIndexes = new WeakMap<
+  VerifiedCaptureSession,
+  ReadonlyMap<string, VerifiedDecisionIndexEntry>
+>();
+
+const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, item) => {
+    if (item && typeof item === 'object' && !Array.isArray(item))
+      return Object.fromEntries(
+        Object.keys(item)
+          .sort()
+          .map((key) => [key, item[key]]),
+      );
+    return item;
+  });
+
+export function isVerifiedCaptureSession(value: unknown): value is VerifiedCaptureSession {
+  return Boolean(value && typeof value === 'object' && verifiedSessions.has(value));
+}
+
+export function isVerifiedTradeEvidence(value: unknown): value is PullbackEvidence {
+  return Boolean(value && typeof value === 'object' && verifiedTradeEvidence.has(value));
+}
+
+export function isVerifiedExecutionBook(value: unknown): value is VerifiedExecutionBook {
+  return Boolean(value && typeof value === 'object' && verifiedExecutionBooks.has(value));
+}
+
+export function isVerifiedIntervalCoverage(value: unknown): value is VerifiedIntervalCoverage {
+  return Boolean(value && typeof value === 'object' && verifiedIntervals.has(value));
+}
+
+export function isVerifiedFundingEvidence(value: unknown): value is VerifiedFundingEvidence {
+  return Boolean(value && typeof value === 'object' && verifiedFundingEvidence.has(value));
+}
+
+export function isVerifiedDecisionRecord(value: unknown): value is StrategyDecisionEvidenceV2 {
+  return Boolean(value && typeof value === 'object' && verifiedDecisionRecords.has(value));
+}
+
+/** Build a session manifest from a closed runtime, its SQLite index and writer health. */
+export async function writeCaptureSessionManifest(
+  input: CaptureSessionBuildInput,
+): Promise<CaptureSessionManifest> {
+  const collectorRoot = resolve(input.collectorRoot);
+  const captureRoot = resolve(input.captureRoot);
+  if (!isVerifiedFrozenCollectorArtifact(input.producer) || input.producer.root !== collectorRoot)
+    throw new Error('CAPTURE_SESSION_PRODUCER_NOT_VERIFIED');
+  if (!isWithin(collectorRoot, captureRoot)) throw new Error('CAPTURE_ROOT_OUTSIDE_COLLECTOR');
+  if (
+    ![input.startedAtMs, input.completedAtMs, input.auxiliaryWriteFailures].every(
+      Number.isFinite,
+    ) ||
+    input.completedAtMs < input.startedAtMs
+  )
+    throw new Error('INVALID_CAPTURE_SESSION_CLOCK');
+  const health = readJson(join(collectorRoot, 'health.json')) as Record<string, any>;
+  const completion = readJson(join(collectorRoot, 'completion.json')) as Record<string, any>;
+  const effectiveConfig = readJson(join(collectorRoot, 'effective-config.json'));
+  const configHash = sha256(JSON.stringify(effectiveConfig));
+  if (configHash !== input.configHash || health.configHash !== input.configHash)
+    throw new Error('EFFECTIVE_CAPTURE_CONFIG_HASH_MISMATCH');
+  const dbPath = join(captureRoot, 'research.sqlite');
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  let segments: CaptureSessionSegment[];
+  let gaps: CaptureSessionGap[];
+  try {
+    const rows = db
+      .prepare(
+        `SELECT file_path, data_type, symbol, record_count, first_event_time_ms,
+                last_event_time_ms, checksum
+         FROM market_data_segments ORDER BY data_type, symbol, first_event_time_ms, file_path`,
+      )
+      .all() as Array<{
+      file_path: string;
+      data_type: string;
+      symbol: string;
+      record_count: number;
+      first_event_time_ms: number;
+      last_event_time_ms: number;
+      checksum: string;
+    }>;
+    segments = rows.map((row) => {
+      if (row.data_type !== 'trades' && row.data_type !== 'depth')
+        throw new Error('CAPTURE_INDEX_UNKNOWN_SEGMENT_TYPE');
+      const filePath = resolve(row.file_path);
+      if (!isWithin(captureRoot, filePath)) throw new Error('CAPTURE_INDEX_PATH_OUTSIDE_ROOT');
+      return {
+        relativePath: relative(collectorRoot, filePath),
+        checksum: row.checksum,
+        recordCount: row.record_count,
+        type: row.data_type,
+        symbol: row.symbol,
+        firstEventTimeMs: row.first_event_time_ms,
+        lastEventTimeMs: row.last_event_time_ms,
+      };
+    });
+    const gapRows = db
+      .prepare(
+        `SELECT symbol, started_at_ms, ended_at_ms, gap_kind, feed, reason
+         FROM market_data_gaps ORDER BY symbol, started_at_ms, ended_at_ms, id`,
+      )
+      .all() as Array<{
+      symbol: string;
+      started_at_ms: number;
+      ended_at_ms: number;
+      gap_kind: string;
+      feed: string | null;
+      reason: string;
+    }>;
+    gaps = gapRows.map((gap) => ({
+      symbol: gap.symbol,
+      fromMs: gap.started_at_ms,
+      throughMs: gap.ended_at_ms,
+      kind: gap.gap_kind,
+      feed: gap.feed,
+      reason: gap.reason,
+    }));
+  } finally {
+    db.close();
+  }
+  const runtime = health.runtime ?? {};
+  const writerStates = [
+    health.decisionWriter,
+    health.restWriter,
+    health.eventWriter,
+    health.snapshotWriter,
+  ].filter(Boolean);
+  const blockers = [...input.shutdownFailures];
+  if (health.startedAtMs !== input.startedAtMs) blockers.push('CAPTURE_START_CLOCK_MISMATCH');
+  if (completion.completedAtMs !== input.completedAtMs) blockers.push('CAPTURE_END_CLOCK_MISMATCH');
+  if (writerStates.length !== 4) blockers.push('CAPTURE_WRITER_HEALTH_MISSING');
+  if (input.auxiliaryWriteFailures !== 0) blockers.push('AUXILIARY_WRITES_FAILED');
+  if (completion.failed === true) blockers.push('COLLECTOR_COMPLETION_FAILED');
+  if (completion.episodeCapture?.failed === true) blockers.push('EPISODE_CAPTURE_FAILED');
+  if ((completion.episodeCapture?.pendingWrites ?? 0) !== 0)
+    blockers.push('EPISODE_CAPTURE_PENDING_WRITES');
+  if (health.liveExecution !== false) blockers.push('LIVE_EXECUTION_NOT_FALSE');
+  if ((runtime.mutationAttempts ?? 0) !== 0 || (runtime.forwardedMutations ?? 0) !== 0)
+    blockers.push('MUTATION_AUDIT_NONZERO');
+  if (runtime.marketArchiveHealthy !== true) blockers.push('MARKET_ARCHIVE_UNHEALTHY');
+  if ((runtime.archiveQueueDepth ?? -1) !== 0) blockers.push('ARCHIVE_QUEUE_NOT_DRAINED');
+  if ((runtime.archiveOverflowRecords ?? -1) !== 0) blockers.push('ARCHIVE_OVERFLOW');
+  if ((runtime.storageErrors ?? -1) !== 0) blockers.push('STORAGE_ERRORS');
+  if (runtime.uncleanDeferredWriteMarker !== false) blockers.push('UNCLEAN_RAW_WRITE_MARKER');
+  if (runtime.uncleanDeferredWriteMarker !== false) blockers.push('UNCLEAN_RAW_WRITE_MARKER');
+  if (writerStates.length !== 4) blockers.push('CAPTURE_WRITER_HEALTH_MISSING');
+  for (const writer of writerStates) {
+    if ((writer.pendingWrites ?? -1) !== 0) blockers.push('JSONL_WRITER_PENDING');
+    if ((writer.writeFailures ?? -1) !== 0) blockers.push('JSONL_WRITER_FAILED');
+    if ((writer.overloadRejected ?? -1) !== 0) blockers.push('JSONL_WRITER_OVERLOADED');
+  }
+  const files = collectCaptureFiles(captureRoot);
+  const indexedFiles = new Set(
+    segments.map((segment) => resolve(collectorRoot, segment.relativePath)),
+  );
+  const actualSegments = files.filter((file) => file.endsWith('.ndjson.gz'));
+  const activeOrTemporary = files.filter(
+    (file) => file.endsWith('.active.ndjson') || file.endsWith('.tmp'),
+  );
+  if (activeOrTemporary.length) blockers.push('ACTIVE_OR_TEMPORARY_ARCHIVE_FILES');
+  if (
+    actualSegments.length !== indexedFiles.size ||
+    actualSegments.some((file) => !indexedFiles.has(file))
+  )
+    blockers.push('ARCHIVE_INDEX_FILE_SET_MISMATCH');
+  const decisionFiles = await Promise.all(
+    files.filter(isDecisionEvidenceFile).map(async (file) => ({
+      relativePath: relative(collectorRoot, file),
+      sha256: await hashStableFile(file),
+      bytes: statSync(file).size,
+    })),
+  );
+  const databaseSha256 = await hashStableFile(dbPath);
+  const body: CaptureSessionBody = {
+    schema: 'MICRO_BURST_CAPTURE_SESSION_V1',
+    producerArtifactHash: input.producer.artifactHash,
+    producerCommit: input.producer.gitCommit,
+    configHash,
+    startedAtMs: input.startedAtMs,
+    completedAtMs: input.completedAtMs,
+    captureComplete: blockers.length === 0 && completion.failed !== true,
+    blockers: [...new Set(blockers)].sort(),
+    segments,
+    gaps,
+    decisionFiles,
+    databaseSha256,
+  };
+  const session = { ...body, manifestSha256: sha256(canonical(body)) };
+  writeFileSync(join(collectorRoot, 'capture-session.json'), JSON.stringify(session, null, 2), {
+    flag: 'wx',
+    mode: 0o600,
+  });
+  return session;
+}
+
+/** Opens only finalized, hash-checked sessions. Existing V1 captures remain untouched and unverified. */
+export async function openVerifiedCaptureSession(root: string): Promise<VerifiedCaptureSession> {
+  const collectorRoot = resolve(root);
+  const producer = verifyFrozenCollectorArtifact(collectorRoot);
+  const session = readJson(join(collectorRoot, 'capture-session.json')) as CaptureSessionManifest;
+  const { manifestSha256, ...body } = session;
+  if (
+    session.schema !== 'MICRO_BURST_CAPTURE_SESSION_V1' ||
+    sha256(canonical(body)) !== manifestSha256 ||
+    session.captureComplete !== true ||
+    session.blockers.length > 0 ||
+    session.producerArtifactHash !== producer.artifactHash ||
+    session.producerCommit !== producer.gitCommit
+  )
+    throw new Error('CAPTURE_SESSION_NOT_CERTIFIED');
+  const health = readJson(join(collectorRoot, 'health.json')) as Record<string, any>;
+  const completion = readJson(join(collectorRoot, 'completion.json')) as Record<string, any>;
+  const effectiveConfig = readJson(join(collectorRoot, 'effective-config.json'));
+  if (
+    sha256(JSON.stringify(effectiveConfig)) !== session.configHash ||
+    health.configHash !== session.configHash ||
+    health.sourceArtifactHash !== producer.artifactHash ||
+    health.startedAtMs !== session.startedAtMs ||
+    health.atMs > session.completedAtMs ||
+    health.liveExecution !== false ||
+    completion.completedAtMs !== session.completedAtMs ||
+    completion.lifecycle !== 'SESSION_ENDED_NOT_AUTOMATICALLY_EPISODE_COMPLETE' ||
+    completion.failed === true ||
+    completion.episodeCapture?.failed === true ||
+    (completion.episodeCapture?.pendingWrites ?? 0) !== 0 ||
+    completion.mutationAttempts !== 0 ||
+    completion.forwardedMutations !== 0 ||
+    completion.auxiliaryWriteFailures !== 0 ||
+    runtimeStorageHealthy(health) !== true
+  )
+    throw new Error('CAPTURE_SESSION_RUNTIME_PROVENANCE_MISMATCH');
+  const captureRoot = join(collectorRoot, 'capture');
+  const databasePath = join(captureRoot, 'research.sqlite');
+  if ((await hashStableFile(databasePath)) !== session.databaseSha256)
+    throw new Error('CAPTURE_SESSION_DATABASE_HASH_MISMATCH');
+  const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    const indexed = db
+      .prepare(
+        `SELECT file_path, data_type, symbol, record_count, first_event_time_ms,
+                last_event_time_ms, checksum
+         FROM market_data_segments ORDER BY data_type, symbol, first_event_time_ms, file_path`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    const expected = session.segments.map((segment) => ({
+      file_path: resolve(collectorRoot, segment.relativePath),
+      data_type: segment.type,
+      symbol: segment.symbol,
+      record_count: segment.recordCount,
+      first_event_time_ms: segment.firstEventTimeMs,
+      last_event_time_ms: segment.lastEventTimeMs,
+      checksum: segment.checksum,
+    }));
+    const normalizedIndexed = indexed.map((row) => ({
+      file_path: resolve(String(row.file_path)),
+      data_type: row.data_type,
+      symbol: row.symbol,
+      record_count: row.record_count,
+      first_event_time_ms: row.first_event_time_ms,
+      last_event_time_ms: row.last_event_time_ms,
+      checksum: row.checksum,
+    }));
+    if (canonical(normalizedIndexed) !== canonical(expected))
+      throw new Error('CAPTURE_SESSION_SQLITE_INDEX_MISMATCH');
+    const indexedGaps = db
+      .prepare(
+        `SELECT symbol, started_at_ms, ended_at_ms, gap_kind, feed, reason
+         FROM market_data_gaps ORDER BY symbol, started_at_ms, ended_at_ms, id`,
+      )
+      .all() as Array<{
+      symbol: string;
+      started_at_ms: number;
+      ended_at_ms: number;
+      gap_kind: string;
+      feed: string | null;
+      reason: string;
+    }>;
+    const normalizedGaps = indexedGaps.map((gap) => ({
+      symbol: gap.symbol,
+      fromMs: gap.started_at_ms,
+      throughMs: gap.ended_at_ms,
+      kind: gap.gap_kind,
+      feed: gap.feed,
+      reason: gap.reason,
+    }));
+    if (canonical(normalizedGaps) !== canonical(session.gaps))
+      throw new Error('CAPTURE_SESSION_GAP_INDEX_MISMATCH');
+  } finally {
+    db.close();
+  }
+  const captureFiles = collectCaptureFiles(captureRoot);
+  const indexedPaths = new Set(
+    session.segments.map((segment) => resolve(collectorRoot, segment.relativePath)),
+  );
+  const actualSegments = captureFiles.filter((file) => file.endsWith('.ndjson.gz'));
+  if (
+    actualSegments.length !== indexedPaths.size ||
+    actualSegments.some((file) => !indexedPaths.has(file)) ||
+    captureFiles.some((file) => file.endsWith('.active.ndjson') || file.endsWith('.tmp'))
+  )
+    throw new Error('CAPTURE_SESSION_ARCHIVE_FILE_SET_MISMATCH');
+  for (const segment of session.segments)
+    await verifyArchiveSegment({
+      filePath: resolve(collectorRoot, segment.relativePath),
+      checksum: segment.checksum,
+      recordCount: segment.recordCount,
+    });
+  const capturedDecisionFiles = collectCaptureFiles(captureRoot).filter(isDecisionEvidenceFile);
+  const declaredDecisionFiles = new Set(
+    session.decisionFiles.map((source) => resolve(collectorRoot, source.relativePath)),
+  );
+  if (
+    capturedDecisionFiles.length !== declaredDecisionFiles.size ||
+    capturedDecisionFiles.some((file) => !declaredDecisionFiles.has(file))
+  )
+    throw new Error('CAPTURE_SESSION_DECISION_FILE_SET_MISMATCH');
+  for (const source of session.decisionFiles) {
+    const file = resolve(collectorRoot, source.relativePath);
+    if (!isWithin(collectorRoot, file) || (await hashStableFile(file)) !== source.sha256)
+      throw new Error('CAPTURE_SESSION_DECISION_SOURCE_HASH_MISMATCH');
+  }
+  const verified: VerifiedCaptureSession = Object.freeze({
+    root: collectorRoot,
+    captureRoot,
+    artifactHash: producer.artifactHash,
+    producerCommit: producer.gitCommit,
+    configHash: session.configHash,
+    startedAtMs: session.startedAtMs,
+    completedAtMs: session.completedAtMs,
+    manifestSha256,
+    segments: session.segments,
+    gaps: session.gaps,
+    decisionFiles: session.decisionFiles,
+  });
+  verifiedSessions.add(verified);
+  sessionDecisionIndexes.set(verified, await buildDecisionIndex(verified));
+  return verified;
+}
+
+export async function readVerifiedDecisionRecords(
+  session: VerifiedCaptureSession,
+  fromMs = session.startedAtMs,
+  throughMs = session.completedAtMs,
+): Promise<StrategyDecisionEvidenceV2[]> {
+  assertVerifiedSession(session);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(throughMs) || throughMs < fromMs)
+    throw new Error('INVALID_DECISION_READ_RANGE');
+  const rows = new Map<string, StrategyDecisionEvidenceV2>();
+  for (const source of session.decisionFiles) {
+    const file = resolve(session.root, source.relativePath);
+    const names = source.relativePath.split(/[\\/]/);
+    const name = names[names.length - 1] ?? '';
+    if (!/^decisions(?:\..+)?\.jsonl(?:\.gz)?$/.test(name) || name.includes('.timing.')) continue;
+    if ((await hashStableFile(file)) !== source.sha256)
+      throw new Error('DECISION_FILE_HASH_MISMATCH');
+    const stream = createReadStream(file);
+    const input = file.endsWith('.gz') ? stream.pipe(createGunzip()) : stream;
+    const reader = createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of reader) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line) as StrategyDecisionEvidenceV2;
+        assertStrategyDecisionEvidenceV2(record);
+        if (
+          record.strategy.strategyId !== 'MICRO_BURST' ||
+          record.evaluatedAtReceivedMs < fromMs ||
+          record.evaluatedAtReceivedMs > throughMs
+        )
+          continue;
+        const index = sessionDecisionIndexes.get(session)?.get(record.decisionId);
+        if (
+          !index ||
+          index.symbol !== record.symbol ||
+          index.canonicalSha256 !== sha256(canonical(record))
+        )
+          throw new Error(`CAPTURED_DECISION_INDEX_MISMATCH:${record.decisionId}`);
+        const previous = rows.get(record.decisionId);
+        if (previous && canonical(previous) !== canonical(record))
+          throw new Error(`CONFLICTING_CAPTURED_DECISION:${record.decisionId}`);
+        const frozen = deepFreeze(record);
+        verifiedDecisionRecords.add(frozen);
+        rows.set(record.decisionId, frozen);
+      }
+    } finally {
+      reader.close();
+    }
+  }
+  return [...rows.values()].sort(
+    (a, b) =>
+      a.evaluatedAtReceivedMs - b.evaluatedAtReceivedMs || a.decisionId.localeCompare(b.decisionId),
+  );
+}
+
+export interface VerifiedEpisodeCaptureEvent {
+  readonly sequence: number;
+  readonly previousHash: string;
+  readonly record: Record<string, unknown>;
+}
+
+export async function readVerifiedEpisodeCapture(
+  session: VerifiedCaptureSession,
+): Promise<VerifiedEpisodeCaptureEvent[]> {
+  assertVerifiedSession(session);
+  const file = join(session.captureRoot, 'episode-capture', 'capture.jsonl');
+  const source = session.decisionFiles.find((entry) =>
+    entry.relativePath.endsWith(`${join('episode-capture', 'capture.jsonl')}`),
+  );
+  if (!source || (await hashStableFile(file)) !== source.sha256)
+    throw new Error('EPISODE_CAPTURE_HASH_MISMATCH');
+  const reader = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+  const events: VerifiedEpisodeCaptureEvent[] = [];
+  let previousHash = 'GENESIS';
+  let sequence = 0;
+  try {
+    for await (const line of reader) {
+      if (!line.trim()) continue;
+      const envelope = JSON.parse(line) as { body: string; hash: string };
+      if (sha256(envelope.body) !== envelope.hash)
+        throw new Error('EPISODE_CAPTURE_HASH_CHAIN_INVALID');
+      const decoded = JSON.parse(envelope.body) as {
+        sequence: number;
+        previousHash: string;
+        record: Record<string, unknown>;
+      };
+      if (decoded.sequence !== sequence + 1 || decoded.previousHash !== previousHash)
+        throw new Error('EPISODE_CAPTURE_HASH_CHAIN_INVALID');
+      sequence = decoded.sequence;
+      previousHash = envelope.hash;
+      events.push(decoded);
+    }
+  } finally {
+    reader.close();
+  }
+  const completion = readJson(join(session.captureRoot, 'episode-capture', 'completion.json'));
+  if (
+    completion.sequence !== sequence ||
+    completion.finalHash !== previousHash ||
+    completion.failed !== false ||
+    completion.droppedRecords !== 0 ||
+    completion.pendingWrites !== 0
+  )
+    throw new Error('EPISODE_CAPTURE_COMPLETION_MISMATCH');
+  return events;
+}
+
+export async function readVerifiedPullbackEvidence(
+  session: VerifiedCaptureSession,
+  decision: StrategyDecisionEvidenceV2,
+  exchangeAsOfMs: number,
+  receivedAsOfMs: number,
+): Promise<PullbackEvidence> {
+  assertVerifiedSession(session);
+  if (!isVerifiedDecisionRecord(decision))
+    throw new Error('PULLBACK_DECISION_NOT_ARCHIVE_VERIFIED');
+  const decisionId = decision.decisionId;
+  const symbol = decision.symbol;
+  const decisionIndex = sessionDecisionIndexes.get(session)?.get(decisionId);
+  if (
+    !decisionIndex ||
+    decisionIndex.symbol !== symbol ||
+    canonical(decisionIndex.canonicalSha256) !== canonical(sha256(canonical(decision))) ||
+    decision.strategy.configHash !== `sha256:${session.configHash}` ||
+    decisionIndex.strategyConfigHash !== decision.strategy.configHash ||
+    decisionIndex.codeCommitSha !== decision.strategy.codeCommitSha ||
+    decision.strategy.codeCommitSha !== session.producerCommit ||
+    decision.strategy.strategyId !== 'MICRO_BURST'
+  )
+    throw new Error('PULLBACK_DECISION_SESSION_IDENTITY_MISMATCH');
+  const fromMs = exchangeAsOfMs - 60_000;
+  const segments = session.segments.filter(
+    (segment) =>
+      segment.type === 'trades' &&
+      segment.symbol === symbol &&
+      segment.firstEventTimeMs <= exchangeAsOfMs &&
+      segment.lastEventTimeMs >= fromMs,
+  );
+  const preceding = session.segments
+    .filter(
+      (segment) =>
+        segment.type === 'trades' && segment.symbol === symbol && segment.lastEventTimeMs < fromMs,
+    )
+    .sort((a, b) => b.lastEventTimeMs - a.lastEventTimeMs)[0];
+  if (preceding) segments.push(preceding);
+  const events = segments.flatMap((segment) =>
+    readVerifiedSegments([
+      {
+        filePath: resolve(session.root, segment.relativePath),
+        checksum: segment.checksum,
+        recordCount: segment.recordCount,
+      },
+    ]),
+  );
+  const evidence = causalTradeEvidence(
+    events,
+    {
+      symbol,
+      fromMs: session.startedAtMs,
+      throughMs: session.completedAtMs,
+      gaps: session.gaps
+        .filter((gap) => gap.symbol === symbol && (gap.feed === 'AGG_TRADE' || gap.feed === null))
+        .map((gap) => ({ fromMs: gap.fromMs, throughMs: gap.throughMs })),
+    },
+    exchangeAsOfMs,
+    receivedAsOfMs,
+  );
+  const verified = Object.freeze({
+    ...evidence,
+    decisionId,
+    decisionInputSha256: decisionIndex.canonicalSha256,
+    sourceArtifactHash: session.artifactHash,
+    sessionManifestSha256: session.manifestSha256,
+    verification: 'ARCHIVE_SESSION_AND_TRADE_SEQUENCE_RECHECKED' as const,
+  });
+  verifiedTradeEvidence.add(verified);
+  return verified;
+}
+
+export function assertVerifiedPullbackEvidence(value: unknown): asserts value is PullbackEvidence {
+  if (!value || typeof value !== 'object' || !verifiedTradeEvidence.has(value))
+    throw new Error('PULLBACK_EVIDENCE_NOT_ARCHIVE_VERIFIED');
+}
+
+export async function readVerifiedExecutionBook(
+  session: VerifiedCaptureSession,
+  input: {
+    decisionId: string;
+    symbol: string;
+    fromMs: number;
+    exchangeAsOfMs: number;
+    receivedAsOfMs: number;
+    maxAgeMs: number;
+    expected?: {
+      bidDepth: readonly { price: number; qty: number }[];
+      askDepth: readonly { price: number; qty: number }[];
+      observedAtMs: number;
+    };
+  },
+): Promise<VerifiedExecutionBook | null> {
+  assertVerifiedSession(session);
+  if (
+    ![input.fromMs, input.exchangeAsOfMs, input.receivedAsOfMs, input.maxAgeMs].every(
+      Number.isFinite,
+    ) ||
+    input.fromMs > input.exchangeAsOfMs ||
+    input.exchangeAsOfMs > input.receivedAsOfMs ||
+    input.maxAgeMs <= 0 ||
+    input.fromMs < session.startedAtMs ||
+    input.receivedAsOfMs > session.completedAtMs ||
+    session.gaps.some(
+      (gap) =>
+        gap.symbol === input.symbol &&
+        (gap.feed === 'DEPTH' || gap.feed === null) &&
+        gap.fromMs <= input.exchangeAsOfMs &&
+        gap.throughMs >= input.fromMs,
+    )
+  )
+    return null;
+  const db = new Database(join(session.captureRoot, 'research.sqlite'), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  let checkpointRow:
+    | { checkpoint_json: string; event_time_ms: number; created_at_ms: number }
+    | undefined;
+  try {
+    checkpointRow = db
+      .prepare(
+        `SELECT checkpoint_json, event_time_ms, created_at_ms FROM book_checkpoints
+         WHERE symbol=? AND event_time_ms<=? AND created_at_ms<=?
+         ORDER BY event_time_ms DESC, created_at_ms DESC LIMIT 1`,
+      )
+      .get(input.symbol, input.exchangeAsOfMs, input.receivedAsOfMs) as typeof checkpointRow;
+  } finally {
+    db.close();
+  }
+  if (!checkpointRow || checkpointRow.created_at_ms > input.receivedAsOfMs) return null;
+  const checkpoint = JSON.parse(checkpointRow.checkpoint_json) as {
+    symbol?: string;
+    observedAtMs?: number;
+    lastUpdateId?: number;
+    bids?: { price: number; qty: number }[];
+    asks?: { price: number; qty: number }[];
+  };
+  if (
+    checkpoint.symbol !== input.symbol ||
+    checkpoint.observedAtMs !== checkpointRow.event_time_ms ||
+    !Number.isFinite(checkpoint.observedAtMs) ||
+    !Number.isSafeInteger(checkpoint.lastUpdateId) ||
+    !Array.isArray(checkpoint.bids) ||
+    !Array.isArray(checkpoint.asks) ||
+    checkpoint.observedAtMs! > input.receivedAsOfMs
+  )
+    return null;
+  const depthSegments = session.segments.filter(
+    (segment) =>
+      segment.type === 'depth' &&
+      segment.symbol === input.symbol &&
+      segment.lastEventTimeMs >= checkpointRow!.event_time_ms &&
+      segment.firstEventTimeMs <= input.exchangeAsOfMs,
+  );
+  const archivedDepthEvents = depthSegments.flatMap((segment) =>
+    readVerifiedSegments([
+      {
+        filePath: resolve(session.root, segment.relativePath),
+        checksum: segment.checksum,
+        recordCount: segment.recordCount,
+      },
+    ]),
+  );
+  const depthEvents = archivedDepthEvents.filter(
+    (event) =>
+      event.eventTime <= input.exchangeAsOfMs && event.receivedAtMs <= input.receivedAsOfMs,
+  );
+  const book = causalExecutionBook(
+    {
+      symbol: input.symbol,
+      receivedAtMs: checkpoint.observedAtMs!,
+      lastUpdateId: checkpoint.lastUpdateId!,
+      bids: checkpoint.bids,
+      asks: checkpoint.asks,
+    },
+    depthEvents,
+    input.receivedAsOfMs,
+    input.maxAgeMs,
+  );
+  if (!book || book.observedAtMs > input.receivedAsOfMs) return null;
+  if (input.expected) {
+    const knownBids = input.expected.bidDepth;
+    const knownAsks = input.expected.askDepth;
+    if (
+      canonical(book.bidDepth.slice(0, knownBids.length)) !== canonical(knownBids) ||
+      canonical(book.askDepth.slice(0, knownAsks.length)) !== canonical(knownAsks) ||
+      book.observedAtMs !== input.expected.observedAtMs
+    )
+      return null;
+  }
+  const value: VerifiedExecutionBook = Object.freeze({
+    decisionId: input.decisionId,
+    symbol: input.symbol,
+    observedAtMs: book.observedAtMs,
+    bidDepth: book.bidDepth,
+    askDepth: book.askDepth,
+    lastUpdateId: depthEvents.reduce(
+      (last, event) =>
+        event.receivedAtMs > checkpoint.observedAtMs! && Number(event.payload.u) > last
+          ? Number(event.payload.u)
+          : last,
+      checkpoint.lastUpdateId!,
+    ),
+    checkpointAtMs: checkpointRow.event_time_ms,
+    checkpointPersistedAtMs: checkpointRow.created_at_ms,
+    depthEventCount: depthEvents.filter((event) => event.receivedAtMs > checkpoint.observedAtMs!)
+      .length,
+    sessionManifestSha256: session.manifestSha256,
+    evidenceSha256: sha256(
+      canonical({
+        session: session.manifestSha256,
+        checkpoint,
+        checkpointPersistedAtMs: checkpointRow.created_at_ms,
+        depthEvents,
+        input,
+      }),
+    ),
+  });
+  verifiedExecutionBooks.add(value);
+  return value;
+}
+
+export async function verifyIntervalCoverage(
+  session: VerifiedCaptureSession,
+  decision: StrategyDecisionEvidenceV2,
+  symbol: string,
+  fromMs: number,
+  throughMs: number,
+): Promise<VerifiedIntervalCoverage | null> {
+  assertVerifiedSession(session);
+  if (!isVerifiedDecisionRecord(decision) || decision.symbol !== symbol)
+    throw new Error('INTERVAL_DECISION_NOT_ARCHIVE_VERIFIED');
+  if (
+    !Number.isFinite(fromMs) ||
+    !Number.isFinite(throughMs) ||
+    fromMs > throughMs ||
+    fromMs < session.startedAtMs ||
+    throughMs > session.completedAtMs ||
+    session.gaps.some(
+      (gap) =>
+        gap.symbol === symbol &&
+        (gap.feed === 'DEPTH' || gap.feed === 'AGG_TRADE' || gap.feed === null) &&
+        gap.fromMs <= throughMs &&
+        gap.throughMs >= fromMs,
+    )
+  )
+    return null;
+  const tradeEvidence = await readVerifiedPullbackEvidence(session, decision, throughMs, throughMs);
+  if (!tradeEvidence.coverageVerified) return null;
+  const depth = session.segments.some(
+    (segment) =>
+      segment.type === 'depth' &&
+      segment.symbol === symbol &&
+      segment.firstEventTimeMs <= throughMs &&
+      segment.lastEventTimeMs >= fromMs,
+  );
+  if (!depth) return null;
+  const value: VerifiedIntervalCoverage = Object.freeze({
+    decisionId: decision.decisionId,
+    symbol,
+    fromMs,
+    throughMs,
+    sessionManifestSha256: session.manifestSha256,
+    sourceArtifactHash: session.artifactHash,
+    tradeEvidenceSha256: sha256(canonical(tradeEvidence.trades)),
+    evidenceSha256: sha256(
+      canonical({
+        sessionManifestSha256: session.manifestSha256,
+        symbol,
+        fromMs,
+        throughMs,
+        tradeEvidenceSha256: sha256(canonical(tradeEvidence.trades)),
+        depthSegments: session.segments.filter(
+          (segment) =>
+            segment.type === 'depth' &&
+            segment.symbol === symbol &&
+            segment.firstEventTimeMs <= throughMs &&
+            segment.lastEventTimeMs >= fromMs,
+        ),
+      }),
+    ),
+  });
+  verifiedIntervals.add(value);
+  return value;
+}
+
+/** Funding proof is optional in captured sessions; absence remains unavailable, never zero. */
+export async function readVerifiedFundingEvidence(
+  session: VerifiedCaptureSession,
+  symbol: string,
+  fromMs: number,
+  throughMs: number,
+): Promise<VerifiedFundingEvidence | null> {
+  assertVerifiedSession(session);
+  if (
+    !Number.isFinite(fromMs) ||
+    !Number.isFinite(throughMs) ||
+    fromMs > throughMs ||
+    fromMs < session.startedAtMs ||
+    throughMs > session.completedAtMs
+  )
+    return null;
+  const sources = session.decisionFiles.filter((source) =>
+    /\/funding-evidence(?:\..+)?\.jsonl$/.test(source.relativePath),
+  );
+  const evidenceRows: Array<{
+    schema: string;
+    symbol: string;
+    fromMs: number;
+    throughMs: number;
+    source: string;
+    events: Array<{
+      eventAtMs: number;
+      fundingRate: number;
+      markPrice: number;
+      markObservedAtMs: number;
+    }>;
+    responseSha256: string;
+  }> = [];
+  for (const source of sources) {
+    const file = resolve(session.root, source.relativePath);
+    if ((await hashStableFile(file)) !== source.sha256)
+      throw new Error('FUNDING_EVIDENCE_FILE_HASH_MISMATCH');
+    const reader = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+    try {
+      for await (const line of reader) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line) as (typeof evidenceRows)[number];
+        if (
+          record.schema !== 'MICRO_FUNDING_EVIDENCE_V1' ||
+          !record.symbol ||
+          !Number.isFinite(record.fromMs) ||
+          !Number.isFinite(record.throughMs) ||
+          record.fromMs > record.throughMs ||
+          !Array.isArray(record.events) ||
+          !['BINANCE_FUNDING_HISTORY_WITH_MARK_PRICE', 'SYNTHETIC_TEST_FIXTURE'].includes(
+            record.source,
+          )
+        )
+          throw new Error('FUNDING_EVIDENCE_SCHEMA_INVALID');
+        const raw = {
+          schema: record.schema,
+          symbol: record.symbol,
+          fromMs: record.fromMs,
+          throughMs: record.throughMs,
+          source: record.source,
+          events: record.events,
+        };
+        if (sha256(canonical(raw)) !== record.responseSha256)
+          throw new Error('FUNDING_EVIDENCE_CONTENT_HASH_MISMATCH');
+        evidenceRows.push(record);
+      }
+    } finally {
+      reader.close();
+    }
+  }
+  const matching = evidenceRows.filter(
+    (row) => row.symbol === symbol && row.fromMs <= fromMs && row.throughMs >= throughMs,
+  );
+  if (matching.length !== 1) return null;
+  const row = matching[0];
+  let previousAt = -Infinity;
+  for (const event of row.events) {
+    if (
+      !Number.isFinite(event.eventAtMs) ||
+      !Number.isFinite(event.fundingRate) ||
+      !Number.isFinite(event.markPrice) ||
+      event.markPrice <= 0 ||
+      !Number.isFinite(event.markObservedAtMs) ||
+      event.markObservedAtMs > event.eventAtMs ||
+      event.eventAtMs < row.fromMs ||
+      event.eventAtMs > row.throughMs ||
+      event.eventAtMs < previousAt
+    )
+      throw new Error('FUNDING_EVIDENCE_EVENT_INVALID');
+    previousAt = event.eventAtMs;
+  }
+  const verified: VerifiedFundingEvidence = Object.freeze({
+    symbol,
+    fromMs: row.fromMs,
+    throughMs: row.throughMs,
+    source: row.source,
+    evidenceSha256: row.responseSha256,
+    events: Object.freeze(row.events.map((event) => Object.freeze({ ...event }))),
+  });
+  verifiedFundingEvidence.add(verified);
+  return verified;
+}
+
+export function assertVerifiedExecutionBook(
+  value: unknown,
+): asserts value is VerifiedExecutionBook {
+  if (!value || typeof value !== 'object' || !verifiedExecutionBooks.has(value))
+    throw new Error('REPLAY_BOOK_NOT_ARCHIVE_VERIFIED');
+}
+
+export function assertVerifiedIntervalCoverage(
+  value: unknown,
+): asserts value is VerifiedIntervalCoverage {
+  if (!value || typeof value !== 'object' || !verifiedIntervals.has(value))
+    throw new Error('REPLAY_INTERVAL_NOT_ARCHIVE_VERIFIED');
+}
+
+function readJson(file: string): any {
+  return JSON.parse(readFileSync(file, 'utf8'));
+}
+
+async function hashStableFile(file: string): Promise<string> {
+  const before = statSync(file);
+  const digest = createHash('sha256');
+  const input = createReadStream(file);
+  for await (const chunk of input) digest.update(chunk as Buffer);
+  const after = statSync(file);
+  if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs)
+    throw new Error(`CAPTURE_SOURCE_CHANGED:${file}`);
+  return digest.digest('hex');
+}
+
+function collectCaptureFiles(directory: string): string[] {
+  const output: string[] = [];
+  const walk = (current: string): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )) {
+      const file = join(current, entry.name);
+      if (entry.isSymbolicLink())
+        throw new Error(`CAPTURE_SYMLINK_PROHIBITED:${relative(directory, file)}`);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile()) output.push(resolve(file));
+    }
+  };
+  walk(directory);
+  return output;
+}
+
+function isWithin(root: string, file: string): boolean {
+  const child = relative(root, file);
+  return child !== '' && !isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`);
+}
+
+function isDecisionEvidenceFile(file: string): boolean {
+  return (
+    /\/(decisions|snapshots|rest-inputs|events)(?:\..+)?\.jsonl(?:\.gz)?$/.test(file) ||
+    /\/funding-evidence(?:\..+)?\.jsonl$/.test(file) ||
+    file.includes(`${sep}episode-capture${sep}`)
+  );
+}
+
+function runtimeStorageHealthy(health: Record<string, any>): boolean {
+  const runtime = health.runtime;
+  const writers = [
+    health.decisionWriter,
+    health.restWriter,
+    health.eventWriter,
+    health.snapshotWriter,
+  ];
+  return Boolean(
+    runtime &&
+      runtime.running === false &&
+      runtime.marketArchiveHealthy === true &&
+      runtime.archiveQueueDepth === 0 &&
+      runtime.archiveOverflowRecords === 0 &&
+      runtime.storageErrors === 0 &&
+      runtime.uncleanDeferredWriteMarker === false &&
+      runtime.mutationAttempts === 0 &&
+      runtime.forwardedMutations === 0 &&
+      writers.every(
+        (writer) =>
+          writer &&
+          writer.pendingWrites === 0 &&
+          writer.writeFailures === 0 &&
+          writer.overloadRejected === 0,
+      ) &&
+      (health.auxiliaryWriteFailures ?? 0) === 0,
+  );
+}
+
+/** Verify every uncompressed archive byte and row count without holding a segment in memory. */
+async function verifyArchiveSegment(segment: ArchiveSegment): Promise<void> {
+  const before = statSync(segment.filePath);
+  const digest = createHash('sha256');
+  const input = createReadStream(segment.filePath);
+  const decoded = input.pipe(createGunzip());
+  const decoder = new StringDecoder('utf8');
+  let remainder = '';
+  let records = 0;
+  const consume = (line: string): void => {
+    if (!line) throw new Error('ARCHIVE_EMPTY_RECORD');
+    const row = JSON.parse(line) as ArchiveEvent;
+    if (
+      !row.symbol ||
+      !['trades', 'depth'].includes(row.type) ||
+      ![row.eventTime, row.receivedAtMs].every((n) => Number.isFinite(n) && n > 0) ||
+      !row.payload ||
+      row.payload.eventTime !== row.eventTime ||
+      row.payload.receivedAtMs !== row.receivedAtMs ||
+      row.payload.symbol !== row.symbol
+    )
+      throw new Error('ARCHIVE_ENVELOPE_INVALID');
+    records++;
+  };
+  for await (const chunk of decoded) {
+    digest.update(chunk as Buffer);
+    const lines = (remainder + decoder.write(chunk as Buffer)).split('\n');
+    remainder = lines.pop() ?? '';
+    for (const line of lines) consume(line);
+  }
+  if ((remainder + decoder.end()).length !== 0)
+    throw new Error('ARCHIVE_CHECKSUM_OR_TERMINATION_INVALID');
+  const after = statSync(segment.filePath);
+  if (
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs ||
+    records !== segment.recordCount ||
+    digest.digest('hex') !== segment.checksum
+  )
+    throw new Error('ARCHIVE_CHECKSUM_OR_METADATA_INVALID');
+}
+
+function assertVerifiedSession(session: unknown): asserts session is VerifiedCaptureSession {
+  if (!isVerifiedCaptureSession(session))
+    throw new Error('CAPTURE_SESSION_NOT_VERIFIED_IN_PROCESS');
+}
+
+async function buildDecisionIndex(
+  session: VerifiedCaptureSession,
+): Promise<ReadonlyMap<string, VerifiedDecisionIndexEntry>> {
+  const index = new Map<string, VerifiedDecisionIndexEntry>();
+  for (const source of session.decisionFiles) {
+    const file = resolve(session.root, source.relativePath);
+    const names = source.relativePath.split(/[\\/]/);
+    const name = names[names.length - 1] ?? '';
+    if (!/^decisions(?:\..+)?\.jsonl(?:\.gz)?$/.test(name) || name.includes('.timing.')) continue;
+    if ((await hashStableFile(file)) !== source.sha256)
+      throw new Error('CAPTURE_SESSION_DECISION_SOURCE_HASH_MISMATCH');
+    const stream = createReadStream(file);
+    const input = file.endsWith('.gz') ? stream.pipe(createGunzip()) : stream;
+    const reader = createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of reader) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line) as StrategyDecisionEvidenceV2;
+        assertStrategyDecisionEvidenceV2(record);
+        if (record.strategy.strategyId !== 'MICRO_BURST') continue;
+        if (
+          record.strategy.configHash !== `sha256:${session.configHash}` ||
+          record.strategy.codeCommitSha !== session.producerCommit
+        )
+          throw new Error(`CAPTURED_DECISION_PROVENANCE_MISMATCH:${record.decisionId}`);
+        const row = {
+          symbol: record.symbol,
+          evaluatedAtReceivedMs: record.evaluatedAtReceivedMs,
+          canonicalSha256: sha256(canonical(record)),
+          strategyConfigHash: record.strategy.configHash,
+          codeCommitSha: record.strategy.codeCommitSha,
+        };
+        const previous = index.get(record.decisionId);
+        if (previous && canonical(previous) !== canonical(row))
+          throw new Error(`CAPTURED_DECISION_CONFLICT:${record.decisionId}`);
+        index.set(record.decisionId, row);
+      }
+    } finally {
+      reader.close();
+    }
+  }
+  return index;
+}
+
+function deepFreeze<T>(value: T): T {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  return Object.freeze(value);
+}

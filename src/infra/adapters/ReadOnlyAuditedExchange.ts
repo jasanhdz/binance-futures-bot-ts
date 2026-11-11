@@ -1,5 +1,4 @@
-import { Exchange } from '../../app/ports/Exchange';
-import { MarketDataPort } from '../../app/ports/MarketData';
+import type { MarketDataPort } from '../../app/ports/MarketData';
 
 export interface MutationAudit {
   codeSha?: string;
@@ -10,24 +9,13 @@ export interface MutationAudit {
   events: Array<{ method: string; at: string; symbol?: string }>;
 }
 
-const authenticatedReads = new Set([
-  'getUSDTBalance',
-  'getUSDTAccountSnapshot',
-  'hasOpenPosition',
-  'readActivePosition',
-  'readMarketOpenByClientOrderId',
-  'readStopCloseByClientOrderId',
-  'readMarketOpenEvidence',
-  'getRecentFills',
-  'listCloseOrdersForSide',
-]);
-
 const mutations = new Set([
   'setLeverage',
   'ensureMarginType',
   'marketOpen',
   'placeStopClose',
   'sendStopCloseOnce',
+  'sendMarketCloseOnce',
   'placeTpClose',
   'closeSideMarketSafe',
   'cancelOrderById',
@@ -38,7 +26,7 @@ const mutations = new Set([
 ]);
 
 export function createReadOnlyAuditedExchange(
-  target: Exchange,
+  target: MarketDataPort,
   codeSha?: string,
 ): { exchange: MarketDataPort; audit: MutationAudit } {
   const audit: MutationAudit = {
@@ -49,24 +37,65 @@ export function createReadOnlyAuditedExchange(
     forwardedMutationCalls: 0,
     events: [],
   };
-  const exchange = new Proxy(target, {
+  const invoke = (method: keyof MarketDataPort, args: unknown[]): unknown => {
+    const value = (target as unknown as Record<string, unknown>)[method] as unknown;
+    if (typeof value !== 'function') throw new Error(`READ_ONLY_CAPABILITY_UNAVAILABLE:${method}`);
+    audit.readOnlyCalls.public++;
+    return (value as (...values: unknown[]) => unknown).apply(target, args);
+  };
+  const forward =
+    (method: keyof MarketDataPort) =>
+    (...args: unknown[]) =>
+      invoke(method, args);
+  const capabilities: Partial<MarketDataPort> = {
+    getServerTime: forward('getServerTime') as MarketDataPort['getServerTime'],
+    getCandles: forward('getCandles') as MarketDataPort['getCandles'],
+    getLastCandle: forward('getLastCandle') as MarketDataPort['getLastCandle'],
+    subscribeToCandles: forward('subscribeToCandles') as MarketDataPort['subscribeToCandles'],
+    getMarkPrice: forward('getMarkPrice') as MarketDataPort['getMarkPrice'],
+    getFundingRate: forward('getFundingRate') as MarketDataPort['getFundingRate'],
+    getBasisSnapshot: forward('getBasisSnapshot') as MarketDataPort['getBasisSnapshot'],
+    getCandleRequestDiagnostics: (() => {
+      const value = target.getCandleRequestDiagnostics;
+      if (typeof value !== 'function') return [];
+      audit.readOnlyCalls.public++;
+      return value.apply(target);
+    }) as NonNullable<MarketDataPort['getCandleRequestDiagnostics']>,
+  };
+  const optionalMethods = [
+    'getCachedCandles',
+    'subscribeToKlineCandles',
+    'subscribeToPartialDepth',
+    'subscribeToDepthDiff',
+    'subscribeToAggTrades',
+    'getDepthSnapshot',
+  ] as const;
+  for (const method of optionalMethods) {
+    if (typeof target[method] === 'function')
+      (capabilities as Record<string, unknown>)[method] = forward(method) as unknown;
+  }
+  const allowed = new Set(Object.keys(capabilities));
+  const marketData = Object.freeze(capabilities);
+  // This proxy targets an object containing only MarketDataPort methods. Unknown
+  // future Exchange methods fail closed rather than being forwarded implicitly.
+  const exchange = new Proxy(marketData, {
     get(source, property, receiver) {
-      const value = Reflect.get(source, property, receiver);
-      if (typeof value !== 'function' || typeof property !== 'string') return value;
-      if (mutations.has(property)) {
-        return (...args: unknown[]) => {
-          const symbol = typeof args[0] === 'string' ? args[0] : undefined;
-          audit.totalMutationAttempts++;
-          audit.blockedMutationAttempts[property] =
-            (audit.blockedMutationAttempts[property] ?? 0) + 1;
-          audit.events.push({ method: property, at: new Date().toISOString(), symbol });
-          throw new Error('MUTATION_FORBIDDEN_IN_SHADOW_SOAK');
-        };
-      }
+      if (typeof property !== 'string' || property in source)
+        return Reflect.get(source, property, receiver);
       return (...args: unknown[]) => {
-        audit.readOnlyCalls[authenticatedReads.has(property) ? 'authenticated' : 'public']++;
-        return value.apply(source, args);
+        const name = property;
+        const symbol = typeof args[0] === 'string' ? args[0] : undefined;
+        audit.totalMutationAttempts++;
+        audit.blockedMutationAttempts[name] = (audit.blockedMutationAttempts[name] ?? 0) + 1;
+        audit.events.push({ method: name, at: new Date().toISOString(), symbol });
+        throw new Error(
+          `${mutations.has(name) ? 'MUTATION_FORBIDDEN_IN_SHADOW_SOAK' : 'UNKNOWN_CAPABILITY_FORBIDDEN'}:${name}`,
+        );
       };
+    },
+    has(source, property) {
+      if (typeof property === 'string' && !allowed.has(property)) return false;
+      return Reflect.has(source, property);
     },
   }) as MarketDataPort;
   return { exchange, audit };

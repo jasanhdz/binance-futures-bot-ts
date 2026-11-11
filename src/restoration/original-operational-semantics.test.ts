@@ -43,7 +43,7 @@ const baselineOperationalDigests: Record<string, string> = {
   // Quantity-bound one-way reduce-only stops; legacy close-all reads retained, not LIVE approval.
   // Historical exact-close discovery and unfiltered flat/order proof. No new mutation capability.
   // EXPIRED stop evidence is preserved only after strict non-execution validation.
-  'src/app/ports/Exchange.ts': 'e5d2c403e034654851e19160aad0fdcfb5ea2622c431a4fd7ff79745efe1c203',
+  'src/app/ports/Exchange.ts': 'b745f32bbd67c59fa22a40fe1f21a491fe93e357e6eb4103fa7b56e08847244b',
   'src/infra/config/environment.ts':
     // User-requested AEGIS_ENABLED disconnect; existing defaults and LIVE values unchanged.
     'b35c9984d4a756c53cc424350317cb4131c4c973f038f08d77bac103b7217ee3',
@@ -71,7 +71,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // See micro-historical-reconciliation.md; source checkpoint, not deployment authority.
     // Conditional EXPIRED stops require explicit empty execution evidence.
     // Blank or whitespace execution prices remain unknown, not terminal evidence.
-    'b1ef4bcb1d67c942ad09c14ed94c83157bc8f3e9de516482624f4c540b4993df',
+    'cbbf74b9285536911bcf5fa99d6da35db44ece377608e0b404f91ad1ce89508f',
   // Current source checkpoint: failed startup now cleans up and exits instead of remaining online.
   // Source checkpoint only; not a LIVE authorization.
   'src/main.ts': 'bb605c4264eb185e76f482f37a6808c16c55b69e7aff26541ab4b33289a4deaf',
@@ -105,7 +105,7 @@ const ownerAuthorizedCurrentBrainContractDigests: Record<string, string> = {
     // Current source checkpoint: startup/loop progress is observable; not artifact approval.
     // Exit observation logs expose the decision reason and context summary.
     // Durable uncertainty admission latch and stale management continuation guard.
-    'be754352a4f6c21a4bb6e41239994e004ae398486f7388fa3304a65748bb500f',
+    '4a5312e9e3ad6d852e655d88fc8c53191cc9572558b1c0257bd71054c896cf78',
   // Phase 2: reject invalid exposure measurements before portfolio admission.
   // This is a source checkpoint, NOT a LIVE authorization or model approval hash.
   'src/strategies/aegis/domain/services/AegisPortfolioRiskGuard.ts':
@@ -156,7 +156,7 @@ const contextualSourceCheckpoints: Record<string, string> = {
   'src/app/services/TradingService.ts':
     // Exit observation logs expose the decision reason and context summary.
     // Durable uncertainty admission latch and stale management continuation guard.
-    'be754352a4f6c21a4bb6e41239994e004ae398486f7388fa3304a65748bb500f',
+    '4a5312e9e3ad6d852e655d88fc8c53191cc9572558b1c0257bd71054c896cf78',
 };
 
 type GuardFixture = [

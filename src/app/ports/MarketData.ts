@@ -215,4 +215,5 @@ export interface MarketDataPort {
   getMarkPrice(symbol: string): Promise<number>;
   getFundingRate(symbol: string): Promise<FundingSnapshot>;
   getBasisSnapshot(symbol: string): Promise<BasisSnapshot>;
+  getCandleRequestDiagnostics?(): ReadonlyArray<Record<string, unknown>>;
 }

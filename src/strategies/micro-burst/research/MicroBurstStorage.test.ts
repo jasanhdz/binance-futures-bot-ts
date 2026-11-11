@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MicroBurstStorage } from './MicroBurstStorage';
@@ -456,6 +457,7 @@ describe('MicroBurstStorage', () => {
   it('defers raw writes, preserves FIFO order, and drains synchronously on flush', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-deferred-'));
     temporaryDirectories.push(root);
+    const archivePath = path.join(root, 'archive');
     const storage = new MicroBurstStorage({
       databasePath: path.join(root, 'state.sqlite'),
       archivePath: path.join(root, 'archive'),
@@ -470,13 +472,104 @@ describe('MicroBurstStorage', () => {
           price: index + 1,
         }),
       ).toBe(true);
-    expect(storage.getHealth()).toMatchObject({ queueDepth: 3, queuedRecords: 3, writtenRecords: 0 });
+    expect(storage.getHealth()).toMatchObject({
+      queueDepth: 3,
+      queuedRecords: 3,
+      writtenRecords: 0,
+    });
     expect(storage.flush()).toBe(true);
-    expect(storage.getHealth()).toMatchObject({ queueDepth: 0, queuedRecords: 3, writtenRecords: 3 });
-    expect(storage.queryArchivedTrades('BTCUSDT', 100, 102).map((trade) => trade.eventTime)).toEqual([
-      100, 101, 102,
-    ]);
+    expect(storage.getHealth()).toMatchObject({
+      queueDepth: 0,
+      queuedRecords: 3,
+      writtenRecords: 3,
+    });
+    expect(
+      storage.queryArchivedTrades('BTCUSDT', 100, 102).map((trade) => trade.eventTime),
+    ).toEqual([100, 101, 102]);
     storage.close();
+    expect(fs.existsSync(path.join(archivePath, '.raw-write-pending.marker'))).toBe(false);
+  });
+
+  it('bounds each deferred event-loop drain and reports the observed batch size', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-bounded-drain-'));
+    temporaryDirectories.push(root);
+    const archivePath = path.join(root, 'archive');
+    const storage = new MicroBurstStorage({
+      databasePath: path.join(root, 'state.sqlite'),
+      archivePath,
+      deferRawWrites: true,
+      maxDeferredWriteBatchRecords: 2,
+      maxDeferredWriteBatchMs: 10_000,
+    });
+    for (let index = 0; index < 5; index++)
+      expect(
+        storage.appendTrade({
+          symbol: 'BTCUSDT',
+          eventTime: 100 + index,
+          receivedAtMs: 200 + index,
+          price: index + 1,
+        }),
+      ).toBe(true);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    expect(storage.getHealth()).toMatchObject({
+      queueDepth: 0,
+      queuedRecords: 5,
+      deferredWriteDrainTurns: 3,
+      deferredWriteMaxBatchRecords: 2,
+      uncleanDeferredWriteMarker: true,
+    });
+    expect(storage.close()).toBe(true);
+    expect(storage.getHealth().writtenRecords).toBe(5);
+    expect(fs.existsSync(path.join(archivePath, '.raw-write-pending.marker'))).toBe(false);
+  });
+
+  it('marks an abruptly terminated deferred-write session incomplete and refuses append', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-crash-'));
+    temporaryDirectories.push(root);
+    const databasePath = path.join(root, 'state.sqlite');
+    const archivePath = path.join(root, 'archive');
+    const storageModule = path.resolve('src/strategies/micro-burst/research/MicroBurstStorage.ts');
+    const childSource = `
+      const { MicroBurstStorage } = require(${JSON.stringify(storageModule)});
+      const storage = new MicroBurstStorage({
+        databasePath: ${JSON.stringify(databasePath)},
+        archivePath: ${JSON.stringify(archivePath)},
+        deferRawWrites: true,
+      });
+      if (!storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 101, price: 1 })) process.exit(3);
+      process.exit(0);
+    `;
+    const child = spawnSync(
+      process.execPath,
+      ['-r', require.resolve('ts-node/register'), '-e', childSource],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: {
+          PATH: process.env.PATH,
+          HOME: root,
+          TMPDIR: root,
+          DOTENV_CONFIG_PATH: '/dev/null',
+          TS_NODE_PROJECT: path.resolve('tsconfig.json'),
+        },
+      },
+    );
+    expect(child.status, child.stderr).toBe(0);
+    const marker = path.join(archivePath, '.raw-write-pending.marker');
+    expect(fs.existsSync(marker)).toBe(true);
+
+    const reopened = new MicroBurstStorage({ databasePath, archivePath, deferRawWrites: true });
+    expect(reopened.getHealth()).toMatchObject({
+      healthy: false,
+      uncleanDeferredWriteMarker: true,
+    });
+    expect(
+      reopened.appendTrade({ symbol: 'BTCUSDT', eventTime: 102, receivedAtMs: 103, price: 2 }),
+    ).toBe(false);
+    expect(reopened.close()).toBe(false);
+    expect(fs.existsSync(marker)).toBe(true);
   });
 
   it('fails closed when the deferred raw-write queue reaches capacity', () => {
@@ -488,13 +581,17 @@ describe('MicroBurstStorage', () => {
       deferRawWrites: true,
       maxArchiveQueueRecords: 1,
     });
-    expect(storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 101, price: 1 })).toBe(
-      true,
-    );
-    expect(storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 101, receivedAtMs: 102, price: 2 })).toBe(
-      false,
-    );
-    expect(storage.getHealth()).toMatchObject({ queueDepth: 1, overflowRecords: 1, healthy: false });
+    expect(
+      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 100, receivedAtMs: 101, price: 1 }),
+    ).toBe(true);
+    expect(
+      storage.appendTrade({ symbol: 'BTCUSDT', eventTime: 101, receivedAtMs: 102, price: 2 }),
+    ).toBe(false);
+    expect(storage.getHealth()).toMatchObject({
+      queueDepth: 1,
+      overflowRecords: 1,
+      healthy: false,
+    });
     storage.close();
   });
 

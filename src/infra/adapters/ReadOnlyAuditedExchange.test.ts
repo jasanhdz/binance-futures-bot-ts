@@ -8,6 +8,7 @@ describe('ReadOnlyAuditedExchange', () => {
       getServerTime: vi.fn().mockResolvedValue(1),
       subscribeToAggTrades: vi.fn(),
       marketOpen,
+      sendMarketCloseOnce: vi.fn(),
       cancelOrderById: vi.fn(),
       setLeverage: vi.fn(),
       ensureMarginType: vi.fn(),
@@ -21,9 +22,17 @@ describe('ReadOnlyAuditedExchange', () => {
     expect(() => (exchange as any).cancelOrderById('BTCUSDT', '1')).toThrow();
     expect(() => (exchange as any).setLeverage('BTCUSDT', 5)).toThrow();
     expect(() => (exchange as any).ensureMarginType('BTCUSDT', 'ISOLATED')).toThrow();
+    expect(() => (exchange as any).sendMarketCloseOnce({ symbol: 'BTCUSDT' })).toThrow(
+      'MUTATION_FORBIDDEN_IN_SHADOW_SOAK',
+    );
+    expect(() => (exchange as any).futureExchangeMutation()).toThrow(
+      'UNKNOWN_CAPABILITY_FORBIDDEN',
+    );
+    expect('sendMarketCloseOnce' in exchange).toBe(false);
     expect(marketOpen).not.toHaveBeenCalled();
+    expect(source.sendMarketCloseOnce).not.toHaveBeenCalled();
     expect(audit.readOnlyCalls.public).toBe(1);
-    expect(audit.totalMutationAttempts).toBe(4);
+    expect(audit.totalMutationAttempts).toBe(6);
     expect(audit.forwardedMutationCalls).toBe(0);
     expect(audit.blockedMutationAttempts).toMatchObject({
       marketOpen: 1,

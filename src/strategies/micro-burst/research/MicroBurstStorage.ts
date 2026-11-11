@@ -32,6 +32,10 @@ export interface MicroBurstStorageOptions {
   slowAppendThresholdMs?: number;
   /** Defer raw trade/depth file writes off the market-data callback. */
   deferRawWrites?: boolean;
+  /** Bound each setImmediate drain so one queued burst cannot monopolize the event loop. */
+  maxDeferredWriteBatchRecords?: number;
+  /** Soft per-turn time budget; at least one record may exceed it. */
+  maxDeferredWriteBatchMs?: number;
 }
 
 export interface ArchiveTrade {
@@ -96,6 +100,10 @@ export interface StorageHealth {
   synchronousAppendTotalMs: number;
   synchronousAppendMaxMs: number;
   synchronousAppendSlowCount: number;
+  deferredWriteDrainTurns: number;
+  deferredWriteMaxBatchRecords: number;
+  deferredWriteMaxBatchMs: number;
+  uncleanDeferredWriteMarker: boolean;
 }
 
 export interface MicroBurstOutcomeReconciliation {
@@ -167,10 +175,15 @@ export class MicroBurstStorage {
   private readonly retentionWarningAgeMs: number | null;
   private readonly slowAppendThresholdMs: number;
   private readonly deferRawWrites: boolean;
+  private readonly maxDeferredWriteBatchRecords: number;
+  private readonly maxDeferredWriteBatchMs: number;
+  private readonly rawWriteMarkerPath: string;
   private readonly activeSegments = new Map<string, ActiveSegment>();
   private readonly rawWriteQueue: ArchiveWrite[] = [];
   private rawWriteScheduled = false;
   private rawWriteDraining = false;
+  private rawWriteFailed = false;
+  private rawWriteMarkerCreated = false;
   private health: StorageHealth = {
     healthy: true,
     errorCount: 0,
@@ -207,6 +220,10 @@ export class MicroBurstStorage {
     synchronousAppendTotalMs: 0,
     synchronousAppendMaxMs: 0,
     synchronousAppendSlowCount: 0,
+    deferredWriteDrainTurns: 0,
+    deferredWriteMaxBatchRecords: 0,
+    deferredWriteMaxBatchMs: 0,
+    uncleanDeferredWriteMarker: false,
   };
 
   constructor(private readonly options: MicroBurstStorageOptions) {
@@ -234,6 +251,9 @@ export class MicroBurstStorage {
     this.retentionWarningAgeMs = positiveInteger(options.retentionWarningAgeMs, 0) || null;
     this.slowAppendThresholdMs = Math.max(0, options.slowAppendThresholdMs ?? 5);
     this.deferRawWrites = options.deferRawWrites === true;
+    this.maxDeferredWriteBatchRecords = positiveInteger(options.maxDeferredWriteBatchRecords, 32);
+    this.maxDeferredWriteBatchMs = Math.max(1, options.maxDeferredWriteBatchMs ?? 4);
+    this.rawWriteMarkerPath = path.join(options.archivePath, '.raw-write-pending.marker');
     this.health.queueCapacity = this.maxArchiveQueueRecords;
     try {
       fs.mkdirSync(path.dirname(options.databasePath), { recursive: true });
@@ -243,6 +263,11 @@ export class MicroBurstStorage {
       this.db.pragma('synchronous = NORMAL');
       this.createSchema();
       this.recoverArchive();
+      if (this.deferRawWrites && fs.existsSync(this.rawWriteMarkerPath)) {
+        this.rawWriteFailed = true;
+        this.health = { ...this.health, uncleanDeferredWriteMarker: true };
+        this.markFailure(new Error('unclean deferred archive session marker exists'));
+      }
     } catch (error) {
       this.markFailure(error);
     }
@@ -705,8 +730,7 @@ export class MicroBurstStorage {
     }
     const deduped = new Map<string, ArchivedTrade>();
     for (const record of records) {
-      const trade =
-        record as unknown as import('./MicroBurstOutcomeTypes').MicroBurstTradeRecord;
+      const trade = record as unknown as import('./MicroBurstOutcomeTypes').MicroBurstTradeRecord;
       if (!deduped.has(tradeIdentity(trade))) deduped.set(tradeIdentity(trade), record);
     }
     return [...deduped.values()].sort((a, b) => compareTrades(a as any, b as any));
@@ -782,7 +806,14 @@ export class MicroBurstStorage {
 
   flush(): boolean {
     return this.safe(() => {
-      this.drainRawWriteQueue();
+      while (this.rawWriteQueue.length > 0) {
+        const before = this.rawWriteQueue.length;
+        this.drainRawWriteQueue(Number.MAX_SAFE_INTEGER);
+        if (this.rawWriteFailed || !this.health.healthy || this.rawWriteQueue.length >= before)
+          throw new Error('deferred archive queue did not drain');
+      }
+      if (this.rawWriteFailed || !this.health.healthy)
+        throw new Error('archive storage is unhealthy; session cannot be finalized');
       this.finalizeAllActiveSegments();
     });
   }
@@ -791,16 +822,36 @@ export class MicroBurstStorage {
 
   close(): boolean {
     if (this.closed) return this.health.healthy;
-    if (!this.flush()) return false;
+    if (!this.flush()) {
+      this.closeDatabaseAfterFailedFlush();
+      return false;
+    }
     try {
       this.refreshArchiveMetrics();
       this.db?.close();
+      if (this.rawWriteMarkerCreated) {
+        fs.unlinkSync(this.rawWriteMarkerPath);
+        this.fsyncDirectory(this.options.archivePath);
+        this.rawWriteMarkerCreated = false;
+        this.health = { ...this.health, uncleanDeferredWriteMarker: false };
+      }
       this.closed = true;
-      return true;
+      return this.health.healthy;
     } catch (error) {
       this.markFailure(error);
+      this.closeDatabaseAfterFailedFlush();
       return false;
     }
+  }
+
+  private closeDatabaseAfterFailedFlush(): void {
+    if (this.closed) return;
+    try {
+      this.db?.close();
+    } catch (error) {
+      this.markFailure(error);
+    }
+    this.closed = true;
   }
 
   getHealth(): StorageHealth {
@@ -865,14 +916,27 @@ export class MicroBurstStorage {
     }
     const write: ArchiveWrite = { type, symbol, eventTime, receivedAtMs, payload };
     if (this.deferRawWrites) {
-      if (this.closed || this.rawWriteQueue.length >= this.maxArchiveQueueRecords) {
+      if (
+        this.closed ||
+        this.rawWriteFailed ||
+        this.rawWriteQueue.length >= this.maxArchiveQueueRecords
+      ) {
         this.health = {
           ...this.health,
           overflowRecords: this.health.overflowRecords + 1,
         };
         this.markFailure(new Error('archive raw write queue overflow'));
+        this.rawWriteFailed = true;
+        this.recordGap({
+          symbol,
+          startedAtMs: eventTime,
+          endedAtMs: eventTime,
+          reason: 'deferred_archive_queue_rejected',
+          dataType: type,
+        });
         return false;
       }
+      if (!this.ensureRawWriteMarker()) return false;
       this.rawWriteQueue.push(write);
       this.health = {
         ...this.health,
@@ -928,7 +992,13 @@ export class MicroBurstStorage {
   }
 
   private scheduleRawWriteDrain(): void {
-    if (!this.deferRawWrites || this.rawWriteScheduled || this.rawWriteDraining || this.closed)
+    if (
+      !this.deferRawWrites ||
+      this.rawWriteScheduled ||
+      this.rawWriteDraining ||
+      this.rawWriteFailed ||
+      this.closed
+    )
       return;
     this.rawWriteScheduled = true;
     setImmediate(() => {
@@ -937,18 +1007,60 @@ export class MicroBurstStorage {
     });
   }
 
-  private drainRawWriteQueue(): void {
-    if (this.rawWriteDraining) return;
+  private drainRawWriteQueue(maxRecords = this.maxDeferredWriteBatchRecords): boolean {
+    if (this.rawWriteDraining || this.rawWriteFailed || this.closed) return false;
+    if (this.rawWriteQueue.length === 0) return true;
     this.rawWriteDraining = true;
+    this.health = { ...this.health, draining: true };
+    const startedAt = performance.now();
+    let drained = 0;
     try {
-      while (this.rawWriteQueue.length) {
+      while (
+        this.rawWriteQueue.length &&
+        drained < maxRecords &&
+        (drained === 0 || performance.now() - startedAt < this.maxDeferredWriteBatchMs)
+      ) {
         const write = this.rawWriteQueue.shift()!;
         this.health = { ...this.health, queueDepth: this.rawWriteQueue.length };
-        if (!this.writeRaw(write)) break;
+        drained++;
+        if (!this.writeRaw(write)) {
+          this.rawWriteFailed = true;
+          break;
+        }
       }
     } finally {
       this.rawWriteDraining = false;
-      if (this.rawWriteQueue.length) this.scheduleRawWriteDrain();
+      const elapsedMs = Math.max(0, performance.now() - startedAt);
+      this.health = {
+        ...this.health,
+        draining: false,
+        deferredWriteDrainTurns: this.health.deferredWriteDrainTurns + 1,
+        deferredWriteMaxBatchRecords: Math.max(this.health.deferredWriteMaxBatchRecords, drained),
+        deferredWriteMaxBatchMs: Math.max(this.health.deferredWriteMaxBatchMs, elapsedMs),
+      };
+      if (this.rawWriteQueue.length && !this.rawWriteFailed) this.scheduleRawWriteDrain();
+    }
+    return this.rawWriteQueue.length === 0 && !this.rawWriteFailed;
+  }
+
+  private ensureRawWriteMarker(): boolean {
+    if (this.rawWriteMarkerCreated) return true;
+    try {
+      const marker = JSON.stringify({
+        schema: 'MICRO_RAW_WRITE_PENDING_V1',
+        createdAtMs: this.now(),
+        databasePath: this.options.databasePath,
+      });
+      fs.writeFileSync(this.rawWriteMarkerPath, marker, { flag: 'wx', mode: 0o600 });
+      this.fsyncFile(this.rawWriteMarkerPath);
+      this.fsyncDirectory(this.options.archivePath);
+      this.rawWriteMarkerCreated = true;
+      this.health = { ...this.health, uncleanDeferredWriteMarker: true };
+      return true;
+    } catch (error) {
+      this.rawWriteFailed = true;
+      this.markFailure(error);
+      return false;
     }
   }
 
@@ -959,8 +1071,7 @@ export class MicroBurstStorage {
       synchronousAppendTotalMs: this.health.synchronousAppendTotalMs + durationMs,
       synchronousAppendMaxMs: Math.max(this.health.synchronousAppendMaxMs, durationMs),
       synchronousAppendSlowCount:
-        this.health.synchronousAppendSlowCount +
-        (durationMs >= this.slowAppendThresholdMs ? 1 : 0),
+        this.health.synchronousAppendSlowCount + (durationMs >= this.slowAppendThresholdMs ? 1 : 0),
     };
   }
 
