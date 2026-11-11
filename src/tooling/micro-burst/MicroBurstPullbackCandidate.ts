@@ -11,6 +11,10 @@ import {
   historicalDecisionAgrees,
 } from './MicroBurstPatternComparison';
 import type { StrategyDecisionEvidenceV2 } from '../../core/blackbox/StrategyDecisionBlackBox';
+import { PULLBACK_EXPERIMENT_V1 } from './MicroBurstReplayEvidenceContract';
+import { createHash } from 'node:crypto';
+
+export { PULLBACK_EXPERIMENT_V1 } from './MicroBurstReplayEvidenceContract';
 
 export interface PullbackTrade {
   aggregateTradeId: number;
@@ -58,16 +62,6 @@ export interface PullbackExperimentConfig {
   minSignedPriceResponseBps: number;
 }
 
-/** Preregistered research assumptions, not calibrated probabilities or LIVE defaults. */
-export const PULLBACK_EXPERIMENT_V1: Readonly<PullbackExperimentConfig> = Object.freeze({
-  persistenceMs: 3_000,
-  maxObservationGapMs: 2_000,
-  maxTradeAgeMs: 2_000,
-  minTradesPerWindow: 3,
-  minSignedFlowRatio: 0.1,
-  minSignedPriceResponseBps: 1,
-});
-
 export interface PullbackWindow {
   horizonMs: number;
   tradeCount: number;
@@ -83,10 +77,14 @@ export interface PullbackObservation {
   sourceArtifactHash: string;
   sessionManifestSha256: string;
   decisionInputSha256: string;
+  experimentConfigSha256: string;
+  tradeEvidenceSha256: string;
+  evidenceSha256: string;
   observedAtMs: number;
   exchangeAsOfMs: number;
   baseline: MicroBurstEntryDecision;
   candidate: 'REJECT' | 'WAIT' | 'QUALIFIED';
+  disposition: 'STRATEGY_REJECTED' | 'WAITING' | 'QUALIFIED' | 'DATA_UNAVAILABLE';
   reason: string;
   windows: readonly PullbackWindow[];
   /** No order intent, sizing or PnL is produced by this selector. */
@@ -102,6 +100,32 @@ interface Persistence {
 }
 
 const verifiedPullbackObservations = new WeakSet<object>();
+const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, item) => {
+    if (item && typeof item === 'object' && !Array.isArray(item))
+      return Object.fromEntries(
+        Object.keys(item)
+          .sort()
+          .map((key) => [key, item[key]]),
+      );
+    return item;
+  });
+const dataUnavailableReasons = new Set([
+  'FLOW_EVIDENCE_NOT_ARCHIVE_VERIFIED',
+  'INVALID_CLOCK',
+  'FLOW_COVERAGE_UNKNOWN',
+  'CAPTURE_SESSION_RANGE_MISSING',
+  'ARCHIVED_FEED_GAP',
+  'PREWINDOW_ANCHOR_MISSING',
+  'TRADE_SEQUENCE_INVALID',
+  'INVALID_TRADE_CLOCK',
+  'RECENT_FLOW_STALE',
+  'RECENT_FLOW_INSUFFICIENT',
+  'RECENT_FLOW_INVALID',
+  'NO_NEW_TRADE_EVIDENCE',
+  'NON_MONOTONIC_OBSERVATION',
+]);
 
 export function isVerifiedPullbackObservation(value: unknown): value is PullbackObservation {
   return Boolean(value && typeof value === 'object' && verifiedPullbackObservations.has(value));
@@ -173,11 +197,28 @@ export class MicroBurstPullbackCandidate {
   }): PullbackObservation {
     const { symbol, baseline, observedAtMs: now, exchangeAsOfMs: asOf, evidence } = input;
     const windows: PullbackWindow[] = [];
+    const experimentConfigSha256 = sha256(canonical(this.config));
+    const tradeEvidenceSha256 = sha256(
+      canonical({
+        sourceArtifactHash: evidence.sourceArtifactHash,
+        sessionManifestSha256: evidence.sessionManifestSha256,
+        decisionId: evidence.decisionId,
+        decisionInputSha256: evidence.decisionInputSha256,
+        coverageStartedAtMs: evidence.coverageStartedAtMs,
+        coverageThroughMs: evidence.coverageThroughMs,
+        coverageVerified: evidence.coverageVerified,
+        gapFree: evidence.gapFree,
+        sequenceValid: evidence.sequenceValid,
+        capacityTruncated: evidence.capacityTruncated,
+        invalidReason: evidence.invalidReason,
+        trades: evidence.trades,
+      }),
+    );
     const result = (
       candidate: PullbackObservation['candidate'],
       reason: string,
     ): PullbackObservation => {
-      const observation: PullbackObservation = Object.freeze({
+      const body: Omit<PullbackObservation, 'evidenceSha256'> = {
         authority: 'SHADOW_ONLY',
         candidateVersion: 'PULLBACK_CONTINUATION_V1',
         symbol,
@@ -185,13 +226,27 @@ export class MicroBurstPullbackCandidate {
         sourceArtifactHash: evidence.sourceArtifactHash,
         sessionManifestSha256: evidence.sessionManifestSha256,
         decisionInputSha256: evidence.decisionInputSha256,
+        experimentConfigSha256,
+        tradeEvidenceSha256,
         observedAtMs: now,
         exchangeAsOfMs: asOf,
         baseline,
         candidate,
+        disposition:
+          candidate === 'QUALIFIED'
+            ? 'QUALIFIED'
+            : candidate === 'WAIT'
+              ? 'WAITING'
+              : dataUnavailableReasons.has(reason)
+                ? 'DATA_UNAVAILABLE'
+                : 'STRATEGY_REJECTED',
         reason,
         windows: Object.freeze(windows.slice()),
         executionEligibility: 'NOT_EVALUATED',
+      };
+      const observation: PullbackObservation = Object.freeze({
+        ...body,
+        evidenceSha256: sha256(canonical(body)),
       });
       verifiedPullbackObservations.add(observation);
       return observation;

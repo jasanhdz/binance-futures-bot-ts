@@ -28,6 +28,8 @@ máxima de observaciones 2 s, antigüedad máxima del último trade 2 s, mínimo
 por ventana, ratio firmado de volumen >=0.1 y respuesta firmada >=1 bp.
 No son umbrales calibrados ni valores recomendados para LIVE. Si el replay solo
 tiene snapshots cada 5 s, no puede acreditar persistencia de 2 s: no interpolar.
+La configuración del candidato queda hashada en cada observación; el frame pareado
+rehúsa instancias con experiment config distinta de `PULLBACK_EXPERIMENT_V1`.
 
 Solo se usan trades con eventTime <= exchangeAsOfMs y receivedAtMs <= observedAtMs.
 Los IDs visibles deben ser contiguos y los tiempos de evento no decrecientes.
@@ -54,10 +56,19 @@ se crea fuera de `capture/` y conserva hash de artefacto/manifiesto por observac
 
 El replay recorre todas las decisiones originales (incluidas NO_TRADE), rechaza
 configuración mezclada y emite resultados de selección, no ejecución ni economía.
-El replay pareado modelado vive separado en `MicroBurstPairedExecutionReplay.ts` y
-requiere coberturas verificadas para intervalos, profundidad y funding. Cada fill está
-etiquetado como modelado y no como fill real; los terminales desconocidos siguen
-UNKNOWN. Los supuestos sobre protección inmediata del stop permanecen visibles.
+`MicroBurstVerifiedReplayFrame.ts` constituye la única frontera para construir frames
+del replay pareado. Liga cada frame a la decisión original, los dos relojes, la sesión,
+el libro/checkpoint y `MICRO_PAIRED_REPLAY_EVIDENCE_V1`. El replay rechaza frames
+fabricados o copiados; frescura (30 s) y gap máximo entre observaciones (2 s) provienen
+de contratos existentes y no se eligen por llamada.
+
+Un hueco `pu/U/u`, segmento parcial sin checkpoint previo, checkpoint no disponible
+antes del uso o ausencia de updates observados deja la cobertura `UNKNOWN`. Un checkpoint
+posterior permite reconstruir un punto nuevo, no rellenar retroactivamente el hueco.
+La CLI descrita aquí sigue siendo replay de selección; el armado pareado usa la API
+offline y las pruebas de integración sintética. No se conecta al runtime ni al paper.
+Cada fill pareado está etiquetado como modelado y no real; los terminales desconocidos
+siguen UNKNOWN y los rechazos de selección no se presentan como ejecuciones.
 
 ## Pendientes antes de medir ventaja
 

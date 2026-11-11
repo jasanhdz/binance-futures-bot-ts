@@ -154,13 +154,214 @@ export function causalTradeEvidence(
 
 export interface DepthCheckpoint {
   symbol: string;
+  /** Local receive time of the book state represented by this checkpoint. */
   receivedAtMs: number;
+  /** Earliest local time at which this persisted checkpoint was available to replay. */
+  availableAtMs?: number;
   lastUpdateId: number;
   bids: readonly { price: number; qty: number }[];
   asks: readonly { price: number; qty: number }[];
 }
 
-/** Conservative finite-depth replay: never uses levels beyond the initial checkpoint boundary. */
+export interface CausalDepthReplay {
+  readonly status: 'VERIFIED' | 'UNKNOWN';
+  readonly reason?:
+    | 'INVALID_DEPTH_CHECKPOINT'
+    | 'DEPTH_EVENT_INVALID'
+    | 'DEPTH_RECEIVE_CLOCK_REGRESSION'
+    | 'DEPTH_EVENT_TIME_REGRESSION'
+    | 'DEPTH_DUPLICATE_CONFLICT'
+    | 'DEPTH_SEQUENCE_GAP'
+    | 'DEPTH_BOOK_INVALID'
+    | 'DEPTH_TOO_OLD'
+    | 'DEPTH_NO_UPDATES_OBSERVED';
+  readonly book?: {
+    bidDepth: { price: number; qty: number }[];
+    askDepth: { price: number; qty: number }[];
+    observedAtMs: number;
+    lastUpdateId: number;
+    appliedEventCount: number;
+  };
+}
+
+/**
+ * Reconstructs only the depth state supported by the supplied checkpoint and every
+ * causally visible USD-M update. Event time and local receive time are independent
+ * clocks; neither is substituted for the other.
+ */
+export function replayCausalDepth(
+  checkpoint: DepthCheckpoint,
+  events: readonly ArchiveEvent[],
+  clocks: { exchangeAsOfMs: number; receivedAsOfMs: number },
+  maxAgeMs: number,
+  requireUpdate = false,
+): CausalDepthReplay {
+  const { exchangeAsOfMs, receivedAsOfMs } = clocks;
+  const availableAtMs = checkpoint.availableAtMs ?? checkpoint.receivedAtMs;
+  if (
+    ![exchangeAsOfMs, receivedAsOfMs, maxAgeMs, checkpoint.receivedAtMs, availableAtMs].every(
+      Number.isFinite,
+    ) ||
+    maxAgeMs <= 0 ||
+    checkpoint.receivedAtMs > receivedAsOfMs ||
+    availableAtMs > receivedAsOfMs ||
+    availableAtMs < checkpoint.receivedAtMs ||
+    !Number.isSafeInteger(checkpoint.lastUpdateId) ||
+    checkpoint.lastUpdateId < 0 ||
+    !checkpoint.bids.length ||
+    !checkpoint.asks.length
+  )
+    return { status: 'UNKNOWN', reason: 'INVALID_DEPTH_CHECKPOINT' };
+  const valid = (levels: DepthCheckpoint['bids'], descending: boolean) =>
+    levels.every(
+      (level, index) =>
+        Number.isFinite(level.price) &&
+        level.price > 0 &&
+        Number.isFinite(level.qty) &&
+        level.qty >= 0 &&
+        (index === 0 ||
+          (descending
+            ? levels[index - 1].price > level.price
+            : levels[index - 1].price < level.price)),
+    );
+  if (
+    !valid(checkpoint.bids, true) ||
+    !valid(checkpoint.asks, false) ||
+    checkpoint.bids[0].price > checkpoint.asks[0].price
+  )
+    return { status: 'UNKNOWN', reason: 'INVALID_DEPTH_CHECKPOINT' };
+  const bids = new Map(checkpoint.bids.map((l) => [l.price, l.qty]));
+  const asks = new Map(checkpoint.asks.map((l) => [l.price, l.qty]));
+  const floor = Math.min(...bids.keys());
+  const ceiling = Math.max(...asks.keys());
+  let last = checkpoint.lastUpdateId;
+  let observedAtMs = checkpoint.receivedAtMs;
+  let appliedEventCount = 0;
+  const identities = new Map<string, string>();
+  const finalUpdateIdentities = new Map<number, { identity: string; fingerprint: string }>();
+  const visible = events
+    .filter(
+      (e) =>
+        e.type === 'depth' &&
+        e.symbol === checkpoint.symbol &&
+        e.receivedAtMs >= availableAtMs &&
+        e.receivedAtMs <= receivedAsOfMs &&
+        e.eventTime <= exchangeAsOfMs,
+    )
+    .slice();
+  const pending: Array<{
+    event: ArchiveEvent;
+    U: number;
+    u: number;
+    pu: number;
+    identity: string;
+    fingerprint: string;
+  }> = [];
+  for (const event of visible) {
+    const p = event.payload;
+    const U = Number(p.U),
+      u = Number(p.u),
+      pu = Number(p.pu);
+    if (
+      ![U, u, pu].every(Number.isSafeInteger) ||
+      U < 0 ||
+      u < U ||
+      pu < 0 ||
+      !Number.isFinite(event.receivedAtMs) ||
+      !Number.isFinite(event.eventTime) ||
+      p.symbol !== event.symbol ||
+      p.eventTime !== event.eventTime ||
+      p.receivedAtMs !== event.receivedAtMs
+    )
+      return { status: 'UNKNOWN', reason: 'DEPTH_EVENT_INVALID' };
+    const identity = `${U}:${u}:${pu}`;
+    const fingerprint = JSON.stringify([event.eventTime, p.b, p.a]);
+    const previousIdentity = identities.get(identity);
+    if (previousIdentity !== undefined) {
+      if (previousIdentity !== fingerprint)
+        return { status: 'UNKNOWN', reason: 'DEPTH_DUPLICATE_CONFLICT' };
+      continue;
+    }
+    identities.set(identity, fingerprint);
+    pending.push({ event, U, u, pu, identity, fingerprint });
+  }
+  let previousReceiveAtMs = availableAtMs;
+  let previousEventAtMs = -Infinity;
+  while (pending.length) {
+    for (let index = pending.length - 1; index >= 0; index--) {
+      const update = pending[index];
+      if (update.u > last) continue;
+      const previousFinal = finalUpdateIdentities.get(update.u);
+      if (
+        previousFinal &&
+        (previousFinal.identity !== update.identity ||
+          previousFinal.fingerprint !== update.fingerprint)
+      )
+        return { status: 'UNKNOWN', reason: 'DEPTH_DUPLICATE_CONFLICT' };
+      pending.splice(index, 1);
+    }
+    if (!pending.length) break;
+    const applicable = pending.filter(
+      (update) => update.pu === last && update.U <= last + 1 && update.u >= last + 1,
+    );
+    if (applicable.length !== 1) return { status: 'UNKNOWN', reason: 'DEPTH_SEQUENCE_GAP' };
+    const update = applicable[0];
+    const event = update.event;
+    if (event.receivedAtMs < previousReceiveAtMs)
+      return { status: 'UNKNOWN', reason: 'DEPTH_RECEIVE_CLOCK_REGRESSION' };
+    if (event.eventTime < previousEventAtMs)
+      return { status: 'UNKNOWN', reason: 'DEPTH_EVENT_TIME_REGRESSION' };
+    previousReceiveAtMs = event.receivedAtMs;
+    previousEventAtMs = event.eventTime;
+    const p = event.payload;
+    for (const [raw, map, bound] of [
+      [p.b, bids, (price: number) => price >= floor],
+      [p.a, asks, (price: number) => price <= ceiling],
+    ] as const) {
+      if (!Array.isArray(raw)) return { status: 'UNKNOWN', reason: 'DEPTH_EVENT_INVALID' };
+      for (const level of raw) {
+        if (!Array.isArray(level) || level.length !== 2)
+          return { status: 'UNKNOWN', reason: 'DEPTH_EVENT_INVALID' };
+        const price = Number(level[0]),
+          qty = Number(level[1]);
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty) || qty < 0)
+          return { status: 'UNKNOWN', reason: 'DEPTH_EVENT_INVALID' };
+        if (bound(price)) {
+          if (qty === 0) map.delete(price);
+          else map.set(price, qty);
+        }
+      }
+    }
+    last = update.u;
+    finalUpdateIdentities.set(update.u, {
+      identity: update.identity,
+      fingerprint: update.fingerprint,
+    });
+    observedAtMs = event.receivedAtMs;
+    appliedEventCount++;
+    pending.splice(pending.indexOf(update), 1);
+  }
+  if (receivedAsOfMs - observedAtMs > maxAgeMs)
+    return { status: 'UNKNOWN', reason: 'DEPTH_TOO_OLD' };
+  if (requireUpdate && appliedEventCount === 0)
+    return { status: 'UNKNOWN', reason: 'DEPTH_NO_UPDATES_OBSERVED' };
+  const bidDepth = [...bids]
+    .filter(([, q]) => q > 0)
+    .sort((a, b) => b[0] - a[0])
+    .map(([price, qty]) => ({ price, qty }));
+  const askDepth = [...asks]
+    .filter(([, q]) => q > 0)
+    .sort((a, b) => a[0] - b[0])
+    .map(([price, qty]) => ({ price, qty }));
+  if (!bidDepth.length || !askDepth.length || bidDepth[0].price > askDepth[0].price)
+    return { status: 'UNKNOWN', reason: 'DEPTH_BOOK_INVALID' };
+  return {
+    status: 'VERIFIED',
+    book: { bidDepth, askDepth, observedAtMs, lastUpdateId: last, appliedEventCount },
+  };
+}
+
+/** Compatibility point query. Paired replay uses replayCausalDepth directly. */
 export function causalExecutionBook(
   checkpoint: DepthCheckpoint,
   events: readonly ArchiveEvent[],
@@ -171,72 +372,18 @@ export function causalExecutionBook(
   askDepth: { price: number; qty: number }[];
   observedAtMs: number;
 } | null {
-  if (
-    ![now, maxAgeMs, checkpoint.receivedAtMs].every(Number.isFinite) ||
-    maxAgeMs <= 0 ||
-    checkpoint.receivedAtMs > now ||
-    !Number.isSafeInteger(checkpoint.lastUpdateId) ||
-    !checkpoint.bids.length ||
-    !checkpoint.asks.length
-  )
-    return null;
-  const valid = (levels: DepthCheckpoint['bids']) =>
-    levels.every(
-      (l) => Number.isFinite(l.price) && l.price > 0 && Number.isFinite(l.qty) && l.qty >= 0,
-    );
-  if (!valid(checkpoint.bids) || !valid(checkpoint.asks)) return null;
-  const bids = new Map(checkpoint.bids.map((l) => [l.price, l.qty]));
-  const asks = new Map(checkpoint.asks.map((l) => [l.price, l.qty]));
-  const floor = Math.min(...bids.keys());
-  const ceiling = Math.max(...asks.keys());
-  let last = checkpoint.lastUpdateId;
-  let observedAtMs = checkpoint.receivedAtMs;
-  for (const event of events
-    .filter(
-      (e) =>
-        e.type === 'depth' &&
-        e.symbol === checkpoint.symbol &&
-        e.receivedAtMs >= checkpoint.receivedAtMs &&
-        e.receivedAtMs <= now,
-    )
-    .sort((a, b) => a.receivedAtMs - b.receivedAtMs)) {
-    const p = event.payload;
-    const U = Number(p.U),
-      u = Number(p.u),
-      pu = Number(p.pu);
-    if (![U, u, pu].every(Number.isSafeInteger) || U > u) return null;
-    if (u <= last) continue;
-    if (pu !== last) return null;
-    for (const [raw, map, bound] of [
-      [p.b, bids, (price: number) => price >= floor],
-      [p.a, asks, (price: number) => price <= ceiling],
-    ] as const) {
-      if (!Array.isArray(raw)) return null;
-      for (const level of raw) {
-        if (!Array.isArray(level) || level.length !== 2) return null;
-        const price = Number(level[0]),
-          qty = Number(level[1]);
-        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty) || qty < 0) return null;
-        if (bound(price)) {
-          if (qty === 0) map.delete(price);
-          else map.set(price, qty);
-        }
-      }
-    }
-    last = u;
-    observedAtMs = event.receivedAtMs;
-  }
-  if (now - observedAtMs > maxAgeMs) return null;
-  const bidDepth = [...bids]
-    .filter(([, q]) => q > 0)
-    .sort((a, b) => b[0] - a[0])
-    .map(([price, qty]) => ({ price, qty }));
-  const askDepth = [...asks]
-    .filter(([, q]) => q > 0)
-    .sort((a, b) => a[0] - b[0])
-    .map(([price, qty]) => ({ price, qty }));
-  if (!bidDepth.length || !askDepth.length || bidDepth[0].price > askDepth[0].price) return null;
-  return { bidDepth, askDepth, observedAtMs };
+  const result = replayCausalDepth(
+    checkpoint,
+    events,
+    { exchangeAsOfMs: Number.MAX_SAFE_INTEGER, receivedAsOfMs: now },
+    maxAgeMs,
+  );
+  if (result.status !== 'VERIFIED' || !result.book) return null;
+  return {
+    bidDepth: result.book.bidDepth,
+    askDepth: result.book.askDepth,
+    observedAtMs: result.book.observedAtMs,
+  };
 }
 
 export function depthVwap(

@@ -14,6 +14,9 @@ original o el flujo de cinco minutos descartan oportunidades útiles.
   cantidad, stop, extremos, tiempo en posición y estado del motor de salida propios.
   La diferencia pareada solo se calcula donde ambas tienen resultado CLOSED.
   Se muestran unknown, unfilled y falta de registro: no se convierten en PnL cero.
+- El reporte distingue rechazo del selector, espera, datos requeridos desconocidos,
+  ejecución no registrada, UNFILLED y terminales modelados. Cada resultado/audit debe
+  volver a un frame verificado, contrato, decisión y lista de intervalos cubierta.
 
 Las medias de casos completos son descriptivas y pueden tener sesgo de selección;
 no son una estimación suficiente de esperanza positiva ni una prueba fuera de muestra.
@@ -32,13 +35,59 @@ no son una estimación suficiente de esperanza positiva ni una prueba fuera de m
   límites. Si el mejor nivel queda desconocido, no hay libro ejecutable certificado.
 - VWAP consume cantidad; profundidad insuficiente devuelve null.
 
-`MicroBurstCaptureSession.ts` abre únicamente sesiones cerradas con hashes
-consistentes de productor, config, decisiones, manifiestos, segmentos e índice SQLite.
-Rechaza symlinks que escapen de la raíz, archivos temporales, gaps no declarados,
-identidades de decisión duplicadas y evidencia de funding sin procedencia verificable.
-La cobertura de intervalos exige checkpoints/observaciones suficientes y respeta los
-relojes de evento y recepción; no extrapola una sesión a partir de los extremos del
-índice SQLite.
+`MicroBurstCaptureSession.ts` abre sesiones cerradas con hashes consistentes de
+productor, config, decisiones, segmentos e índice SQLite. Esto prueba integridad de
+los bytes archivados y coherencia con el manifest; no es una firma del exchange ni
+demuestra que el productor no perdió datos antes de escribirlos. `health.json` y
+`completion.json` se comprueban por valores/relojes, pero sus propios hashes no forman
+parte del manifest V1; el manifest tampoco está firmado externamente.
+
+## Frontera de evidencia del replay pareado
+
+`buildVerifiedReplayFrame()` en `MicroBurstVerifiedReplayFrame.ts` es el único
+constructor de frames aceptados por `replayPairedExecutions()`. Requiere una sesión,
+decisión y observación ya verificadas en el proceso. Decodifica los relojes y el libro
+esperado desde el input original; el llamador no suministra `decisionId`, `asOf`, libro,
+`coverageVerified` ni un límite de frescura. El frame queda ligado a hash de sesión,
+artefacto, contenido de decisión, símbolo y contrato de evidencia. Los lectores usados
+por esta frontera reciben la decisión original y derivan identidad y relojes de ella.
+Los intervalos sólo se verifican entre decisiones verificadas consecutivas del mismo
+símbolo; se rechazan decisiones omitidas dentro del tramo.
+
+El contrato `MICRO_PAIRED_REPLAY_EVIDENCE_V1` fija la frescura máxima del libro en el
+límite existente de CURRENT (30 s) y la separación de observaciones en el límite
+prerregistrado de la candidata (2 s). También fija el hash del
+`PULLBACK_EXPERIMENT_V1`; el replay toma la política de salida de los inputs registrados
+y rechaza mezclar configuraciones en una misma comparación. Cada frame declara una de
+estas situaciones:
+
+- `VERIFIED_POINT`: libro causal para esa decisión; por sí solo no acredita la
+  trayectoria posterior ni permite un fill después de una demora.
+- `VERIFIED_INTERVAL`: dos decisiones registradas consecutivas, reloj exchange y
+  recepción local separados, checkpoint persistido y disponible antes del inicio,
+  libro fuente coincidente y deltas depth encadenados entre los dos instantes.
+- `UNKNOWN`: checkpoint ausente/antiguo, gaps, timestamps incompatibles, secuencia
+  `U/u/pu` rota, ausencia de updates observados o cualquier evidencia insuficiente.
+
+El intervalo se comprueba leyendo los archivos cuyos rangos de recepción, calculados
+al verificar cada byte, se solapan con el tramo; las fechas mínimas/máximas sólo
+seleccionan archivos, no certifican continuidad. Sus envelopes se contrastan con el
+índice SQLite. Se verifican orden causal, duplicados, solapamientos, `U/u/pu` y los
+límites de profundidad conocidos. Un checkpoint posterior a un hueco puede servir como
+punto nuevo para intervalos futuros, pero nunca reconstruye la trayectoria anterior.
+Sin updates depth observados se declara unknown: el archivo no permite distinguir
+mercado quieto de silencio del feed. Los trades se verifican en las ventanas requeridas
+por la política y cubren el intervalo real entre decisiones; una ventana final de 60 s
+no sustituye una trayectoria más larga. El builder rechaza decisiones intermedias
+omitidas; CURRENT y PULLBACK conservan señales, demoras, sizing y estado de salida
+independientes.
+
+La marca en proceso no es un sandbox frente a código arbitrario y las sumas hash no
+autentican al exchange. La continuidad probada es la continuidad de updates que el
+archivo conserva y cuya secuencia se puede verificar; no la completitud absoluta de la
+captura. Un corte de energía no está modelado por las pruebas de terminación de proceso.
+El reader de funding valida schema, orden e integridad hash del contenido ligado a la
+sesión; su campo `source` es autodeclarado, no autentica una respuesta de Binance.
 
 La cobertura declarada debe proceder de auditoría de sesión (inicio, fin, gaps,
 overflows), no de un booleano elegido por el usuario. El lector verifica integridad,
@@ -48,8 +97,9 @@ hay que comprobar su semántica en el productor, nunca sustituirlo por hora del 
 
 ## Modelo de ejecución
 
-`MicroBurstPairedExecutionReplay.ts` recibe una serie ordenada por símbolo, con
-observación CURRENT/candidata, libro reconstruido y evidencia causal de salida.
+`MicroBurstPairedExecutionReplay.ts` consume sólo `VerifiedReplayFrame` producidos por
+la frontera anterior. Un objeto fabricado o copiado pierde la marca débil en proceso y
+es rechazado. Los fills siguen siendo modelos por VWAP, no fills reales.
 
 - Una ejecución por episodio y variante; una posición concurrente por variante.
 - Mismo presupuesto monetario al stop, máximo notional, step y costes para ambas.
@@ -62,8 +112,11 @@ observación CURRENT/candidata, libro reconstruido y evidencia causal de salida.
   usa como mínimo las comisiones modeladas y deslizamiento residual.
 - Usa MicroBurstExitEngine con estado independiente y tiempos desde cada entrada.
 - Salida pendiente respeta demora y se ejecuta sobre el nuevo libro, no el de decisión.
-- Huecos, profundidad de salida insuficiente y final incompleto producen UNKNOWN.
-- Funding cero requiere evidencia explícita de ausencia de funding en el intervalo.
+- Huecos, profundidad de salida insuficiente y final incompleto producen UNKNOWN. Una
+  posición abierta conserva sus fills modelados anteriores, pero su resultado total
+  no recibe PnL terminal certificado después de perder cobertura.
+- Funding cero requiere evidencia explícita de ausencia de funding ligada a la misma
+  sesión; una sesión distinta no se acepta.
 
 **Límites:** asume cobertura inmediata del stop y aplicación inmediata de MOVE_STOP;
 no replica demoras/fallos de protección del exchange, ni valida liquidación/margen ni
@@ -76,32 +129,32 @@ no una reproducción del MARGIN_FRACTION LIVE ni una modificación del bot.
 
 ## Validaciones realizadas
 
-Prueba determinista con archivo gzip generado: lectura/integridad, cobertura de flujo,
-confirmación, libros causales de prueba, entradas distintas, sizing, costes y cierres.
-La decisión CURRENT y los checkpoints de esa prueba son fixtures, no reconstrucción
-integral del contexto técnico desde mercado crudo.
+Pruebas deterministas con sesiones sintéticas: segmentos parciales, hueco `pu` entre
+segmentos, duplicados exactos/conflictivos, checkpoint de reconexión, libro antiguo,
+clock/decision identity, no updates observados y frames pareados válidos. La integración
+sesión verificada → candidato → `VerifiedReplayFrame` → replay es sintética. La decisión
+CURRENT y checkpoints son fixtures, no reconstrucción real del contexto completo.
 
-Las pruebas sintéticas verifican también la apertura/rechazo de sesiones, el vínculo
-con decisiones CURRENT originales, evidencia de funding y trazas de ejecución
-pareada. No constituyen un certificado de un episodio real. El `MicroBurstEpisodeCapture`
-persiste un journal encadenado y marca sesiones incompletas si quedan escrituras
-pendientes o faltan terminales; el cierre de captura no equivale al cierre económico
-de una posición.
+Las pruebas también verifican funding ligado a la misma sesión y que un rechazo
+PULLBACK se informa como rechazo, distinto de espera, datos desconocidos o una ejecución
+sin registro. No constituyen un certificado de un episodio real. El `MicroBurstEpisodeCapture`
+persiste un journal encadenado; un lifecycle incompleto del episodio sigue siendo
+distinto de cierre económico de una posición.
 
 También prueba que una oportunidad consumida durante la espera queda UNFILLED,
 que un gap invalida resultados, que la política Micro puede cerrar sin tocar stop,
 y que las observaciones repetidas no multiplican episodios en el reporte.
 
-Lectura real read-only de los primeros cuatro segmentos de cada símbolo en
+La lectura read-only histórica de los primeros cuatro segmentos de cada símbolo en
 `data/micro-burst/shadow-20261001/research.sqlite`:
 
 - SOL: 2 752 registros, trades y depth, integridad válida.
 - AVAX: 2 101 registros, trades y depth, integridad válida.
 
-**Esto no es aún un backtest económico real completo.** Falta enlazar contexto
-CURRENT completo, checkpoints, gaps y cobertura de sesión al mismo reloj causal,
-conservar huellas de código/dataset y reproducir las decisiones originales.
-No cambiar los 2 s ni interpolar snapshots para eludir ese requisito.
+**Esto no es un backtest económico real completo.** No se afirma que este subconjunto
+anterior a la frontera corregida pase el builder nuevo. Falta una captura V2 que incluya
+un episodio real y la trayectoria causal completa de las dos variantes. No cambiar los
+2 s ni interpolar snapshots para eludir ese requisito.
 
 No se cambió LIVE, no se reinició PM2 ni se sustituyó dist. La candidata continúa
 aislada bajo tooling. La siguiente certificación debe ser un episodio real completo

@@ -14,7 +14,10 @@ import {
   type ArchiveDepth,
   type ArchiveTrade,
 } from '../../strategies/micro-burst/research/MicroBurstStorage';
-import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
+import {
+  defaultMicroBurstConfig,
+  type MicroBurstConfig,
+} from '../../strategies/micro-burst/domain/MicroBurstTypes';
 import {
   makeLevel,
   makeMicroBurstContext,
@@ -37,6 +40,7 @@ export interface SyntheticCaptureInput {
   readonly checkpoints?: readonly {
     symbol: string;
     eventTimeMs: number;
+    persistedAtMs?: number;
     checkpoint: unknown;
   }[];
   readonly gaps?: readonly {
@@ -47,6 +51,7 @@ export interface SyntheticCaptureInput {
   }[];
   readonly decisionRecords?: readonly StrategyDecisionEvidenceV2[];
   readonly storageNowMs?: number;
+  readonly maxActiveSegmentRecords?: number;
   readonly fundingEvidenceRecords?: readonly Record<string, unknown>[];
 }
 
@@ -70,7 +75,12 @@ export function makeSyntheticDecisionRecord(
   atMs: number,
   side: Side = 'LONG',
   symbol = 'SOLUSDT',
-  options: { rejectBaseline?: boolean; book?: { bid: number; ask: number } } = {},
+  options: {
+    rejectBaseline?: boolean;
+    exchangeClockOffsetMs?: number;
+    book?: { bid: number; ask: number; bidQty?: number; askQty?: number };
+    replayConfig?: MicroBurstConfig;
+  } = {},
 ): StrategyDecisionEvidenceV2 {
   const config = defaultMicroBurstConfig();
   const mirror = (price: number): number => (side === 'LONG' ? price : 200 - price);
@@ -166,12 +176,12 @@ export function makeSyntheticDecisionRecord(
   };
   const strategyContext = context as MicroBurstStrategyContext;
   strategyContext.observedAtMs = atMs;
-  strategyContext.exchangeObservedAtMs = atMs;
+  strategyContext.exchangeObservedAtMs = atMs + (options.exchangeClockOffsetMs ?? 0);
   strategyContext.executionBook = {
     observedAtMs: atMs,
     status: 'HEALTHY',
-    bidDepth: [{ price: options.book?.bid ?? 99.99, qty: 100 }],
-    askDepth: [{ price: options.book?.ask ?? 100.01, qty: 100 }],
+    bidDepth: [{ price: options.book?.bid ?? 99.99, qty: options.book?.bidQty ?? 100 }],
+    askDepth: [{ price: options.book?.ask ?? 100.01, qty: options.book?.askQty ?? 100 }],
   };
   if (options.rejectBaseline) context.dataQuality.contextValid = false;
   const baseline = evaluateMicroBurstReactionEntry(
@@ -179,12 +189,12 @@ export function makeSyntheticDecisionRecord(
     config,
     strategyContext.executionBook,
     atMs,
-    atMs,
+    strategyContext.exchangeObservedAtMs,
   );
   const codeCommitSha = 'a'.repeat(40);
   const decisionId = `synthetic-${symbol}-${atMs}`;
   const strategyInputReplay = encodeMicroReplay(
-    captureMicroBurstReplay(strategyContext, config, codeCommitSha),
+    captureMicroBurstReplay(strategyContext, options.replayConfig ?? config, codeCommitSha),
   );
   return {
     schemaVersion: 2,
@@ -285,15 +295,25 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
     const configHash = sha(JSON.stringify(effectiveConfig));
     writeFileSync(join(root, 'effective-config.json'), JSON.stringify(effectiveConfig));
     const archivePath = join(root, 'capture', 'market-data');
+    let storageNowMs = input.storageNowMs ?? input.startedAtMs;
     const storage = new MicroBurstStorage({
       databasePath: join(root, 'capture', 'research.sqlite'),
       archivePath,
-      now: () => input.storageNowMs ?? input.startedAtMs,
+      now: () => storageNowMs,
+      maxActiveSegmentRecords: input.maxActiveSegmentRecords,
     });
-    for (const trade of input.trades) storage.appendTrade(trade);
-    for (const depth of input.depth ?? []) storage.appendDepth(depth);
-    for (const checkpoint of input.checkpoints ?? [])
+    for (const trade of input.trades) {
+      storageNowMs = Math.max(storageNowMs, trade.receivedAtMs);
+      storage.appendTrade(trade);
+    }
+    for (const depth of input.depth ?? []) {
+      storageNowMs = Math.max(storageNowMs, depth.receivedAtMs);
+      storage.appendDepth(depth);
+    }
+    for (const checkpoint of input.checkpoints ?? []) {
+      storageNowMs = checkpoint.persistedAtMs ?? checkpoint.eventTimeMs;
       storage.persistCheckpoint(checkpoint.symbol, checkpoint.eventTimeMs, checkpoint.checkpoint);
+    }
     for (const gap of input.gaps ?? [])
       storage.recordGap({
         symbol: gap.symbol,

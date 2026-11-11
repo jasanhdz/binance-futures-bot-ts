@@ -19,13 +19,18 @@ import {
   type VerifiedFrozenCollectorArtifact,
 } from './MicroBurstCollectorFreeze';
 import {
-  causalExecutionBook,
   causalTradeEvidence,
+  replayCausalDepth,
   readVerifiedSegments,
   type ArchiveEvent,
   type ArchiveSegment,
 } from './MicroBurstCausalArchive';
 import type { PullbackEvidence } from './MicroBurstPullbackCandidate';
+import {
+  MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256,
+  MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1,
+} from './MicroBurstReplayEvidenceContract';
+import type { MicroBurstExitContext } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 import {
   assertStrategyDecisionEvidenceV2,
   type StrategyDecisionEvidenceV2,
@@ -103,6 +108,11 @@ export interface VerifiedDecisionIndexEntry {
 export interface VerifiedExecutionBook {
   readonly decisionId: string;
   readonly symbol: string;
+  readonly decisionInputSha256: string;
+  readonly exchangeAsOfMs: number;
+  readonly receivedAsOfMs: number;
+  readonly maxAgeMs: number;
+  readonly evidenceContractSha256: string;
   readonly observedAtMs: number;
   readonly bidDepth: readonly { price: number; qty: number }[];
   readonly askDepth: readonly { price: number; qty: number }[];
@@ -114,19 +124,35 @@ export interface VerifiedExecutionBook {
   readonly evidenceSha256: string;
 }
 
+export type VerifiedExecutionBookAssessment =
+  | { readonly status: 'VERIFIED'; readonly book: VerifiedExecutionBook }
+  | { readonly status: 'UNKNOWN'; readonly reason: string };
+
 export interface VerifiedIntervalCoverage {
+  readonly fromDecisionId: string;
+  readonly fromDecisionInputSha256: string;
   readonly decisionId: string;
   readonly symbol: string;
-  readonly fromMs: number;
-  readonly throughMs: number;
+  readonly fromExchangeAsOfMs: number;
+  readonly throughExchangeAsOfMs: number;
+  readonly fromReceivedAtMs: number;
+  readonly throughReceivedAtMs: number;
   readonly sessionManifestSha256: string;
   readonly sourceArtifactHash: string;
   readonly tradeEvidenceSha256: string;
+  readonly depthEvidenceSha256: string;
+  readonly checkpointAtMs: number;
+  readonly checkpointPersistedAtMs: number;
+  readonly depthFirstUpdateId: number;
+  readonly depthLastUpdateId: number;
+  readonly depthEventCount: number;
+  readonly evidenceContractSha256: string;
   readonly evidenceSha256: string;
 }
 
 export interface VerifiedFundingEvidence {
   readonly symbol: string;
+  readonly sessionManifestSha256: string;
   readonly fromMs: number;
   readonly throughMs: number;
   readonly source: string;
@@ -145,10 +171,21 @@ const verifiedExecutionBooks = new WeakSet<object>();
 const verifiedIntervals = new WeakSet<object>();
 const verifiedFundingEvidence = new WeakSet<object>();
 const verifiedDecisionRecords = new WeakSet<object>();
+const sessionDepthSegmentStats = new WeakMap<
+  VerifiedCaptureSession,
+  ReadonlyMap<string, DepthSegmentStats>
+>();
 const sessionDecisionIndexes = new WeakMap<
   VerifiedCaptureSession,
   ReadonlyMap<string, VerifiedDecisionIndexEntry>
 >();
+
+interface DepthSegmentStats {
+  readonly minEventTimeMs: number;
+  readonly maxEventTimeMs: number;
+  readonly minReceivedAtMs: number;
+  readonly maxReceivedAtMs: number;
+}
 
 const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 const canonical = (value: unknown): string =>
@@ -448,12 +485,19 @@ export async function openVerifiedCaptureSession(root: string): Promise<Verified
     captureFiles.some((file) => file.endsWith('.active.ndjson') || file.endsWith('.tmp'))
   )
     throw new Error('CAPTURE_SESSION_ARCHIVE_FILE_SET_MISMATCH');
-  for (const segment of session.segments)
-    await verifyArchiveSegment({
+  const verifiedDepthStats = new Map<string, DepthSegmentStats>();
+  for (const segment of session.segments) {
+    const stats = await verifyArchiveSegment({
       filePath: resolve(collectorRoot, segment.relativePath),
       checksum: segment.checksum,
       recordCount: segment.recordCount,
+      expectedType: segment.type,
+      expectedSymbol: segment.symbol,
+      expectedFirstEventTimeMs: segment.firstEventTimeMs,
+      expectedLastEventTimeMs: segment.lastEventTimeMs,
     });
+    if (segment.type === 'depth') verifiedDepthStats.set(segment.relativePath, stats);
+  }
   const capturedDecisionFiles = collectCaptureFiles(captureRoot).filter(isDecisionEvidenceFile);
   const declaredDecisionFiles = new Set(
     session.decisionFiles.map((source) => resolve(collectorRoot, source.relativePath)),
@@ -482,6 +526,7 @@ export async function openVerifiedCaptureSession(root: string): Promise<Verified
     decisionFiles: session.decisionFiles,
   });
   verifiedSessions.add(verified);
+  sessionDepthSegmentStats.set(verified, verifiedDepthStats);
   sessionDecisionIndexes.set(verified, await buildDecisionIndex(verified));
   return verified;
 }
@@ -615,6 +660,14 @@ export async function readVerifiedPullbackEvidence(
     decision.strategy.strategyId !== 'MICRO_BURST'
   )
     throw new Error('PULLBACK_DECISION_SESSION_IDENTITY_MISMATCH');
+  if (
+    !Number.isFinite(exchangeAsOfMs) ||
+    exchangeAsOfMs <= 0 ||
+    !Number.isFinite(receivedAsOfMs) ||
+    receivedAsOfMs < session.startedAtMs ||
+    receivedAsOfMs > session.completedAtMs
+  )
+    throw new Error('PULLBACK_DECISION_CLOCK_OUTSIDE_VERIFIED_SESSION');
   const fromMs = exchangeAsOfMs - 60_000;
   const segments = session.segments.filter(
     (segment) =>
@@ -643,8 +696,26 @@ export async function readVerifiedPullbackEvidence(
     events,
     {
       symbol,
-      fromMs: session.startedAtMs,
-      throughMs: session.completedAtMs,
+      // Bounds are in exchange-event time and derived from verified segment contents;
+      // local session clocks are deliberately not compared with exchange time.
+      fromMs: session.segments.some(
+        (segment) => segment.type === 'trades' && segment.symbol === symbol,
+      )
+        ? Math.min(
+            ...session.segments
+              .filter((segment) => segment.type === 'trades' && segment.symbol === symbol)
+              .map((segment) => segment.firstEventTimeMs),
+          )
+        : Number.NaN,
+      throughMs: session.segments.some(
+        (segment) => segment.type === 'trades' && segment.symbol === symbol,
+      )
+        ? Math.max(
+            ...session.segments
+              .filter((segment) => segment.type === 'trades' && segment.symbol === symbol)
+              .map((segment) => segment.lastEventTimeMs),
+          )
+        : Number.NaN,
       gaps: session.gaps
         .filter((gap) => gap.symbol === symbol && (gap.feed === 'AGG_TRADE' || gap.feed === null))
         .map((gap) => ({ fromMs: gap.fromMs, throughMs: gap.throughMs })),
@@ -664,46 +735,247 @@ export async function readVerifiedPullbackEvidence(
   return verified;
 }
 
+function replayEvidenceContractSha256(): string {
+  return MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256;
+}
+
+function replayContext(decision: StrategyDecisionEvidenceV2): {
+  readonly symbol?: string;
+  readonly observedAtMs?: number;
+  readonly exchangeObservedAtMs?: number;
+  readonly executionBook?: {
+    readonly status?: string;
+    readonly observedAtMs?: number;
+    readonly bidDepth?: readonly { price: number; qty: number }[];
+    readonly askDepth?: readonly { price: number; qty: number }[];
+  };
+  readonly bookPressure?: MicroBurstExitContext['currentBookPressure'];
+  readonly btcContext?: MicroBurstExitContext['currentBtcContext'] | null;
+  readonly marketEvidence?: MicroBurstExitContext['marketEvidence'] | null;
+} | null {
+  const replay = decision.diagnostics?.strategyInputReplay as
+    | { context?: Record<string, unknown> }
+    | undefined;
+  const context = replay?.context;
+  return context ? (context as ReturnType<typeof replayContext> & {}) : null;
+}
+
+function assertVerifiedDecisionInSession(
+  session: VerifiedCaptureSession,
+  decision: StrategyDecisionEvidenceV2,
+): VerifiedDecisionIndexEntry {
+  assertVerifiedSession(session);
+  if (!isVerifiedDecisionRecord(decision)) throw new Error('REPLAY_DECISION_NOT_ARCHIVE_VERIFIED');
+  const entry = sessionDecisionIndexes.get(session)?.get(decision.decisionId);
+  if (
+    !entry ||
+    entry.symbol !== decision.symbol ||
+    entry.canonicalSha256 !== sha256(canonical(decision)) ||
+    entry.strategyConfigHash !== decision.strategy.configHash ||
+    entry.codeCommitSha !== decision.strategy.codeCommitSha ||
+    decision.strategy.strategyId !== 'MICRO_BURST' ||
+    decision.strategy.configHash !== `sha256:${session.configHash}` ||
+    decision.strategy.codeCommitSha !== session.producerCommit
+  )
+    throw new Error('REPLAY_DECISION_SESSION_IDENTITY_MISMATCH');
+  return entry;
+}
+
+function sameKnownBook(
+  actual: {
+    readonly bidDepth: readonly { price: number; qty: number }[];
+    readonly askDepth: readonly { price: number; qty: number }[];
+    readonly observedAtMs: number;
+  },
+  expected: {
+    readonly status?: string;
+    readonly bidDepth?: readonly { price: number; qty: number }[];
+    readonly askDepth?: readonly { price: number; qty: number }[];
+    readonly observedAtMs?: number;
+  },
+): boolean {
+  const bids = expected.bidDepth;
+  const asks = expected.askDepth;
+  return Boolean(
+    expected.status === 'HEALTHY' &&
+      bids?.length &&
+      asks?.length &&
+      actual.observedAtMs === expected.observedAtMs &&
+      canonical(actual.bidDepth.slice(0, bids.length)) === canonical(bids) &&
+      canonical(actual.askDepth.slice(0, asks.length)) === canonical(asks),
+  );
+}
+
+function hasSessionFeedGap(
+  session: VerifiedCaptureSession,
+  symbol: string,
+  feed: 'DEPTH' | 'AGG_TRADE',
+  fromEventTimeMs: number,
+  throughEventTimeMs: number,
+): boolean {
+  return session.gaps.some(
+    (gap) =>
+      gap.symbol === symbol &&
+      (gap.feed === feed || gap.feed === null) &&
+      gap.fromMs <= throughEventTimeMs &&
+      gap.throughMs >= fromEventTimeMs,
+  );
+}
+
+function findCheckpointAtOrBefore(
+  session: VerifiedCaptureSession,
+  symbol: string,
+  receivedAtMs: number,
+): {
+  readonly checkpoint: {
+    readonly symbol: string;
+    readonly observedAtMs: number;
+    readonly lastUpdateId: number;
+    readonly bids: readonly { price: number; qty: number }[];
+    readonly asks: readonly { price: number; qty: number }[];
+  };
+  readonly createdAtMs: number;
+} | null {
+  const db = new Database(join(session.captureRoot, 'research.sqlite'), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    const row = db
+      .prepare(
+        `SELECT checkpoint_json, event_time_ms, created_at_ms FROM book_checkpoints
+         WHERE symbol=? AND event_time_ms<=? AND created_at_ms<=?
+         ORDER BY event_time_ms DESC, created_at_ms DESC LIMIT 1`,
+      )
+      .get(symbol, receivedAtMs, receivedAtMs) as
+      | { checkpoint_json: string; event_time_ms: number; created_at_ms: number }
+      | undefined;
+    if (!row) return null;
+    const checkpoint = JSON.parse(row.checkpoint_json) as {
+      symbol?: string;
+      observedAtMs?: number;
+      lastUpdateId?: number;
+      bids?: { price: number; qty: number }[];
+      asks?: { price: number; qty: number }[];
+    };
+    if (
+      checkpoint.symbol !== symbol ||
+      checkpoint.observedAtMs !== row.event_time_ms ||
+      !Number.isFinite(checkpoint.observedAtMs) ||
+      !Number.isSafeInteger(checkpoint.lastUpdateId) ||
+      !Array.isArray(checkpoint.bids) ||
+      !Array.isArray(checkpoint.asks) ||
+      row.created_at_ms > receivedAtMs ||
+      row.created_at_ms < checkpoint.observedAtMs!
+    )
+      return null;
+    return {
+      checkpoint: checkpoint as NonNullable<
+        ReturnType<typeof findCheckpointAtOrBefore>
+      >['checkpoint'],
+      createdAtMs: row.created_at_ms,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function readDepthEventsInReceiveWindow(
+  session: VerifiedCaptureSession,
+  symbol: string,
+  fromReceivedAtMs: number,
+  throughReceivedAtMs: number,
+): Promise<ArchiveEvent[]> {
+  const stats = sessionDepthSegmentStats.get(session);
+  if (!stats) throw new Error('CAPTURE_DEPTH_SEGMENT_INDEX_UNAVAILABLE');
+  const segments = session.segments.filter((segment) => {
+    if (segment.type !== 'depth' || segment.symbol !== symbol) return false;
+    const range = stats.get(segment.relativePath);
+    return Boolean(
+      range &&
+        range.maxReceivedAtMs >= fromReceivedAtMs &&
+        range.minReceivedAtMs <= throughReceivedAtMs,
+    );
+  });
+  const events = segments.flatMap((segment) => {
+    const rows = readVerifiedSegments([
+      {
+        filePath: resolve(session.root, segment.relativePath),
+        checksum: segment.checksum,
+        recordCount: segment.recordCount,
+      },
+    ]);
+    if (
+      rows.some(
+        (event) =>
+          event.type !== 'depth' ||
+          event.symbol !== symbol ||
+          event.eventTime < segment.firstEventTimeMs ||
+          event.eventTime > segment.lastEventTimeMs,
+      )
+    )
+      throw new Error('CAPTURE_DEPTH_SEGMENT_METADATA_MISMATCH');
+    return rows.filter(
+      (event) =>
+        event.receivedAtMs >= fromReceivedAtMs && event.receivedAtMs <= throughReceivedAtMs,
+    );
+  });
+  return events.sort(
+    (a, b) =>
+      a.receivedAtMs - b.receivedAtMs ||
+      Number(a.payload.U) - Number(b.payload.U) ||
+      Number(a.payload.u) - Number(b.payload.u),
+  );
+}
+
 export function assertVerifiedPullbackEvidence(value: unknown): asserts value is PullbackEvidence {
   if (!value || typeof value !== 'object' || !verifiedTradeEvidence.has(value))
     throw new Error('PULLBACK_EVIDENCE_NOT_ARCHIVE_VERIFIED');
 }
 
-export async function readVerifiedExecutionBook(
+/** Point book bound to the exact verified decision clocks and captured book. */
+export async function readVerifiedExecutionBookForDecision(
   session: VerifiedCaptureSession,
-  input: {
-    decisionId: string;
-    symbol: string;
-    fromMs: number;
-    exchangeAsOfMs: number;
-    receivedAsOfMs: number;
-    maxAgeMs: number;
-    expected?: {
-      bidDepth: readonly { price: number; qty: number }[];
-      askDepth: readonly { price: number; qty: number }[];
-      observedAtMs: number;
-    };
-  },
-): Promise<VerifiedExecutionBook | null> {
-  assertVerifiedSession(session);
+  decision: StrategyDecisionEvidenceV2,
+): Promise<VerifiedExecutionBookAssessment> {
+  assertVerifiedDecisionInSession(session, decision);
+  const replay = decision.diagnostics?.strategyInputReplay as
+    | {
+        config?: { bookFreshnessMaxMs?: number };
+        context?: {
+          symbol?: string;
+          observedAtMs?: number;
+          exchangeObservedAtMs?: number;
+          executionBook?: {
+            status?: string;
+            bidDepth?: readonly { price: number; qty: number }[];
+            askDepth?: readonly { price: number; qty: number }[];
+            observedAtMs?: number;
+          };
+        };
+      }
+    | undefined;
+  const context = replay?.context;
+  const maxAgeMs = MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxBookAgeMs;
   if (
-    ![input.fromMs, input.exchangeAsOfMs, input.receivedAsOfMs, input.maxAgeMs].every(
-      Number.isFinite,
-    ) ||
-    input.fromMs > input.exchangeAsOfMs ||
-    input.exchangeAsOfMs > input.receivedAsOfMs ||
-    input.maxAgeMs <= 0 ||
-    input.fromMs < session.startedAtMs ||
-    input.receivedAsOfMs > session.completedAtMs ||
-    session.gaps.some(
-      (gap) =>
-        gap.symbol === input.symbol &&
-        (gap.feed === 'DEPTH' || gap.feed === null) &&
-        gap.fromMs <= input.exchangeAsOfMs &&
-        gap.throughMs >= input.fromMs,
-    )
+    replay?.config?.bookFreshnessMaxMs !== maxAgeMs ||
+    context?.symbol !== decision.symbol ||
+    !Number.isFinite(context.observedAtMs) ||
+    !Number.isFinite(context.exchangeObservedAtMs) ||
+    context.exchangeObservedAtMs! <= 0 ||
+    context.observedAtMs! < session.startedAtMs ||
+    context.observedAtMs! > session.completedAtMs
   )
-    return null;
+    return { status: 'UNKNOWN', reason: 'DECISION_BOOK_CLOCK_OR_CONTRACT_INVALID' };
+  const expected = context.executionBook;
+  if (
+    !expected ||
+    expected.status !== 'HEALTHY' ||
+    !Array.isArray(expected.bidDepth) ||
+    !Array.isArray(expected.askDepth) ||
+    !Number.isFinite(expected.observedAtMs)
+  )
+    return { status: 'UNKNOWN', reason: 'DECISION_BOOK_MISSING_OR_UNHEALTHY' };
   const db = new Database(join(session.captureRoot, 'research.sqlite'), {
     readonly: true,
     fileMustExist: true,
@@ -715,14 +987,15 @@ export async function readVerifiedExecutionBook(
     checkpointRow = db
       .prepare(
         `SELECT checkpoint_json, event_time_ms, created_at_ms FROM book_checkpoints
-         WHERE symbol=? AND event_time_ms<=? AND created_at_ms<=?
-         ORDER BY event_time_ms DESC, created_at_ms DESC LIMIT 1`,
+          WHERE symbol=? AND event_time_ms<=? AND created_at_ms<=?
+          ORDER BY event_time_ms DESC, created_at_ms DESC LIMIT 1`,
       )
-      .get(input.symbol, input.exchangeAsOfMs, input.receivedAsOfMs) as typeof checkpointRow;
+      .get(decision.symbol, context.observedAtMs, context.observedAtMs) as typeof checkpointRow;
   } finally {
     db.close();
   }
-  if (!checkpointRow || checkpointRow.created_at_ms > input.receivedAsOfMs) return null;
+  if (!checkpointRow || checkpointRow.created_at_ms > context.observedAtMs!)
+    return { status: 'UNKNOWN', reason: 'DEPTH_CHECKPOINT_MISSING_OR_NOT_YET_AVAILABLE' };
   const checkpoint = JSON.parse(checkpointRow.checkpoint_json) as {
     symbol?: string;
     observedAtMs?: number;
@@ -731,152 +1004,310 @@ export async function readVerifiedExecutionBook(
     asks?: { price: number; qty: number }[];
   };
   if (
-    checkpoint.symbol !== input.symbol ||
+    checkpoint.symbol !== decision.symbol ||
     checkpoint.observedAtMs !== checkpointRow.event_time_ms ||
     !Number.isFinite(checkpoint.observedAtMs) ||
     !Number.isSafeInteger(checkpoint.lastUpdateId) ||
     !Array.isArray(checkpoint.bids) ||
     !Array.isArray(checkpoint.asks) ||
-    checkpoint.observedAtMs! > input.receivedAsOfMs
+    checkpoint.observedAtMs! > context.observedAtMs!
   )
-    return null;
-  const depthSegments = session.segments.filter(
-    (segment) =>
-      segment.type === 'depth' &&
-      segment.symbol === input.symbol &&
-      segment.lastEventTimeMs >= checkpointRow!.event_time_ms &&
-      segment.firstEventTimeMs <= input.exchangeAsOfMs,
+    return { status: 'UNKNOWN', reason: 'DEPTH_CHECKPOINT_INVALID' };
+  if (checkpointRow.created_at_ms < checkpoint.observedAtMs!)
+    return { status: 'UNKNOWN', reason: 'DEPTH_CHECKPOINT_PERSISTENCE_CLOCK_INVALID' };
+  const depthEvents = await readDepthEventsInReceiveWindow(
+    session,
+    decision.symbol,
+    checkpoint.observedAtMs!,
+    context.observedAtMs!,
   );
-  const archivedDepthEvents = depthSegments.flatMap((segment) =>
-    readVerifiedSegments([
-      {
-        filePath: resolve(session.root, segment.relativePath),
-        checksum: segment.checksum,
-        recordCount: segment.recordCount,
-      },
-    ]),
-  );
-  const depthEvents = archivedDepthEvents.filter(
-    (event) =>
-      event.eventTime <= input.exchangeAsOfMs && event.receivedAtMs <= input.receivedAsOfMs,
-  );
-  const book = causalExecutionBook(
+  const result = replayCausalDepth(
     {
-      symbol: input.symbol,
+      symbol: decision.symbol,
       receivedAtMs: checkpoint.observedAtMs!,
+      availableAtMs: checkpoint.observedAtMs!,
       lastUpdateId: checkpoint.lastUpdateId!,
       bids: checkpoint.bids,
       asks: checkpoint.asks,
     },
     depthEvents,
-    input.receivedAsOfMs,
-    input.maxAgeMs,
+    {
+      exchangeAsOfMs: context.exchangeObservedAtMs!,
+      receivedAsOfMs: context.observedAtMs!,
+    },
+    maxAgeMs,
   );
-  if (!book || book.observedAtMs > input.receivedAsOfMs) return null;
-  if (input.expected) {
-    const knownBids = input.expected.bidDepth;
-    const knownAsks = input.expected.askDepth;
-    if (
-      canonical(book.bidDepth.slice(0, knownBids.length)) !== canonical(knownBids) ||
-      canonical(book.askDepth.slice(0, knownAsks.length)) !== canonical(knownAsks) ||
-      book.observedAtMs !== input.expected.observedAtMs
-    )
-      return null;
-  }
+  if (result.status !== 'VERIFIED' || !result.book)
+    return { status: 'UNKNOWN', reason: result.reason ?? 'DEPTH_BOOK_UNVERIFIED' };
+  if (!sameKnownBook(result.book, expected))
+    return {
+      status: 'UNKNOWN',
+      reason:
+        result.book.observedAtMs < expected.observedAtMs!
+          ? 'DEPTH_NO_UPDATES_OBSERVED'
+          : 'DECISION_BOOK_CONTENT_MISMATCH',
+    };
+  const decisionInputSha256 = sessionDecisionIndexes
+    .get(session)!
+    .get(decision.decisionId)!.canonicalSha256;
+  const evidenceContractSha256 = replayEvidenceContractSha256();
   const value: VerifiedExecutionBook = Object.freeze({
-    decisionId: input.decisionId,
-    symbol: input.symbol,
-    observedAtMs: book.observedAtMs,
-    bidDepth: book.bidDepth,
-    askDepth: book.askDepth,
-    lastUpdateId: depthEvents.reduce(
-      (last, event) =>
-        event.receivedAtMs > checkpoint.observedAtMs! && Number(event.payload.u) > last
-          ? Number(event.payload.u)
-          : last,
-      checkpoint.lastUpdateId!,
-    ),
+    decisionId: decision.decisionId,
+    symbol: decision.symbol,
+    decisionInputSha256,
+    exchangeAsOfMs: context.exchangeObservedAtMs!,
+    receivedAsOfMs: context.observedAtMs!,
+    maxAgeMs,
+    evidenceContractSha256,
+    observedAtMs: result.book.observedAtMs,
+    bidDepth: Object.freeze(result.book.bidDepth.map((level) => Object.freeze({ ...level }))),
+    askDepth: Object.freeze(result.book.askDepth.map((level) => Object.freeze({ ...level }))),
+    lastUpdateId: result.book.lastUpdateId,
     checkpointAtMs: checkpointRow.event_time_ms,
     checkpointPersistedAtMs: checkpointRow.created_at_ms,
-    depthEventCount: depthEvents.filter((event) => event.receivedAtMs > checkpoint.observedAtMs!)
-      .length,
+    depthEventCount: result.book.appliedEventCount,
     sessionManifestSha256: session.manifestSha256,
     evidenceSha256: sha256(
       canonical({
         session: session.manifestSha256,
+        decisionInputSha256,
         checkpoint,
         checkpointPersistedAtMs: checkpointRow.created_at_ms,
         depthEvents,
-        input,
+        clocks: {
+          exchangeAsOfMs: context.exchangeObservedAtMs,
+          receivedAsOfMs: context.observedAtMs,
+        },
+        maxAgeMs,
+        evidenceContractSha256,
       }),
     ),
   });
   verifiedExecutionBooks.add(value);
-  return value;
+  return { status: 'VERIFIED', book: value };
 }
 
-export async function verifyIntervalCoverage(
+export async function verifyVerifiedDecisionInterval(
   session: VerifiedCaptureSession,
-  decision: StrategyDecisionEvidenceV2,
-  symbol: string,
-  fromMs: number,
-  throughMs: number,
-): Promise<VerifiedIntervalCoverage | null> {
+  fromDecision: StrategyDecisionEvidenceV2,
+  throughDecision: StrategyDecisionEvidenceV2,
+  fromBook: VerifiedExecutionBook,
+  throughBook: VerifiedExecutionBook,
+): Promise<
+  | { readonly status: 'VERIFIED'; readonly evidence: VerifiedIntervalCoverage }
+  | { readonly status: 'UNKNOWN'; readonly reason: string }
+> {
   assertVerifiedSession(session);
-  if (!isVerifiedDecisionRecord(decision) || decision.symbol !== symbol)
-    throw new Error('INTERVAL_DECISION_NOT_ARCHIVE_VERIFIED');
+  assertVerifiedDecisionInSession(session, fromDecision);
+  assertVerifiedDecisionInSession(session, throughDecision);
+  assertVerifiedExecutionBook(fromBook);
+  assertVerifiedExecutionBook(throughBook);
+  const fromContext = replayContext(fromDecision);
+  const throughContext = replayContext(throughDecision);
+  const symbol = throughDecision.symbol;
+  const fromExchangeAsOfMs = fromContext?.exchangeObservedAtMs;
+  const throughExchangeAsOfMs = throughContext?.exchangeObservedAtMs;
+  const fromReceivedAtMs = fromContext?.observedAtMs;
+  const throughReceivedAtMs = throughContext?.observedAtMs;
+  const decisionIndex = sessionDecisionIndexes.get(session)!;
+  const fromInputSha256 = decisionIndex.get(fromDecision.decisionId)!.canonicalSha256;
+  const throughInputSha256 = decisionIndex.get(throughDecision.decisionId)!.canonicalSha256;
+  const skippedDecision = [...decisionIndex.entries()].some(
+    ([decisionId, entry]) =>
+      decisionId !== fromDecision.decisionId &&
+      decisionId !== throughDecision.decisionId &&
+      entry.symbol === symbol &&
+      entry.evaluatedAtReceivedMs > fromDecision.evaluatedAtReceivedMs &&
+      entry.evaluatedAtReceivedMs < throughDecision.evaluatedAtReceivedMs,
+  );
   if (
-    !Number.isFinite(fromMs) ||
-    !Number.isFinite(throughMs) ||
-    fromMs > throughMs ||
-    fromMs < session.startedAtMs ||
-    throughMs > session.completedAtMs ||
-    session.gaps.some(
-      (gap) =>
-        gap.symbol === symbol &&
-        (gap.feed === 'DEPTH' || gap.feed === 'AGG_TRADE' || gap.feed === null) &&
-        gap.fromMs <= throughMs &&
-        gap.throughMs >= fromMs,
+    fromDecision.symbol !== symbol ||
+    fromBook.decisionId !== fromDecision.decisionId ||
+    throughBook.decisionId !== throughDecision.decisionId ||
+    fromBook.symbol !== symbol ||
+    throughBook.symbol !== symbol ||
+    fromBook.decisionInputSha256 !== fromInputSha256 ||
+    throughBook.decisionInputSha256 !== throughInputSha256 ||
+    fromBook.sessionManifestSha256 !== session.manifestSha256 ||
+    throughBook.sessionManifestSha256 !== session.manifestSha256 ||
+    fromBook.exchangeAsOfMs !== fromExchangeAsOfMs ||
+    throughBook.exchangeAsOfMs !== throughExchangeAsOfMs ||
+    fromBook.receivedAsOfMs !== fromReceivedAtMs ||
+    throughBook.receivedAsOfMs !== throughReceivedAtMs ||
+    fromBook.evidenceContractSha256 !== replayEvidenceContractSha256() ||
+    throughBook.evidenceContractSha256 !== replayEvidenceContractSha256() ||
+    ![fromExchangeAsOfMs, throughExchangeAsOfMs, fromReceivedAtMs, throughReceivedAtMs].every(
+      Number.isFinite,
+    ) ||
+    fromExchangeAsOfMs! >= throughExchangeAsOfMs! ||
+    fromReceivedAtMs! >= throughReceivedAtMs! ||
+    fromDecision.evaluatedAtReceivedMs >= throughDecision.evaluatedAtReceivedMs ||
+    fromReceivedAtMs! < session.startedAtMs ||
+    throughReceivedAtMs! > session.completedAtMs
+  )
+    return { status: 'UNKNOWN', reason: 'INTERVAL_CLOCK_OR_IDENTITY_INVALID' };
+  if (
+    throughReceivedAtMs! - fromReceivedAtMs! >
+      MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxObservationGapMs ||
+    throughExchangeAsOfMs! - fromExchangeAsOfMs! >
+      MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxObservationGapMs ||
+    throughDecision.evaluatedAtReceivedMs - fromDecision.evaluatedAtReceivedMs >
+      MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxObservationGapMs
+  )
+    return { status: 'UNKNOWN', reason: 'FRAME_CADENCE_GAP' };
+  if (skippedDecision) return { status: 'UNKNOWN', reason: 'INTERMEDIATE_DECISIONS_NOT_INCLUDED' };
+  const declaredGap = session.gaps.find(
+    (gap) =>
+      gap.symbol === symbol &&
+      (gap.feed === 'DEPTH' || gap.feed === 'AGG_TRADE' || gap.feed === null) &&
+      gap.fromMs <= throughExchangeAsOfMs! &&
+      gap.throughMs >= fromExchangeAsOfMs!,
+  );
+  if (declaredGap)
+    return {
+      status: 'UNKNOWN',
+      reason:
+        declaredGap.feed === 'DEPTH'
+          ? 'DECLARED_DEPTH_GAP'
+          : declaredGap.feed === 'AGG_TRADE'
+            ? 'DECLARED_TRADE_GAP'
+            : 'DECLARED_UNKNOWN_FEED_GAP',
+    };
+  if (
+    fromBook.maxAgeMs !== MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxBookAgeMs ||
+    throughBook.maxAgeMs !== MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxBookAgeMs ||
+    fromReceivedAtMs! - fromBook.observedAtMs > fromBook.maxAgeMs ||
+    throughReceivedAtMs! - throughBook.observedAtMs > throughBook.maxAgeMs
+  )
+    return { status: 'UNKNOWN', reason: 'BOOK_FRESHNESS_CONTRACT_FAILED' };
+
+  const checkpointRow = findCheckpointAtOrBefore(session, symbol, fromReceivedAtMs!);
+  if (!checkpointRow) return { status: 'UNKNOWN', reason: 'PRE_INTERVAL_DEPTH_CHECKPOINT_MISSING' };
+  const checkpoint = checkpointRow.checkpoint;
+  if (fromReceivedAtMs! - fromBook.observedAtMs > fromBook.maxAgeMs)
+    return { status: 'UNKNOWN', reason: 'PRE_INTERVAL_DEPTH_CHECKPOINT_STALE' };
+  const depthEvents = await readDepthEventsInReceiveWindow(
+    session,
+    symbol,
+    checkpoint.observedAtMs,
+    throughReceivedAtMs!,
+  );
+  const checkpointInput = {
+    symbol,
+    receivedAtMs: checkpoint.observedAtMs,
+    availableAtMs: checkpoint.observedAtMs,
+    lastUpdateId: checkpoint.lastUpdateId,
+    bids: checkpoint.bids,
+    asks: checkpoint.asks,
+  };
+  const startReplay = replayCausalDepth(
+    checkpointInput,
+    depthEvents,
+    { exchangeAsOfMs: fromExchangeAsOfMs!, receivedAsOfMs: fromReceivedAtMs! },
+    MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxBookAgeMs,
+  );
+  const endReplay = replayCausalDepth(
+    checkpointInput,
+    depthEvents,
+    { exchangeAsOfMs: throughExchangeAsOfMs!, receivedAsOfMs: throughReceivedAtMs! },
+    MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxBookAgeMs,
+    true,
+  );
+  if (startReplay.status !== 'VERIFIED' || !startReplay.book)
+    return { status: 'UNKNOWN', reason: startReplay.reason ?? 'PRE_INTERVAL_BOOK_UNKNOWN' };
+  if (endReplay.status !== 'VERIFIED' || !endReplay.book)
+    return { status: 'UNKNOWN', reason: endReplay.reason ?? 'INTERVAL_BOOK_UNKNOWN' };
+  if (!sameKnownBook(startReplay.book, fromContext!.executionBook!))
+    return { status: 'UNKNOWN', reason: 'PRE_INTERVAL_BOOK_DECISION_MISMATCH' };
+  if (!sameKnownBook(endReplay.book, throughContext!.executionBook!))
+    return { status: 'UNKNOWN', reason: 'THROUGH_INTERVAL_BOOK_DECISION_MISMATCH' };
+  if (endReplay.book.lastUpdateId === startReplay.book.lastUpdateId)
+    return { status: 'UNKNOWN', reason: 'DEPTH_NO_UPDATES_OBSERVED' };
+  if (endReplay.book.lastUpdateId < startReplay.book.lastUpdateId)
+    return { status: 'UNKNOWN', reason: 'DEPTH_UPDATE_ID_REGRESSION' };
+
+  const intervalDepthEvents = depthEvents.filter(
+    (event) =>
+      event.receivedAtMs <= throughReceivedAtMs! &&
+      event.eventTime > fromExchangeAsOfMs! &&
+      event.eventTime <= throughExchangeAsOfMs!,
+  );
+  if (intervalDepthEvents.length === 0)
+    return { status: 'UNKNOWN', reason: 'DEPTH_INTERVAL_HAS_NO_CAUSAL_UPDATES' };
+  if (
+    depthEvents.some(
+      (event) =>
+        event.receivedAtMs > fromReceivedAtMs! &&
+        event.receivedAtMs <= throughReceivedAtMs! &&
+        event.eventTime <= fromExchangeAsOfMs!,
     )
   )
-    return null;
-  const tradeEvidence = await readVerifiedPullbackEvidence(session, decision, throughMs, throughMs);
-  if (!tradeEvidence.coverageVerified) return null;
-  const depth = session.segments.some(
-    (segment) =>
-      segment.type === 'depth' &&
-      segment.symbol === symbol &&
-      segment.firstEventTimeMs <= throughMs &&
-      segment.lastEventTimeMs >= fromMs,
+    return { status: 'UNKNOWN', reason: 'DEPTH_LATE_EVENT_CROSSES_INTERVAL_START' };
+  const tradeEvidence = await readVerifiedPullbackEvidence(
+    session,
+    throughDecision,
+    throughExchangeAsOfMs!,
+    throughReceivedAtMs!,
   );
-  if (!depth) return null;
+  if (
+    !tradeEvidence.coverageVerified ||
+    !tradeEvidence.gapFree ||
+    !tradeEvidence.sequenceValid ||
+    tradeEvidence.coverageStartedAtMs > fromExchangeAsOfMs!
+  )
+    return {
+      status: 'UNKNOWN',
+      reason: tradeEvidence.invalidReason ?? 'TRADE_INTERVAL_UNVERIFIED',
+    };
+  const depthEvidenceSha256 = sha256(
+    canonical({
+      checkpoint,
+      checkpointPersistedAtMs: checkpointRow.createdAtMs,
+      startBook: startReplay.book,
+      endBook: endReplay.book,
+      depthEvents,
+      intervalDepthEvents,
+    }),
+  );
+  const evidenceContractSha256 = replayEvidenceContractSha256();
   const value: VerifiedIntervalCoverage = Object.freeze({
-    decisionId: decision.decisionId,
+    fromDecisionId: fromDecision.decisionId,
+    fromDecisionInputSha256: fromInputSha256,
+    decisionId: throughDecision.decisionId,
     symbol,
-    fromMs,
-    throughMs,
+    fromExchangeAsOfMs: fromExchangeAsOfMs!,
+    throughExchangeAsOfMs: throughExchangeAsOfMs!,
+    fromReceivedAtMs: fromReceivedAtMs!,
+    throughReceivedAtMs: throughReceivedAtMs!,
     sessionManifestSha256: session.manifestSha256,
     sourceArtifactHash: session.artifactHash,
     tradeEvidenceSha256: sha256(canonical(tradeEvidence.trades)),
+    depthEvidenceSha256,
+    checkpointAtMs: checkpoint.observedAtMs,
+    checkpointPersistedAtMs: checkpointRow.createdAtMs,
+    depthFirstUpdateId: startReplay.book.lastUpdateId,
+    depthLastUpdateId: endReplay.book.lastUpdateId,
+    depthEventCount: intervalDepthEvents.length,
+    evidenceContractSha256,
     evidenceSha256: sha256(
       canonical({
         sessionManifestSha256: session.manifestSha256,
+        sourceArtifactHash: session.artifactHash,
+        fromDecisionSha256: fromInputSha256,
+        throughDecisionSha256: throughInputSha256,
         symbol,
-        fromMs,
-        throughMs,
+        fromExchangeAsOfMs,
+        throughExchangeAsOfMs,
+        fromReceivedAtMs,
+        throughReceivedAtMs,
         tradeEvidenceSha256: sha256(canonical(tradeEvidence.trades)),
-        depthSegments: session.segments.filter(
-          (segment) =>
-            segment.type === 'depth' &&
-            segment.symbol === symbol &&
-            segment.firstEventTimeMs <= throughMs &&
-            segment.lastEventTimeMs >= fromMs,
-        ),
+        depthEvidenceSha256,
+        evidenceContractSha256,
       }),
     ),
   });
   verifiedIntervals.add(value);
-  return value;
+  return { status: 'VERIFIED', evidence: value };
 }
 
 /** Funding proof is optional in captured sessions; absence remains unavailable, never zero. */
@@ -890,9 +1321,9 @@ export async function readVerifiedFundingEvidence(
   if (
     !Number.isFinite(fromMs) ||
     !Number.isFinite(throughMs) ||
-    fromMs > throughMs ||
-    fromMs < session.startedAtMs ||
-    throughMs > session.completedAtMs
+    fromMs <= 0 ||
+    throughMs <= 0 ||
+    fromMs > throughMs
   )
     return null;
   const sources = session.decisionFiles.filter((source) =>
@@ -972,6 +1403,7 @@ export async function readVerifiedFundingEvidence(
   }
   const verified: VerifiedFundingEvidence = Object.freeze({
     symbol,
+    sessionManifestSha256: session.manifestSha256,
     fromMs: row.fromMs,
     throughMs: row.throughMs,
     source: row.source,
@@ -1070,8 +1502,15 @@ function runtimeStorageHealthy(health: Record<string, any>): boolean {
   );
 }
 
-/** Verify every uncompressed archive byte and row count without holding a segment in memory. */
-async function verifyArchiveSegment(segment: ArchiveSegment): Promise<void> {
+/** Verify bytes, envelopes and indexed event bounds without holding a segment in memory. */
+async function verifyArchiveSegment(
+  segment: ArchiveSegment & {
+    readonly expectedType: 'trades' | 'depth';
+    readonly expectedSymbol: string;
+    readonly expectedFirstEventTimeMs: number;
+    readonly expectedLastEventTimeMs: number;
+  },
+): Promise<DepthSegmentStats> {
   const before = statSync(segment.filePath);
   const digest = createHash('sha256');
   const input = createReadStream(segment.filePath);
@@ -1079,6 +1518,10 @@ async function verifyArchiveSegment(segment: ArchiveSegment): Promise<void> {
   const decoder = new StringDecoder('utf8');
   let remainder = '';
   let records = 0;
+  let minEventTimeMs = Infinity;
+  let maxEventTimeMs = -Infinity;
+  let minReceivedAtMs = Infinity;
+  let maxReceivedAtMs = -Infinity;
   const consume = (line: string): void => {
     if (!line) throw new Error('ARCHIVE_EMPTY_RECORD');
     const row = JSON.parse(line) as ArchiveEvent;
@@ -1089,9 +1532,15 @@ async function verifyArchiveSegment(segment: ArchiveSegment): Promise<void> {
       !row.payload ||
       row.payload.eventTime !== row.eventTime ||
       row.payload.receivedAtMs !== row.receivedAtMs ||
-      row.payload.symbol !== row.symbol
+      row.payload.symbol !== row.symbol ||
+      row.type !== segment.expectedType ||
+      row.symbol !== segment.expectedSymbol
     )
       throw new Error('ARCHIVE_ENVELOPE_INVALID');
+    minEventTimeMs = Math.min(minEventTimeMs, row.eventTime);
+    maxEventTimeMs = Math.max(maxEventTimeMs, row.eventTime);
+    minReceivedAtMs = Math.min(minReceivedAtMs, row.receivedAtMs);
+    maxReceivedAtMs = Math.max(maxReceivedAtMs, row.receivedAtMs);
     records++;
   };
   for await (const chunk of decoded) {
@@ -1108,9 +1557,12 @@ async function verifyArchiveSegment(segment: ArchiveSegment): Promise<void> {
     before.size !== after.size ||
     before.mtimeMs !== after.mtimeMs ||
     records !== segment.recordCount ||
+    minEventTimeMs !== segment.expectedFirstEventTimeMs ||
+    maxEventTimeMs !== segment.expectedLastEventTimeMs ||
     digest.digest('hex') !== segment.checksum
   )
     throw new Error('ARCHIVE_CHECKSUM_OR_METADATA_INVALID');
+  return { minEventTimeMs, maxEventTimeMs, minReceivedAtMs, maxReceivedAtMs };
 }
 
 function assertVerifiedSession(session: unknown): asserts session is VerifiedCaptureSession {
