@@ -289,7 +289,7 @@ Reproducir esa fixture:
 
 ```bash
 TMPDIR=/tmp/opencode DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run \
-  --config src/testing/OfflineVitest.config.ts \
+  --config src/testing/OfflineVitest.config.ts --exclude 'data/**' \
   src/tooling/micro-burst/MicroBurstPairedReplayCli.test.ts \
   --maxWorkers=1 --no-file-parallelism
 ```

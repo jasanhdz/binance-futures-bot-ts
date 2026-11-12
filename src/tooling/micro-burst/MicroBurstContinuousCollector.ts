@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -7,7 +8,7 @@ import {
   statfsSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { load } from 'js-yaml';
@@ -109,6 +110,7 @@ export function buildEffectiveCaptureConfiguration(
   policySourceSha256: string,
   output: string,
   durationSeconds: number,
+  rateLimitDbPath = 'SUPERVISOR_MONITOR/public-rate-limit.sqlite3',
 ): {
   config: MicroBurstRuntimeConfig;
   effectiveConfig: Record<string, unknown>;
@@ -141,6 +143,12 @@ export function buildEffectiveCaptureConfiguration(
     schema: 'MICRO_OBSERVATIONAL_CAPTURE_CONFIG_V1',
     authority: 'PUBLIC_MARKET_DATA_OBSERVATION_ONLY',
     sourcePolicyConfigSha256: policySourceSha256,
+    rateLimitIsolation: {
+      limiterProcessLabel: '01-Trading-Bot legacy source label',
+      databasePath: rateLimitDbPath,
+      sharedWithOperationalBot: false,
+      scope: 'FRESH_UNIQUE_SUPERVISOR_FILE_PER_CAPTURE',
+    },
     activation: 'EXPLICIT_CAPTURE_SHADOW_OVERRIDE',
     mode: config.mode,
     enabled: config.enabled,
@@ -211,6 +219,24 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
     throw new Error('COLLECTOR_CREDENTIALS_PROHIBITED');
   const collectorRoot = resolve(root);
   const producer = verifyFrozenCollectorArtifact(collectorRoot);
+  const rateLimitDbPathEnv = process.env.BINANCE_SHARED_RATE_LIMIT_DB;
+  if (!rateLimitDbPathEnv || !isAbsolute(rateLimitDbPathEnv))
+    throw new Error('CAPTURE_RATE_LIMIT_DATABASE_ISOLATION_REQUIRED');
+  const rateLimitDbPath = resolve(rateLimitDbPathEnv);
+  const rateLimitRelative = relative(collectorRoot, rateLimitDbPath);
+  if (
+    rateLimitRelative === '' ||
+    (!isAbsolute(rateLimitRelative) &&
+      rateLimitRelative !== '..' &&
+      !rateLimitRelative.startsWith(`..${sep}`))
+  )
+    throw new Error('CAPTURE_RATE_LIMIT_DATABASE_MUST_BE_OUTSIDE_CAPTURE_ROOT');
+  if (
+    existsSync(rateLimitDbPath) ||
+    existsSync(`${rateLimitDbPath}-wal`) ||
+    existsSync(`${rateLimitDbPath}-shm`)
+  )
+    throw new Error('CAPTURE_RATE_LIMIT_DATABASE_MUST_BE_NEW');
   const output = join(collectorRoot, 'capture');
   const {
     config: cfg,
@@ -221,6 +247,7 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
     producer.configSha256,
     output,
     durationSeconds,
+    rateLimitDbPath,
   );
   const diskStats = statfsSync(collectorRoot);
   const availableDiskBytes = diskStats.bavail * diskStats.bsize;

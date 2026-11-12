@@ -12,6 +12,7 @@ const plan: MicroBurstCaptureRunPlan = {
   collectorRoot: '/tmp/frozen-collector',
   monitorDirectory: '/tmp/frozen-collector-monitor',
   expectedProducerCommit: 'a'.repeat(40),
+  expectedProducerArtifactHash: 'b'.repeat(64),
   durationSeconds: 420,
   symbols: ['SOLUSDT', 'AVAXUSDT'],
   benchmarkSymbols: ['BTCUSDT'],
@@ -59,11 +60,14 @@ it('creates a child environment from an allowlist and blanks all Binance credent
   process.env.BINANCE_API_KEY = 'parent-key-must-not-leak';
   process.env.BINANCE_API_SECRET = 'parent-secret-must-not-leak';
   try {
-    const env = sanitizedCollectorEnvironment(plan.collectorRoot);
+    const env = sanitizedCollectorEnvironment(plan.collectorRoot, plan.monitorDirectory);
     expect(env.BINANCE_API_KEY).toBe('');
     expect(env.BINANCE_API_SECRET).toBe('');
     expect(env.DOTENV_CONFIG_PATH).toBe('/dev/null');
     expect(env.REGIME_CONFIG).toBe('/tmp/frozen-collector/regime_config.live.yaml');
+    expect(env.BINANCE_SHARED_RATE_LIMIT_DB).toBe(
+      '/tmp/frozen-collector-monitor/public-rate-limit.sqlite3',
+    );
     expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
     expect(env.ML_SERVICE_URL).toBeUndefined();
   } finally {

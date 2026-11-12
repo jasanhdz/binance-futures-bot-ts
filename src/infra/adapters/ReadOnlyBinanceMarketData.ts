@@ -4,6 +4,7 @@ import { BinanceExchange } from './BinanceAdapter';
 import { createReadOnlyAuditedExchange } from './ReadOnlyAuditedExchange';
 
 export interface ReadOnlyMarketDataSource extends MarketDataPort {
+  disconnectReadOnlyResources?(): void;
   disconnectAll?(): void;
 }
 
@@ -19,7 +20,8 @@ export function createReadOnlyBinanceMarketData(
   return {
     ...createReadOnlyAuditedExchange(source, codeSha),
     disconnectAll: () => {
-      if (source.disconnectAll) source.disconnectAll();
+      if (source.disconnectReadOnlyResources) source.disconnectReadOnlyResources();
+      else if (source.disconnectAll) source.disconnectAll();
       else
         (source as unknown as { wsManager: { disconnectAll(): void } }).wsManager.disconnectAll();
     },

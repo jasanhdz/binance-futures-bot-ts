@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -31,6 +31,7 @@ export interface MicroBurstCaptureRunPlan {
   collectorRoot: string;
   monitorDirectory: string;
   expectedProducerCommit: string;
+  expectedProducerArtifactHash: string;
   durationSeconds: number;
   symbols: readonly ['SOLUSDT', 'AVAXUSDT'];
   benchmarkSymbols: readonly ['BTCUSDT'];
@@ -71,6 +72,7 @@ export async function runMicroBurstCapturePlan(planPath: string): Promise<Record
   if (
     manifest.schema !== 'MICRO_COLLECTOR_FROZEN_V2' ||
     manifest.gitCommit !== plan.expectedProducerCommit ||
+    manifest.artifactHash !== plan.expectedProducerArtifactHash ||
     !manifest.artifactHash
   )
     throw new Error('CAPTURE_RUN_PLAN_PRODUCER_IDENTITY_MISMATCH');
@@ -88,7 +90,7 @@ export async function runMicroBurstCapturePlan(planPath: string): Promise<Record
   const monitor = createWriteStream(monitorPath, { flags: 'wx', mode: 0o600 });
   const stdout = createWriteStream(stdoutPath, { flags: 'wx', mode: 0o600 });
   const stderr = createWriteStream(stderrPath, { flags: 'wx', mode: 0o600 });
-  const env = sanitizedCollectorEnvironment(collectorRoot);
+  const env = sanitizedCollectorEnvironment(collectorRoot, monitorDirectory);
   const child = spawn(process.execPath, [codePath, collectorRoot, String(plan.durationSeconds)], {
     cwd: collectorRoot,
     env,
@@ -116,9 +118,10 @@ export async function runMicroBurstCapturePlan(planPath: string): Promise<Record
     result = { code, signal };
     settled = true;
   });
-  monitor.once('error', (error) => {
-    monitorError = String(error);
-  });
+  for (const stream of [monitor, stdout, stderr])
+    stream.once('error', (error) => {
+      monitorError ??= String(error);
+    });
 
   const requestStop = (reason: string): void => {
     if (stopReason) return;
@@ -134,6 +137,7 @@ export async function runMicroBurstCapturePlan(planPath: string): Promise<Record
     await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, HEALTH_SAMPLE_MS));
     if (settled) break;
     const now = Date.now();
+    if (monitorError) requestStop('SUPERVISOR_LOG_FAILURE');
     if (now > deadline) {
       requestStop('SUPERVISOR_HARD_TIMEOUT');
       const terminateDeadline = Date.now() + MAX_TERMINATION_GRACE_MS;
@@ -230,6 +234,7 @@ export async function runMicroBurstCapturePlan(planPath: string): Promise<Record
     monitorPath,
     stdoutPath,
     stderrPath,
+    publicRateLimitArtifacts: rateLimitArtifacts(monitorDirectory),
   };
   record({ atMs: Date.now(), event: 'SUPERVISOR_TERMINAL', summary });
   await Promise.all(
@@ -256,13 +261,17 @@ export async function runMicroBurstCapturePlan(planPath: string): Promise<Record
   return report;
 }
 
-export function sanitizedCollectorEnvironment(collectorRoot: string): NodeJS.ProcessEnv {
+export function sanitizedCollectorEnvironment(
+  collectorRoot: string,
+  monitorDirectory: string,
+): NodeJS.ProcessEnv {
   return {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     HOME: '/tmp',
     TMPDIR: '/tmp/opencode',
     DOTENV_CONFIG_PATH: '/dev/null',
     REGIME_CONFIG: join(resolve(collectorRoot), 'regime_config.live.yaml'),
+    BINANCE_SHARED_RATE_LIMIT_DB: join(resolve(monitorDirectory), 'public-rate-limit.sqlite3'),
     BINANCE_API_KEY: '',
     BINANCE_API_SECRET: '',
     IS_TESTNET: '0',
@@ -271,6 +280,28 @@ export function sanitizedCollectorEnvironment(collectorRoot: string): NodeJS.Pro
     PHANTOM_MICRO_BURST_PROSPECTIVE_VALIDATION: 'false',
     PHANTOM_MICRO_BURST_MARKET_ARCHIVE: 'false',
   };
+}
+
+function rateLimitArtifacts(monitorDirectory: string): Array<{
+  file: string;
+  bytes: number;
+  sha256: string;
+}> {
+  return [
+    'public-rate-limit.sqlite3',
+    'public-rate-limit.sqlite3-wal',
+    'public-rate-limit.sqlite3-shm',
+  ]
+    .map((name) => join(monitorDirectory, name))
+    .filter(existsSync)
+    .map((file) => {
+      const bytes = readFileSync(file);
+      return {
+        file,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+    });
 }
 
 export function healthStopReason(
@@ -333,6 +364,7 @@ function validatePlan(plan: MicroBurstCaptureRunPlan): void {
     !plan.collectorRoot ||
     !plan.monitorDirectory ||
     !/^[a-f0-9]{40}$/.test(plan.expectedProducerCommit) ||
+    !/^[a-f0-9]{64}$/.test(plan.expectedProducerArtifactHash) ||
     !Number.isSafeInteger(plan.durationSeconds) ||
     plan.durationSeconds < 360 ||
     plan.durationSeconds > 1200 ||
