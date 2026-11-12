@@ -460,6 +460,98 @@ describe('MicroBurstRuntime', () => {
     await runtime.stop();
   });
 
+  it('drains in-flight evaluations before sealing observation and disables paper for capture mode', async () => {
+    const shadowJournal = new MemoryShadowJournal();
+    deps.shadowTradeJournal = shadowJournal;
+    deps.enablePaperTrading = false;
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    const closeObservation = vi.spyOn(deps.strategyRouter, 'closeObservation');
+    await runtime.start();
+
+    let finishEvaluation!: () => void;
+    let enteredEvaluation!: () => void;
+    const evaluationEntered = new Promise<void>((resolve) => (enteredEvaluation = resolve));
+    (runtime as any).evaluator = {
+      evaluate: async () => {
+        enteredEvaluation();
+        await new Promise<void>((resolve) => (finishEvaluation = resolve));
+        return {
+          symbol: 'ETHUSDT',
+          diagnostics: {},
+          dataQuality: { contextValid: false, invalidReasons: [] },
+          wouldEnter: false,
+          duplicateSuppressed: false,
+        };
+      },
+    };
+    const evaluation = runtime.evaluateSymbol('ETHUSDT');
+    await evaluationEntered;
+    const stopping = runtime.stop();
+    await Promise.resolve();
+    expect(closeObservation).not.toHaveBeenCalled();
+    finishEvaluation();
+    await evaluation;
+    await stopping;
+
+    expect(closeObservation).toHaveBeenCalledTimes(1);
+    expect(shadowJournal.positions).toHaveLength(0);
+    expect(shadowJournal.events).toHaveLength(0);
+    expect(runtime.getHealth()).toMatchObject({
+      evaluationInFlight: 0,
+      paperTradingEnabled: false,
+      paperTrading: { openPositions: 0 },
+    });
+  });
+
+  it('can evaluate captured market context without opening or managing paper positions', async () => {
+    const shadowJournal = new MemoryShadowJournal();
+    deps.shadowTradeJournal = shadowJournal;
+    deps.enablePaperTrading = false;
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    await runtime.start();
+    (runtime as any).evaluator = {
+      evaluate: async ({ symbol }: { symbol: string }) => ({
+        symbol,
+        strategyId: 'MICRO_BURST',
+        strategyVersion: 'MICRO',
+        decision: 'ENTRY_INTENT',
+        side: 'LONG',
+        confidence: 0.9,
+        referencePrice: 100,
+        snapshotAtMs: Date.now(),
+        lastObservedAt: Date.now(),
+        supportPrice: 99,
+        resistancePrice: 110,
+        structuralInvalidation: 99,
+        destinationPrice: 102,
+        roomToTargetBps: 200,
+        riskToInvalidationBps: 100,
+        rewardRisk: 2,
+        momentum: { direction: 'LONG', strength: 0.9, continuationScore: 0.9 },
+        book: { status: 'HEALTHY', ageMs: 1, imbalance: 0.3, imbalanceSlope: null },
+        btc: { status: 'HEALTHY', ageMs: 1, ret1m: 0, ret3m: 0, ret5m: 0, conflict: false },
+        microRegime: 'RANGING',
+        dataQuality: { contextValid: true, invalidReasons: [] },
+        wouldEnter: true,
+        liveExecution: false,
+        shadowSignalId: 'capture-only-signal',
+        duplicateSuppressed: false,
+        firstObservedAt: Date.now(),
+        diagnostics: {},
+      }),
+    };
+
+    const result = await runtime.evaluateSymbol('ETHUSDT');
+    expect(result?.wouldEnter).toBe(true);
+    expect(shadowJournal.positions).toHaveLength(0);
+    expect(shadowJournal.events).toHaveLength(0);
+    expect(runtime.getHealth()).toMatchObject({
+      paperTradingEnabled: false,
+      paperTrading: { openPositions: 0, completedManagedTrades: 0 },
+    });
+    await runtime.stop();
+  });
+
   it('reports invalid context reasons overall and by symbol', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig());
     await runtime.start();

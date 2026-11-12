@@ -160,7 +160,9 @@ export function createMicroBurstBlackBoxObservation(
     });
   });
   let captureAttempts = 0;
+  let captureSucceeded = 0;
   let captureFailures = 0;
+  let exactDecisionEmissions = 0;
   return {
     beforeEvaluation: legacy.beforeEvaluation.bind(legacy),
     afterEvaluation: legacy.afterEvaluation.bind(legacy),
@@ -172,6 +174,7 @@ export function createMicroBurstBlackBoxObservation(
       let captured: MicroBurstStrategyContext;
       try {
         captured = copyObservation(context, MICRO_INPUT_COPY_LIMITS).value;
+        captureSucceeded++;
       } catch (error) {
         captureFailures++;
         throw error;
@@ -220,13 +223,16 @@ export function createMicroBurstBlackBoxObservation(
       };
     },
     enqueueExactDecision(snapshot, decision) {
+      exactDecisionEmissions++;
       return queue.enqueue({ snapshot, decision });
     },
     close: () => queue.close(),
     observationHealth: () => ({
       ...queue.health(),
       captureAttempts,
+      captureSucceeded,
       captureFailures,
+      exactDecisionEmissions,
       memorySampleAtMs: deps.clock.now(),
       processMemory: process.memoryUsage(),
       byteAccounting: 'CONSERVATIVE_COPY_ESTIMATE_NOT_RETAINED_HEAP',

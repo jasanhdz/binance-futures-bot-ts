@@ -92,6 +92,7 @@ export interface MicroBurstRuntimeHealth {
   symbolHealth: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   totalResyncs: number;
   liveExecution: boolean;
+  paperTradingEnabled: boolean;
   paperEngine: 'GENERIC';
   lastHealthReportAt: number;
   outcomeTracker: {
@@ -249,6 +250,8 @@ export interface MicroBurstRuntimeDeps {
   };
   mutationAudit?: () => { totalMutationAttempts: number; forwardedMutationCalls: number };
   shadowTradeJournal?: ShadowJournal;
+  /** Capture tooling may collect decisions without running market-connected paper trades. */
+  enablePaperTrading?: boolean;
   /** @deprecated Isolated-test fallback only. Production injects app-owned shared planes. */
   orderBookDataPlane?: OrderBookDataPlane<SynchronizedOrderBook>;
   /** @deprecated Isolated-test fallback only. Production injects app-owned shared planes. */
@@ -293,6 +296,7 @@ export class MicroBurstRuntime {
   private stopPromise: Promise<void> | null = null;
   private readonly shadowEngine: ShadowTradingEngine;
   private readonly shadowTradeJournal: ShadowJournal;
+  private readonly paperTradingEnabled: boolean;
   private readonly paperOpenSymbols = new Set<string>();
   private paperRecoveryBlocked = false;
   private paperPersistenceError: string | null = null;
@@ -308,6 +312,7 @@ export class MicroBurstRuntime {
   ) {
     this.evaluationIntervalMs = evaluationIntervalMs;
     this.journal = new MicroBurstSignalJournal(journalDir);
+    this.paperTradingEnabled = deps.enablePaperTrading !== false;
     this.shadowTradeJournal =
       deps.shadowTradeJournal ??
       new FileShadowTradeJournal(
@@ -493,7 +498,7 @@ export class MicroBurstRuntime {
       const bookLease = this.orderBookDataPlane.acquire(symbol);
       const book = bookLease.book;
       const aggTradeLease = aggTradeDataPlane.acquire(symbol, (event) => {
-        this.managePaperTrade(symbol, event);
+        if (this.paperTradingEnabled) this.managePaperTrade(symbol, event);
         this.deps.marketStorage?.appendTrade?.({
           symbol,
           eventTime: event.eventTime,
@@ -632,12 +637,12 @@ export class MicroBurstRuntime {
       mode: this.config.mode,
       symbols: enabledSymbols,
       evaluationIntervalMs: this.evaluationIntervalMs,
+      paperTradingEnabled: this.paperTradingEnabled,
     });
   }
 
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    const observationDrained = this.deps.strategyRouter.closeObservation();
     this.running = false;
 
     if (this.evaluationTimer) {
@@ -649,22 +654,28 @@ export class MicroBurstRuntime {
       this.healthTimer = null;
     }
 
-    for (const [symbol, state] of this.symbolStates) {
-      state.bookLease.release();
-      state.aggTradeLease.release();
-      state.aggTradeBuffer.clear();
-      state.evaluationInFlight = false;
-    }
-    this.symbolStates.clear();
-    this.lastBookCheckpointAtMs.clear();
-
-    if (this.btcProvider) {
-      this.btcProvider.stop();
-      this.btcProvider = null;
-    }
-
     this.stopPromise = (async () => {
       const failures: string[] = [];
+      const evaluationDrainDeadline = Date.now() + 30_000;
+      while (this.evaluationInFlight > 0 && Date.now() < evaluationDrainDeadline)
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      if (this.evaluationInFlight > 0) failures.push('EVALUATION_DRAIN_TIMEOUT');
+
+      // Do not seal the exact-input evidence queue until evaluations have either
+      // completed or the bounded drain is declared failed.
+      const observationDrained = this.deps.strategyRouter.closeObservation();
+      for (const [, state] of this.symbolStates) {
+        state.bookLease.release();
+        state.aggTradeLease.release();
+        state.aggTradeBuffer.clear();
+      }
+      this.symbolStates.clear();
+      this.lastBookCheckpointAtMs.clear();
+
+      if (this.btcProvider) {
+        this.btcProvider.stop();
+        this.btcProvider = null;
+      }
       try {
         this.journal.flush();
       } catch (error) {
@@ -750,6 +761,7 @@ export class MicroBurstRuntime {
       let paperSuppressed = false;
       if (
         this.config.mode === 'SHADOW' &&
+        this.paperTradingEnabled &&
         result.wouldEnter &&
         !result.duplicateSuppressed &&
         result.side
@@ -1017,6 +1029,7 @@ export class MicroBurstRuntime {
       ),
       totalResyncs: this.getTotalResyncs(),
       liveExecution: this.config.mode === 'LIVE' && this.deps.liveTrading !== undefined,
+      paperTradingEnabled: this.paperTradingEnabled,
       paperEngine: 'GENERIC',
       lastHealthReportAt: this.lastHealthReportAt,
       outcomeTracker: this.deps.outcomeTracker ? this.deps.outcomeTracker.getHealth() : null,

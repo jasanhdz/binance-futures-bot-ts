@@ -1,13 +1,27 @@
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  statfsSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { load } from 'js-yaml';
 import { createReadOnlyBinanceMarketData } from '../../infra/adapters/ReadOnlyBinanceMarketData';
-import { MicroBurstRuntime } from '../../strategies/micro-burst/application/MicroBurstRuntime';
+import {
+  MicroBurstRuntime,
+  type MicroBurstRuntimeDeps,
+} from '../../strategies/micro-burst/application/MicroBurstRuntime';
 import { parseMicroBurstConfig } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
+import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
+import { ORDER_BOOK_FEATURE_DEPTH, ORDER_BOOK_SNAPSHOT_DEPTH } from '../../app/ports/MarketData';
 import { MicroBurstEpisodeCapture } from './MicroBurstEpisodeCapture';
+import { reconcileMicroBurstCaptureCounters } from './MicroBurstCaptureCounters';
 import { writeCaptureSessionManifest } from './MicroBurstCaptureSession';
 import { verifyFrozenCollectorArtifact } from './MicroBurstCollectorFreeze';
 import {
@@ -18,46 +32,254 @@ import { createMicroBurstIdentity } from '../../strategies/micro-burst/domain/Mi
 import { StrategyRouter } from '../../core/strategy/StrategyRouter';
 import { JsonlDecisionEvidenceSink } from '../../infra/logging/JsonlDecisionEvidenceSink';
 import { JsonlMarketSnapshotSink } from '../../infra/logging/JsonlMarketSnapshotSink';
-import { FileShadowTradeJournal } from '../../core/shadow/ShadowTradeJournal';
+import type { ShadowJournal } from '../../core/shadow/ShadowTradeJournal';
 import { RotatingJsonlWriter } from '../../infra/logging/RotatingJsonlWriter';
 import type { Logger } from '../../app/ports/Logger';
+import type { VerifiedFrozenCollectorArtifact } from './MicroBurstCollectorFreeze';
+import { MICRO_EVIDENCE_LIMITS } from '../../strategies/micro-burst/domain/MicroBurstExactReplay';
+
+const EVALUATION_INTERVAL_MS = 500;
+const MAX_CAPTURE_BYTES = 1024 * 1024 * 1024;
+const MAX_CAPTURE_MEMORY_BYTES = 1536 * 1024 * 1024;
+const MIN_FREE_DISK_RESERVE_BYTES = 1536 * 1024 * 1024;
+const CAPTURE_DISK_STOP_BYTES = MAX_CAPTURE_BYTES - 64 * 1024 * 1024;
+const MAX_CAPTURE_QUEUE_RECORDS = 8192;
+const MAX_ACTIVE_SEGMENT_BYTES = 4 * 1024 * 1024;
+const MAX_ACTIVE_SEGMENT_RECORDS = 5000;
+const MAX_ACTIVE_SEGMENT_DURATION_MS = 30_000;
+const DURABILITY_FLUSH_INTERVAL_MS = 1000;
+const EPISODE_CAPTURE_PENDING_LIMIT = 128;
+
+class NoPaperShadowJournal implements ShadowJournal {
+  appendPosition(): void {
+    throw new Error('PAPER_TRADING_DISABLED_IN_CAPTURE');
+  }
+  appendEvent(): void {
+    throw new Error('PAPER_TRADING_DISABLED_IN_CAPTURE');
+  }
+  loadOpenPositions(): never[] {
+    return [];
+  }
+  loadAllPositions(): never[] {
+    return [];
+  }
+  loadAllEvents(): never[] {
+    return [];
+  }
+  getHealth(): { healthy: boolean; malformedCount: number } {
+    return { healthy: true, malformedCount: 0 };
+  }
+  flush(): void {}
+}
+
+/** Shared by production capture and the simulated-transport integration test. */
+export function composeCaptureObservationRuntime(input: {
+  config: MicroBurstRuntimeConfig;
+  producer: Pick<VerifiedFrozenCollectorArtifact, 'gitCommit'>;
+  configHash: string;
+  runtimeDeps: Omit<
+    MicroBurstRuntimeDeps,
+    'strategyRouter' | 'enablePaperTrading' | 'shadowTradeJournal'
+  >;
+  signalJournalDir: string;
+}): MicroBurstRuntime {
+  const strategyRouter = new StrategyRouter<MicroBurstStrategyContext>();
+  strategyRouter.register(
+    new MicroBurstStrategy(
+      createMicroBurstIdentity(input.producer.gitCommit, input.configHash),
+      'SHADOW',
+      input.config.exitPolicy,
+    ),
+  );
+  return new MicroBurstRuntime(
+    {
+      ...input.runtimeDeps,
+      strategyRouter,
+      enablePaperTrading: false,
+      shadowTradeJournal: new NoPaperShadowJournal(),
+    },
+    input.config,
+    EVALUATION_INTERVAL_MS,
+    input.signalJournalDir,
+  );
+}
+
+export function buildEffectiveCaptureConfiguration(
+  policySource: unknown,
+  policySourceSha256: string,
+  output: string,
+  durationSeconds: number,
+): {
+  config: MicroBurstRuntimeConfig;
+  effectiveConfig: Record<string, unknown>;
+  configHash: string;
+} {
+  if (!Number.isSafeInteger(durationSeconds) || durationSeconds < 360 || durationSeconds > 1200)
+    throw new Error('COLLECTOR_DURATION_MUST_BE_360_TO_1200_SECONDS');
+  const config = parseMicroBurstConfig(policySource);
+  // Policy thresholds are preserved, but activation, symbols, archival and paper settings
+  // are owned by this capture request, not by the operational YAML's enable/mode fields.
+  config.enabled = true;
+  config.mode = 'SHADOW';
+  config.symbols = Object.fromEntries(
+    ['SOLUSDT', 'AVAXUSDT'].map((symbol) => [symbol, { enabled: true }]),
+  );
+  config.marketArchive = {
+    ...config.marketArchive,
+    enabled: true,
+    rootDir: output,
+    bookCheckpointIntervalMs: 1000,
+    rawTradeArchive: true,
+    rawDepthArchive: true,
+    maxActiveSegmentRecords: MAX_ACTIVE_SEGMENT_RECORDS,
+    maxActiveSegmentBytes: MAX_ACTIVE_SEGMENT_BYTES,
+    maxActiveSegmentDurationMs: MAX_ACTIVE_SEGMENT_DURATION_MS,
+    durabilityFlushIntervalMs: DURABILITY_FLUSH_INTERVAL_MS,
+  };
+  config.prospectiveValidation = { ...config.prospectiveValidation, enabled: false };
+  const effectiveConfig: Record<string, unknown> = {
+    schema: 'MICRO_OBSERVATIONAL_CAPTURE_CONFIG_V1',
+    authority: 'PUBLIC_MARKET_DATA_OBSERVATION_ONLY',
+    sourcePolicyConfigSha256: policySourceSha256,
+    activation: 'EXPLICIT_CAPTURE_SHADOW_OVERRIDE',
+    mode: config.mode,
+    enabled: config.enabled,
+    symbols: ['SOLUSDT', 'AVAXUSDT'],
+    benchmarkSymbols: ['BTCUSDT'],
+    requestedDurationSeconds: durationSeconds,
+    runtime: {
+      evaluationIntervalMs: EVALUATION_INTERVAL_MS,
+      warmupRequiredMs: 300_000,
+      minimumPostWarmupWindowMs: 60_000,
+      tradeFlowWindowMs: 300_000,
+      benchmarkCandleInterval: '1m',
+      benchmarkWarmupCandleCount: 60,
+      strategyCandleIntervals: ['1m', '3m', '5m'],
+      healthReportingIntervalMs: 5000,
+      maximumDurationSeconds: 1200,
+      shutdownDrainTimeoutMs: 30_000,
+      publicRestDrainTimeoutMs: 30_000,
+      supervisorShutdownGraceMs: 120_000,
+      paperTradingEnabled: false,
+      prospectiveValidationEnabled: false,
+    },
+    limits: {
+      captureBytes: MAX_CAPTURE_BYTES,
+      processMemoryBytes: MAX_CAPTURE_MEMORY_BYTES,
+      minimumFreeDiskReserveBytes: MIN_FREE_DISK_RESERVE_BYTES,
+      stopCaptureBytes: CAPTURE_DISK_STOP_BYTES,
+      marketQueueRecords: MAX_CAPTURE_QUEUE_RECORDS,
+      activeSegmentBytes: MAX_ACTIVE_SEGMENT_BYTES,
+      activeSegmentRecords: MAX_ACTIVE_SEGMENT_RECORDS,
+      activeSegmentDurationMs: MAX_ACTIVE_SEGMENT_DURATION_MS,
+      decisionObservationQueue: MICRO_EVIDENCE_LIMITS,
+      signalJournalMaxEntriesPerFile: 10_000,
+      episodeCapturePendingWrites: EPISODE_CAPTURE_PENDING_LIMIT,
+      orderBook: {
+        snapshotLevels: ORDER_BOOK_SNAPSHOT_DEPTH,
+        featureLevels: ORDER_BOOK_FEATURE_DEPTH,
+        diffSpeed: '100ms',
+        checkpointIntervalMs: 1000,
+      },
+      writers: {
+        decisions: { maxBytes: 64 * 1024 * 1024, maxPendingWrites: 256, compressRotated: true },
+        snapshots: {
+          maxBytes: 32 * 1024 * 1024,
+          maxPendingWrites: 256,
+          compressRotated: true,
+          dedupeWindowMs: 300_000,
+          maxDedupeEntries: 4096,
+        },
+        events: { maxBytes: 32 * 1024 * 1024, maxPendingWrites: 256, compressRotated: true },
+        rawRest: { maxBytes: 32 * 1024 * 1024, maxPendingWrites: 256, compressRotated: true },
+      },
+    },
+    strategyConfig: config,
+  };
+  return {
+    config,
+    effectiveConfig,
+    configHash: createHash('sha256').update(JSON.stringify(effectiveConfig)).digest('hex'),
+  };
+}
 
 /** Separate public-data observer. There is deliberately no LIVE execution port. */
 export async function runContinuousCollector(root: string, durationSeconds: number): Promise<void> {
-  if (!Number.isFinite(durationSeconds) || durationSeconds < 360)
-    throw new Error('COLLECTOR_MINIMUM_360_SECONDS');
-  if (process.env.BINANCE_API_KEY || process.env.BINANCE_API_SECRET)
+  if (!Number.isSafeInteger(durationSeconds) || durationSeconds < 360 || durationSeconds > 1200)
+    throw new Error('COLLECTOR_DURATION_MUST_BE_360_TO_1200_SECONDS');
+  if ((process.env.BINANCE_API_KEY ?? '') !== '' || (process.env.BINANCE_API_SECRET ?? '') !== '')
     throw new Error('COLLECTOR_CREDENTIALS_PROHIBITED');
   const collectorRoot = resolve(root);
   const producer = verifyFrozenCollectorArtifact(collectorRoot);
-  const cfg = parseMicroBurstConfig(
-    load(readFileSync(join(collectorRoot, 'regime_config.live.yaml'), 'utf8')),
-  );
-  cfg.enabled = true;
-  cfg.mode = 'SHADOW';
-  cfg.symbols = Object.fromEntries(['SOLUSDT', 'AVAXUSDT'].map((s) => [s, { enabled: true }]));
-  cfg.marketArchive = { ...cfg.marketArchive, enabled: true, bookCheckpointIntervalMs: 1000 };
-  cfg.prospectiveValidation = { ...cfg.prospectiveValidation, enabled: true };
-  const configHash = createHash('sha256').update(JSON.stringify(cfg)).digest('hex');
-  writeFileSync(join(collectorRoot, 'effective-config.json'), JSON.stringify(cfg, null, 2), {
-    flag: 'wx',
-    mode: 0o600,
-  });
   const output = join(collectorRoot, 'capture');
+  const {
+    config: cfg,
+    effectiveConfig,
+    configHash,
+  } = buildEffectiveCaptureConfiguration(
+    load(readFileSync(join(collectorRoot, 'regime_config.live.yaml'), 'utf8')),
+    producer.configSha256,
+    output,
+    durationSeconds,
+  );
+  const diskStats = statfsSync(collectorRoot);
+  const availableDiskBytes = diskStats.bavail * diskStats.bsize;
+  if (availableDiskBytes < MAX_CAPTURE_BYTES + MIN_FREE_DISK_RESERVE_BYTES)
+    throw new Error('COLLECTOR_DISK_BUDGET_UNAVAILABLE');
+  writeFileSync(
+    join(collectorRoot, 'effective-config.json'),
+    JSON.stringify(effectiveConfig, null, 2),
+    {
+      flag: 'wx',
+      mode: 0o600,
+    },
+  );
   mkdirSync(output, { recursive: true });
-  const sessionStartedAtMs = Date.now();
+  const episodeCaptureStartedAtMs = Date.now();
+  let sessionStartedAtMs = episodeCaptureStartedAtMs;
   const episodeCapture = await MicroBurstEpisodeCapture.create(
     join(output, 'episode-capture'),
-    { config: cfg, producer },
-    sessionStartedAtMs,
+    { config: effectiveConfig, producer },
+    episodeCaptureStartedAtMs,
+    EPISODE_CAPTURE_PENDING_LIMIT,
   );
-  const events = new RotatingJsonlWriter(join(output, 'events.jsonl'));
-  const rawRest = new RotatingJsonlWriter(join(output, 'rest-inputs.jsonl'));
+  const writerConfiguration = (
+    effectiveConfig.limits as {
+      writers: {
+        decisions: { maxBytes: number; maxPendingWrites: number; compressRotated: boolean };
+        snapshots: {
+          maxBytes: number;
+          maxPendingWrites: number;
+          compressRotated: boolean;
+          dedupeWindowMs: number;
+          maxDedupeEntries: number;
+        };
+        events: { maxBytes: number; maxPendingWrites: number; compressRotated: boolean };
+        rawRest: { maxBytes: number; maxPendingWrites: number; compressRotated: boolean };
+      };
+    }
+  ).writers;
+  const auxiliaryWriterOptions = {
+    ...writerConfiguration.events,
+  };
+  const events = new RotatingJsonlWriter(join(output, 'events.jsonl'), auxiliaryWriterOptions);
+  const rawRest = new RotatingJsonlWriter(join(output, 'rest-inputs.jsonl'), {
+    ...writerConfiguration.rawRest,
+  });
   let auxiliaryWriteFailures = 0;
+  let publicRequestsInFlight = 0;
+  const pendingAuxiliaryWrites = new Set<Promise<void>>();
+  const trackAuxiliaryWrite = (operation: Promise<void>): void => {
+    let tracked: Promise<void>;
+    tracked = operation
+      .catch(() => {
+        auxiliaryWriteFailures++;
+      })
+      .finally(() => pendingAuxiliaryWrites.delete(tracked));
+    pendingAuxiliaryWrites.add(tracked);
+  };
   const log = (level: string, message: string, context?: unknown): void => {
-    void events.append({ atMs: Date.now(), level, message, context }).catch(() => {
-      auxiliaryWriteFailures++;
-    });
+    trackAuxiliaryWrite(events.append({ atMs: Date.now(), level, message, context }));
   };
   const logger: Logger = {
     debug: () => {},
@@ -70,50 +292,77 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
     get(target, property) {
       const value = Reflect.get(target, property);
       if (typeof value !== 'function') return value;
-      if (!['getCandles', 'getDepthSnapshot', 'getServerTime'].includes(String(property)))
-        return value.bind(target);
+      const capturedPublicRequest = [
+        'getCandles',
+        'getDepthSnapshot',
+        'getServerTime',
+        'getMarkPrice',
+        'getFundingRate',
+        'getBasisSnapshot',
+      ].includes(String(property));
+      if (!capturedPublicRequest) return value.bind(target);
       return async (...args: unknown[]) => {
+        publicRequestsInFlight++;
         const requestedAtMs = Date.now();
-        const response = await value.apply(target, args);
-        const receivedAtMs = Date.now();
-        void rawRest
-          .append({ method: property, args, requestedAtMs, receivedAtMs, response })
-          .catch(() => {
-            auxiliaryWriteFailures++;
-          });
-        return response;
+        try {
+          const response = await value.apply(target, args);
+          const receivedAtMs = Date.now();
+          trackAuxiliaryWrite(
+            rawRest.append({ method: property, args, requestedAtMs, receivedAtMs, response }),
+          );
+          return response;
+        } catch (error) {
+          trackAuxiliaryWrite(
+            rawRest.append({
+              method: property,
+              args,
+              requestedAtMs,
+              receivedAtMs: Date.now(),
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+          throw error;
+        } finally {
+          publicRequestsInFlight--;
+        }
       };
     },
   });
   const storage = new MicroBurstStorage({
     databasePath: join(output, 'research.sqlite'),
     archivePath: join(output, 'market-data'),
+    maxArchiveQueueRecords: MAX_CAPTURE_QUEUE_RECORDS,
+    maxActiveSegmentRecords: MAX_ACTIVE_SEGMENT_RECORDS,
+    maxActiveSegmentBytes: MAX_ACTIVE_SEGMENT_BYTES,
     deferRawWrites: true,
-    maxActiveSegmentDurationMs: 30_000,
-    durabilityFlushIntervalMs: 1000,
+    maxActiveSegmentDurationMs: MAX_ACTIVE_SEGMENT_DURATION_MS,
+    durabilityFlushIntervalMs: DURABILITY_FLUSH_INTERVAL_MS,
+    maxDeferredWriteBatchRecords: 128,
+    maxDeferredWriteBatchMs: 10,
   });
-  const router = new StrategyRouter<MicroBurstStrategyContext>();
-  router.register(
-    new MicroBurstStrategy(
-      createMicroBurstIdentity(producer.gitCommit, configHash),
-      'SHADOW',
-      cfg.exitPolicy,
-    ),
+  const decisions = new JsonlDecisionEvidenceSink(
+    join(output, 'decisions.jsonl'),
+    writerConfiguration.decisions,
   );
-  const decisions = new JsonlDecisionEvidenceSink(join(output, 'decisions.jsonl'));
-  const snapshots = new JsonlMarketSnapshotSink(join(output, 'snapshots.jsonl'));
+  const snapshots = new JsonlMarketSnapshotSink(
+    join(output, 'snapshots.jsonl'),
+    writerConfiguration.snapshots,
+  );
   const lastAt = new Map<string, number>();
   const cadence = new Map<
     string,
     { observations: number; gapsOver2s: number; maxGapMs: number; lastGapMs: number }
   >();
   const seen = new Set<string>();
-  const runtime = new MicroBurstRuntime(
-    {
+  const runtime = composeCaptureObservationRuntime({
+    config: cfg,
+    producer,
+    configHash,
+    signalJournalDir: join(output, 'signals'),
+    runtimeDeps: {
       exchange,
       logger,
       clock: { now: Date.now },
-      strategyRouter: router,
       marketStorage: storage,
       provenance: {
         codeCommitSha: producer.gitCommit,
@@ -125,10 +374,6 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
         totalMutationAttempts: audited.audit.totalMutationAttempts,
         forwardedMutationCalls: audited.audit.forwardedMutationCalls,
       }),
-      shadowTradeJournal: new FileShadowTradeJournal(
-        join(output, 'paper-trades'),
-        join(output, 'paper-events'),
-      ),
       blackBox: {
         marketSnapshotSink: snapshots,
         decisionSink: {
@@ -180,10 +425,7 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
         },
       },
     },
-    cfg,
-    500,
-    join(output, 'signals'),
-  );
+  });
   const lag = monitorEventLoopDelay({ resolution: 20 });
   lag.enable();
   let timer: NodeJS.Timeout | undefined;
@@ -192,46 +434,118 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
   const done = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  const stop = (): void => finish();
-  process.once('SIGTERM', stop);
-  process.once('SIGINT', stop);
-  const health = (): void => {
-    const report = {
+  const shutdownFailures: string[] = [];
+  let externalStopReason: string | null = null;
+  let stopFinished = false;
+  const stop = (reason?: string): void => {
+    if (reason) externalStopReason ??= reason;
+    if (stopFinished) return;
+    stopFinished = true;
+    finish();
+  };
+  const onSigterm = (): void => stop('SIGTERM');
+  const onSigint = (): void => stop('SIGINT');
+  process.once('SIGTERM', onSigterm);
+  process.once('SIGINT', onSigint);
+  let lastHealthSha256: string | null = null;
+  const health = (enforceSafetyLimits = true): Record<string, unknown> => {
+    const memory = process.memoryUsage();
+    const captureBytes = directoryBytes(output);
+    const disk = statfsSync(output);
+    const freeDiskBytes = disk.bavail * disk.bsize;
+    const runtimeHealth = runtime.getHealth();
+    const report: Record<string, unknown> = {
       pid: process.pid,
       startedAtMs: sessionStartedAtMs,
       atMs: Date.now(),
       sourceArtifactHash: producer.artifactHash,
       configHash,
       liveExecution: false,
-      runtime: runtime.getHealth(),
+      runtime: runtimeHealth,
       observations: Object.fromEntries(cadence),
       decisionWriter: decisions.health(),
       restWriter: rawRest.health(),
       eventWriter: events.health(),
       snapshotWriter: snapshots.health(),
       auxiliaryWriteFailures,
-      memory: process.memoryUsage(),
+      memory,
       cpu: process.cpuUsage(),
       eventLoopP99Ms: lag.percentile(99) / 1e6,
+      captureBytes,
+      availableDiskBytes: freeDiskBytes,
+      publicRequestsInFlight,
+      auxiliaryWritesPending: pendingAuxiliaryWrites.size,
       mutationAudit: audited.audit,
     };
-    writeFileSync(join(collectorRoot, 'health.json.tmp'), JSON.stringify(report), { mode: 0o600 });
-    renameSync(join(collectorRoot, 'health.json.tmp'), join(collectorRoot, 'health.json'));
+    const counterReconciliation = reconcileMicroBurstCaptureCounters(report);
+    report.counterReconciliation = counterReconciliation;
+    try {
+      const bytes = JSON.stringify(report);
+      writeFileSync(join(collectorRoot, 'health.json.tmp'), bytes, { mode: 0o600 });
+      renameSync(join(collectorRoot, 'health.json.tmp'), join(collectorRoot, 'health.json'));
+      lastHealthSha256 = createHash('sha256').update(bytes).digest('hex');
+    } catch (error) {
+      shutdownFailures.push(`HEALTH_WRITE_FAILED:${String(error)}`);
+      stop('HEALTH_WRITE_FAILED');
+    }
+    if (enforceSafetyLimits) {
+      if (runtimeHealth.mutationAttempts > 0 || runtimeHealth.forwardedMutations > 0)
+        stop('MUTATION_ATTEMPT');
+      if (runtimeHealth.totalEvaluationFailures > 0) stop('EVALUATION_FAILURE');
+      if ((runtimeHealth.archiveOverflowRecords ?? 0) > 0) stop('ARCHIVE_QUEUE_OVERFLOW');
+      if ((runtimeHealth.archiveQueueDepth ?? 0) >= Math.floor(MAX_CAPTURE_QUEUE_RECORDS * 0.75))
+        stop('ARCHIVE_QUEUE_PRESSURE');
+      if (auxiliaryWriteFailures > 0) stop('AUXILIARY_WRITE_FAILURE');
+      const observation = (runtimeHealth.observationQueue ?? {}) as Record<string, unknown>;
+      if ((Number(observation.captureFailures) || 0) > 0) stop('EXACT_INPUT_CAPTURE_FAILURE');
+      if ((Number(observation.dropped) || 0) > 0) stop('OBSERVATION_QUEUE_DROP');
+      if ((Number(observation.failed) || 0) > 0) stop('OBSERVATION_QUEUE_WRITE_FAILURE');
+      if (observation.drainTimedOut === true) stop('OBSERVATION_QUEUE_DRAIN_TIMEOUT');
+      if (publicRequestsInFlight > 4) stop('PUBLIC_REQUEST_BACKLOG');
+      if (memory.rss > MAX_CAPTURE_MEMORY_BYTES) stop('PROCESS_MEMORY_LIMIT');
+      if (captureBytes >= CAPTURE_DISK_STOP_BYTES) stop('CAPTURE_DISK_LIMIT');
+      if (freeDiskBytes < MIN_FREE_DISK_RESERVE_BYTES) stop('FREE_DISK_RESERVE_LIMIT');
+      if (
+        Number(runtimeHealth.observationQueue?.pendingRecords ?? 0) >=
+        MICRO_EVIDENCE_LIMITS.maxRecords - 2
+      )
+        stop('DECISION_OBSERVATION_QUEUE_PRESSURE');
+      if (
+        Math.max(
+          decisions.health().pendingWrites,
+          rawRest.health().pendingWrites,
+          events.health().pendingWrites,
+          snapshots.health().pendingWrites,
+        ) >= 224
+      )
+        stop('AUXILIARY_WRITER_QUEUE_PRESSURE');
+      if (
+        [decisions.health(), snapshots.health(), rawRest.health(), events.health()].some(
+          (writer) => writer.writeFailures > 0 || writer.overloadRejected > 0,
+        )
+      )
+        stop('AUXILIARY_WRITER_FAILURE');
+      if (lag.percentile(99) / 1e6 > 1000) stop('EVENT_LOOP_LAG_LIMIT');
+    }
+    return report;
   };
-  const shutdownFailures: string[] = [];
   let runFailure: unknown;
   try {
     await runtime.start();
-    timer = setInterval(health, 5000);
-    end = setTimeout(stop, durationSeconds * 1000);
+    sessionStartedAtMs = Date.now();
+    health();
+    timer = setInterval(() => health(), 5000);
+    end = setTimeout(() => stop(), durationSeconds * 1000);
     await done;
   } catch (error) {
     runFailure = error;
+    shutdownFailures.push(`COLLECTOR_RUNTIME_FAILED:${String(error)}`);
   } finally {
     if (timer) clearInterval(timer);
     if (end) clearTimeout(end);
-    process.removeListener('SIGTERM', stop);
-    process.removeListener('SIGINT', stop);
+    process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('SIGINT', onSigint);
+    if (externalStopReason) shutdownFailures.push(`CAPTURE_INTERRUPTED:${externalStopReason}`);
     const attempt = async (name: string, work: () => Promise<unknown> | unknown): Promise<void> => {
       try {
         await work();
@@ -240,6 +554,13 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
       }
     };
     await attempt('runtime_stop', () => runtime.stop());
+    await attempt('websocket_disconnect', () => audited.disconnectAll());
+    const publicDrainDeadline = Date.now() + 30_000;
+    while (publicRequestsInFlight > 0 && Date.now() < publicDrainDeadline)
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    if (publicRequestsInFlight > 0) shutdownFailures.push('PUBLIC_REST_REQUEST_DRAIN_TIMEOUT');
+    await Promise.allSettled([...pendingAuxiliaryWrites]);
+    if (pendingAuxiliaryWrites.size > 0) shutdownFailures.push('AUXILIARY_WRITES_STILL_PENDING');
     await attempt('decisions_drain', () => decisions.drain());
     await attempt('snapshots_drain', () => snapshots.drain());
     await attempt('events_drain', () => events.drain());
@@ -253,8 +574,7 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
       shutdownFailures.push(`EPISODE_CAPTURE_CLOSE:${String(error)}`);
     }
     if (auxiliaryWriteFailures > 0) shutdownFailures.push('AUXILIARY_WRITES_FAILED');
-    await attempt('websocket_disconnect', () => audited.disconnectAll());
-    health();
+    const finalHealth = health(false);
     const completedAtMs = Date.now();
     writeFileSync(
       join(collectorRoot, 'completion.json'),
@@ -265,6 +585,9 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
         failed: shutdownFailures.length > 0 || episodeCompletion?.failed === true,
         shutdownFailures,
         episodeCapture: episodeCompletion,
+        counterReconciliation: finalHealth.counterReconciliation,
+        finalHealthSha256: lastHealthSha256,
+        externalStopReason,
         auxiliaryWriteFailures,
         mutationAttempts: audited.audit.totalMutationAttempts,
         forwardedMutations: audited.audit.forwardedMutationCalls,
@@ -290,8 +613,24 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
     throw new Error(`COLLECTOR_SHUTDOWN_INCOMPLETE:${shutdownFailures.join(';')}`);
 }
 
+function directoryBytes(directory: string): number {
+  return readdirSync(directory, { withFileTypes: true }).reduce((total, entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isSymbolicLink()) return total;
+    return total + (entry.isDirectory() ? directoryBytes(path) : statSync(path).size);
+  }, 0);
+}
+
 if (require.main === module)
-  runContinuousCollector(process.argv[2], Number(process.argv[3] ?? 86400)).then(
+  ((): Promise<void> => {
+    const collectorRoot = process.argv[2];
+    const durationText = process.argv[3];
+    if (!collectorRoot || !durationText)
+      throw new Error(
+        'USAGE: MicroBurstContinuousCollector <frozen-collector-root> <duration-seconds-360-to-1200>',
+      );
+    return runContinuousCollector(collectorRoot, Number(durationText));
+  })().then(
     () => process.exit(0),
     (error: unknown) => {
       console.error(error instanceof Error ? error.stack : String(error));

@@ -29,6 +29,7 @@ import {
   captureMicroBurstReplay,
   encodeMicroReplay,
 } from '../../strategies/micro-burst/domain/MicroBurstExactReplay';
+import { reconcileMicroBurstCaptureCounters } from './MicroBurstCaptureCounters';
 
 const sha = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 
@@ -291,7 +292,13 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
       ),
     );
     const producer = verifyFrozenCollectorArtifact(root);
-    const effectiveConfig = defaultMicroBurstConfig();
+    const effectiveConfig = {
+      schema: 'MICRO_OBSERVATIONAL_CAPTURE_CONFIG_V1',
+      authority: 'PUBLIC_MARKET_DATA_OBSERVATION_ONLY',
+      symbols: ['SOLUSDT', 'AVAXUSDT'],
+      benchmarkSymbols: ['BTCUSDT'],
+      strategyConfig: defaultMicroBurstConfig(),
+    };
     const configHash = sha(JSON.stringify(effectiveConfig));
     writeFileSync(join(root, 'effective-config.json'), JSON.stringify(effectiveConfig));
     const archivePath = join(root, 'capture', 'market-data');
@@ -324,16 +331,39 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
         feed: gap.feed,
       });
     if (!storage.close()) throw new Error('SYNTHETIC_CAPTURE_STORAGE_CLOSE_FAILED');
-    if (input.decisionRecords?.length)
+    const decisionRecords = (input.decisionRecords ?? []).map((record) => ({
+      ...record,
+      strategy: { ...record.strategy, configHash: `sha256:${configHash}` },
+    }));
+    if (decisionRecords.length)
       writeFileSync(
         join(root, 'capture', 'decisions.jsonl'),
-        `${input.decisionRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+        `${decisionRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
       );
     if (input.fundingEvidenceRecords?.length)
       writeFileSync(
         join(root, 'capture', 'funding-evidence.jsonl'),
         `${input.fundingEvidenceRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
       );
+    const decisionCount = input.decisionRecords?.length ?? 0;
+    const observationQueue = {
+      captureAttempts: decisionCount,
+      captureSucceeded: decisionCount,
+      captureFailures: 0,
+      exactDecisionEmissions: decisionCount,
+      pendingRecords: 0,
+      pendingBytes: 0,
+      peakRecords: 0,
+      peakBytes: 0,
+      accepted: decisionCount,
+      written: decisionCount,
+      dropped: 0,
+      failed: 0,
+      closed: true,
+      lastWriteDurationMs: 0,
+      lastQueueWaitMs: 0,
+      drainTimedOut: false,
+    };
     const runtime = {
       running: false,
       marketArchiveHealthy: true,
@@ -343,26 +373,37 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
       uncleanDeferredWriteMarker: false,
       mutationAttempts: 0,
       forwardedMutations: 0,
-      totalEvaluations: input.trades.length,
+      totalEvaluations: decisionCount,
+      totalEvaluationAttempts: decisionCount,
       totalEvaluationFailures: 0,
+      evaluationInFlight: 0,
+      observationQueue,
+      paperTradingEnabled: false,
+      paperTrading: { openPositions: 0, completedManagedTrades: 0 },
     };
-    const writer = { pendingWrites: 0, writeFailures: 0, overloadRejected: 0 };
-    writeFileSync(
-      join(root, 'health.json'),
-      JSON.stringify({
-        startedAtMs: input.startedAtMs,
-        atMs: input.completedAtMs,
-        configHash,
-        sourceArtifactHash: artifactHash,
-        liveExecution: false,
-        runtime,
-        decisionWriter: writer,
-        restWriter: writer,
-        eventWriter: writer,
-        snapshotWriter: writer,
-        auxiliaryWriteFailures: 0,
-      }),
-    );
+    const writer = {
+      recordsWritten: 0,
+      pendingWrites: 0,
+      writeFailures: 0,
+      overloadRejected: 0,
+    };
+    const health: Record<string, any> = {
+      startedAtMs: input.startedAtMs,
+      atMs: input.completedAtMs,
+      configHash,
+      sourceArtifactHash: artifactHash,
+      liveExecution: false,
+      runtime,
+      decisionWriter: { ...writer, recordsWritten: decisionCount },
+      restWriter: { ...writer },
+      eventWriter: { ...writer },
+      snapshotWriter: { ...writer },
+      auxiliaryWriteFailures: 0,
+    };
+    const counterReconciliation = reconcileMicroBurstCaptureCounters(health);
+    health.counterReconciliation = counterReconciliation;
+    const healthBytes = JSON.stringify(health);
+    writeFileSync(join(root, 'health.json'), healthBytes);
     writeFileSync(
       join(root, 'completion.json'),
       JSON.stringify({
@@ -372,6 +413,8 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
         mutationAttempts: 0,
         forwardedMutations: 0,
         auxiliaryWriteFailures: 0,
+        counterReconciliation,
+        finalHealthSha256: sha(healthBytes),
       }),
     );
     await writeCaptureSessionManifest({

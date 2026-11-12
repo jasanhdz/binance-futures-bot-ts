@@ -408,6 +408,28 @@ it('refuses result directories inside the archived session', async () => {
   }
 });
 
+it('detects tampering with final health and completion evidence', async () => {
+  for (const file of ['health.json', 'completion.json']) {
+    const capture = await fixture();
+    try {
+      const path = join(capture.root, file);
+      const value = JSON.parse(readFileSync(path, 'utf8'));
+      value.tamperedAfterClosure = true;
+      writeFileSync(path, JSON.stringify(value));
+      const output = join(capture.outputRoot, 'tampered');
+      await expect(
+        runPairedReplayRequestFile(writeRequest(capture.outputRoot, capture.root, output)),
+      ).rejects.toThrow(
+        file === 'health.json'
+          ? 'CAPTURE_SESSION_HEALTH_HASH_MISMATCH'
+          : 'CAPTURE_SESSION_COMPLETION_HASH_MISMATCH',
+      );
+    } finally {
+      capture.cleanup();
+    }
+  }
+});
+
 it('writes deterministic reports, preserves episode filters, and rejects unverified caller objects', async () => {
   const capture = await fixture();
   try {

@@ -32,6 +32,10 @@ import {
 } from './MicroBurstReplayEvidenceContract';
 import type { MicroBurstExitContext } from '../../strategies/micro-burst/domain/MicroBurstTypes';
 import {
+  reconcileMicroBurstCaptureCounters,
+  type CaptureCounterReconciliation,
+} from './MicroBurstCaptureCounters';
+import {
   assertStrategyDecisionEvidenceV2,
   type StrategyDecisionEvidenceV2,
 } from '../../core/blackbox/StrategyDecisionBlackBox';
@@ -66,10 +70,15 @@ interface CaptureSessionBody {
   readonly gaps: readonly CaptureSessionGap[];
   readonly decisionFiles: readonly { relativePath: string; sha256: string; bytes: number }[];
   readonly databaseSha256: string;
+  readonly healthSha256: string;
+  readonly completionSha256: string;
+  readonly decisionRecordCount: number;
+  readonly counterReconciliation: CaptureCounterReconciliation;
 }
 
 export interface CaptureSessionManifest extends CaptureSessionBody {
   readonly manifestSha256: string;
+  readonly decisionRecordCount: number;
 }
 
 export interface CaptureSessionBuildInput {
@@ -243,7 +252,13 @@ export async function writeCaptureSessionManifest(
   const completion = readJson(join(collectorRoot, 'completion.json')) as Record<string, any>;
   const effectiveConfig = readJson(join(collectorRoot, 'effective-config.json'));
   const configHash = sha256(JSON.stringify(effectiveConfig));
-  if (configHash !== input.configHash || health.configHash !== input.configHash)
+  if (
+    !effectiveConfig ||
+    (effectiveConfig as Record<string, unknown>).schema !==
+      'MICRO_OBSERVATIONAL_CAPTURE_CONFIG_V1' ||
+    configHash !== input.configHash ||
+    health.configHash !== input.configHash
+  )
     throw new Error('EFFECTIVE_CAPTURE_CONFIG_HASH_MISMATCH');
   const dbPath = join(captureRoot, 'research.sqlite');
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -305,13 +320,14 @@ export async function writeCaptureSessionManifest(
     db.close();
   }
   const runtime = health.runtime ?? {};
+  const counterReconciliation = reconcileMicroBurstCaptureCounters(health);
   const writerStates = [
     health.decisionWriter,
     health.restWriter,
     health.eventWriter,
     health.snapshotWriter,
   ].filter(Boolean);
-  const blockers = [...input.shutdownFailures];
+  const blockers = [...input.shutdownFailures, ...counterReconciliation.blockers];
   if (health.startedAtMs !== input.startedAtMs) blockers.push('CAPTURE_START_CLOCK_MISMATCH');
   if (completion.completedAtMs !== input.completedAtMs) blockers.push('CAPTURE_END_CLOCK_MISMATCH');
   if (writerStates.length !== 4) blockers.push('CAPTURE_WRITER_HEALTH_MISSING');
@@ -321,6 +337,9 @@ export async function writeCaptureSessionManifest(
   if ((completion.episodeCapture?.pendingWrites ?? 0) !== 0)
     blockers.push('EPISODE_CAPTURE_PENDING_WRITES');
   if (health.liveExecution !== false) blockers.push('LIVE_EXECUTION_NOT_FALSE');
+  if (runtime.paperTradingEnabled !== false) blockers.push('PAPER_TRADING_NOT_DISABLED');
+  if ((runtime.paperTrading?.openPositions ?? -1) !== 0)
+    blockers.push('PAPER_POSITION_OPENED_DURING_CAPTURE');
   if ((runtime.mutationAttempts ?? 0) !== 0 || (runtime.forwardedMutations ?? 0) !== 0)
     blockers.push('MUTATION_AUDIT_NONZERO');
   if (runtime.marketArchiveHealthy !== true) blockers.push('MARKET_ARCHIVE_UNHEALTHY');
@@ -356,7 +375,18 @@ export async function writeCaptureSessionManifest(
       bytes: statSync(file).size,
     })),
   );
+  const decisionRecordCount = await countDecisionEvidenceRows(collectorRoot, decisionFiles);
+  if (decisionRecordCount !== counterReconciliation.decisionWriter.recordsWritten)
+    blockers.push('DECISION_FILE_WRITER_COUNT_MISMATCH');
   const databaseSha256 = await hashStableFile(dbPath);
+  const healthSha256 = await hashStableFile(join(collectorRoot, 'health.json'));
+  const completionSha256 = await hashStableFile(join(collectorRoot, 'completion.json'));
+  if (
+    canonical(health.counterReconciliation) !== canonical(counterReconciliation) ||
+    canonical(completion.counterReconciliation) !== canonical(counterReconciliation) ||
+    completion.finalHealthSha256 !== healthSha256
+  )
+    blockers.push('COMPLETION_COUNTER_OR_FINAL_HEALTH_MISMATCH');
   const body: CaptureSessionBody = {
     schema: 'MICRO_BURST_CAPTURE_SESSION_V1',
     producerArtifactHash: input.producer.artifactHash,
@@ -370,6 +400,10 @@ export async function writeCaptureSessionManifest(
     gaps,
     decisionFiles,
     databaseSha256,
+    healthSha256,
+    completionSha256,
+    decisionRecordCount,
+    counterReconciliation,
   };
   const session = { ...body, manifestSha256: sha256(canonical(body)) };
   writeFileSync(join(collectorRoot, 'capture-session.json'), JSON.stringify(session, null, 2), {
@@ -397,7 +431,16 @@ export async function openVerifiedCaptureSession(root: string): Promise<Verified
   const health = readJson(join(collectorRoot, 'health.json')) as Record<string, any>;
   const completion = readJson(join(collectorRoot, 'completion.json')) as Record<string, any>;
   const effectiveConfig = readJson(join(collectorRoot, 'effective-config.json'));
+  const healthSha256 = await hashStableFile(join(collectorRoot, 'health.json'));
+  const completionSha256 = await hashStableFile(join(collectorRoot, 'completion.json'));
+  const counterReconciliation = reconcileMicroBurstCaptureCounters(health);
+  if (healthSha256 !== session.healthSha256)
+    throw new Error('CAPTURE_SESSION_HEALTH_HASH_MISMATCH');
+  if (completionSha256 !== session.completionSha256)
+    throw new Error('CAPTURE_SESSION_COMPLETION_HASH_MISMATCH');
   if (
+    (effectiveConfig as Record<string, unknown>)?.schema !==
+      'MICRO_OBSERVATIONAL_CAPTURE_CONFIG_V1' ||
     sha256(JSON.stringify(effectiveConfig)) !== session.configHash ||
     health.configHash !== session.configHash ||
     health.sourceArtifactHash !== producer.artifactHash ||
@@ -407,6 +450,12 @@ export async function openVerifiedCaptureSession(root: string): Promise<Verified
     completion.completedAtMs !== session.completedAtMs ||
     completion.lifecycle !== 'SESSION_ENDED_NOT_AUTOMATICALLY_EPISODE_COMPLETE' ||
     completion.failed === true ||
+    completion.finalHealthSha256 !== healthSha256 ||
+    canonical(health.counterReconciliation) !== canonical(counterReconciliation) ||
+    canonical(completion.counterReconciliation) !== canonical(counterReconciliation) ||
+    canonical(session.counterReconciliation) !== canonical(counterReconciliation) ||
+    counterReconciliation.blockers.length > 0 ||
+    session.decisionRecordCount !== counterReconciliation.decisionWriter.recordsWritten ||
     completion.episodeCapture?.failed === true ||
     (completion.episodeCapture?.pendingWrites ?? 0) !== 0 ||
     completion.mutationAttempts !== 0 ||
@@ -521,13 +570,20 @@ export async function openVerifiedCaptureSession(root: string): Promise<Verified
     startedAtMs: session.startedAtMs,
     completedAtMs: session.completedAtMs,
     manifestSha256,
+    decisionRecordCount: session.decisionRecordCount,
     segments: session.segments,
     gaps: session.gaps,
     decisionFiles: session.decisionFiles,
   });
   verifiedSessions.add(verified);
   sessionDepthSegmentStats.set(verified, verifiedDepthStats);
-  sessionDecisionIndexes.set(verified, await buildDecisionIndex(verified));
+  const decisionIndex = await buildDecisionIndex(verified);
+  if (
+    decisionIndex.recordCount !== session.decisionRecordCount ||
+    decisionIndex.recordCount !== health.decisionWriter?.recordsWritten
+  )
+    throw new Error('CAPTURE_DECISION_RECORD_COUNT_MISMATCH');
+  sessionDecisionIndexes.set(verified, decisionIndex.index);
   return verified;
 }
 
@@ -1477,6 +1533,7 @@ function isWithin(root: string, file: string): boolean {
 function isDecisionEvidenceFile(file: string): boolean {
   return (
     /\/(decisions|snapshots|rest-inputs|events)(?:\..+)?\.jsonl(?:\.gz)?$/.test(file) ||
+    /\/signals\/.+\.jsonl$/.test(file) ||
     /\/funding-evidence(?:\..+)?\.jsonl$/.test(file) ||
     file.includes(`${sep}episode-capture${sep}`)
   );
@@ -1493,6 +1550,9 @@ function runtimeStorageHealthy(health: Record<string, any>): boolean {
   return Boolean(
     runtime &&
       runtime.running === false &&
+      runtime.paperTradingEnabled === false &&
+      runtime.paperTrading?.openPositions === 0 &&
+      runtime.paperTrading?.completedManagedTrades === 0 &&
       runtime.marketArchiveHealthy === true &&
       runtime.archiveQueueDepth === 0 &&
       runtime.archiveOverflowRecords === 0 &&
@@ -1581,8 +1641,9 @@ function assertVerifiedSession(session: unknown): asserts session is VerifiedCap
 
 async function buildDecisionIndex(
   session: VerifiedCaptureSession,
-): Promise<ReadonlyMap<string, VerifiedDecisionIndexEntry>> {
+): Promise<{ index: ReadonlyMap<string, VerifiedDecisionIndexEntry>; recordCount: number }> {
   const index = new Map<string, VerifiedDecisionIndexEntry>();
+  let recordCount = 0;
   for (const source of session.decisionFiles) {
     const file = resolve(session.root, source.relativePath);
     const names = source.relativePath.split(/[\\/]/);
@@ -1598,7 +1659,9 @@ async function buildDecisionIndex(
         if (!line.trim()) continue;
         const record = JSON.parse(line) as StrategyDecisionEvidenceV2;
         assertStrategyDecisionEvidenceV2(record);
-        if (record.strategy.strategyId !== 'MICRO_BURST') continue;
+        if (record.strategy.strategyId !== 'MICRO_BURST')
+          throw new Error(`CAPTURED_DECISION_STRATEGY_MISMATCH:${record.decisionId}`);
+        recordCount++;
         if (
           record.strategy.configHash !== `sha256:${session.configHash}` ||
           record.strategy.codeCommitSha !== session.producerCommit
@@ -1620,7 +1683,36 @@ async function buildDecisionIndex(
       reader.close();
     }
   }
-  return index;
+  return { index, recordCount };
+}
+
+async function countDecisionEvidenceRows(
+  collectorRoot: string,
+  files: readonly CaptureSessionBody['decisionFiles'][number][],
+): Promise<number> {
+  let count = 0;
+  for (const source of files) {
+    const names = source.relativePath.split(/[\\/]/);
+    const name = names[names.length - 1] ?? '';
+    if (!/^decisions(?:\..+)?\.jsonl(?:\.gz)?$/.test(name) || name.includes('.timing.')) continue;
+    const file = resolve(collectorRoot, source.relativePath);
+    const stream = createReadStream(file);
+    const input = file.endsWith('.gz') ? stream.pipe(createGunzip()) : stream;
+    const reader = createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of reader) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line) as StrategyDecisionEvidenceV2;
+        assertStrategyDecisionEvidenceV2(record);
+        if (record.strategy.strategyId !== 'MICRO_BURST')
+          throw new Error(`CAPTURED_DECISION_STRATEGY_MISMATCH:${record.decisionId}`);
+        count++;
+      }
+    } finally {
+      reader.close();
+    }
+  }
+  return count;
 }
 
 function deepFreeze<T>(value: T): T {

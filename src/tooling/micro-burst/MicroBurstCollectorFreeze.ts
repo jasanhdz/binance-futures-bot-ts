@@ -193,7 +193,10 @@ export function freezeCollector(workspace: string, destination: string): Record<
     artifactHash,
     gitCommit,
     sourceDirty: manifest.sourceDirty,
-    command: `DOTENV_CONFIG_PATH=/dev/null REGIME_CONFIG=${join(out, 'regime_config.live.yaml')} BINANCE_API_KEY= BINANCE_API_SECRET= node ${join(out, 'code/tooling/micro-burst/MicroBurstContinuousCollector.js')} ${out} 86400`,
+    collectorEntryPoint: join(out, 'code/tooling/micro-burst/MicroBurstContinuousCollector.js'),
+    supervisorCommand:
+      'DOTENV_CONFIG_PATH=/dev/null npm run micro-burst:collector-supervise -- <bounded-run-plan.json>',
+    maximumDurationSeconds: 1200,
   };
 }
 

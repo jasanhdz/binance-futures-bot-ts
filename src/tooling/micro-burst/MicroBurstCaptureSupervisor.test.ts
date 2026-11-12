@@ -1,0 +1,100 @@
+import { expect, it } from 'vitest';
+import {
+  CAPTURE_CANCELLATION_CONDITIONS,
+  healthStopReason,
+  sanitizedCollectorEnvironment,
+  type MicroBurstCaptureRunPlan,
+} from './MicroBurstCaptureSupervisor';
+import { MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256 } from './MicroBurstReplayEvidenceContract';
+
+const plan: MicroBurstCaptureRunPlan = {
+  schema: 'MICRO_OBSERVATIONAL_CAPTURE_RUN_PLAN_V1',
+  collectorRoot: '/tmp/frozen-collector',
+  monitorDirectory: '/tmp/frozen-collector-monitor',
+  expectedProducerCommit: 'a'.repeat(40),
+  durationSeconds: 420,
+  symbols: ['SOLUSDT', 'AVAXUSDT'],
+  benchmarkSymbols: ['BTCUSDT'],
+  warmupMs: 300_000,
+  minimumPostWarmupWindowMs: 120_000,
+  replayFromSessionStartOffsetMs: 300_000,
+  replayThroughSessionEndOffsetMs: 0,
+  experimentContractSha256: MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256,
+  cancellationConditions: CAPTURE_CANCELLATION_CONDITIONS,
+  maxCaptureBytes: 1024,
+  stopCaptureBytes: 900,
+  maxProcessMemoryBytes: 2048,
+  minimumFreeDiskBytes: 512,
+  maxArchiveQueueRecords: 100,
+  maxDecisionObservationQueueRecords: 16,
+};
+
+const healthy = () => ({
+  atMs: 10_000,
+  liveExecution: false,
+  publicRequestsInFlight: 0,
+  auxiliaryWriteFailures: 0,
+  captureBytes: 200,
+  availableDiskBytes: 1000,
+  memory: { rss: 512 },
+  eventLoopP99Ms: 2,
+  mutationAudit: { totalMutationAttempts: 0, forwardedMutationCalls: 0 },
+  runtime: {
+    liveExecution: false,
+    paperTradingEnabled: false,
+    totalEvaluationFailures: 0,
+    archiveOverflowRecords: 0,
+    archiveQueueDepth: 5,
+    observationQueue: { pendingRecords: 2 },
+  },
+  decisionWriter: { pendingWrites: 0 },
+  snapshotWriter: { pendingWrites: 0 },
+  eventWriter: { pendingWrites: 0 },
+  restWriter: { pendingWrites: 0 },
+});
+
+it('creates a child environment from an allowlist and blanks all Binance credentials', () => {
+  const previousKey = process.env.BINANCE_API_KEY;
+  const previousSecret = process.env.BINANCE_API_SECRET;
+  process.env.BINANCE_API_KEY = 'parent-key-must-not-leak';
+  process.env.BINANCE_API_SECRET = 'parent-secret-must-not-leak';
+  try {
+    const env = sanitizedCollectorEnvironment(plan.collectorRoot);
+    expect(env.BINANCE_API_KEY).toBe('');
+    expect(env.BINANCE_API_SECRET).toBe('');
+    expect(env.DOTENV_CONFIG_PATH).toBe('/dev/null');
+    expect(env.REGIME_CONFIG).toBe('/tmp/frozen-collector/regime_config.live.yaml');
+    expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+    expect(env.ML_SERVICE_URL).toBeUndefined();
+  } finally {
+    if (previousKey === undefined) delete process.env.BINANCE_API_KEY;
+    else process.env.BINANCE_API_KEY = previousKey;
+    if (previousSecret === undefined) delete process.env.BINANCE_API_SECRET;
+    else process.env.BINANCE_API_SECRET = previousSecret;
+  }
+});
+
+it('continues on healthy public-feed gaps but stops on authority, queue, disk or resource limits', () => {
+  const sample = healthy();
+  expect(healthStopReason(sample, plan, 10_000, 10_000)).toBeNull();
+  expect(
+    healthStopReason(
+      { ...sample, mutationAudit: { totalMutationAttempts: 1, forwardedMutationCalls: 0 } },
+      plan,
+      10_000,
+      10_000,
+    ),
+  ).toBe('MUTATION_ATTEMPT');
+  expect(
+    healthStopReason(
+      { ...sample, runtime: { ...sample.runtime, archiveQueueDepth: 75 } },
+      plan,
+      10_000,
+      10_000,
+    ),
+  ).toBe('ARCHIVE_QUEUE_PRESSURE');
+  expect(healthStopReason({ ...sample, captureBytes: 900 }, plan, 10_000, 10_000)).toBe(
+    'CAPTURE_DISK_LIMIT',
+  );
+  expect(healthStopReason(sample, plan, 30_001, 10_000)).toBe('HEALTH_SAMPLE_STALE');
+});
