@@ -1,0 +1,25 @@
+{
+  "schema": "MICRO_PAIRED_ARCHIVE_REPLAY_REQUEST_V1",
+  "captureRoot": "/home/jasan/Develop/trading_system/binance-futures-bot-ts/data/micro-burst/micro-observer-20261112-v7",
+  "outputDir": "/tmp/opencode/micro-observer-v7-avax-replay",
+  "symbol": "AVAXUSDT",
+  "range": {
+    "fromReceivedAtMs": 1794462733091,
+    "throughReceivedAtMs": 1794462974194
+  },
+  "selection": { "selectionHorizonMs": null },
+  "experiment": {
+    "schema": "MICRO_PAIRED_REPLAY_EVIDENCE_V1",
+    "sha256": "6fd9cab7fb47bfabc2706c9e32b574fcacc9a5503b2428d436f2a29300aadb67"
+  },
+  "execution": {
+    "riskBudgetUsdt": 1,
+    "maxNotionalUsdt": 100,
+    "quantityStep": 0.001,
+    "minNotionalUsdt": 1,
+    "feeBpsPerSide": 5,
+    "adverseSlippageBps": 1,
+    "entryDelayMs": 1000,
+    "exitDelayMs": 1000
+  }
+}
