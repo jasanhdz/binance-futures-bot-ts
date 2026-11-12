@@ -27,10 +27,15 @@ import {
 } from './MicroBurstPatternComparison';
 
 export type ReplayFrameVerificationStatus = 'VERIFIED_POINT' | 'VERIFIED_INTERVAL' | 'UNKNOWN';
+export type ReplayFrameIntervalStatus = 'NOT_EVALUATED' | 'UNKNOWN' | 'VERIFIED';
 
 export interface VerifiedReplayFrame {
   readonly schema: 'MICRO_VERIFIED_REPLAY_FRAME_V1';
   readonly verificationStatus: ReplayFrameVerificationStatus;
+  /** A point can be verified even when continuity to the preceding decision is not. */
+  readonly intervalStatus: ReplayFrameIntervalStatus;
+  readonly intervalReason: string | null;
+  readonly intervalFromDecisionId: string | null;
   readonly reason?: string;
   readonly decision: StrategyDecisionEvidenceV2;
   readonly observation: PullbackObservation;
@@ -140,26 +145,37 @@ export async function buildVerifiedReplayFrame(
     previous &&
     (previous.sourceArtifactHash !== session.artifactHash ||
       previous.sessionManifestSha256 !== session.manifestSha256 ||
-      previous.symbol !== decision.symbol ||
-      previous.atMs >= observedAtMs! ||
-      previous.decisionAvailableAtMs >= decisionAvailableAtMs! ||
-      previous.exchangeAsOfMs >= exchangeAsOfMs!)
+      previous.symbol !== decision.symbol)
   )
-    throw new Error('REPLAY_FRAME_PREVIOUS_IDENTITY_OR_CLOCK_MISMATCH');
+    throw new Error('REPLAY_FRAME_PREVIOUS_IDENTITY_MISMATCH');
+
+  const previousClockRegression = previous
+    ? previous.atMs >= observedAtMs!
+      ? 'PREVIOUS_FRAME_RECEIVE_CLOCK_REGRESSION'
+      : previous.decisionAvailableAtMs >= decisionAvailableAtMs!
+        ? 'PREVIOUS_FRAME_AVAILABILITY_CLOCK_REGRESSION'
+        : previous.exchangeAsOfMs >= exchangeAsOfMs!
+          ? 'PREVIOUS_FRAME_EXCHANGE_CLOCK_REGRESSION'
+          : null
+    : null;
 
   const bookAssessment = await readVerifiedExecutionBookForDecision(session, decision);
   const book = bookAssessment.status === 'VERIFIED' ? bookAssessment.book : null;
   let verificationStatus: ReplayFrameVerificationStatus = 'VERIFIED_POINT';
   let reason: string | undefined =
     bookAssessment.status === 'UNKNOWN' ? bookAssessment.reason : undefined;
+  let intervalStatus: ReplayFrameIntervalStatus = previous ? 'UNKNOWN' : 'NOT_EVALUATED';
+  let intervalReason: string | null = null;
   let intervalCoverage: VerifiedIntervalCoverage | null = null;
   if (!book) {
     verificationStatus = 'UNKNOWN';
     reason ??= 'DECISION_BOOK_UNVERIFIED';
+    intervalStatus = 'NOT_EVALUATED';
   } else if (previous) {
-    if (!previous.book) {
-      verificationStatus = 'UNKNOWN';
-      reason = 'PREVIOUS_FRAME_BOOK_UNAVAILABLE';
+    if (previousClockRegression) {
+      intervalReason = previousClockRegression;
+    } else if (!previous.book) {
+      intervalReason = 'PREVIOUS_FRAME_BOOK_UNAVAILABLE';
     } else {
       const interval = await verifyVerifiedDecisionInterval(
         session,
@@ -170,16 +186,19 @@ export async function buildVerifiedReplayFrame(
       );
       if (interval.status === 'VERIFIED') {
         verificationStatus = 'VERIFIED_INTERVAL';
+        intervalStatus = 'VERIFIED';
         intervalCoverage = interval.evidence;
       } else {
-        verificationStatus = 'UNKNOWN';
-        reason = interval.reason;
+        intervalReason = interval.reason;
       }
     }
   }
   const frame = Object.freeze({
     schema: 'MICRO_VERIFIED_REPLAY_FRAME_V1' as const,
     verificationStatus,
+    intervalStatus,
+    intervalReason,
+    intervalFromDecisionId: previous?.decisionId ?? null,
     ...(reason ? { reason } : {}),
     decision,
     observation,
@@ -205,6 +224,9 @@ export async function buildVerifiedReplayFrame(
       canonical({
         schema: 'MICRO_VERIFIED_REPLAY_FRAME_V1',
         verificationStatus,
+        intervalStatus,
+        intervalReason,
+        intervalFromDecisionId: previous?.decisionId ?? null,
         reason,
         decisionId: decision.decisionId,
         symbol: decision.symbol,

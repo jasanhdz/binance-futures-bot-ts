@@ -419,12 +419,13 @@ async function coverageSession(input: {
   checkpoints: readonly ReturnType<typeof checkpoint>[];
   decisionTimes?: readonly number[];
   exchangeClockOffsetMs?: number;
+  exchangeClockOffsetsMs?: readonly number[];
   includeTrades?: boolean;
   maxActiveSegmentRecords?: number;
 }) {
-  const records = (input.decisionTimes ?? [BASE + 5000]).map((atMs) =>
+  const records = (input.decisionTimes ?? [BASE + 5000]).map((atMs, index) =>
     makeSyntheticDecisionRecord(atMs, 'LONG', 'SOLUSDT', {
-      exchangeClockOffsetMs: input.exchangeClockOffsetMs,
+      exchangeClockOffsetMs: input.exchangeClockOffsetsMs?.[index] ?? input.exchangeClockOffsetMs,
     }),
   );
   const capture = await createSyntheticCaptureSession({
@@ -469,7 +470,33 @@ it('rejects a depth checkpoint that was persisted after the decision became avai
   }
 });
 
-it('rejects a segment that overlaps an interval when no checkpoint proves its start', async () => {
+it('keeps a book-content mismatch as an unknown point instead of claiming a point book', async () => {
+  const decision = makeSyntheticDecisionRecord(BASE + 5000, 'LONG', 'SOLUSDT', {
+    book: { bid: 99.98, ask: 100.01 },
+  });
+  const capture = await createSyntheticCaptureSession({
+    startedAtMs: BASE - 120_000,
+    completedAtMs: BASE + 90_000,
+    storageNowMs: BASE - 120_000,
+    trades: coverageTrades(),
+    depth: [],
+    checkpoints: [checkpoint(BASE + 5000, 1000)],
+    decisionRecords: [decision],
+  });
+  try {
+    const [record] = await readVerifiedDecisionRecords(capture.session, BASE, BASE + 7000);
+    const observation = await new MicroBurstPullbackCandidate().evaluate(capture.session, record);
+    const frame = await buildVerifiedReplayFrame(capture.session, record, observation);
+    expect(frame.verificationStatus).toBe('UNKNOWN');
+    expect(frame.book).toBeNull();
+    expect(frame.reason).toBe('DECISION_BOOK_CONTENT_MISMATCH');
+    expect(frame.intervalStatus).toBe('NOT_EVALUATED');
+  } finally {
+    capture.cleanup();
+  }
+});
+
+it('retains a verified current point when the preceding frame book is unavailable', async () => {
   const capture = await coverageSession({
     decisionTimes: [BASE + 1000, BASE + 5000],
     checkpoints: [checkpoint(BASE + 2000, 1002)],
@@ -489,14 +516,16 @@ it('rejects a segment that overlaps an interval when no checkpoint proves its st
       first,
     );
     expect(first.verificationStatus).toBe('UNKNOWN');
-    expect(second.verificationStatus).toBe('UNKNOWN');
-    expect(second.reason).toBe('PREVIOUS_FRAME_BOOK_UNAVAILABLE');
+    expect(second.verificationStatus).toBe('VERIFIED_POINT');
+    expect(second.book).not.toBeNull();
+    expect(second.intervalStatus).toBe('UNKNOWN');
+    expect(second.intervalReason).toBe('PREVIOUS_FRAME_BOOK_UNAVAILABLE');
   } finally {
     capture.cleanup();
   }
 });
 
-it('rejects a pu discontinuity hidden by adjacent segment time ranges', async () => {
+it('keeps a verified point when a pu discontinuity invalidates the interval', async () => {
   const capture = await coverageSession({
     decisionTimes: [BASE, BASE + 1000],
     checkpoints: [checkpoint(BASE, 1000), checkpoint(BASE + 1000, 1006)],
@@ -523,8 +552,10 @@ it('rejects a pu discontinuity hidden by adjacent segment time ranges', async ()
       first,
     );
     expect(first.verificationStatus).toBe('VERIFIED_POINT');
-    expect(second.verificationStatus).toBe('UNKNOWN');
-    expect(second.reason).toBe('DEPTH_SEQUENCE_GAP');
+    expect(second.verificationStatus).toBe('VERIFIED_POINT');
+    expect(second.book).not.toBeNull();
+    expect(second.intervalStatus).toBe('UNKNOWN');
+    expect(second.intervalReason).toBe('DEPTH_SEQUENCE_GAP');
   } finally {
     capture.cleanup();
   }
@@ -549,10 +580,10 @@ it('does not let a caller-selected freshness allowance certify an old book', asy
   }
 });
 
-it('labels an interval with no observed depth updates unknown instead of inferring a quiet market', async () => {
+it('keeps a verified point while leaving a no-update interval unknown', async () => {
   const capture = await coverageSession({
     decisionTimes: [BASE, BASE + 1000],
-    checkpoints: [checkpoint(BASE, 1000)],
+    checkpoints: [checkpoint(BASE, 1000), checkpoint(BASE + 1000, 1000)],
     depth: [depthEvent(BASE, 1000, 999)],
   });
   try {
@@ -568,8 +599,42 @@ it('labels an interval with no observed depth updates unknown instead of inferri
       await candidate.evaluate(capture.session, capture.records[1]),
       first,
     );
-    expect(second.verificationStatus).toBe('UNKNOWN');
-    expect(second.reason).toBe('DEPTH_NO_UPDATES_OBSERVED');
+    expect(second.verificationStatus).toBe('VERIFIED_POINT');
+    expect(second.book).not.toBeNull();
+    expect(second.intervalStatus).toBe('UNKNOWN');
+    expect(second.intervalReason).toBe('DEPTH_NO_UPDATES_OBSERVED');
+  } finally {
+    capture.cleanup();
+  }
+});
+
+it('keeps the current book as a point when the previous exchange-time upper bound regresses', async () => {
+  const capture = await coverageSession({
+    decisionTimes: [BASE + 1000, BASE + 2000],
+    exchangeClockOffsetsMs: [1200, 100],
+    checkpoints: [checkpoint(BASE, 1000)],
+    depth: [depthEvent(BASE + 1000, 1001, 1000), depthEvent(BASE + 2000, 1002, 1001)],
+  });
+  try {
+    const candidate = new MicroBurstPullbackCandidate();
+    const first = await buildVerifiedReplayFrame(
+      capture.session,
+      capture.records[0],
+      await candidate.evaluate(capture.session, capture.records[0]),
+    );
+    const second = await buildVerifiedReplayFrame(
+      capture.session,
+      capture.records[1],
+      await candidate.evaluate(capture.session, capture.records[1]),
+      first,
+    );
+    expect(first.exchangeAsOfMs).toBeGreaterThan(second.exchangeAsOfMs);
+    expect(first.decisionAvailableAtMs).toBeLessThan(second.decisionAvailableAtMs);
+    expect(second.verificationStatus).toBe('VERIFIED_POINT');
+    expect(second.book).not.toBeNull();
+    expect(second.intervalCoverage).toBeNull();
+    expect(second.intervalStatus).toBe('UNKNOWN');
+    expect(second.intervalReason).toBe('PREVIOUS_FRAME_EXCHANGE_CLOCK_REGRESSION');
   } finally {
     capture.cleanup();
   }
@@ -596,10 +661,11 @@ it('uses a reconnect checkpoint only as a new point and never fills across the p
       previous = frame;
     }
     expect(frames[0].verificationStatus).toBe('VERIFIED_POINT');
-    expect(frames[1].verificationStatus).toBe('UNKNOWN');
+    expect(frames[1].verificationStatus).toBe('VERIFIED_POINT');
     expect(frames[1].book).not.toBeNull(); // a new checkpoint is a point, not a bridge
+    expect(frames[1].intervalStatus).toBe('UNKNOWN');
+    expect(frames[1].intervalReason).toBe('THROUGH_INTERVAL_BOOK_DECISION_MISMATCH');
     expect(frames[2].verificationStatus).toBe('VERIFIED_INTERVAL');
-    expect(frames[1].reason).toBe('THROUGH_INTERVAL_BOOK_DECISION_MISMATCH');
     expect(frames[2].intervalCoverage?.checkpointAtMs).toBe(BASE + 1000);
     expect(frames[2].intervalCoverage?.depthFirstUpdateId).toBe(2000);
     expect(frames[2].intervalCoverage?.depthLastUpdateId).toBe(2001);
@@ -990,6 +1056,7 @@ it('marks loss of archived depth coverage unknown and never turns it into zero P
     expect(
       results.every((result) => result.status === 'UNKNOWN' && result.netPnlUsdt === undefined),
     ).toBe(true);
+    expect(results.every((result) => result.reason === 'DECLARED_DEPTH_GAP')).toBe(true);
     const report = summarizePairedReplay(frames, results);
     expect(report.operable.pairedClosedEpisodes).toBe(0);
     expect(report.terminalOutcomes[0].current).toBe('UNKNOWN_TOTAL_AFTER_MODELLED_ENTRY');

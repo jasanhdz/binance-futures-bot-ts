@@ -287,7 +287,8 @@ export function replayPairedExecutions(
         active.result.status = 'UNKNOWN';
         active.result.reason = gap
           ? 'FRAME_CADENCE_GAP'
-          : (frame.reason ??
+          : (frame.intervalReason ??
+            frame.reason ??
             (frame.verificationStatus === 'UNKNOWN'
               ? 'ARCHIVE_COVERAGE_UNVERIFIED'
               : 'EXECUTION_BOOK_UNAVAILABLE'));
@@ -360,7 +361,9 @@ export function replayPairedExecutions(
       if (!coverageMatchesFrame && !(startedHere && frame.book && options.entryDelayMs > 0)) {
         if (r.status === 'PENDING') {
           r.status = 'UNKNOWN';
-          r.reason = gap ? 'FRAME_CADENCE_GAP' : (frame.reason ?? 'ENTRY_INTERVAL_UNVERIFIED');
+          r.reason = gap
+            ? 'FRAME_CADENCE_GAP'
+            : (frame.intervalReason ?? frame.reason ?? 'ENTRY_INTERVAL_UNVERIFIED');
           active = undefined;
         }
         continue;

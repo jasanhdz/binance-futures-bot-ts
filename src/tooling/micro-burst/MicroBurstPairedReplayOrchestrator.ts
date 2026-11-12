@@ -69,6 +69,10 @@ interface DecisionTrace {
   pullbackReason?: string;
   frameStatus?: string;
   frameReason?: string;
+  pointBookStatus?: 'VERIFIED' | 'UNKNOWN';
+  intervalStatus?: string;
+  intervalReason?: string | null;
+  intervalFromDecisionId?: string | null;
   exitPolicyConfigSha256?: string;
 }
 
@@ -135,6 +139,10 @@ export async function runPairedReplayRequestFile(requestPath: string): Promise<{
         pullbackReason: observation.reason,
         frameStatus: frame.verificationStatus,
         frameReason: frame.reason,
+        pointBookStatus: frame.book ? 'VERIFIED' : 'UNKNOWN',
+        intervalStatus: frame.intervalStatus,
+        intervalReason: frame.intervalReason,
+        intervalFromDecisionId: frame.intervalFromDecisionId,
         exitPolicyConfigSha256: frame.exitPolicyConfigSha256,
       });
     } catch (error) {
@@ -338,9 +346,24 @@ export async function runPairedReplayRequestFile(requestPath: string): Promise<{
       decisionsForSymbol: records.length,
       decisionsReported: decisionsForReport.length,
       uniqueEpisodes: uniqueEpisodeIds.length,
-      verifiedFrames: selectedFrames.length,
-      unknownFrames: selectedFrames.filter((frame) => frame.verificationStatus === 'UNKNOWN')
+      framesBuilt: selectedFrames.length,
+      pointBooksVerified: selectedFrames.filter((frame) => frame.book !== null).length,
+      pointBooksUnknown: selectedFrames.filter((frame) => frame.book === null).length,
+      intervalsConsidered: selectedFrames.filter(
+        (frame) => frame.intervalStatus !== 'NOT_EVALUATED',
+      ).length,
+      intervalsVerified: selectedFrames.filter((frame) => frame.intervalStatus === 'VERIFIED')
         .length,
+      intervalsUnknown: selectedFrames.filter((frame) => frame.intervalStatus === 'UNKNOWN').length,
+      intervalsNotEvaluated: selectedFrames.filter(
+        (frame) => frame.intervalStatus === 'NOT_EVALUATED',
+      ).length,
+      // Compatibility counters: verifiedFrames is frame objects built; unknownFrames
+      // is the union of unverified points and unverified intervals, not a trade count.
+      verifiedFrames: selectedFrames.length,
+      unknownFrames:
+        selectedFrames.filter((frame) => frame.book === null).length +
+        selectedFrames.filter((frame) => frame.intervalStatus === 'UNKNOWN').length,
       pullbackWaiting: decisionsForReport.filter((row) => row.pullbackDisposition === 'WAITING')
         .length,
       pullbackRejected: decisionsForReport.filter(
@@ -354,11 +377,29 @@ export async function runPairedReplayRequestFile(requestPath: string): Promise<{
       fundingUnavailable: fundingEvidence === null,
     },
     observations: decisionsForReport,
-    evidenceRejections: selectedFrames.flatMap((frame) =>
-      frame.verificationStatus === 'UNKNOWN'
-        ? [{ decisionId: frame.decisionId, reason: frame.reason ?? 'UNKNOWN_EVIDENCE' }]
-        : [],
-    ),
+    evidenceRejections: selectedFrames.flatMap((frame) => [
+      ...(frame.book === null
+        ? [
+            {
+              unit: 'POINT_BOOK',
+              decisionId: frame.decisionId,
+              reason: frame.reason ?? 'UNKNOWN_POINT_BOOK',
+            },
+          ]
+        : []),
+      ...(frame.intervalStatus === 'UNKNOWN'
+        ? [
+            {
+              unit: 'INTERVAL',
+              decisionId: frame.decisionId,
+              fromDecisionId: frame.intervalFromDecisionId,
+              derivedFromPreviousPointFailure:
+                frame.intervalReason === 'PREVIOUS_FRAME_BOOK_UNAVAILABLE',
+              reason: frame.intervalReason ?? 'UNKNOWN_INTERVAL',
+            },
+          ]
+        : []),
+    ]),
     technicalErrors: selectedTechnicalErrors,
     executions: selectedExecutions,
     terminalOutcomes,
@@ -554,7 +595,8 @@ function renderSummary(report: Record<string, any>): string {
     `- Contract: \`${report.experiment.sha256}\``,
     `- Selection: ${report.request.symbol}, ${report.request.range.fromReceivedAtMs}–${report.request.range.throughReceivedAtMs} local receive ms${report.request.selection.episodeId ? `, episode \`${report.request.selection.episodeId}\`` : ''}`,
     `- Decisions: ${report.counts.decisionsRead}; symbol decisions: ${report.counts.decisionsForSymbol}; unique episodes: ${report.counts.uniqueEpisodes}`,
-    `- Frames: ${report.counts.verifiedFrames}; unknown frames: ${report.counts.unknownFrames}; technical errors: ${report.counts.technicalErrors}`,
+    `- Frames built: ${report.counts.framesBuilt}; point books: ${report.counts.pointBooksVerified} verified, ${report.counts.pointBooksUnknown} unknown`,
+    `- Intervals: ${report.counts.intervalsVerified} verified, ${report.counts.intervalsUnknown} unknown, ${report.counts.intervalsNotEvaluated} not evaluated (${report.counts.intervalsConsidered} considered); technical errors: ${report.counts.technicalErrors}`,
     '',
     '## Terminal outcomes',
     '',
