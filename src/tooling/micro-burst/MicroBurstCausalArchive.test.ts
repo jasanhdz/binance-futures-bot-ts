@@ -180,6 +180,42 @@ it('accepts exact duplicates and overlapping USD-M ranges while rejecting confli
   expect(conflicting).toMatchObject({ status: 'UNKNOWN', reason: 'DEPTH_DUPLICATE_CONFLICT' });
 });
 
+it('accepts pu-linked USD-M updates when U begins beyond the checkpoint update id', () => {
+  const checkpointInput = {
+    symbol: 'SOLUSDT',
+    receivedAtMs: 100,
+    availableAtMs: 100,
+    lastUpdateId: 100,
+    bids: [{ price: 99, qty: 10 }],
+    asks: [{ price: 101, qty: 10 }],
+  };
+  const event = (eventTime: number, U: number, u: number, pu: number) => ({
+    symbol: 'SOLUSDT',
+    type: 'depth' as const,
+    eventTime,
+    receivedAtMs: eventTime,
+    payload: {
+      symbol: 'SOLUSDT',
+      eventTime,
+      receivedAtMs: eventTime,
+      U,
+      u,
+      pu,
+      b: [['99', String(10 + u)]],
+      a: [],
+    },
+  });
+  expect(
+    replayCausalDepth(
+      checkpointInput,
+      [event(200, 110, 115, 100), event(300, 120, 125, 115)],
+      { exchangeAsOfMs: 300, receivedAsOfMs: 300 },
+      1000,
+      true,
+    ),
+  ).toMatchObject({ status: 'VERIFIED', book: { lastUpdateId: 125, appliedEventCount: 2 } });
+});
+
 it('does not consume depth events outside either the exchange or local receive cutoff', () => {
   const checkpointInput = {
     symbol: 'SOLUSDT',

@@ -302,7 +302,9 @@ export function replayCausalDepth(
     }
     if (!pending.length) break;
     const applicable = pending.filter(
-      (update) => update.pu === last && update.U <= last + 1 && update.u >= last + 1,
+      // USD-M `pu` links this update to the checkpoint/previous update. `U` is
+      // a range boundary and can start above last+1 even when the `pu` chain is intact.
+      (update) => update.pu === last && update.u >= last + 1,
     );
     if (applicable.length !== 1) return { status: 'UNKNOWN', reason: 'DEPTH_SEQUENCE_GAP' };
     const update = applicable[0];
