@@ -104,9 +104,6 @@ export function replayPairedExecutions(
   frames: readonly VerifiedReplayFrame[],
   options: PairedReplayOptions,
 ): readonly EpisodeExecution[] {
-  if (frames.length === 0) return [];
-  const config = frames[0].exitPolicyConfig;
-  const exitPolicyConfigSha256 = frames[0].exitPolicyConfigSha256;
   const { fundingEvidence, ...numbers } = options;
   if (
     (fundingEvidence !== null && !isVerifiedFundingEvidence(fundingEvidence)) ||
@@ -122,6 +119,9 @@ export function replayPairedExecutions(
     options.exitDelayMs < 0
   )
     throw new Error('INVALID_REPLAY_OPTIONS');
+  if (frames.length === 0) return Object.freeze([]);
+  const config = frames[0].exitPolicyConfig;
+  const exitPolicyConfigSha256 = frames[0].exitPolicyConfigSha256;
   const results: EpisodeExecution[] = [];
   const audit = (
     decisionAtMs: number,
@@ -193,6 +193,8 @@ export function replayPairedExecutions(
       if (
         !Number.isFinite(frame.atMs) ||
         frame.atMs <= previous ||
+        !Number.isFinite(frame.decisionAvailableAtMs) ||
+        frame.decisionAvailableAtMs < frame.atMs ||
         frame.observation.observedAtMs !== frame.atMs ||
         frame.evidenceContractSha256 !== MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256
       )
@@ -312,7 +314,7 @@ export function replayPairedExecutions(
             sourceDecisionInputSha256: frame.decisionInputSha256,
             sourceReplayFrameSha256: frame.evidenceSha256,
             sourcePullbackObservationSha256: frame.observation.evidenceSha256,
-            signalAtMs: frame.atMs,
+            signalAtMs: frame.decisionAvailableAtMs,
             signalExchangeAsOfMs: frame.exchangeAsOfMs,
             status: 'UNKNOWN',
             reason: frame.reason ?? 'SIGNAL_BOOK_UNVERIFIED',
@@ -337,7 +339,7 @@ export function replayPairedExecutions(
           sourceDecisionInputSha256: frame.decisionInputSha256,
           sourceReplayFrameSha256: frame.evidenceSha256,
           sourcePullbackObservationSha256: frame.observation.evidenceSha256,
-          signalAtMs: frame.atMs,
+          signalAtMs: frame.decisionAvailableAtMs,
           signalExchangeAsOfMs: frame.exchangeAsOfMs,
           status: 'PENDING',
         };
@@ -494,7 +496,7 @@ export function replayPairedExecutions(
       active.trough = Math.min(active.trough, quote);
       if (active.closeAt === undefined) {
         if (sign * (quote - active.stop) <= 0) {
-          active.closeAt = frame.atMs + options.exitDelayMs;
+          active.closeAt = frame.decisionAvailableAtMs + options.exitDelayMs;
           active.closeExchangeAsOfMs = frame.exchangeAsOfMs;
           r.reason = 'STOP_TOUCHED';
         } else {
@@ -523,7 +525,7 @@ export function replayPairedExecutions(
           if (decision.action === 'MOVE_STOP' && decision.requestedStopPrice !== undefined)
             active.stop = decision.requestedStopPrice;
           if (decision.action === 'CLOSE_MARKET') {
-            active.closeAt = frame.atMs + options.exitDelayMs;
+            active.closeAt = frame.decisionAvailableAtMs + options.exitDelayMs;
             active.closeExchangeAsOfMs = frame.exchangeAsOfMs;
             r.reason = decision.reason;
           }

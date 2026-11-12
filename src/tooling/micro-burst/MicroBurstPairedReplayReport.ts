@@ -23,7 +23,9 @@ export interface PairedReplayReport {
   terminalOutcomes: readonly {
     episodeId: string;
     current: string;
+    currentReason: string | null;
     pullback: string;
+    pullbackReason: string | null;
     pullbackSelection: string;
     executionKind: 'MODELLED_BOOK_VWAP_NOT_REAL_FILL';
   }[];
@@ -45,10 +47,12 @@ interface Group {
 export function summarizePairedReplay(
   frames: readonly VerifiedReplayFrame[],
   results: readonly EpisodeExecution[],
+  episodeFilter?: ReadonlySet<string>,
 ): PairedReplayReport {
   const episodes = new Set<string>();
   const accepted = new Set<string>();
   const lastSelection = new Map<string, PullbackObservation['disposition']>();
+  const lastSelectionReason = new Map<string, string>();
   const verifiedFrameHashes = new Map<string, VerifiedReplayFrame>();
   const verifiedIntervalHashes = new Set<string>();
   let baselineRejectedObservations = 0;
@@ -65,8 +69,10 @@ export function summarizePairedReplay(
     }
     const id = baseline.diagnostics.episodeId;
     if (typeof id !== 'string') continue;
+    if (episodeFilter && !episodeFilter.has(id)) continue;
     episodes.add(id);
     lastSelection.set(id, frame.observation.disposition);
+    lastSelectionReason.set(id, frame.observation.reason);
     if (frame.observation.disposition === 'QUALIFIED') accepted.add(id);
   }
   const records = new Map<string, EpisodeExecution>();
@@ -164,6 +170,12 @@ export function summarizePairedReplay(
       throw new Error('NON_MODELLED_EXECUTION_IN_RESEARCH_REPORT');
     if (row.status === 'CLOSED') return 'MODELLED_CLOSED';
     if (row.status === 'UNFILLED') return 'UNFILLED';
+    if (row.status === 'UNKNOWN' && row.entryAtMs === undefined)
+      return 'ACCEPTED_WITHOUT_MODELLED_EXECUTION';
+    if (row.status === 'UNKNOWN' && row.reason === 'END_OF_COVERAGE')
+      return 'SESSION_ENDED_WITH_FOLLOW_UP_PENDING';
+    if (row.status === 'UNKNOWN' && row.entryAtMs !== undefined)
+      return 'UNKNOWN_TOTAL_AFTER_MODELLED_ENTRY';
     return 'UNKNOWN_OR_INCOMPLETE';
   };
   return {
@@ -172,13 +184,19 @@ export function summarizePairedReplay(
     evidenceContractSha256: MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256,
     baselineRejectedObservations,
     independentBaselineEpisodes: episodes.size,
-    terminalOutcomes: [...episodes].map((episodeId) => ({
-      episodeId,
-      current: terminal(records.get(`CURRENT:${episodeId}`)),
-      pullback: terminal(records.get(`PULLBACK:${episodeId}`), lastSelection.get(episodeId)),
-      pullbackSelection: lastSelection.get(episodeId) ?? 'NO_OBSERVATION',
-      executionKind: 'MODELLED_BOOK_VWAP_NOT_REAL_FILL',
-    })),
+    terminalOutcomes: [...episodes].map((episodeId) => {
+      const current = records.get(`CURRENT:${episodeId}`);
+      const pullback = records.get(`PULLBACK:${episodeId}`);
+      return {
+        episodeId,
+        current: terminal(current),
+        currentReason: current?.reason ?? null,
+        pullback: terminal(pullback, lastSelection.get(episodeId)),
+        pullbackReason: pullback?.reason ?? lastSelectionReason.get(episodeId) ?? null,
+        pullbackSelection: lastSelection.get(episodeId) ?? 'NO_OBSERVATION',
+        executionKind: 'MODELLED_BOOK_VWAP_NOT_REAL_FILL' as const,
+      };
+    }),
     selection: {
       accepted: summarize(acceptedEpisodes, 'CURRENT'),
       rejected: summarize(rejectedEpisodes, 'CURRENT'),

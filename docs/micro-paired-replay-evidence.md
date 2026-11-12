@@ -172,3 +172,150 @@ DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run \
 La suite omite `data/**` deliberadamente: los directorios de captura son evidencia,
 no archivos de prueba del proyecto. La ejecución sintética no certifica el contenido
 de `collector-20261002-v2` ni la integridad económica de ningún episodio real.
+
+## Recorrido pareado offline conectado
+
+`MicroBurstPairedReplayCli.ts` y `MicroBurstPairedReplayOrchestrator.ts` conectan ahora
+la sesión cerrada, las decisiones verificadas, el selector con persistencia, los frames
+verificados, el replay independiente y el reporte. No importan adapters de Exchange,
+TradingService ni código de runtime. La sesión fuente se abre read-only; los dos outputs
+se escriben fuera de todo el árbol del colector, con creación exclusiva para no pisar una
+ejecución anterior.
+
+La entrada es un request JSON V1 y requiere rango local explícito de recepción, símbolo,
+criterio de episodio opcional, horizonte de selección explícito o `null`, contrato de
+evidencia y supuestos económicos:
+
+```json
+{
+  "schema": "MICRO_PAIRED_ARCHIVE_REPLAY_REQUEST_V1",
+  "captureRoot": "/data/local/compatible-collector",
+  "outputDir": "/tmp/micro-paired-results/run-001",
+  "symbol": "SOLUSDT",
+  "range": {
+    "fromReceivedAtMs": 1790982000000,
+    "throughReceivedAtMs": 1790982600000
+  },
+  "selection": {
+    "episodeId": "MB-EP-example-or-omit-this-property",
+    "selectionHorizonMs": null
+  },
+  "experiment": {
+    "schema": "MICRO_PAIRED_REPLAY_EVIDENCE_V1",
+    "sha256": "6fd9cab7fb47bfabc2706c9e32b574fcacc9a5503b2428d436f2a29300aadb67"
+  },
+  "execution": {
+    "riskBudgetUsdt": 1,
+    "maxNotionalUsdt": 100,
+    "quantityStep": 0.001,
+    "minNotionalUsdt": 1,
+    "feeBpsPerSide": 5,
+    "adverseSlippageBps": 1,
+    "entryDelayMs": 1000,
+    "exitDelayMs": 1000
+  }
+}
+```
+
+Quita `episodeId` para procesar todos los episodios elegibles del rango. El request admite
+hasta 10 minutos y 20.000 decisiones; los segmentos comprimidos se verifican en streaming,
+y sólo se retienen decisiones del rango/símbolo y sus frames. El índice autenticado de
+decisiones conserva metadatos de identidad para rechazar duplicados y decisiones omitidas.
+El rango se aplica a `evaluatedAtReceivedMs` (disponibilidad local de la decisión); el frame
+conserva por separado `observedAtMs` y reloj exchange del input. La demora de orden empieza
+en la disponibilidad de la decisión/confirmación, no en un timestamp de contexto anterior.
+`selectionHorizonMs` es una regla explícita de investigación, contada desde la disponibilidad
+de la primera señal CURRENT del episodio. Con `null`, un `WAIT` al final permanece incompleto;
+nunca se reetiqueta como rechazo.
+
+Comando:
+
+```bash
+DOTENV_CONFIG_PATH=/dev/null npm run micro-burst:paired-replay -- /tmp/paired-request.json
+```
+
+También se puede invocar `npx ts-node
+src/tooling/micro-burst/MicroBurstPairedReplayCli.ts /tmp/paired-request.json`. El
+contrato admitido es `MICRO_BURST_CAPTURE_SESSION_V1` más artefacto productor
+`MICRO_COLLECTOR_FROZEN_V2`; una captura/manifiesto V1 no se convierte ni se admite por
+compatibilidad aproximada. Rechaza manifiestos incompatibles, límites no finitos, rangos
+fuera de sesión, exceso de decisiones, contrato alterado y salida dentro del colector.
+
+Produce `report.json` (hashes, revisiones/configs, decisiones/observaciones, rechazos,
+trazas de ejecución, terminales y denominadores) y `summary.md`. Estados terminales
+distinguen `REJECTED_BY_SELECTOR`, `SELECTION_WINDOW_EXPIRED_WITHOUT_QUALIFICATION`,
+`WAITING_AT_END_OF_CAPTURE`, `UNFILLED`, `MODELLED_CLOSED`,
+`ACCEPTED_WITHOUT_MODELLED_EXECUTION`, `UNKNOWN_TOTAL_AFTER_MODELLED_ENTRY`,
+`SESSION_ENDED_WITH_FOLLOW_UP_PENDING`, `UNKNOWN_OR_INCOMPLETE`, `TECHNICAL_ERROR` e
+incompletitud tras calificación. Cada terminal incluye el motivo; cuando no hay episodios,
+el comando termina con `NO_ELIGIBLE_EPISODES`, terminales vacíos y medias `null`, no cero.
+Huecos conservan cualquier entrada ya modelada, pero no conceden PnL de cierre. Los resultados cerrados para medias y diferencias son sólo el subconjunto
+`MODELLED_CLOSED`; el reporte da denominadores y lista exclusiones para cada media y el
+delta pareado.
+El `sourceTreeSha256` del ejecutor incluye el commit y cambios locales de las dependencias
+Micro relevantes; el reporte también fija `sourceWorktreeDirty`, versión Node, hash del
+contrato, configuración de salida por decisión, supuestos de coste y sizing.
+
+CURRENT reejecuta la entrada exacta almacenada bajo la revisión de evaluador admitida,
+exige concordancia campo por campo con la decisión original y registra revisión/config.
+Una discrepancia es `TECHNICAL_ERROR` y bloquea todo el episodio en ambas variantes.
+El reporte lo denomina reevaluación de inputs capturados, no ejecución exacta del binario
+histórico. PULLBACK recorre las observaciones realmente guardadas, usa el estado de
+persistencia existente y reinicia con evidencia insuficiente; no interpola decisiones.
+Los IDs de episodio del baseline deduplican repeticiones; hay como máximo una operación
+por episodio y variante.
+
+La salida del motor de cierre sólo observa los frames de decisiones guardados, aunque los
+intervalos depth entre ellos sean verificados. No se afirma que se hayan reconstruido el
+contexto del motor ni todos los eventos de disparo de stop/salida entre frames. Un cierre
+es un cierre **modelado sobre frames observados**, no una reproducción fiel del stop
+exchange, latencia/cola, impacto, margen LIVE o protección. Sizing es el presupuesto común
+de riesgo del experimento, no sizing LIVE por margen.
+
+### Recorrido sintético reproducible
+
+Las pruebas de CLI crean una sesión mínima mediante los fixtures de captura verificados,
+la abren por el mismo `openVerifiedCaptureSession` público y llaman
+`runPairedReplayRequestFile`, que es la entrada que usa la CLI. CURRENT y PULLBACK tienen
+fills distintos y pueden cerrarse bajo un `exitMaxHoldMs` explícito e idéntico en el replay
+capturado; otras fixtures cubren rechazo, WAIT con/sin horizonte, oportunidad desaparecida,
+depth insuficiente, discontinuidad, hueco con posición, fin temprano, cero episodios,
+manifiesto incompatible, discrepancia del evaluador, filtro por episodio y determinismo.
+La decisión fixture se inyecta con `evaluateMicroBurstReactionEntry` en el generador de
+pruebas; no se presenta como señal de mercado. El código de producción reutiliza el
+evaluador autorizado y exige que reproduzca la decisión almacenada.
+
+Reproducir esa fixture:
+
+```bash
+TMPDIR=/tmp/opencode DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run \
+  --config src/testing/OfflineVitest.config.ts \
+  src/tooling/micro-burst/MicroBurstPairedReplayCli.test.ts \
+  --maxWorkers=1 --no-file-parallelism
+```
+
+Ejemplo del reporte de fixture: `COMPLETED`, 8 decisiones y 1 episodio único; CURRENT
+entra en `BASE+1000 ms`, PULLBACK entra tras la confirmación en `BASE+4000 ms`, y ambos
+cierran bajo el horizonte corto de salida fijado en esa fixture. La comparación etiqueta
+1 par cerrado como VWAP modelado. Eso sólo demuestra el recorrido de software con inputs
+sintéticos.
+
+### Comprobación explícita del defecto original
+
+| Requisito                                                          | Implementación                                                                                                                                                        | Regresión que lo demuestra                                                                                                                                                             | Resultado                                                                            |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Cobertura de todo el intervalo, no mera intersección de segmentos  | `verifyVerifiedDecisionInterval()` reconstituye desde checkpoint preintervalo y exige libro inicial/final, actualizaciones causales, trades y decisiones consecutivas | `rejects a segment that overlaps an interval when no checkpoint proves its start`; `rejects a pu discontinuity hidden by adjacent segment time ranges`                                 | Pasa; un segmento que sólo solapa no basta y un `pu` roto devuelve `UNKNOWN`         |
+| Puente checkpoint → updates con continuidad USD-M                  | `replayCausalDepth()` encadena `U/u/pu`, ordena por recepción causal y contrasta ambos estados                                                                        | `accepts exact duplicates and overlapping USD-M ranges while rejecting conflicting duplicates`; `uses a reconnect checkpoint only as a new point and never fills across the prior gap` | Pasa; duplicado conflictivo/hueco no genera estado ejecutable                        |
+| Checkpoint posterior no repara el tramo anterior                   | El intervalo exige un checkpoint disponible antes del inicio y verifica entre decisiones; un nuevo checkpoint sólo habilita un frame punto                            | `uses a reconnect checkpoint only as a new point and never fills across the prior gap`                                                                                                 | Pasa; el primer tramo queda unknown y sólo el posterior puede verificarse            |
+| Libro ligado a símbolo, decisión, contenido y manifiesto de sesión | `readVerifiedExecutionBookForDecision()`, `assertVerifiedDecisionInSession()` y `buildVerifiedReplayFrame()` comparan IDs, hashes, símbolo, clocks y sesión           | `does not let a frame use an observation from a different verified decision`; `does not let a verified decision or frame cross capture sessions`                                       | Pasa; rechazos antes de producir frame aceptable                                     |
+| Event time, receive time y disponibilidad del checkpoint           | `replayCausalDepth()` limita ambos clocks; query de checkpoint requiere `created_at_ms <= decision.observedAtMs`                                                      | `does not consume depth events outside either the exchange or local receive cutoff`; `rejects a depth checkpoint that was persisted after the decision became available`               | Pasa; eventos fuera de cualquiera de los clocks y checkpoints futuros quedan unknown |
+| Disponibilidad real de decisión frente al timestamp del contexto   | El frame registra `decisionAvailableAtMs`; señales y demoras comienzan allí, manteniendo `atMs`/book ligado al contexto recibido                                      | `starts delays from decision availability, not an earlier context observation timestamp`; `preserves distinct exchange-event and local-receive clocks in a verified point frame`       | Pasa; una decisión disponible 500 ms después no puede ejecutar como si ya existiera  |
+| Frescura fija y no ampliable por frame                             | `MICRO_PAIRED_REPLAY_EVIDENCE_V1` fija 30 s desde config CURRENT; constructor no acepta `maxAgeMs` del caller                                                         | `does not let a caller-selected freshness allowance certify an old book`; `preserves distinct exchange-event and local-receive clocks in a verified point frame`                       | Pasa; el límite alterado no puede certificar libro antiguo                           |
+| Unknown no certifica nuevos fills ni resultado total               | `replayPairedExecutions()` exige intervalo verificado tras señal; gaps invalidan posición abierta sin borrar fill previo ni producir PnL terminal                     | `reconnect checkpoint...`; `marks loss of archived depth coverage unknown and never turns it into zero PnL`; integración CLI de gap antes/después de entrada                           | Pasa; estado unknown y PnL ausente                                                   |
+| Freeze/hash sólo se aplican después de verificar                   | WeakSet y congelado protegen identidad/mutación en proceso, mientras todas las pruebas causales anteriores evalúan el contenido fuente                                | rechazo de frame clonado/resultado caller-authored en `MicroBurstCausalArchive.test.ts`; pruebas de gaps, timestamps, continuidad y frescura arriba                                    | Pasa; la marca no reemplaza verificación de archivo                                  |
+
+La carpeta histórica `data/micro-burst/collector-20261002-v2/` declara realmente
+`MICRO_COLLECTOR_FROZEN_V1`; no satisface el productor V2 requerido y se deja intacta.
+No se ha verificado una sesión real compatible con episodio, por lo que la validación de
+mercado real permanece pendiente. No hace falta reprocesar el archivo grande para esta
+demostración.

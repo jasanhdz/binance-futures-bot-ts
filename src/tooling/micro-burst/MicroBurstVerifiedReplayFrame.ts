@@ -37,6 +37,7 @@ export interface VerifiedReplayFrame {
   readonly decisionId: string;
   readonly symbol: string;
   readonly atMs: number;
+  readonly decisionAvailableAtMs: number;
   readonly exchangeAsOfMs: number;
   readonly sourceArtifactHash: string;
   readonly sessionManifestSha256: string;
@@ -113,6 +114,7 @@ export async function buildVerifiedReplayFrame(
   const replay = replayResult.replay;
   const observedAtMs = replay.context.observedAtMs;
   const exchangeAsOfMs = replay.context.exchangeObservedAtMs;
+  const decisionAvailableAtMs = decision.evaluatedAtReceivedMs;
   const decisionInputSha256 = sha256(canonical(decision));
   const evidenceContractSha256 = MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256;
   const exitPolicyConfig = deepFreeze(replayResult.replay.config);
@@ -120,6 +122,9 @@ export async function buildVerifiedReplayFrame(
   if (
     !Number.isFinite(observedAtMs) ||
     !Number.isFinite(exchangeAsOfMs) ||
+    !Number.isFinite(decisionAvailableAtMs) ||
+    decisionAvailableAtMs! < observedAtMs! ||
+    decisionAvailableAtMs! > session.completedAtMs ||
     observation.sourceDecisionId !== decision.decisionId ||
     observation.symbol !== decision.symbol ||
     observation.observedAtMs !== observedAtMs ||
@@ -137,6 +142,7 @@ export async function buildVerifiedReplayFrame(
       previous.sessionManifestSha256 !== session.manifestSha256 ||
       previous.symbol !== decision.symbol ||
       previous.atMs >= observedAtMs! ||
+      previous.decisionAvailableAtMs >= decisionAvailableAtMs! ||
       previous.exchangeAsOfMs >= exchangeAsOfMs!)
   )
     throw new Error('REPLAY_FRAME_PREVIOUS_IDENTITY_OR_CLOCK_MISMATCH');
@@ -180,6 +186,7 @@ export async function buildVerifiedReplayFrame(
     decisionId: decision.decisionId,
     symbol: decision.symbol,
     atMs: observedAtMs!,
+    decisionAvailableAtMs: decisionAvailableAtMs!,
     exchangeAsOfMs: exchangeAsOfMs!,
     sourceArtifactHash: session.artifactHash,
     sessionManifestSha256: session.manifestSha256,
@@ -202,6 +209,7 @@ export async function buildVerifiedReplayFrame(
         decisionId: decision.decisionId,
         symbol: decision.symbol,
         atMs: observedAtMs,
+        decisionAvailableAtMs,
         exchangeAsOfMs,
         sourceArtifactHash: session.artifactHash,
         sessionManifestSha256: session.manifestSha256,

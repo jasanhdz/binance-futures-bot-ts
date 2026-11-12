@@ -535,9 +535,16 @@ export async function readVerifiedDecisionRecords(
   session: VerifiedCaptureSession,
   fromMs = session.startedAtMs,
   throughMs = session.completedAtMs,
+  maxRecords = Number.POSITIVE_INFINITY,
 ): Promise<StrategyDecisionEvidenceV2[]> {
   assertVerifiedSession(session);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(throughMs) || throughMs < fromMs)
+  if (
+    !Number.isFinite(fromMs) ||
+    !Number.isFinite(throughMs) ||
+    throughMs < fromMs ||
+    (!(maxRecords === Number.POSITIVE_INFINITY) &&
+      (!Number.isSafeInteger(maxRecords) || maxRecords <= 0))
+  )
     throw new Error('INVALID_DECISION_READ_RANGE');
   const rows = new Map<string, StrategyDecisionEvidenceV2>();
   for (const source of session.decisionFiles) {
@@ -571,6 +578,8 @@ export async function readVerifiedDecisionRecords(
         const previous = rows.get(record.decisionId);
         if (previous && canonical(previous) !== canonical(record))
           throw new Error(`CONFLICTING_CAPTURED_DECISION:${record.decisionId}`);
+        if (!previous && rows.size >= maxRecords)
+          throw new Error('DECISION_READ_RECORD_CAP_EXCEEDED');
         const frozen = deepFreeze(record);
         verifiedDecisionRecords.add(frozen);
         rows.set(record.decisionId, frozen);

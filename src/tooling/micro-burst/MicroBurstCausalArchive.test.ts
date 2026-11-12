@@ -13,6 +13,7 @@ import {
   type ArchiveEvent,
 } from './MicroBurstCausalArchive';
 import {
+  readVerifiedExecutionBookForDecision,
   readVerifiedDecisionRecords,
   readVerifiedFundingEvidence,
 } from './MicroBurstCaptureSession';
@@ -404,6 +405,34 @@ async function coverageSession(input: {
   return { ...capture, decision: verifiedRecords[0], records: verifiedRecords };
 }
 
+it('rejects a depth checkpoint that was persisted after the decision became available', async () => {
+  const decision = makeSyntheticDecisionRecord(BASE + 1000);
+  const capture = await createSyntheticCaptureSession({
+    startedAtMs: BASE - 120_000,
+    completedAtMs: BASE + 90_000,
+    storageNowMs: BASE - 120_000,
+    trades: coverageTrades(),
+    depth: [depthEvent(BASE + 750, 1001, 1000)],
+    checkpoints: [
+      {
+        ...checkpoint(BASE + 500, 1000),
+        persistedAtMs: BASE + 1500,
+      },
+    ],
+    decisionRecords: [decision],
+  });
+  try {
+    const [record] = await readVerifiedDecisionRecords(capture.session, BASE, BASE + 2000);
+    const assessment = await readVerifiedExecutionBookForDecision(capture.session, record);
+    expect(assessment).toMatchObject({
+      status: 'UNKNOWN',
+      reason: 'DEPTH_CHECKPOINT_MISSING_OR_NOT_YET_AVAILABLE',
+    });
+  } finally {
+    capture.cleanup();
+  }
+});
+
 it('rejects a segment that overlaps an interval when no checkpoint proves its start', async () => {
   const capture = await coverageSession({
     decisionTimes: [BASE + 1000, BASE + 5000],
@@ -653,9 +682,14 @@ it('rejects mixing recorded CURRENT exit-policy configs in one paired replay', a
 });
 
 it('preserves distinct exchange-event and local-receive clocks in a verified point frame', async () => {
-  const decision = makeSyntheticDecisionRecord(BASE + 1000, 'LONG', 'SOLUSDT', {
+  const original = makeSyntheticDecisionRecord(BASE + 1000, 'LONG', 'SOLUSDT', {
     exchangeClockOffsetMs: 120_000,
   });
+  const decision = {
+    ...original,
+    evaluatedAtReceivedMs: BASE + 1500,
+    recordedAtMs: BASE + 1501,
+  };
   const capture = await createSyntheticCaptureSession({
     startedAtMs: BASE - 120_000,
     completedAtMs: BASE + 90_000,
@@ -672,6 +706,7 @@ it('preserves distinct exchange-event and local-receive clocks in a verified poi
     expect(frame.verificationStatus).toBe('VERIFIED_POINT');
     expect(frame.exchangeAsOfMs).toBe(BASE + 121_000);
     expect(frame.atMs).toBe(BASE + 1000);
+    expect(frame.decisionAvailableAtMs).toBe(BASE + 1500);
     expect(frame.book?.exchangeAsOfMs).toBe(BASE + 121_000);
     expect(frame.book?.receivedAsOfMs).toBe(BASE + 1000);
   } finally {
@@ -852,7 +887,7 @@ it('keeps a CURRENT modelled position unknown when the verified session ends bef
     expect(current?.netPnlUsdt).toBeUndefined();
     const report = summarizePairedReplay(frames, results);
     expect(report.terminalOutcomes[0]).toMatchObject({
-      current: 'UNKNOWN_OR_INCOMPLETE',
+      current: 'SESSION_ENDED_WITH_FOLLOW_UP_PENDING',
       pullbackSelection: 'WAITING',
       pullback: 'WAITING_AT_END_OF_CAPTURE',
     });
@@ -921,7 +956,7 @@ it('marks loss of archived depth coverage unknown and never turns it into zero P
     ).toBe(true);
     const report = summarizePairedReplay(frames, results);
     expect(report.operable.pairedClosedEpisodes).toBe(0);
-    expect(report.terminalOutcomes[0].current).toBe('UNKNOWN_OR_INCOMPLETE');
+    expect(report.terminalOutcomes[0].current).toBe('UNKNOWN_TOTAL_AFTER_MODELLED_ENTRY');
   } finally {
     capture.cleanup();
   }
