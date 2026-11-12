@@ -62,9 +62,21 @@ describe('StrategyDecisionBlackBox', () => {
     expect(record.marketSnapshotId).toBe('snapshot-1');
     expect(record.strategy.strategyId).toBe('MICRO_BURST');
     expect(record.decision).toBe('ENTRY_INTENT');
+    expect(record.evaluationStatus).toBeUndefined();
     expect(record.evaluatedAtReceivedMs).toBe(950);
     expect(record.strategyTimestampMs).toBe(100);
     expect(record.provenance.causalClock).toBe('LOCAL_RECEIVE_TIME');
+  });
+
+  it('preserves the normalized evaluation outcome independently from the decision action', () => {
+    const record = createDecisionEvidenceV2(
+      snapshot(),
+      decision({ decision: 'NO_TRADE', evaluationStatus: 'WAIT', reason: 'warming_up' }),
+      storedSnapshotReference(),
+      1_010,
+      950,
+    );
+    expect(record).toMatchObject({ decision: 'NO_TRADE', evaluationStatus: 'WAIT' });
   });
 
   it('rejects a snapshot captured after the local receive-time evaluation boundary', () => {

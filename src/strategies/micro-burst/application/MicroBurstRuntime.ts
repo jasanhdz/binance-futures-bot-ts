@@ -198,6 +198,12 @@ export interface MicroBurstRuntimeDeps {
   marketStorage?: {
     appendTrade?(event: Record<string, unknown>): boolean;
     appendDepth(event: Record<string, unknown>): boolean;
+    getPersistenceWatermark?(): {
+      storageGenerationId: string;
+      appendedArchiveSequence: number;
+      checkpointSequence: number;
+      sampledAtMonotonicMs: number;
+    };
     recordGap?(gap: {
       symbol: string;
       startedAtMs: number;
@@ -430,6 +436,7 @@ export class MicroBurstRuntime {
                   U: depth.U,
                   u: depth.u,
                   pu: depth.pu,
+                  localCausality: depth.localCausality,
                   b: depth.bids,
                   a: depth.asks,
                 });
@@ -488,6 +495,7 @@ export class MicroBurstRuntime {
                   aggregateTradeId: trade.aggregateTradeId,
                   firstTradeId: trade.firstTradeId,
                   lastTradeId: trade.lastTradeId,
+                  localCausality: trade.localCausality,
                 }),
               onStatus,
             );
@@ -505,6 +513,7 @@ export class MicroBurstRuntime {
           symbol,
           eventTime: event.eventTime,
           receivedAtMs: event.receivedAtMs ?? this.deps.clock.now(),
+          localCausality: event.localCausality,
           price: event.price,
           quantity: event.quantity,
           isBuyerMaker: event.isBuyerMaker,
@@ -628,6 +637,8 @@ export class MicroBurstRuntime {
         logger,
         clock,
         getServerTime: () => exchange.getServerTime(),
+        getArchivePersistenceWatermark: () =>
+          this.deps.marketStorage?.getPersistenceWatermark?.() ?? null,
       },
       this.config,
     );
@@ -1376,6 +1387,7 @@ export class MicroBurstRuntime {
         lastUpdateId: snapshot.lastUpdateId,
         bids: snapshot.bidDepth,
         asks: snapshot.askDepth,
+        localCausality: snapshot.localCausality ?? null,
       })
     )
       return;

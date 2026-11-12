@@ -1,4 +1,5 @@
 import { Logger } from '../../app/ports/Logger';
+import { processLocalCausalSequence } from '../../core/market-data/LocalCausalWatermark';
 import {
   MarketDataEndpointConfig,
   MarketDataEndpointDescriptor,
@@ -31,6 +32,7 @@ type Route = {
 
 /** Multiplexes public and market feeds into one socket per Binance route. */
 export class CombinedMarketDataHub {
+  private readonly causalSequence = processLocalCausalSequence();
   private readonly endpoint: MarketDataEndpointConfig;
   private readonly reconnectDelayMs: number;
   private readonly watchdogTimeoutMs: number;
@@ -232,11 +234,12 @@ export class CombinedMarketDataHub {
       if (!stream) return;
       stream.lastMessageAtMs = receivedAtMs;
       const payload = message.data ?? message;
+      const causal = this.causalSequence.receive(generation);
       for (const consumer of stream.consumers) {
         try {
           consumer(
             payload !== null && typeof payload === 'object'
-              ? { ...payload, receivedAtMs }
+              ? { ...payload, receivedAtMs, localCausality: causal }
               : payload,
           );
         } catch (error) {

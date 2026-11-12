@@ -1,4 +1,5 @@
 import { Side } from '../../../core/types';
+import type { StrategyEvaluationStatus } from '../../../core/strategy/EntryStrategy';
 import { BookDataStatus, BtcDataStatus } from '../domain/MicroBurstTypes';
 
 export interface MicroBurstShadowEvaluationResult {
@@ -7,6 +8,7 @@ export interface MicroBurstShadowEvaluationResult {
   symbol: string;
   snapshotAtMs: number;
   decision: 'NO_TRADE' | 'ENTRY_INTENT';
+  evaluationStatus?: StrategyEvaluationStatus;
   side?: Side;
   confidence: number;
   referencePrice: number;
@@ -57,6 +59,7 @@ export interface MicroBurstShadowTelemetryLog {
   symbol: string;
   snapshotAtMs: number;
   decision: 'NO_TRADE' | 'ENTRY_INTENT';
+  evaluationStatus?: StrategyEvaluationStatus;
   side?: Side;
   confidence: number;
   referencePrice: number;

@@ -118,6 +118,7 @@ export class SharedMarketDataRuntime {
                 aggregateTradeId: trade.aggregateTradeId,
                 firstTradeId: trade.firstTradeId,
                 lastTradeId: trade.lastTradeId,
+                localCausality: trade.localCausality,
               }),
             onStatus,
           );

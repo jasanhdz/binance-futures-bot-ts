@@ -52,7 +52,16 @@ describe('AggTradeDataPlane', () => {
     expect(first.state).toBe(second.state);
     expect(stream.subscribe).toHaveBeenCalledTimes(1);
     expect(first.state.getTakerFlow().tradeCount).toBe(1);
-    expect(firstEvent).toHaveBeenCalledWith(TRADE);
+    expect(firstEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ...TRADE,
+        localCausality: expect.objectContaining({
+          processGenerationId: expect.any(String),
+          connectionGeneration: 1,
+          receiveSequence: expect.any(Number),
+        }),
+      }),
+    );
 
     first.release();
     expect(stream.unsubscribe).not.toHaveBeenCalled();

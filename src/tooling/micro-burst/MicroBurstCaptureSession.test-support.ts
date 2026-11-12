@@ -4,6 +4,10 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Side } from '../../core/types';
 import type { StrategyDecisionEvidenceV2 } from '../../core/blackbox/StrategyDecisionBlackBox';
+import type {
+  LocalCausalContextEvidence,
+  LocalCausalStateWatermark,
+} from '../../core/market-data/LocalCausalWatermark';
 import { hashTree, verifyFrozenCollectorArtifact } from './MicroBurstCollectorFreeze';
 import {
   openVerifiedCaptureSession,
@@ -53,6 +57,7 @@ export interface SyntheticCaptureInput {
   readonly decisionRecords?: readonly StrategyDecisionEvidenceV2[];
   readonly rawRestRecords?: readonly Record<string, unknown>[];
   readonly eventRecords?: readonly Record<string, unknown>[];
+  readonly bindLocalCausalPersistence?: boolean;
   readonly storageNowMs?: number;
   readonly maxActiveSegmentRecords?: number;
   readonly fundingEvidenceRecords?: readonly Record<string, unknown>[];
@@ -83,6 +88,8 @@ export function makeSyntheticDecisionRecord(
     exchangeClockOffsetMs?: number;
     exchangeClockLowerBoundOffsetMs?: number;
     bookObservedAtOffsetMs?: number;
+    bookCausalState?: LocalCausalStateWatermark;
+    localCausalContext?: LocalCausalContextEvidence;
     book?: { bid: number; ask: number; bidQty?: number; askQty?: number };
     bookDepth?: {
       bidDepth: readonly { price: number; qty: number }[];
@@ -206,7 +213,20 @@ export function makeSyntheticDecisionRecord(
     askDepth: options.bookDepth?.askDepth.map((level) => ({ ...level })) ?? [
       { price: options.book?.ask ?? 100.01, qty: options.book?.askQty ?? 100 },
     ],
+    ...(options.bookCausalState ? { localCausality: options.bookCausalState } : {}),
   };
+  if (options.localCausalContext) {
+    strategyContext.inputCaptureTiming = {
+      captureStartedAtMs: atMs - 50,
+      capturedAtMs: atMs,
+      captureDurationMs: 50,
+      timestampClock: 'LOCAL_RECEIVE_TIME',
+      durationClock: 'MONOTONIC',
+      contextCaptureAtMonotonicMs: options.localCausalContext.captureMonotonicAtMs,
+      decisionAtMonotonicMs: options.localCausalContext.captureMonotonicAtMs ?? undefined,
+      localCausalContext: options.localCausalContext,
+    };
+  }
   if (options.rejectBaseline) context.dataQuality.contextValid = false;
   const baseline = evaluateMicroBurstReactionEntry(
     context,
@@ -354,9 +374,21 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
         feed: gap.feed,
       });
     if (!storage.close()) throw new Error('SYNTHETIC_CAPTURE_STORAGE_CLOSE_FAILED');
+    const persistenceWatermark = storage.getPersistenceWatermark();
     const decisionRecords = (input.decisionRecords ?? []).map((record) => ({
       ...record,
       strategy: { ...record.strategy, configHash: `sha256:${configHash}` },
+      ...(input.bindLocalCausalPersistence
+        ? {
+            diagnostics: {
+              ...record.diagnostics,
+              strategyInputReplay: bindReplayPersistenceWatermark(
+                record.diagnostics?.strategyInputReplay,
+                persistenceWatermark,
+              ),
+            },
+          }
+        : {}),
     }));
     if (decisionRecords.length)
       writeFileSync(
@@ -466,4 +498,28 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
     rmSync(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+function bindReplayPersistenceWatermark(value: unknown, persistenceWatermark: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  const replay = value as Record<string, any>;
+  if (!replay.context || typeof replay.context !== 'object') return value;
+  const context = replay.context as Record<string, any>;
+  if (!context.inputCaptureTiming || typeof context.inputCaptureTiming !== 'object') return value;
+  const inputCaptureTiming = context.inputCaptureTiming as Record<string, any>;
+  const localCausalContext = inputCaptureTiming.localCausalContext;
+  if (!localCausalContext || typeof localCausalContext !== 'object') return value;
+  return {
+    ...replay,
+    context: {
+      ...context,
+      inputCaptureTiming: {
+        ...inputCaptureTiming,
+        localCausalContext: {
+          ...localCausalContext,
+          archivePersistence: persistenceWatermark,
+        },
+      },
+    },
+  };
 }

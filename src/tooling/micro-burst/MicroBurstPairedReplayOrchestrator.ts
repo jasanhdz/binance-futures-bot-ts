@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import type { StrategyEvaluationStatus } from '../../core/strategy/EntryStrategy';
 import { MICRO_EVALUATOR_REVISION } from '../../strategies/micro-burst/domain/MicroBurstExactReplay';
 import {
   openVerifiedCaptureSession,
@@ -64,6 +65,7 @@ interface DecisionTrace {
   evaluatedAtReceivedMs: number;
   exchangeAsOfMs: number | null;
   storedCurrentAction: string;
+  evaluationStatus?: StrategyEvaluationStatus | null;
   currentVerification: 'RE_EVALUATION_AGREED' | 'TECHNICAL_ERROR';
   pullbackDisposition?: string;
   pullbackReason?: string;
@@ -136,6 +138,7 @@ export async function runPairedReplayRequestFile(requestPath: string): Promise<{
         evaluatedAtReceivedMs: record.evaluatedAtReceivedMs,
         exchangeAsOfMs: frame.exchangeAsOfMs,
         storedCurrentAction: record.decision,
+        evaluationStatus: record.evaluationStatus ?? null,
         currentVerification: 'RE_EVALUATION_AGREED',
         pullbackDisposition: observation.disposition,
         pullbackReason: observation.reason,
@@ -162,6 +165,7 @@ export async function runPairedReplayRequestFile(requestPath: string): Promise<{
         evaluatedAtReceivedMs: record.evaluatedAtReceivedMs,
         exchangeAsOfMs: null,
         storedCurrentAction: record.decision,
+        evaluationStatus: record.evaluationStatus ?? null,
         currentVerification: 'TECHNICAL_ERROR',
       });
       candidate.reset();

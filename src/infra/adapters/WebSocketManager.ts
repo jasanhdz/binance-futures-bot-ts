@@ -6,6 +6,7 @@ import { MarketDataHub } from './MarketDataHub';
 import { CombinedMarketDataHub } from './CombinedMarketDataHub';
 import { MARKET, PUBLIC } from './MarketDataEndpoints';
 import { createWsWebSocket } from './WsWebSocketFactory';
+import type { LocalCausalEventStamp } from '../../core/market-data/LocalCausalWatermark';
 
 export interface WebSocketConfig {
   reconnectIntervalMs?: number;
@@ -26,8 +27,9 @@ export class WebSocketManager {
     private readonly logger: Logger,
     config: WebSocketConfig = {},
   ) {
-    this.marketDataHub = config.marketDataHub ??
-      (config.combinedStreams ?? true
+    this.marketDataHub =
+      config.marketDataHub ??
+      ((config.combinedStreams ?? true)
         ? new CombinedMarketDataHub(logger, {
             isTestnet: config.isTestnet,
             watchdogTimeoutMs: config.watchdogTimeoutMs,
@@ -77,6 +79,7 @@ export class WebSocketManager {
       aggregateTradeId?: number;
       firstTradeId?: number;
       lastTradeId?: number;
+      localCausality?: LocalCausalEventStamp;
     }) => void,
     onStatus?: (status: 'connecting' | 'open' | 'reconnecting') => void,
   ): () => void {
@@ -96,6 +99,7 @@ export class WebSocketManager {
           aggregateTradeId: parsed.aggregateTradeId,
           firstTradeId: parsed.firstTradeId,
           lastTradeId: parsed.lastTradeId,
+          localCausality: parsed.localCausality,
         });
       },
       onStatus,
@@ -144,6 +148,7 @@ export class WebSocketManager {
           E: parsed.eventTimeMs,
           T: parsed.transactionTimeMs ?? parsed.eventTimeMs,
           receivedAtMs: parsed.receivedAtMs,
+          localCausality: parsed.localCausality,
         });
       },
     );

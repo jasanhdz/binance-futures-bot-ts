@@ -70,6 +70,8 @@ export function strategyLifecyclePolicy(strategyId: StrategyId): StrategyLifecyc
       return MOMENTUM_POLICY;
     case 'MICRO_BURST':
       return MICRO_BURST_RESERVED_POLICY;
+    case 'TEST_PROBE':
+      throw new Error('TEST_ONLY_STRATEGY_HAS_NO_RUNTIME_LIFECYCLE_POLICY');
   }
 }
 

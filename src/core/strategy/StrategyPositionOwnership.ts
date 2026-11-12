@@ -46,6 +46,7 @@ export function resolveStrategyOwnership(state: BotState): StrategyOwnershipReso
 
   if (
     strategyId !== 'MICRO_BURST' &&
+    strategyId !== 'TEST_PROBE' &&
     (state.positionOwner === 'AEGIS' || state.tradeOrigin === 'BOT')
   ) {
     return { status: 'LEGACY_MIGRATABLE', strategyId };

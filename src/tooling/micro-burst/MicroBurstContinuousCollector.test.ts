@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { createReadOnlyBinanceMarketData } from '../../infra/adapters/ReadOnlyBinanceMarketData';
 import type { Logger } from '../../app/ports/Logger';
+import type { MarketDataPort } from '../../app/ports/MarketData';
 import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import {
   buildEffectiveCaptureConfiguration,
@@ -15,6 +16,30 @@ const logger: Logger = {
   warn: () => {},
   error: () => {},
 };
+
+it('records monotonic REST receipt without normalizing a regressing local wall clock', async () => {
+  const records: Record<string, unknown>[] = [];
+  const localWallTimes = [1_000, 900];
+  const response = [{ openTime: 0, closeTime: 59_999 }];
+  const source = { getCandles: vi.fn(async () => response) } as unknown as MarketDataPort;
+  const wrapped = wrapPublicMarketDataForCapture(
+    source,
+    (record) => records.push(record),
+    () => undefined,
+    () => undefined,
+    () => localWallTimes.shift() ?? 900,
+  );
+
+  await wrapped.getCandles('ETHUSDT', '1m', 1);
+  expect(records[0]).toMatchObject({
+    requestedAtMs: 1_000,
+    receivedAtMs: 900,
+    response,
+  });
+  expect(Number(records[0].receivedAtMonotonicMs)).toBeGreaterThanOrEqual(
+    Number(records[0].requestedAtMonotonicMs),
+  );
+});
 
 it('forces capture activation separately from the operational enable and mode fields', () => {
   const prepared = buildEffectiveCaptureConfiguration(
@@ -117,6 +142,14 @@ it('composes the capture runtime with the real read-only factory and a simulated
     expect(calls).toContain('getDepthSnapshot');
     expect(rawRestRecords.length).toBeGreaterThan(0);
     expect(rawRestRecords.every((record) => typeof record.method === 'string')).toBe(true);
+    expect(
+      rawRestRecords.every(
+        (record) =>
+          typeof record.requestedAtMonotonicMs === 'number' &&
+          typeof record.receivedAtMonotonicMs === 'number' &&
+          Number(record.receivedAtMonotonicMs) >= Number(record.requestedAtMonotonicMs),
+      ),
+    ).toBe(true);
     expect(requestsInFlight).toBe(0);
     expect(market.audit.totalMutationAttempts).toBe(0);
     expect(market.audit.forwardedMutationCalls).toBe(0);

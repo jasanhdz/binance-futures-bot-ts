@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { load } from 'js-yaml';
 import { createReadOnlyBinanceMarketData } from '../../infra/adapters/ReadOnlyBinanceMarketData';
@@ -133,10 +134,20 @@ export function wrapPublicMarketDataForCapture(
       return async (...args: unknown[]) => {
         requestStarted();
         const requestedAtMs = now();
+        const requestedAtMonotonicMs = performance.now();
         try {
           const response = await value(...args);
+          const receivedAtMonotonicMs = performance.now();
           try {
-            recordRequest({ method: property, args, requestedAtMs, receivedAtMs: now(), response });
+            recordRequest({
+              method: property,
+              args,
+              requestedAtMs,
+              receivedAtMs: now(),
+              requestedAtMonotonicMs,
+              receivedAtMonotonicMs,
+              response,
+            });
           } catch {
             // Raw REST capture is observational; persistence failures are counted separately.
           }
@@ -148,6 +159,8 @@ export function wrapPublicMarketDataForCapture(
               args,
               requestedAtMs,
               receivedAtMs: now(),
+              requestedAtMonotonicMs,
+              receivedAtMonotonicMs: performance.now(),
               error: error instanceof Error ? error.message : String(error),
             });
           } catch {

@@ -58,6 +58,68 @@ describe('StrategyRouter', () => {
     expect(result.decision).toBe('ENTRY_INTENT');
   });
 
+  it('preserves explicit intent, rejection, wait, and context-not-evaluable outcomes', async () => {
+    const router = new StrategyRouter<{
+      symbol: string;
+      status: 'INTENT' | 'REJECTED' | 'WAIT' | 'NOT_EVALUABLE';
+    }>();
+    router.register({
+      identity,
+      mode: 'SHADOW',
+      evaluate: (context) => ({
+        symbol: context.symbol,
+        timestamp: 123,
+        decision: context.status === 'INTENT' ? 'ENTRY_INTENT' : 'NO_TRADE',
+        ...(context.status === 'INTENT' ? { side: 'SHORT' as const } : {}),
+        evaluationStatus: context.status,
+        reason: `probe_${context.status.toLowerCase()}`,
+        diagnostics: {},
+      }),
+    });
+
+    for (const status of ['INTENT', 'REJECTED', 'WAIT', 'NOT_EVALUABLE'] as const) {
+      const result = await router.evaluate('MOMENTUM_RIDE', { symbol: 'SUIUSDT', status });
+      expect(result.evaluationStatus).toBe(status);
+    }
+    await expect(
+      router.evaluate('MOMENTUM_RIDE', { symbol: 'SUIUSDT', status: 'INTENT' }),
+    ).resolves.toMatchObject({ decision: 'ENTRY_INTENT', evaluationStatus: 'INTENT' });
+  });
+
+  it('rejects a declared position-manager owner that differs from the strategy identity', () => {
+    const router = new StrategyRouter();
+    expect(() =>
+      router.register({
+        identity,
+        mode: 'SHADOW',
+        contract: {
+          symbols: { source: 'CALLER_CONTEXT' },
+          configuration: {
+            source: 'EVALUATION_CONTEXT',
+            schemaVersion: 'TEST_V1',
+            effectiveConfigHash: null,
+            scope: 'PER_SYMBOL_POLICY',
+          },
+          inputs: [],
+          warmup: [],
+          entryState: { kind: 'STATELESS', schemaVersion: 1, recovery: 'REBUILD_FROM_CONTEXT' },
+          positionLifecycle: {
+            managerStrategyId: 'AEGIS_TURBO',
+            stateSchemaVersion: 1,
+            recovery: 'RESTORE_BY_PERSISTED_STRATEGY_IDENTITY',
+          },
+        },
+        evaluate: () => ({
+          symbol: 'SUIUSDT',
+          timestamp: 1,
+          decision: 'NO_TRADE',
+          reason: 'not-evaluated',
+          diagnostics: {},
+        }),
+      }),
+    ).toThrow('STRATEGY_CONTRACT_POSITION_OWNER_MISMATCH:MOMENTUM_RIDE');
+  });
+
   it('rejects duplicate strategy ownership', () => {
     const router = new StrategyRouter();
     const strategy = {

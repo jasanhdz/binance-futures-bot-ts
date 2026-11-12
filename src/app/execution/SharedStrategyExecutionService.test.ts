@@ -114,6 +114,25 @@ describe('SharedStrategyExecutionService protection policy', () => {
     );
   });
 
+  it('never grants the test-only probe strategy operational execution authority', async () => {
+    const result = await service.execute(
+      intent({
+        identity: {
+          strategyId: 'TEST_PROBE',
+          strategyVersion: 'deterministic-test-only',
+          freezeState: 'FROZEN_LIVE',
+          strategyHash: `sha256:${'a'.repeat(64)}`,
+          configHash: `sha256:${'b'.repeat(64)}`,
+          codeCommitSha: 'c'.repeat(40),
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ status: 'DENIED', reason: 'STRATEGY_NOT_LIVE' });
+    expect(exchange.setLeverage).not.toHaveBeenCalled();
+    expect(exchange.marketOpen).not.toHaveBeenCalled();
+  });
+
   it('opens without validating or placing protection that the intent does not use', async () => {
     const result = await service.execute(intent());
 

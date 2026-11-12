@@ -1,5 +1,7 @@
 /** Strategy-neutral, lossless envelopes for normalized market-data observations. */
 
+import type { LocalCausalEventStamp } from './LocalCausalWatermark';
+
 export type MarketDataFeed = 'AGG_TRADE' | 'DEPTH' | 'MARK_PRICE' | 'CANDLE' | 'BTC_CONTEXT';
 export type GapKind =
   | 'AGG_TRADE_SEQUENCE'
@@ -20,6 +22,7 @@ export interface AggTradeEvent {
   firstTradeId?: number;
   lastTradeId?: number;
   tradeTimeMs?: number;
+  readonly localCausality?: LocalCausalEventStamp;
 }
 
 export interface DepthEvent {
@@ -33,6 +36,7 @@ export interface DepthEvent {
   previousFinalUpdateId?: number;
   bids: readonly (readonly [string, string])[];
   asks: readonly (readonly [string, string])[];
+  readonly localCausality?: LocalCausalEventStamp;
 }
 
 export interface MarketDataGap {
@@ -77,6 +81,7 @@ export function parseAggTrade(
     firstTradeId: optionalNumber(value.f),
     lastTradeId: optionalNumber(value.l),
     tradeTimeMs: optionalNumber(value.T),
+    localCausality: isLocalCausalityStamp(value.localCausality) ? value.localCausality : undefined,
   };
 }
 
@@ -109,6 +114,7 @@ export function parseDepth(symbol: string, data: unknown, receivedAtMs: number):
     previousFinalUpdateId: optionalNumber(value.pu),
     bids: value.b,
     asks: value.a,
+    localCausality: isLocalCausalityStamp(value.localCausality) ? value.localCausality : undefined,
   };
 }
 
@@ -121,4 +127,19 @@ function number(value: unknown): number {
 function optionalNumber(value: unknown): number | undefined {
   const result = number(value);
   return Number.isFinite(result) ? result : undefined;
+}
+
+function isLocalCausalityStamp(value: unknown): value is LocalCausalEventStamp {
+  if (!value || typeof value !== 'object') return false;
+  const stamp = value as LocalCausalEventStamp;
+  return (
+    stamp.schemaVersion === 1 &&
+    typeof stamp.processGenerationId === 'string' &&
+    Number.isSafeInteger(stamp.connectionGeneration) &&
+    stamp.connectionGeneration > 0 &&
+    Number.isSafeInteger(stamp.receiveSequence) &&
+    stamp.receiveSequence > 0 &&
+    Number.isFinite(stamp.receivedMonotonicAtMs) &&
+    stamp.receivedMonotonicAtMs >= 0
+  );
 }

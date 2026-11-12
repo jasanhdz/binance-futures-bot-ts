@@ -62,6 +62,10 @@ export class SharedStrategyExecutionService implements StrategyExecutionPort {
   ) {}
 
   async execute(intent: StrategyExecutionIntent): Promise<StrategyExecutionResult> {
+    if (intent.identity.strategyId === 'TEST_PROBE')
+      return denied(intent, 'STRATEGY_NOT_LIVE', {
+        reasonDetail: 'TEST_ONLY_STRATEGY_HAS_NO_OPERATIONAL_EXECUTION_AUTHORITY',
+      });
     return this.config.entryCoordinator
       ? this.config.entryCoordinator.withLiveHandoff(() => this.executeLive(intent))
       : this.executeLive(intent);

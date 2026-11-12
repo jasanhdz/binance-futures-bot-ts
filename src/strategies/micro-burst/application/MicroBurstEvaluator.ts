@@ -15,6 +15,7 @@ import {
 } from './MicroBurstShadowEvaluationTypes';
 import { priceDistanceToBps } from '../domain/MicroBurstUnits';
 import { MICRO_BURST_VERSION } from '../domain/MicroBurstIdentity';
+import type { LocalCausalContextEvidence } from '../../../core/market-data/LocalCausalWatermark';
 
 interface Clock {
   now(): number;
@@ -27,6 +28,12 @@ interface ShadowEvaluatorDeps {
   logger: Logger;
   clock: Clock;
   getServerTime(): Promise<number>;
+  getArchivePersistenceWatermark?(): {
+    storageGenerationId: string;
+    appendedArchiveSequence: number;
+    checkpointSequence: number;
+    sampledAtMonotonicMs: number;
+  } | null;
 }
 
 export class MicroBurstEvaluator {
@@ -79,11 +86,38 @@ export class MicroBurstEvaluator {
       });
 
       const contextBuiltMono = performance.now();
+      const contextTiming = context.inputSources?.timing ?? {};
+      const contextCaptureStartedAtMs = Number(contextTiming.contextStartedAtMs);
+      const contextCapturedAtMs = Number(contextTiming.contextBuiltAtMs);
+      const contextCaptureDurationMs = Number(contextTiming.contextDurationMs);
+      const localCausalContext = contextTiming.localCausalContext as
+        | LocalCausalContextEvidence
+        | undefined;
       const strategyContext: MicroBurstStrategyContext = {
         ...context,
         entryPolicy: 'MICRO',
         executionBook: context.inputSources?.book ?? undefined,
         observedAtMs: this.deps.clock.now(),
+        inputCaptureTiming: {
+          captureStartedAtMs: Number.isFinite(contextCaptureStartedAtMs)
+            ? contextCaptureStartedAtMs
+            : localRequestStartedAtMs,
+          capturedAtMs: Number.isFinite(contextCapturedAtMs)
+            ? contextCapturedAtMs
+            : this.deps.clock.now(),
+          captureDurationMs: Number.isFinite(contextCaptureDurationMs)
+            ? contextCaptureDurationMs
+            : contextBuiltMono - serverRequestStartedMono,
+          timestampClock: 'LOCAL_RECEIVE_TIME',
+          durationClock: 'MONOTONIC',
+          contextCaptureAtMonotonicMs: localCausalContext?.captureMonotonicAtMs ?? null,
+          localCausalContext: localCausalContext
+            ? {
+                ...localCausalContext,
+                archivePersistence: this.deps.getArchivePersistenceWatermark?.() ?? null,
+              }
+            : undefined,
+        },
         // The server sample happened somewhere within request/response. Using request-start
         // elapsed gives an upper bound on exchange-now, conservatively consuming freshness.
         exchangeObservedAtMs: snapshotAtMs + contextBuiltMono - serverRequestStartedMono,
@@ -186,6 +220,7 @@ export class MicroBurstEvaluator {
         symbol,
         snapshotAtMs,
         decision: envelope.decision,
+        evaluationStatus: envelope.evaluationStatus,
         side: envelope.side,
         confidence: envelope.confidence ?? 0,
         referencePrice,
@@ -275,6 +310,7 @@ export class MicroBurstEvaluator {
       symbol: result.symbol,
       snapshotAtMs: result.snapshotAtMs,
       decision: result.decision,
+      evaluationStatus: result.evaluationStatus,
       side: result.side,
       confidence: result.confidence,
       referencePrice: result.referencePrice,
@@ -325,6 +361,7 @@ export class MicroBurstEvaluator {
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',
+      evaluationStatus: 'NOT_EVALUABLE',
       confidence: 0,
       referencePrice: 0,
       supportPrice: null,
@@ -367,6 +404,7 @@ export class MicroBurstEvaluator {
       symbol,
       snapshotAtMs,
       decision: 'NO_TRADE',
+      evaluationStatus: 'NOT_EVALUABLE',
       confidence: 0,
       referencePrice: 0,
       supportPrice: null,

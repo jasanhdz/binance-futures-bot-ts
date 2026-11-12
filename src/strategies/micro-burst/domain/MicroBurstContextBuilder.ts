@@ -1,4 +1,5 @@
 import { Candle, Side } from '../../../core/types';
+import type { MarketDataPort } from '../../../app/ports/MarketData';
 import { getCandleProvenance } from '../../../core/market-data/CandleProvenance';
 import {
   prepareClosedCandles,
@@ -23,12 +24,15 @@ import { analyzeMicroMomentum } from './MicroBurstMomentumAnalyzer';
 import { classifyMicroRegime } from './MicroBurstMicroRegime';
 import { detectSupportResistance } from './MicroBurstSupportResistance';
 import { copyObservation } from '../../../core/blackbox/BoundedObservationQueue';
+import type {
+  LocalCausalContextEvidence,
+  LocalCausalStateWatermark,
+} from '../../../core/market-data/LocalCausalWatermark';
 
 const SOURCE_COPY_LIMITS = { maxBytes: 2 * 1024 * 1024, maxNodes: 40_000, maxDepth: 16 };
 
-export interface CandleSnapshotProvider {
-  getCandles(symbol: string, interval: string, limit: number): Promise<Candle[]>;
-}
+/** Micro's existing one-as-of REST semantics use the shared exchange candle capability. */
+export type CandleSnapshotProvider = Pick<MarketDataPort, 'getCandles'>;
 
 export interface BtcMicroContextProvider {
   getBtcContext(): BtcContext | undefined;
@@ -63,6 +67,7 @@ export interface AggTradeFlowProvider {
     continuityUncertain?: boolean;
     pendingGapCount?: number;
     confirmedGapCount?: number;
+    localCausality?: LocalCausalStateWatermark | null;
     windowComplete: boolean;
     gapFree: boolean;
   };
@@ -414,11 +419,28 @@ export async function buildMicroBurstContext(
     }
   }
   dataQuality.contextValid = dataQuality.invalidReasons.length === 0;
+  const localCausalSources = {
+    depth: bookSnapshot?.localCausality ?? null,
+    aggTrade: aggTradeFlow?.localCausality ?? null,
+  };
+  const localCausalGenerations = Object.values(localCausalSources)
+    .filter((source): source is LocalCausalStateWatermark => source !== null)
+    .map((source) => source.processGenerationId);
+  const localCausalGenerationId = localCausalGenerations[0] ?? null;
+  const localCausalGenerationConsistent = localCausalGenerations.every(
+    (generation) => generation === localCausalGenerationId,
+  );
+  if (!localCausalGenerationConsistent) {
+    dataQuality.invalidReasons.push('local_causal_process_generation_mismatch');
+    dataQuality.contextValid = false;
+  }
   if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
     dataQuality.contextValid = false;
     dataQuality.invalidReasons.push('invalid_reference_price');
   }
 
+  const contextBuiltAtMs = localNow();
+  const contextBuiltAtMonotonicMs = monotonicNow();
   return {
     inputSources: {
       rawCandles: rawCandleSets,
@@ -426,8 +448,9 @@ export async function buildMicroBurstContext(
       builderConfig: config,
       timing: {
         contextStartedAtMs,
-        contextBuiltAtMs: localNow(),
+        contextBuiltAtMs,
         contextDurationMs: elapsed(contextStartedMono),
+        contextBuiltAtMonotonicMs,
         durationClock: 'MONOTONIC',
         localClock: 'LOCAL_RECEIVE_TIME',
         asOfClock: 'EXCHANGE_TIME',
@@ -439,6 +462,14 @@ export async function buildMicroBurstContext(
         btcReceivedAtMs: btcRaw?.receivedAtMs ?? null,
         aggTradeEventAtMs: aggTradeFlow?.eventWatermarkMs ?? null,
         aggTradeReceivedAtMs: null,
+        localCausalContext: {
+          schemaVersion: 1,
+          processGenerationId: localCausalGenerationConsistent ? localCausalGenerationId : null,
+          captureLocalReceivedAtMs: contextBuiltAtMs,
+          captureMonotonicAtMs: contextBuiltAtMonotonicMs,
+          sourceGenerationsConsistent: localCausalGenerationConsistent,
+          sources: localCausalSources,
+        },
       },
     },
     symbol,
@@ -468,6 +499,7 @@ export async function buildMicroBurstContext(
             coverageStartedAtMs: aggTradeFlow.coverageStartedAtMs,
             windowComplete: aggTradeFlow.windowComplete,
             gapFree: aggTradeFlow.gapFree,
+            localCausality: aggTradeFlow.localCausality ?? null,
           },
         }
       : {}),

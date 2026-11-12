@@ -38,6 +38,15 @@ export interface MicroBurstStorageOptions {
   maxDeferredWriteBatchMs?: number;
 }
 
+export interface MicroBurstStoragePersistenceWatermark {
+  readonly storageGenerationId: string;
+  /** Highest raw segment record appended before the watermark was read. */
+  readonly appendedArchiveSequence: number;
+  /** Highest synchronous SQLite book checkpoint transaction committed before the read. */
+  readonly checkpointSequence: number;
+  readonly sampledAtMonotonicMs: number;
+}
+
 export interface ArchiveTrade {
   symbol: string;
   eventTime: number;
@@ -123,6 +132,9 @@ interface ArchiveWrite {
   eventTime: number;
   receivedAtMs: number;
   payload: unknown;
+  storageGenerationId?: string;
+  queueSequence?: number;
+  queuedMonotonicAtMs?: number;
 }
 
 interface ActiveSegment {
@@ -167,6 +179,10 @@ const DEFAULT_DURABILITY_FLUSH_INTERVAL_MS = 1_000;
 export class MicroBurstStorage {
   private db!: Database.Database;
   private readonly now: () => number;
+  private readonly storageGenerationId = crypto.randomUUID();
+  private archiveQueueSequence = 0;
+  private lastWrittenArchiveSequence = 0;
+  private checkpointPersistenceSequence = 0;
   private readonly maxArchiveQueueRecords: number;
   private readonly maxActiveSegmentRecords: number;
   private readonly maxActiveSegmentBytes: number;
@@ -282,14 +298,45 @@ export class MicroBurstStorage {
     return this.appendRaw('depth', depth.symbol, depth.eventTime, depth.receivedAtMs, depth);
   }
 
+  getPersistenceWatermark(): MicroBurstStoragePersistenceWatermark {
+    return Object.freeze({
+      storageGenerationId: this.storageGenerationId,
+      appendedArchiveSequence: this.lastWrittenArchiveSequence,
+      checkpointSequence: this.checkpointPersistenceSequence,
+      sampledAtMonotonicMs: performance.now(),
+    });
+  }
+
   persistCheckpoint(symbol: string, eventTimeMs: number, checkpoint: unknown): boolean {
     return this.safe(() => {
+      const checkpointSequence = this.checkpointPersistenceSequence + 1;
+      const committedMonotonicAtMs = performance.now();
+      const persistedCheckpoint =
+        checkpoint && typeof checkpoint === 'object'
+          ? {
+              ...(checkpoint as Record<string, unknown>),
+              archivePersistence: {
+                storageGenerationId: this.storageGenerationId,
+                checkpointSequence,
+                committedMonotonicAtMs,
+              },
+            }
+          : checkpoint;
       this.db
         .prepare(
-          `INSERT INTO book_checkpoints (symbol, event_time_ms, checkpoint_json, created_at_ms)
-        VALUES (?, ?, ?, ?)`,
+          `INSERT INTO book_checkpoints
+            (symbol, event_time_ms, checkpoint_json, created_at_ms, storage_generation_id, persistence_sequence)
+          VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(symbol, eventTimeMs, JSON.stringify(checkpoint), this.now());
+        .run(
+          symbol,
+          eventTimeMs,
+          JSON.stringify(persistedCheckpoint),
+          this.now(),
+          this.storageGenerationId,
+          checkpointSequence,
+        );
+      this.checkpointPersistenceSequence = checkpointSequence;
     });
   }
 
@@ -914,7 +961,16 @@ export class MicroBurstStorage {
       this.markFailure(new Error('invalid archive record metadata'));
       return false;
     }
-    const write: ArchiveWrite = { type, symbol, eventTime, receivedAtMs, payload };
+    const write: ArchiveWrite = {
+      type,
+      symbol,
+      eventTime,
+      receivedAtMs,
+      payload,
+      storageGenerationId: this.storageGenerationId,
+      queueSequence: ++this.archiveQueueSequence,
+      queuedMonotonicAtMs: performance.now(),
+    };
     if (this.deferRawWrites) {
       if (
         this.closed ||
@@ -960,8 +1016,33 @@ export class MicroBurstStorage {
         active = this.openActiveSegment(write.type, write.symbol, hourStartMs);
         this.activeSegments.set(key, active);
       }
-      const line = this.serialize(write);
+      const existingPersistence =
+        write.payload && typeof write.payload === 'object'
+          ? (write.payload as Record<string, unknown>).archivePersistence
+          : undefined;
+      const payload =
+        existingPersistence !== undefined || write.storageGenerationId === undefined
+          ? write.payload
+          : {
+              ...(write.payload && typeof write.payload === 'object'
+                ? (write.payload as Record<string, unknown>)
+                : { value: write.payload }),
+              archivePersistence: {
+                status: 'APPENDED_TO_ACTIVE_SEGMENT',
+                storageGenerationId: write.storageGenerationId,
+                queueSequence: write.queueSequence,
+                queuedMonotonicAtMs: write.queuedMonotonicAtMs,
+                appendedMonotonicAtMs: performance.now(),
+                durabilityRequirement: 'SEGMENT_CHECKSUM_AND_SESSION_FINALIZATION',
+              },
+            };
+      const line = this.serialize({ ...write, payload });
       fs.appendFileSync(active.activePath, line, 'utf8');
+      if (write.queueSequence !== undefined)
+        this.lastWrittenArchiveSequence = Math.max(
+          this.lastWrittenArchiveSequence,
+          write.queueSequence,
+        );
       active.records++;
       active.bytes += Buffer.byteLength(line);
       active.firstEventTimeMs = Math.min(active.firstEventTimeMs, write.eventTime);
@@ -1668,7 +1749,7 @@ export class MicroBurstStorage {
   private createSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS market_data_segments (file_path TEXT PRIMARY KEY, segment_id TEXT, data_type TEXT NOT NULL, symbol TEXT NOT NULL, hour_start_ms INTEGER NOT NULL, record_count INTEGER NOT NULL, first_event_time_ms INTEGER NOT NULL, last_event_time_ms INTEGER NOT NULL, checksum TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS book_checkpoints (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS book_checkpoints (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, storage_generation_id TEXT, persistence_sequence INTEGER);
       CREATE TABLE IF NOT EXISTS book_features (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, event_time_ms INTEGER NOT NULL, features_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
        CREATE TABLE IF NOT EXISTS micro_burst_signals (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT, signal_at_ms INTEGER NOT NULL, cohort_id TEXT, episode_id TEXT, snapshot_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
        CREATE TABLE IF NOT EXISTS micro_burst_outcomes (signal_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT, signal_at_ms INTEGER, completed_at_ms INTEGER NOT NULL, cohort_id TEXT, episode_id TEXT, outcome_json TEXT NOT NULL, journal_status TEXT NOT NULL DEFAULT 'PENDING', created_at_ms INTEGER NOT NULL);
@@ -1689,6 +1770,8 @@ export class MicroBurstStorage {
     for (const statement of [
       `ALTER TABLE market_data_gaps ADD COLUMN gap_kind TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'`,
       `ALTER TABLE market_data_gaps ADD COLUMN feed TEXT`,
+      `ALTER TABLE book_checkpoints ADD COLUMN storage_generation_id TEXT`,
+      `ALTER TABLE book_checkpoints ADD COLUMN persistence_sequence INTEGER`,
     ]) {
       try {
         this.db.exec(statement);
@@ -1696,7 +1779,7 @@ export class MicroBurstStorage {
         /* already migrated */
       }
     }
-    this.db.pragma('user_version = 2');
+    this.db.pragma('user_version = 3');
     try {
       this.db.exec(
         `ALTER TABLE micro_burst_outcomes ADD COLUMN journal_status TEXT NOT NULL DEFAULT 'PENDING'`,
@@ -1727,6 +1810,9 @@ export class MicroBurstStorage {
     }
     this.db.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_segments_segment_id ON market_data_segments(segment_id) WHERE segment_id IS NOT NULL`,
+    );
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_checkpoints_local_persistence ON book_checkpoints(symbol, storage_generation_id, persistence_sequence)`,
     );
   }
 }

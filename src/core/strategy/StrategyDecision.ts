@@ -1,5 +1,6 @@
 import { Side } from '../types';
 import { StrategyIdentity, StrategyMode } from './StrategyIdentity';
+import type { StrategyEvaluationStatus } from './EntryStrategy';
 
 export type StrategyEntryDecision = 'NO_TRADE' | 'ENTRY_INTENT';
 
@@ -9,6 +10,8 @@ export interface StrategyDecisionEnvelope {
   symbol: string;
   timestamp: number;
   decision: StrategyEntryDecision;
+  /** Classification of the evaluation outcome; distinct from an entry intent. */
+  evaluationStatus?: StrategyEvaluationStatus;
   side?: Side;
   reason: string;
   confidence?: number;

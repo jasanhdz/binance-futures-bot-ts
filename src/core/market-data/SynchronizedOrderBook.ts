@@ -109,6 +109,24 @@ export class SynchronizedOrderBook implements OrderBookPort {
   private lifecycleGeneration = 0;
   private awaitingBridge = false;
   private recoveryStartedAtMs = 0;
+  private localProcessGenerationId: string | null = null;
+  private localConnectionGeneration = 0;
+  private localLastAppliedConnectionGeneration: number | null = null;
+  private localReceivedSequence = 0;
+  private localLastAppliedReceiveSequence: number | null = null;
+  private localAppliedStateVersion = 0;
+  private localReceivedMonotonicAtMs: number | null = null;
+  private localAppliedMonotonicAtMs: number | null = null;
+  private latestSnapshotSync: {
+    requestedAtMs: number;
+    snapshotReceivedAtMs: number;
+    snapshotLastUpdateId: number;
+    bufferLengthBefore: number;
+    bufferLengthAfter: number;
+    bufferProcessGenerationId: string | null;
+    bufferFirstReceiveSequence: number | null;
+    bufferLastReceiveSequence: number | null;
+  } | null = null;
 
   constructor(
     private readonly symbol: string,
@@ -153,6 +171,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
       gapCount: this.gapCount,
       resyncCount: this.resyncCount,
       lastRecoveryLatencyMs: this.lastRecoveryLatencyMs,
+      localCausality: this.getLocalCausalityWatermark(),
     };
   }
 
@@ -182,10 +201,12 @@ export class SynchronizedOrderBook implements OrderBookPort {
       status: 'HEALTHY',
       lastUpdateId: this.lastUpdateId,
       temporalHistory: [...this.temporalHistory],
+      localCausality: this.getLocalCausalityWatermark(),
     };
   }
 
   private handleDiff(event: BinanceDepthDiffEvent): void {
+    this.noteLocalReceive(event);
     if (!validateDiff(event)) {
       this.desync('malformed diff-depth event');
       return;
@@ -217,6 +238,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
             bridge: true,
           });
         }
+        this.logSnapshotSynchronized(true);
         return;
       }
       this.buffer(event);
@@ -252,6 +274,15 @@ export class SynchronizedOrderBook implements OrderBookPort {
         this.symbol,
         ORDER_BOOK_SNAPSHOT_DEPTH,
       );
+      const bufferCausality = this.getDiffBufferCausalRange();
+      this.latestSnapshotSync = {
+        requestedAtMs,
+        snapshotReceivedAtMs: snapshot.receivedAtMs ?? this.deps.clock.now(),
+        snapshotLastUpdateId: snapshot.lastUpdateId,
+        bufferLengthBefore,
+        bufferLengthAfter: this.diffBuffer.length,
+        ...bufferCausality,
+      };
       this.deps.logger.info('market_data_order_book_snapshot_received', {
         symbol: this.symbol,
         requestedAtMs,
@@ -259,6 +290,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
         snapshotLastUpdateId: snapshot.lastUpdateId,
         bufferLengthBefore,
         bufferLengthAfter: this.diffBuffer.length,
+        ...bufferCausality,
       });
       if (generation !== this.lifecycleGeneration || !this.diffUnsubscribe) return;
       if (!isUpdateId(snapshot.lastUpdateId) || !this.loadSnapshot(snapshot)) {
@@ -268,6 +300,10 @@ export class SynchronizedOrderBook implements OrderBookPort {
       this.lastUpdateId = snapshot.lastUpdateId;
       this.lastSyncAtMs = snapshot.receivedAtMs ?? this.deps.clock.now();
       this.observedAtMs = this.lastSyncAtMs;
+      this.localAppliedStateVersion++;
+      this.localLastAppliedConnectionGeneration = null;
+      this.localLastAppliedReceiveSequence = null;
+      this.localAppliedMonotonicAtMs = performance.now();
       this.lastDiffAtMs = 0;
       this.temporalHistory = [];
 
@@ -305,6 +341,7 @@ export class SynchronizedOrderBook implements OrderBookPort {
         return;
       }
       this.health = 'HEALTHY';
+      this.logSnapshotSynchronized(false);
       this.resyncFailureStreak = 0;
       if (this.recoveryStartedAtMs > 0) {
         this.lastRecoveryLatencyMs = this.deps.clock.now() - this.recoveryStartedAtMs;
@@ -366,6 +403,15 @@ export class SynchronizedOrderBook implements OrderBookPort {
     applyDiff(this.bidBook, event.bids);
     applyDiff(this.askBook, event.asks);
     this.lastUpdateId = event.u;
+    if (
+      event.localCausality &&
+      event.localCausality.processGenerationId === this.localProcessGenerationId
+    ) {
+      this.localAppliedStateVersion++;
+      this.localLastAppliedConnectionGeneration = event.localCausality.connectionGeneration;
+      this.localLastAppliedReceiveSequence = event.localCausality.receiveSequence;
+      this.localAppliedMonotonicAtMs = performance.now();
+    }
     this.lastDiffAtMs = event.receivedAtMs;
     this.observedAtMs = event.receivedAtMs;
     if (!this.isBookValid()) {
@@ -374,6 +420,84 @@ export class SynchronizedOrderBook implements OrderBookPort {
     }
     this.health = 'HEALTHY';
     this.recordTemporalObservation();
+  }
+
+  private noteLocalReceive(event: BinanceDepthDiffEvent): void {
+    const stamp = event.localCausality;
+    if (!stamp) return;
+    if (stamp.processGenerationId !== this.localProcessGenerationId) {
+      const firstObservedGeneration = this.localProcessGenerationId === null;
+      this.localProcessGenerationId = stamp.processGenerationId;
+      this.localConnectionGeneration = stamp.connectionGeneration;
+      this.localReceivedSequence = 0;
+      this.localLastAppliedConnectionGeneration = null;
+      this.localLastAppliedReceiveSequence = null;
+      if (!firstObservedGeneration) this.localAppliedStateVersion = 0;
+      this.localReceivedMonotonicAtMs = null;
+      this.localAppliedMonotonicAtMs = null;
+    }
+    if (stamp.connectionGeneration !== this.localConnectionGeneration) {
+      this.localConnectionGeneration = stamp.connectionGeneration;
+    }
+    this.localReceivedSequence = Math.max(this.localReceivedSequence, stamp.receiveSequence);
+    this.localReceivedMonotonicAtMs = stamp.receivedMonotonicAtMs;
+  }
+
+  private getLocalCausalityWatermark() {
+    if (!this.localProcessGenerationId) return null;
+    return Object.freeze({
+      schemaVersion: 1 as const,
+      processGenerationId: this.localProcessGenerationId,
+      connectionGeneration: this.localConnectionGeneration,
+      receivedSequence: this.localReceivedSequence,
+      lastAppliedConnectionGeneration: this.localLastAppliedConnectionGeneration,
+      lastAppliedReceiveSequence: this.localLastAppliedReceiveSequence,
+      appliedStateVersion: this.localAppliedStateVersion,
+      receivedMonotonicAtMs: this.localReceivedMonotonicAtMs,
+      appliedMonotonicAtMs: this.localAppliedMonotonicAtMs,
+    });
+  }
+
+  private getDiffBufferCausalRange(): {
+    bufferProcessGenerationId: string | null;
+    bufferFirstReceiveSequence: number | null;
+    bufferLastReceiveSequence: number | null;
+  } {
+    const stamps = this.diffBuffer
+      .map((event) => event.localCausality)
+      .filter((stamp): stamp is NonNullable<typeof stamp> => stamp !== undefined);
+    const processGenerationId = stamps[0]?.processGenerationId ?? null;
+    if (
+      stamps.length !== this.diffBuffer.length ||
+      !processGenerationId ||
+      stamps.some((stamp) => stamp.processGenerationId !== processGenerationId)
+    )
+      return {
+        bufferProcessGenerationId: null,
+        bufferFirstReceiveSequence: null,
+        bufferLastReceiveSequence: null,
+      };
+    return {
+      bufferProcessGenerationId: processGenerationId,
+      bufferFirstReceiveSequence: stamps[0].receiveSequence,
+      bufferLastReceiveSequence: stamps[stamps.length - 1].receiveSequence,
+    };
+  }
+
+  private logSnapshotSynchronized(bridgeOnly: boolean): void {
+    const sync = this.latestSnapshotSync;
+    if (!sync || this.health !== 'HEALTHY') return;
+    const synchronizedAtMonotonicMs = performance.now();
+    this.deps.logger.info('market_data_order_book_snapshot_synchronized', {
+      symbol: this.symbol,
+      ...sync,
+      synchronizedAtMs: this.deps.clock.now(),
+      synchronizedAtMonotonicMs,
+      finalUpdateId: this.lastUpdateId,
+      localCausality: this.getLocalCausalityWatermark(),
+      bridgeOnly,
+    });
+    this.latestSnapshotSync = null;
   }
 
   private isBookValid(

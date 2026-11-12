@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { MarketSnapshotV1 } from '../market-data/MarketSnapshotProvider';
 import type { StrategyDecisionEnvelope } from '../strategy/StrategyDecision';
+import type { StrategyEvaluationStatus } from '../strategy/EntryStrategy';
 
 export const STRATEGY_DECISION_BLACKBOX_V2 = 'STRATEGY_DECISION_BLACKBOX_V2' as const;
 export const STRATEGY_DECISION_BLACKBOX_SCHEMA_VERSION = 2 as const;
@@ -24,6 +25,7 @@ export interface StrategyDecisionEvidenceV2 {
   readonly strategy: StrategyDecisionEnvelope['identity'];
   readonly mode: StrategyDecisionEnvelope['mode'];
   readonly decision: StrategyDecisionEnvelope['decision'];
+  readonly evaluationStatus?: StrategyEvaluationStatus;
   readonly side?: StrategyDecisionEnvelope['side'];
   readonly reason: string;
   readonly confidence?: number;
@@ -77,7 +79,9 @@ export function assertStrategyDecisionEvidenceV2(
     typeof candidate.marketSnapshotId !== 'string' ||
     typeof candidate.marketSnapshotStored !== 'boolean' ||
     typeof candidate.marketSnapshotContentHash !== 'string' ||
-    !['COMPACT', 'FULL_REPLAY'].includes(candidate.evidenceLevel ?? '')
+    !['COMPACT', 'FULL_REPLAY'].includes(candidate.evidenceLevel ?? '') ||
+    (candidate.evaluationStatus !== undefined &&
+      !['INTENT', 'REJECTED', 'WAIT', 'NOT_EVALUABLE'].includes(candidate.evaluationStatus))
   ) {
     throw new Error('UNSUPPORTED_STRATEGY_DECISION_BLACKBOX_SCHEMA');
   }
@@ -233,6 +237,7 @@ export function createDecisionEvidenceV2(
               evaluatedAtReceivedMs,
               marketSnapshotId,
               decision: decision.decision,
+              evaluationStatus: decision.evaluationStatus ?? null,
               side: decision.side ?? null,
             }),
           )
@@ -256,6 +261,9 @@ export function createDecisionEvidenceV2(
     strategy: { ...decision.identity },
     mode: decision.mode,
     decision: decision.decision,
+    ...(decision.evaluationStatus !== undefined
+      ? { evaluationStatus: decision.evaluationStatus }
+      : {}),
     side: decision.side,
     reason: decision.reason,
     confidence: decision.confidence,

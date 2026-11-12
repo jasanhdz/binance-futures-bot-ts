@@ -34,6 +34,15 @@ export class StrategyRouter<TContext = unknown> {
     if (this.strategies.has(strategyId)) {
       throw new Error(`STRATEGY_ALREADY_REGISTERED:${strategyId}`);
     }
+    if (strategy.contract && strategy.contract.positionLifecycle.managerStrategyId !== strategyId)
+      throw new Error(`STRATEGY_CONTRACT_POSITION_OWNER_MISMATCH:${strategyId}`);
+    if (
+      strategy.contract &&
+      strategy.contract.configuration.effectiveConfigHash !== null &&
+      strategy.contract.configuration.effectiveConfigHash !== (strategy.identity.configHash ?? null)
+    )
+      throw new Error(`STRATEGY_CONTRACT_CONFIG_HASH_MISMATCH:${strategyId}`);
+    if (strategy.contract) validateStrategyContract(strategyId, strategy.contract);
     this.strategies.set(strategyId, strategy);
   }
 
@@ -47,6 +56,11 @@ export class StrategyRouter<TContext = unknown> {
 
   list(): EntryStrategy<TContext>[] {
     return Array.from(this.strategies.values());
+  }
+
+  /** Declared inputs/warmup/configuration for a registered strategy, if migrated. */
+  contract(strategyId: StrategyId): EntryStrategy<TContext>['contract'] {
+    return this.strategies.get(strategyId)?.contract;
   }
 
   async evaluate(strategyId: StrategyId, context: TContext): Promise<StrategyDecisionEnvelope> {
@@ -74,7 +88,12 @@ export class StrategyRouter<TContext = unknown> {
     } else {
       snapshot = await this.captureObservation(strategyId, context);
     }
-    context = strategy.afterObservationWait?.(context, performance.now() - waitStarted) ?? context;
+    context =
+      strategy.afterObservationWait?.(
+        context,
+        performance.now() - waitStarted,
+        performance.now(),
+      ) ?? context;
     const evaluationStartedAtMs = Date.now();
     const evaluationStartedMono = performance.now();
 
@@ -86,6 +105,7 @@ export class StrategyRouter<TContext = unknown> {
         symbol: extractSymbol(context),
         timestamp: Date.now(),
         decision: 'NO_TRADE',
+        evaluationStatus: 'NOT_EVALUABLE',
         reason: 'strategy_off',
         diagnostics: { routerBlocked: true },
       };
@@ -96,10 +116,14 @@ export class StrategyRouter<TContext = unknown> {
         identity: strategy.identity,
         mode: strategy.mode,
         ...decision,
+        evaluationStatus:
+          decision.evaluationStatus ??
+          (decision.decision === 'ENTRY_INTENT' ? 'INTENT' : 'REJECTED'),
       };
     }
 
     const evaluationFinishedAtMs = Date.now();
+    const evaluationFinishedAtMono = performance.now();
     if (exact)
       envelope = {
         ...envelope,
@@ -109,6 +133,9 @@ export class StrategyRouter<TContext = unknown> {
           evaluationTiming: {
             evaluationStartedAtMs,
             evaluationFinishedAtMs,
+            evaluationStartedAtMonotonicMs: evaluationStartedMono,
+            evaluationFinishedAtMonotonicMs: evaluationFinishedAtMono,
+            processGenerationId: extractProcessGenerationId(context),
             evaluationDurationMs: performance.now() - evaluationStartedMono,
             durationClock: 'MONOTONIC',
             timestampClock: 'LOCAL_RECEIVE_TIME',
@@ -147,6 +174,7 @@ export class StrategyRouter<TContext = unknown> {
             symbol: envelope.symbol,
             timestamp: envelope.timestamp,
             decision: 'NO_TRADE',
+            evaluationStatus: 'REJECTED',
             reason,
             diagnostics: {
               ...envelope.diagnostics,
@@ -161,6 +189,7 @@ export class StrategyRouter<TContext = unknown> {
           symbol: envelope.symbol,
           timestamp: envelope.timestamp,
           decision: 'NO_TRADE',
+          evaluationStatus: 'NOT_EVALUABLE',
           reason: 'REQUIRED_DECISION_AUDIT_FAILED',
           diagnostics: {
             ...envelope.diagnostics,
@@ -234,6 +263,92 @@ function validateDecision(decision: StrategyEvaluationResult): void {
   if (!decision.symbol || !Number.isFinite(decision.timestamp)) {
     throw new Error('STRATEGY_DECISION_INVALID_IDENTITY_FIELDS');
   }
+  if (
+    (decision.decision === 'ENTRY_INTENT' &&
+      decision.evaluationStatus !== undefined &&
+      decision.evaluationStatus !== 'INTENT') ||
+    (decision.decision === 'NO_TRADE' && decision.evaluationStatus === 'INTENT')
+  )
+    throw new Error('STRATEGY_EVALUATION_STATUS_CONFLICT');
+}
+
+function validateStrategyContract(
+  strategyId: StrategyId,
+  contract: NonNullable<EntryStrategy['contract']>,
+): void {
+  if (
+    !contract.configuration.schemaVersion ||
+    !contract.entryState.schemaVersion ||
+    !Number.isSafeInteger(contract.entryState.schemaVersion) ||
+    contract.entryState.schemaVersion <= 0 ||
+    !Number.isSafeInteger(contract.positionLifecycle.stateSchemaVersion) ||
+    contract.positionLifecycle.stateSchemaVersion <= 0
+  )
+    throw new Error(`STRATEGY_CONTRACT_SCHEMA_INVALID:${strategyId}`);
+  const candleIntervals = new Set<string>();
+  for (const input of contract.inputs) {
+    if (input.kind === 'CLOSED_CANDLES') {
+      if (
+        !input.interval ||
+        !Number.isSafeInteger(input.limit) ||
+        !Number.isSafeInteger(input.minimumClosed) ||
+        input.limit < input.minimumClosed ||
+        input.minimumClosed <= 0 ||
+        (input.maximumAgeMs !== null &&
+          (!Number.isFinite(input.maximumAgeMs) || input.maximumAgeMs < 0)) ||
+        candleIntervals.has(input.interval)
+      )
+        throw new Error(`STRATEGY_CONTRACT_CANDLE_REQUIREMENT_INVALID:${strategyId}`);
+      candleIntervals.add(input.interval);
+    } else if (input.kind === 'ORDER_BOOK') {
+      if (
+        !Number.isSafeInteger(input.minimumDepthLevels) ||
+        input.minimumDepthLevels <= 0 ||
+        !Number.isFinite(input.maximumAgeMs) ||
+        input.maximumAgeMs < 0
+      )
+        throw new Error(`STRATEGY_CONTRACT_ORDER_BOOK_REQUIREMENT_INVALID:${strategyId}`);
+    } else if (input.kind === 'AGG_TRADE_FLOW') {
+      if (
+        !Number.isFinite(input.windowMs) ||
+        input.windowMs <= 0 ||
+        !Number.isSafeInteger(input.minimumObservedSamples) ||
+        input.minimumObservedSamples < 0
+      )
+        throw new Error(`STRATEGY_CONTRACT_FLOW_REQUIREMENT_INVALID:${strategyId}`);
+    } else if (input.kind === 'BENCHMARK_CONTEXT') {
+      if (
+        !input.benchmarkId ||
+        !input.intervals.length ||
+        !Number.isFinite(input.maximumAgeMs) ||
+        input.maximumAgeMs < 0
+      )
+        throw new Error(`STRATEGY_CONTRACT_BENCHMARK_REQUIREMENT_INVALID:${strategyId}`);
+    } else if (
+      !input.schemaVersion ||
+      !input.requiredFields.length ||
+      !Number.isFinite(input.maximumAgeMs) ||
+      input.maximumAgeMs < 0
+    )
+      throw new Error(`STRATEGY_CONTRACT_FEATURE_REQUIREMENT_INVALID:${strategyId}`);
+  }
+  if (!contract.modelFeatureSchema) return;
+  const featureSchema = contract.modelFeatureSchema;
+  if (!featureSchema.schemaId || !featureSchema.version || featureSchema.features.length === 0)
+    throw new Error(`STRATEGY_CONTRACT_FEATURE_SCHEMA_INVALID:${strategyId}`);
+  const featureNames = new Set<string>();
+  featureSchema.features.forEach((feature, index) => {
+    if (
+      !feature.name ||
+      featureNames.has(feature.name) ||
+      feature.order !== index ||
+      !feature.units ||
+      !feature.version ||
+      !feature.availability.requiredEvidence.length
+    )
+      throw new Error(`STRATEGY_CONTRACT_FEATURE_DEFINITION_INVALID:${strategyId}`);
+    featureNames.add(feature.name);
+  });
 }
 
 function extractSymbol(context: unknown): string {
@@ -242,4 +357,14 @@ function extractSymbol(context: unknown): string {
     if (typeof symbol === 'string') return symbol;
   }
   return 'UNKNOWN';
+}
+
+function extractProcessGenerationId(context: unknown): string | null {
+  if (!context || typeof context !== 'object' || !('inputCaptureTiming' in context)) return null;
+  const timing = (context as { inputCaptureTiming?: unknown }).inputCaptureTiming;
+  if (!timing || typeof timing !== 'object' || !('localCausalContext' in timing)) return null;
+  const causal = (timing as { localCausalContext?: unknown }).localCausalContext;
+  if (!causal || typeof causal !== 'object' || !('processGenerationId' in causal)) return null;
+  const processGenerationId = (causal as { processGenerationId?: unknown }).processGenerationId;
+  return typeof processGenerationId === 'string' ? processGenerationId : null;
 }

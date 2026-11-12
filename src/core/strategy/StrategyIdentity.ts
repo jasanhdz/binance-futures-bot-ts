@@ -1,4 +1,4 @@
-export type StrategyId = 'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST';
+export type StrategyId = 'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST' | 'TEST_PROBE';
 
 export type StrategyMode = 'OFF' | 'SHADOW' | 'LIVE';
 

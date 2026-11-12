@@ -1,4 +1,5 @@
 import { Candle, Side } from '../../../core/types';
+import type { LocalCausalStateWatermark } from '../../../core/market-data/LocalCausalWatermark';
 import { StrategyIdentity } from '../../../core/strategy/StrategyIdentity';
 export type { OrderBookDepthLevel } from '../../../app/ports/MarketData';
 import type { OrderBookDepthLevel } from '../../../app/ports/MarketData';
@@ -115,6 +116,7 @@ export interface OrderBookSnapshot {
   lastUpdateId?: number;
   /** Causal observations strictly preceding this snapshot, supplied by the synchronized book. */
   temporalHistory?: import('../../../app/ports/MarketData').TemporalOrderBookObservation[];
+  localCausality?: LocalCausalStateWatermark | null;
 }
 
 export interface MicroBurstDecisionPrice {
@@ -217,6 +219,7 @@ export interface MicroBurstContext {
     continuityUncertain?: boolean;
     pendingGapCount?: number;
     confirmedGapCount?: number;
+    localCausality?: LocalCausalStateWatermark | null;
     windowComplete: boolean;
     gapFree: boolean;
   };

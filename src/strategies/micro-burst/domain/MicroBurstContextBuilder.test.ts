@@ -6,6 +6,7 @@ import {
   filterClosedCandles,
 } from './MicroBurstContextBuilder';
 import { BtcContext, OrderBookSnapshot } from './MicroBurstTypes';
+import { MarketDataCandleProvider } from '../../../core/market-data/MarketDataCandleProvider';
 
 const SNAPSHOT_AT_MS = 1_700_000_000_000;
 
@@ -89,11 +90,91 @@ describe('MicroBurstContextBuilder deterministic causal contract', () => {
     ]);
   });
 
+  it('keeps Micro shared-contract REST semantics distinct from shared provider server-time classification', async () => {
+    const raw = candlesEndingAt(3, 60_000, SNAPSHOT_AT_MS);
+    const microClosed = filterClosedCandles(raw, SNAPSHOT_AT_MS);
+    const sharedProvider = new MarketDataCandleProvider(
+      {
+        getServerTime: async () => SNAPSHOT_AT_MS - 1,
+        getCandles: async () => raw,
+      },
+      { now: () => SNAPSHOT_AT_MS },
+    );
+    const sharedSeries = await sharedProvider.getSeries('ETHUSDT', '1m', 3);
+
+    expect(microClosed).toHaveLength(3);
+    expect(sharedSeries.candles[sharedSeries.candles.length - 1]?.status).toBe('OPEN');
+    expect(sharedSeries.provenance?.classificationExchangeTimeMs).toBe(SNAPSHOT_AT_MS - 1);
+  });
+
   it('produces the same context for the same snapshot and snapshotAtMs', async () => {
     const deps = depsWith(freshCandleSets());
     const first = await buildMicroBurstContext('ETHUSDT', deps, { snapshotAtMs: SNAPSHOT_AT_MS });
     const second = await buildMicroBurstContext('ETHUSDT', deps, { snapshotAtMs: SNAPSHOT_AT_MS });
     expect(first).toEqual(second);
+  });
+
+  it('captures the local state versions consumed by the context and rejects mixed process generations', async () => {
+    const causal = (processGenerationId: string, receiveSequence: number) => ({
+      schemaVersion: 1 as const,
+      processGenerationId,
+      connectionGeneration: 1,
+      receivedSequence: receiveSequence,
+      lastAppliedConnectionGeneration: 1,
+      lastAppliedReceiveSequence: receiveSequence,
+      appliedStateVersion: receiveSequence,
+      receivedMonotonicAtMs: receiveSequence * 10,
+      appliedMonotonicAtMs: receiveSequence * 10,
+    });
+    const deps = depsWith(
+      freshCandleSets(),
+      healthyBook({ localCausality: causal('process-a', 7) }),
+    );
+    deps.aggTradeFlow = {
+      getTakerFlow: () => ({
+        buyVolume: 10,
+        sellVolume: 5,
+        netTakerVolume: 5,
+        tradeCount: 2,
+        requestedWindowMs: 300_000,
+        observedWindowMs: 300_000,
+        observedSampleCount: 2,
+        eventWatermarkMs: SNAPSHOT_AT_MS,
+        capacityTruncated: false,
+        coverageStartedAtMs: SNAPSHOT_AT_MS - 300_000,
+        continuityUncertain: false,
+        pendingGapCount: 0,
+        confirmedGapCount: 0,
+        windowComplete: true,
+        gapFree: true,
+        localCausality: causal('process-a', 9),
+      }),
+    };
+
+    const aligned = await buildMicroBurstContext('ETHUSDT', deps, {
+      snapshotAtMs: SNAPSHOT_AT_MS,
+      localNowAtMs: SNAPSHOT_AT_MS,
+      timingClock: { localNow: () => SNAPSHOT_AT_MS, monotonicNow: () => 100 },
+    });
+    expect(aligned.inputSources?.timing).toMatchObject({
+      localCausalContext: {
+        processGenerationId: 'process-a',
+        sourceGenerationsConsistent: true,
+        sources: {
+          depth: { receivedSequence: 7, appliedStateVersion: 7 },
+          aggTrade: { receivedSequence: 9, appliedStateVersion: 9 },
+        },
+      },
+    });
+
+    deps.book = { getDepthSnapshot: () => healthyBook({ localCausality: causal('process-b', 1) }) };
+    const mixed = await buildMicroBurstContext('ETHUSDT', deps, {
+      snapshotAtMs: SNAPSHOT_AT_MS,
+      localNowAtMs: SNAPSHOT_AT_MS,
+      timingClock: { localNow: () => SNAPSHOT_AT_MS, monotonicNow: () => 100 },
+    });
+    expect(mixed.dataQuality.contextValid).toBe(false);
+    expect(mixed.dataQuality.invalidReasons).toContain('local_causal_process_generation_mismatch');
   });
 
   it('uses an immutable closed-candle decision price with explicit provenance', async () => {

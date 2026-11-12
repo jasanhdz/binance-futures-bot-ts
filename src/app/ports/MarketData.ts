@@ -1,6 +1,10 @@
 /** Neutral exchange market-data payloads and capability shared by consumers. */
 
 import { Candle } from '../../core/types';
+import type {
+  LocalCausalEventStamp,
+  LocalCausalStateWatermark,
+} from '../../core/market-data/LocalCausalWatermark';
 
 export interface BinanceDepthDiffEvent {
   /** First update ID in this USD-M diff-depth event (Binance `U`). */
@@ -17,6 +21,7 @@ export interface BinanceDepthDiffEvent {
   T: number;
   /** Local receive time. */
   receivedAtMs: number;
+  readonly localCausality?: LocalCausalEventStamp;
 }
 
 export interface BinanceDepthSnapshot {
@@ -36,6 +41,7 @@ export interface AggTradeEvent {
   aggregateTradeId?: number;
   firstTradeId?: number;
   lastTradeId?: number;
+  readonly localCausality?: LocalCausalEventStamp;
 }
 
 export interface LiveCandleUpdate {
@@ -139,6 +145,7 @@ export interface OrderBookState {
   gapCount: number;
   resyncCount: number;
   lastRecoveryLatencyMs?: number | null;
+  readonly localCausality?: LocalCausalStateWatermark | null;
 }
 
 export interface OrderBookSnapshot {
@@ -148,6 +155,7 @@ export interface OrderBookSnapshot {
   status: 'HEALTHY';
   lastUpdateId: number;
   temporalHistory: TemporalOrderBookObservation[];
+  readonly localCausality?: LocalCausalStateWatermark | null;
 }
 
 export interface OrderBookPort {
@@ -208,6 +216,7 @@ export interface MarketDataPort {
       aggregateTradeId?: number;
       firstTradeId?: number;
       lastTradeId?: number;
+      localCausality?: LocalCausalEventStamp;
     }) => void,
     onStatus?: (status: 'connecting' | 'open' | 'reconnecting') => void,
   ): () => void;

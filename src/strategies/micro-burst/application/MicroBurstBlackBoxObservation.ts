@@ -218,6 +218,7 @@ export function createMicroBurstBlackBoxObservation(
         context: {
           ...captured,
           inputCaptureTiming: {
+            ...captured.inputCaptureTiming,
             captureStartedAtMs,
             capturedAtMs,
             captureDurationMs: performance.now() - captureStartedMono,

@@ -1,4 +1,5 @@
 import { Logger } from '../../app/ports/Logger';
+import { processLocalCausalSequence } from '../../core/market-data/LocalCausalWatermark';
 import {
   MarketDataEndpointConfig,
   MarketDataEndpointDescriptor,
@@ -41,12 +42,14 @@ type StreamConnection = {
   reconnectTimer?: NodeJS.Timeout;
   intentionallyClosed: boolean;
   descriptor: MarketDataEndpointDescriptor;
+  connectionGeneration: number;
 };
 
 const defaultWebSocketFactory = (url: string): RawWebSocket => createWsWebSocket(url);
 
 /** Shares one raw stream socket per route and stream among its consumers. */
 export class MarketDataHub {
+  private readonly causalSequence = processLocalCausalSequence();
   private readonly endpoint: MarketDataEndpointConfig;
   private readonly watchdogTimeoutMs: number;
   private readonly reconnectDelayMs: number;
@@ -83,6 +86,7 @@ export class MarketDataHub {
         intentionallyClosed: false,
         reconnectCount: 0,
         descriptor,
+        connectionGeneration: 0,
       };
       this.connections.set(key, connection);
     }
@@ -135,6 +139,7 @@ export class MarketDataHub {
     if (this.closed || connection.consumers.size === 0) return;
     connection.intentionallyClosed = false;
     connection.status = 'connecting';
+    connection.connectionGeneration++;
     this.notifyStatus(connection);
     try {
       const socket = this.webSocketFactory(
@@ -172,13 +177,14 @@ export class MarketDataHub {
     try {
       const message = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(String(raw));
       const receivedAtMs = Date.now();
+      const causal = this.causalSequence.receive(connection.connectionGeneration);
       connection.lastMessageAtMs = receivedAtMs;
       for (const consumer of connection.consumers) {
         try {
           const payload = message.data ?? message;
           consumer(
             payload !== null && typeof payload === 'object'
-              ? { ...payload, receivedAtMs }
+              ? { ...payload, receivedAtMs, localCausality: causal }
               : payload,
           );
         } catch (error) {

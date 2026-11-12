@@ -1,5 +1,6 @@
 import type { AggTradeEvent } from '../../app/ports/MarketData';
 import { RollingAggTradeBuffer } from './RollingAggTradeBuffer';
+import { processLocalCausalSequence } from './LocalCausalWatermark';
 
 export type AggTradeStreamStatus = 'connecting' | 'open' | 'reconnecting';
 
@@ -21,6 +22,7 @@ type StateEntry<T extends RollingAggTradeBuffer> = {
   references: number;
   listeners: Set<(event: AggTradeEvent) => void>;
   unsubscribe: () => void;
+  connectionGeneration: number;
 };
 
 /** Owns one canonical rolling AggTrade state and stream per symbol. */
@@ -43,6 +45,7 @@ export class AggTradeDataPlane<T extends RollingAggTradeBuffer = RollingAggTrade
         references: 0,
         listeners,
         unsubscribe: () => {},
+        connectionGeneration: 0,
       };
       this.states.set(normalizedSymbol, entry);
       try {
@@ -50,11 +53,20 @@ export class AggTradeDataPlane<T extends RollingAggTradeBuffer = RollingAggTrade
           normalizedSymbol,
           (event) => {
             if (this.states.get(normalizedSymbol)?.state !== entry!.state) return;
-            entry!.state.push(event);
-            for (const consumer of entry!.listeners) consumer(event);
+            const received = event.localCausality
+              ? event
+              : {
+                  ...event,
+                  localCausality: processLocalCausalSequence().receive(
+                    Math.max(1, entry!.connectionGeneration),
+                  ),
+                };
+            entry!.state.push(received);
+            for (const consumer of entry!.listeners) consumer(received);
           },
           (status) => {
             if (this.states.get(normalizedSymbol)?.state !== entry!.state) return;
+            if (status === 'connecting') entry!.connectionGeneration++;
             if (status === 'connecting' || status === 'reconnecting') {
               entry!.state.markContinuityUncertain();
             }

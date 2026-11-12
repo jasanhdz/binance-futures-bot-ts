@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import type { PullbackTrade } from './MicroBurstPullbackCandidate';
+import type {
+  LocalCausalEventStamp,
+  LocalCausalStateWatermark,
+} from '../../core/market-data/LocalCausalWatermark';
 
 export interface ArchiveSegment {
   filePath: string;
@@ -25,8 +29,11 @@ export interface DepthKnowledgeBounds {
 export interface RestDepthSnapshotAnchor {
   readonly symbol: string;
   readonly requestedAtMs: number;
+  readonly requestedAtMonotonicMs?: number;
   readonly snapshotReceivedAtMs: number;
+  readonly snapshotReceivedMonotonicAtMs?: number;
   readonly availableAtMs: number;
+  readonly availableMonotonicAtMs?: number;
   readonly exchangeUpperBoundAtAvailableMs: number;
   readonly lastUpdateId: number;
   readonly bids: readonly { price: number; qty: number }[];
@@ -34,7 +41,83 @@ export interface RestDepthSnapshotAnchor {
   readonly bufferLengthBefore: number;
   readonly bufferLengthAfter: number;
   readonly bufferedEvents: readonly ArchiveEvent[];
+  readonly bufferCausalRange?: {
+    readonly processGenerationId: string;
+    readonly firstReceiveSequence: number;
+    readonly lastReceiveSequence: number;
+  };
   readonly evidenceSha256: string;
+}
+
+export function readLocalCausalEventStamp(value: unknown): LocalCausalEventStamp | null {
+  if (!value || typeof value !== 'object') return null;
+  const stamp = value as LocalCausalEventStamp;
+  return stamp.schemaVersion === 1 &&
+    typeof stamp.processGenerationId === 'string' &&
+    Number.isSafeInteger(stamp.connectionGeneration) &&
+    stamp.connectionGeneration > 0 &&
+    Number.isSafeInteger(stamp.receiveSequence) &&
+    stamp.receiveSequence > 0 &&
+    Number.isFinite(stamp.receivedMonotonicAtMs) &&
+    stamp.receivedMonotonicAtMs >= 0
+    ? stamp
+    : null;
+}
+
+function validArchivePersistenceStamp(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const stamp = value as Record<string, unknown>;
+  return (
+    stamp.status === 'APPENDED_TO_ACTIVE_SEGMENT' &&
+    typeof stamp.storageGenerationId === 'string' &&
+    Number.isSafeInteger(stamp.queueSequence) &&
+    Number(stamp.queueSequence) > 0 &&
+    Number.isFinite(stamp.queuedMonotonicAtMs) &&
+    Number.isFinite(stamp.appendedMonotonicAtMs) &&
+    stamp.durabilityRequirement === 'SEGMENT_CHECKSUM_AND_SESSION_FINALIZATION'
+  );
+}
+
+export function compareArchiveDepthReceiveOrder(a: ArchiveEvent, b: ArchiveEvent): number {
+  const aStamp = readLocalCausalEventStamp(a.payload.localCausality);
+  const bStamp = readLocalCausalEventStamp(b.payload.localCausality);
+  if (aStamp && bStamp && aStamp.processGenerationId === bStamp.processGenerationId)
+    return aStamp.receiveSequence - bStamp.receiveSequence;
+  return (
+    a.receivedAtMs - b.receivedAtMs ||
+    Number(a.payload.U) - Number(b.payload.U) ||
+    Number(a.payload.u) - Number(b.payload.u)
+  );
+}
+
+function isInLocalCausalRange(
+  event: ArchiveEvent,
+  range: RestDepthSnapshotAnchor['bufferCausalRange'],
+): boolean {
+  const stamp = readLocalCausalEventStamp(event.payload.localCausality);
+  return Boolean(
+    range &&
+      stamp?.processGenerationId === range.processGenerationId &&
+      stamp.receiveSequence >= range.firstReceiveSequence &&
+      stamp.receiveSequence <= range.lastReceiveSequence,
+  );
+}
+
+function isLaterLocalCausalEvent(
+  event: ArchiveEvent,
+  range: NonNullable<RestDepthSnapshotAnchor['bufferCausalRange']>,
+  target: LocalCausalStateWatermark | null | undefined,
+): boolean {
+  const stamp = readLocalCausalEventStamp(event.payload.localCausality);
+  return Boolean(
+    stamp &&
+      target?.processGenerationId === range.processGenerationId &&
+      stamp.processGenerationId === range.processGenerationId &&
+      target.lastAppliedReceiveSequence !== null &&
+      target.lastAppliedReceiveSequence !== undefined &&
+      stamp.receiveSequence > range.lastReceiveSequence &&
+      stamp.receiveSequence <= target.lastAppliedReceiveSequence,
+  );
 }
 
 export interface UnverifiedPullbackEvidence {
@@ -62,6 +145,8 @@ export function readVerifiedSegments(segments: readonly ArchiveSegment[]): Archi
     if (lines.length !== segment.recordCount) throw new Error('ARCHIVE_RECORD_COUNT_INVALID');
     return lines.map((line) => {
       const row = JSON.parse(line) as ArchiveEvent;
+      const localCausalityValue = row.payload?.localCausality;
+      const archivePersistenceValue = row.payload?.archivePersistence;
       if (
         !row.symbol ||
         !['trades', 'depth'].includes(row.type) ||
@@ -69,7 +154,10 @@ export function readVerifiedSegments(segments: readonly ArchiveSegment[]): Archi
         !row.payload ||
         row.payload.eventTime !== row.eventTime ||
         row.payload.receivedAtMs !== row.receivedAtMs ||
-        row.payload.symbol !== row.symbol
+        row.payload.symbol !== row.symbol ||
+        (localCausalityValue !== undefined && !readLocalCausalEventStamp(localCausalityValue)) ||
+        (archivePersistenceValue !== undefined &&
+          !validArchivePersistenceStamp(archivePersistenceValue))
       )
         throw new Error('ARCHIVE_ENVELOPE_INVALID');
       return row;
@@ -184,6 +272,7 @@ export interface DepthCheckpoint {
   asks: readonly { price: number; qty: number }[];
   /** Original known depth bounds; they may exceed surviving edge levels. */
   knownDepthBounds?: DepthKnowledgeBounds;
+  localCausality?: LocalCausalStateWatermark | null;
 }
 
 export interface CausalDepthReplay {
@@ -204,7 +293,10 @@ export interface CausalDepthReplay {
     | 'REST_DEPTH_SNAPSHOT_BRIDGE_MISSING'
     | 'REST_DEPTH_SNAPSHOT_BRIDGE_INVALID'
     | 'REST_DEPTH_SNAPSHOT_BUFFER_SEQUENCE_GAP'
-    | 'REST_DEPTH_SNAPSHOT_AFTER_DECISION_BOUND';
+    | 'REST_DEPTH_SNAPSHOT_AFTER_DECISION_BOUND'
+    | 'LOCAL_CAUSAL_CHECKPOINT_MISSING'
+    | 'LOCAL_CAUSAL_PROCESS_GENERATION_MISMATCH'
+    | 'LOCAL_CAUSAL_EVENT_UNVERIFIED';
   readonly book?: {
     bidDepth: { price: number; qty: number }[];
     askDepth: { price: number; qty: number }[];
@@ -212,6 +304,7 @@ export interface CausalDepthReplay {
     lastUpdateId: number;
     appliedEventCount: number;
     knownDepthBounds: DepthKnowledgeBounds;
+    localCausality?: LocalCausalStateWatermark | null;
   };
 }
 
@@ -223,19 +316,36 @@ export interface CausalDepthReplay {
 export function replayCausalDepth(
   checkpoint: DepthCheckpoint,
   events: readonly ArchiveEvent[],
-  clocks: { exchangeAsOfMs: number; receivedAsOfMs: number },
+  clocks: {
+    exchangeAsOfMs: number;
+    receivedAsOfMs: number;
+    localCausality?: LocalCausalStateWatermark | null;
+    monotonicAsOfMs?: number | null;
+  },
   maxAgeMs: number,
   requireUpdate = false,
 ): CausalDepthReplay {
   const { exchangeAsOfMs, receivedAsOfMs } = clocks;
   const availableAtMs = checkpoint.availableAtMs ?? checkpoint.receivedAtMs;
+  const targetLocalCausality = clocks.localCausality ?? null;
+  const localCausalReplay = targetLocalCausality !== null;
+  if (localCausalReplay && !checkpoint.localCausality)
+    return { status: 'UNKNOWN', reason: 'LOCAL_CAUSAL_CHECKPOINT_MISSING' };
+  if (
+    localCausalReplay &&
+    checkpoint.localCausality?.processGenerationId !== targetLocalCausality.processGenerationId
+  )
+    return { status: 'UNKNOWN', reason: 'LOCAL_CAUSAL_PROCESS_GENERATION_MISMATCH' };
+  const sameLocalCausalGeneration =
+    localCausalReplay &&
+    checkpoint.localCausality?.processGenerationId === targetLocalCausality?.processGenerationId;
   if (
     ![exchangeAsOfMs, receivedAsOfMs, maxAgeMs, checkpoint.receivedAtMs, availableAtMs].every(
       Number.isFinite,
     ) ||
     maxAgeMs <= 0 ||
-    checkpoint.receivedAtMs > receivedAsOfMs ||
-    availableAtMs > receivedAsOfMs ||
+    (!sameLocalCausalGeneration && checkpoint.receivedAtMs > receivedAsOfMs) ||
+    (!sameLocalCausalGeneration && availableAtMs > receivedAsOfMs) ||
     availableAtMs < checkpoint.receivedAtMs ||
     !Number.isSafeInteger(checkpoint.lastUpdateId) ||
     checkpoint.lastUpdateId < 0 ||
@@ -276,19 +386,37 @@ export function replayCausalDepth(
     return { status: 'UNKNOWN', reason: 'INVALID_DEPTH_CHECKPOINT' };
   let last = checkpoint.lastUpdateId;
   let observedAtMs = checkpoint.receivedAtMs;
+  let localCausality = checkpoint.localCausality ?? null;
   let appliedEventCount = 0;
   const identities = new Map<string, string>();
   const finalUpdateIdentities = new Map<number, { identity: string; fingerprint: string }>();
+  const startAppliedSequence = checkpoint.localCausality?.lastAppliedReceiveSequence;
+  const throughAppliedSequence = targetLocalCausality?.lastAppliedReceiveSequence;
   const visible = events
-    .filter(
-      (e) =>
-        e.type === 'depth' &&
-        e.symbol === checkpoint.symbol &&
-        e.receivedAtMs >= availableAtMs &&
-        e.receivedAtMs <= receivedAsOfMs &&
-        e.eventTime <= exchangeAsOfMs,
-    )
-    .slice();
+    .filter((event) => {
+      if (
+        event.type !== 'depth' ||
+        event.symbol !== checkpoint.symbol ||
+        event.eventTime > exchangeAsOfMs
+      )
+        return false;
+      if (sameLocalCausalGeneration) {
+        const stamp = readLocalCausalEventStamp(event.payload.localCausality);
+        if (!stamp || stamp.processGenerationId !== targetLocalCausality!.processGenerationId)
+          return false;
+        return (
+          throughAppliedSequence !== null &&
+          throughAppliedSequence !== undefined &&
+          stamp.receiveSequence <= throughAppliedSequence &&
+          (startAppliedSequence === null || startAppliedSequence === undefined
+            ? stamp.receiveSequence > (checkpoint.localCausality?.receivedSequence ?? 0)
+            : stamp.receiveSequence > startAppliedSequence)
+        );
+      }
+      return event.receivedAtMs >= availableAtMs && event.receivedAtMs <= receivedAsOfMs;
+    })
+    .slice()
+    .sort(compareArchiveDepthReceiveOrder);
   const pending: Array<{
     event: ArchiveEvent;
     U: number;
@@ -327,6 +455,11 @@ export function replayCausalDepth(
   }
   let previousReceiveAtMs = availableAtMs;
   let previousEventAtMs = -Infinity;
+  let previousLocalSequence = checkpoint.localCausality?.lastAppliedReceiveSequence ?? null;
+  let observedMonotonicAtMs =
+    checkpoint.localCausality?.appliedMonotonicAtMs ??
+    checkpoint.localCausality?.receivedMonotonicAtMs ??
+    null;
   while (pending.length) {
     for (let index = pending.length - 1; index >= 0; index--) {
       const update = pending[index];
@@ -349,12 +482,44 @@ export function replayCausalDepth(
     if (applicable.length !== 1) return { status: 'UNKNOWN', reason: 'DEPTH_SEQUENCE_GAP' };
     const update = applicable[0];
     const event = update.event;
-    if (event.receivedAtMs < previousReceiveAtMs)
+    const localStamp = readLocalCausalEventStamp(event.payload.localCausality);
+    const localSequenceProvesOrder = Boolean(
+      sameLocalCausalGeneration &&
+        localStamp &&
+        localStamp.processGenerationId === targetLocalCausality?.processGenerationId &&
+        (previousLocalSequence === null || localStamp.receiveSequence > previousLocalSequence),
+    );
+    if (sameLocalCausalGeneration && !localSequenceProvesOrder)
+      return { status: 'UNKNOWN', reason: 'LOCAL_CAUSAL_EVENT_UNVERIFIED' };
+    if (!localSequenceProvesOrder && event.receivedAtMs < previousReceiveAtMs)
       return { status: 'UNKNOWN', reason: 'DEPTH_RECEIVE_CLOCK_REGRESSION' };
-    if (event.eventTime < previousEventAtMs)
+    if (!localSequenceProvesOrder && event.eventTime < previousEventAtMs)
       return { status: 'UNKNOWN', reason: 'DEPTH_EVENT_TIME_REGRESSION' };
     previousReceiveAtMs = event.receivedAtMs;
     previousEventAtMs = event.eventTime;
+    if (localStamp) {
+      previousLocalSequence = localStamp.receiveSequence;
+      observedMonotonicAtMs = localStamp.receivedMonotonicAtMs;
+      localCausality = {
+        schemaVersion: 1,
+        processGenerationId: localStamp.processGenerationId,
+        connectionGeneration: localStamp.connectionGeneration,
+        lastAppliedConnectionGeneration: localStamp.connectionGeneration,
+        receivedSequence: Math.max(
+          localCausality?.processGenerationId === localStamp.processGenerationId
+            ? localCausality.receivedSequence
+            : 0,
+          localStamp.receiveSequence,
+        ),
+        lastAppliedReceiveSequence: localStamp.receiveSequence,
+        appliedStateVersion:
+          (localCausality?.processGenerationId === localStamp.processGenerationId
+            ? localCausality.appliedStateVersion
+            : 0) + 1,
+        receivedMonotonicAtMs: localStamp.receivedMonotonicAtMs,
+        appliedMonotonicAtMs: null,
+      };
+    }
     const p = event.payload;
     for (const [raw, map, bound] of [
       [p.b, bids, (price: number) => price >= floor],
@@ -383,8 +548,21 @@ export function replayCausalDepth(
     appliedEventCount++;
     pending.splice(pending.indexOf(update), 1);
   }
-  if (receivedAsOfMs - observedAtMs > maxAgeMs)
+  const observedAgeMs =
+    sameLocalCausalGeneration &&
+    Number.isFinite(clocks.monotonicAsOfMs) &&
+    Number.isFinite(observedMonotonicAtMs)
+      ? Number(clocks.monotonicAsOfMs) - Number(observedMonotonicAtMs)
+      : receivedAsOfMs - observedAtMs;
+  if (observedAgeMs < 0 || observedAgeMs > maxAgeMs)
     return { status: 'UNKNOWN', reason: 'DEPTH_TOO_OLD' };
+  if (
+    sameLocalCausalGeneration &&
+    (localCausality?.lastAppliedReceiveSequence !==
+      targetLocalCausality?.lastAppliedReceiveSequence ||
+      localCausality.appliedStateVersion !== targetLocalCausality?.appliedStateVersion)
+  )
+    return { status: 'UNKNOWN', reason: 'LOCAL_CAUSAL_EVENT_UNVERIFIED' };
   if (requireUpdate && appliedEventCount === 0)
     return { status: 'UNKNOWN', reason: 'DEPTH_NO_UPDATES_OBSERVED' };
   const bidDepth = [...bids]
@@ -406,6 +584,7 @@ export function replayCausalDepth(
       lastUpdateId: last,
       appliedEventCount,
       knownDepthBounds: { bidFloor: floor, askCeiling: ceiling },
+      localCausality,
     },
   };
 }
@@ -614,6 +793,8 @@ export function replayCausalDepthFromRestSnapshot(
     exchangeAsOfMs: number;
     receivedAsOfMs: number;
     exchangeLowerBoundMs: number;
+    localCausality?: LocalCausalStateWatermark | null;
+    monotonicAsOfMs?: number | null;
   },
   maxAgeMs: number,
 ): CausalDepthReplay {
@@ -621,6 +802,18 @@ export function replayCausalDepthFromRestSnapshot(
     status: 'UNKNOWN',
     reason,
   });
+  const monotonicSnapshotBounds = Boolean(
+    Number.isFinite(anchor.requestedAtMonotonicMs) &&
+      Number.isFinite(anchor.snapshotReceivedMonotonicAtMs) &&
+      Number.isFinite(anchor.availableMonotonicAtMs),
+  );
+  const sameLocalCausalGeneration = Boolean(
+    clocks.localCausality &&
+      anchor.bufferCausalRange?.processGenerationId === clocks.localCausality.processGenerationId &&
+      monotonicSnapshotBounds &&
+      Number.isFinite(clocks.monotonicAsOfMs) &&
+      anchor.availableMonotonicAtMs! <= clocks.monotonicAsOfMs!,
+  );
   if (anchor.bufferLengthBefore !== 0 || anchor.bufferLengthAfter !== anchor.bufferedEvents.length)
     return unknown('REST_DEPTH_SNAPSHOT_BUFFER_UNVERIFIED');
   if (
@@ -636,9 +829,9 @@ export function replayCausalDepthFromRestSnapshot(
     ].every(Number.isFinite) ||
     !Number.isSafeInteger(anchor.lastUpdateId) ||
     anchor.lastUpdateId < 0 ||
-    anchor.snapshotReceivedAtMs < anchor.requestedAtMs ||
-    anchor.availableAtMs < anchor.snapshotReceivedAtMs ||
-    anchor.availableAtMs > clocks.receivedAsOfMs ||
+    (!monotonicSnapshotBounds && anchor.snapshotReceivedAtMs < anchor.requestedAtMs) ||
+    (!monotonicSnapshotBounds && anchor.availableAtMs < anchor.snapshotReceivedAtMs) ||
+    (!sameLocalCausalGeneration && anchor.availableAtMs > clocks.receivedAsOfMs) ||
     anchor.exchangeUpperBoundAtAvailableMs >= clocks.exchangeLowerBoundMs ||
     !anchor.bids.length ||
     !anchor.asks.length
@@ -675,6 +868,7 @@ export function replayCausalDepthFromRestSnapshot(
   };
   let last = anchor.lastUpdateId;
   let observedAtMs = anchor.snapshotReceivedAtMs;
+  let localCausality: LocalCausalStateWatermark | null = null;
   let appliedBootstrapEvents = 0;
   const bootstrapIdentities = new Map<string, string>();
   const eventIdentity = (event: ArchiveEvent): string =>
@@ -724,22 +918,34 @@ export function replayCausalDepthFromRestSnapshot(
     bootstrapIdentities.set(eventIdentity(event), eventFingerprint(event));
     last = Number(event.payload.u);
     observedAtMs = event.receivedAtMs;
+    const stamp = readLocalCausalEventStamp(event.payload.localCausality);
+    if (stamp) {
+      const previousStateVersion =
+        localCausality?.processGenerationId === stamp.processGenerationId
+          ? localCausality.appliedStateVersion
+          : 1;
+      localCausality = {
+        schemaVersion: 1,
+        processGenerationId: stamp.processGenerationId,
+        connectionGeneration: stamp.connectionGeneration,
+        lastAppliedConnectionGeneration: stamp.connectionGeneration,
+        receivedSequence: stamp.receiveSequence,
+        lastAppliedReceiveSequence: stamp.receiveSequence,
+        appliedStateVersion: previousStateVersion + 1,
+        receivedMonotonicAtMs: stamp.receivedMonotonicAtMs,
+        appliedMonotonicAtMs: null,
+      };
+    }
     appliedBootstrapEvents++;
   };
-  const buffered = anchor.bufferedEvents
-    .slice()
-    .sort(
-      (a, b) =>
-        a.receivedAtMs - b.receivedAtMs ||
-        Number(a.payload.U) - Number(b.payload.U) ||
-        Number(a.payload.u) - Number(b.payload.u),
-    );
+  const buffered = anchor.bufferedEvents.slice().sort(compareArchiveDepthReceiveOrder);
   if (
     buffered.some(
       (event) =>
         !validEvent(event) ||
-        event.receivedAtMs < anchor.requestedAtMs ||
-        event.receivedAtMs > anchor.availableAtMs,
+        (anchor.bufferCausalRange
+          ? !isInLocalCausalRange(event, anchor.bufferCausalRange)
+          : event.receivedAtMs < anchor.requestedAtMs || event.receivedAtMs > anchor.availableAtMs),
     )
   )
     return unknown('REST_DEPTH_SNAPSHOT_BUFFER_UNVERIFIED');
@@ -775,18 +981,14 @@ export function replayCausalDepthFromRestSnapshot(
       .filter(
         (event) =>
           validEvent(event) &&
-          event.receivedAtMs > availableAtMs &&
-          event.receivedAtMs <= clocks.receivedAsOfMs &&
+          (anchor.bufferCausalRange
+            ? isLaterLocalCausalEvent(event, anchor.bufferCausalRange, clocks.localCausality)
+            : event.receivedAtMs > availableAtMs && event.receivedAtMs <= clocks.receivedAsOfMs) &&
           event.eventTime <= clocks.exchangeAsOfMs &&
           Number(event.payload.u) >= last,
       )
       .slice()
-      .sort(
-        (a, b) =>
-          a.receivedAtMs - b.receivedAtMs ||
-          Number(a.payload.U) - Number(b.payload.U) ||
-          Number(a.payload.u) - Number(b.payload.u),
-      )[0];
+      .sort(compareArchiveDepthReceiveOrder)[0];
     if (!candidate) return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_MISSING');
     if (!(Number(candidate.payload.U) <= last && last <= Number(candidate.payload.u)))
       return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_INVALID');
@@ -803,8 +1005,9 @@ export function replayCausalDepthFromRestSnapshot(
     if (
       event.type !== 'depth' ||
       event.symbol !== anchor.symbol ||
-      event.receivedAtMs < availableAtMs ||
-      event.receivedAtMs > clocks.receivedAsOfMs
+      (anchor.bufferCausalRange
+        ? !isLaterLocalCausalEvent(event, anchor.bufferCausalRange, clocks.localCausality)
+        : event.receivedAtMs < availableAtMs || event.receivedAtMs > clocks.receivedAsOfMs)
     )
       continue;
     if (!validEvent(event)) return unknown('DEPTH_EVENT_INVALID');
@@ -826,8 +1029,14 @@ export function replayCausalDepthFromRestSnapshot(
     bids: [...bids].map(([price, qty]) => ({ price, qty })).sort((a, b) => b.price - a.price),
     asks: [...asks].map(([price, qty]) => ({ price, qty })).sort((a, b) => a.price - b.price),
     knownDepthBounds,
+    localCausality,
   };
-  const result = replayCausalDepth(checkpoint, futureEvents, clocks, maxAgeMs);
+  const result = replayCausalDepth(
+    checkpoint,
+    futureEvents,
+    { ...clocks, localCausality: clocks.localCausality ?? localCausality },
+    maxAgeMs,
+  );
   if (result.status !== 'VERIFIED' || !result.book) return result;
   return {
     status: 'VERIFIED',

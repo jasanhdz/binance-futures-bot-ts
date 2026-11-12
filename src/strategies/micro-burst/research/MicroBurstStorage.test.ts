@@ -37,6 +37,51 @@ afterEach(() => {
 });
 
 describe('MicroBurstStorage', () => {
+  it('binds SQLite checkpoints to a process-local writer generation and committed sequence', () => {
+    const { storage, databasePath } = createStorage();
+    expect(storage.getPersistenceWatermark()).toMatchObject({
+      appendedArchiveSequence: 0,
+      checkpointSequence: 0,
+    });
+    expect(
+      storage.persistCheckpoint('BTCUSDT', 100, {
+        schemaVersion: 1,
+        symbol: 'BTCUSDT',
+        observedAtMs: 100,
+        lastUpdateId: 10,
+        bids: [{ price: 99, qty: 1 }],
+        asks: [{ price: 101, qty: 1 }],
+      }),
+    ).toBe(true);
+
+    const watermark = storage.getPersistenceWatermark();
+    const db = new Database(databasePath, { readonly: true });
+    try {
+      expect(db.pragma('user_version', { simple: true })).toBe(3);
+      const row = db
+        .prepare(
+          'SELECT checkpoint_json, storage_generation_id, persistence_sequence FROM book_checkpoints',
+        )
+        .get() as {
+        checkpoint_json: string;
+        storage_generation_id: string;
+        persistence_sequence: number;
+      };
+      expect(row.storage_generation_id).toBe(watermark.storageGenerationId);
+      expect(row.persistence_sequence).toBe(1);
+      expect(JSON.parse(row.checkpoint_json)).toMatchObject({
+        archivePersistence: {
+          storageGenerationId: watermark.storageGenerationId,
+          checkpointSequence: 1,
+        },
+      });
+      expect(watermark.checkpointSequence).toBe(1);
+    } finally {
+      db.close();
+      storage.close();
+    }
+  });
+
   it('migrates legacy gap rows without relabeling them as a reliable feed gap', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'micro-burst-storage-migration-'));
     temporaryDirectories.push(root);
@@ -470,6 +515,13 @@ describe('MicroBurstStorage', () => {
           eventTime: 100 + index,
           receivedAtMs: 200 + index,
           price: index + 1,
+          localCausality: {
+            schemaVersion: 1,
+            processGenerationId: 'process-a',
+            connectionGeneration: 1,
+            receiveSequence: index + 1,
+            receivedMonotonicAtMs: index + 1,
+          },
         }),
       ).toBe(true);
     expect(storage.getHealth()).toMatchObject({
@@ -477,16 +529,42 @@ describe('MicroBurstStorage', () => {
       queuedRecords: 3,
       writtenRecords: 0,
     });
+    expect(storage.getPersistenceWatermark()).toMatchObject({
+      appendedArchiveSequence: 0,
+      checkpointSequence: 0,
+    });
     expect(storage.flush()).toBe(true);
     expect(storage.getHealth()).toMatchObject({
       queueDepth: 0,
       queuedRecords: 3,
       writtenRecords: 3,
     });
+    expect(storage.getPersistenceWatermark().appendedArchiveSequence).toBe(3);
     expect(
       storage.queryArchivedTrades('BTCUSDT', 100, 102).map((trade) => trade.eventTime),
     ).toEqual([100, 101, 102]);
     storage.close();
+    const segmentName = fs
+      .readdirSync(path.join(archivePath, 'trades', 'BTCUSDT'))
+      .find((name) => name.endsWith('.ndjson.gz'));
+    expect(segmentName).toBeDefined();
+    const persistedRows = zlib
+      .gunzipSync(fs.readFileSync(path.join(archivePath, 'trades', 'BTCUSDT', segmentName!)))
+      .toString('utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(persistedRows.map((row) => row.payload.localCausality.receiveSequence)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(persistedRows.map((row) => row.payload.archivePersistence.queueSequence)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(
+      persistedRows.every(
+        (row) => row.payload.archivePersistence.status === 'APPENDED_TO_ACTIVE_SEGMENT',
+      ),
+    ).toBe(true);
     expect(fs.existsSync(path.join(archivePath, '.raw-write-pending.marker'))).toBe(false);
   });
 

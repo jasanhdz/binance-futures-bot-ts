@@ -12,6 +12,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { createGunzip } from 'node:zlib';
 import { createInterface } from 'node:readline';
 import Database from 'better-sqlite3';
+import type { LocalCausalStateWatermark } from '../../core/market-data/LocalCausalWatermark';
 import {
   hashTree,
   isVerifiedFrozenCollectorArtifact,
@@ -20,6 +21,8 @@ import {
 } from './MicroBurstCollectorFreeze';
 import {
   causalTradeEvidence,
+  compareArchiveDepthReceiveOrder,
+  readLocalCausalEventStamp,
   replayCausalDepth,
   readVerifiedSegments,
   type ArchiveEvent,
@@ -116,6 +119,11 @@ export interface VerifiedDecisionIndexEntry {
   readonly canonicalSha256: string;
   readonly strategyConfigHash: string;
   readonly codeCommitSha: string;
+  readonly localEvaluationOrder?: {
+    readonly processGenerationId: string;
+    readonly startedAtMonotonicMs: number;
+    readonly finishedAtMonotonicMs: number;
+  };
 }
 
 export interface VerifiedExecutionBook {
@@ -135,6 +143,7 @@ export interface VerifiedExecutionBook {
   readonly checkpointSource: 'SQLITE_DEPTH_CHECKPOINT' | 'PUBLIC_REST_DEPTH_SNAPSHOT';
   readonly checkpointEvidenceSha256: string;
   readonly knownDepthBounds: DepthKnowledgeBounds;
+  readonly localCausality: LocalCausalStateWatermark | null;
   readonly exchangeLowerBoundMs: number | null;
   readonly depthEventCount: number;
   readonly sessionManifestSha256: string;
@@ -826,6 +835,19 @@ function replayContext(decision: StrategyDecisionEvidenceV2): {
   readonly symbol?: string;
   readonly observedAtMs?: number;
   readonly exchangeObservedAtMs?: number;
+  readonly inputCaptureTiming?: {
+    readonly decisionAtMonotonicMs?: number;
+    readonly contextCaptureAtMonotonicMs?: number | null;
+    readonly localCausalContext?: {
+      readonly processGenerationId?: string | null;
+      readonly sources?: { readonly depth?: LocalCausalStateWatermark | null };
+      readonly archivePersistence?: {
+        readonly storageGenerationId: string;
+        readonly appendedArchiveSequence: number;
+        readonly checkpointSequence: number;
+      } | null;
+    };
+  };
   readonly clockReference?: {
     readonly contextBuiltExchangeLowerBoundMs?: number;
     readonly contextBuiltExchangeUpperBoundMs?: number;
@@ -835,6 +857,7 @@ function replayContext(decision: StrategyDecisionEvidenceV2): {
     readonly observedAtMs?: number;
     readonly bidDepth?: readonly { price: number; qty: number }[];
     readonly askDepth?: readonly { price: number; qty: number }[];
+    readonly localCausality?: LocalCausalStateWatermark | null;
   };
   readonly bookPressure?: MicroBurstExitContext['currentBookPressure'];
   readonly btcContext?: MicroBurstExitContext['currentBtcContext'] | null;
@@ -879,6 +902,7 @@ function sameKnownBook(
     readonly bidDepth?: readonly { price: number; qty: number }[];
     readonly askDepth?: readonly { price: number; qty: number }[];
     readonly observedAtMs?: number;
+    readonly localCausality?: LocalCausalStateWatermark | null;
   },
 ): boolean {
   const bids = expected.bidDepth;
@@ -1007,6 +1031,8 @@ async function readVerifiedInitialRestDepthSnapshots(
     const serverTimeSamples: Array<{
       requestStartedAtMs: number;
       responseReceivedAtMs: number;
+      requestStartedMonotonicAtMs?: number;
+      responseReceivedMonotonicAtMs?: number;
       serverTime: number;
     }> = [];
     await forEachVerifiedEvidenceJsonLine(
@@ -1024,6 +1050,12 @@ async function readVerifiedInitialRestDepthSnapshots(
           serverTimeSamples.push({
             requestStartedAtMs: Number(record.requestedAtMs),
             responseReceivedAtMs: Number(record.receivedAtMs),
+            ...(Number.isFinite(record.requestedAtMonotonicMs)
+              ? { requestStartedMonotonicAtMs: Number(record.requestedAtMonotonicMs) }
+              : {}),
+            ...(Number.isFinite(record.receivedAtMonotonicMs)
+              ? { responseReceivedMonotonicAtMs: Number(record.receivedAtMonotonicMs) }
+              : {}),
             serverTime,
           });
       },
@@ -1032,7 +1064,10 @@ async function readVerifiedInitialRestDepthSnapshots(
       session,
       /^events(?:\..+)?\.jsonl(?:\.gz)?$/,
       (record, source) => {
-        if (record.message === 'market_data_order_book_snapshot_received')
+        if (
+          record.message === 'market_data_order_book_snapshot_received' ||
+          record.message === 'market_data_order_book_snapshot_synchronized'
+        )
           syncLogs.push({ record, source });
       },
     );
@@ -1053,6 +1088,9 @@ async function readVerifiedInitialRestDepthSnapshots(
       const record = candidate.record;
       const response = record.response as Record<string, any> | undefined;
       const requestLimit = Number(record.args?.[1]);
+      const hasMonotonicRestBounds =
+        Number.isFinite(record.requestedAtMonotonicMs) &&
+        Number.isFinite(record.receivedAtMonotonicMs);
       if (
         !response ||
         requestLimit <= 0 ||
@@ -1062,8 +1100,10 @@ async function readVerifiedInitialRestDepthSnapshots(
         !Number.isFinite(record.receivedAtMs) ||
         !Number.isFinite(response.receivedAtMs) ||
         response.receivedAtMs < session.startedAtMs ||
-        record.requestedAtMs > response.receivedAtMs ||
-        response.receivedAtMs > record.receivedAtMs ||
+        (!hasMonotonicRestBounds && record.requestedAtMs > response.receivedAtMs) ||
+        (!hasMonotonicRestBounds && response.receivedAtMs > record.receivedAtMs) ||
+        (hasMonotonicRestBounds &&
+          Number(record.requestedAtMonotonicMs) > Number(record.receivedAtMonotonicMs)) ||
         !Array.isArray(response.bids) ||
         !Array.isArray(response.asks) ||
         !response.bids.length ||
@@ -1072,7 +1112,7 @@ async function readVerifiedInitialRestDepthSnapshots(
         response.asks.length > requestLimit
       )
         continue;
-      const syncMatches = syncLogs.filter(({ record: log }) => {
+      const matchingSyncLogs = syncLogs.filter(({ record: log }) => {
         const context = log.context ?? {};
         return (
           context.symbol === symbol &&
@@ -1080,33 +1120,60 @@ async function readVerifiedInitialRestDepthSnapshots(
           context.snapshotLastUpdateId === response.lastUpdateId
         );
       });
+      const completedSyncLogs = matchingSyncLogs.filter(
+        ({ record: log }) =>
+          log.message === 'market_data_order_book_snapshot_synchronized' &&
+          log.context?.bufferLengthAfter > 0,
+      );
+      const syncMatches = completedSyncLogs.length ? completedSyncLogs : matchingSyncLogs;
       if (syncMatches.length !== 1) continue;
       const syncLog = syncMatches[0];
       const sync = syncLog.record.context as Record<string, any>;
+      const syncAvailableAtMs = Number(sync.synchronizedAtMs ?? sync.receivedAtMs);
+      const syncAvailableMonotonicAtMs = Number(sync.synchronizedAtMonotonicMs);
+      const useMonotonicSyncBounds =
+        Number.isFinite(syncAvailableMonotonicAtMs) &&
+        serverTimeSamples.some(
+          (sample) =>
+            Number.isFinite(sample.requestStartedMonotonicAtMs) &&
+            Number.isFinite(sample.responseReceivedMonotonicAtMs),
+        );
       if (
-        !Number.isFinite(sync.receivedAtMs) ||
-        sync.receivedAtMs < response.receivedAtMs ||
-        sync.receivedAtMs > session.completedAtMs ||
-        record.receivedAtMs > sync.receivedAtMs ||
+        !Number.isFinite(syncAvailableAtMs) ||
+        (!useMonotonicSyncBounds && syncAvailableAtMs < response.receivedAtMs) ||
+        syncAvailableAtMs > session.completedAtMs ||
+        (!useMonotonicSyncBounds && record.receivedAtMs > syncAvailableAtMs) ||
+        (useMonotonicSyncBounds &&
+          Number(record.receivedAtMonotonicMs) > syncAvailableMonotonicAtMs) ||
         sync.bufferLengthBefore !== 0 ||
         !Number.isSafeInteger(sync.bufferLengthAfter) ||
         sync.bufferLengthAfter < 0
       )
         continue;
-      const overlappingServerSamples = serverTimeSamples.filter(
-        (sample) =>
-          sample.requestStartedAtMs <= sync.receivedAtMs &&
-          sample.responseReceivedAtMs >= sync.receivedAtMs,
+      const overlappingServerSamples = serverTimeSamples.filter((sample) =>
+        useMonotonicSyncBounds
+          ? sample.requestStartedMonotonicAtMs! <= syncAvailableMonotonicAtMs &&
+            sample.responseReceivedMonotonicAtMs! >= syncAvailableMonotonicAtMs
+          : sample.requestStartedAtMs <= syncAvailableAtMs &&
+            sample.responseReceivedAtMs >= syncAvailableAtMs,
       );
       if (!overlappingServerSamples.length) continue;
       const exchangeLowerBoundAtSnapshot = Math.max(
         ...overlappingServerSamples.map(
-          (sample) => sample.serverTime + (sync.receivedAtMs - sample.responseReceivedAtMs),
+          (sample) =>
+            sample.serverTime +
+            (useMonotonicSyncBounds
+              ? syncAvailableMonotonicAtMs - sample.responseReceivedMonotonicAtMs!
+              : syncAvailableAtMs - sample.responseReceivedAtMs),
         ),
       );
       const exchangeUpperBoundAtSnapshot = Math.min(
         ...overlappingServerSamples.map(
-          (sample) => sample.serverTime + (sync.receivedAtMs - sample.requestStartedAtMs),
+          (sample) =>
+            sample.serverTime +
+            (useMonotonicSyncBounds
+              ? syncAvailableMonotonicAtMs - sample.requestStartedMonotonicAtMs!
+              : syncAvailableAtMs - sample.requestStartedAtMs),
         ),
       );
       if (
@@ -1142,12 +1209,34 @@ async function readVerifiedInitialRestDepthSnapshots(
       const bids = levelArraysValid(response.bids, true);
       const asks = levelArraysValid(response.asks, false);
       if (!bids || !asks || bids[0].price > asks[0].price) continue;
-      const bufferedEvents = await readDepthEventsInReceiveWindow(
-        session,
-        symbol,
-        record.requestedAtMs,
-        sync.receivedAtMs,
-      );
+      const localBufferRange = {
+        processGenerationId: sync.bufferProcessGenerationId,
+        fromSequence: sync.bufferFirstReceiveSequence,
+        throughSequence: sync.bufferLastReceiveSequence,
+      };
+      const hasLocalBufferRange =
+        typeof localBufferRange.processGenerationId === 'string' &&
+        Number.isSafeInteger(localBufferRange.fromSequence) &&
+        Number.isSafeInteger(localBufferRange.throughSequence);
+      if (hasLocalBufferRange && !Number.isFinite(syncAvailableMonotonicAtMs)) continue;
+      const localBufferedEvents = hasLocalBufferRange
+        ? await readDepthEventsByLocalSequenceRange(
+            session,
+            symbol,
+            localBufferRange.processGenerationId,
+            localBufferRange.fromSequence!,
+            localBufferRange.throughSequence!,
+          )
+        : null;
+      if (hasLocalBufferRange && !localBufferedEvents) continue;
+      const bufferedEvents =
+        (hasLocalBufferRange ? localBufferedEvents : null) ??
+        (await readDepthEventsInReceiveWindow(
+          session,
+          symbol,
+          record.requestedAtMs,
+          syncAvailableAtMs,
+        ));
       if (bufferedEvents.length !== sync.bufferLengthAfter) continue;
       const rawEvidence = {
         schema: 'MICRO_REST_DEPTH_SNAPSHOT_ANCHOR_V1',
@@ -1163,6 +1252,16 @@ async function readVerifiedInitialRestDepthSnapshots(
         record,
         syncLog: syncLog.record,
         bufferedEvents,
+        ...(hasLocalBufferRange
+          ? {
+              bufferCausalRange: {
+                processGenerationId: localBufferRange.processGenerationId,
+                firstReceiveSequence: localBufferRange.fromSequence,
+                lastReceiveSequence: localBufferRange.throughSequence,
+              },
+              availableMonotonicAtMs: syncAvailableMonotonicAtMs,
+            }
+          : {}),
         overlappingServerSamples,
         exchangeLowerBoundAtSnapshot,
         exchangeUpperBoundAtSnapshot,
@@ -1172,8 +1271,15 @@ async function readVerifiedInitialRestDepthSnapshots(
         Object.freeze({
           symbol,
           requestedAtMs: record.requestedAtMs,
+          ...(Number.isFinite(record.requestedAtMonotonicMs)
+            ? { requestedAtMonotonicMs: Number(record.requestedAtMonotonicMs) }
+            : {}),
           snapshotReceivedAtMs: response.receivedAtMs,
-          availableAtMs: sync.receivedAtMs,
+          ...(hasMonotonicRestBounds
+            ? { snapshotReceivedMonotonicAtMs: Number(record.receivedAtMonotonicMs) }
+            : {}),
+          availableAtMs: syncAvailableAtMs,
+          ...(hasLocalBufferRange ? { availableMonotonicAtMs: syncAvailableMonotonicAtMs } : {}),
           exchangeUpperBoundAtAvailableMs: exchangeUpperBoundAtSnapshot,
           lastUpdateId: response.lastUpdateId,
           bids: Object.freeze(bids.map((level) => Object.freeze(level))),
@@ -1181,6 +1287,16 @@ async function readVerifiedInitialRestDepthSnapshots(
           bufferLengthBefore: sync.bufferLengthBefore,
           bufferLengthAfter: sync.bufferLengthAfter,
           bufferedEvents: Object.freeze(bufferedEvents),
+          ...(hasLocalBufferRange
+            ? {
+                bufferCausalRange: Object.freeze({
+                  processGenerationId: localBufferRange.processGenerationId!,
+                  firstReceiveSequence: localBufferRange.fromSequence!,
+                  lastReceiveSequence: localBufferRange.throughSequence!,
+                }),
+                availableMonotonicAtMs: syncAvailableMonotonicAtMs,
+              }
+            : {}),
           evidenceSha256: sha256(canonical(rawEvidence)),
         }),
       );
@@ -1227,19 +1343,32 @@ async function readSnapshotReplayDepthEvents(
       grouped.set(record.symbol, events);
     }
     for (const [symbol, events] of grouped)
-      grouped.set(
-        symbol,
-        events.sort(
-          (a, b) =>
-            a.receivedAtMs - b.receivedAtMs ||
-            Number(a.payload.U) - Number(b.payload.U) ||
-            Number(a.payload.u) - Number(b.payload.u),
-        ),
-      );
+      grouped.set(symbol, events.sort(compareArchiveDepthReceiveOrder));
     return grouped;
   })();
   sessionSnapshotReplayDepthEvents.set(session, pending);
   return pending;
+}
+
+async function readDepthEventsByLocalSequenceRange(
+  session: VerifiedCaptureSession,
+  symbol: string,
+  processGenerationId: string,
+  fromSequence: number,
+  throughSequence: number,
+): Promise<ArchiveEvent[] | null> {
+  const events = await readSnapshotReplayDepthEvents(session);
+  if (!events) return null;
+  if (throughSequence < fromSequence) return [];
+  return (events.get(symbol) ?? []).filter((event) => {
+    const stamp = readLocalCausalEventStamp(event.payload.localCausality);
+    return Boolean(
+      stamp &&
+        stamp.processGenerationId === processGenerationId &&
+        stamp.receiveSequence >= fromSequence &&
+        stamp.receiveSequence <= throughSequence,
+    );
+  });
 }
 
 export function assertVerifiedPullbackEvidence(value: unknown): asserts value is PullbackEvidence {
@@ -1254,6 +1383,15 @@ function createVerifiedExecutionBook(input: {
     observedAtMs: number;
     exchangeObservedAtMs: number;
     clockReference?: { contextBuiltExchangeLowerBoundMs?: number };
+    executionBook?: { localCausality?: LocalCausalStateWatermark | null };
+    inputCaptureTiming?: {
+      readonly decisionAtMonotonicMs?: number;
+      readonly contextCaptureAtMonotonicMs?: number | null;
+      readonly localCausalContext?: {
+        readonly processGenerationId?: string | null;
+        readonly sources?: { readonly depth?: LocalCausalStateWatermark | null };
+      };
+    };
   };
   replay: CausalDepthReplay & { status: 'VERIFIED'; book: NonNullable<CausalDepthReplay['book']> };
   checkpointAtMs: number;
@@ -1290,6 +1428,7 @@ function createVerifiedExecutionBook(input: {
     checkpointSource: input.checkpointSource,
     checkpointEvidenceSha256: input.checkpointEvidenceSha256,
     knownDepthBounds: Object.freeze({ ...replay.book.knownDepthBounds }),
+    localCausality: context.executionBook?.localCausality ?? replay.book.localCausality ?? null,
     exchangeLowerBoundMs,
     depthEventCount: replay.book.appliedEventCount,
     sessionManifestSha256: session.manifestSha256,
@@ -1301,6 +1440,7 @@ function createVerifiedExecutionBook(input: {
         checkpointPersistedAtMs: input.checkpointPersistedAtMs,
         checkpointSource: input.checkpointSource,
         checkpointEvidenceSha256: input.checkpointEvidenceSha256,
+        localCausality: context.executionBook?.localCausality ?? replay.book.localCausality ?? null,
         depthEvidenceSha256: input.depthEvidenceSha256,
         clocks: {
           exchangeAsOfMs: context.exchangeObservedAtMs,
@@ -1335,6 +1475,20 @@ export async function readVerifiedExecutionBookForDecision(
             bidDepth?: readonly { price: number; qty: number }[];
             askDepth?: readonly { price: number; qty: number }[];
             observedAtMs?: number;
+            localCausality?: LocalCausalStateWatermark | null;
+          };
+          inputCaptureTiming?: {
+            decisionAtMonotonicMs?: number;
+            contextCaptureAtMonotonicMs?: number | null;
+            localCausalContext?: {
+              processGenerationId?: string | null;
+              sources?: { depth?: LocalCausalStateWatermark | null };
+              archivePersistence?: {
+                storageGenerationId: string;
+                appendedArchiveSequence: number;
+                checkpointSequence: number;
+              } | null;
+            };
           };
         };
       }
@@ -1361,28 +1515,63 @@ export async function readVerifiedExecutionBookForDecision(
   )
     return { status: 'UNKNOWN', reason: 'DECISION_BOOK_MISSING_OR_UNHEALTHY' };
 
+  const localCausalGenerationId =
+    context.inputCaptureTiming?.localCausalContext?.processGenerationId;
+  const localCausality =
+    expected.localCausality ??
+    context.inputCaptureTiming?.localCausalContext?.sources?.depth ??
+    null;
+  const archivePersistence = context.inputCaptureTiming?.localCausalContext?.archivePersistence;
+  if (
+    localCausalGenerationId &&
+    (!localCausality || localCausality.processGenerationId !== localCausalGenerationId)
+  )
+    return { status: 'UNKNOWN', reason: 'LOCAL_CAUSAL_PROCESS_GENERATION_MISMATCH' };
+
   const initialSnapshots = await readVerifiedInitialRestDepthSnapshots(session);
   const snapshotAnchor = initialSnapshots.get(decision.symbol);
   const allDepthEvents = snapshotAnchor ? await readSnapshotReplayDepthEvents(session) : null;
   const snapshotDepthEvents = allDepthEvents?.get(decision.symbol);
   let snapshotFallbackReason: string | undefined;
   if (snapshotAnchor && snapshotDepthEvents) {
-    const eventsThroughDecision = snapshotDepthEvents.filter(
-      (event) =>
-        event.receivedAtMs >= snapshotAnchor.requestedAtMs &&
-        event.receivedAtMs <= context.observedAtMs!,
-    );
-    const snapshotReplay = replayCausalDepthFromRestSnapshot(
-      snapshotAnchor,
-      eventsThroughDecision,
-      {
-        exchangeAsOfMs: context.exchangeObservedAtMs!,
-        exchangeLowerBoundMs: Number(context.clockReference?.contextBuiltExchangeLowerBoundMs),
-        receivedAsOfMs: context.observedAtMs!,
-      },
-      maxAgeMs,
-    );
-    if (snapshotReplay.status === 'VERIFIED' && snapshotReplay.book) {
+    const localSequenceCut = localCausality?.lastAppliedReceiveSequence;
+    const causalEvents =
+      localCausality && localSequenceCut !== null && localSequenceCut !== undefined
+        ? await readDepthEventsByLocalSequenceRange(
+            session,
+            decision.symbol,
+            localCausality.processGenerationId,
+            1,
+            localSequenceCut,
+          )
+        : null;
+    const canReplaySnapshotCausally =
+      !localCausality || (snapshotAnchor.bufferCausalRange !== undefined && causalEvents !== null);
+    if (!canReplaySnapshotCausally) {
+      snapshotFallbackReason = 'LOCAL_CAUSAL_CHECKPOINT_MISSING';
+    }
+    const eventsThroughDecision = localCausality
+      ? (causalEvents ?? [])
+      : snapshotDepthEvents.filter(
+          (event) =>
+            event.receivedAtMs >= snapshotAnchor.requestedAtMs &&
+            event.receivedAtMs <= context.observedAtMs!,
+        );
+    const snapshotReplay = canReplaySnapshotCausally
+      ? replayCausalDepthFromRestSnapshot(
+          snapshotAnchor,
+          eventsThroughDecision,
+          {
+            exchangeAsOfMs: context.exchangeObservedAtMs!,
+            exchangeLowerBoundMs: Number(context.clockReference?.contextBuiltExchangeLowerBoundMs),
+            receivedAsOfMs: context.observedAtMs!,
+            localCausality,
+            monotonicAsOfMs: context.inputCaptureTiming?.decisionAtMonotonicMs,
+          },
+          maxAgeMs,
+        )
+      : null;
+    if (snapshotReplay?.status === 'VERIFIED' && snapshotReplay.book) {
       if (sameKnownBook(snapshotReplay.book, expected)) {
         const depthEvidenceSha256 = sha256(
           canonical({
@@ -1420,7 +1609,8 @@ export async function readVerifiedExecutionBookForDecision(
         snapshotReplay.book.observedAtMs < expected.observedAtMs!
           ? 'DEPTH_NO_UPDATES_OBSERVED'
           : 'DECISION_BOOK_CONTENT_MISMATCH';
-    } else snapshotFallbackReason = snapshotReplay.reason ?? 'REST_SNAPSHOT_DEPTH_UNVERIFIED';
+    } else if (snapshotReplay)
+      snapshotFallbackReason = snapshotReplay.reason ?? 'REST_SNAPSHOT_DEPTH_UNVERIFIED';
   }
 
   const db = new Database(join(session.captureRoot, 'research.sqlite'), {
@@ -1431,20 +1621,77 @@ export async function readVerifiedExecutionBookForDecision(
     | { checkpoint_json: string; event_time_ms: number; created_at_ms: number }
     | undefined;
   try {
-    checkpointRow = db
-      .prepare(
-        `SELECT checkpoint_json, event_time_ms, created_at_ms FROM book_checkpoints
-          WHERE symbol=? AND event_time_ms<=? AND created_at_ms<=?
-          ORDER BY event_time_ms DESC, created_at_ms DESC LIMIT 1`,
-      )
-      .get(decision.symbol, context.observedAtMs, context.observedAtMs) as typeof checkpointRow;
+    const checkpointColumns = new Set(
+      (db.pragma('table_info(book_checkpoints)') as Array<{ name: string }>).map((column) =>
+        String(column.name),
+      ),
+    );
+    if (localCausality) {
+      if (!archivePersistence || !checkpointColumns.has('storage_generation_id')) {
+        checkpointRow = undefined;
+      } else {
+        const rows = db
+          .prepare(
+            `SELECT checkpoint_json, event_time_ms, created_at_ms, persistence_sequence
+               FROM book_checkpoints
+              WHERE symbol=? AND storage_generation_id=? AND persistence_sequence<=?
+              ORDER BY persistence_sequence DESC LIMIT 10000`,
+          )
+          .all(
+            decision.symbol,
+            archivePersistence.storageGenerationId,
+            archivePersistence.checkpointSequence,
+          ) as Array<{
+          checkpoint_json: string;
+          event_time_ms: number;
+          created_at_ms: number;
+          persistence_sequence: number;
+        }>;
+        for (const row of rows) {
+          const candidate = JSON.parse(row.checkpoint_json) as {
+            localCausality?: LocalCausalStateWatermark | null;
+            archivePersistence?: {
+              storageGenerationId?: string;
+              checkpointSequence?: number;
+              committedMonotonicAtMs?: number;
+            };
+          };
+          if (
+            candidate.localCausality?.processGenerationId !== localCausality.processGenerationId ||
+            candidate.localCausality.appliedStateVersion > localCausality.appliedStateVersion ||
+            candidate.archivePersistence?.storageGenerationId !==
+              archivePersistence.storageGenerationId ||
+            candidate.archivePersistence?.checkpointSequence !== row.persistence_sequence ||
+            !Number.isFinite(candidate.archivePersistence?.committedMonotonicAtMs) ||
+            !Number.isFinite(context.inputCaptureTiming?.contextCaptureAtMonotonicMs) ||
+            candidate.archivePersistence?.committedMonotonicAtMs! >
+              context.inputCaptureTiming!.contextCaptureAtMonotonicMs!
+          )
+            continue;
+          checkpointRow = row;
+          break;
+        }
+      }
+    } else {
+      checkpointRow = db
+        .prepare(
+          `SELECT checkpoint_json, event_time_ms, created_at_ms FROM book_checkpoints
+            WHERE symbol=? AND event_time_ms<=? AND created_at_ms<=?
+            ORDER BY event_time_ms DESC, created_at_ms DESC LIMIT 1`,
+        )
+        .get(decision.symbol, context.observedAtMs, context.observedAtMs) as typeof checkpointRow;
+    }
   } finally {
     db.close();
   }
-  if (!checkpointRow || checkpointRow.created_at_ms > context.observedAtMs!)
+  if (!checkpointRow || (!localCausality && checkpointRow.created_at_ms > context.observedAtMs!))
     return {
       status: 'UNKNOWN',
-      reason: snapshotFallbackReason ?? 'DEPTH_CHECKPOINT_MISSING_OR_NOT_YET_AVAILABLE',
+      reason:
+        snapshotFallbackReason ??
+        (localCausality
+          ? 'LOCAL_CAUSAL_CHECKPOINT_PERSISTENCE_UNKNOWN'
+          : 'DEPTH_CHECKPOINT_MISSING_OR_NOT_YET_AVAILABLE'),
     };
   const checkpoint = JSON.parse(checkpointRow.checkpoint_json) as {
     symbol?: string;
@@ -1452,6 +1699,7 @@ export async function readVerifiedExecutionBookForDecision(
     lastUpdateId?: number;
     bids?: { price: number; qty: number }[];
     asks?: { price: number; qty: number }[];
+    localCausality?: LocalCausalStateWatermark | null;
   };
   if (
     checkpoint.symbol !== decision.symbol ||
@@ -1460,7 +1708,7 @@ export async function readVerifiedExecutionBookForDecision(
     !Number.isSafeInteger(checkpoint.lastUpdateId) ||
     !Array.isArray(checkpoint.bids) ||
     !Array.isArray(checkpoint.asks) ||
-    checkpoint.observedAtMs! > context.observedAtMs!
+    (!localCausality && checkpoint.observedAtMs! > context.observedAtMs!)
   )
     return { status: 'UNKNOWN', reason: snapshotFallbackReason ?? 'DEPTH_CHECKPOINT_INVALID' };
   if (checkpointRow.created_at_ms < checkpoint.observedAtMs!)
@@ -1468,12 +1716,31 @@ export async function readVerifiedExecutionBookForDecision(
       status: 'UNKNOWN',
       reason: snapshotFallbackReason ?? 'DEPTH_CHECKPOINT_PERSISTENCE_CLOCK_INVALID',
     };
-  const depthEvents = await readDepthEventsInReceiveWindow(
-    session,
-    decision.symbol,
-    checkpoint.observedAtMs!,
-    context.observedAtMs!,
-  );
+  const depthEvents = localCausality
+    ? checkpoint.localCausality?.processGenerationId === localCausality.processGenerationId &&
+      checkpoint.localCausality.appliedStateVersion <= localCausality.appliedStateVersion &&
+      checkpoint.localCausality.lastAppliedReceiveSequence !== null &&
+      checkpoint.localCausality.lastAppliedReceiveSequence !== undefined &&
+      localCausality.lastAppliedReceiveSequence !== null
+      ? await readDepthEventsByLocalSequenceRange(
+          session,
+          decision.symbol,
+          localCausality.processGenerationId,
+          checkpoint.localCausality.lastAppliedReceiveSequence + 1,
+          localCausality.lastAppliedReceiveSequence,
+        )
+      : null
+    : await readDepthEventsInReceiveWindow(
+        session,
+        decision.symbol,
+        checkpoint.observedAtMs!,
+        context.observedAtMs!,
+      );
+  if (!depthEvents)
+    return {
+      status: 'UNKNOWN',
+      reason: 'LOCAL_CAUSAL_CHECKPOINT_PERSISTENCE_UNKNOWN',
+    };
   const result = replayCausalDepth(
     {
       symbol: decision.symbol,
@@ -1482,11 +1749,14 @@ export async function readVerifiedExecutionBookForDecision(
       lastUpdateId: checkpoint.lastUpdateId!,
       bids: checkpoint.bids,
       asks: checkpoint.asks,
+      localCausality: checkpoint.localCausality ?? null,
     },
     depthEvents,
     {
       exchangeAsOfMs: context.exchangeObservedAtMs!,
       receivedAsOfMs: context.observedAtMs!,
+      localCausality,
+      monotonicAsOfMs: context.inputCaptureTiming?.decisionAtMonotonicMs,
     },
     maxAgeMs,
   );
@@ -1550,17 +1820,47 @@ export async function verifyVerifiedDecisionInterval(
   const throughExchangeAsOfMs = throughContext?.exchangeObservedAtMs;
   const fromReceivedAtMs = fromContext?.observedAtMs;
   const throughReceivedAtMs = throughContext?.observedAtMs;
+  const fromLocalCausality = fromBook.localCausality;
+  const throughLocalCausality = throughBook.localCausality;
+  if (
+    (fromLocalCausality || throughLocalCausality) &&
+    (!fromLocalCausality ||
+      !throughLocalCausality ||
+      fromLocalCausality.processGenerationId !== throughLocalCausality.processGenerationId)
+  )
+    return { status: 'UNKNOWN', reason: 'LOCAL_CAUSAL_PROCESS_GENERATION_CHANGED' };
   const decisionIndex = sessionDecisionIndexes.get(session)!;
   const fromInputSha256 = decisionIndex.get(fromDecision.decisionId)!.canonicalSha256;
   const throughInputSha256 = decisionIndex.get(throughDecision.decisionId)!.canonicalSha256;
-  const skippedDecision = [...decisionIndex.entries()].some(
-    ([decisionId, entry]) =>
-      decisionId !== fromDecision.decisionId &&
-      decisionId !== throughDecision.decisionId &&
-      entry.symbol === symbol &&
-      entry.evaluatedAtReceivedMs > fromDecision.evaluatedAtReceivedMs &&
-      entry.evaluatedAtReceivedMs < throughDecision.evaluatedAtReceivedMs,
+  const fromIndexEntry = decisionIndex.get(fromDecision.decisionId)!;
+  const throughIndexEntry = decisionIndex.get(throughDecision.decisionId)!;
+  const fromLocalOrder = fromIndexEntry.localEvaluationOrder;
+  const throughLocalOrder = throughIndexEntry.localEvaluationOrder;
+  const localDecisionOrderComparable = Boolean(
+    fromLocalOrder &&
+      throughLocalOrder &&
+      fromLocalOrder.processGenerationId === throughLocalOrder.processGenerationId,
   );
+  const skippedDecision = [...decisionIndex.entries()].some(([decisionId, entry]) => {
+    if (
+      decisionId === fromDecision.decisionId ||
+      decisionId === throughDecision.decisionId ||
+      entry.symbol !== symbol
+    )
+      return false;
+    if (localDecisionOrderComparable) {
+      const order = entry.localEvaluationOrder;
+      if (!order || order.processGenerationId !== fromLocalOrder!.processGenerationId) return true;
+      return (
+        order.startedAtMonotonicMs > fromLocalOrder!.startedAtMonotonicMs &&
+        order.startedAtMonotonicMs < throughLocalOrder!.startedAtMonotonicMs
+      );
+    }
+    return (
+      entry.evaluatedAtReceivedMs > fromDecision.evaluatedAtReceivedMs &&
+      entry.evaluatedAtReceivedMs < throughDecision.evaluatedAtReceivedMs
+    );
+  });
   if (
     fromDecision.symbol !== symbol ||
     fromBook.decisionId !== fromDecision.decisionId ||
@@ -1633,23 +1933,48 @@ export async function verifyVerifiedDecisionInterval(
     bids: fromBook.bidDepth,
     asks: fromBook.askDepth,
     knownDepthBounds: fromBook.knownDepthBounds,
+    localCausality: fromBook.localCausality,
   };
-  const depthEvents = await readDepthEventsInReceiveWindow(
-    session,
-    symbol,
-    fromBook.observedAtMs,
-    throughReceivedAtMs!,
-  );
+  const depthEvents =
+    fromLocalCausality && throughLocalCausality
+      ? fromLocalCausality.lastAppliedReceiveSequence !== null &&
+        fromLocalCausality.lastAppliedReceiveSequence !== undefined &&
+        throughLocalCausality.lastAppliedReceiveSequence !== null
+        ? await readDepthEventsByLocalSequenceRange(
+            session,
+            symbol,
+            fromLocalCausality.processGenerationId,
+            fromLocalCausality.lastAppliedReceiveSequence + 1,
+            throughLocalCausality.lastAppliedReceiveSequence,
+          )
+        : null
+      : await readDepthEventsInReceiveWindow(
+          session,
+          symbol,
+          fromBook.observedAtMs,
+          throughReceivedAtMs!,
+        );
+  if (!depthEvents) return { status: 'UNKNOWN', reason: 'LOCAL_CAUSAL_ARCHIVE_WINDOW_UNAVAILABLE' };
   const startReplay = replayCausalDepth(
     checkpointInput,
     depthEvents,
-    { exchangeAsOfMs: fromExchangeAsOfMs!, receivedAsOfMs: fromReceivedAtMs! },
+    {
+      exchangeAsOfMs: fromExchangeAsOfMs!,
+      receivedAsOfMs: fromReceivedAtMs!,
+      localCausality: fromLocalCausality,
+      monotonicAsOfMs: fromContext?.inputCaptureTiming?.decisionAtMonotonicMs,
+    },
     MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxBookAgeMs,
   );
   const endReplay = replayCausalDepth(
     checkpointInput,
     depthEvents,
-    { exchangeAsOfMs: throughExchangeAsOfMs!, receivedAsOfMs: throughReceivedAtMs! },
+    {
+      exchangeAsOfMs: throughExchangeAsOfMs!,
+      receivedAsOfMs: throughReceivedAtMs!,
+      localCausality: throughLocalCausality,
+      monotonicAsOfMs: throughContext?.inputCaptureTiming?.decisionAtMonotonicMs,
+    },
     MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_V1.maxBookAgeMs,
     true,
   );
@@ -2045,6 +2370,28 @@ function assertVerifiedSession(session: unknown): asserts session is VerifiedCap
     throw new Error('CAPTURE_SESSION_NOT_VERIFIED_IN_PROCESS');
 }
 
+function readLocalEvaluationOrder(
+  record: StrategyDecisionEvidenceV2,
+): VerifiedDecisionIndexEntry['localEvaluationOrder'] | undefined {
+  const diagnostics = record.diagnostics as Record<string, unknown> | undefined;
+  const timing = diagnostics?.evaluationTiming as Record<string, unknown> | undefined;
+  const replay = diagnostics?.strategyInputReplay as Record<string, unknown> | undefined;
+  const context = replay?.context as Record<string, unknown> | undefined;
+  const inputTiming = context?.inputCaptureTiming as Record<string, unknown> | undefined;
+  const localCausal = inputTiming?.localCausalContext as Record<string, unknown> | undefined;
+  const processGenerationId = timing?.processGenerationId ?? localCausal?.processGenerationId;
+  const startedAtMonotonicMs = Number(timing?.evaluationStartedAtMonotonicMs);
+  const finishedAtMonotonicMs = Number(timing?.evaluationFinishedAtMonotonicMs);
+  if (
+    typeof processGenerationId !== 'string' ||
+    !Number.isFinite(startedAtMonotonicMs) ||
+    !Number.isFinite(finishedAtMonotonicMs) ||
+    finishedAtMonotonicMs < startedAtMonotonicMs
+  )
+    return undefined;
+  return { processGenerationId, startedAtMonotonicMs, finishedAtMonotonicMs };
+}
+
 async function buildDecisionIndex(
   session: VerifiedCaptureSession,
 ): Promise<{ index: ReadonlyMap<string, VerifiedDecisionIndexEntry>; recordCount: number }> {
@@ -2079,6 +2426,9 @@ async function buildDecisionIndex(
           canonicalSha256: sha256(canonical(record)),
           strategyConfigHash: record.strategy.configHash,
           codeCommitSha: record.strategy.codeCommitSha,
+          ...(readLocalEvaluationOrder(record)
+            ? { localEvaluationOrder: readLocalEvaluationOrder(record)! }
+            : {}),
         };
         const previous = index.get(record.decisionId);
         if (previous && canonical(previous) !== canonical(row))

@@ -17,6 +17,7 @@ import {
   readVerifiedExecutionBookForDecision,
   readVerifiedDecisionRecords,
   readVerifiedFundingEvidence,
+  verifyVerifiedDecisionInterval,
 } from './MicroBurstCaptureSession';
 import { MicroBurstPullbackCandidate, PULLBACK_EXPERIMENT_V1 } from './MicroBurstPullbackCandidate';
 import { replayPairedExecutions } from './MicroBurstPairedExecutionReplay';
@@ -33,6 +34,7 @@ import type {
   ArchiveTrade,
 } from '../../strategies/micro-burst/research/MicroBurstStorage';
 import { defaultMicroBurstConfig } from '../../strategies/micro-burst/domain/MicroBurstTypes';
+import type { LocalCausalStateWatermark } from '../../core/market-data/LocalCausalWatermark';
 
 const BASE = TEST_SNAPSHOT_AT_MS;
 
@@ -215,6 +217,211 @@ it('accepts pu-linked USD-M updates when U begins beyond the checkpoint update i
       true,
     ),
   ).toMatchObject({ status: 'VERIFIED', book: { lastUpdateId: 125, appliedEventCount: 2 } });
+});
+
+it('uses process-local sequence to replay equal and regressing clocks without rewriting source timestamps', () => {
+  const stamp = (receiveSequence: number, receivedMonotonicAtMs: number) => ({
+    schemaVersion: 1 as const,
+    processGenerationId: 'process-causal-replay',
+    connectionGeneration: receiveSequence < 3 ? 1 : 2,
+    receiveSequence,
+    receivedMonotonicAtMs,
+  });
+  const checkpointInput = {
+    symbol: 'SOLUSDT',
+    receivedAtMs: 1000,
+    availableAtMs: 1000,
+    lastUpdateId: 100,
+    bids: [{ price: 99, qty: 10 }],
+    asks: [{ price: 101, qty: 10 }],
+    localCausality: {
+      schemaVersion: 1 as const,
+      processGenerationId: 'process-causal-replay',
+      connectionGeneration: 1,
+      receivedSequence: 1,
+      lastAppliedConnectionGeneration: 1,
+      lastAppliedReceiveSequence: 1,
+      appliedStateVersion: 1,
+      receivedMonotonicAtMs: 10,
+      appliedMonotonicAtMs: 10,
+    },
+  };
+  const event = (
+    eventTime: number,
+    receivedAtMs: number,
+    U: number,
+    u: number,
+    pu: number,
+    seq: number,
+  ) => ({
+    type: 'depth' as const,
+    symbol: 'SOLUSDT',
+    eventTime,
+    receivedAtMs,
+    payload: {
+      symbol: 'SOLUSDT',
+      eventTime,
+      receivedAtMs,
+      U,
+      u,
+      pu,
+      b: [['99', String(10 + u)]],
+      a: [],
+      localCausality: stamp(seq, seq + 10),
+    },
+  });
+  const first = event(900, 900, 101, 101, 100, 2);
+  const second = event(800, 900, 102, 102, 101, 3);
+  const result = replayCausalDepth(
+    checkpointInput,
+    [second, first],
+    {
+      exchangeAsOfMs: 1000,
+      receivedAsOfMs: 900,
+      monotonicAsOfMs: 14,
+      localCausality: {
+        schemaVersion: 1,
+        processGenerationId: 'process-causal-replay',
+        connectionGeneration: 2,
+        receivedSequence: 3,
+        lastAppliedConnectionGeneration: 2,
+        lastAppliedReceiveSequence: 3,
+        appliedStateVersion: 3,
+        receivedMonotonicAtMs: 13,
+        appliedMonotonicAtMs: 13,
+      },
+    },
+    100,
+    true,
+  );
+  expect(first.eventTime).toBe(900);
+  expect(second.eventTime).toBe(800);
+  expect(result).toMatchObject({
+    status: 'VERIFIED',
+    book: {
+      lastUpdateId: 102,
+      observedAtMs: 900,
+      appliedEventCount: 2,
+    },
+  });
+});
+
+it('reconstructs locally known point books but keeps execution interval unknown on exchange-clock regression', async () => {
+  const fromAtMs = BASE + 1000;
+  const throughAtMs = BASE + 2000;
+  const monotonicBase = performance.now();
+  const localState = (
+    receiveSequence: number,
+    appliedStateVersion: number,
+  ): LocalCausalStateWatermark => ({
+    schemaVersion: 1,
+    processGenerationId: 'synthetic-process-local-replay',
+    connectionGeneration: 1,
+    receivedSequence: receiveSequence,
+    lastAppliedConnectionGeneration: 1,
+    lastAppliedReceiveSequence: receiveSequence,
+    appliedStateVersion,
+    receivedMonotonicAtMs: monotonicBase + receiveSequence,
+    appliedMonotonicAtMs: monotonicBase + receiveSequence,
+  });
+  const contextWatermark = (atMs: number, depth: LocalCausalStateWatermark) => ({
+    schemaVersion: 1 as const,
+    processGenerationId: depth.processGenerationId,
+    captureLocalReceivedAtMs: atMs,
+    captureMonotonicAtMs: monotonicBase + 10_000,
+    sourceGenerationsConsistent: true,
+    sources: { depth, aggTrade: null },
+  });
+  const fromState = localState(1, 2);
+  const throughState = localState(3, 4);
+  const decisions = [
+    makeSyntheticDecisionRecord(fromAtMs, 'LONG', 'SOLUSDT', {
+      exchangeClockOffsetMs: 2000,
+      exchangeClockLowerBoundOffsetMs: 1900,
+      bookCausalState: fromState,
+      localCausalContext: contextWatermark(fromAtMs, fromState),
+    }),
+    makeSyntheticDecisionRecord(throughAtMs, 'LONG', 'SOLUSDT', {
+      exchangeClockOffsetMs: 100,
+      exchangeClockLowerBoundOffsetMs: 50,
+      bookObservedAtOffsetMs: -600,
+      bookCausalState: throughState,
+      localCausalContext: contextWatermark(throughAtMs, throughState),
+    }),
+  ];
+  const firstUpdate = {
+    ...depthEvent(BASE + 1600, 1001, 1000),
+    receivedAtMs: BASE + 1500,
+    localCausality: {
+      schemaVersion: 1 as const,
+      processGenerationId: fromState.processGenerationId,
+      connectionGeneration: 1,
+      receiveSequence: 2,
+      receivedMonotonicAtMs: monotonicBase + 2,
+    },
+  };
+  const regressingReceiveUpdate = {
+    ...depthEvent(BASE + 1700, 1002, 1001),
+    receivedAtMs: BASE + 1400,
+    localCausality: {
+      schemaVersion: 1 as const,
+      processGenerationId: fromState.processGenerationId,
+      connectionGeneration: 1,
+      receiveSequence: 3,
+      receivedMonotonicAtMs: monotonicBase + 3,
+    },
+  };
+  const initialCheckpoint = checkpoint(fromAtMs, 1000);
+  const capture = await createSyntheticCaptureSession({
+    startedAtMs: BASE - 120_000,
+    completedAtMs: BASE + 90_000,
+    storageNowMs: BASE - 120_000,
+    trades: coverageTrades(),
+    depth: [firstUpdate, regressingReceiveUpdate],
+    checkpoints: [
+      {
+        ...initialCheckpoint,
+        persistedAtMs: fromAtMs,
+        checkpoint: {
+          ...initialCheckpoint.checkpoint,
+          localCausality: fromState,
+        },
+      },
+    ],
+    decisionRecords: decisions,
+    bindLocalCausalPersistence: true,
+  });
+  try {
+    const records = await readVerifiedDecisionRecords(capture.session, fromAtMs, throughAtMs);
+    const pointAssessments = await Promise.all(
+      records.map((record) => readVerifiedExecutionBookForDecision(capture.session, record)),
+    );
+    if (pointAssessments.some((assessment) => assessment.status === 'UNKNOWN'))
+      throw new Error(JSON.stringify(pointAssessments));
+    expect(pointAssessments.map((assessment) => assessment.status)).toEqual([
+      'VERIFIED',
+      'VERIFIED',
+    ]);
+    if (pointAssessments[0].status !== 'VERIFIED' || pointAssessments[1].status !== 'VERIFIED')
+      throw new Error('LOCAL_CAUSAL_POINT_RECONSTRUCTION_EXPECTED');
+    expect(pointAssessments[1].book.observedAtMs).toBe(BASE + 1400);
+    expect(pointAssessments[1].book.lastUpdateId).toBe(1002);
+    expect(pointAssessments[1].book.localCausality?.appliedStateVersion).toBe(4);
+
+    const interval = await verifyVerifiedDecisionInterval(
+      capture.session,
+      records[0],
+      records[1],
+      pointAssessments[0].book,
+      pointAssessments[1].book,
+    );
+    expect(interval).toMatchObject({
+      status: 'UNKNOWN',
+      reason: 'INTERVAL_CLOCK_OR_IDENTITY_INVALID',
+    });
+  } finally {
+    capture.cleanup();
+  }
 });
 
 it('reconstructs a full-depth REST snapshot through its bridge event and subsequent pu chain', () => {

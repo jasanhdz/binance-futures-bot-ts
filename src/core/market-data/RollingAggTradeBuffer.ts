@@ -1,4 +1,5 @@
 import { AggTradeEvent } from '../../app/ports/MarketData';
+import type { LocalCausalStateWatermark } from './LocalCausalWatermark';
 
 // Time retention is authoritative; this only prevents unbounded memory use during a feed failure.
 const DEFAULT_EMERGENCY_MAX_BUFFER_SIZE = 50_000;
@@ -30,6 +31,7 @@ export interface AggTradeContinuityDiagnostics {
   confirmedGapCount: number;
   latestGap: AggTradeGap | null;
   continuityUncertain: boolean;
+  localCausality: LocalCausalStateWatermark | null;
 }
 
 interface AggTradeGapInterval {
@@ -69,6 +71,14 @@ export class RollingAggTradeBuffer {
   private continuityUncertain = false;
   private firstAggregateTradeId: number | null = null;
   private latestGap: AggTradeGap | null = null;
+  private localProcessGenerationId: string | null = null;
+  private localConnectionGeneration = 0;
+  private localLastAppliedConnectionGeneration: number | null = null;
+  private localReceivedSequence = 0;
+  private localAppliedStateVersion = 0;
+  private localLastAppliedReceiveSequence: number | null = null;
+  private localReceivedMonotonicAtMs: number | null = null;
+  private localAppliedMonotonicAtMs: number | null = null;
 
   constructor(
     clock: Clock,
@@ -87,6 +97,29 @@ export class RollingAggTradeBuffer {
     if (!Number.isFinite(event.price) || event.price <= 0) return;
     if (!Number.isFinite(event.quantity) || event.quantity < 0) return;
     if (!Number.isFinite(event.eventTime) || event.eventTime <= 0) return;
+
+    const causal = event.localCausality;
+    if (causal) {
+      if (causal.processGenerationId !== this.localProcessGenerationId) {
+        this.localProcessGenerationId = causal.processGenerationId;
+        this.localConnectionGeneration = causal.connectionGeneration;
+        this.localReceivedSequence = 0;
+        this.localLastAppliedConnectionGeneration = null;
+        this.localLastAppliedReceiveSequence = null;
+        this.localAppliedStateVersion = 0;
+        this.localReceivedMonotonicAtMs = null;
+        this.localAppliedMonotonicAtMs = null;
+      }
+      if (causal.connectionGeneration !== this.localConnectionGeneration) {
+        this.localConnectionGeneration = causal.connectionGeneration;
+      }
+      this.localReceivedSequence = Math.max(this.localReceivedSequence, causal.receiveSequence);
+      this.localReceivedMonotonicAtMs = causal.receivedMonotonicAtMs;
+      this.localAppliedStateVersion++;
+      this.localLastAppliedConnectionGeneration = causal.connectionGeneration;
+      this.localLastAppliedReceiveSequence = causal.receiveSequence;
+      this.localAppliedMonotonicAtMs = performance.now();
+    }
 
     this.eventWatermarkMs = Math.max(this.eventWatermarkMs ?? event.eventTime, event.eventTime);
     if (this.coverageStartedAtMs === null) this.coverageStartedAtMs = event.eventTime;
@@ -189,6 +222,7 @@ export class RollingAggTradeBuffer {
       confirmedGapCount: this.gapIntervals.length,
       latestGap: this.latestGap,
       continuityUncertain: this.continuityUncertain,
+      localCausality: this.getLocalCausalityWatermark(),
     };
   }
 
@@ -214,6 +248,7 @@ export class RollingAggTradeBuffer {
     continuityUncertain: boolean;
     pendingGapCount: number;
     confirmedGapCount: number;
+    localCausality: LocalCausalStateWatermark | null;
     windowComplete: boolean;
     gapFree: boolean;
   } {
@@ -249,6 +284,7 @@ export class RollingAggTradeBuffer {
       continuityUncertain: this.continuityUncertain,
       pendingGapCount: this.pendingGaps.size,
       confirmedGapCount: this.gapIntervals.length,
+      localCausality: this.getLocalCausalityWatermark(),
       windowComplete:
         this.coverageStartedAtMs !== null &&
         this.eventWatermarkMs !== null &&
@@ -278,6 +314,29 @@ export class RollingAggTradeBuffer {
     this.lastTradeEventTimeMs = null;
     this.pendingGaps.clear();
     this.continuityUncertain = false;
+    this.localProcessGenerationId = null;
+    this.localConnectionGeneration = 0;
+    this.localLastAppliedConnectionGeneration = null;
+    this.localReceivedSequence = 0;
+    this.localAppliedStateVersion = 0;
+    this.localLastAppliedReceiveSequence = null;
+    this.localReceivedMonotonicAtMs = null;
+    this.localAppliedMonotonicAtMs = null;
+  }
+
+  private getLocalCausalityWatermark(): LocalCausalStateWatermark | null {
+    if (!this.localProcessGenerationId) return null;
+    return Object.freeze({
+      schemaVersion: 1,
+      processGenerationId: this.localProcessGenerationId,
+      connectionGeneration: this.localConnectionGeneration,
+      receivedSequence: this.localReceivedSequence,
+      lastAppliedConnectionGeneration: this.localLastAppliedConnectionGeneration,
+      lastAppliedReceiveSequence: this.localLastAppliedReceiveSequence,
+      appliedStateVersion: this.localAppliedStateVersion,
+      receivedMonotonicAtMs: this.localReceivedMonotonicAtMs,
+      appliedMonotonicAtMs: this.localAppliedMonotonicAtMs,
+    });
   }
 
   markContinuityUncertain(): void {
