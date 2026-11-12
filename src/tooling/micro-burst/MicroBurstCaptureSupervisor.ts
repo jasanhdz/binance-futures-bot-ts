@@ -60,7 +60,7 @@ export async function runMicroBurstCapturePlan(planPath: string): Promise<Record
   } catch {
     throw new Error('CAPTURE_RUN_PLAN_JSON_INVALID');
   }
-  validatePlan(plan);
+  validateCaptureRunPlan(plan);
   const collectorRoot = resolve(plan.collectorRoot);
   const monitorDirectory = resolve(plan.monitorDirectory);
   assertSeparatePath(collectorRoot, monitorDirectory);
@@ -357,7 +357,7 @@ export function healthStopReason(
   return null;
 }
 
-function validatePlan(plan: MicroBurstCaptureRunPlan): void {
+export function validateCaptureRunPlan(plan: MicroBurstCaptureRunPlan): void {
   if (
     !plan ||
     plan.schema !== 'MICRO_OBSERVATIONAL_CAPTURE_RUN_PLAN_V1' ||

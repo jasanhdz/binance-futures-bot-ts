@@ -3,6 +3,7 @@ import {
   CAPTURE_CANCELLATION_CONDITIONS,
   healthStopReason,
   sanitizedCollectorEnvironment,
+  validateCaptureRunPlan,
   type MicroBurstCaptureRunPlan,
 } from './MicroBurstCaptureSupervisor';
 import { MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256 } from './MicroBurstReplayEvidenceContract';
@@ -52,6 +53,16 @@ const healthy = () => ({
   snapshotWriter: { pendingWrites: 0 },
   eventWriter: { pendingWrites: 0 },
   restWriter: { pendingWrites: 0 },
+});
+
+it('accepts only the bound two-symbol 7-minute plan with the declared warmup, replay, and limits', () => {
+  expect(() => validateCaptureRunPlan(plan)).not.toThrow();
+  expect(() => validateCaptureRunPlan({ ...plan, symbols: ['SOLUSDT', 'SUIUSDT'] as any })).toThrow(
+    'CAPTURE_RUN_PLAN_INVALID',
+  );
+  expect(() => validateCaptureRunPlan({ ...plan, durationSeconds: 1201 })).toThrow(
+    'CAPTURE_RUN_PLAN_INVALID',
+  );
 });
 
 it('creates a child environment from an allowlist and blanks all Binance credentials', () => {
