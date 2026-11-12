@@ -116,6 +116,12 @@ export function createMicroBurstBlackBoxObservation(
       : originalSnapshot;
     const reference = await deps.marketSnapshotSink.append(snapshot);
     const timing = decision.diagnostics.evaluationTiming as { evaluationFinishedAtMs: number };
+    const evaluatedAtReceivedMs = Math.ceil(
+      Math.max(
+        timing.evaluationFinishedAtMs,
+        replay?.context.observedAtMs ?? Number.NEGATIVE_INFINITY,
+      ),
+    );
     const serializationStartedMono = performance.now();
     const record = createDecisionEvidenceV2(
       snapshot,
@@ -142,7 +148,7 @@ export function createMicroBurstBlackBoxObservation(
         marketSnapshotContentHash: reference.contentHash,
       },
       deps.clock.now(),
-      timing.evaluationFinishedAtMs,
+      evaluatedAtReceivedMs,
     );
     const serializationDurationMs = performance.now() - serializationStartedMono;
     await deps.decisionSink.append(record);

@@ -302,6 +302,7 @@ describe('Micro temporal diagnostic regressions', () => {
   });
   it('evaluates without awaiting REST capture or a blocked writer and freezes original evidence', async () => {
     const ctx = temporalFixture();
+    ctx.observedAtMs = now + 0.5;
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => {
       release = resolve;
@@ -341,6 +342,9 @@ describe('Micro temporal diagnostic regressions', () => {
     release();
     await router.closeObservation();
     expect(records).toHaveLength(1);
+    expect(records[0].evaluatedAtReceivedMs).toBeGreaterThanOrEqual(
+      records[0].diagnostics.strategyInputReplay.context.observedAtMs,
+    );
     expect(observer.observationHealth!()).toMatchObject({
       captureAttempts: 1,
       captureFailures: 0,
