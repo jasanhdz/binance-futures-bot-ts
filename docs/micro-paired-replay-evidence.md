@@ -152,9 +152,10 @@ La lectura read-only histórica de los primeros cuatro segmentos de cada símbol
 - AVAX: 2 101 registros, trades y depth, integridad válida.
 
 **Esto no es un backtest económico real completo.** No se afirma que este subconjunto
-anterior a la frontera corregida pase el builder nuevo. Falta una captura V2 que incluya
-un episodio real y la trayectoria causal completa de las dos variantes. No cambiar los
-2 s ni interpolar snapshots para eludir ese requisito.
+anterior a la frontera corregida pase el builder nuevo. La captura real compatible V6
+cerró y verificó su manifiesto, pero no registró episodios elegibles y el replay reportó
+incertidumbre técnica; por tanto, aún falta una trayectoria causal de episodio real para
+ambas variantes. No cambiar los 2 s ni interpolar snapshots para eludir ese requisito.
 
 No se cambió LIVE, no se reinició PM2 ni se sustituyó dist. La candidata continúa
 aislada bajo tooling. La siguiente certificación debe ser un episodio real completo
@@ -316,6 +317,31 @@ sintéticos.
 
 La carpeta histórica `data/micro-burst/collector-20261002-v2/` declara realmente
 `MICRO_COLLECTOR_FROZEN_V1`; no satisface el productor V2 requerido y se deja intacta.
-No se ha verificado una sesión real compatible con episodio, por lo que la validación de
-mercado real permanece pendiente. No hace falta reprocesar el archivo grande para esta
-demostración.
+La captura real V6 compatible se verificó como sesión cerrada, pero no contiene un episodio
+elegible; la validación económica de mercado real permanece pendiente.
+
+### Captura real supervisada V6 — 12 de noviembre de 2026
+
+- Plan: `data/micro-burst/micro-observer-20261112-v6-plan.json`; productor congelado y
+  verificado en el commit `b110d835ec5c988b29b1c91126713d85fb951eb0`, artifact SHA-256
+  `7626d3268ee35acc03e374515eb4fb47a18460afe89a0e671ffa441c987cdcd5`.
+- Supervisor: `SESSION_CLOSED_MANIFEST_COMPLETE`; duración 420 s, 300 s de warmup y
+  ventana posterior de 120 s. `openVerifiedCaptureSession()` aceptó el manifest
+  `75e03410e19cf0295930d5d99bc8478088424679a4b10f6ee264f58c1e19f397`: 56 segmentos,
+  cero gaps del índice de archivo y 1,406 decisiones. Las ecuaciones de evaluación,
+  copia exacta, cola y persistencia reconciliaron; cero fallos, drops, mutaciones o
+  escrituras pendientes.
+- Requests post-warmup para SOLUSDT y AVAXUSDT, reloj de recepción local, contrato y
+  supuestos económicos congelados en el plan. Los resultados están en
+  `/tmp/opencode/micro-observer-v6-{sol,avax}-replay/` (artefactos locales, no adjuntos
+  versionados).
+- Ambos CLI terminaron `COMPLETED_WITH_TECHNICAL_ERRORS_NO_ELIGIBLE_EPISODES`. SOL:
+  207 decisiones del símbolo, cero episodios, 152 frames unknown y 53 errores técnicos.
+  AVAX: 202 decisiones, cero episodios, 150 frames unknown y 51 errores técnicos. Los
+  unknown se deben principalmente a `DEPTH_SEQUENCE_GAP`; los errores técnicos incluyen
+  `REPLAY_FRAME_DECISION_IDENTITY_OR_CLOCK_MISMATCH`. No se modelaron ejecuciones:
+  denominador CURRENT cerrado = 0, PULLBACK cerrado = 0 y pares cerrados = 0.
+- Conclusión: la integridad de la sesión quedó verificada, pero esta ventana no demuestra
+  resultado económico ni produce evidencia causal de episodio real. Los resultados no se
+  convierten en cero PnL y no justifican modificar estrategia o umbrales. Capturas V2–V5
+  incompletas y sus informes se conservan por separado, sin reetiquetarlos como completos.
