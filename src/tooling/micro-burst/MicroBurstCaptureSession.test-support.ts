@@ -51,6 +51,8 @@ export interface SyntheticCaptureInput {
     feed: 'AGG_TRADE' | 'DEPTH';
   }[];
   readonly decisionRecords?: readonly StrategyDecisionEvidenceV2[];
+  readonly rawRestRecords?: readonly Record<string, unknown>[];
+  readonly eventRecords?: readonly Record<string, unknown>[];
   readonly storageNowMs?: number;
   readonly maxActiveSegmentRecords?: number;
   readonly fundingEvidenceRecords?: readonly Record<string, unknown>[];
@@ -79,7 +81,13 @@ export function makeSyntheticDecisionRecord(
   options: {
     rejectBaseline?: boolean;
     exchangeClockOffsetMs?: number;
+    exchangeClockLowerBoundOffsetMs?: number;
+    bookObservedAtOffsetMs?: number;
     book?: { bid: number; ask: number; bidQty?: number; askQty?: number };
+    bookDepth?: {
+      bidDepth: readonly { price: number; qty: number }[];
+      askDepth: readonly { price: number; qty: number }[];
+    };
     replayConfig?: MicroBurstConfig;
   } = {},
 ): StrategyDecisionEvidenceV2 {
@@ -178,11 +186,26 @@ export function makeSyntheticDecisionRecord(
   const strategyContext = context as MicroBurstStrategyContext;
   strategyContext.observedAtMs = atMs;
   strategyContext.exchangeObservedAtMs = atMs + (options.exchangeClockOffsetMs ?? 0);
+  if (options.exchangeClockLowerBoundOffsetMs !== undefined) {
+    strategyContext.clockReference = {
+      source: 'SERVER_REQUEST_RESPONSE_BOUND',
+      serverSampleAtMs: atMs,
+      localRequestStartedAtMs: atMs - 100,
+      localResponseReceivedAtMs: atMs - 50,
+      requestRoundTripMs: 50,
+      contextBuiltExchangeLowerBoundMs: atMs + options.exchangeClockLowerBoundOffsetMs,
+      contextBuiltExchangeUpperBoundMs: strategyContext.exchangeObservedAtMs,
+    };
+  }
   strategyContext.executionBook = {
-    observedAtMs: atMs,
+    observedAtMs: atMs + (options.bookObservedAtOffsetMs ?? 0),
     status: 'HEALTHY',
-    bidDepth: [{ price: options.book?.bid ?? 99.99, qty: options.book?.bidQty ?? 100 }],
-    askDepth: [{ price: options.book?.ask ?? 100.01, qty: options.book?.askQty ?? 100 }],
+    bidDepth: options.bookDepth?.bidDepth.map((level) => ({ ...level })) ?? [
+      { price: options.book?.bid ?? 99.99, qty: options.book?.bidQty ?? 100 },
+    ],
+    askDepth: options.bookDepth?.askDepth.map((level) => ({ ...level })) ?? [
+      { price: options.book?.ask ?? 100.01, qty: options.book?.askQty ?? 100 },
+    ],
   };
   if (options.rejectBaseline) context.dataQuality.contextValid = false;
   const baseline = evaluateMicroBurstReactionEntry(
@@ -339,6 +362,16 @@ export async function createSyntheticCaptureSession(input: SyntheticCaptureInput
       writeFileSync(
         join(root, 'capture', 'decisions.jsonl'),
         `${decisionRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      );
+    if (input.rawRestRecords?.length)
+      writeFileSync(
+        join(root, 'capture', 'rest-inputs.jsonl'),
+        `${input.rawRestRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      );
+    if (input.eventRecords?.length)
+      writeFileSync(
+        join(root, 'capture', 'events.jsonl'),
+        `${input.eventRecords.map((record) => JSON.stringify(record)).join('\n')}\n`,
       );
     if (input.fundingEvidenceRecords?.length)
       writeFileSync(

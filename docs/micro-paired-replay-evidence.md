@@ -375,3 +375,67 @@ una regresión sintética para esta discrepancia.
   `/tmp/opencode/micro-observer-v7-causalfix-avax-replay/`. El encadenamiento `pu` ahora
   verifica más puntos/intervalos sin relajar límites temporales; la mayoría de intervalos
   continúa unknown y no hay un episodio real ni evidencia de rentabilidad.
+
+### Revisión V7: snapshot REST y diagnóstico de relojes/IP
+
+Se repitieron SOLUSDT y AVAXUSDT sobre la misma captura, rango de disponibilidad
+local `1794462733091–1794462974194`, contrato y supuestos económicos. Los hashes
+efectivos de request coinciden con la pasada inicial: SOL
+`1b3784fe50963f2972ae125d98f3c4331b2864a7a86989ed5c99967e7d19b81d` y AVAX
+`44e280f5211b78b39a37a169c499984550b40f51bc9029074c8a9b6d00e1b33e`. Los reportes
+previos se conservaron; la pasada final se guardó fuera del repositorio en
+`/tmp/opencode/micro-observer-v7-review-final2-{sol,avax}/`.
+
+| Símbolo  | Inicial: decisiones / errores técnicos / unknown frames |    Final: libros punto verificados | Final: intervalos verificados / unknown / no evaluado | Episodios / ejecuciones |
+| -------- | ------------------------------------------------------: | ---------------------------------: | ----------------------------------------------------: | ----------------------: |
+| SOLUSDT  |                                           409 / 2 / 404 | 409 de 409 (snapshot REST público) |                                           0 / 408 / 1 |                   0 / 0 |
+| AVAXUSDT |                                           405 / 2 / 392 | 405 de 405 (snapshot REST público) |                                          10 / 394 / 1 |                   0 / 0 |
+
+Los dos errores técnicos originales desaparecen (2→0 por símbolo). El libro de
+punto y la continuidad intervalar quedan reportados por separado; los contadores
+antiguos `unknownFrames` no son comparables directamente con los nuevos contadores
+de intervalos desconocidos. SOL conserva 59 intervalos con eventos definitivamente
+tardíos, 300 dentro de la banda de incertidumbre del reloj exchange, 47 sin updates
+causales y 2 con regresión del límite superior exchange previo. AVAX conserva 40,
+307, 44, 2 y 1 sin updates observados desde checkpoint, respectivamente. Un evento
+con `eventTime` anterior al límite inferior de la decisión previa se identifica como
+tardío demostrado; si cae dentro del rango inferior-superior, el orden es ambiguo.
+Ambos impiden certificar el intervalo, sin invalidar el punto ya reconstruido.
+
+La causa del rechazo del test también quedó aislada: el `ArchiveDepth` sintético
+almacena timestamps y campos Binance a nivel superior; se le había agregado un
+`payload` parcial que sustituía esos campos al leer el registro almacenado. Quitarlo
+corrige la fixture. Además, el libro esperado debe mantener el timestamp real de su
+última actualización y el checkpoint debe representar ese estado disponible; el
+test ahora refleja ese contrato. No se relajó el comparador ni la validación. Las dos
+regresiones pasan y alcanzan sus motivos esperados:
+`DEPTH_LATE_EVENT_CROSSES_INTERVAL_START` y
+`DEPTH_EVENT_ORDER_AMBIGUOUS_AT_INTERVAL_START`.
+
+**Diagnóstico de IP/API:** el observador V7 prohíbe credenciales en
+`MicroBurstContinuousCollector.ts`, y `MicroBurstCaptureSupervisor.ts` limpia
+`BINANCE_API_KEY` y `BINANCE_API_SECRET` del entorno hijo. El colector utiliza datos
+públicos; no solicita balances, posiciones ni realiza órdenes. La captura contiene
+7.324 registros REST: 1.835 `getServerTime`, 5.485 `getCandles`, 2
+`getDepthSnapshot` y 2 `getMarkPrice`; cero incluyen error. El log contiene dos
+aperturas de combined WebSocket, dos snapshots aceptados, y no registra errores de
+conexión. Esto concuerda con rutas públicas documentadas por Binance, por ejemplo
+[`GET /fapi/v1/time`](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Check-Server-Time)
+y [`GET /fapi/v1/depth`](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book).
+
+Por tanto, la whitelist de una API key no explica estos errores ni los UNKNOWN: no
+hubo solicitud autenticada que pudiera estar limitada por ella, y las solicitudes
+públicas archivadas respondieron sin errores. Tampoco hay evidencia de bloqueo o
+rate-limit público en la captura. La dirección de egreso no está registrada, así que
+no se puede afirmar cuál fue la IP observada por Binance ni excluir una degradación
+transitoria general de red; no hay una señal de eso en los logs disponibles. Los
+UNKNOWN que siguen se explican directamente por orden temporal no demostrable,
+ausencia de updates causalmente visibles y las dos regresiones de reloj exchange,
+no por identidad de IP.
+
+Requests finales ejecutados con `DOTENV_CONFIG_PATH=/dev/null` y la CLI offline.
+Resultados: `NO_ELIGIBLE_EPISODES`; cero errores técnicos; cero episodios y cero
+ejecuciones modeladas para ambos símbolos. Verificación separada: `npx vitest run
+--dir src/tooling/micro-burst src/tooling/micro-burst/MicroBurstCausalArchive.test.ts`
+(29/29) y `npx tsc --noEmit -p tsconfig.json` (código de salida 0). La captura y su
+SQLite se abrieron únicamente para lectura; no se inició otra captura.

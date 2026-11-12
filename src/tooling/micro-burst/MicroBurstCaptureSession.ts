@@ -24,6 +24,10 @@ import {
   readVerifiedSegments,
   type ArchiveEvent,
   type ArchiveSegment,
+  type CausalDepthReplay,
+  type DepthKnowledgeBounds,
+  type RestDepthSnapshotAnchor,
+  replayCausalDepthFromRestSnapshot,
 } from './MicroBurstCausalArchive';
 import type { PullbackEvidence } from './MicroBurstPullbackCandidate';
 import {
@@ -128,6 +132,10 @@ export interface VerifiedExecutionBook {
   readonly lastUpdateId: number;
   readonly checkpointAtMs: number;
   readonly checkpointPersistedAtMs: number;
+  readonly checkpointSource: 'SQLITE_DEPTH_CHECKPOINT' | 'PUBLIC_REST_DEPTH_SNAPSHOT';
+  readonly checkpointEvidenceSha256: string;
+  readonly knownDepthBounds: DepthKnowledgeBounds;
+  readonly exchangeLowerBoundMs: number | null;
   readonly depthEventCount: number;
   readonly sessionManifestSha256: string;
   readonly evidenceSha256: string;
@@ -152,6 +160,9 @@ export interface VerifiedIntervalCoverage {
   readonly depthEvidenceSha256: string;
   readonly checkpointAtMs: number;
   readonly checkpointPersistedAtMs: number;
+  readonly checkpointSource: 'SQLITE_DEPTH_CHECKPOINT' | 'PUBLIC_REST_DEPTH_SNAPSHOT';
+  readonly checkpointEvidenceSha256: string;
+  readonly fromBookEvidenceSha256: string;
   readonly depthFirstUpdateId: number;
   readonly depthLastUpdateId: number;
   readonly depthEventCount: number;
@@ -188,7 +199,14 @@ const sessionDecisionIndexes = new WeakMap<
   VerifiedCaptureSession,
   ReadonlyMap<string, VerifiedDecisionIndexEntry>
 >();
-
+const sessionRestDepthSnapshotIndexes = new WeakMap<
+  VerifiedCaptureSession,
+  Promise<ReadonlyMap<string, RestDepthSnapshotAnchor>>
+>();
+const sessionSnapshotReplayDepthEvents = new WeakMap<
+  VerifiedCaptureSession,
+  Promise<ReadonlyMap<string, readonly ArchiveEvent[]> | null>
+>();
 interface DepthSegmentStats {
   readonly minEventTimeMs: number;
   readonly maxEventTimeMs: number;
@@ -808,6 +826,10 @@ function replayContext(decision: StrategyDecisionEvidenceV2): {
   readonly symbol?: string;
   readonly observedAtMs?: number;
   readonly exchangeObservedAtMs?: number;
+  readonly clockReference?: {
+    readonly contextBuiltExchangeLowerBoundMs?: number;
+    readonly contextBuiltExchangeUpperBoundMs?: number;
+  };
   readonly executionBook?: {
     readonly status?: string;
     readonly observedAtMs?: number;
@@ -887,64 +909,6 @@ function hasSessionFeedGap(
   );
 }
 
-function findCheckpointAtOrBefore(
-  session: VerifiedCaptureSession,
-  symbol: string,
-  receivedAtMs: number,
-): {
-  readonly checkpoint: {
-    readonly symbol: string;
-    readonly observedAtMs: number;
-    readonly lastUpdateId: number;
-    readonly bids: readonly { price: number; qty: number }[];
-    readonly asks: readonly { price: number; qty: number }[];
-  };
-  readonly createdAtMs: number;
-} | null {
-  const db = new Database(join(session.captureRoot, 'research.sqlite'), {
-    readonly: true,
-    fileMustExist: true,
-  });
-  try {
-    const row = db
-      .prepare(
-        `SELECT checkpoint_json, event_time_ms, created_at_ms FROM book_checkpoints
-         WHERE symbol=? AND event_time_ms<=? AND created_at_ms<=?
-         ORDER BY event_time_ms DESC, created_at_ms DESC LIMIT 1`,
-      )
-      .get(symbol, receivedAtMs, receivedAtMs) as
-      | { checkpoint_json: string; event_time_ms: number; created_at_ms: number }
-      | undefined;
-    if (!row) return null;
-    const checkpoint = JSON.parse(row.checkpoint_json) as {
-      symbol?: string;
-      observedAtMs?: number;
-      lastUpdateId?: number;
-      bids?: { price: number; qty: number }[];
-      asks?: { price: number; qty: number }[];
-    };
-    if (
-      checkpoint.symbol !== symbol ||
-      checkpoint.observedAtMs !== row.event_time_ms ||
-      !Number.isFinite(checkpoint.observedAtMs) ||
-      !Number.isSafeInteger(checkpoint.lastUpdateId) ||
-      !Array.isArray(checkpoint.bids) ||
-      !Array.isArray(checkpoint.asks) ||
-      row.created_at_ms > receivedAtMs ||
-      row.created_at_ms < checkpoint.observedAtMs!
-    )
-      return null;
-    return {
-      checkpoint: checkpoint as NonNullable<
-        ReturnType<typeof findCheckpointAtOrBefore>
-      >['checkpoint'],
-      createdAtMs: row.created_at_ms,
-    };
-  } finally {
-    db.close();
-  }
-}
-
 async function readDepthEventsInReceiveWindow(
   session: VerifiedCaptureSession,
   symbol: string,
@@ -993,9 +957,363 @@ async function readDepthEventsInReceiveWindow(
   );
 }
 
+async function forEachVerifiedEvidenceJsonLine(
+  session: VerifiedCaptureSession,
+  basenamePattern: RegExp,
+  visit: (
+    record: Record<string, any>,
+    source: CaptureSessionManifest['decisionFiles'][number],
+  ) => void,
+): Promise<void> {
+  for (const source of session.decisionFiles) {
+    const basename = source.relativePath.split(/[\\/]/).pop() ?? '';
+    if (!basenamePattern.test(basename)) continue;
+    const file = resolve(session.root, source.relativePath);
+    if ((await hashStableFile(file)) !== source.sha256)
+      throw new Error('CAPTURE_EVIDENCE_SOURCE_HASH_MISMATCH');
+    const stream = createReadStream(file);
+    const input = file.endsWith('.gz') ? stream.pipe(createGunzip()) : stream;
+    const reader = createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of reader) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line) as Record<string, any>;
+        visit(record, source);
+      }
+    } finally {
+      reader.close();
+    }
+    if ((await hashStableFile(file)) !== source.sha256)
+      throw new Error('CAPTURE_EVIDENCE_SOURCE_CHANGED_DURING_READ');
+  }
+}
+
+/** Read the session-hash-bound initial REST snapshots and their recorded sync/buffer facts. */
+async function readVerifiedInitialRestDepthSnapshots(
+  session: VerifiedCaptureSession,
+): Promise<ReadonlyMap<string, RestDepthSnapshotAnchor>> {
+  assertVerifiedSession(session);
+  const cached = sessionRestDepthSnapshotIndexes.get(session);
+  if (cached) return cached;
+  const pending = (async () => {
+    const snapshots: Array<{
+      record: Record<string, any>;
+      source: CaptureSessionManifest['decisionFiles'][number];
+    }> = [];
+    const syncLogs: Array<{
+      record: Record<string, any>;
+      source: CaptureSessionManifest['decisionFiles'][number];
+    }> = [];
+    const serverTimeSamples: Array<{
+      requestStartedAtMs: number;
+      responseReceivedAtMs: number;
+      serverTime: number;
+    }> = [];
+    await forEachVerifiedEvidenceJsonLine(
+      session,
+      /^rest-inputs(?:\..+)?\.jsonl(?:\.gz)?$/,
+      (record, source) => {
+        if (record.method === 'getDepthSnapshot') snapshots.push({ record, source });
+        if (record.method !== 'getServerTime') return;
+        const serverTime = Number(
+          record.response && typeof record.response === 'object'
+            ? record.response.serverTime
+            : record.response,
+        );
+        if ([record.requestedAtMs, record.receivedAtMs, serverTime].every(Number.isFinite))
+          serverTimeSamples.push({
+            requestStartedAtMs: Number(record.requestedAtMs),
+            responseReceivedAtMs: Number(record.receivedAtMs),
+            serverTime,
+          });
+      },
+    );
+    await forEachVerifiedEvidenceJsonLine(
+      session,
+      /^events(?:\..+)?\.jsonl(?:\.gz)?$/,
+      (record, source) => {
+        if (record.message === 'market_data_order_book_snapshot_received')
+          syncLogs.push({ record, source });
+      },
+    );
+    const output = new Map<string, RestDepthSnapshotAnchor>();
+    const bySymbol = new Map<string, typeof snapshots>();
+    for (const row of snapshots) {
+      const symbol = row.record.args?.[0];
+      if (typeof symbol !== 'string') continue;
+      const values = bySymbol.get(symbol) ?? [];
+      values.push(row);
+      bySymbol.set(symbol, values);
+    }
+    for (const [symbol, candidates] of bySymbol) {
+      // A second snapshot implies a resync generation; this initial-snapshot reader
+      // deliberately declines to guess which websocket generation owns it.
+      if (candidates.length !== 1) continue;
+      const candidate = candidates[0];
+      const record = candidate.record;
+      const response = record.response as Record<string, any> | undefined;
+      const requestLimit = Number(record.args?.[1]);
+      if (
+        !response ||
+        requestLimit <= 0 ||
+        !Number.isSafeInteger(response.lastUpdateId) ||
+        response.lastUpdateId < 0 ||
+        !Number.isFinite(record.requestedAtMs) ||
+        !Number.isFinite(record.receivedAtMs) ||
+        !Number.isFinite(response.receivedAtMs) ||
+        response.receivedAtMs < session.startedAtMs ||
+        record.requestedAtMs > response.receivedAtMs ||
+        response.receivedAtMs > record.receivedAtMs ||
+        !Array.isArray(response.bids) ||
+        !Array.isArray(response.asks) ||
+        !response.bids.length ||
+        !response.asks.length ||
+        response.bids.length > requestLimit ||
+        response.asks.length > requestLimit
+      )
+        continue;
+      const syncMatches = syncLogs.filter(({ record: log }) => {
+        const context = log.context ?? {};
+        return (
+          context.symbol === symbol &&
+          context.requestedAtMs === record.requestedAtMs &&
+          context.snapshotLastUpdateId === response.lastUpdateId
+        );
+      });
+      if (syncMatches.length !== 1) continue;
+      const syncLog = syncMatches[0];
+      const sync = syncLog.record.context as Record<string, any>;
+      if (
+        !Number.isFinite(sync.receivedAtMs) ||
+        sync.receivedAtMs < response.receivedAtMs ||
+        sync.receivedAtMs > session.completedAtMs ||
+        record.receivedAtMs > sync.receivedAtMs ||
+        sync.bufferLengthBefore !== 0 ||
+        !Number.isSafeInteger(sync.bufferLengthAfter) ||
+        sync.bufferLengthAfter < 0
+      )
+        continue;
+      const overlappingServerSamples = serverTimeSamples.filter(
+        (sample) =>
+          sample.requestStartedAtMs <= sync.receivedAtMs &&
+          sample.responseReceivedAtMs >= sync.receivedAtMs,
+      );
+      if (!overlappingServerSamples.length) continue;
+      const exchangeLowerBoundAtSnapshot = Math.max(
+        ...overlappingServerSamples.map(
+          (sample) => sample.serverTime + (sync.receivedAtMs - sample.responseReceivedAtMs),
+        ),
+      );
+      const exchangeUpperBoundAtSnapshot = Math.min(
+        ...overlappingServerSamples.map(
+          (sample) => sample.serverTime + (sync.receivedAtMs - sample.requestStartedAtMs),
+        ),
+      );
+      if (
+        !Number.isFinite(exchangeLowerBoundAtSnapshot) ||
+        !Number.isFinite(exchangeUpperBoundAtSnapshot) ||
+        exchangeLowerBoundAtSnapshot > exchangeUpperBoundAtSnapshot
+      )
+        continue;
+      const levelArraysValid = (
+        levels: readonly unknown[],
+        descending: boolean,
+      ): Array<{ price: number; qty: number }> | undefined => {
+        const parsed: Array<{ price: number; qty: number }> = [];
+        for (const raw of levels) {
+          if (!Array.isArray(raw) || raw.length !== 2) return undefined;
+          const price = Number(raw[0]);
+          const qty = Number(raw[1]);
+          if (
+            !Number.isFinite(price) ||
+            price <= 0 ||
+            !Number.isFinite(qty) ||
+            qty < 0 ||
+            (parsed.length > 0 &&
+              (descending
+                ? parsed[parsed.length - 1].price <= price
+                : parsed[parsed.length - 1].price >= price))
+          )
+            return undefined;
+          parsed.push({ price, qty });
+        }
+        return parsed;
+      };
+      const bids = levelArraysValid(response.bids, true);
+      const asks = levelArraysValid(response.asks, false);
+      if (!bids || !asks || bids[0].price > asks[0].price) continue;
+      const bufferedEvents = await readDepthEventsInReceiveWindow(
+        session,
+        symbol,
+        record.requestedAtMs,
+        sync.receivedAtMs,
+      );
+      if (bufferedEvents.length !== sync.bufferLengthAfter) continue;
+      const rawEvidence = {
+        schema: 'MICRO_REST_DEPTH_SNAPSHOT_ANCHOR_V1',
+        sessionManifestSha256: session.manifestSha256,
+        rawRestSource: {
+          relativePath: candidate.source.relativePath,
+          sha256: candidate.source.sha256,
+        },
+        eventSource: {
+          relativePath: syncLog.source.relativePath,
+          sha256: syncLog.source.sha256,
+        },
+        record,
+        syncLog: syncLog.record,
+        bufferedEvents,
+        overlappingServerSamples,
+        exchangeLowerBoundAtSnapshot,
+        exchangeUpperBoundAtSnapshot,
+      };
+      output.set(
+        symbol,
+        Object.freeze({
+          symbol,
+          requestedAtMs: record.requestedAtMs,
+          snapshotReceivedAtMs: response.receivedAtMs,
+          availableAtMs: sync.receivedAtMs,
+          exchangeUpperBoundAtAvailableMs: exchangeUpperBoundAtSnapshot,
+          lastUpdateId: response.lastUpdateId,
+          bids: Object.freeze(bids.map((level) => Object.freeze(level))),
+          asks: Object.freeze(asks.map((level) => Object.freeze(level))),
+          bufferLengthBefore: sync.bufferLengthBefore,
+          bufferLengthAfter: sync.bufferLengthAfter,
+          bufferedEvents: Object.freeze(bufferedEvents),
+          evidenceSha256: sha256(canonical(rawEvidence)),
+        }),
+      );
+    }
+    return output;
+  })();
+  sessionRestDepthSnapshotIndexes.set(session, pending);
+  return pending;
+}
+
+const MAX_SNAPSHOT_REPLAY_COMPRESSED_DEPTH_BYTES = 32 * 1024 * 1024;
+const MAX_SNAPSHOT_REPLAY_DEPTH_RECORDS = 100_000;
+
+/** Cache the compact verified depth tape only for sessions small enough for bounded offline replay. */
+async function readSnapshotReplayDepthEvents(
+  session: VerifiedCaptureSession,
+): Promise<ReadonlyMap<string, readonly ArchiveEvent[]> | null> {
+  const cached = sessionSnapshotReplayDepthEvents.get(session);
+  if (cached) return cached;
+  const pending = (async () => {
+    const segments = session.segments.filter((segment) => segment.type === 'depth');
+    const compressedBytes = segments.reduce(
+      (sum, segment) => sum + statSync(resolve(session.root, segment.relativePath)).size,
+      0,
+    );
+    const recordCount = segments.reduce((sum, segment) => sum + segment.recordCount, 0);
+    if (
+      compressedBytes > MAX_SNAPSHOT_REPLAY_COMPRESSED_DEPTH_BYTES ||
+      recordCount > MAX_SNAPSHOT_REPLAY_DEPTH_RECORDS
+    )
+      return null;
+    const records = readVerifiedSegments(
+      segments.map((segment) => ({
+        filePath: resolve(session.root, segment.relativePath),
+        checksum: segment.checksum,
+        recordCount: segment.recordCount,
+      })),
+    );
+    if (records.length !== recordCount) throw new Error('CAPTURE_DEPTH_RECORD_COUNT_MISMATCH');
+    const grouped = new Map<string, ArchiveEvent[]>();
+    for (const record of records) {
+      const events = grouped.get(record.symbol) ?? [];
+      events.push(record);
+      grouped.set(record.symbol, events);
+    }
+    for (const [symbol, events] of grouped)
+      grouped.set(
+        symbol,
+        events.sort(
+          (a, b) =>
+            a.receivedAtMs - b.receivedAtMs ||
+            Number(a.payload.U) - Number(b.payload.U) ||
+            Number(a.payload.u) - Number(b.payload.u),
+        ),
+      );
+    return grouped;
+  })();
+  sessionSnapshotReplayDepthEvents.set(session, pending);
+  return pending;
+}
+
 export function assertVerifiedPullbackEvidence(value: unknown): asserts value is PullbackEvidence {
   if (!value || typeof value !== 'object' || !verifiedTradeEvidence.has(value))
     throw new Error('PULLBACK_EVIDENCE_NOT_ARCHIVE_VERIFIED');
+}
+
+function createVerifiedExecutionBook(input: {
+  session: VerifiedCaptureSession;
+  decision: StrategyDecisionEvidenceV2;
+  context: {
+    observedAtMs: number;
+    exchangeObservedAtMs: number;
+    clockReference?: { contextBuiltExchangeLowerBoundMs?: number };
+  };
+  replay: CausalDepthReplay & { status: 'VERIFIED'; book: NonNullable<CausalDepthReplay['book']> };
+  checkpointAtMs: number;
+  checkpointPersistedAtMs: number;
+  checkpointSource: VerifiedExecutionBook['checkpointSource'];
+  checkpointEvidenceSha256: string;
+  depthEvidenceSha256: string;
+  maxAgeMs: number;
+}): VerifiedExecutionBook {
+  const { session, decision, context, replay } = input;
+  const decisionInputSha256 = sessionDecisionIndexes
+    .get(session)!
+    .get(decision.decisionId)!.canonicalSha256;
+  const evidenceContractSha256 = replayEvidenceContractSha256();
+  const exchangeLowerBoundMs = Number.isFinite(
+    context.clockReference?.contextBuiltExchangeLowerBoundMs,
+  )
+    ? context.clockReference!.contextBuiltExchangeLowerBoundMs!
+    : null;
+  const value: VerifiedExecutionBook = Object.freeze({
+    decisionId: decision.decisionId,
+    symbol: decision.symbol,
+    decisionInputSha256,
+    exchangeAsOfMs: context.exchangeObservedAtMs,
+    receivedAsOfMs: context.observedAtMs,
+    maxAgeMs: input.maxAgeMs,
+    evidenceContractSha256,
+    observedAtMs: replay.book.observedAtMs,
+    bidDepth: Object.freeze(replay.book.bidDepth.map((level) => Object.freeze({ ...level }))),
+    askDepth: Object.freeze(replay.book.askDepth.map((level) => Object.freeze({ ...level }))),
+    lastUpdateId: replay.book.lastUpdateId,
+    checkpointAtMs: input.checkpointAtMs,
+    checkpointPersistedAtMs: input.checkpointPersistedAtMs,
+    checkpointSource: input.checkpointSource,
+    checkpointEvidenceSha256: input.checkpointEvidenceSha256,
+    knownDepthBounds: Object.freeze({ ...replay.book.knownDepthBounds }),
+    exchangeLowerBoundMs,
+    depthEventCount: replay.book.appliedEventCount,
+    sessionManifestSha256: session.manifestSha256,
+    evidenceSha256: sha256(
+      canonical({
+        session: session.manifestSha256,
+        decisionInputSha256,
+        checkpointAtMs: input.checkpointAtMs,
+        checkpointPersistedAtMs: input.checkpointPersistedAtMs,
+        checkpointSource: input.checkpointSource,
+        checkpointEvidenceSha256: input.checkpointEvidenceSha256,
+        depthEvidenceSha256: input.depthEvidenceSha256,
+        clocks: {
+          exchangeAsOfMs: context.exchangeObservedAtMs,
+          exchangeLowerBoundMs,
+          receivedAsOfMs: context.observedAtMs,
+        },
+        maxAgeMs: input.maxAgeMs,
+        evidenceContractSha256,
+      }),
+    ),
+  });
+  verifiedExecutionBooks.add(value);
+  return value;
 }
 
 /** Point book bound to the exact verified decision clocks and captured book. */
@@ -1011,6 +1329,7 @@ export async function readVerifiedExecutionBookForDecision(
           symbol?: string;
           observedAtMs?: number;
           exchangeObservedAtMs?: number;
+          clockReference?: { contextBuiltExchangeLowerBoundMs?: number };
           executionBook?: {
             status?: string;
             bidDepth?: readonly { price: number; qty: number }[];
@@ -1041,6 +1360,69 @@ export async function readVerifiedExecutionBookForDecision(
     !Number.isFinite(expected.observedAtMs)
   )
     return { status: 'UNKNOWN', reason: 'DECISION_BOOK_MISSING_OR_UNHEALTHY' };
+
+  const initialSnapshots = await readVerifiedInitialRestDepthSnapshots(session);
+  const snapshotAnchor = initialSnapshots.get(decision.symbol);
+  const allDepthEvents = snapshotAnchor ? await readSnapshotReplayDepthEvents(session) : null;
+  const snapshotDepthEvents = allDepthEvents?.get(decision.symbol);
+  let snapshotFallbackReason: string | undefined;
+  if (snapshotAnchor && snapshotDepthEvents) {
+    const eventsThroughDecision = snapshotDepthEvents.filter(
+      (event) =>
+        event.receivedAtMs >= snapshotAnchor.requestedAtMs &&
+        event.receivedAtMs <= context.observedAtMs!,
+    );
+    const snapshotReplay = replayCausalDepthFromRestSnapshot(
+      snapshotAnchor,
+      eventsThroughDecision,
+      {
+        exchangeAsOfMs: context.exchangeObservedAtMs!,
+        exchangeLowerBoundMs: Number(context.clockReference?.contextBuiltExchangeLowerBoundMs),
+        receivedAsOfMs: context.observedAtMs!,
+      },
+      maxAgeMs,
+    );
+    if (snapshotReplay.status === 'VERIFIED' && snapshotReplay.book) {
+      if (sameKnownBook(snapshotReplay.book, expected)) {
+        const depthEvidenceSha256 = sha256(
+          canonical({
+            sessionManifestSha256: session.manifestSha256,
+            symbol: decision.symbol,
+            fromReceivedAtMs: snapshotAnchor.requestedAtMs,
+            throughReceivedAtMs: context.observedAtMs,
+            exchangeAsOfMs: context.exchangeObservedAtMs,
+            segments: session.segments
+              .filter((segment) => segment.type === 'depth' && segment.symbol === decision.symbol)
+              .map((segment) => ({ path: segment.relativePath, checksum: segment.checksum })),
+          }),
+        );
+        const value = createVerifiedExecutionBook({
+          session,
+          decision,
+          context: context as NonNullable<typeof context> & {
+            observedAtMs: number;
+            exchangeObservedAtMs: number;
+          },
+          replay: snapshotReplay as CausalDepthReplay & {
+            status: 'VERIFIED';
+            book: NonNullable<CausalDepthReplay['book']>;
+          },
+          checkpointAtMs: snapshotAnchor.snapshotReceivedAtMs,
+          checkpointPersistedAtMs: snapshotAnchor.availableAtMs,
+          checkpointSource: 'PUBLIC_REST_DEPTH_SNAPSHOT',
+          checkpointEvidenceSha256: snapshotAnchor.evidenceSha256,
+          depthEvidenceSha256,
+          maxAgeMs,
+        });
+        return { status: 'VERIFIED', book: value };
+      }
+      snapshotFallbackReason =
+        snapshotReplay.book.observedAtMs < expected.observedAtMs!
+          ? 'DEPTH_NO_UPDATES_OBSERVED'
+          : 'DECISION_BOOK_CONTENT_MISMATCH';
+    } else snapshotFallbackReason = snapshotReplay.reason ?? 'REST_SNAPSHOT_DEPTH_UNVERIFIED';
+  }
+
   const db = new Database(join(session.captureRoot, 'research.sqlite'), {
     readonly: true,
     fileMustExist: true,
@@ -1060,7 +1442,10 @@ export async function readVerifiedExecutionBookForDecision(
     db.close();
   }
   if (!checkpointRow || checkpointRow.created_at_ms > context.observedAtMs!)
-    return { status: 'UNKNOWN', reason: 'DEPTH_CHECKPOINT_MISSING_OR_NOT_YET_AVAILABLE' };
+    return {
+      status: 'UNKNOWN',
+      reason: snapshotFallbackReason ?? 'DEPTH_CHECKPOINT_MISSING_OR_NOT_YET_AVAILABLE',
+    };
   const checkpoint = JSON.parse(checkpointRow.checkpoint_json) as {
     symbol?: string;
     observedAtMs?: number;
@@ -1077,9 +1462,12 @@ export async function readVerifiedExecutionBookForDecision(
     !Array.isArray(checkpoint.asks) ||
     checkpoint.observedAtMs! > context.observedAtMs!
   )
-    return { status: 'UNKNOWN', reason: 'DEPTH_CHECKPOINT_INVALID' };
+    return { status: 'UNKNOWN', reason: snapshotFallbackReason ?? 'DEPTH_CHECKPOINT_INVALID' };
   if (checkpointRow.created_at_ms < checkpoint.observedAtMs!)
-    return { status: 'UNKNOWN', reason: 'DEPTH_CHECKPOINT_PERSISTENCE_CLOCK_INVALID' };
+    return {
+      status: 'UNKNOWN',
+      reason: snapshotFallbackReason ?? 'DEPTH_CHECKPOINT_PERSISTENCE_CLOCK_INVALID',
+    };
   const depthEvents = await readDepthEventsInReceiveWindow(
     session,
     decision.symbol,
@@ -1103,52 +1491,40 @@ export async function readVerifiedExecutionBookForDecision(
     maxAgeMs,
   );
   if (result.status !== 'VERIFIED' || !result.book)
-    return { status: 'UNKNOWN', reason: result.reason ?? 'DEPTH_BOOK_UNVERIFIED' };
+    return {
+      status: 'UNKNOWN',
+      reason: snapshotFallbackReason ?? result.reason ?? 'DEPTH_BOOK_UNVERIFIED',
+    };
   if (!sameKnownBook(result.book, expected))
     return {
       status: 'UNKNOWN',
       reason:
-        result.book.observedAtMs < expected.observedAtMs!
+        snapshotFallbackReason ??
+        (result.book.observedAtMs < expected.observedAtMs!
           ? 'DEPTH_NO_UPDATES_OBSERVED'
-          : 'DECISION_BOOK_CONTENT_MISMATCH',
+          : 'DECISION_BOOK_CONTENT_MISMATCH'),
     };
-  const decisionInputSha256 = sessionDecisionIndexes
-    .get(session)!
-    .get(decision.decisionId)!.canonicalSha256;
-  const evidenceContractSha256 = replayEvidenceContractSha256();
-  const value: VerifiedExecutionBook = Object.freeze({
-    decisionId: decision.decisionId,
-    symbol: decision.symbol,
-    decisionInputSha256,
-    exchangeAsOfMs: context.exchangeObservedAtMs!,
-    receivedAsOfMs: context.observedAtMs!,
-    maxAgeMs,
-    evidenceContractSha256,
-    observedAtMs: result.book.observedAtMs,
-    bidDepth: Object.freeze(result.book.bidDepth.map((level) => Object.freeze({ ...level }))),
-    askDepth: Object.freeze(result.book.askDepth.map((level) => Object.freeze({ ...level }))),
-    lastUpdateId: result.book.lastUpdateId,
+  const checkpointEvidenceSha256 = sha256(
+    canonical({ checkpoint, checkpointPersistedAtMs: checkpointRow.created_at_ms }),
+  );
+  const value = createVerifiedExecutionBook({
+    session,
+    decision,
+    context: context as NonNullable<typeof context> & {
+      observedAtMs: number;
+      exchangeObservedAtMs: number;
+    },
+    replay: result as CausalDepthReplay & {
+      status: 'VERIFIED';
+      book: NonNullable<CausalDepthReplay['book']>;
+    },
     checkpointAtMs: checkpointRow.event_time_ms,
     checkpointPersistedAtMs: checkpointRow.created_at_ms,
-    depthEventCount: result.book.appliedEventCount,
-    sessionManifestSha256: session.manifestSha256,
-    evidenceSha256: sha256(
-      canonical({
-        session: session.manifestSha256,
-        decisionInputSha256,
-        checkpoint,
-        checkpointPersistedAtMs: checkpointRow.created_at_ms,
-        depthEvents,
-        clocks: {
-          exchangeAsOfMs: context.exchangeObservedAtMs,
-          receivedAsOfMs: context.observedAtMs,
-        },
-        maxAgeMs,
-        evidenceContractSha256,
-      }),
-    ),
+    checkpointSource: 'SQLITE_DEPTH_CHECKPOINT',
+    checkpointEvidenceSha256,
+    depthEvidenceSha256: sha256(canonical(depthEvents)),
+    maxAgeMs,
   });
-  verifiedExecutionBooks.add(value);
   return { status: 'VERIFIED', book: value };
 }
 
@@ -1246,25 +1622,24 @@ export async function verifyVerifiedDecisionInterval(
   )
     return { status: 'UNKNOWN', reason: 'BOOK_FRESHNESS_CONTRACT_FAILED' };
 
-  const checkpointRow = findCheckpointAtOrBefore(session, symbol, fromReceivedAtMs!);
-  if (!checkpointRow) return { status: 'UNKNOWN', reason: 'PRE_INTERVAL_DEPTH_CHECKPOINT_MISSING' };
-  const checkpoint = checkpointRow.checkpoint;
-  if (fromReceivedAtMs! - fromBook.observedAtMs > fromBook.maxAgeMs)
-    return { status: 'UNKNOWN', reason: 'PRE_INTERVAL_DEPTH_CHECKPOINT_STALE' };
+  // The exact, independently verified point book is the interval's starting state.
+  // It carries its source depth bounds, which may be wider than the rolling top-20
+  // SQLite feature checkpoint persisted near this decision.
+  const checkpointInput = {
+    symbol,
+    receivedAtMs: fromBook.observedAtMs,
+    availableAtMs: fromBook.observedAtMs,
+    lastUpdateId: fromBook.lastUpdateId,
+    bids: fromBook.bidDepth,
+    asks: fromBook.askDepth,
+    knownDepthBounds: fromBook.knownDepthBounds,
+  };
   const depthEvents = await readDepthEventsInReceiveWindow(
     session,
     symbol,
-    checkpoint.observedAtMs,
+    fromBook.observedAtMs,
     throughReceivedAtMs!,
   );
-  const checkpointInput = {
-    symbol,
-    receivedAtMs: checkpoint.observedAtMs,
-    availableAtMs: checkpoint.observedAtMs,
-    lastUpdateId: checkpoint.lastUpdateId,
-    bids: checkpoint.bids,
-    asks: checkpoint.asks,
-  };
   const startReplay = replayCausalDepth(
     checkpointInput,
     depthEvents,
@@ -1302,12 +1677,38 @@ export async function verifyVerifiedDecisionInterval(
   if (
     depthEvents.some(
       (event) =>
+        event.receivedAtMs === fromReceivedAtMs! &&
+        Number(event.payload.u) > fromBook.lastUpdateId &&
+        event.eventTime <= throughExchangeAsOfMs!,
+    )
+  )
+    return { status: 'UNKNOWN', reason: 'DEPTH_RECEIVE_CLOCK_TIE_AT_INTERVAL_START' };
+  if (
+    depthEvents.some(
+      (event) =>
         event.receivedAtMs > fromReceivedAtMs! &&
         event.receivedAtMs <= throughReceivedAtMs! &&
         event.eventTime <= fromExchangeAsOfMs!,
     )
-  )
-    return { status: 'UNKNOWN', reason: 'DEPTH_LATE_EVENT_CROSSES_INTERVAL_START' };
+  ) {
+    const fromExchangeLowerBoundMs = Number(
+      fromContext?.clockReference?.contextBuiltExchangeLowerBoundMs,
+    );
+    const crossingEvents = depthEvents.filter(
+      (event) =>
+        event.receivedAtMs > fromReceivedAtMs! &&
+        event.receivedAtMs <= throughReceivedAtMs! &&
+        event.eventTime <= fromExchangeAsOfMs!,
+    );
+    return {
+      status: 'UNKNOWN',
+      reason:
+        Number.isFinite(fromExchangeLowerBoundMs) &&
+        crossingEvents.some((event) => event.eventTime < fromExchangeLowerBoundMs)
+          ? 'DEPTH_LATE_EVENT_CROSSES_INTERVAL_START'
+          : 'DEPTH_EVENT_ORDER_AMBIGUOUS_AT_INTERVAL_START',
+    };
+  }
   const tradeEvidence = await readVerifiedPullbackEvidence(
     session,
     throughDecision,
@@ -1326,8 +1727,10 @@ export async function verifyVerifiedDecisionInterval(
     };
   const depthEvidenceSha256 = sha256(
     canonical({
-      checkpoint,
-      checkpointPersistedAtMs: checkpointRow.createdAtMs,
+      checkpoint: checkpointInput,
+      checkpointSource: fromBook.checkpointSource,
+      checkpointEvidenceSha256: fromBook.checkpointEvidenceSha256,
+      fromBookEvidenceSha256: fromBook.evidenceSha256,
       startBook: startReplay.book,
       endBook: endReplay.book,
       depthEvents,
@@ -1348,8 +1751,11 @@ export async function verifyVerifiedDecisionInterval(
     sourceArtifactHash: session.artifactHash,
     tradeEvidenceSha256: sha256(canonical(tradeEvidence.trades)),
     depthEvidenceSha256,
-    checkpointAtMs: checkpoint.observedAtMs,
-    checkpointPersistedAtMs: checkpointRow.createdAtMs,
+    checkpointAtMs: fromBook.checkpointAtMs,
+    checkpointPersistedAtMs: fromBook.checkpointPersistedAtMs,
+    checkpointSource: fromBook.checkpointSource,
+    checkpointEvidenceSha256: fromBook.checkpointEvidenceSha256,
+    fromBookEvidenceSha256: fromBook.evidenceSha256,
     depthFirstUpdateId: startReplay.book.lastUpdateId,
     depthLastUpdateId: endReplay.book.lastUpdateId,
     depthEventCount: intervalDepthEvents.length,

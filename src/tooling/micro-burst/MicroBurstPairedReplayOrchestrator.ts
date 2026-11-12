@@ -70,9 +70,11 @@ interface DecisionTrace {
   frameStatus?: string;
   frameReason?: string;
   pointBookStatus?: 'VERIFIED' | 'UNKNOWN';
+  pointBookSource?: 'SQLITE_DEPTH_CHECKPOINT' | 'PUBLIC_REST_DEPTH_SNAPSHOT' | null;
   intervalStatus?: string;
   intervalReason?: string | null;
   intervalFromDecisionId?: string | null;
+  intervalCheckpointSource?: 'SQLITE_DEPTH_CHECKPOINT' | 'PUBLIC_REST_DEPTH_SNAPSHOT' | null;
   exitPolicyConfigSha256?: string;
 }
 
@@ -140,9 +142,11 @@ export async function runPairedReplayRequestFile(requestPath: string): Promise<{
         frameStatus: frame.verificationStatus,
         frameReason: frame.reason,
         pointBookStatus: frame.book ? 'VERIFIED' : 'UNKNOWN',
+        pointBookSource: frame.book?.checkpointSource ?? null,
         intervalStatus: frame.intervalStatus,
         intervalReason: frame.intervalReason,
         intervalFromDecisionId: frame.intervalFromDecisionId,
+        intervalCheckpointSource: frame.intervalCoverage?.checkpointSource ?? null,
         exitPolicyConfigSha256: frame.exitPolicyConfigSha256,
       });
     } catch (error) {
@@ -349,11 +353,19 @@ export async function runPairedReplayRequestFile(requestPath: string): Promise<{
       framesBuilt: selectedFrames.length,
       pointBooksVerified: selectedFrames.filter((frame) => frame.book !== null).length,
       pointBooksUnknown: selectedFrames.filter((frame) => frame.book === null).length,
+      pointBookSources: countBy(
+        selectedFrames.flatMap((frame) => (frame.book ? [frame.book.checkpointSource] : [])),
+      ),
       intervalsConsidered: selectedFrames.filter(
         (frame) => frame.intervalStatus !== 'NOT_EVALUATED',
       ).length,
       intervalsVerified: selectedFrames.filter((frame) => frame.intervalStatus === 'VERIFIED')
         .length,
+      intervalCheckpointSources: countBy(
+        selectedFrames.flatMap((frame) =>
+          frame.intervalCoverage ? [frame.intervalCoverage.checkpointSource] : [],
+        ),
+      ),
       intervalsUnknown: selectedFrames.filter((frame) => frame.intervalStatus === 'UNKNOWN').length,
       intervalsNotEvaluated: selectedFrames.filter(
         (frame) => frame.intervalStatus === 'NOT_EVALUATED',
@@ -595,8 +607,8 @@ function renderSummary(report: Record<string, any>): string {
     `- Contract: \`${report.experiment.sha256}\``,
     `- Selection: ${report.request.symbol}, ${report.request.range.fromReceivedAtMs}–${report.request.range.throughReceivedAtMs} local receive ms${report.request.selection.episodeId ? `, episode \`${report.request.selection.episodeId}\`` : ''}`,
     `- Decisions: ${report.counts.decisionsRead}; symbol decisions: ${report.counts.decisionsForSymbol}; unique episodes: ${report.counts.uniqueEpisodes}`,
-    `- Frames built: ${report.counts.framesBuilt}; point books: ${report.counts.pointBooksVerified} verified, ${report.counts.pointBooksUnknown} unknown`,
-    `- Intervals: ${report.counts.intervalsVerified} verified, ${report.counts.intervalsUnknown} unknown, ${report.counts.intervalsNotEvaluated} not evaluated (${report.counts.intervalsConsidered} considered); technical errors: ${report.counts.technicalErrors}`,
+    `- Frames built: ${report.counts.framesBuilt}; point books: ${report.counts.pointBooksVerified} verified (${JSON.stringify(report.counts.pointBookSources)}), ${report.counts.pointBooksUnknown} unknown`,
+    `- Intervals: ${report.counts.intervalsVerified} verified (${JSON.stringify(report.counts.intervalCheckpointSources)}), ${report.counts.intervalsUnknown} unknown, ${report.counts.intervalsNotEvaluated} not evaluated (${report.counts.intervalsConsidered} considered); technical errors: ${report.counts.technicalErrors}`,
     '',
     '## Terminal outcomes',
     '',

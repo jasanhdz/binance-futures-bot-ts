@@ -9,6 +9,7 @@ import {
   causalTradeEvidence,
   depthVwap,
   replayCausalDepth,
+  replayCausalDepthFromRestSnapshot,
   readVerifiedSegments,
   type ArchiveEvent,
 } from './MicroBurstCausalArchive';
@@ -216,6 +217,210 @@ it('accepts pu-linked USD-M updates when U begins beyond the checkpoint update i
   ).toMatchObject({ status: 'VERIFIED', book: { lastUpdateId: 125, appliedEventCount: 2 } });
 });
 
+it('reconstructs a full-depth REST snapshot through its bridge event and subsequent pu chain', () => {
+  const snapshot = {
+    symbol: 'SOLUSDT',
+    requestedAtMs: 100,
+    snapshotReceivedAtMs: 150,
+    availableAtMs: 160,
+    exchangeUpperBoundAtAvailableMs: 140,
+    lastUpdateId: 100,
+    bids: [
+      { price: 99, qty: 10 },
+      { price: 98, qty: 10 },
+    ],
+    asks: [
+      { price: 101, qty: 10 },
+      { price: 102, qty: 10 },
+    ],
+    bufferLengthBefore: 0,
+    bufferLengthAfter: 0,
+    bufferedEvents: [],
+    evidenceSha256: 'a'.repeat(64),
+  };
+  const event = (eventTime: number, receivedAtMs: number, U: number, u: number, pu: number) => ({
+    symbol: 'SOLUSDT',
+    type: 'depth' as const,
+    eventTime,
+    receivedAtMs,
+    payload: {
+      symbol: 'SOLUSDT',
+      eventTime,
+      receivedAtMs,
+      U,
+      u,
+      pu,
+      b: [['99', String(10 + u)]],
+      a: [],
+    },
+  });
+  const replay = replayCausalDepthFromRestSnapshot(
+    snapshot,
+    [event(200, 200, 95, 105, 90), event(300, 300, 110, 115, 105)],
+    { exchangeAsOfMs: 400, exchangeLowerBoundMs: 350, receivedAsOfMs: 400 },
+    1000,
+  );
+  expect(replay).toMatchObject({
+    status: 'VERIFIED',
+    book: {
+      lastUpdateId: 115,
+      appliedEventCount: 2,
+      knownDepthBounds: { bidFloor: 98, askCeiling: 102 },
+    },
+  });
+});
+
+it('rejects REST-snapshot replay if the snapshot is not proven prior to the decision exchange clock', () => {
+  const snapshot = {
+    symbol: 'SOLUSDT',
+    requestedAtMs: 100,
+    snapshotReceivedAtMs: 150,
+    availableAtMs: 160,
+    exchangeUpperBoundAtAvailableMs: 350,
+    lastUpdateId: 100,
+    bids: [{ price: 99, qty: 10 }],
+    asks: [{ price: 101, qty: 10 }],
+    bufferLengthBefore: 0,
+    bufferLengthAfter: 0,
+    bufferedEvents: [],
+    evidenceSha256: 'a'.repeat(64),
+  };
+  expect(
+    replayCausalDepthFromRestSnapshot(
+      snapshot,
+      [],
+      { exchangeAsOfMs: 400, exchangeLowerBoundMs: 350, receivedAsOfMs: 400 },
+      1000,
+    ),
+  ).toMatchObject({ status: 'UNKNOWN', reason: 'REST_DEPTH_SNAPSHOT_INVALID' });
+});
+
+it('reconstructs the previous point and interval from the captured full REST snapshot, not the truncated feature checkpoint', async () => {
+  const fullBids = Array.from({ length: 21 }, (_, index) => ({
+    price: 99.99 - index * 0.01,
+    qty: 100 + index,
+  }));
+  const fullAsks = Array.from({ length: 21 }, (_, index) => ({
+    price: 100.01 + index * 0.01,
+    qty: 100 + index,
+  }));
+  const beforeBids = fullBids.slice(0, 20);
+  const asks = fullAsks.slice(0, 20);
+  const removedBid = beforeBids[19].price;
+  const afterBids = [...beforeBids.slice(0, 19), fullBids[20]];
+  const decisions = [
+    makeSyntheticDecisionRecord(BASE + 4000, 'LONG', 'SOLUSDT', {
+      exchangeClockOffsetMs: 100,
+      exchangeClockLowerBoundOffsetMs: 50,
+      bookDepth: { bidDepth: beforeBids, askDepth: asks },
+    }),
+    makeSyntheticDecisionRecord(BASE + 5000, 'LONG', 'SOLUSDT', {
+      exchangeClockOffsetMs: 100,
+      exchangeClockLowerBoundOffsetMs: 50,
+      bookDepth: { bidDepth: afterBids, askDepth: asks },
+    }),
+  ];
+  const update = (
+    eventTime: number,
+    U: number,
+    u: number,
+    pu: number,
+    bids: [string, string][] = [],
+  ): ArchiveDepth => ({
+    symbol: 'SOLUSDT',
+    eventTime,
+    receivedAtMs: eventTime,
+    E: eventTime,
+    T: eventTime,
+    U,
+    u,
+    pu,
+    b: bids,
+    a: [],
+  });
+  const restSnapshot = {
+    method: 'getDepthSnapshot',
+    args: ['SOLUSDT', 1000],
+    requestedAtMs: BASE - 100,
+    receivedAtMs: BASE + 1,
+    response: {
+      lastUpdateId: 1000,
+      bids: fullBids.map((level) => [String(level.price), String(level.qty)]),
+      asks: fullAsks.map((level) => [String(level.price), String(level.qty)]),
+      receivedAtMs: BASE,
+    },
+  };
+  const capture = await createSyntheticCaptureSession({
+    startedAtMs: BASE - 500,
+    completedAtMs: BASE + 90_000,
+    storageNowMs: BASE - 500,
+    trades: coverageTrades(),
+    depth: [
+      update(BASE + 1000, 999, 1001, 998, [[String(fullBids[0].price), String(fullBids[0].qty)]]),
+      update(BASE + 2000, 1002, 1002, 1001),
+      update(BASE + 3000, 1003, 1003, 1002),
+      update(BASE + 4000, 1004, 1004, 1003),
+      update(BASE + 5000, 1005, 1005, 1004, [[String(removedBid), '0']]),
+    ],
+    checkpoints: [
+      {
+        symbol: 'SOLUSDT',
+        eventTimeMs: BASE + 4000,
+        persistedAtMs: BASE + 4000,
+        checkpoint: {
+          schemaVersion: 1,
+          symbol: 'SOLUSDT',
+          observedAtMs: BASE + 4000,
+          lastUpdateId: 1004,
+          bids: beforeBids,
+          asks,
+        },
+      },
+    ],
+    decisionRecords: decisions,
+    rawRestRecords: [
+      {
+        method: 'getServerTime',
+        args: [],
+        requestedAtMs: BASE - 200,
+        receivedAtMs: BASE + 100,
+        response: { serverTime: BASE },
+      },
+      restSnapshot,
+    ],
+    eventRecords: [
+      {
+        atMs: BASE + 1,
+        level: 'info',
+        message: 'market_data_order_book_snapshot_received',
+        context: {
+          symbol: 'SOLUSDT',
+          requestedAtMs: BASE - 100,
+          receivedAtMs: BASE + 1,
+          snapshotLastUpdateId: 1000,
+          bufferLengthBefore: 0,
+          bufferLengthAfter: 0,
+        },
+      },
+    ],
+  });
+  try {
+    const records = await readVerifiedDecisionRecords(capture.session, BASE + 4000, BASE + 5000);
+    const frames = await buildReplayFrames(capture.session, records);
+    expect(frames[0].book?.checkpointSource).toBe('PUBLIC_REST_DEPTH_SNAPSHOT');
+    expect(frames[0].book?.bidDepth).toEqual(fullBids);
+    expect(frames[1].book?.bidDepth).toEqual(afterBids);
+    expect(frames[1].verificationStatus).toBe('VERIFIED_INTERVAL');
+    expect(frames[1].intervalCoverage).toMatchObject({
+      checkpointSource: 'PUBLIC_REST_DEPTH_SNAPSHOT',
+      depthFirstUpdateId: 1004,
+      depthLastUpdateId: 1005,
+    });
+  } finally {
+    capture.cleanup();
+  }
+});
+
 it('does not consume depth events outside either the exchange or local receive cutoff', () => {
   const checkpointInput = {
     symbol: 'SOLUSDT',
@@ -420,12 +625,16 @@ async function coverageSession(input: {
   decisionTimes?: readonly number[];
   exchangeClockOffsetMs?: number;
   exchangeClockOffsetsMs?: readonly number[];
+  exchangeClockLowerBoundOffsetsMs?: readonly number[];
+  bookObservedAtOffsetsMs?: readonly number[];
   includeTrades?: boolean;
   maxActiveSegmentRecords?: number;
 }) {
   const records = (input.decisionTimes ?? [BASE + 5000]).map((atMs, index) =>
     makeSyntheticDecisionRecord(atMs, 'LONG', 'SOLUSDT', {
       exchangeClockOffsetMs: input.exchangeClockOffsetsMs?.[index] ?? input.exchangeClockOffsetMs,
+      exchangeClockLowerBoundOffsetMs: input.exchangeClockLowerBoundOffsetsMs?.[index],
+      bookObservedAtOffsetMs: input.bookObservedAtOffsetsMs?.[index],
     }),
   );
   const capture = await createSyntheticCaptureSession({
@@ -639,6 +848,54 @@ it('keeps the current book as a point when the previous exchange-time upper boun
     capture.cleanup();
   }
 });
+
+it.each([
+  { eventOffsetMs: 40, expected: 'DEPTH_LATE_EVENT_CROSSES_INTERVAL_START' },
+  { eventOffsetMs: 75, expected: 'DEPTH_EVENT_ORDER_AMBIGUOUS_AT_INTERVAL_START' },
+])(
+  'classifies late depth using the exchange-clock uncertainty bounds',
+  async ({ eventOffsetMs, expected }) => {
+    const startAtMs = BASE + 1000;
+    const throughAtMs = BASE + 2000;
+    const lateEvent = depthEvent(startAtMs + eventOffsetMs, 1001, 1000);
+    const lateReceivedAtMs = BASE + 1500;
+    const capture = await coverageSession({
+      decisionTimes: [startAtMs, throughAtMs],
+      exchangeClockOffsetsMs: [100, 100],
+      exchangeClockLowerBoundOffsetsMs: [50, 50],
+      bookObservedAtOffsetsMs: [0, -400],
+      checkpoints: [checkpoint(startAtMs, 1000), checkpoint(BASE + 1600, 1002)],
+      depth: [
+        {
+          ...lateEvent,
+          receivedAtMs: lateReceivedAtMs,
+        },
+        depthEvent(BASE + 1600, 1002, 1001),
+      ],
+    });
+    try {
+      const candidate = new MicroBurstPullbackCandidate();
+      const first = await buildVerifiedReplayFrame(
+        capture.session,
+        capture.records[0],
+        await candidate.evaluate(capture.session, capture.records[0]),
+      );
+      const second = await buildVerifiedReplayFrame(
+        capture.session,
+        capture.records[1],
+        await candidate.evaluate(capture.session, capture.records[1]),
+        first,
+      );
+      expect(first.verificationStatus).toBe('VERIFIED_POINT');
+      expect(second.verificationStatus).toBe('VERIFIED_POINT');
+      expect(second.intervalStatus).toBe('UNKNOWN');
+      expect(second.intervalReason).toBe(expected);
+      expect(second.intervalCoverage).toBeNull();
+    } finally {
+      capture.cleanup();
+    }
+  },
+);
 
 it('uses a reconnect checkpoint only as a new point and never fills across the prior gap', async () => {
   const capture = await coverageSession({

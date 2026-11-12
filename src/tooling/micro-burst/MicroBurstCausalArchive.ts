@@ -16,6 +16,27 @@ export interface ArchiveEvent {
   payload: Record<string, unknown>;
 }
 
+export interface DepthKnowledgeBounds {
+  readonly bidFloor: number;
+  readonly askCeiling: number;
+}
+
+/** Public REST snapshot and the archived diff buffer present while its snapshot sync completed. */
+export interface RestDepthSnapshotAnchor {
+  readonly symbol: string;
+  readonly requestedAtMs: number;
+  readonly snapshotReceivedAtMs: number;
+  readonly availableAtMs: number;
+  readonly exchangeUpperBoundAtAvailableMs: number;
+  readonly lastUpdateId: number;
+  readonly bids: readonly { price: number; qty: number }[];
+  readonly asks: readonly { price: number; qty: number }[];
+  readonly bufferLengthBefore: number;
+  readonly bufferLengthAfter: number;
+  readonly bufferedEvents: readonly ArchiveEvent[];
+  readonly evidenceSha256: string;
+}
+
 export interface UnverifiedPullbackEvidence {
   coverageVerified: boolean;
   coverageStartedAtMs: number;
@@ -161,6 +182,8 @@ export interface DepthCheckpoint {
   lastUpdateId: number;
   bids: readonly { price: number; qty: number }[];
   asks: readonly { price: number; qty: number }[];
+  /** Original known depth bounds; they may exceed surviving edge levels. */
+  knownDepthBounds?: DepthKnowledgeBounds;
 }
 
 export interface CausalDepthReplay {
@@ -174,13 +197,21 @@ export interface CausalDepthReplay {
     | 'DEPTH_SEQUENCE_GAP'
     | 'DEPTH_BOOK_INVALID'
     | 'DEPTH_TOO_OLD'
-    | 'DEPTH_NO_UPDATES_OBSERVED';
+    | 'DEPTH_NO_UPDATES_OBSERVED'
+    | 'REST_DEPTH_SNAPSHOT_INVALID'
+    | 'REST_DEPTH_SNAPSHOT_BUFFER_UNVERIFIED'
+    | 'REST_DEPTH_SNAPSHOT_BUFFER_COUNT_MISMATCH'
+    | 'REST_DEPTH_SNAPSHOT_BRIDGE_MISSING'
+    | 'REST_DEPTH_SNAPSHOT_BRIDGE_INVALID'
+    | 'REST_DEPTH_SNAPSHOT_BUFFER_SEQUENCE_GAP'
+    | 'REST_DEPTH_SNAPSHOT_AFTER_DECISION_BOUND';
   readonly book?: {
     bidDepth: { price: number; qty: number }[];
     askDepth: { price: number; qty: number }[];
     observedAtMs: number;
     lastUpdateId: number;
     appliedEventCount: number;
+    knownDepthBounds: DepthKnowledgeBounds;
   };
 }
 
@@ -232,8 +263,17 @@ export function replayCausalDepth(
     return { status: 'UNKNOWN', reason: 'INVALID_DEPTH_CHECKPOINT' };
   const bids = new Map(checkpoint.bids.map((l) => [l.price, l.qty]));
   const asks = new Map(checkpoint.asks.map((l) => [l.price, l.qty]));
-  const floor = Math.min(...bids.keys());
-  const ceiling = Math.max(...asks.keys());
+  const floor = checkpoint.knownDepthBounds?.bidFloor ?? Math.min(...bids.keys());
+  const ceiling = checkpoint.knownDepthBounds?.askCeiling ?? Math.max(...asks.keys());
+  if (
+    !Number.isFinite(floor) ||
+    !Number.isFinite(ceiling) ||
+    floor <= 0 ||
+    ceiling <= 0 ||
+    floor > Math.min(...bids.keys()) ||
+    ceiling < Math.max(...asks.keys())
+  )
+    return { status: 'UNKNOWN', reason: 'INVALID_DEPTH_CHECKPOINT' };
   let last = checkpoint.lastUpdateId;
   let observedAtMs = checkpoint.receivedAtMs;
   let appliedEventCount = 0;
@@ -359,7 +399,442 @@ export function replayCausalDepth(
     return { status: 'UNKNOWN', reason: 'DEPTH_BOOK_INVALID' };
   return {
     status: 'VERIFIED',
-    book: { bidDepth, askDepth, observedAtMs, lastUpdateId: last, appliedEventCount },
+    book: {
+      bidDepth,
+      askDepth,
+      observedAtMs,
+      lastUpdateId: last,
+      appliedEventCount,
+      knownDepthBounds: { bidFloor: floor, askCeiling: ceiling },
+    },
+  };
+}
+
+/**
+ * Replays the captured USD-M snapshot bridge exactly as SynchronizedOrderBook does:
+ * REST snapshot first, then its pre-response diff buffer, then pu-linked live updates.
+ */
+export function replayCausalDepthFromBufferedRestSnapshot(
+  anchor: RestDepthSnapshotAnchor,
+  events: readonly ArchiveEvent[],
+  clocks: { exchangeAsOfMs: number; receivedAsOfMs: number; exchangeLowerBoundMs?: number },
+  maxAgeMs: number,
+): CausalDepthReplay {
+  const unknown = (reason: NonNullable<CausalDepthReplay['reason']>): CausalDepthReplay => ({
+    status: 'UNKNOWN',
+    reason,
+  });
+  if (
+    anchor.bufferLengthBefore !== 0 ||
+    anchor.bufferLengthAfter !== anchor.bufferedEvents.length ||
+    !Number.isSafeInteger(anchor.lastUpdateId) ||
+    ![
+      anchor.requestedAtMs,
+      anchor.snapshotReceivedAtMs,
+      anchor.availableAtMs,
+      anchor.exchangeUpperBoundAtAvailableMs,
+      clocks.exchangeAsOfMs,
+      clocks.receivedAsOfMs,
+      maxAgeMs,
+    ].every(Number.isFinite) ||
+    anchor.snapshotReceivedAtMs < anchor.requestedAtMs ||
+    anchor.availableAtMs < anchor.snapshotReceivedAtMs ||
+    anchor.availableAtMs > clocks.receivedAsOfMs ||
+    anchor.exchangeUpperBoundAtAvailableMs >= (clocks.exchangeLowerBoundMs ?? NaN) ||
+    !anchor.bids.length ||
+    !anchor.asks.length
+  )
+    return unknown('REST_DEPTH_SNAPSHOT_INVALID');
+
+  const orderedBuffered = anchor.bufferedEvents
+    .filter((event) => event.type === 'depth' && event.symbol === anchor.symbol)
+    .slice()
+    .sort(
+      (a, b) =>
+        a.receivedAtMs - b.receivedAtMs ||
+        Number(a.payload.U) - Number(b.payload.U) ||
+        Number(a.payload.u) - Number(b.payload.u),
+    );
+  if (
+    orderedBuffered.length !== anchor.bufferedEvents.length ||
+    orderedBuffered.some(
+      (event) =>
+        event.receivedAtMs < anchor.requestedAtMs || event.receivedAtMs > anchor.availableAtMs,
+    )
+  )
+    return unknown('REST_DEPTH_SNAPSHOT_BUFFER_UNVERIFIED');
+
+  const bids = new Map(anchor.bids.map((level) => [level.price, level.qty]));
+  const asks = new Map(anchor.asks.map((level) => [level.price, level.qty]));
+  const knownDepthBounds = {
+    bidFloor: Math.min(...bids.keys()),
+    askCeiling: Math.max(...asks.keys()),
+  };
+  let last = anchor.lastUpdateId;
+  let observedAtMs = anchor.snapshotReceivedAtMs;
+  let appliedBufferedEvents = 0;
+  const appliedIdentities = new Map<string, string>();
+  const fingerprint = (event: ArchiveEvent): string =>
+    JSON.stringify([event.eventTime, event.payload.b, event.payload.a]);
+  const apply = (event: ArchiveEvent): boolean => {
+    const p = event.payload;
+    const U = Number(p.U);
+    const u = Number(p.u);
+    const pu = Number(p.pu);
+    if (
+      ![U, u, pu].every(Number.isSafeInteger) ||
+      U < 0 ||
+      u < U ||
+      pu < 0 ||
+      !Number.isFinite(event.eventTime) ||
+      !Number.isFinite(event.receivedAtMs) ||
+      p.symbol !== event.symbol ||
+      p.eventTime !== event.eventTime ||
+      p.receivedAtMs !== event.receivedAtMs
+    )
+      return false;
+    for (const [raw, book, bound] of [
+      [p.b, bids, (price: number) => price >= knownDepthBounds.bidFloor],
+      [p.a, asks, (price: number) => price <= knownDepthBounds.askCeiling],
+    ] as const) {
+      if (!Array.isArray(raw)) return false;
+      for (const level of raw) {
+        if (!Array.isArray(level) || level.length !== 2) return false;
+        const price = Number(level[0]);
+        const quantity = Number(level[1]);
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity < 0)
+          return false;
+        if (!bound(price)) continue;
+        if (quantity === 0) book.delete(price);
+        else book.set(price, quantity);
+      }
+    }
+    return true;
+  };
+  const rememberApplied = (event: ArchiveEvent): void => {
+    appliedIdentities.set(
+      `${event.payload.U}:${event.payload.u}:${event.payload.pu}`,
+      fingerprint(event),
+    );
+    last = Number(event.payload.u);
+    observedAtMs = event.receivedAtMs;
+    appliedBufferedEvents++;
+  };
+  const firstBuffered = orderedBuffered.filter((event) => Number(event.payload.u) >= last);
+  let bridgeFound = false;
+  if (firstBuffered.length) {
+    const first = firstBuffered[0];
+    if (!(Number(first.payload.U) <= last && last <= Number(first.payload.u)))
+      return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_INVALID');
+    if (!apply(first)) return unknown('DEPTH_EVENT_INVALID');
+    rememberApplied(first);
+    bridgeFound = true;
+    for (const event of firstBuffered.slice(1)) {
+      const u = Number(event.payload.u);
+      if (u <= last) continue;
+      if (Number(event.payload.pu) !== last)
+        return unknown('REST_DEPTH_SNAPSHOT_BUFFER_SEQUENCE_GAP');
+      if (!apply(event)) return unknown('DEPTH_EVENT_INVALID');
+      rememberApplied(event);
+    }
+  } else {
+    const futureBridge = events
+      .filter(
+        (event) =>
+          event.type === 'depth' &&
+          event.symbol === anchor.symbol &&
+          event.receivedAtMs > anchor.availableAtMs &&
+          event.receivedAtMs <= clocks.receivedAsOfMs &&
+          event.eventTime <= clocks.exchangeAsOfMs &&
+          Number(event.payload.u) >= last,
+      )
+      .slice()
+      .sort(
+        (a, b) =>
+          a.receivedAtMs - b.receivedAtMs ||
+          Number(a.payload.U) - Number(b.payload.U) ||
+          Number(a.payload.u) - Number(b.payload.u),
+      )[0];
+    if (!futureBridge) return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_MISSING');
+    if (!(Number(futureBridge.payload.U) <= last && last <= Number(futureBridge.payload.u)))
+      return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_INVALID');
+    if (!apply(futureBridge)) return unknown('DEPTH_EVENT_INVALID');
+    rememberApplied(futureBridge);
+    bridgeFound = true;
+  }
+  if (!bridgeFound) return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_MISSING');
+
+  const availableAtMs = Math.max(
+    anchor.availableAtMs,
+    ...orderedBuffered.map((event) => event.receivedAtMs),
+  );
+  const checkpoint: DepthCheckpoint = {
+    symbol: anchor.symbol,
+    receivedAtMs: observedAtMs,
+    availableAtMs,
+    lastUpdateId: last,
+    bids: [...bids].map(([price, qty]) => ({ price, qty })).sort((a, b) => b.price - a.price),
+    asks: [...asks].map(([price, qty]) => ({ price, qty })).sort((a, b) => a.price - b.price),
+    knownDepthBounds,
+  };
+  const futureEvents: ArchiveEvent[] = [];
+  for (const event of events) {
+    if (
+      event.type !== 'depth' ||
+      event.symbol !== anchor.symbol ||
+      event.receivedAtMs < availableAtMs ||
+      event.receivedAtMs > clocks.receivedAsOfMs
+    )
+      continue;
+    const identity = `${event.payload.U}:${event.payload.u}:${event.payload.pu}`;
+    const previous = appliedIdentities.get(identity);
+    if (previous !== undefined) {
+      if (previous !== fingerprint(event)) return unknown('DEPTH_DUPLICATE_CONFLICT');
+      continue;
+    }
+    futureEvents.push(event);
+  }
+  const result = replayCausalDepth(checkpoint, futureEvents, clocks, maxAgeMs);
+  if (result.status !== 'VERIFIED' || !result.book) return result;
+  return {
+    status: 'VERIFIED',
+    book: {
+      ...result.book,
+      appliedEventCount: result.book.appliedEventCount + appliedBufferedEvents,
+      knownDepthBounds,
+    },
+  };
+}
+
+/** Reconstructs from the full REST book used by the producer's snapshot-bridge algorithm. */
+export function replayCausalDepthFromRestSnapshot(
+  anchor: RestDepthSnapshotAnchor,
+  events: readonly ArchiveEvent[],
+  clocks: {
+    exchangeAsOfMs: number;
+    receivedAsOfMs: number;
+    exchangeLowerBoundMs: number;
+  },
+  maxAgeMs: number,
+): CausalDepthReplay {
+  const unknown = (reason: NonNullable<CausalDepthReplay['reason']>): CausalDepthReplay => ({
+    status: 'UNKNOWN',
+    reason,
+  });
+  if (anchor.bufferLengthBefore !== 0 || anchor.bufferLengthAfter !== anchor.bufferedEvents.length)
+    return unknown('REST_DEPTH_SNAPSHOT_BUFFER_UNVERIFIED');
+  if (
+    ![
+      anchor.requestedAtMs,
+      anchor.snapshotReceivedAtMs,
+      anchor.availableAtMs,
+      anchor.exchangeUpperBoundAtAvailableMs,
+      clocks.exchangeAsOfMs,
+      clocks.exchangeLowerBoundMs,
+      clocks.receivedAsOfMs,
+      maxAgeMs,
+    ].every(Number.isFinite) ||
+    !Number.isSafeInteger(anchor.lastUpdateId) ||
+    anchor.lastUpdateId < 0 ||
+    anchor.snapshotReceivedAtMs < anchor.requestedAtMs ||
+    anchor.availableAtMs < anchor.snapshotReceivedAtMs ||
+    anchor.availableAtMs > clocks.receivedAsOfMs ||
+    anchor.exchangeUpperBoundAtAvailableMs >= clocks.exchangeLowerBoundMs ||
+    !anchor.bids.length ||
+    !anchor.asks.length
+  )
+    return unknown('REST_DEPTH_SNAPSHOT_INVALID');
+
+  const validLevels = (
+    levels: readonly { price: number; qty: number }[],
+    descending: boolean,
+  ): boolean =>
+    levels.every(
+      (level, index) =>
+        Number.isFinite(level.price) &&
+        level.price > 0 &&
+        Number.isFinite(level.qty) &&
+        level.qty >= 0 &&
+        (index === 0 ||
+          (descending
+            ? levels[index - 1].price > level.price
+            : levels[index - 1].price < level.price)),
+    );
+  if (
+    !validLevels(anchor.bids, true) ||
+    !validLevels(anchor.asks, false) ||
+    anchor.bids[0].price > anchor.asks[0].price
+  )
+    return unknown('REST_DEPTH_SNAPSHOT_INVALID');
+
+  const bids = new Map(anchor.bids.map((level) => [level.price, level.qty]));
+  const asks = new Map(anchor.asks.map((level) => [level.price, level.qty]));
+  const knownDepthBounds: DepthKnowledgeBounds = {
+    bidFloor: Math.min(...bids.keys()),
+    askCeiling: Math.max(...asks.keys()),
+  };
+  let last = anchor.lastUpdateId;
+  let observedAtMs = anchor.snapshotReceivedAtMs;
+  let appliedBootstrapEvents = 0;
+  const bootstrapIdentities = new Map<string, string>();
+  const eventIdentity = (event: ArchiveEvent): string =>
+    `${event.payload.U}:${event.payload.u}:${event.payload.pu}`;
+  const eventFingerprint = (event: ArchiveEvent): string =>
+    JSON.stringify([event.eventTime, event.payload.b, event.payload.a]);
+  const validEvent = (event: ArchiveEvent): boolean => {
+    const p = event.payload;
+    const U = Number(p.U);
+    const u = Number(p.u);
+    const pu = Number(p.pu);
+    return (
+      event.type === 'depth' &&
+      event.symbol === anchor.symbol &&
+      [U, u, pu, event.eventTime, event.receivedAtMs].every(Number.isFinite) &&
+      [U, u, pu].every(Number.isSafeInteger) &&
+      U >= 0 &&
+      u >= U &&
+      pu >= 0 &&
+      p.symbol === event.symbol &&
+      p.eventTime === event.eventTime &&
+      p.receivedAtMs === event.receivedAtMs &&
+      Array.isArray(p.b) &&
+      Array.isArray(p.a)
+    );
+  };
+  const apply = (event: ArchiveEvent): boolean => {
+    if (!validEvent(event) || event.eventTime > clocks.exchangeAsOfMs) return false;
+    const p = event.payload;
+    for (const [raw, book, inKnownRange] of [
+      [p.b, bids, (price: number) => price >= knownDepthBounds.bidFloor],
+      [p.a, asks, (price: number) => price <= knownDepthBounds.askCeiling],
+    ] as const) {
+      for (const level of raw as unknown[]) {
+        if (!Array.isArray(level) || level.length !== 2) return false;
+        const price = Number(level[0]);
+        const qty = Number(level[1]);
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty) || qty < 0) return false;
+        if (!inKnownRange(price)) continue;
+        if (qty === 0) book.delete(price);
+        else book.set(price, qty);
+      }
+    }
+    return true;
+  };
+  const remember = (event: ArchiveEvent): void => {
+    bootstrapIdentities.set(eventIdentity(event), eventFingerprint(event));
+    last = Number(event.payload.u);
+    observedAtMs = event.receivedAtMs;
+    appliedBootstrapEvents++;
+  };
+  const buffered = anchor.bufferedEvents
+    .slice()
+    .sort(
+      (a, b) =>
+        a.receivedAtMs - b.receivedAtMs ||
+        Number(a.payload.U) - Number(b.payload.U) ||
+        Number(a.payload.u) - Number(b.payload.u),
+    );
+  if (
+    buffered.some(
+      (event) =>
+        !validEvent(event) ||
+        event.receivedAtMs < anchor.requestedAtMs ||
+        event.receivedAtMs > anchor.availableAtMs,
+    )
+  )
+    return unknown('REST_DEPTH_SNAPSHOT_BUFFER_UNVERIFIED');
+  const bridgeBuffer = buffered.filter((event) => Number(event.payload.u) >= last);
+  let bridgeFound = false;
+  if (bridgeBuffer.length) {
+    const first = bridgeBuffer[0];
+    if (!(Number(first.payload.U) <= last && last <= Number(first.payload.u)))
+      return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_INVALID');
+    if (first.eventTime > clocks.exchangeAsOfMs)
+      return unknown('REST_DEPTH_SNAPSHOT_AFTER_DECISION_BOUND');
+    if (!apply(first)) return unknown('DEPTH_EVENT_INVALID');
+    remember(first);
+    bridgeFound = true;
+    for (const event of bridgeBuffer.slice(1)) {
+      const u = Number(event.payload.u);
+      if (u <= last) continue;
+      if (Number(event.payload.pu) !== last)
+        return unknown('REST_DEPTH_SNAPSHOT_BUFFER_SEQUENCE_GAP');
+      if (event.eventTime > clocks.exchangeAsOfMs)
+        return unknown('REST_DEPTH_SNAPSHOT_AFTER_DECISION_BOUND');
+      if (!apply(event)) return unknown('DEPTH_EVENT_INVALID');
+      remember(event);
+    }
+  }
+
+  let availableAtMs = Math.max(
+    anchor.availableAtMs,
+    ...buffered.map((event) => event.receivedAtMs),
+  );
+  if (!bridgeFound) {
+    const candidate = events
+      .filter(
+        (event) =>
+          validEvent(event) &&
+          event.receivedAtMs > availableAtMs &&
+          event.receivedAtMs <= clocks.receivedAsOfMs &&
+          event.eventTime <= clocks.exchangeAsOfMs &&
+          Number(event.payload.u) >= last,
+      )
+      .slice()
+      .sort(
+        (a, b) =>
+          a.receivedAtMs - b.receivedAtMs ||
+          Number(a.payload.U) - Number(b.payload.U) ||
+          Number(a.payload.u) - Number(b.payload.u),
+      )[0];
+    if (!candidate) return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_MISSING');
+    if (!(Number(candidate.payload.U) <= last && last <= Number(candidate.payload.u)))
+      return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_INVALID');
+    if (!apply(candidate)) return unknown('DEPTH_EVENT_INVALID');
+    remember(candidate);
+    availableAtMs = Math.max(availableAtMs, candidate.receivedAtMs);
+    bridgeFound = true;
+  }
+  if (!bridgeFound) return unknown('REST_DEPTH_SNAPSHOT_BRIDGE_MISSING');
+
+  const conflicts = new Map(bootstrapIdentities);
+  const futureEvents: ArchiveEvent[] = [];
+  for (const event of events) {
+    if (
+      event.type !== 'depth' ||
+      event.symbol !== anchor.symbol ||
+      event.receivedAtMs < availableAtMs ||
+      event.receivedAtMs > clocks.receivedAsOfMs
+    )
+      continue;
+    if (!validEvent(event)) return unknown('DEPTH_EVENT_INVALID');
+    const identity = eventIdentity(event);
+    const fingerprint = eventFingerprint(event);
+    const previous = conflicts.get(identity);
+    if (previous !== undefined) {
+      if (previous !== fingerprint) return unknown('DEPTH_DUPLICATE_CONFLICT');
+      continue;
+    }
+    conflicts.set(identity, fingerprint);
+    futureEvents.push(event);
+  }
+  const checkpoint: DepthCheckpoint = {
+    symbol: anchor.symbol,
+    receivedAtMs: observedAtMs,
+    availableAtMs,
+    lastUpdateId: last,
+    bids: [...bids].map(([price, qty]) => ({ price, qty })).sort((a, b) => b.price - a.price),
+    asks: [...asks].map(([price, qty]) => ({ price, qty })).sort((a, b) => a.price - b.price),
+    knownDepthBounds,
+  };
+  const result = replayCausalDepth(checkpoint, futureEvents, clocks, maxAgeMs);
+  if (result.status !== 'VERIFIED' || !result.book) return result;
+  return {
+    status: 'VERIFIED',
+    book: {
+      ...result.book,
+      appliedEventCount: result.book.appliedEventCount + appliedBootstrapEvents,
+    },
   };
 }
 
