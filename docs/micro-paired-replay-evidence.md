@@ -345,3 +345,29 @@ elegible; la validación económica de mercado real permanece pendiente.
   resultado económico ni produce evidencia causal de episodio real. Los resultados no se
   convierten en cero PnL y no justifican modificar estrategia o umbrales. Capturas V2–V5
   incompletas y sus informes se conservan por separado, sin reetiquetarlos como completos.
+
+### Captura V7 tras corregir precisión temporal
+
+El replay V6 mostró decisiones cuya disponibilidad local entera precedía al reloj
+`observedAtMs` fraccionario del input por menos de 1 ms. `b64de6b` conserva la disponibilidad
+como `ceil(max(evaluationFinishedAtMs, input.observedAtMs))`, de forma conservadora, y añade
+una regresión sintética para esta discrepancia.
+
+- Plan: `data/micro-burst/micro-observer-20261112-v7-plan.json`; productor commit
+  `b64de6b3588f83132aeaefe6ad01f15d5119d740`, artifact
+  `7c2d70030fadcfe3bf5e081ba368eb6247e4c2385841391acda73a0571524b84`.
+- Sesión verificada: `SESSION_CLOSED_MANIFEST_COMPLETE`, 540 s totales, 300 s de warmup,
+  240 s post-warmup; manifest
+  `a74f0ccd4a6baba15e55b0e4a00a6eb91fe7d2fba8ecb65a229c2e926151dcb0`, 71 segmentos,
+  cero gaps del índice y 1,825 decisiones. Reconciliación completa, sin fallos, drops,
+  mutaciones ni escrituras pendientes.
+- Replay V7: SOL tuvo 409 decisiones y AVAX 405; ambos reportaron cero episodios
+  elegibles. Todos los frames fueron `UNKNOWN` (`DEPTH_SEQUENCE_GAP` y
+  `PREVIOUS_FRAME_BOOK_UNAVAILABLE`); hubo además dos errores
+  `REPLAY_FRAME_PREVIOUS_IDENTITY_OR_CLOCK_MISMATCH` por símbolo. CURRENT/PULLBACK/par
+  cerrados y ejecuciones modeladas: cero. Estado CLI de ambos:
+  `COMPLETED_WITH_TECHNICAL_ERRORS_NO_ELIGIBLE_EPISODES`.
+- Artefactos locales del replay: `/tmp/opencode/micro-observer-v7-sol-replay/` y
+  `/tmp/opencode/micro-observer-v7-avax-replay/`. La mejora temporal reduce los errores
+  de identidad/clock observados en V6, pero V7 no acredita continuidad de profundidad ni
+  un episodio real; no produce evidencia de rentabilidad.
