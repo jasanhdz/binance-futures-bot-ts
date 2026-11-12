@@ -361,13 +361,17 @@ una regresión sintética para esta discrepancia.
   `a74f0ccd4a6baba15e55b0e4a00a6eb91fe7d2fba8ecb65a229c2e926151dcb0`, 71 segmentos,
   cero gaps del índice y 1,825 decisiones. Reconciliación completa, sin fallos, drops,
   mutaciones ni escrituras pendientes.
-- Replay V7: SOL tuvo 409 decisiones y AVAX 405; ambos reportaron cero episodios
-  elegibles. Todos los frames fueron `UNKNOWN` (`DEPTH_SEQUENCE_GAP` y
-  `PREVIOUS_FRAME_BOOK_UNAVAILABLE`); hubo además dos errores
-  `REPLAY_FRAME_PREVIOUS_IDENTITY_OR_CLOCK_MISMATCH` por símbolo. CURRENT/PULLBACK/par
-  cerrados y ejecuciones modeladas: cero. Estado CLI de ambos:
+- Replay V7 con el lector causal corregido en `59e5c7d`: SOL tuvo 409 decisiones y AVAX
+  405; ambos reportaron cero episodios elegibles. SOL verificó 3 frames y dejó 404 unknown;
+  AVAX verificó 3 puntos y 8 intervalos, con 392 unknown. Persisten dos errores
+  `REPLAY_FRAME_PREVIOUS_IDENTITY_OR_CLOCK_MISMATCH` por símbolo. Los unknown se deben
+  principalmente a `DEPTH_LATE_EVENT_CROSSES_INTERVAL_START`, además de discrepancias entre
+  libro capturado/reconstruido y tramos sin updates causales. CURRENT/PULLBACK/par cerrados
+  y ejecuciones modeladas: cero. Estado CLI de ambos:
   `COMPLETED_WITH_TECHNICAL_ERRORS_NO_ELIGIBLE_EPISODES`.
 - Artefactos locales del replay: `/tmp/opencode/micro-observer-v7-sol-replay/` y
-  `/tmp/opencode/micro-observer-v7-avax-replay/`. La mejora temporal reduce los errores
-  de identidad/clock observados en V6, pero V7 no acredita continuidad de profundidad ni
-  un episodio real; no produce evidencia de rentabilidad.
+  `/tmp/opencode/micro-observer-v7-avax-replay/` conservan el primer procesamiento;
+  replays corregidos: `/tmp/opencode/micro-observer-v7-causalfix-sol-replay/` y
+  `/tmp/opencode/micro-observer-v7-causalfix-avax-replay/`. El encadenamiento `pu` ahora
+  verifica más puntos/intervalos sin relajar límites temporales; la mayoría de intervalos
+  continúa unknown y no hay un episodio real ni evidencia de rentabilidad.
