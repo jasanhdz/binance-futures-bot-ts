@@ -1,13 +1,45 @@
 # TypeScript Trading Runtime Architecture
 
-> **Status:** DESIGN / NO RUNTIME AUTHORITY  
+> **Status:** CURRENT IMPLEMENTATION MAP + TARGET BOUNDARIES
 > **Branch:** `work/micro-burst-rider-v1-20260826`  
 > **Parent branch:** `work/ts-multisymbol-momentum-20260826`  
-> **Purpose:** define the target architecture before moving, deleting, or refactoring runtime code.
+> **Purpose:** distinguish connected runtime components from intended but incomplete platform boundaries.
 
-This document is the architectural contract for the TypeScript trading runtime. It intentionally describes both the current shape of the system and the target boundaries we want to introduce before implementing Micro Burst Rider V1.
+This is the canonical architecture document. The runtime already contains several strategy-neutral data, risk, execution, ownership, shadow and replay components; it is not a plan to implement Micro from scratch.
 
-Nothing in this document enables trading, changes exchange behavior, modifies live configuration, or authorizes a strategy. Runtime code remains unchanged until a later implementation phase is explicitly approved.
+This document does not authorize trading or imply that a proposed/typed boundary is connected. Mode, operational configuration, existing live safety, and runtime code remain the only execution authorities. Micro is used as a technically verifiable reference; no profitability is inferred.
+
+## Implemented today
+
+- `StrategyRouter` evaluates typed entry adapters and records observational evidence. Micro and
+  Momentum register here through separate typed routers because their contexts are different.
+- `PositionManagerRouter` routes by persisted strategy identity and fails closed on missing owner.
+- `SharedStrategyExecutionService`, `SharedEntryReservation`, and existing safety coordinators
+  own live execution admission/mutation. A strategy intent alone grants no authority.
+- `StrategyRuntimeCoordinator` owns `SharedMarketDataRuntime`; Aegis, Momentum, and the
+  integrated Micro runtime can consume canonical order-book/AggTrade state through leases.
+- `ShadowTradingEngine` is a strategy-keyed, recoverable paper lifecycle. Micro's paper/exit
+  adapter uses it; replay uses the same `MicroBurstStrategy`/entry policy as runtime.
+- `MicroBurstCaptureSession` and paired replay verify manifests, inputs, snapshots, sequence
+  chains and interval evidence. UNKNOWN is preserved and remains separate from execution claims.
+
+## Still partial or disconnected
+
+- `EntryStrategy.contract` now describes identity-bound config, required inputs, warmup, entry
+  state recovery and position-manager ownership for Micro/Momentum. It is metadata, not yet an
+  automatic feed-acquisition/readiness compiler; legacy Aegis entry orchestration remains
+  outside this generic router.
+- `MarketDataCapabilityCatalog` / consumer profiles and neutral snapshot composition are tested
+  but not wired into the decision contexts. Do not describe them as the active runtime path.
+- Micro consumes the shared depth/AggTrade planes when built by `StrategyRuntimeCoordinator`,
+  but its `MicroBurstContextBuilder` still uses raw exchange REST candles and a single
+  exchange-as-of boundary. The shared streaming candle plane has different closure/availability
+  semantics; no silent substitution is valid until parity is demonstrated.
+- `SharedStrategyExecutionService` still has Micro-specific contextual sizing/policy validation;
+  `TradingService` still composes strategy-specific authorities. These remain explicit
+  extraction seams, not a reason for a parallel framework.
+- The typed feature-vector/model-prediction contracts are only future-facing types. No Python,
+  ONNX Runtime, model loading, or inference service is part of this runtime.
 
 ---
 
@@ -30,11 +62,11 @@ Aegis Turbo, Momentum Ride, and Micro Burst must be able to coexist without pret
 
 ---
 
-## 2. Current branch baseline
+## 2. Earlier coupled-flow baseline (historical)
 
-The parent branch `work/ts-multisymbol-momentum-20260826` already introduced an important capability: a standalone momentum detector can create an entry candidate independently of the Python/Aegis brain.
+The parent branch `work/ts-multisymbol-momentum-20260826` introduced standalone Momentum entry, but downstream gates were then more tightly coupled to Aegis.
 
-However, the current execution path still reuses substantial Aegis-specific machinery after that candidate is created. Conceptually, the current shape is approximately:
+That earlier architecture looked approximately as follows; it is not a complete diagram of the current strategy paths:
 
 ```mermaid
 flowchart TD
@@ -142,7 +174,7 @@ Example target identity:
 
 ```ts
 interface StrategyIdentity {
-  strategyId: 'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST_V1';
+  strategyId: 'AEGIS_TURBO' | 'MOMENTUM_RIDE' | 'MICRO_BURST';
   strategyVersion: string;
   strategyHash: string;
 }
@@ -457,7 +489,7 @@ flowchart TD
     P[Open Position] --> ID{strategyId}
     ID -->|AEGIS_TURBO| AP[Aegis Position Manager]
     ID -->|MOMENTUM_RIDE| MP[Momentum Position Manager]
-    ID -->|MICRO_BURST_V1| BP[Micro Burst Position Manager]
+    ID -->|MICRO_BURST| BP[Micro Burst Position Manager]
     ID -->|UNKNOWN| FC[FAIL CLOSED / SAFE RECOVERY]
 ```
 
@@ -542,7 +574,7 @@ Each strategy-derived event should contain:
 
 ```json
 {
-  "strategy_id": "MICRO_BURST_V1",
+  "strategy_id": "MICRO_BURST",
   "strategy_version": "...",
   "strategy_hash": "sha256:...",
   "decision_reason": "...",
@@ -624,61 +656,15 @@ This separation is the principal architectural objective of the branch.
 
 ---
 
-## 19. Planned migration order
+## 19. Remaining architecture work
 
-This document does **not** authorize the migration. When implementation is approved, the intended low-risk order is:
+The current incremental boundary still leaves `TradingService` responsible for much of the
+application composition, Aegis uses its legacy orchestration rather than `EntryStrategy`, and
+Micro builds its own REST candle context. Shared data contracts do not yet provision feeds or
+readiness automatically from `StrategyRuntimeContract`. `MIGRATION_STATUS.md` records these
+remaining seams and their validation status.
 
-1. introduce `StrategyIdentity` without changing behavior;
-2. fix strategy attribution in trade-open/trade-close history;
-3. introduce `StrategyRouter` as a compatibility layer;
-4. introduce `PositionManagerRouter` while routing all existing traffic to legacy behavior;
-5. extract shared hard-safety/execution mechanisms without changing their semantics;
-6. add Micro Burst in `OFF` mode;
-7. add deterministic shadow telemetry;
-8. add market-data caches needed for 1m/3m/5m and microstructure;
-9. test strategy isolation;
-10. only after evidence and explicit approval consider live authority.
-
-Every migration step should remain independently revertible.
-
----
-
-## 20. Non-goals of the current documentation phase
-
-This phase does **not**:
-
-- move existing files;
-- delete existing files;
-- rename runtime classes;
-- change `TradingService`;
-- change Binance adapters;
-- change brackets;
-- change leverage;
-- enable Micro Burst;
-- disable current strategies in live config;
-- alter E4;
-- alter Aegis Entry Policy;
-- alter Momentum Ride behavior;
-- add order-book subscriptions;
-- add new dependencies.
-
-Those choices must be discussed after reviewing this architecture.
-
----
-
-## 21. Architecture review checklist
-
-Before implementation begins, we should explicitly agree on:
-
-- final strategy IDs;
-- which controls are truly shared hard safety;
-- whether E4 remains Aegis-only or becomes a shared safety service for selected strategies;
-- whether global single-position means all strategies or Micro Burst only;
-- whether destination TP is mandatory or optional for Micro Burst;
-- how often fast TradeHealth evaluates;
-- exact market-data feeds for order-book and taker flow;
-- recovery behavior for unknown ownership;
-- final code directories;
-- hash-manifest implementation and CI verification.
-
-Until those decisions are made, this document remains an architectural proposal with **NO RUNTIME AUTHORITY**.
+The next low-risk cuts should preserve existing policy functions, use the same Micro evaluator
+in runtime/paper/replay, and keep risk/ownership authority in the existing shared services.
+Unknown ownership, incomplete data, and unverified replay intervals remain fail-closed. Any
+later live authority/policy changes require a separate explicit task.

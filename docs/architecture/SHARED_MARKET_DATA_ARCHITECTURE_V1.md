@@ -1,7 +1,7 @@
 # Shared Market Data Architecture V1
 
-**Status:** DESIGN SOURCE OF TRUTH  
-**Baseline reviewed:** `f39215fd4a2c89d3cbbf32c84ea204486fc65e21`  
+**Status:** CURRENT CAPABILITY CONTRACT; PARTIAL RUNTIME INTEGRATION
+**Original design baseline reviewed:** `f39215fd4a2c89d3cbbf32c84ea204486fc65e21`
 **Scope:** market-data ownership, causal state, neutral features, strategy consumption, and future research snapshots.  
 **Non-goal:** this document does not authorize any LIVE strategy change, exchange mutation, model gate, or strategy tuning.
 
@@ -22,9 +22,31 @@ The repository already has useful shared foundations:
 - `src/app/ports/MarketData.ts` exposes a neutral `MarketDataPort` with candles, depth diff, AggTrades, snapshots, mark price, funding, and basis.
 - `src/infra/adapters/MarketDataHub.ts` already fans out one raw WebSocket stream to multiple consumers and owns reconnect/watchdog behavior.
 - `src/infra/adapters/MarketDataEndpoints.ts` owns the environment-specific routing descriptors.
-- Micro Burst currently owns strategy-named normalized feed envelopes, synchronized book state, AggTrade rolling continuity, and several market-derived analyzers.
+- Micro Burst owns its interpretation context and policy, while the integrated `StrategyRuntimeCoordinator` supplies the shared order-book and AggTrade planes. The older standalone runtime retains fallback constructors for isolated tests/composition.
 
 Therefore this project MUST NOT create a second WebSocket hub or a second competing transport plane. The migration is an extraction and normalization of reusable state above strategies, not a rewrite of transport that already works.
+
+### Integration and equivalence status
+
+- `StrategyRuntimeCoordinator` constructs one `SharedMarketDataRuntime` and passes its
+  `OrderBookDataPlane` and `AggTradeDataPlane` into Micro. Consumers acquire reference-counted
+  leases over the same per-symbol state. Momentum also consumes shared realtime market state and
+  a shared 5m candle state.
+- Micro's direct 1m/3m/5m `getCandles` adapter remains in use. It filters against one exchange
+  `snapshotAtMs`; `MarketDataCandleProvider` samples server time per request, while
+  `CandleDataPlane` consumes WS updates and local response freshness. These availability semantics
+  are not equivalent, so no silent substitution has been made.
+- `MarketSnapshotProvider` and `MarketDataCapabilityCatalog` are implemented and tested but are
+  not wired into the production decision contexts. Their profiles are not active runtime
+  dependencies.
+- WebSocket market events carry process-generation, connection-generation, receive sequence,
+  and local monotonic receive provenance. Synchronized book/flow states expose applied state
+  watermarks. Decision evidence preserves those source versions and the context capture boundary;
+  archive records/checkpoints expose writer-generation/sequence. These local sequence domains
+  are never compared across process generations and do not replace exchange event timestamps.
+
+V7 predates these local-causal fields. Its exact inputs and UNKNOWN intervals remain immutable;
+new provenance does not retroactively certify its event order or market execution.
 
 ## 3. Target dependency direction
 
@@ -305,31 +327,29 @@ The actual implementation must not make every field mandatory. Snapshot requests
 
 The provider must record per-source timestamp/quality. A single `snapshotAt` is not sufficient proof that all underlying data was equally fresh.
 
-## 13. Strategy capability model
+## 13. Current strategy capability model
 
-The desired composition is declarative and optional.
+The matrix records current decision dependencies and optional observations. A declared
+`StrategyRuntimeContract` does not yet automatically provision every listed feed.
 
 Example conceptual state:
 
 ```text
-AEGIS
-  candles: REQUIRED by current strategy
-  orderBook: NOT REQUIRED for decision
-  AggTrades: NOT REQUIRED for decision
-  black-box observation: MAY request them later
+AEGIS_TURBO (legacy entry orchestration)
+  current brain/candle context: REQUIRED
+  shared liquidity/depth: optional/configured guards
+  AggTrades: not a universal Aegis alpha input
 
 MOMENTUM_RIDE
-  candles/price: current requirements
-  orderBook: NOT REQUIRED for decision
-  AggTrades: NOT REQUIRED for decision
-  black-box observation: MAY request them later
+  closed 5m candidate candles: REQUIRED
+  fresh shared order-book/AggTrade realtime context: REQUIRED by the current route policy
+  strategy-specific safety and liquidity context: REQUIRED
 
-MICRO_BURST_V1
-  candles: REQUIRED
-  quote/reference: REQUIRED
-  orderBook: REQUIRED
-  AggTrades: REQUIRED
-  benchmark/BTC: REQUIRED
+MICRO_BURST (reference policy version MICRO)
+  1m/3m/5m candles: REQUIRED through the existing raw MarketDataPort adapter
+  synchronized order book/AggTrade: REQUIRED when integrated with SharedMarketDataRuntime
+  BTC benchmark context: REQUIRED by the current context quality contract
+  neutral feature snapshots: implemented contracts, not the production decision source
 ```
 
 No strategy may be prevented from evaluating solely because an optional research-only capability is missing.
@@ -422,4 +442,7 @@ The architecture is considered successfully established only when all are true:
 
 ## 20. Authority
 
-This document is the design source of truth for Shared Market Data V1. The phased implementation sequence and stop/go gates are defined in `SHARED_MARKET_DATA_MIGRATION_PLAN.md`. The current code inventory and migration classification are defined in `SHARED_MARKET_DATA_CLASSIFICATION.md`. The observational research consumer is defined in `../research/STRATEGY_DECISION_BLACKBOX_V2.md`.
+This is the shared market-data capability contract. Current connected seams and remaining work
+are in `MIGRATION_STATUS.md`. `SHARED_MARKET_DATA_CLASSIFICATION.md` is a historical baseline
+inventory at its recorded SHA, not the live code index. The observational research consumer is
+defined in `../research/STRATEGY_DECISION_BLACKBOX_V2.md`.

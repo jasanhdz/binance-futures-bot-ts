@@ -1,266 +1,118 @@
-# Runtime Architecture Migration Status
+# Architecture implementation status
 
-Branch: `work/micro-burst-rider-v1-20260826`
+This file is the current checkpoint for the incremental platform separation. Strategy modes and
+existing operational configuration are unchanged. Micro is a technical reference; its positive
+economic edge and profitability are **not demonstrated**.
 
-This file tracks implementation progress. It does not grant live authority to a new strategy.
+## Connected runtime graph
 
-## Current checkpoint
+| Capability          | Current connection                                                                                                                                                     | Boundary/status                                                                                                                                                                                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Entry evaluation    | `TradingService` registers `MomentumRideStrategy` and `MicroBurstStrategy` with the existing typed `StrategyRouter`s.                                                  | Both call their existing policy functions. Aegis still uses its legacy entry orchestration.                                                                                                                                                                              |
+| Strategy contract   | Micro and Momentum declare versioned config source, data requirements, warmup, stateless entry state, and position-manager/recovery owner.                             | Router validates identity/config/manager ownership and exposes the declaration. Contract requirements do not yet compile into subscriptions/readiness automatically; legacy adapters can have no contract.                                                               |
+| Evaluation outcome  | `StrategyRouter` reports `INTENT`, `REJECTED`, `WAIT`, or `NOT_EVALUABLE` separately from `decision`.                                                                  | Legacy `NO_TRADE` maps to `REJECTED`; OFF/audit failure maps to `NOT_EVALUABLE`. Micro and Momentum label unusable context explicitly.                                                                                                                                   |
+| Shared market state | `StrategyRuntimeCoordinator` owns one `SharedMarketDataRuntime`; Micro, Momentum, and other consumers can acquire the same order-book/AggTrade state.                  | The deterministic integration test proves one feed/state shared by Micro and `TEST_PROBE`. Aegis consumes other shared runtime projections.                                                                                                                              |
+| Candle source       | Momentum uses `CandleDataPlane`; Micro BTC context uses `MarketDataCandleProvider`.                                                                                    | Micro's 1m/3m/5m builder still uses the existing raw exchange `getCandles` adapter and one exchange-as-of boundary. It is represented by the existing `MarketDataPort` contract but not replaced with the streaming plane because closure/availability semantics differ. |
+| Risk/admission      | Existing `SharedEntrySafetyGate`, strategy risk session, `SharedEntryReservation`, symbol/open-position checks and execution preconditions remain in force.            | Same-symbol admission is serialized and a new entry against an occupied symbol is rejected; no netting/hedge ownership is added. Open positions continue through their owner lifecycle while entry authority is blocked.                                                 |
+| Execution           | `SharedStrategyExecutionService` remains the exchange mutation boundary used by current entry paths.                                                                   | It still contains Micro contextual-policy/sizing validation; `TradingService` still composes much of Aegis/Micro authority. `TEST_PROBE` is explicitly denied here.                                                                                                      |
+| Position ownership  | `PositionManagerRouter` routes persisted strategy ownership; `StrategyPositionLifecycleCore` and the existing Aegis/Momentum/Micro managers retain lifecycle policy.   | A missing/mismatched manager requires recovery. Paper positions are keyed by strategy identity.                                                                                                                                                                          |
+| Paper/replay        | `ShadowTradingEngine` is the shared, recoverable paper lifecycle. Micro's runtime evaluator and paired archive replay call the same `MicroBurstStrategy` entry policy. | The paired replay only models execution on intervals it verifies. It remains distinct from bot knowledge and actual exchange execution.                                                                                                                                  |
+| Snapshot catalog    | `MarketDataCapabilityCatalog`, consumer profiles, and `MarketSnapshotProvider` exist and have tests.                                                                   | Not connected to production decision contexts. Their presence does not mean strategies are provisioned from profiles.                                                                                                                                                    |
 
-Runtime architecture migration checkpoint after MICRO_BURST_V1 M3 prospective shadow outcome validation.
+## Strategy ownership in this slice
 
-`MICRO_BURST_V1_M3_1_BLOCKED` — SHADOW authority enabled, LIVE authority disabled. Runtime outcome wiring, market archive, event-time preservation, and USD-M book synchronization are implemented, but official prospective collection is blocked pending a known deployment SHA and archive-backed recomputation of mandatory negative controls.
+Micro retains its candle and feature interpretation, regime/support-resistance/momentum logic,
+BTC conflict policy, entry/exit decisions, strategy config, and persisted exit-engine state. Its
+context can carry shared depth/AggTrade state plus the exact per-source causal watermarks.
 
-Validation results are recorded below. This checkpoint does not grant live authority.
+`TEST_PROBE` is a tiny test-only strategy using the same `EntryStrategy`, `StrategyRouter`,
+`PositionManagerRouter`, shared market state, and `ShadowTradingEngine`. It exercises intent,
+reject, wait, unavailable context, recovery, ownership and paper exit. There is no operational
+configuration for it, and `SharedStrategyExecutionService` rejects the identity even if a test
+constructs a frozen-looking one.
 
-## Completed foundations
+The probe is not a trading proposal. It establishes that data and lifecycle mechanisms can be
+reused without importing Micro policy or sharing its state. The current production composition
+still has separate routers for distinct context types, as does the existing runtime coordinator.
 
-- Canonical strategy identity contract in `src/domain/strategy/StrategyIdentity.ts`.
-- Canonical decision/execution/lifecycle contracts under `src/domain/strategy/`.
-- `StrategyRouter` for strategy-owned entry evaluation.
-- `PositionManagerRouter` for strategy-owned position lifecycle routing.
-- `AegisPositionManager` and `MomentumRidePositionManager` ownership boundaries.
-- Strategy-aware telemetry/provenance fields.
-- Persisted strategy version/hash/config hash/code SHA/freeze-state fields on bot state.
-- Strategy-prefixed trade IDs for new Aegis and Momentum trades.
-- Canonical new bot ownership marker is `positionOwner: BOT`.
-- Legacy persisted `positionOwner: AEGIS` remains readable for recovery compatibility only.
-- `StrategyRiskLedger` provides independent per-strategy trades/day, loss streak, last entry/exit/loss and cooldown timing.
-- Aegis entry context now consumes Aegis-owned risk counters instead of sharing Momentum counters.
-- Momentum standalone entry consumes Momentum-owned risk counters.
-- `SharedEntrySafetyGate` remains the shared operational safety boundary.
-- `SharedStrategyExecutionService` exists as the strategy-neutral exchange mutation boundary.
-- Shared execution accepts either the existing ROE stop path or one exact absolute structural stop, rejects ambiguous dual specifications, validates structural geometry against the confirmed fill after exchange rounding, and fails closed through the existing protection recovery path.
-- Momentum standalone entry is evaluated through `MomentumRideStrategy` and can execute through `SharedStrategyExecutionService` without requiring an Aegis entry approval.
-- Momentum has its own runtime protection/risk settings instead of inheriting Aegis Turbo SL/TP/liquidity/daily-loss values by accident.
-- Position lifecycle is routed by strategy identity and receives an explicit `StrategyLifecyclePolicy`.
-- The common lifecycle body lives in `StrategyPositionLifecycleCore`, outside `TradingService`.
-- `AegisPositionManager` owns the Aegis lifecycle composition with ExitEye; `MomentumRidePositionManager` cannot receive ExitEye through its construction path.
-- Manual/external positions retain common protective management without entering a strategy manager or receiving Aegis ExitEye authority.
-- Ownership recovery distinguishes owned, legacy-migratable, ambiguous, external and unknown state; ambiguous/unknown ownership fails closed.
-- Startup risk reconstruction reads verified Aegis and Momentum closes independently and deduplicates by trade ID.
-- Closed outcomes reconstruct loss streak/last-loss state but do not fabricate `tradesToday`, because a close journal alone does not prove an open occurred in the current UTC day.
-- Bracket lifecycle respects the strategy/config bracket requirement instead of forcing Aegis brackets when `require_brackets: false`.
-- Portfolio exposure counting defensively rejects a LONG object returned by a SHORT lookup (and vice versa) so one position is not double counted.
-- One-shot migration/audit workflows and scripts used during this phase have been removed after successful application.
-- Proven-dead runtime compatibility files were removed, including old legacy runtime factory/compatibility/coordinator/telemetry adapters and obsolete `config/regimen.config.yaml`.
-- Broken npm scripts whose target source files no longer existed were removed from `package.json`.
+The pre-separation Micro behavior reference is the existing deterministic suite:
+`MicroBurstStrategy.test.ts`, `MicroBurstReactionEntryPolicy.test.ts`,
+`MicroBurstTemporalContracts.test.ts`, `MicroBurstGoldenParity.test.ts`, and
+`MicroBurstExitPolicy.test.ts`. It includes LONG/SHORT entries, policy rejection/unusable input,
+clock boundaries and paper exit parity. The extraction adds registry/data/paper assertions around
+those evaluators; it does not update their expected thresholds or policy outcomes.
 
-## Phase 1 Cleanup (Archived)
+## Temporal evidence contract
 
-The following cleanup tasks were completed to stabilize architecture before Micro Burst:
+The new WebSocket provenance is process-scoped:
 
-- **Shared execution relocated** to `src/app/execution/SharedStrategyExecutionService.ts`.
-- **EntryStrategy** moved to `src/domain/strategy/EntryStrategy.ts`.
-- **Formatter** moved to `src/app/telegram/presentation/AegisTurboEntryMessageFormatter.ts`.
-- **Legacy research modules** archived:
-  - `src/brain` → `src/tooling/research/archived/brain-contract-v1/`
-  - `src/prospective` → `src/tooling/research/archived/prospective-shadow-cohort-v1/`
-  - `src/challengers` → `src/tooling/research/archived/challengers-v17/`
-- **Legacy execution** archived:
-  - `src/execution-durable` → `src/tooling/legacy-execution/durable/`
-- **Sentinel integration** archived:
-  - `src/sentinel` → `src/tooling/research/archived/sentinel-news-v1/`
-  - `enable_sentinel` config option removed.
-- **Backtest directory** removed (contained only mock tests, no runner).
-- **Auditors** relocated to `src/tooling/audit/binance-usdm-readonly/`.
-- **Analyzer** moved to `src/app/analysis/AegisTurboHistoryAnalyzer.ts`.
-- **Aegis tools** moved to `src/tooling/aegis/`.
-- **Documentation** reorganized:
-  - `docs/README.md` added.
-  - Aegis docs under `docs/strategies/aegis/` and `docs/operations/aegis/`.
-  - Historical docs under `docs/history/`.
-  - Aegis Range archived under `docs/research/archived/aegis-range-v1/`.
-- **Vitest config** added with `testTimeout: 15000` to accommodate lifecycle tests with filesystem I/O.
-- **`package.json`** normalized: `main` now points to `dist/main.js`.
-- **Restoration tests** use real `config/regime_config.example.yaml` fixture.
-- **Phase 1 architecture boundary test** added at `src/restoration/phase1-architecture-boundaries.test.ts`.
-- **Digests** updated: `23e210a84d4f547588e899d345d13905e4084a685346794c96f2cf2429e17fc6`, `43546401954d3c79b56b29a8156411815679c63977799884cb58d7c6a78c7324`.
+| Stage             | Evidence retained                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Receive           | Original exchange event time and local wall receive time remain unchanged. WebSocket hubs stamp raw payloads; depth keeps that stamp through the port, while the shared AggTrade plane stamps on canonical receipt because the legacy adapter narrows its callback. Both use the process sequence, connection generation and local monotonic sample.                                    |
+| Apply             | The synchronized book and AggTrade buffer expose their own applied-state version and last applied receive sequence, separately from their latest received sequence. A queued/duplicate/unapplied event is not silently treated as applied state.                                                                                                                                        |
+| Context capture   | Micro exact-input evidence includes a local monotonic capture boundary and the depth/AggTrade state-watermark vector consumed by the decision. Decision-time monotonic evidence is recorded separately from context capture.                                                                                                                                                            |
+| Persistence       | Raw segments include storage-writer generation, append-queue sequence and append boundary. SQLite book checkpoints include storage generation/sequence plus the depth state watermark. The decision records the storage watermark sampled for its input; replay only uses a checkpoint from that writer generation/sequence whose synchronous commit boundary precedes context capture. |
+| Restart/reconnect | Receive sequences are compared only inside one process generation. Socket reconnects carry a new connection generation. SQLite/archive writers have their own generation and sequence. No sequence or monotonic clock is compared across process restarts.                                                                                                                              |
 
-## Architecture currently in effect
+When local-causal evidence is present, replay can use same-generation sequence watermarks to
+order equal or regressing local wall timestamps and to avoid consuming events received after the
+book state used by a decision. It still preserves original exchange `E/T` values and requires
+exchange-time bounds for market-time replay. A local sequence proves what the bot received or
+applied; it does not prove the market state at a different exchange instant or an executable
+fill. If process generations differ, sequence evidence is not comparable and the affected state
+is UNKNOWN.
 
-### AEGIS_TURBO
+V7 was produced before these local sequence fields existed. It remains intact and is replayed
+under its original timestamp evidence. Its two exchange-clock regressions per symbol and its
+UNKNOWN intervals are not reclassified using metadata that was never captured. Full requests,
+before/after reports, report hashes and executor provenance are archived at
+[`../research/micro-observer-v7/`](../research/micro-observer-v7/README.md); no capture segments
+or SQLite are in Git. New-provenance behavior is validated with synthetic feed/storage/replay
+fixtures only; this phase did not start a new collection to claim an end-to-end recorded session.
 
-Entry authority remains Aegis-specific:
+## ML/ONNX boundary
 
-`Aegis signal/current brain -> AegisEntryGuardOrchestrator -> E4/final Aegis safety -> approved Aegis entry`
+The core strategy contracts now define a versioned feature schema shape (name, order, scalar
+type, units, evidence/time availability, missing-value policy and warmup state) and a
+model-prediction input with model/schema identity and feature evidence hash. A future Python
+training pipeline can export a model and an optional TypeScript/ONNX adapter may supply that
+prediction as strategy input. Neither feature materialization, model loading, training,
+ONNX Runtime nor inference is implemented; execution and risk remain downstream of strategy
+decisions.
 
-Important: Aegis policy remains upstream of execution. Its scientific/current-brain/E4 semantics must not be moved into shared execution.
+## Documents and current gaps
 
-Position ownership is strategy-aware and routes to `AegisPositionManager`, which composes `StrategyPositionLifecycleCore` with the Aegis-only ExitEye callback.
+See [`../README.md`](../README.md) for the document inventory, canonical sources, and cleanup
+decisions. Remaining seams for the next phase:
 
-Exchange mutation is now routed through `SharedStrategyExecutionService` via `AegisExecutionIntentFactory`. Per-intent protection policies are enforced at the shared execution boundary, with `closeIfProtectionFails` always true for Aegis (preserving legacy fail-close behavior). The orchestrator no longer carries any synthetic Momentum authority.
+1. Make strategy contract requirements drive the existing runtime's subscription/readiness
+   composition without creating a second registry or changing data freshness semantics.
+2. Decide whether to expose the existing `MarketDataCapabilityCatalog` to runtime consumers or
+   retire it; do not treat it as connected today.
+3. Complete a Micro 1m/3m/5m source adapter over a shared capability only after tests demonstrate
+   exact OPEN/CLOSED classification, as-of boundary, warmup, order, deduplication, quality,
+   BTC-context and numerical parity. Current semantics are preserved behind `MarketDataPort`.
+4. Further reduce `TradingService`/`StrategyRuntimeCoordinator` composition and extract the
+   Micro-specific branch from shared execution only where current policy and safety checks can
+   be kept equivalent.
+5. Clarify and test account-wide exposure across coexisting strategies. Existing entry
+   reservation/open-position checks remain the conservative boundary; there is not a new
+   portfolio netting or cross-strategy margin allocator.
+6. Keep the synthetic probe test-only; do not register it in operational YAML or give it live
+   authority.
 
-### MOMENTUM_RIDE
+## Verification of this implementation slice
 
-Standalone Momentum entry path exists independently:
+- `npx tsc --noEmit -p tsconfig.json`: PASS.
+- `DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism`: PASS, 245 files / 3,189 tests.
+- Directed regression and integration tests cover local equal/regressing clocks, reconnect
+  generations, received-vs-applied book versions, deferred append vs persistence watermark,
+  archived local-order replay, exchange-clock regression remaining UNKNOWN, Micro policy/paper
+  baseline, test-probe owner recovery/exit, and execution denial.
+- The pinned `BinanceAdapter.ts` operational-semantics source remains byte-identical; monotonic
+  REST instrumentation is in the read-only capture wrapper instead.
+- Prettier checks and `git diff --check`: PASS.
+- V7 was only read from the durable capture; no capture or real/private exchange call was run.
 
-`MomentumRideStrategy -> Momentum-owned limits/risk -> shared operational safety -> SharedStrategyExecutionService -> MomentumRidePositionManager`
-
-This path must remain independent from Aegis current brain, CleanEntry, EntryQuality, DecisionBrain and E4 authority unless a future contract explicitly declares a shared account-level safety rule.
-
-The synthetic Momentum-inside-Aegis decision path has been retired. The orchestrator no longer imports or evaluates `MomentumRideGuardAdapter`; it cannot select `momentum_ride`, override Aegis denials, or attribute Aegis-opened positions to Momentum. The `MomentumRideGuardAdapter` file has been removed. Config types for the standalone `aegis.momentum_ride` YAML section are retained in `AegisEntryDecisionTypes` for the standalone Momentum strategy path.
-
-Position ownership routes to `MomentumRidePositionManager`, which owns its policy composition over `StrategyPositionLifecycleCore` and has no ExitEye callback surface.
-
-### MICRO_BURST_V1 (M2 operational shadow)
-
-Deterministic tactical strategy with synchronized market data plane and operational shadow runtime. SHADOW authority enabled; LIVE authority disabled. Shadow evaluation produces structured telemetry and persists unique signals to JSONL. Cannot open, close, or modify exchange positions.
-
-```
-TradingService.start()
-  └─ MicroBurstRuntime.start()
-       ├─ BtcMicroContextProvider (shared BTC stream)
-       ├─ SynchronizedOrderBook per symbol (depth sync)
-       ├─ MicroBurstAggTradeBuffer per symbol (aggTrade streaming)
-       ├─ MicroBurstReferencePriceProvider per symbol (mark price / midpoint)
-       ├─ MicroBurstShadowEvaluator
-       │    └─ MicroBurstContextBuilder (candles + book + BTC + ref price + aggTrade)
-       │         └─ StrategyRouter.evaluate('MICRO_BURST_V1')
-       ├─ Evaluation loop (configurable interval, default 5s)
-       ├─ Health reporting (60s interval)
-       └─ MicroBurstSignalJournal (JSONL persistence)
-```
-
-Key properties:
-
-- Deterministic replay via explicit snapshot time, closed-candle filtering, causal S/R, typed BTC timestamps, and typed book status
-- Direction-aligned entry via S/R + micro-momentum + required BTC and order book context
-- Two leverage tiers: HIGH (40x, >=0.75 confirmation) and MEDIUM (20x, >=0.50)
-- Structural-price invalidation, time-to-prove, target, software trailing, idempotent break-even, and max hold
-- Uses `MICRO_BURST_RESERVED_POLICY`: no guardian, no break-even, no trailing in lifecycle
-- No Aegis dependencies (no Current Brain, E4, ExitEye)
-- Position manager computes/translates exits but applies no lifecycle/exchange mutation
-- Registered in StrategyRouter and PositionManagerRouter
-- Execution intent preserves `structuralStopPrice` as an absolute price through shared execution; no ROE conversion is permitted
-- Structural stop geometry is validated after the real fill and tick rounding; protection failure triggers emergency close
-- `destinationPrice` remains software-exit policy and does not become exchange take profit
-- No Micro Burst production execution call site exists
-- Synchronized order book with Binance depth diff algorithm, gap detection, resync
-- Temporal book history with real `imbalanceSlope`, absorption, sweep detection
-- BTC live context with 1m/3m/5m decimal returns and acceleration
-- `marketPriceAtSnapshot` (mark price / midpoint) for runtime reference price
-- `aggTrade` bounded rolling history for taker flow diagnostics
-- AggTrade taker flow integrated into `MicroBurstContext` for diagnostics
-- Shadow evaluation with structured telemetry and duplicate signal suppression
-- `MicroBurstSignalJournal` for append-only JSONL persistence of unique signals
-- `MicroBurstRuntime` orchestrator with evaluation loop, health reporting, failure isolation
-- All components use injected clock — no `Date.now()` in domain production code
-- SHADOW authority enabled; LIVE authority disabled; no exchange mutation possible
-
-## Remaining work before Micro Burst live authority
-
-1. ~~**Migrate Aegis exchange mutation to `SharedStrategyExecutionService`.**~~ DONE
-2. ~~**Remove the synthetic Momentum-inside-Aegis decision path.**~~ DONE
-3. ~~**Extract position lifecycle implementation out of `TradingService`.**~~ DONE
-4. ~~**Make restart/recovery strategy-generic.**~~ DONE
-5. ~~**Finish per-strategy risk persistence/recovery.**~~ DONE WITH DOCUMENTED JOURNAL LIMITATION
-6. ~~**Phase 1 Cleanup and archive reorganization.**~~ DONE
-7. ~~**MICRO_BURST_V1 scaffold implementation.**~~ DONE (mode OFF, no live authority)
-8. ~~**MICRO_BURST_V1 M0.2 correctness patch.**~~ DONE (deterministic/fail-closed contracts, no authority)
-9. ~~**MICRO_BURST_V1 M0.3 exact structural protection.**~~ DONE (shared execution boundary only, mode OFF)
-10. ~~**MICRO_BURST_V1 M1 Market Data Plane.**~~ DONE (synchronized depth, BTC stream, reference price, aggTrade, shadow evaluation, mode OFF)
-11. ~~**MICRO_BURST_V1 M2 Operational Shadow.**~~ DONE (runtime wiring, real data streams, evaluation loop, signal journal, SHADOW authority)
-12. **MICRO_BURST_V1 M3 — Tune and validate.**
-    - Tune S/R detection parameters for real market conditions.
-    - Tune momentum thresholds and leverage tiers based on backtesting.
-    - Validate temporal absorption/sweep thresholds.
-    - Tune BTC conflict threshold.
-13. **Freeze/hash stabilized Aegis and Momentum runtime/config contracts.**
-    - Do not mark `FROZEN_LIVE` merely because code compiles.
-    - Generate deterministic hashes only after architecture and behavior are stable.
-14. **Reduce `TradingService` responsibility.**
-    - Target role: orchestration/runtime coordination, not strategy policy + execution + lifecycle + recovery all in one class.
-    - Do this incrementally; do not rewrite the bot from scratch.
-15. **MICRO_BURST_V1 live authority activation.**
-    - Only after tuning, testing, and explicit approval.
-
-## Explicit architecture invariants
-
-- Strategy decides; shared safety can veto; shared execution executes. Shared execution never invents a strategy decision.
-- A strategy cannot mutate another strategy's open position.
-- A strategy cannot consume another strategy's loss streak/trade counter as if it were its own.
-- Account-wide risk remains account-wide and may veto every strategy.
-- Strategy-specific risk remains strategy-specific.
-- Every opened bot trade carries strategy identity/provenance.
-- Unknown ownership/recovery ambiguity fails closed.
-- No pyramiding/strategy flip is introduced by this migration.
-- No new live strategy authority is introduced accidentally.
-- `MICRO_BURST_V1` SHADOW authority enabled; LIVE authority disabled; no exchange mutation possible.
-- Do not change E4 frozen scientific behavior while refactoring execution architecture.
-
-## Validation checkpoint
-
-At the latest runtime checkpoint (M2):
-
-- TypeScript build: PASS.
-- Full M2 suite: 93/93 files, 962/962 PASS.
-- M2 new component tests: 2 test files, 24 tests PASS (Runtime + SignalJournal).
-- M2 static audit: 7/7 PASS (no exchange mutation, no Date.now, no forbidden imports, shadow authority, application-layer firewall).
-- Micro Burst architecture invariants: PASS.
-- Shared execution: 24/24 PASS.
-- Aegis live: 108/108 PASS.
-- Position managers: 4/4 PASS.
-- Restoration: 4/4 PASS.
-- Targeted matrix (micro-burst + shared execution + aegis-live + momentum + routers + restoration): 326/326 PASS.
-
-## M0.1 Hardening (superseded by M0.2)
-
-MICRO_BURST_V1 M0.1 hardening completed. All 24 items addressed:
-
-### Types & conventions
-
-- Price returns in decimal (0.001 = 0.1% = 10 bps), ROE in decimal (0.10 = 10%).
-- `BookDataStatus` enum: HEALTHY | UNAVAILABLE | STALE | UNSYNCED | ANOMALOUS.
-- `BookPressureSignal.imbalanceSlope` is `number | null` — null when only single snapshot available.
-- Renamed `absorptionDetected`/`sweepDetected` → `staticBidConcentration`/`staticAskConcentration` (static proxies, not temporal).
-- `SupportResistanceLevel.availableAtCandleIndex` — internal confirmation metadata; M0.2 added real `pivotAtMs` and `availableAtMs` causal timestamps.
-
-### Config governance
-
-- `srLookbackBars` separates from `srPivotLeftBars`/`srPivotRightBars`.
-- `nearLevelThresholdBps` used by context builder (was hardcoded at 50).
-- `momentumSlopePeriod` used by momentum analyzer (was hardcoded at 5).
-- `bookMinImbalance` used by book pressure analyzer (was hardcoded at 0.5).
-- `structuralInvalidationBufferBps` used for stop placement (was hardcoded at 0.3%).
-- `minRoomBps` enforced as entry gate (was absent).
-- `maxLeverageHardCap` enforced (50x default).
-
-### Context validity
-
-- `DataQualityDiagnostics` with `contextValid`, `invalidReasons`, `candleFreshnessMs`, `bookAgeMs`, `btcAgeMs`.
-- Closed candle filtering: only candles older than their interval are used.
-- Fail-closed: insufficient candles, stale data, unhealthy book → `contextValid: false`.
-- Entry policy rejects `contextValid: false`.
-
-### Entry policy
-
-- No fallback stop/target without structural level.
-- Room gate: `roomToTargetBps >= minRoomBps`.
-- Risk gate: `riskToInvalidationBps` computed.
-- Leverage/positionFraction carried into `StrategyEvaluationResult.diagnostics`.
-
-### Exit policy
-
-- Price-based trailing (not ROE-based).
-- Break-even uses price comparison (not excursion comparison).
-- Priority order: HARD_INVALIDATION → ANOMALY → BTC_REVERSAL → EARLY_FAILURE → TRAILING → BREAK_EVEN → MAX_HOLD → HOLD.
-- `MicroBurstExitContext` includes `currentPrice`, `entryPrice`, `peakPrice`, `troughPrice`.
-
-### Execution intent factory
-
-- `createMicroBurstExecutionIntent()` converts approved entry to `StrategyExecutionIntent`.
-- Preserves leverage, positionFraction, structuralStopPrice, destinationPrice.
-
-### Position manager
-
-- `MicroBurstPositionManager.evaluateExit()` integrated with exit policy.
-- Ownership assertion with clear error message.
-- Configurable via constructor.
-
-### Strategy class
-
-- Carries leverage/positionFraction/leverageTier/roomToTargetBps/riskToInvalidationBps into diagnostics.
-
-## Explicit prohibition
-
-`MICRO_BURST_V1` M2 operational shadow completed. SHADOW authority enabled; LIVE authority disabled. Runtime orchestrator wires real market data streams, evaluates continuously, and persists unique signals to JSONL. No exchange mutation is possible. Live authority activation requires explicit approval after M3 tuning, backtesting, and freeze.
+No strategy thresholds, sizing, leverage, symbols, LIVE settings, PM2 state or `dist` output
+were changed by this separation.

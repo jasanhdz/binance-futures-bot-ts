@@ -1,8 +1,13 @@
-# Shared Market Data Classification — Baseline Inventory
+# Shared Market Data Classification — Historical Baseline Inventory
 
-**Status:** BASELINE AUDIT FOR MIGRATION  
+**Status:** HISTORICAL AUDIT SNAPSHOT — NOT A CURRENT FILE/OWNERSHIP INDEX
 **Reviewed SHA:** `26dbf822ecfa1b2607199da393c55b8de697b844`
 **Purpose:** classify current market-data-related code before extraction so generic mechanics are moved without accidentally moving strategy meaning.
+
+This inventory is retained because its reviewed SHA and per-file migration decisions explain
+the original extraction. Paths and implementation status have since moved. For current
+connections and residuals use [`MIGRATION_STATUS.md`](./MIGRATION_STATUS.md) and
+[`SHARED_MARKET_DATA_ARCHITECTURE_V1.md`](./SHARED_MARKET_DATA_ARCHITECTURE_V1.md).
 
 ## 1. Classification vocabulary
 

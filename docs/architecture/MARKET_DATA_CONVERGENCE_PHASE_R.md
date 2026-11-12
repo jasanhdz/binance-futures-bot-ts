@@ -1,6 +1,6 @@
 # Market Data Convergence — Phase R
 
-**Status:** IMPLEMENTED, CI QUALIFICATION REQUIRED  
+**Status:** HISTORICAL IMPLEMENTATION REPORT — CURRENT STATUS IS IN `MIGRATION_STATUS.md`
 **Phase:** R — remove Micro Burst ownership of generic market mechanics
 
 ## Resulting ownership

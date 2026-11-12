@@ -1,12 +1,35 @@
-# Strategy Behavior & Hash Freeze Contracts
+# Strategy Runtime Contracts and Freeze Policy
 
-> **Status:** DESIGN / NO RUNTIME AUTHORITY  
+> **Status:** runtime contract extension implemented incrementally; freeze/promotion policy remains design guidance
 > **Branch:** `work/micro-burst-rider-v1-20260826`  
 > **Purpose:** define how each strategy behaves, what it owns, what it may share, and how an immutable strategy revision will be frozen and identified.
 
-This document is intentionally separate from the general runtime architecture. The architecture describes **how the bot is organized**. This file describes **what each strategy is allowed to do** and how that behavior becomes reproducible through versioned hashes.
+This is the canonical specification of strategy-owned behavior and reproducibility. The current architecture is in [`README.md`](./README.md); the code implementation and remaining gaps are in [`MIGRATION_STATUS.md`](./MIGRATION_STATUS.md).
 
-No strategy is frozen merely because it appears in this document. A strategy becomes frozen only after a canonical manifest exists, all referenced source/config artifacts are finalized, the required hashes are computed, and the resulting contract is committed.
+No strategy is frozen merely because it appears in this document. A strategy becomes frozen only after a canonical manifest exists, all referenced source/config artifacts are finalized, the required hashes are computed, and the resulting contract is committed. This phase does not assert that Micro has demonstrated profitability or grant it new execution authority.
+
+## Runtime interface currently implemented
+
+The implementation extends the existing `EntryStrategy<TContext>` and `StrategyRouter`; it
+does not create a second registry or runtime. Contract metadata is available for Micro and
+Momentum and is optional only for legacy/test adapters not yet migrated. The router verifies
+declared position ownership/config hash and exposes the registered contract.
+
+The declaration is typed around separate closed-candle, order-book, AggTrade-flow, benchmark
+and realtime-feature requirements. It names configuration provenance, data warmup, strategy
+entry-state recovery and the existing owner of position lifecycle. This metadata does not yet
+automatically acquire feeds or replace each runtime's current readiness checks; that coupling
+is tracked in `MIGRATION_STATUS.md`.
+
+`StrategyDecisionEnvelope.evaluationStatus` distinguishes `INTENT`, `REJECTED`, `WAIT`, and
+`NOT_EVALUABLE`. The existing `decision`/`reason` fields and evaluators remain unchanged; a
+legacy result without explicit classification is normalized by the router to `INTENT` or
+`REJECTED`. `OFF` and required-audit failure are `NOT_EVALUABLE`.
+
+`StrategyFeatureSchema`, `StrategyFeatureVector`, `StrategyModelPredictionInput`, and
+`StrategyEvaluationInput<TContext>` define a future offline-feature/model-input shape. They are
+contracts only: no feature materializer, Python dependency, ONNX Runtime, or serving path is
+implemented. A model prediction is an input fact, never an execution intent.
 
 ---
 
@@ -57,7 +80,7 @@ interface StrategyIdentity {
 ### Required semantics
 
 `strategyId`
-: stable family identifier, e.g. `AEGIS_TURBO`, `MOMENTUM_RIDE`, `MICRO_BURST_V1`.
+: stable family identifier, e.g. `AEGIS_TURBO`, `MOMENTUM_RIDE`, `MICRO_BURST`.
 
 `strategyVersion`
 : human-readable immutable revision label, e.g. `1.0.0-frozen-2026-09-01`.
@@ -122,12 +145,12 @@ Proposed `manifest.json` schema:
 ```json
 {
   "schema": "strategy-freeze-contract-v1",
-  "strategy_id": "MICRO_BURST_V1",
+  "strategy_id": "MICRO_BURST",
   "strategy_version": "1.0.0",
   "freeze_state": "FROZEN_SHADOW",
   "source_commit_sha": "<git-sha>",
-  "entry_owner": "MICRO_BURST_V1",
-  "position_manager_owner": "MICRO_BURST_V1",
+  "entry_owner": "MICRO_BURST",
+  "position_manager_owner": "MICRO_BURST",
   "execution_core_version": "<version>",
   "hard_safety_contract_version": "<version>",
   "source_files": [],
@@ -404,7 +427,13 @@ The existing `MAIN_STACKING_MOMENTUM_AUTHORITY` reference is provenance, not yet
 
 ---
 
-## 11. MICRO_BURST_V1
+## 11. MICRO_BURST (reference policy version `MICRO`)
+
+The runtime registry identifier is `MICRO_BURST` and the current reference policy version is
+`MICRO`. Identity/config hash and mode come from the existing runtime path; this section does
+not override them or prove profitability. Implementation lives in `MicroBurstStrategy`,
+`MicroBurstContextBuilder`, `MicroBurstReactionEntryPolicy`, `MicroBurstExitPolicy` and
+`MicroBurstPositionManager`.
 
 ### Objective
 
@@ -426,9 +455,15 @@ Primary intended inputs:
 5m = regime / structural context
 ```
 
-BTC may be used as contextual confirmation/veto.
+BTC context is used for contextual confirmation/veto.
 
-Order-book and taker-flow data may be used as short-horizon confirmation/veto once implemented and validated.
+The shared synchronized order book and rolling AggTrade flow are consumed as short-horizon
+confirmation/veto and data-quality inputs.
+
+The concrete runtime declaration lists 1m/3m/5m closed candles with 30/20/15 minimum warmup,
+healthy linked depth, a complete gap-free 300s flow window, and fresh BTC 1m/3m/5m context.
+These values document the current context builder's data-quality contract; they are not alpha
+thresholds. The declaration is not yet an automatic feed/readiness provisioner.
 
 ### Entry families
 
@@ -442,7 +477,8 @@ SHORT_TO_SUPPORT
 NO_TRADE
 ```
 
-These names describe the intended path relative to nearby structure. Exact rules are not frozen yet.
+These names describe the intended path relative to nearby structure. Exact current entry rules
+are in `MicroBurstReactionEntryPolicy`; these names are not a second runtime implementation.
 
 ### Intended entry pipeline
 
@@ -487,12 +523,13 @@ These are research dimensions, not frozen thresholds.
 
 ```text
 HOLD
-PROTECT
-EXIT_NOW
-DESTINATION_REACHED
-HARD_INVALIDATION
-MAX_HOLD_EXIT
+MOVE_STOP
+CLOSE_MARKET
 ```
+
+These are the existing normalized `PositionLifecycleDecision` actions. Micro reason codes remain
+strategy-specific (for example `HARD_INVALIDATION`, `TARGET`, `EARLY_FAILURE`, `PROFIT_LOCK`,
+`MAX_HOLD`); they are not translated into a generic Alpha policy.
 
 ### Time-to-prove principle
 
@@ -502,15 +539,17 @@ The strategy is explicitly allowed to conclude:
 
 Therefore a Micro Burst trade should not become an hours-long passive position merely because a distant hard stop has not been reached.
 
-Exact time thresholds require evidence and are currently **UNFROZEN**.
+Exact time thresholds remain experimental and do not imply profitable behavior.
 
 ### Bracket contract
 
-Micro Burst should normally require an exchange-resident hard protective stop immediately after entry.
+The current Micro execution intent requires an exchange-resident absolute structural stop and
+fails closed if the protection cannot be verified.
 
 This stop is primarily disaster/structural protection. Active TradeHealth may exit much earlier.
 
-A destination TP may be used, but whether it is mandatory is still an architectural decision.
+The current contract does not require an exchange TP; destination handling remains owned by the
+software exit policy.
 
 ### Legacy policy isolation
 
@@ -529,30 +568,28 @@ Python brain signal
 
 Shared low-level mechanisms remain reusable.
 
-### Initial position concurrency contract
+### Entry admission and same-symbol conflicts
 
-For V1 research, desired default:
-
-```text
-MAX_OPEN_MICRO_BURST_POSITIONS_GLOBAL = 1
-```
-
-No pyramiding, no averaging down/up, no simultaneous second Micro Burst position, and no immediate side flip while an exit is unresolved.
+The current `SharedEntryReservation` serializes in-flight entry handoffs account-wide and
+reports `SYMBOL_BUSY` for a concurrent request on the same symbol. The callers perform their
+existing open-position/risk checks before execution. This is not an account portfolio/netting
+engine and does not create hedge-mode behavior. Paper state is keyed by `(strategyId, symbol)`
+for independent research; those separate positions are not a simulation of shared LIVE margin.
 
 ### Leverage
 
-30x–50x is an experimental goal, **not a frozen default**.
+The current code has existing leverage tiers/configuration. They are preserved, not changed or
+validated by the platform refactor.
 
 Leverage does not replace risk sizing or the hard stop. Final leverage rules must be separately validated and frozen.
 
 ### Freeze status
 
 ```text
-STRATEGY_ID: MICRO_BURST_V1
-FREEZE_STATUS: DRAFT
-STRATEGY_HASH: NOT_ASSIGNED
-CONFIG_HASH: NOT_ASSIGNED
-LIVE_AUTHORITY: FALSE
+STRATEGY_ID: MICRO_BURST
+STRATEGY_VERSION: MICRO
+RUNTIME_IDENTITY: see `createMicroBurstIdentity()` and effective deployment config
+PROFITABILITY: NOT_DEMONSTRATED
 ```
 
 ---
@@ -561,7 +598,7 @@ LIVE_AUTHORITY: FALSE
 
 Target policy:
 
-| Capability / Policy    |    AEGIS_TURBO |    MOMENTUM_RIDE | MICRO_BURST_V1 |                        Shared Core |
+| Capability / Policy    |    AEGIS_TURBO |    MOMENTUM_RIDE |    MICRO_BURST |                        Shared Core |
 | ---------------------- | -------------: | ---------------: | -------------: | ---------------------------------: |
 | Python/current brain   | Strategy-owned |    No by default |             No |                                 No |
 | Aegis Entry Policy     | Strategy-owned |    No by default |             No |                                 No |
@@ -581,6 +618,10 @@ Target policy:
 | Trade logging          |           Uses |             Uses |           Uses |                                Yes |
 
 ---
+
+`TEST_PROBE` is a compile/test-only identity used to prove contract/data/paper composition. It is
+not present in operational configuration, receives no LIVE profile, is not recognized as a
+recoverable bot owner, and is explicitly denied by `SharedStrategyExecutionService`.
 
 ## 13. Forbidden cross-strategy behavior
 
@@ -758,18 +799,15 @@ These questions must be resolved before any strategy is declared frozen.
 
 ---
 
-## 21. Documentation-phase guarantee
+## 21. Implementation / evidence boundary
 
-At the time this document is introduced:
-
-```text
-RUNTIME_CODE_CHANGED = FALSE
-LIVE_CONFIG_CHANGED = FALSE
-FILES_MOVED = FALSE
-FILES_DELETED = FALSE
-MICRO_BURST_IMPLEMENTED = FALSE
-MICRO_BURST_LIVE_AUTHORITY = FALSE
-STRATEGY_HASHES_FROZEN = FALSE
-```
-
-The only purpose of this phase is to establish a reviewable architectural and strategy-contract foundation before changing the codebase.
+- The strategy identity, entry router, position manager router, shared execution port,
+  shared market-data planes, Micro evaluator and Micro exit manager are runtime code.
+- The `EntryStrategy` contract metadata, readiness checks, future feature schemas and freeze
+  manifest procedure have different levels of connection; consult `MIGRATION_STATUS.md`.
+- Micro is a deterministic technical reference with exact-input replay tests and preserved
+  negative V7 evidence. No positive economic edge or profitability is established.
+- `TEST_PROBE` exists only in test composition. The shared execution boundary denies it and no
+  operational configuration registers it.
+- Python training and ONNX integration remain future work; the current TypeScript runtime has
+  no model inference dependency.

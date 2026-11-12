@@ -1,14 +1,20 @@
-# MICRO_BURST_V1
+# Micro Burst — strategy reference
 
-MICRO_BURST_V1 is a deterministic tactical strategy scaffold. M3 implements prospective shadow outcome validation — tracking what happens after each `WOULD_ENTER` signal in real-time, without executing any trades.
+The runtime identity is `MICRO_BURST` (the current policy version is configured separately).
+This strategy is a deterministic technical reference inside the shared platform. Its existing
+entry/exit rules and defaults are preserved; no profitability or positive edge is established.
+M3 prospective outcome validation is observational/research-only and does not tune policy.
 
 ## Authority
 
-- `MICRO_BURST_V1_SHADOW_AUTHORITY_ENABLED = true` — can evaluate and log decisions.
-- `MICRO_BURST_V1_LIVE_AUTHORITY_ENABLED = false` — cannot execute.
-- Shadow evaluation produces `WOULD_ENTER` telemetry and persists unique signals to JSONL, but never calls `SharedStrategyExecutionService.execute()`.
+- Runtime mode and authority continue to come from the existing configuration/identity checks; this architecture phase does not alter them.
+- SHADOW evaluation records decisions and may drive the existing paper engine. It does not submit exchange orders.
+- A Micro intent remains subject to shared admission, risk and `SharedStrategyExecutionService`; intent is not authorization.
 - The position manager may compute and translate an exit decision, but does not apply lifecycle or exchange mutations.
 - The outcome tracker observes post-T0 prices and computes prospective outcomes — it has no exchange mutation authority.
+
+The existence of a guarded LIVE path is not evidence of profitability and was not enabled or
+exercised by this work.
 
 ## Correctness Invariants
 
@@ -91,126 +97,68 @@ They were not tuned in M0.2.
 
 Dynamic exits belong only to `MicroBurstExitPolicy`; legacy lifecycle logic cannot supply them.
 
-## M1 Market Data Plane (Implemented)
+## Platform integration and remaining adapters
 
-- Depth WebSocket ingestion and Binance Futures synchronization algorithm.
-- REST snapshot + diff synchronization with update-ID gap detection and resync.
-- Typed `OrderBookSnapshotProvider` with `HEALTHY|UNAVAILABLE|STALE|UNSYNCED|ANOMALOUS` health.
-- Temporal book history with real `imbalanceSlope`, absorption, and sweep detection.
-- Live BTC context stream with 1m/3m/5m decimal returns and acceleration.
-- `marketPriceAtSnapshot` (mark price / midpoint) for runtime live reference price.
-- `aggTrade` bounded rolling history for taker flow.
-- `MicroBurstShadowEvaluator` with structured telemetry and duplicate signal suppression.
-- `MicroBurstConfigLoader` for YAML/environment configuration.
+`StrategyRuntimeCoordinator` constructs one `SharedMarketDataRuntime` and passes its canonical
+`OrderBookDataPlane` and `AggTradeDataPlane` into the integrated `MicroBurstRuntime`. Micro's
+`MicroBurstContextBuilder` reads the shared synchronized book and rolling flow when supplied;
+reference-counted leases ensure other consumers see the same state and stream. The runtime
+retains fallback constructors for isolated tests and other explicit compositions.
 
-## M2 Operational Shadow (Implemented)
+Micro's 1m/3m/5m context candles still come through its `MarketDataPort.getCandles` adapter,
+classified together against one exchange `snapshotAtMs`. `MarketDataCandleProvider` and
+`CandleDataPlane` use separate per-request or streaming/local availability boundaries. A fixture
+demonstrates that identical candle bytes can be OPEN in one boundary and CLOSED in the other.
+Therefore the adapter remains behind the shared exchange capability until an explicit parity
+contract can be proven; no feature, warmup or signal behavior is silently substituted.
 
-`MicroBurstRuntime` wires the shadow evaluation into the live bot runtime with real market data, continuous evaluation, and structured signal journaling. The strategy cannot open, close, or modify any exchange position.
+Micro also retains a strategy-specific BTC context/polling adapter and reference-price
+selection. `MarketSnapshotProvider` and its non-owning capability catalog are implemented but
+are not currently the input composition used by this strategy. `TradingService` and
+`StrategyRuntimeCoordinator` still contain strategy-specific construction and admission work;
+the remaining seams are tracked in `docs/architecture/MIGRATION_STATUS.md`.
 
-**Signal flow:**
+## Causal capture, paper and replay
 
-```
-TradingService.start()
-  └─ MicroBurstRuntime.start()
-       ├─ BtcMicroContextProvider (shared BTC 1m stream)
-       ├─ SynchronizedOrderBook per symbol (depth diff + snapshot sync)
-       ├─ MicroBurstAggTradeBuffer per symbol (aggTrade streaming, taker flow)
-       ├─ MicroBurstReferencePriceProvider per symbol (mark price / midpoint)
-       ├─ MicroBurstShadowEvaluator
-       │    └─ MicroBurstContextBuilder (candles + book + BTC + ref price + aggTrade)
-       │         └─ StrategyRouter.evaluate('MICRO_BURST_V1')
-       ├─ Evaluation loop (configurable interval, default 5s, per-symbol in-flight guard)
-       ├─ Health reporting (60s interval, MICRO_BURST_SHADOW_HEALTH log)
-       └─ MicroBurstSignalJournal (append-only JSONL persistence)
-```
+WebSocket events preserve Binance event/transaction timestamps and carry a separate
+process-generation, connection-generation, receive sequence and monotonic receive sample.
+Book/flow state snapshots carry applied state versions and last-applied receive sequences.
+Micro's exact decision input includes those per-source watermarks and the local monotonic
+context/decision boundaries. The market archive records writer generation/append sequence and
+SQLite checkpoints record a synchronous persistence sequence. None of these counters is
+comparable across a process restart.
 
-**What M2 enables:**
+Paired replay uses the same `MicroBurstStrategy`/entry evaluator as runtime and then supplies a
+distinct verified-market execution model. Knowledge reconstructed from the bot's input and a
+claim about what an order could execute in the market are separate guarantees. Replay keeps
+UNKNOWN whenever local generation, exchange-time bounds, event chain, point book, persistence
+boundary or market interval cannot be verified.
 
-- Real depth WebSocket per symbol via `SynchronizedOrderBook` with gap detection and resync.
-- Real BTC context via `BtcMicroContextProvider` (1m REST polling, 1m/3m/5m returns, acceleration).
-- Real aggTrade streaming per symbol via `MicroBurstAggTradeBuffer` (bounded rolling history, taker flow computation).
-- Real reference price via `MicroBurstReferencePriceProvider` (mark price polling, midpoint fallback, source tracking).
-- AggTrade taker flow integrated into `MicroBurstContext` and diagnostics.
-- `MicroBurstSignalJournal`: append-only JSONL for unique `ENTRY_INTENT` signals with rotation at 10,000 entries.
-- Evaluation loop with configurable interval and per-symbol in-flight guard preventing overlapping evaluations.
-- Health reporting every 60s with `MICRO_BURST_SHADOW_HEALTH` structured log.
-- Config from YAML `micro_burst` section or environment variables.
+V7 predates local sequence and persistence-writer fields. Its original exchange timestamps and
+UNKNOWN intervals remain unchanged; see the durable [V7 reports and requests](../../research/micro-observer-v7/README.md).
+No new capture was started for this phase.
 
-**What M2 explicitly does NOT enable:**
+The pre-extraction behavior oracle is the existing deterministic suite:
+`MicroBurstStrategy.test.ts`, `MicroBurstReactionEntryPolicy.test.ts`,
+`MicroBurstTemporalContracts.test.ts`, `MicroBurstGoldenParity.test.ts` and
+`MicroBurstExitPolicy.test.ts`. It covers LONG/SHORT entry candidates, rejection and unusable
+inputs, proof/clock boundaries, and parity between the existing Micro paper lifecycle and the
+shared shadow lifecycle. The platform composition test adds a separate deterministic probe; it
+does not alter these expected policy results.
 
-- No `SharedStrategyExecutionService.execute()` is called.
-- No `marketOpen` calls.
-- No `placeStopClose` calls.
-- No `placeTpClose` calls.
-- No `closeSideMarketSafe` calls.
-- No exchange mutation of any kind.
-- `liveExecution: false` is hardcoded in all evaluation results.
-- `MICRO_BURST_V1_LIVE_NOT_AUTHORIZED` thrown if LIVE mode attempted.
+## Research evidence (historical, not strategy authority)
 
-## M3 Prospective Shadow Outcome Validation (Implemented)
+Prospective outcome tracking, replay, and data-integrity work remain separate from the
+strategy's entry/exit policy. Dated reports keep their original sample, limitations and
+negative results; they are not an active tuning plan:
 
-M3 tracks what happens after each `WOULD_ENTER` signal by observing post-T0 prices and computing prospective outcomes.
+- `M3_1_PROSPECTIVE_CORRECTNESS_AND_ARCHIVE_REPORT.md`
+- `M3_2_EVENT_TIME_RUNTIME_PARITY_REPORT.md`
+- `M3_2_1_RUNTIME_CORRECTNESS_CLOSURE_REPORT.md`
+- `M3_2_6_4_FINAL_PRE_SOAK_EVIDENCE_REPORT.md`
+- [Paired replay evidence and V7 limits](../../micro-paired-replay-evidence.md)
+- [Durable V7 requests/reports/hashes](../../research/micro-observer-v7/README.md)
 
-**Architecture:**
-
-```
-Entry Plane (unchanged):
-  MicroBurstRuntime → ShadowEvaluator → StrategyRouter → ENTRY_INTENT
-
-Outcome Plane (new):
-  MicroBurstOutcomeTracker
-    ├─ freezeSignalSnapshot() — immutable T0 snapshot
-    ├─ processTradeEvent() — observe post-T0 prices
-    ├─ computeHorizonOutcome() — MFE/MAE/barrier per horizon
-    ├─ simulateDynamicExit() — reuses MicroBurstExitPolicy
-    └─ MicroBurstOutcomeJournal — JSONL append-only
-```
-
-**Key features:**
-
-- 5 outcome horizons: 15s, 30s, 60s, 120s, 300s
-- 3 entry price models: SIGNAL_PRICE, NEXT_TRADE, CONSERVATIVE_SLIPPAGE
-- 5 cost scenarios: cost_0 through cost_30
-- First-touch detection using trade-level temporal ordering
-- Dynamic exit counterfactual simulation (reuses exit policy)
-- Independent episode tracking
-- Restart recovery from journal
-- Memory-bounded pending outcomes (max 500)
-- Anti-lookahead guarantees (verified by tests)
-- Negative controls (shuffled timestamps, random side)
-
-**What M3 explicitly does NOT enable:**
-
-- No tuning during collection
-- No live execution
-- No exchange mutation of any kind
-- No economic edge declaration without sufficient N
-- No LIVE_READY declaration during M3
-
-## M4 Scope Pending
-
-- Tune S/R detection parameters for real market conditions.
-- Tune momentum thresholds and leverage tiers.
-- Validate temporal absorption/sweep thresholds.
-- Backtest signal quality with shadow journal data.
-- Evaluate economic edge with accumulated prospective data.
-- Evaluate the research-only `MICRO_OFFLINE_NO_TIME_CLOSE_V1` reducer with paired causal replay;
-  it is not a LIVE policy and does not alter the current defaults.
-
-## M3.1 Correctness And Archive
-
-M3.1 wires prospective tracking into the actual SHADOW runtime, archives raw exchange-time trades and USD-M `U/u/pu` depth diffs, and persists research metadata in SQLite WAL. See `M3_1_PROSPECTIVE_CORRECTNESS_AND_ARCHIVE_REPORT.md` for confirmed M3 defects, recovery semantics, cohort gating, and current limitations. LIVE authority remains false.
-
-## M3.2 Event-Time And Runtime Parity
-
-M3.2 moves public market data to routed raw WebSockets, makes archive/replay event-time aware, and supplies archive-backed prospective controls. Automated verification is complete, but the official cohort remains blocked pending a production read-only soak and proof of graceful archive-queue draining. See `M3_2_EVENT_TIME_RUNTIME_PARITY_REPORT.md`.
-
-## M3.2.1 Runtime Correctness Soak Preparation
-
-Run the actual compiled main path, not the stand-alone probes, with a local SHADOW environment file:
-
-```bash
-SOAK_ENV_FILE=/absolute/path/to/local.env SOAK_SECONDS=300 npm run micro-burst:production-soak
-```
-
-Use `config/m3_2_1_soak.env.example` as the local environment template. The command forces `AEGIS_SHADOW`, selects `config/micro-burst-m3_2_1-soak.yaml`, and writes only to the isolated `data/micro-burst/m3_2_1-soak` archive root. It prints retained `MICRO_BURST_SHADOW_HEALTH` records after graceful shutdown. No real Binance soak is claimed by this repository change; see `M3_2_1_RUNTIME_CORRECTNESS_CLOSURE_REPORT.md` for evidence and closure criteria.
+The remaining architecture task is to reuse/provision existing data and cycle services without
+changing Micro behavior. Threshold tuning, live activation, backtests claiming edge and changes
+to leverage/universe are outside that task and are not prerequisites for proving reuse.

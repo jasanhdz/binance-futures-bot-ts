@@ -1,5 +1,9 @@
 # Phase 1 Architecture Cleanup Report
 
+> Historical checkpoint before the current Micro platform/reference work. Its authority and
+> directory claims apply only to the recorded phase/SHA; use `MIGRATION_STATUS.md` for current
+> runtime behavior.
+
 Branch: `work/micro-burst-rider-v1-20260826`
 Checkpoint: `a32ec56` (pre-cleanup) → pending commit
 
@@ -62,6 +66,9 @@ Stabilize module boundaries and remove dead code paths before Micro Burst implem
 5. **No premature freeze**: Hashes/digests will be generated only after architecture is stable.
 
 ## Invariants preserved
+
+These are the assertions from the Phase 1 cleanup checkpoint only. The later Micro runtime
+identity/configuration path is documented in current strategy/status references.
 
 - Aegis never selects Momentum.
 - Momentum does not depend on Current Brain, CleanEntry, EntryQuality, DecisionBrain, or E4.

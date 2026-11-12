@@ -1,7 +1,7 @@
 # Market Data Capability Composition V1
 
 **Phase:** Q  
-**Status:** COMPLETE — non-owning capability composition qualified.
+**Status:** IMPLEMENTED AND TESTED IN ISOLATION; NOT CONNECTED TO STRATEGY RUNTIME.
 
 This layer makes two facts explicit without changing market-data ownership:
 
@@ -71,7 +71,7 @@ rules. `PRIMARY_CRYPTO_BENCHMARK -> BTCUSDT` and another descriptor such as
 ## Failure isolation / Gate Q
 
 A source that exists in the catalog but is not requested must not be read and must
-not affect snapshot health. A missing source that *is* requested is passed to the
+not affect snapshot health. A missing source that _is_ requested is passed to the
 already-qualified `MarketSnapshotProvider` as unavailable and becomes explicit
 `UNAVAILABLE` evidence for that family.
 

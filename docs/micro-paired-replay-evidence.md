@@ -384,7 +384,9 @@ efectivos de request coinciden con la pasada inicial: SOL
 `1b3784fe50963f2972ae125d98f3c4331b2864a7a86989ed5c99967e7d19b81d` y AVAX
 `44e280f5211b78b39a37a169c499984550b40f51bc9029074c8a9b6d00e1b33e`. Los reportes
 previos se conservaron; la pasada final se guardó fuera del repositorio en
-`/tmp/opencode/micro-observer-v7-review-final2-{sol,avax}/`.
+`/tmp/opencode/micro-observer-v7-review-final2-{sol,avax}/` y sus requests, reportes completos,
+resúmenes, hashes y procedencia se preservaron en
+[`docs/research/micro-observer-v7/`](./research/micro-observer-v7/README.md).
 
 | Símbolo  | Inicial: decisiones / errores técnicos / unknown frames |    Final: libros punto verificados | Final: intervalos verificados / unknown / no evaluado | Episodios / ejecuciones |
 | -------- | ------------------------------------------------------: | ---------------------------------: | ----------------------------------------------------: | ----------------------: |
@@ -439,3 +441,36 @@ ejecuciones modeladas para ambos símbolos. Verificación separada: `npx vitest 
 --dir src/tooling/micro-burst src/tooling/micro-burst/MicroBurstCausalArchive.test.ts`
 (29/29) y `npx tsc --noEmit -p tsconfig.json` (código de salida 0). La captura y su
 SQLite se abrieron únicamente para lectura; no se inició otra captura.
+
+### Provenance temporal local para capturas posteriores
+
+Las capturas que produce el código actual añaden un campo local causal opcional sin cambiar
+`E` (exchange event time), `T` (transaction time) ni `receivedAtMs`:
+
+- Los hubs WebSocket emiten `processGenerationId`, `connectionGeneration`,
+  `receiveSequence` y `receivedMonotonicAtMs` por evento. El camino depth conserva ese sello a
+  través del puerto; el adapter AggTrade legacy reduce el payload, por lo que
+  `AggTradeDataPlane` asigna el sello al recibir el evento en el estado canónico compartido.
+- `SynchronizedOrderBook` conserva `receivedSequence`, `lastAppliedReceiveSequence` y
+  `appliedStateVersion`; `RollingAggTradeBuffer` conserva su watermark de recepción/aplicación.
+  Así se distingue una actualización ya recibida de una que realmente cambió el estado leído.
+- El contexto Micro conserva el vector de watermarks de los feeds consumidos, la hora de
+  captura local y el límite monotónico de evaluación. El exchange timestamp sigue siendo su
+  dominio original.
+- Los segmentos raw incorporan una generación del escritor y orden de append. Los checkpoints
+  SQLite incorporan generación/sequence de persistencia. El campo `APPENDED_TO_ACTIVE_SEGMENT`
+  demuestra append al spool; la fsync/terminación se comprueba por los marcadores de salud y
+  finalización existentes, no por inferir durabilidad de ese campo.
+
+En el mismo `processGenerationId`, replay puede ordenar eventos con receive timestamps iguales
+o regresivos por `receiveSequence`, siempre que el estado del contexto confirme que ese evento
+sí fue aplicado. Rechaza watermarks de otro proceso. No se comparan secuencias ni clocks
+monotónicos entre reinicios; una captura posterior a un reinicio necesita ancla/estado local de
+esa generación. REST candles conservan `requestedAtMs`/`receivedAtMs` y monotonic bounds de
+observación cuando el wrapper los registra.
+
+Esta evidencia permite reconstruir qué estado local conocía el bot. No hace que un `eventTime`
+que excede el límite exchange de la decisión sea elegible para un modelo de ejecución, no prueba
+un fill, y no elimina requisitos de continuidad `U/u/pu`, frescura, trades o cobertura. V7 no
+incluye esos metadatos: sus dos regresiones de exchange clock, límites ambiguos y UNKNOWN
+intervalares permanecen exactamente como están en los reportes preservados.
