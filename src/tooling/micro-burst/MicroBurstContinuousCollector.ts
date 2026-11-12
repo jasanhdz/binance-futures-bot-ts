@@ -44,6 +44,7 @@ import type { VerifiedFrozenCollectorArtifact } from './MicroBurstCollectorFreez
 import { MICRO_EVIDENCE_LIMITS } from '../../strategies/micro-burst/domain/MicroBurstExactReplay';
 
 const EVALUATION_INTERVAL_MS = 500;
+const MAX_PUBLIC_REQUESTS_IN_FLIGHT = 16;
 const MAX_CAPTURE_BYTES = 1024 * 1024 * 1024;
 const MAX_CAPTURE_MEMORY_BYTES = 1536 * 1024 * 1024;
 const MIN_FREE_DISK_RESERVE_BYTES = 1536 * 1024 * 1024;
@@ -230,6 +231,7 @@ export function buildEffectiveCaptureConfiguration(
       supervisorShutdownGraceMs: 120_000,
       paperTradingEnabled: false,
       prospectiveValidationEnabled: false,
+      maxPublicRestRequestsInFlight: MAX_PUBLIC_REQUESTS_IN_FLIGHT,
     },
     limits: {
       captureBytes: MAX_CAPTURE_BYTES,
@@ -559,7 +561,7 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
       if ((Number(observation.dropped) || 0) > 0) stop('OBSERVATION_QUEUE_DROP');
       if ((Number(observation.failed) || 0) > 0) stop('OBSERVATION_QUEUE_WRITE_FAILURE');
       if (observation.drainTimedOut === true) stop('OBSERVATION_QUEUE_DRAIN_TIMEOUT');
-      if (publicRequestsInFlight > 4) stop('PUBLIC_REQUEST_BACKLOG');
+      if (publicRequestsInFlight > MAX_PUBLIC_REQUESTS_IN_FLIGHT) stop('PUBLIC_REQUEST_BACKLOG');
       if (memory.rss > MAX_CAPTURE_MEMORY_BYTES) stop('PROCESS_MEMORY_LIMIT');
       if (captureBytes >= CAPTURE_DISK_STOP_BYTES) stop('CAPTURE_DISK_LIMIT');
       if (freeDiskBytes < MIN_FREE_DISK_RESERVE_BYTES) stop('FREE_DISK_RESERVE_LIMIT');

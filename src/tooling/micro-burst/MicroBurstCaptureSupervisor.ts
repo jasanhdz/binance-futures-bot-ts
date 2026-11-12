@@ -14,7 +14,7 @@ export const CAPTURE_CANCELLATION_CONDITIONS = [
   'any public market mutation attempt or forwarded mutation',
   'paper simulation or live execution reported enabled',
   'any evaluator failure, archive overflow, observation drop, or writer failure',
-  'public REST requests in flight above four',
+  'public REST requests in flight above sixteen',
   'archive queue reaches 75 percent of configured capacity',
   'decision observation queue reaches capacity minus two',
   'any writer queue reaches 224 pending writes',
@@ -47,6 +47,7 @@ export interface MicroBurstCaptureRunPlan {
   minimumFreeDiskBytes: number;
   maxArchiveQueueRecords: number;
   maxDecisionObservationQueueRecords: number;
+  maxPublicRequestsInFlight: number;
 }
 
 /** Spawns exactly one frozen collector with an allowlisted, credential-free environment. */
@@ -327,7 +328,8 @@ export function healthStopReason(
   if ((queue.dropped ?? 0) > 0) return 'OBSERVATION_QUEUE_DROP';
   if ((queue.failed ?? 0) > 0) return 'OBSERVATION_QUEUE_WRITE_FAILURE';
   if (queue.drainTimedOut === true) return 'OBSERVATION_QUEUE_DRAIN_TIMEOUT';
-  if ((health.publicRequestsInFlight ?? 0) > 4) return 'PUBLIC_REQUEST_BACKLOG';
+  if ((health.publicRequestsInFlight ?? 0) > plan.maxPublicRequestsInFlight)
+    return 'PUBLIC_REQUEST_BACKLOG';
   if ((queue.pendingRecords ?? 0) >= plan.maxDecisionObservationQueueRecords - 2)
     return 'DECISION_OBSERVATION_QUEUE_PRESSURE';
   if (
@@ -368,6 +370,7 @@ export function validateCaptureRunPlan(plan: MicroBurstCaptureRunPlan): void {
     !Number.isSafeInteger(plan.durationSeconds) ||
     plan.durationSeconds < 360 ||
     plan.durationSeconds > 1200 ||
+    plan.maxPublicRequestsInFlight !== 16 ||
     JSON.stringify(plan.symbols) !== JSON.stringify(['SOLUSDT', 'AVAXUSDT']) ||
     JSON.stringify(plan.benchmarkSymbols) !== JSON.stringify(['BTCUSDT']) ||
     plan.experimentContractSha256 !== MICRO_PAIRED_REPLAY_EVIDENCE_CONTRACT_SHA256 ||
@@ -390,6 +393,7 @@ export function validateCaptureRunPlan(plan: MicroBurstCaptureRunPlan): void {
       plan.minimumFreeDiskBytes,
       plan.maxArchiveQueueRecords,
       plan.maxDecisionObservationQueueRecords,
+      plan.maxPublicRequestsInFlight,
     ].every((value) => Number.isSafeInteger(value) && value > 0) ||
     plan.stopCaptureBytes > plan.maxCaptureBytes
   )

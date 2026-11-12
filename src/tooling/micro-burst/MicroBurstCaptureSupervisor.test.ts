@@ -29,6 +29,7 @@ const plan: MicroBurstCaptureRunPlan = {
   minimumFreeDiskBytes: 512,
   maxArchiveQueueRecords: 100,
   maxDecisionObservationQueueRecords: 16,
+  maxPublicRequestsInFlight: 16,
 };
 
 const healthy = () => ({
@@ -108,6 +109,9 @@ it('continues on healthy public-feed gaps but stops on authority, queue, disk or
       10_000,
     ),
   ).toBe('ARCHIVE_QUEUE_PRESSURE');
+  expect(healthStopReason({ ...sample, publicRequestsInFlight: 17 }, plan, 10_000, 10_000)).toBe(
+    'PUBLIC_REQUEST_BACKLOG',
+  );
   expect(healthStopReason({ ...sample, captureBytes: 900 }, plan, 10_000, 10_000)).toBe(
     'CAPTURE_DISK_LIMIT',
   );
