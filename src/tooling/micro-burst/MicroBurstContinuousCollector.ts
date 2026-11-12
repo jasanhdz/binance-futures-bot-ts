@@ -20,7 +20,11 @@ import {
 import { parseMicroBurstConfig } from '../../strategies/micro-burst/application/MicroBurstConfigLoader';
 import type { MicroBurstRuntimeConfig } from '../../strategies/micro-burst/application/MicroBurstRuntimeTypes';
 import { MicroBurstStorage } from '../../strategies/micro-burst/research/MicroBurstStorage';
-import { ORDER_BOOK_FEATURE_DEPTH, ORDER_BOOK_SNAPSHOT_DEPTH } from '../../app/ports/MarketData';
+import {
+  ORDER_BOOK_FEATURE_DEPTH,
+  ORDER_BOOK_SNAPSHOT_DEPTH,
+  type MarketDataPort,
+} from '../../app/ports/MarketData';
 import { MicroBurstEpisodeCapture } from './MicroBurstEpisodeCapture';
 import { reconcileMicroBurstCaptureCounters } from './MicroBurstCaptureCounters';
 import { writeCaptureSessionManifest } from './MicroBurstCaptureSession';
@@ -105,6 +109,61 @@ export function composeCaptureObservationRuntime(input: {
   );
 }
 
+export function wrapPublicMarketDataForCapture(
+  source: MarketDataPort,
+  recordRequest: (entry: Record<string, unknown>) => void,
+  requestStarted: () => void,
+  requestFinished: () => void,
+  now: () => number = Date.now,
+): MarketDataPort {
+  const capturedMethods = new Set([
+    'getCandles',
+    'getDepthSnapshot',
+    'getServerTime',
+    'getMarkPrice',
+    'getFundingRate',
+    'getBasisSnapshot',
+  ]);
+  return new Proxy(Object.create(null) as MarketDataPort, {
+    get(_target, property) {
+      const value = Reflect.get(source, property);
+      if (typeof property !== 'string' || typeof value !== 'function') return value;
+      if (!capturedMethods.has(property)) return value;
+      return async (...args: unknown[]) => {
+        requestStarted();
+        const requestedAtMs = now();
+        try {
+          const response = await value(...args);
+          try {
+            recordRequest({ method: property, args, requestedAtMs, receivedAtMs: now(), response });
+          } catch {
+            // Raw REST capture is observational; persistence failures are counted separately.
+          }
+          return response;
+        } catch (error) {
+          try {
+            recordRequest({
+              method: property,
+              args,
+              requestedAtMs,
+              receivedAtMs: now(),
+              error: error instanceof Error ? error.message : String(error),
+            });
+          } catch {
+            // Keep the original public request failure when observational logging also fails.
+          }
+          throw error;
+        } finally {
+          requestFinished();
+        }
+      };
+    },
+    has(_target, property) {
+      return Reflect.has(source, property);
+    },
+  });
+}
+
 export function buildEffectiveCaptureConfiguration(
   policySource: unknown,
   policySourceSha256: string,
@@ -162,6 +221,7 @@ export function buildEffectiveCaptureConfiguration(
       tradeFlowWindowMs: 300_000,
       benchmarkCandleInterval: '1m',
       benchmarkWarmupCandleCount: 60,
+      benchmarkPollIntervalMs: 60_000,
       strategyCandleIntervals: ['1m', '3m', '5m'],
       healthReportingIntervalMs: 5000,
       maximumDurationSeconds: 1200,
@@ -296,17 +356,22 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
   let auxiliaryWriteFailures = 0;
   let publicRequestsInFlight = 0;
   const pendingAuxiliaryWrites = new Set<Promise<void>>();
-  const trackAuxiliaryWrite = (operation: Promise<void>): void => {
+  const trackAuxiliaryWrite = (start: () => Promise<void>): void => {
     let tracked: Promise<void>;
-    tracked = operation
-      .catch(() => {
-        auxiliaryWriteFailures++;
-      })
-      .finally(() => pendingAuxiliaryWrites.delete(tracked));
+    try {
+      tracked = start()
+        .catch(() => {
+          auxiliaryWriteFailures++;
+        })
+        .finally(() => pendingAuxiliaryWrites.delete(tracked));
+    } catch {
+      auxiliaryWriteFailures++;
+      return;
+    }
     pendingAuxiliaryWrites.add(tracked);
   };
   const log = (level: string, message: string, context?: unknown): void => {
-    trackAuxiliaryWrite(events.append({ atMs: Date.now(), level, message, context }));
+    trackAuxiliaryWrite(() => events.append({ atMs: Date.now(), level, message, context }));
   };
   const logger: Logger = {
     debug: () => {},
@@ -315,46 +380,12 @@ export async function runContinuousCollector(root: string, durationSeconds: numb
     error: (m, c) => log('error', m, c),
   };
   const audited = createReadOnlyBinanceMarketData(logger, producer.gitCommit);
-  const exchange = new Proxy(audited.exchange, {
-    get(target, property) {
-      const value = Reflect.get(target, property);
-      if (typeof value !== 'function') return value;
-      const capturedPublicRequest = [
-        'getCandles',
-        'getDepthSnapshot',
-        'getServerTime',
-        'getMarkPrice',
-        'getFundingRate',
-        'getBasisSnapshot',
-      ].includes(String(property));
-      if (!capturedPublicRequest) return value.bind(target);
-      return async (...args: unknown[]) => {
-        publicRequestsInFlight++;
-        const requestedAtMs = Date.now();
-        try {
-          const response = await value.apply(target, args);
-          const receivedAtMs = Date.now();
-          trackAuxiliaryWrite(
-            rawRest.append({ method: property, args, requestedAtMs, receivedAtMs, response }),
-          );
-          return response;
-        } catch (error) {
-          trackAuxiliaryWrite(
-            rawRest.append({
-              method: property,
-              args,
-              requestedAtMs,
-              receivedAtMs: Date.now(),
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
-          throw error;
-        } finally {
-          publicRequestsInFlight--;
-        }
-      };
-    },
-  });
+  const exchange = wrapPublicMarketDataForCapture(
+    audited.exchange,
+    (entry) => trackAuxiliaryWrite(() => rawRest.append(entry)),
+    () => publicRequestsInFlight++,
+    () => publicRequestsInFlight--,
+  );
   const storage = new MicroBurstStorage({
     databasePath: join(output, 'research.sqlite'),
     archivePath: join(output, 'market-data'),

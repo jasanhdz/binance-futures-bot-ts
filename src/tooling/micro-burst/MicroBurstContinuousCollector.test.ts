@@ -6,6 +6,7 @@ import {
   buildEffectiveCaptureConfiguration,
   composeCaptureObservationRuntime,
   runContinuousCollector,
+  wrapPublicMarketDataForCapture,
 } from './MicroBurstContinuousCollector';
 
 const logger: Logger = {
@@ -76,6 +77,14 @@ it('composes the capture runtime with the real read-only factory and a simulated
   } as any;
   const codeCommitSha = 'a'.repeat(40);
   const market = createReadOnlyBinanceMarketData(logger, codeCommitSha, () => simulated);
+  const rawRestRecords: Record<string, unknown>[] = [];
+  let requestsInFlight = 0;
+  const exchange = wrapPublicMarketDataForCapture(
+    market.exchange,
+    (entry) => rawRestRecords.push(entry),
+    () => requestsInFlight++,
+    () => requestsInFlight--,
+  );
   const config: MicroBurstRuntimeConfig = {
     enabled: true,
     mode: 'SHADOW',
@@ -89,7 +98,7 @@ it('composes the capture runtime with the real read-only factory and a simulated
     configHash: 'sha256:offline-test',
     signalJournalDir: '/tmp/micro-capture-composition-test-signals',
     runtimeDeps: {
-      exchange: market.exchange,
+      exchange,
       logger,
       clock: { now: Date.now },
       mutationAudit: () => ({
@@ -106,6 +115,9 @@ it('composes the capture runtime with the real read-only factory and a simulated
     expect(calls).toContain('getServerTime');
     expect(calls).toContain('getCandles');
     expect(calls).toContain('getDepthSnapshot');
+    expect(rawRestRecords.length).toBeGreaterThan(0);
+    expect(rawRestRecords.every((record) => typeof record.method === 'string')).toBe(true);
+    expect(requestsInFlight).toBe(0);
     expect(market.audit.totalMutationAttempts).toBe(0);
     expect(market.audit.forwardedMutationCalls).toBe(0);
     expect(runtime.getHealth()).toMatchObject({
