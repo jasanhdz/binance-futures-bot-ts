@@ -894,6 +894,17 @@ describe('MicroBurstRuntime', () => {
     await runtime.stop();
   });
 
+  it('surfaces the market archive deferred-write marker in runtime health', () => {
+    const deps = makeDeps();
+    deps.marketStorage = {
+      appendDepth: () => true,
+      persistCheckpoint: () => true,
+      getHealth: () => ({ healthy: true, errorCount: 0, uncleanDeferredWriteMarker: false }),
+    };
+    const runtime = new MicroBurstRuntime(deps, makeConfig());
+    expect(runtime.getHealth().uncleanDeferredWriteMarker).toBe(false);
+  });
+
   it('stops cleanup clears all resources', async () => {
     const runtime = new MicroBurstRuntime(deps, makeConfig());
     await runtime.start();

@@ -122,6 +122,7 @@ export interface MicroBurstRuntimeHealth {
   archiveFileCount: number | null;
   archiveRetentionAgeMs: number | null;
   archiveRetentionWarning: boolean | null;
+  uncleanDeferredWriteMarker: boolean | null;
   archiveSynchronousAppendCount: number | null;
   archiveSynchronousAppendTotalMs: number | null;
   archiveSynchronousAppendMaxMs: number | null;
@@ -233,6 +234,7 @@ export interface MicroBurstRuntimeDeps {
       synchronousAppendTotalMs?: number;
       synchronousAppendMaxMs?: number;
       synchronousAppendSlowCount?: number;
+      uncleanDeferredWriteMarker?: boolean;
     };
   };
   provenance?: {
@@ -1053,6 +1055,7 @@ export class MicroBurstRuntime {
       archiveSynchronousAppendTotalMs: archiveHealth?.synchronousAppendTotalMs ?? null,
       archiveSynchronousAppendMaxMs: archiveHealth?.synchronousAppendMaxMs ?? null,
       archiveSynchronousAppendSlowCount: archiveHealth?.synchronousAppendSlowCount ?? null,
+      uncleanDeferredWriteMarker: archiveHealth?.uncleanDeferredWriteMarker ?? null,
       storageErrors: this.journal.getHealth().storageErrors + (archiveHealth?.errorCount ?? 0),
       mutationAttempts: mutationAudit.totalMutationAttempts,
       forwardedMutations: mutationAudit.forwardedMutationCalls,
