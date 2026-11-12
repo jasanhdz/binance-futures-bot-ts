@@ -353,6 +353,7 @@ export function healthStopReason(
   if ((health.eventLoopP99Ms ?? 0) > 1000) return 'EVENT_LOOP_LAG_LIMIT';
   if (
     now >= Number(health.startedAtMs ?? now) + plan.warmupMs + 30_000 &&
+    now < Number(health.startedAtMs ?? now) + plan.durationSeconds * 1000 &&
     (runtime.btcHealthy !== true || (runtime.healthyBooks ?? 0) < plan.symbols.length)
   )
     return 'POST_WARMUP_BENCHMARK_OR_BOOK_UNAVAILABLE';

@@ -34,6 +34,7 @@ const plan: MicroBurstCaptureRunPlan = {
 
 const healthy = () => ({
   atMs: 10_000,
+  startedAtMs: 0,
   liveExecution: false,
   publicRequestsInFlight: 0,
   auxiliaryWriteFailures: 0,
@@ -43,6 +44,8 @@ const healthy = () => ({
   eventLoopP99Ms: 2,
   mutationAudit: { totalMutationAttempts: 0, forwardedMutationCalls: 0 },
   runtime: {
+    btcHealthy: true,
+    healthyBooks: 2,
     liveExecution: false,
     paperTradingEnabled: false,
     totalEvaluationFailures: 0,
@@ -116,4 +119,24 @@ it('continues on healthy public-feed gaps but stops on authority, queue, disk or
     'CAPTURE_DISK_LIMIT',
   );
   expect(healthStopReason(sample, plan, 30_001, 10_000)).toBe('HEALTH_SAMPLE_STALE');
+});
+
+it('does not classify normal collector teardown at the planned endpoint as a feed failure', () => {
+  const sample = healthy();
+  expect(
+    healthStopReason(
+      { ...sample, runtime: { ...sample.runtime, btcHealthy: false, healthyBooks: 0 } },
+      plan,
+      330_001,
+      330_001,
+    ),
+  ).toBe('POST_WARMUP_BENCHMARK_OR_BOOK_UNAVAILABLE');
+  expect(
+    healthStopReason(
+      { ...sample, runtime: { ...sample.runtime, btcHealthy: false, healthyBooks: 0 } },
+      plan,
+      420_000,
+      420_000,
+    ),
+  ).toBeNull();
 });
