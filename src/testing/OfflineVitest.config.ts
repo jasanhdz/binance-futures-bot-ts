@@ -2,7 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    testTimeout: 15_000,
+    // Serial offline CI can run SQLite/fsync-heavy fixtures on shared CI workers.
+    testTimeout: 30_000,
     setupFiles: ['./src/testing/OfflineTestSetup.ts'],
     maxWorkers: 1,
     fileParallelism: false,

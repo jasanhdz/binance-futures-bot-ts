@@ -86,6 +86,60 @@ describe('StrategyRouter', () => {
     ).resolves.toMatchObject({ decision: 'ENTRY_INTENT', evaluationStatus: 'INTENT' });
   });
 
+  it('fails closed for an unclassified contracted outcome while preserving legacy classification', async () => {
+    const router = new StrategyRouter<{ symbol: string }>();
+    const contract = {
+      symbols: { source: 'CALLER_CONTEXT' as const },
+      configuration: {
+        source: 'EVALUATION_CONTEXT' as const,
+        schemaVersion: 'TEST_V1',
+        effectiveConfigHash: null,
+        scope: 'PER_SYMBOL_POLICY' as const,
+      },
+      inputs: [],
+      warmup: [],
+      entryState: {
+        kind: 'STATELESS' as const,
+        schemaVersion: 1,
+        recovery: 'REBUILD_FROM_CONTEXT' as const,
+      },
+      positionLifecycle: {
+        managerStrategyId: 'MOMENTUM_RIDE' as const,
+        stateSchemaVersion: 1,
+        recovery: 'RESTORE_BY_PERSISTED_STRATEGY_IDENTITY' as const,
+      },
+    };
+    router.register({
+      identity,
+      mode: 'SHADOW',
+      contract,
+      evaluate: ({ symbol }) => ({
+        symbol,
+        timestamp: 123,
+        decision: 'NO_TRADE',
+        reason: 'missing explicit readiness classification',
+        diagnostics: {},
+      }),
+    });
+    const contractedResult = await router.evaluate('MOMENTUM_RIDE', { symbol: 'SUIUSDT' });
+    expect(contractedResult.evaluationStatus).toBe('NOT_EVALUABLE');
+
+    const legacyRouter = new StrategyRouter<{ symbol: string }>();
+    legacyRouter.register({
+      identity,
+      mode: 'SHADOW',
+      evaluate: ({ symbol }) => ({
+        symbol,
+        timestamp: 123,
+        decision: 'NO_TRADE',
+        reason: 'legacy rejection',
+        diagnostics: {},
+      }),
+    });
+    const legacyResult = await legacyRouter.evaluate('MOMENTUM_RIDE', { symbol: 'SUIUSDT' });
+    expect(legacyResult.evaluationStatus).toBe('REJECTED');
+  });
+
   it('rejects a declared position-manager owner that differs from the strategy identity', () => {
     const router = new StrategyRouter();
     expect(() =>

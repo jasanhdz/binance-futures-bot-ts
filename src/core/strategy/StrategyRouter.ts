@@ -118,7 +118,11 @@ export class StrategyRouter<TContext = unknown> {
         ...decision,
         evaluationStatus:
           decision.evaluationStatus ??
-          (decision.decision === 'ENTRY_INTENT' ? 'INTENT' : 'REJECTED'),
+          (decision.decision === 'ENTRY_INTENT'
+            ? 'INTENT'
+            : strategy.contract
+              ? 'NOT_EVALUABLE'
+              : 'REJECTED'),
       };
     }
 

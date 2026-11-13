@@ -5,7 +5,6 @@ on:
     branches:
       - work/micro-burst-rider-v1-20260826
     paths:
-      - '.github/workflows/momentum-websocket-soak.yml'
       - 'scripts/momentum-websocket-soak.ts'
       - 'src/core/market-data/CandleDataPlane.ts'
       - 'src/app/services/SharedMarketDataRuntime.ts'
@@ -46,7 +45,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -56,12 +55,16 @@ jobs:
         run: npm run build
 
       - name: Unit and integration tests
-        run: npm test
+        env:
+          DOTENV_CONFIG_PATH: /dev/null
+        run: npm test -- --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism
 
       - name: Static read-only safety audit
+        if: success()
         run: npm run audit:usdm-readonly:static
 
       - name: Capture runner public IP before Tailscale
+        if: success()
         run: |
           RUNNER_PUBLIC_IP="$(curl --fail --silent --show-error --max-time 15 https://api.ipify.org)"
           test -n "$RUNNER_PUBLIC_IP"
@@ -69,6 +72,7 @@ jobs:
           echo "RUNNER_PUBLIC_IP=$RUNNER_PUBLIC_IP" >> "$GITHUB_ENV"
 
       - name: Connect runner to Tailscale
+        if: success()
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -77,6 +81,7 @@ jobs:
           version: latest
 
       - name: Route traffic through iPhone exit node
+        if: success()
         run: |
           sudo -E tailscale status
           timeout 3m sudo -E tailscale set --exit-node=iphone-15-pro-max --exit-node-allow-lan-access=true
@@ -88,6 +93,7 @@ jobs:
           fi
 
       - name: Verify Binance Futures public REST through iPhone
+        if: success()
         run: |
           test -z "$BINANCE_API_KEY"
           test -z "$BINANCE_API_SECRET"
@@ -107,6 +113,7 @@ jobs:
           test "$HTTP_CODE" = "200"
 
       - name: Momentum WebSocket operational soak
+        if: success()
         run: npx ts-node scripts/momentum-websocket-soak.ts
 
       - name: Disable exit node

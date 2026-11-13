@@ -143,8 +143,10 @@ The pre-extraction behavior oracle is the existing deterministic suite:
 `MicroBurstTemporalContracts.test.ts`, `MicroBurstGoldenParity.test.ts` and
 `MicroBurstExitPolicy.test.ts`. It covers LONG/SHORT entry candidates, rejection and unusable
 inputs, proof/clock boundaries, and parity between the existing Micro paper lifecycle and the
-shared shadow lifecycle. The platform composition test adds a separate deterministic probe; it
-does not alter these expected policy results.
+shared shadow lifecycle. Platform tests separately exercise shared stream subscriptions and a
+disk-backed two-owner paper cycle. Those cycle intents are explicit synthetic fixtures, not
+outputs of Micro policy; they prove persistence and ownership mechanics only and are not market
+evidence. The test-only probe remains blocked from execution authority.
 
 ## Research evidence (historical, not strategy authority)
 

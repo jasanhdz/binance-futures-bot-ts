@@ -13,6 +13,9 @@ This document does not authorize trading or imply that a proposed/typed boundary
 
 - `StrategyRouter` evaluates typed entry adapters and records observational evidence. Micro and
   Momentum register here through separate typed routers because their contexts are different.
+- Contracted strategies must explicitly classify their evaluation result; a missing classification
+  becomes `NOT_EVALUABLE`. Legacy adapters without contracts retain their existing `REJECTED`
+  fallback. This is a fail-closed outcome rule, not an automatic check of declared data needs.
 - `PositionManagerRouter` routes by persisted strategy identity and fails closed on missing owner.
 - `SharedStrategyExecutionService`, `SharedEntryReservation`, and existing safety coordinators
   own live execution admission/mutation. A strategy intent alone grants no authority.
@@ -26,15 +29,19 @@ This document does not authorize trading or imply that a proposed/typed boundary
 ## Still partial or disconnected
 
 - `EntryStrategy.contract` now describes identity-bound config, required inputs, warmup, entry
-  state recovery and position-manager ownership for Micro/Momentum. It is metadata, not yet an
-  automatic feed-acquisition/readiness compiler; legacy Aegis entry orchestration remains
-  outside this generic router.
+  state recovery and position-manager ownership for Micro/Momentum. It validates declaration
+  identity and requires explicit outcome classification, but does not yet compare all data needs
+  to supplied feeds or compile requirements into feed acquisition/readiness. Legacy Aegis entry
+  orchestration remains outside this generic router.
 - `MarketDataCapabilityCatalog` / consumer profiles and neutral snapshot composition are tested
   but not wired into the decision contexts. Do not describe them as the active runtime path.
 - Micro consumes the shared depth/AggTrade planes when built by `StrategyRuntimeCoordinator`,
   but its `MicroBurstContextBuilder` still uses raw exchange REST candles and a single
   exchange-as-of boundary. The shared streaming candle plane has different closure/availability
   semantics; no silent substitution is valid until parity is demonstrated.
+- Synthetic paper integration persists owner-keyed Micro/probe fixture positions to the existing
+  JSONL journal and recovers them in a new engine/journal instance. This proves lifecycle and
+  persistence mechanics only; fixture intents are not strategy decisions or market evidence.
 - `SharedStrategyExecutionService` still has Micro-specific contextual sizing/policy validation;
   `TradingService` still composes strategy-specific authorities. These remain explicit
   extraction seams, not a reason for a parallel framework.

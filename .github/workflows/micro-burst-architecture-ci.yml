@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -33,4 +33,6 @@ jobs:
         run: npm run build
 
       - name: Unit and integration tests
-        run: npm test
+        env:
+          DOTENV_CONFIG_PATH: /dev/null
+        run: npm test -- --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism

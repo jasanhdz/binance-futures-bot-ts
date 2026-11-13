@@ -19,12 +19,17 @@ The declaration is typed around separate closed-candle, order-book, AggTrade-flo
 and realtime-feature requirements. It names configuration provenance, data warmup, strategy
 entry-state recovery and the existing owner of position lifecycle. This metadata does not yet
 automatically acquire feeds or replace each runtime's current readiness checks; that coupling
-is tracked in `MIGRATION_STATUS.md`.
+is tracked in `MIGRATION_STATUS.md`. Contracted strategies must explicitly classify a `NO_TRADE`
+as `REJECTED`, `WAIT`, or `NOT_EVALUABLE`; if they omit classification the router returns
+`NOT_EVALUABLE`. Legacy adapters without contracts keep the prior `REJECTED` fallback.
 
 `StrategyDecisionEnvelope.evaluationStatus` distinguishes `INTENT`, `REJECTED`, `WAIT`, and
 `NOT_EVALUABLE`. The existing `decision`/`reason` fields and evaluators remain unchanged; a
-legacy result without explicit classification is normalized by the router to `INTENT` or
-`REJECTED`. `OFF` and required-audit failure are `NOT_EVALUABLE`.
+unclassified `ENTRY_INTENT` remains `INTENT`. An unclassified `NO_TRADE` from a contracted
+strategy is `NOT_EVALUABLE`; an uncontracted legacy result is `REJECTED`. `OFF` and required-audit
+failure are `NOT_EVALUABLE`. Micro and Momentum already emit explicit classifications from their
+existing context/evaluation outcomes. This rule does not independently verify the contract's
+declared data inputs.
 
 `StrategyFeatureSchema`, `StrategyFeatureVector`, `StrategyModelPredictionInput`, and
 `StrategyEvaluationInput<TContext>` define a future offline-feature/model-input shape. They are
@@ -622,6 +627,11 @@ Target policy:
 `TEST_PROBE` is a compile/test-only identity used to prove contract/data/paper composition. It is
 not present in operational configuration, receives no LIVE profile, is not recognized as a
 recoverable bot owner, and is explicitly denied by `SharedStrategyExecutionService`.
+
+The disk-backed paper test uses explicit synthetic intents for both Micro and `TEST_PROBE` to
+exercise owner-specific HOLD, restart, recovery, close, and duplicate-record blocking. It does not
+assert that Micro policy emitted an intent; synthetic positions and market observations are not
+market evidence.
 
 ## 13. Forbidden cross-strategy behavior
 

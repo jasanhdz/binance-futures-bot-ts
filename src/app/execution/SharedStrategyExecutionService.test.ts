@@ -130,7 +130,12 @@ describe('SharedStrategyExecutionService protection policy', () => {
 
     expect(result).toMatchObject({ status: 'DENIED', reason: 'STRATEGY_NOT_LIVE' });
     expect(exchange.setLeverage).not.toHaveBeenCalled();
+    expect(exchange.ensureMarginType).not.toHaveBeenCalled();
     expect(exchange.marketOpen).not.toHaveBeenCalled();
+    expect(exchange.placeStopClose).not.toHaveBeenCalled();
+    expect(exchange.placeTpClose).not.toHaveBeenCalled();
+    expect(exchange.closeSideMarketSafe).not.toHaveBeenCalled();
+    expect(exchange.cancelOrderById).not.toHaveBeenCalled();
   });
 
   it('opens without validating or placing protection that the intent does not use', async () => {
