@@ -68,7 +68,9 @@ The `StrategyRouter` readiness entry point is supplied a readiness result that h
 snapshot; its context factory receives that same snapshot. A non-ready result returns `WAIT` for
 warming coverage or `NOT_EVALUABLE` for stale/invalid/unverifiable evidence before invoking the
 strategy evaluator. This path has offline tests for `TEST_PROBE` only and is not wired into the
-production coordinator.
+production coordinator. The provisioner receives the same market-data port and clock used to
+construct `SharedMarketDataRuntime` for capability checks; actual market reads stay on the shared
+leases.
 
 Micro is deliberately not migrated here. Its 1m/3m/5m REST candle path shares one exchange
 as-of boundary and its `MarketDataCandleProvider` classifies OPEN/CLOSED data differently from

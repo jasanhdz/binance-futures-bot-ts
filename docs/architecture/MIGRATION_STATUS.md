@@ -50,7 +50,9 @@ operation over one existing `SharedMarketDataRuntime`. It does not run from
 `StrategyRouter.register()`. The provisioner owns only the leases it acquires; the underlying
 planes still own streams, buffers, health, and reference counts. Consumers must call `warmup()`
 explicitly where closed candles are required and must call the returned idempotent `release()`
-during teardown. Partial acquisition/warmup failure releases leases already obtained.
+during teardown. Its capability-presence port and clock are the same instances used to construct
+the shared runtime; the adapter never reads market data directly from that port. Partial
+acquisition/warmup failure releases leases already obtained.
 
 The current adapter supports only capabilities whose real state is available from those planes:
 
@@ -155,7 +157,7 @@ decisions. Remaining seams for the next phase:
 
 - Current workflow Node runtime: Node 22, matching `better-sqlite3@13.0.3`'s `>=22` engine. Offline Vitest uses `OfflineVitest.config.ts`, one worker, no file parallelism, and a 30-second per-test timeout for SQLite/fsync-heavy serial runs. The Momentum soak remains behind successful build, test, and static read-only audit steps.
 - `npx tsc -p tsconfig.json --noEmit`: PASS. A full TypeScript compile to `/tmp/opencode/binance-futures-bot-ts-build-check` also passed without writing into repository `dist/`.
-- `DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism`: PASS, 247 files / 3,198 tests (432.22 seconds).
+- `DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism`: PASS, 247 files / 3,198 tests (425.67 seconds).
 - Focal composition/ownership/recovery/execution tests cover shared-stream reference counts, disk-backed HOLD/restart/recovery/close, duplicate-record blocking, and `TEST_PROBE` execution denial without exchange mutation.
 - Contract-composition tests cover deferred acquisition, shared/interval-keyed leases, differing flow windows, changed requirements changing readiness, warmup WAIT, stale/gapped/unknown-generation NOT_EVALUABLE, unsupported/duplicate requirements, partial rollback, reconnect re-warmup, and same-snapshot evaluation. All use simulated feeds; they are not market evidence.
 - Directed regression and integration tests cover local equal/regressing clocks, reconnect
