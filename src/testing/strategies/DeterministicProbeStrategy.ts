@@ -1,12 +1,38 @@
 import { freezeStrategyRuntimeContract } from '../../core/strategy/EntryStrategy';
 import type {
   EntryStrategy,
+  StrategyDataRequirement,
   StrategyRuntimeContract,
   StrategyEvaluationStatus,
 } from '../../core/strategy/EntryStrategy';
 import type { StrategyEvaluationResult } from '../../core/strategy/StrategyDecision';
 import type { StrategyIdentity, StrategyMode } from '../../core/strategy/StrategyIdentity';
 import type { LocalCausalStateWatermark } from '../../core/market-data/LocalCausalWatermark';
+import type { SharedStrategyMarketDataSnapshot } from '../../app/services/StrategyContractMarketDataProvisioner';
+
+const DEFAULT_REQUIREMENTS: readonly StrategyDataRequirement[] = [
+  {
+    kind: 'ORDER_BOOK',
+    minimumDepthLevels: 1,
+    maximumAgeMs: 3_000,
+    sequencePolicy: 'REQUIRE_HEALTHY_POINT',
+  },
+  {
+    kind: 'AGG_TRADE_FLOW',
+    windowMs: 5_000,
+    minimumObservedSamples: 1,
+    maximumAgeMs: 3_000,
+    continuityPolicy: 'REQUIRE_GAP_FREE',
+  },
+  {
+    kind: 'CLOSED_CANDLES',
+    interval: '5m',
+    limit: 1,
+    minimumClosed: 1,
+    maximumAgeMs: 300_000,
+    gapPolicy: 'REJECT',
+  },
+];
 
 /** Test-only strategy: a deterministic probe of common registration and paper seams. */
 export interface DeterministicProbeContext {
@@ -19,6 +45,7 @@ export interface DeterministicProbeContext {
     readonly depth: LocalCausalStateWatermark | null;
     readonly aggTrade: LocalCausalStateWatermark | null;
   };
+  readonly marketDataSnapshot?: SharedStrategyMarketDataSnapshot;
   readonly outcome: 'INTENT' | 'REJECTED' | 'WAIT' | 'NOT_EVALUABLE';
   readonly side?: 'LONG' | 'SHORT';
 }
@@ -29,6 +56,7 @@ export class DeterministicProbeStrategy implements EntryStrategy<DeterministicPr
   public constructor(
     public readonly identity: StrategyIdentity,
     public readonly mode: StrategyMode,
+    requirements: readonly StrategyDataRequirement[] = DEFAULT_REQUIREMENTS,
   ) {
     if (identity.strategyId !== 'TEST_PROBE') throw new Error('TEST_PROBE_IDENTITY_REQUIRED');
     const contract: StrategyRuntimeContract = {
@@ -39,33 +67,11 @@ export class DeterministicProbeStrategy implements EntryStrategy<DeterministicPr
         effectiveConfigHash: identity.configHash ?? null,
         value: Object.freeze({ operationalRegistration: false }),
       },
-      inputs: [
-        {
-          kind: 'ORDER_BOOK',
-          minimumDepthLevels: 1,
-          maximumAgeMs: 3_000,
-          sequencePolicy: 'REQUIRE_HEALTHY_POINT',
-        },
-        {
-          kind: 'AGG_TRADE_FLOW',
-          windowMs: 5_000,
-          minimumObservedSamples: 1,
-          continuityPolicy: 'REQUIRE_GAP_FREE',
-        },
-        {
-          kind: 'CLOSED_CANDLES',
-          interval: '5m',
-          limit: 1,
-          minimumClosed: 1,
-          maximumAgeMs: 300_000,
-          gapPolicy: 'REPORT_TO_STRATEGY',
-        },
-      ],
-      warmup: [
-        { inputKind: 'ORDER_BOOK', minimumReadyCondition: 'healthy depth point available' },
-        { inputKind: 'AGG_TRADE_FLOW', minimumReadyCondition: 'one gap-free sample' },
-        { inputKind: 'CLOSED_CANDLES', minimumReadyCondition: 'one closed 5m candle' },
-      ],
+      inputs: requirements,
+      warmup: requirements.map((requirement) => ({
+        inputKind: requirement.kind,
+        minimumReadyCondition: `TEST_PROBE requires ${requirement.kind} input readiness`,
+      })),
       entryState: {
         kind: 'STATELESS',
         schemaVersion: 1,
@@ -97,6 +103,7 @@ export class DeterministicProbeStrategy implements EntryStrategy<DeterministicPr
         owner: this.identity.strategyId,
         depthStateVersion: context.localCausalState.depth?.appliedStateVersion ?? null,
         flowStateVersion: context.localCausalState.aggTrade?.appliedStateVersion ?? null,
+        marketDataCapturedAtMs: context.marketDataSnapshot?.capturedAtMs ?? null,
       },
     };
   }

@@ -23,7 +23,17 @@ export class OrderBookDataPlane<T extends OrderBookPort = OrderBookPort> {
       const book = this.createBook(normalizedSymbol);
       entry = { book, references: 0 };
       this.books.set(normalizedSymbol, entry);
-      book.start();
+      try {
+        book.start();
+      } catch (error) {
+        this.books.delete(normalizedSymbol);
+        try {
+          book.stop();
+        } catch {
+          // Preserve the acquisition error; cleanup remains best effort.
+        }
+        throw error;
+      }
     }
     entry.references++;
 

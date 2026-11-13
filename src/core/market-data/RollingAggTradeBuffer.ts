@@ -3,7 +3,7 @@ import type { LocalCausalStateWatermark } from './LocalCausalWatermark';
 
 // Time retention is authoritative; this only prevents unbounded memory use during a feed failure.
 const DEFAULT_EMERGENCY_MAX_BUFFER_SIZE = 50_000;
-const DEFAULT_MAX_AGE_MS = 300_000;
+export const ROLLING_AGG_TRADE_MAX_AGE_MS = 300_000;
 
 interface Clock {
   now(): number;
@@ -83,7 +83,7 @@ export class RollingAggTradeBuffer {
   constructor(
     clock: Clock,
     maxSize = DEFAULT_EMERGENCY_MAX_BUFFER_SIZE,
-    maxAgeMs = DEFAULT_MAX_AGE_MS,
+    maxAgeMs = ROLLING_AGG_TRADE_MAX_AGE_MS,
     private readonly onGap?: (gap: AggTradeGap) => void,
     private readonly hasPersistedGap?: (fromMs: number, toMs: number) => boolean,
   ) {

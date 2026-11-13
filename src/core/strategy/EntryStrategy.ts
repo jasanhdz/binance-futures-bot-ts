@@ -23,6 +23,8 @@ export type StrategyDataRequirement =
       readonly windowMs: number;
       readonly minimumObservedSamples: number;
       readonly continuityPolicy: 'REQUIRE_GAP_FREE' | 'REPORT_TO_STRATEGY';
+      /** Optional local-monotonic receive-age requirement; never compared across generations. */
+      readonly maximumAgeMs?: number;
     }
   | {
       readonly kind: 'BENCHMARK_CONTEXT';
@@ -131,6 +133,16 @@ export interface StrategyRuntimeContract {
     readonly recovery: 'RESTORE_BY_PERSISTED_STRATEGY_IDENTITY';
   };
   readonly modelFeatureSchema?: StrategyFeatureSchema;
+}
+
+export type StrategyDataReadinessStatus = 'READY' | 'WAIT' | 'NOT_EVALUABLE';
+
+/** Readiness refers to this exact captured state, which is also used to build evaluation context. */
+export interface StrategyDataReadiness<TSnapshot> {
+  readonly status: StrategyDataReadinessStatus;
+  readonly reasons: readonly string[];
+  readonly snapshot: TSnapshot;
+  readonly diagnostics: Readonly<Record<string, unknown>>;
 }
 
 export function freezeStrategyRuntimeContract<T extends StrategyRuntimeContract>(contract: T): T {

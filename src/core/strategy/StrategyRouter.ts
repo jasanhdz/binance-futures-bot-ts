@@ -1,6 +1,6 @@
 import type { StrategyDecisionObservationHook } from '../blackbox/StrategyDecisionObservation';
 import { StrategyDecisionEnvelope, StrategyEvaluationResult } from './StrategyDecision';
-import { EntryStrategy } from './EntryStrategy';
+import { EntryStrategy, StrategyDataReadiness } from './EntryStrategy';
 import { StrategyId } from './StrategyIdentity';
 import { randomUUID } from 'node:crypto';
 
@@ -61,6 +61,74 @@ export class StrategyRouter<TContext = unknown> {
   /** Declared inputs/warmup/configuration for a registered strategy, if migrated. */
   contract(strategyId: StrategyId): EntryStrategy<TContext>['contract'] {
     return this.strategies.get(strategyId)?.contract;
+  }
+
+  /**
+   * Evaluate from one explicit readiness snapshot. Incomplete/invalid input returns
+   * before observation or strategy evaluation; the context factory receives the exact
+   * snapshot used to produce the readiness result.
+   */
+  async evaluateWithReadiness<TSnapshot>(
+    strategyId: StrategyId,
+    readiness: StrategyDataReadiness<TSnapshot>,
+    contextFromSnapshot: (
+      snapshot: TSnapshot,
+    ) => TContext & { readonly marketDataSnapshot: TSnapshot },
+  ): Promise<StrategyDecisionEnvelope> {
+    const strategy = this.strategies.get(strategyId);
+    if (!strategy) throw new Error(`STRATEGY_NOT_REGISTERED:${strategyId}`);
+    if (!strategy.contract)
+      throw new Error(`STRATEGY_CONTRACT_REQUIRED_FOR_READINESS:${strategyId}`);
+
+    const context = contextFromSnapshot(readiness.snapshot);
+    if (context.marketDataSnapshot !== readiness.snapshot)
+      throw new Error('STRATEGY_READINESS_CONTEXT_SNAPSHOT_MISMATCH');
+    const snapshotSymbol = extractSymbol(readiness.snapshot);
+    const symbol = extractSymbol(context);
+    if (snapshotSymbol !== 'UNKNOWN' && symbol !== snapshotSymbol)
+      throw new Error('STRATEGY_READINESS_CONTEXT_SYMBOL_MISMATCH');
+    if (strategy.mode === 'OFF')
+      return {
+        identity: strategy.identity,
+        mode: strategy.mode,
+        symbol,
+        timestamp: Date.now(),
+        decision: 'NO_TRADE',
+        evaluationStatus: 'NOT_EVALUABLE',
+        reason: 'strategy_off',
+        diagnostics: { routerBlocked: true },
+      };
+
+    if (readiness.status !== 'READY')
+      return {
+        identity: strategy.identity,
+        mode: strategy.mode,
+        symbol,
+        timestamp: Date.now(),
+        decision: 'NO_TRADE',
+        evaluationStatus: readiness.status,
+        reason: readiness.reasons[0] ?? `STRATEGY_DATA_${readiness.status}`,
+        diagnostics: {
+          sharedMarketDataReadiness: {
+            status: readiness.status,
+            reasons: [...readiness.reasons],
+            evidence: readiness.diagnostics,
+          },
+        },
+      };
+
+    const envelope = await this.evaluate(strategyId, context);
+    return {
+      ...envelope,
+      diagnostics: {
+        ...envelope.diagnostics,
+        sharedMarketDataReadiness: {
+          status: 'READY',
+          reasons: [...readiness.reasons],
+          evidence: readiness.diagnostics,
+        },
+      },
+    };
   }
 
   async evaluate(strategyId: StrategyId, context: TContext): Promise<StrategyDecisionEnvelope> {
@@ -317,7 +385,9 @@ function validateStrategyContract(
         !Number.isFinite(input.windowMs) ||
         input.windowMs <= 0 ||
         !Number.isSafeInteger(input.minimumObservedSamples) ||
-        input.minimumObservedSamples < 0
+        input.minimumObservedSamples < 0 ||
+        (input.maximumAgeMs !== undefined &&
+          (!Number.isFinite(input.maximumAgeMs) || input.maximumAgeMs < 0))
       )
         throw new Error(`STRATEGY_CONTRACT_FLOW_REQUIREMENT_INVALID:${strategyId}`);
     } else if (input.kind === 'BENCHMARK_CONTEXT') {
