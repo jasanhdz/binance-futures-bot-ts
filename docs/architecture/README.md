@@ -21,6 +21,10 @@ This document does not authorize trading or imply that a proposed/typed boundary
   own live execution admission/mutation. A strategy intent alone grants no authority.
 - `StrategyRuntimeCoordinator` owns `SharedMarketDataRuntime`; Aegis, Momentum, and the
   integrated Micro runtime can consume canonical order-book/AggTrade state through leases.
+- An explicit `StrategyContractMarketDataProvisioner` maps supported declarations onto
+  `SharedMarketDataRuntime` leases; `StrategyRouter.evaluateWithReadiness()` gates using the
+  resulting exact snapshot. This composition path is exercised only with `TEST_PROBE` tests; it is
+  not started by strategy registration or wired into production strategy composition.
 - `ShadowTradingEngine` is a strategy-keyed, recoverable paper lifecycle. Micro's paper/exit
   adapter uses it; replay uses the same `MicroBurstStrategy`/entry policy as runtime.
 - `MicroBurstCaptureSession` and paired replay verify manifests, inputs, snapshots, sequence
@@ -29,10 +33,10 @@ This document does not authorize trading or imply that a proposed/typed boundary
 ## Still partial or disconnected
 
 - `EntryStrategy.contract` now describes identity-bound config, required inputs, warmup, entry
-  state recovery and position-manager ownership for Micro/Momentum. It validates declaration
-  identity and requires explicit outcome classification, but does not yet compare all data needs
-  to supplied feeds or compile requirements into feed acquisition/readiness. Legacy Aegis entry
-  orchestration remains outside this generic router.
+  state recovery and position-manager ownership for Micro/Momentum. The explicit provisioner
+  supports existing candles/book/AggTrade planes for the test-only consumer, but doesn't support
+  benchmark/realtime-feature requirements or automatically compose production readiness. Legacy
+  Aegis entry orchestration remains outside this generic router.
 - `MarketDataCapabilityCatalog` / consumer profiles and neutral snapshot composition are tested
   but not wired into the decision contexts. Do not describe them as the active runtime path.
 - Micro consumes the shared depth/AggTrade planes when built by `StrategyRuntimeCoordinator`,

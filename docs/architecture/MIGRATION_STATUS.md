@@ -9,9 +9,9 @@ economic edge and profitability are **not demonstrated**.
 | Capability          | Current connection                                                                                                                                                     | Boundary/status                                                                                                                                                                                                                                                                                     |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Entry evaluation    | `TradingService` registers `MomentumRideStrategy` and `MicroBurstStrategy` with the existing typed `StrategyRouter`s.                                                  | Both call their existing policy functions. Aegis still uses its legacy entry orchestration.                                                                                                                                                                                                         |
-| Strategy contract   | Micro and Momentum declare versioned config source, data requirements, warmup, stateless entry state, and position-manager/recovery owner.                             | Router validates identity/config/manager ownership and exposes the declaration. A contracted `NO_TRADE` without classification fails closed to `NOT_EVALUABLE`; legacy adapters retain the `REJECTED` fallback. Requirements still do not provision feeds/readiness automatically.                  |
+| Strategy contract   | Micro, Momentum, and test-only `TEST_PROBE` declare config provenance, data requirements, warmup, entry-state recovery, and position-manager ownership.                | `StrategyContractMarketDataProvisioner` explicitly acquires supported leases from `SharedMarketDataRuntime`; `StrategyRouter.evaluateWithReadiness` gates on that lease snapshot. Only test composition uses the adapter; registration has no resource side effects.                                |
 | Evaluation outcome  | `StrategyRouter` reports `INTENT`, `REJECTED`, `WAIT`, or `NOT_EVALUABLE` separately from `decision`.                                                                  | Micro and Momentum classify their existing context/evaluation result explicitly. A contracted `NO_TRADE` without classification is `NOT_EVALUABLE`; an uncontracted legacy `NO_TRADE` remains `REJECTED`. OFF/audit failure is `NOT_EVALUABLE`.                                                     |
-| Shared market state | `StrategyRuntimeCoordinator` owns one `SharedMarketDataRuntime`; Micro, Momentum, and other consumers can acquire the same order-book/AggTrade state.                  | Deterministic integration tests prove shared state and one subscription per symbol/capability for Micro and `TEST_PROBE`. Consumers acquire existing leases; contract declarations do not yet drive lease acquisition.                                                                              |
+| Shared market state | `StrategyRuntimeCoordinator` owns one `SharedMarketDataRuntime`; Micro, Momentum, and other consumers can acquire the same order-book/AggTrade state.                  | Contract composition tests explicitly acquire reference-counted leases and prove one subscription per symbol/interval plus shared book/flow state across consumers. The production coordinator still does not automatically provision arbitrary strategy contracts.                                 |
 | Candle source       | Momentum uses `CandleDataPlane`; Micro BTC context uses `MarketDataCandleProvider`.                                                                                    | Micro's 1m/3m/5m builder still uses the existing raw exchange `getCandles` adapter and one exchange-as-of boundary. It is represented by the existing `MarketDataPort` contract but not replaced with the streaming plane because closure/availability semantics differ.                            |
 | Risk/admission      | Existing `SharedEntrySafetyGate`, strategy risk session, `SharedEntryReservation`, symbol/open-position checks and execution preconditions remain in force.            | Paper integration invokes the production `SharedEntryReservation` and verifies its same-symbol busy result. It does not exercise `TradingService`'s exchange-backed occupied-position path; no netting/hedge ownership is added.                                                                    |
 | Execution           | `SharedStrategyExecutionService` remains the exchange mutation boundary used by current entry paths.                                                                   | It still contains Micro contextual-policy/sizing validation; `TradingService` still composes much of Aegis/Micro authority. `TEST_PROBE` is explicitly denied here.                                                                                                                                 |
@@ -42,6 +42,46 @@ offline paper fixture.
 The probe is not a trading proposal. It establishes that data and lifecycle mechanisms can be
 reused without importing Micro policy or sharing its state. The current production composition
 still has separate routers for distinct context types, as does the existing runtime coordinator.
+
+## Contract-driven data composition and readiness (test-only first consumer)
+
+`StrategyContractMarketDataProvisioner.acquire(contract, symbol)` is an explicit composition
+operation over one existing `SharedMarketDataRuntime`. It does not run from
+`StrategyRouter.register()`. The provisioner owns only the leases it acquires; the underlying
+planes still own streams, buffers, health, and reference counts. Consumers must call `warmup()`
+explicitly where closed candles are required and must call the returned idempotent `release()`
+during teardown. Partial acquisition/warmup failure releases leases already obtained.
+
+The current adapter supports only capabilities whose real state is available from those planes:
+
+- `CLOSED_CANDLES`: supported shared intervals, up to the existing plane's bounded history;
+  checks actual `closeTime <= capturedAtMs`, source receive age, optional close age, OHLC
+  boundaries, minimum closed count, and continuity when `gapPolicy` is `REJECT`.
+- `ORDER_BOOK`: known top depth up to the plane's exposed feature depth, current synchronized
+  health and receive age. `REQUIRE_LINKED_UPDATES` additionally requires a same-process applied
+  watermark and no recorded book gap; a healthy point alone does not claim interval continuity.
+- `AGG_TRADE_FLOW`: the buffer's actual window coverage, observed sample count, capacity/gap
+  state, and (when `maximumAgeMs` is declared) applied local-monotonic age from the current
+  process generation. No exchange-event clock is compared to a local clock.
+
+Benchmark context and realtime feature schemas have no owned lease/state mapping in this adapter;
+acquisition throws an explicit unsupported-capability error. Exact duplicate requirements are
+rejected; distinct flow windows share the same per-symbol buffer and distinct candle intervals
+share their corresponding per-symbol/interval entries. The non-owning
+`MarketDataCapabilityCatalog` and profiles remain a separate snapshot-composition prototype: they
+do not acquire/release resources and are not used as a second provisioner.
+
+The lease's `read()` returns a detached immutable snapshot. `assess(snapshot)` only accepts
+snapshots issued by that lease and evaluates actual state. Insufficient startup coverage returns
+`WAIT`; stale, malformed, gapped, truncated, or generation-incomparable evidence returns
+`NOT_EVALUABLE` with reason codes. `StrategyRouter.evaluateWithReadiness()` receives that
+readiness object and invokes the context factory with its exact snapshot. For non-READY results
+the strategy evaluator is not called. The composition test spies on that evaluator and checks
+snapshot object identity in the context it receives.
+
+This is exercised exclusively by `TEST_PROBE` and offline Exchange fakes. `TradingService` and
+`StrategyRuntimeCoordinator` do not automatically use the adapter for production entries; Micro,
+Momentum, and Aegis retain their current composition/readiness paths.
 
 The pre-separation Micro behavior reference is the existing deterministic suite:
 `MicroBurstStrategy.test.ts`, `MicroBurstReactionEntryPolicy.test.ts`,
@@ -93,10 +133,10 @@ decisions.
 See [`../README.md`](../README.md) for the document inventory, canonical sources, and cleanup
 decisions. Remaining seams for the next phase:
 
-1. Make strategy contract requirements drive the existing runtime's subscription/readiness
-   composition without creating a second registry or changing data freshness semantics. For
-   now, the router only requires explicit evaluation classification from contracted adapters;
-   candle closure/freshness parity and runtime readiness remain strategy-specific/manual.
+1. Decide whether and how production composition should opt into contract-driven provisioning.
+   The explicit adapter and readiness gate are currently proved only with `TEST_PROBE`; migrating
+   live/shadow production consumers needs separate equivalence/regression proof and must not
+   happen at registration time.
 2. Decide whether to expose the existing `MarketDataCapabilityCatalog` to runtime consumers or
    retire it; do not treat it as connected today.
 3. Complete a Micro 1m/3m/5m source adapter over a shared capability only after tests demonstrate
@@ -115,8 +155,9 @@ decisions. Remaining seams for the next phase:
 
 - Current workflow Node runtime: Node 22, matching `better-sqlite3@13.0.3`'s `>=22` engine. Offline Vitest uses `OfflineVitest.config.ts`, one worker, no file parallelism, and a 30-second per-test timeout for SQLite/fsync-heavy serial runs. The Momentum soak remains behind successful build, test, and static read-only audit steps.
 - `npx tsc -p tsconfig.json --noEmit`: PASS. A full TypeScript compile to `/tmp/opencode/binance-futures-bot-ts-build-check` also passed without writing into repository `dist/`.
-- `DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism`: PASS, 246 files / 3,191 tests (415.89 seconds).
+- `DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism`: PASS, 247 files / 3,198 tests (432.22 seconds).
 - Focal composition/ownership/recovery/execution tests cover shared-stream reference counts, disk-backed HOLD/restart/recovery/close, duplicate-record blocking, and `TEST_PROBE` execution denial without exchange mutation.
+- Contract-composition tests cover deferred acquisition, shared/interval-keyed leases, differing flow windows, changed requirements changing readiness, warmup WAIT, stale/gapped/unknown-generation NOT_EVALUABLE, unsupported/duplicate requirements, partial rollback, reconnect re-warmup, and same-snapshot evaluation. All use simulated feeds; they are not market evidence.
 - Directed regression and integration tests cover local equal/regressing clocks, reconnect
   generations, received-vs-applied book versions, deferred append vs persistence watermark,
   archived local-order replay, exchange-clock regression remaining UNKNOWN, Micro policy/paper

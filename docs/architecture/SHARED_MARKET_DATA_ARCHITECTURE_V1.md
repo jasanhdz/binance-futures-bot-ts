@@ -39,6 +39,12 @@ Therefore this project MUST NOT create a second WebSocket hub or a second compet
 - `MarketSnapshotProvider` and `MarketDataCapabilityCatalog` are implemented and tested but are
   not wired into the production decision contexts. Their profiles are not active runtime
   dependencies.
+- `StrategyContractMarketDataProvisioner.acquire(contract, symbol)` is an explicit adapter from
+  typed requirements to `SharedMarketDataRuntime`'s existing book/AggTrade/candle leases. It is currently called
+  only in offline `TEST_PROBE` composition; registering a strategy does not acquire a feed.
+- Readiness is checked from a detached immutable snapshot from those same leases. Unsupported
+  benchmark/realtime-feature needs fail with an explicit capability error; partial acquisition
+  releases acquired leases. The caller owns the explicit warmup and idempotent release lifecycle.
 - WebSocket market events carry process-generation, connection-generation, receive sequence,
   and local monotonic receive provenance. Synchronized book/flow states expose applied state
   watermarks. Decision evidence preserves those source versions and the context capture boundary;
@@ -47,6 +53,29 @@ Therefore this project MUST NOT create a second WebSocket hub or a second compet
 
 V7 predates these local-causal fields. Its exact inputs and UNKNOWN intervals remain immutable;
 new provenance does not retroactively certify its event order or market execution.
+
+### Contract-driven composition boundary
+
+The contract lease adapter uses existing ownership rather than the non-owning
+`MarketDataCapabilityCatalog`: one order-book and one AggTrade state per symbol, plus one candle
+entry per `(symbol, interval)`, all through current reference-counted leases. Multiple flow
+windows read the same rolling buffer. Present support is bounded to retained candle history,
+exposed order-book feature depth, and the rolling AggTrade retention window. Each requirement is
+checked against actual data quality, timestamps, gap/continuity evidence, and causal-generation
+metadata when the requirement needs it. Unknown requirements are rejected explicitly.
+
+The `StrategyRouter` readiness entry point is supplied a readiness result that holds the exact
+snapshot; its context factory receives that same snapshot. A non-ready result returns `WAIT` for
+warming coverage or `NOT_EVALUABLE` for stale/invalid/unverifiable evidence before invoking the
+strategy evaluator. This path has offline tests for `TEST_PROBE` only and is not wired into the
+production coordinator.
+
+Micro is deliberately not migrated here. Its 1m/3m/5m REST candle path shares one exchange
+as-of boundary and its `MarketDataCandleProvider` classifies OPEN/CLOSED data differently from
+`CandleDataPlane`'s WS/local availability and warmup status. Before Micro can use contract-driven
+candle provisioning, an explicit compatibility adapter must prove parity for interval ordering,
+closed-candle boundary, sample count, response freshness, gaps, and BTC context under the same
+snapshot time. Until then its current provider and decision path remain authoritative.
 
 ## 3. Target dependency direction
 

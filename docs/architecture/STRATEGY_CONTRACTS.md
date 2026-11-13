@@ -17,11 +17,18 @@ declared position ownership/config hash and exposes the registered contract.
 
 The declaration is typed around separate closed-candle, order-book, AggTrade-flow, benchmark
 and realtime-feature requirements. It names configuration provenance, data warmup, strategy
-entry-state recovery and the existing owner of position lifecycle. This metadata does not yet
-automatically acquire feeds or replace each runtime's current readiness checks; that coupling
-is tracked in `MIGRATION_STATUS.md`. Contracted strategies must explicitly classify a `NO_TRADE`
-as `REJECTED`, `WAIT`, or `NOT_EVALUABLE`; if they omit classification the router returns
-`NOT_EVALUABLE`. Legacy adapters without contracts keep the prior `REJECTED` fallback.
+entry-state recovery and the existing owner of position lifecycle. The
+`StrategyContractMarketDataProvisioner` now acquires supported leases from
+`SharedMarketDataRuntime` for closed-candle,
+order-book and AggTrade requirements; `StrategyRouter.evaluateWithReadiness()` can gate an
+evaluation on evidence from the snapshot produced by those same leases. This route is currently
+exercised only by test-only `TEST_PROBE`; normal strategy registration remains side-effect-free,
+and production runtime composition has not switched over. Support gaps are in
+`MIGRATION_STATUS.md`.
+
+Contracted strategies must explicitly classify a `NO_TRADE` as `REJECTED`, `WAIT`, or
+`NOT_EVALUABLE`; if they omit classification the router returns `NOT_EVALUABLE`. Legacy adapters
+without contracts keep the prior `REJECTED` fallback.
 
 `StrategyDecisionEnvelope.evaluationStatus` distinguishes `INTENT`, `REJECTED`, `WAIT`, and
 `NOT_EVALUABLE`. The existing `decision`/`reason` fields and evaluators remain unchanged; a
@@ -30,6 +37,23 @@ strategy is `NOT_EVALUABLE`; an uncontracted legacy result is `REJECTED`. `OFF` 
 failure are `NOT_EVALUABLE`. Micro and Momentum already emit explicit classifications from their
 existing context/evaluation outcomes. This rule does not independently verify the contract's
 declared data inputs.
+
+The explicit contract-data lease currently supports candle intervals exposed by `CandleDataPlane`
+(bounded to its retained history), book depth up to the existing feature-depth projection, and
+AggTrade windows up to the existing rolling retention. It checks the real closed candle series,
+source age/close age, candle boundaries and declared gap policy; actual synchronized book health,
+known levels and sequence watermark when requested; and actual AggTrade sample/window coverage,
+continuity/capacity state and optional same-process monotonic freshness. Unsupported benchmark or
+realtime-feature requirements fail acquisition explicitly. Duplicate requirements with identical
+definitions are rejected; different windows over one symbol share the same AggTrade state, while
+candle intervals use the existing interval-keyed leases. Warmup strings are descriptive; these
+checks are calculated from plane snapshots, not inferred from the strings.
+
+The readiness result carries the exact immutable plane snapshot used by the context factory.
+`WAIT` is reserved for coverage/connection warmup still in progress; `NOT_EVALUABLE` covers stale,
+invalid, discontinuous, truncated, or generation-incomparable evidence. Neither is converted to a
+strategy rejection, and neither path calls the entry evaluator. This contract-to-data route is a
+composition capability, not automatic production provisioning.
 
 `StrategyFeatureSchema`, `StrategyFeatureVector`, `StrategyModelPredictionInput`, and
 `StrategyEvaluationInput<TContext>` define a future offline-feature/model-input shape. They are
