@@ -115,7 +115,7 @@ decisions. Remaining seams for the next phase:
 
 - Current workflow Node runtime: Node 22, matching `better-sqlite3@13.0.3`'s `>=22` engine. Offline Vitest uses `OfflineVitest.config.ts`, one worker, no file parallelism, and a 30-second per-test timeout for SQLite/fsync-heavy serial runs. The Momentum soak remains behind successful build, test, and static read-only audit steps.
 - `npx tsc -p tsconfig.json --noEmit`: PASS. A full TypeScript compile to `/tmp/opencode/binance-futures-bot-ts-build-check` also passed without writing into repository `dist/`.
-- `DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism`: PASS, 246 files / 3,191 tests (467.85 seconds).
+- `DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/vitest run --config src/testing/OfflineVitest.config.ts --exclude 'data/**' --maxWorkers=1 --no-file-parallelism`: PASS, 246 files / 3,191 tests (415.89 seconds).
 - Focal composition/ownership/recovery/execution tests cover shared-stream reference counts, disk-backed HOLD/restart/recovery/close, duplicate-record blocking, and `TEST_PROBE` execution denial without exchange mutation.
 - Directed regression and integration tests cover local equal/regressing clocks, reconnect
   generations, received-vs-applied book versions, deferred append vs persistence watermark,

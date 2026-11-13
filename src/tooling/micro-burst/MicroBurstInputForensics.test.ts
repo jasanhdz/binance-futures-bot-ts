@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
 import { join } from 'node:path';
 import type { Candle } from '../../core/types';
@@ -98,7 +99,7 @@ describe('offline input forensics', () => {
     expect(input).toEqual(before);
   });
   it('hashes stable gzip bytes, preserves source line numbers and counts malformed lines', async () => {
-    const directory = mkdtempSync('/tmp/opencode/micro-forensics-test-');
+    const directory = mkdtempSync(join(tmpdir(), 'micro-forensics-test-'));
     try {
       const file = join(directory, 'sample.jsonl.gz');
       writeFileSync(file, gzipSync('{"x":1}\ninvalid\n{"x":2}\n'));
@@ -114,7 +115,7 @@ describe('offline input forensics', () => {
     }
   });
   it('rejects changed files rather than treating a partial read as stable', async () => {
-    const directory = mkdtempSync('/tmp/opencode/micro-forensics-test-');
+    const directory = mkdtempSync(join(tmpdir(), 'micro-forensics-test-'));
     try {
       const file = join(directory, 'sample.jsonl');
       writeFileSync(file, '{"x":1}\n');
